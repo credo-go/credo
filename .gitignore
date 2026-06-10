@@ -1,0 +1,78 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+*.prof
+
+# Build output
+/bin/
+/dist/
+
+# Dependency directories
+/vendor/
+
+# Go workspace (local dev only — see CONTRIBUTING.md)
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Debug
+debug
+__debug_bin*
+
+# AI Assistant configs
+.mcp.json
+.opencode/
+opencode.jsonc
+
+# Coverage output (make cover)
+/coverage
+
+# AI / dev tooling artifacts
+.codegraph/
+.codex/
+.cursor/
+.kiro/
+.gemini/
+.serena/
+
+# Agent instruction files (local dev only — excluded from the public release)
+AGENTS.md
+CLAUDE.md
+
+# Private launch tracker (internal; the public roadmap lives in TODO.md)
+LAUNCH-READINESS.md
+
+# Private refactor tracker (internal; analysis report lives in tmp/)
+REFACTOR-PLAN.md
+
+# Internal design deliberation (resolved decisions live in the ADRs/specs)
+docs/open-questions.md
+
+# Temporary files
+tmp/

@@ -1,0 +1,269 @@
+NOTICES — Third-Party Code Attribution
+======================================
+
+Credo includes code adapted from the following open-source projects.
+All original licenses and copyrights are preserved as required.
+Over time, adapted code may diverge significantly from its origin.
+
+Each entry lists the source project, its license, and the Credo packages
+where adapted code resides. Original copyright headers are retained in
+individual source files.
+
+----------------------------------------------------------------------
+
+httprouter (https://github.com/julienschmidt/httprouter)
+Copyright (c) 2013 Julien Schmidt
+License: BSD-3-Clause (https://github.com/julienschmidt/httprouter/blob/master/LICENSE)
+
+Referenced in (no code copied):
+  - internal/radix/    — Algorithmic reference only. Chi is the primary
+                         source; httprouter was consulted for edge-case fixes
+                         and algorithmic reference. No httprouter source code
+                         is included in Credo.
+
+----------------------------------------------------------------------
+
+Chi (https://github.com/go-chi/chi)
+Copyright (c) 2015-present Peter Kieltyka, Google Inc.
+License: MIT (https://github.com/go-chi/chi/blob/master/LICENSE)
+
+Adapted in:
+  - internal/radix/    — Primary source for radix tree algorithm, pattern
+                         matching ({param}, {param:regex}, {path...})
+    Files (derived from chi tree.go / context.go):
+      method.go        — HTTP method bitflags (MethodTyp, MethodMap)
+      context.go       — RouteContext, RouteParams, Routes interface
+      pattern.go       — PatNextSegment ({param}, {id:[0-9]+}, {path...})
+      sort.go          — Node sorting by type priority
+      tree.go          — Node, InsertRoute, FindRoute with backtracking
+
+  - (root package)     — Router API, route groups, sub-router mounting
+    Files (derived from chi mux.go / chi.go, merged into root 2026-02-28):
+      routectx.go      — routeCtxKey, GetRouteContext, URLParam
+      mux.go           — Mux (radix tree storage), InsertRoute, FindRoute
+      walk.go          — WalkFunc, Walk
+      credo.go          — App struct, ServeHTTP, dispatch, Handle, Group, Mount
+
+  - middleware/         — Logger, Recover, RequestID, Compress
+    Files (derived from chi middleware/):
+      requestid.go     — X-Request-Id injection + context storage
+      recover.go       — Panic recovery with slog structured logging
+      logger.go        — Structured request logging via slog (co-derived with Echo)
+      compress.go      — gzip/deflate response compression
+
+----------------------------------------------------------------------
+
+Echo (https://github.com/labstack/echo)
+Copyright (c) 2024 LabStack
+License: MIT (https://github.com/labstack/echo/blob/master/LICENSE)
+
+Adapted in:
+  - (root package)     — Context struct, response writer, request binder
+    Files (inspired by echo context.go / response.go / binder.go):
+      context.go       — Context struct with Request/Response split,
+                         Set/Get, Logger, context.Context bridge
+      request.go       — Request struct, BindBody (JSON), RouteParams, QueryParam
+      response.go      — Response struct (wraps http.ResponseWriter,
+                         tracks Status/Size/Committed), JSON/XML/HTML/Text helpers
+
+  - middleware/         — Config struct pattern, Skipper pattern,
+                          AccessLog, CORS, Secure, Timeout
+    Files (derived from echo middleware/):
+      accesslog.go     — AccessLogConfig struct, Skipper function pattern (co-derived with Chi)
+      cors.go          — CORS config + preflight handling
+      secure.go        — Security headers middleware
+      timeout.go       — Context timeout middleware
+
+----------------------------------------------------------------------
+
+Goyave (https://github.com/go-goyave/goyave)
+Copyright (c) 2024 Jérémy MUSIC (Systemglitch) and Goyave contributors
+License: MIT (https://github.com/go-goyave/goyave/blob/master/LICENSE)
+
+Adapted in:
+  - (root package)     — Route Meta, named routes, StatusHandler, fluent API,
+                         3-tier middleware, HEAD auto-handling
+    Files (inspired by goyave route.go / router.go):
+      route.go         — Route struct, fluent Name/SetMeta/Middleware,
+                         LookupMeta with parent chain, BuildURI/BuildURL
+      group.go         — routeGroup with meta inheritance, StatusHandler,
+                         nested Group support
+
+  - validation/        — Topic-based rule grouping inspiration (Goyave organization pattern)
+    Credo validation is primarily adapted from ozzo-validation (see below).
+    Goyave influence: topic-based file grouping (string_rules.go, numeric_rules.go, etc.)
+
+  - store/            — Connection pattern influence, multi-database registry design
+    Goyave v6 Discussion #285 influence: type-safe generic connection interface,
+    named connection pool with typed retrieval.
+    Goyave v5 session package influence: transaction callback pattern.
+
+----------------------------------------------------------------------
+
+samber/do (https://github.com/samber/do)
+Copyright (c) 2022 Samuel Berthe
+License: MIT (https://github.com/samber/do/blob/main/LICENSE)
+
+Adapted in:
+  - internal/di/       — Generics DI container, lifecycle management
+    Files (derived from samber/do core APIs):
+      container.go     — service registry, constructor graph, singleton cache
+      provide.go       — typed service registration API
+      resolve.go       — typed resolution API + dependency graph traversal
+      lifecycle.go     — singleton lifecycle semantics
+      bind.go          — interface-to-concrete type alias (Alias[I,T])
+      build.go         — container freeze + validation lifecycle
+
+----------------------------------------------------------------------
+
+koanf (https://github.com/knadh/koanf)
+Copyright (c) 2019 Kailash Nadh
+License: MIT (https://github.com/knadh/koanf/blob/master/LICENSE)
+
+Adapted in:
+  - config/            — Map-merge utilities for the single-pass loader
+    Files (derived from koanf v2 maps/maps.go, koanf.go):
+      maps.go            — Map utilities (lookup, unflatten, merge, copy,
+                           interface-key normalization)
+
+----------------------------------------------------------------------
+
+go-i18n (https://github.com/nicksnyder/go-i18n)
+Copyright (c) 2014 Nick Snyder
+License: MIT (https://github.com/nicksnyder/go-i18n/blob/main/LICENSE)
+
+Adapted in:
+  - internal/i18n/       — Bundle, Localizer, Message types
+    Files adapted from go-i18n v2 (bundle.go, localizer.go, message.go,
+    internal/template.go, plural operand decomposition):
+      internal/i18n/bundle.go                     — Message container (simplified: JSON-only, dir-per-locale)
+      internal/i18n/localizer.go                  — Per-request message lookup (simplified: no Must* variants)
+      internal/i18n/message.go                    — Message struct (simplified: no Hash, Description, delimiters)
+      internal/i18n/message_template.go           — Message + template pairing
+      internal/i18n/template.go                   — text/template wrapper (simplified: no custom delimiters)
+      internal/i18n/plural.go                     — Operand decomposition derived from go-i18n; CLDR form
+                                                    selection delegated to golang.org/x/text/feature/plural
+    Root-level files using internal/i18n (original Credo code):
+      i18n.go                                     — UseI18n setup, I18nConfig
+      errors.go                                   — translateError, translateValidationErrors
+      context.go                                  — Locale(), T(), TPlural() methods
+
+----------------------------------------------------------------------
+
+ozzo-validation (https://github.com/go-ozzo/ozzo-validation)
+Copyright (c) 2016 Qiang Xue
+License: MIT (https://github.com/go-ozzo/ozzo-validation/blob/master/LICENSE)
+
+Adapted in:
+  - validation/        — Programmatic validation API, composable field rules
+    Files adapted from ozzo-validation (struct.go, validation.go):
+      rule.go          — ValidateStruct, Field[T], findStructField (offset-based
+                         with sync.Map caching), getErrorFieldName, FieldRules
+    Original Credo files (not adapted from ozzo):
+      errors.go        — ValidationError, Errors (RFC 7807 format)
+      common_rules.go  — By[T], In[T], NotNil[T]
+      string_rules.go  — Required[T], Email, URL, UUID, Regex, Length
+      numeric_rules.go — Min[T], Max[T], Between[T]
+      collection_rules.go — Each[T], When[T], NilSafe[T]
+      date_rules.go    — DateBefore, DateAfter
+
+----------------------------------------------------------------------
+
+GoFr (https://github.com/gofr-dev/gofr)
+Copyright (c) 2021 Vinicius Sabadim Gerevini, GoFr contributors
+License: Apache-2.0 (https://github.com/gofr-dev/gofr/blob/main/LICENSE)
+
+Adapted in:
+  - store/            — Interface-driven design, health check integration
+    Files (inspired by gofr pkg/gofr/ patterns):
+      health.go        — Health struct, HealthStatus constants
+                         (adapted from GoFr's health check design)
+      lifecycle.go     — Lifecycle interface design (interface-driven
+                          pluggable backends pattern)
+
+----------------------------------------------------------------------
+
+uptrace/bun (https://github.com/uptrace/bun)
+Copyright (c) 2021 Vladimir Mihailenco
+License: BSD-2-Clause (https://github.com/uptrace/bun/blob/master/LICENSE)
+
+Wrapped in:
+  - store/sqldb/      — Bun ORM wrapper with lifecycle management,
+                         query builder proxies, error mapping, and
+                         transaction support
+    Files:
+      db.go           — DB type wrapping *bun.DB
+      query_*.go      — Query builder proxy types
+      tx.go           — RunInTx transaction management
+      errors.go       — Bun/driver error → store.Err* mapping
+
+----------------------------------------------------------------------
+
+golang-jwt/jwt (https://github.com/golang-jwt/jwt)
+Copyright (c) 2021 golang-jwt contributors
+License: MIT (https://github.com/golang-jwt/jwt/blob/main/LICENSE)
+
+Wrapped in:
+  - auth/             — JWT token parsing and signature verification adapter
+    Files:
+      jwt.go          — JWTAuthenticator[T] wrapper over jwt/v5 parser
+
+----------------------------------------------------------------------
+
+robfig/cron (https://github.com/robfig/cron)
+Copyright (C) 2012 Rob Figueiredo
+License: MIT (https://github.com/robfig/cron/blob/master/LICENSE)
+
+Adapted in:
+  - worker/           — cron expression parser and next-fire calculation
+    Files adapted from robfig/cron v3:
+      schedule.go     — cron parser, descriptor parsing, next-fire calculation
+
+----------------------------------------------------------------------
+
+go-limiter (https://github.com/sethvargo/go-limiter)
+Copyright (c) Seth Vargo and go-limiter contributors
+License: Apache-2.0 (https://github.com/sethvargo/go-limiter/blob/main/LICENSE)
+
+Wrapped in:
+  - middleware/       — token bucket rate limiting middleware adapter
+    Files:
+      ratelimit.go    — RateLimit middleware wrapper over go-limiter store
+
+----------------------------------------------------------------------
+
+LICENSE NOTES
+
+MIT / ISC:
+  Copyright notice and license text must be preserved in adapted files
+  and in this NOTICES file.
+
+BSD-3-Clause (httprouter):
+  httprouter was consulted as an algorithmic reference only; no httprouter
+  source code is included in Credo, so no per-file BSD-3 header applies. This
+  attribution is retained for transparency. Were code copied, the copyright
+  notice, license text, and "neither the name nor contributors" non-endorsement
+  clause would be required.
+
+Apache-2.0 (when applicable):
+  Additional patent grant obligations apply. See the Apache License,
+  Version 2.0 for full terms: https://www.apache.org/licenses/LICENSE-2.0
+
+----------------------------------------------------------------------
+
+ADAPTATION PROCESS
+
+When adapting code from the above projects, the following process is
+followed (documented in docs/adr/002-code-acquisition-strategy.md):
+
+1. LICENSE CHECK  — Verify source license permits adaptation
+2. COPY           — Bring source files into the Credo directory structure
+3. ATTRIBUTE      — Retain original copyright headers in each file
+4. ADAPT          — Rename packages, update imports, align with Credo conventions
+5. SIMPLIFY       — Remove code not needed for Credo's architecture
+6. TEST           — Adapt and run original tests, add new ones
+7. DOCUMENT       — Update this NOTICES file and doc.go
+
+Over time, adapted code is expected to diverge substantially from its
+origin as Credo's own patterns and requirements evolve. This file records
+the initial provenance for transparency and legal compliance.

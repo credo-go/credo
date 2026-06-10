@@ -1,0 +1,157 @@
+# Comprehensive Credo configuration for a SaaS application.
+#
+# Section categories:
+#   [framework-read]  Automatically consumed by credo.New()
+#   [user-read]       Read via store.Unmarshal("key", &cfg) at module boundary, injected via DI
+#   [aspirational]    Config struct exists but is currently code-only; shown for reference
+#
+# Precedence (lowest to highest):
+#   1. This file (config.yaml)
+#   2. .env file
+#   3. Process environment variables (CREDO_ prefix)
+
+# ---------------------------------------------------------------------------
+# Server [framework-read]
+# Automatically consumed by credo.New(credo.WithRawConfig(store)).
+# The "server" key is the ONLY section read by the framework itself.
+# ---------------------------------------------------------------------------
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: "15s"
+  write_timeout: "15s"
+  idle_timeout: "60s"
+  read_header_timeout: "5s"
+  max_header_bytes: 1048576            # 1 MB (Go default when 0)
+
+# ---------------------------------------------------------------------------
+# Databases [user-read]
+# Named database connections using sqldb.Config (store/sqldb package).
+# Each entry is unmarshalled into sqldb.Config and registered via store.Register.
+# Usage:  store.Unmarshal("databases.default", &cfg)
+# ---------------------------------------------------------------------------
+databases:
+  default:
+    driver: "postgres"
+    host: "localhost"
+    port: 5432
+    name: "saas_app"
+    user: "app_user"
+    password: ""                       # Override via CREDO_DATABASES__DEFAULT__PASSWORD
+    max_open: 25
+    max_idle: 5
+    max_lifetime: "30m"
+    ssl_mode: "require"
+  # read_replica:
+  #   driver: "postgres"
+  #   host: "replica-db.internal"
+  #   port: 5432
+  #   name: "saas_app"
+  #   user: "readonly_user"
+  #   password: ""
+  #   max_open: 10
+  #   max_idle: 2
+  #   max_lifetime: "30m"
+  #   ssl_mode: "require"
+
+# ---------------------------------------------------------------------------
+# i18n [user-read]
+# Internationalization settings for i18n.Setup().
+# Usage:  store.Unmarshal("i18n", &cfg)
+# ---------------------------------------------------------------------------
+i18n:
+  dir: "locales/"
+  default: "en"
+
+# ---------------------------------------------------------------------------
+# Auth [user-read]
+# Authentication strategy settings. Function fields (Validator, KeyFunc,
+# ParseUser) are code-only and cannot appear in config files.
+# Usage:  store.Unmarshal("auth.jwt", &cfg)
+# ---------------------------------------------------------------------------
+auth:
+  jwt:
+    header: "Authorization"
+    prefix: "Bearer"
+    signing_method: "RS256"
+    # query: "token"                   # Optional: extract from query param
+    # cookie: "jwt"                    # Optional: extract from cookie
+  api_key:
+    header: "X-API-Key"
+    # prefix: "ApiKey"                 # Optional: scheme prefix
+    # query: "api_key"                 # Optional: query param fallback
+  basic:
+    realm: "SaaS Admin"
+
+# ---------------------------------------------------------------------------
+# Middleware [aspirational]
+# These config structs exist but are currently instantiated in Go code only.
+# Shown here as forward reference for when config-driven middleware is added.
+# Function fields (Skipper, ErrorHandler, Generator, etc.) are always code-only.
+# ---------------------------------------------------------------------------
+middleware:
+  cors:
+    allow_origins:
+      - "https://app.example.com"
+      - "https://*.example.com"
+    allow_methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "PATCH"
+      - "DELETE"
+    allow_headers:
+      - "Authorization"
+      - "Content-Type"
+      - "X-Request-Id"
+    allow_credentials: true
+    expose_headers:
+      - "X-Request-Id"
+      - "X-RateLimit-Remaining"
+    max_age: 86400                     # 24 hours
+
+  compress:
+    level: 5
+    types:
+      - "text/html"
+      - "text/css"
+      - "text/plain"
+      - "application/json"
+      - "application/javascript"
+      - "image/svg+xml"
+
+  rate_limit:
+    tokens: 100
+    interval: "1m"
+
+  recover:
+    disable_stack_trace: false
+    stack_size: 8192
+
+  request_id:
+    header: "X-Request-Id"
+    limit: 64
+
+  secure:
+    xss_protection: "1; mode=block"
+    content_type_nosniff: "nosniff"
+    x_frame_options: "DENY"
+    hsts_max_age: 31536000             # 1 year
+    hsts_exclude_subdomains: false
+    hsts_preload_enabled: true
+    content_security_policy: "default-src 'self'; script-src 'self'"
+    csp_report_only: false
+    referrer_policy: "strict-origin-when-cross-origin"
+
+  timeout:
+    timeout: "30s"
+
+# ---------------------------------------------------------------------------
+# Application [user-read]
+# User-defined application settings, injected via DI.
+# Usage:  store.Unmarshal("app", &cfg)
+# ---------------------------------------------------------------------------
+app:
+  name: "My SaaS App"
+  environment: "production"
+  debug: false

@@ -1,0 +1,22 @@
+# Enforce LF line endings in the repository for all text files.
+# Keeps the tree consistent across Windows/macOS/Linux and matches gofmt output,
+# so a Windows checkout no longer triggers "LF will be replaced by CRLF" churn.
+* text=auto eol=lf
+
+# Explicit rules for the common text types in this repo.
+*.go    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf
+Makefile text eol=lf
+
+# Known binaries: never normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary

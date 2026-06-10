@@ -1,0 +1,41 @@
+name: Upstream advisory watch
+
+# Adapted (forked) code is invisible to Dependabot and govulncheck. This
+# scheduled job runs govulncheck for the wrapped dependencies and prints a
+# reminder to manually review the upstream projects in SECURITY-UPSTREAMS.md.
+
+on:
+  schedule:
+    - cron: "0 9 1 * *" # 09:00 UTC on the 1st of each month
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: govulncheck + adapted-upstream reminder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck (root module)
+        run: govulncheck ./...
+
+      - name: govulncheck (store/sqldb submodule)
+        working-directory: store/sqldb
+        run: govulncheck ./...
+
+      - name: Adapted-code review reminder
+        if: always()
+        run: |
+          echo "::notice::govulncheck covers go.mod deps only. Manually review these upstreams for advisories affecting ADAPTED code (see SECURITY-UPSTREAMS.md):"
+          grep -oE 'https://github.com/[^)]+' SECURITY-UPSTREAMS.md | sort -u

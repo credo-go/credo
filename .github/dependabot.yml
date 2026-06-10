@@ -1,0 +1,41 @@
+# Dependabot — keeps the version-pinned ("wrap + pin") dependencies fresh.
+#
+# By policy (docs/adr/002-code-acquisition-strategy.md), adapted core packages
+# carry zero external runtime dependencies, so every entry in go.mod is by
+# definition a wrapped or directly-imported library — exactly the set that
+# needs version/CVE watching. Drift in *adapted* (forked) sources is watched
+# separately by .github/workflows/upstream-watch.yml (see SECURITY-UPSTREAMS.md).
+#
+# examples/* modules are deliberately not covered: demo code, no production
+# exposure.
+
+version: 2
+updates:
+  # Root module: yaml.v3 + mapstructure (config), golang-jwt (auth),
+  # go-limiter (rate limiting), x/text (BCP 47).
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # store/sqldb submodule: uptrace/bun + dialects, modernc.org/sqlite (tests).
+  - package-ecosystem: "gomod"
+    directory: "/store/sqldb"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The parent module is path-replaced (bootstrap) and bumped manually in
+      # lockstep at release time — see docs/releasing.md.
+      - dependency-name: "github.com/credo-go/credo"
+
+  # CI actions (checkout, setup-go, codeql-action, golangci-lint-action).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
