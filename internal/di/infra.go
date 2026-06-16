@@ -33,7 +33,7 @@ func deriveServiceName(t reflect.Type) string {
 		return name
 	}
 	// Pointer types: dereference.
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return deriveServiceName(t.Elem())
 	}
 	return t.String()

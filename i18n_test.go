@@ -385,7 +385,7 @@ func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 	}
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusErr{msg: "store: not found", status: 404}
+		return &httpStatusError{msg: "store: not found", status: 404}
 	})
 
 	w := httptest.NewRecorder()

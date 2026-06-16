@@ -279,7 +279,7 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 		app.errorRenderer(ctx, info)
 		if !ctx.Response().Committed() {
 			if isHEAD {
-				ctx.Response().NoContent(pd.Status)
+				_ = ctx.Response().NoContent(pd.Status)
 			} else {
 				ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
 					"credo: ErrorRenderer did not write response, falling back to default")
@@ -291,7 +291,7 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 
 	// No custom renderer — use default.
 	if isHEAD {
-		ctx.Response().NoContent(pd.Status)
+		_ = ctx.Response().NoContent(pd.Status)
 		return
 	}
 	defaultRenderError(ctx, pd)

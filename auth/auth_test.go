@@ -161,7 +161,7 @@ func TestMiddleware_AuthSuccess(t *testing.T) {
 	var captured *testUser
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Request.Context())
+		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
 		if !ok {
 			t.Error("expected user in context")
 		}
@@ -307,7 +307,7 @@ func TestMiddleware_UserAccessibleInHandler(t *testing.T) {
 
 	app := mustNew(t)
 	app.GET("/profile", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Request.Context())
+		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
 		if !ok {
 			t.Fatal("expected user in handler context")
 		}
@@ -336,7 +336,7 @@ func TestMiddleware_IntegrationWithApp(t *testing.T) {
 	g := app.Group("/api")
 	g.Middleware(auth.Middleware[*testUser](authenticator, nil))
 	g.GET("/me", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Request.Context())
+		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
 		if !ok {
 			return credo.ErrUnauthorized
 		}

@@ -242,11 +242,14 @@ func TestApp_Shutdown_GracefulDrain(t *testing.T) {
 	}
 
 	// Start an in-flight request.
-	var resp *http.Response
 	var reqErr error
 	done := make(chan struct{})
 	go func() {
-		resp, reqErr = http.Get("http://" + addr + "/slow")
+		resp, err := http.Get("http://" + addr + "/slow")
+		reqErr = err
+		if resp != nil {
+			defer resp.Body.Close()
+		}
 		close(done)
 	}()
 
@@ -268,9 +271,6 @@ func TestApp_Shutdown_GracefulDrain(t *testing.T) {
 	<-done
 	if reqErr != nil {
 		t.Fatalf("in-flight request error: %v", reqErr)
-	}
-	if resp != nil {
-		resp.Body.Close()
 	}
 	if !requestCompleted.Load() {
 		t.Error("in-flight request was not completed before shutdown")

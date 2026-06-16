@@ -24,7 +24,7 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Errors are handled inside the compiled handler chain by
 	// builtinErrorHandler (non-panic) and builtinRecover (panic).
 	// The chain always returns nil.
-	app.compiledHandler(c)
+	_ = app.compiledHandler(c)
 	app.ctxPool.put(c)
 }
 
@@ -118,10 +118,10 @@ func (app *App) runWith(
 	app.serverMu.Unlock()
 
 	for i, fn := range app.onStart {
-		if err := fn(appCtx); err != nil {
+		if startErr := fn(appCtx); startErr != nil {
 			cleanup()
 			app.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
-			return fmt.Errorf("credo: %s: OnStart hook [%d]: %w", label, i, err)
+			return fmt.Errorf("credo: %s: OnStart hook [%d]: %w", label, i, startErr)
 		}
 	}
 

@@ -115,7 +115,7 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 		},
 		{
 			name:        "three return values",
-			constructor: func() (*SimpleService, error, int) { return nil, nil, 0 },
+			constructor: func() (*SimpleService, int, error) { return nil, 0, nil },
 		},
 		{
 			name:        "wrong return type",

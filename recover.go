@@ -1,6 +1,7 @@
 package credo
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -31,7 +32,7 @@ func builtinRecover(next Handler) Handler {
 	return func(ctx *Context) error {
 		defer func() {
 			if rvr := recover(); rvr != nil {
-				if rvr == http.ErrAbortHandler {
+				if err, ok := rvr.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 					panic(rvr)
 				}
 

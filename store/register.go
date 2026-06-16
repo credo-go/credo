@@ -96,8 +96,8 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 		return err
 	}
 
-	if err := pingLifecycle(plan); err != nil {
-		return err
+	if pingErr := pingLifecycle(plan); pingErr != nil {
+		return pingErr
 	}
 
 	rollbackTrack, err := trackLifecycle(app, plan)
@@ -271,7 +271,7 @@ func ensureRegistry(app *credo.App) (*Registry, error) {
 func isNilValue[R any](value R) bool {
 	v := reflect.ValueOf(&value).Elem()
 	switch v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return v.IsNil()
 	default:
 		return false

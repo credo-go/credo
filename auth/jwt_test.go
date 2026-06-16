@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/credo-go/credo/auth"
 	jwt "github.com/golang-jwt/jwt/v5"
+
+	"github.com/credo-go/credo/auth"
 )
 
 func TestJWTAuthenticator_Success_DefaultClaims(t *testing.T) {
@@ -435,8 +436,8 @@ func TestJWTAuthenticator_Leeway(t *testing.T) {
 	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+signed)
-	if _, err := strict.Authenticate(r); !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("expired token without leeway: expected ErrJWTInvalid, got %v", err)
+	if _, authErr := strict.Authenticate(r); !errors.Is(authErr, auth.ErrJWTInvalid) {
+		t.Fatalf("expired token without leeway: expected ErrJWTInvalid, got %v", authErr)
 	}
 
 	lenient, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
@@ -448,8 +449,8 @@ func TestJWTAuthenticator_Leeway(t *testing.T) {
 	}
 	r = httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+signed)
-	if _, err := lenient.Authenticate(r); err != nil {
-		t.Fatalf("expired-within-leeway token rejected: %v", err)
+	if _, authErr := lenient.Authenticate(r); authErr != nil {
+		t.Fatalf("expired-within-leeway token rejected: %v", authErr)
 	}
 }
 
@@ -466,8 +467,8 @@ func TestJWTAuthenticator_RequireExpiry(t *testing.T) {
 	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+noExp)
-	if _, err := lax.Authenticate(r); err != nil {
-		t.Fatalf("v5 default should accept exp-less token, got %v", err)
+	if _, authErr := lax.Authenticate(r); authErr != nil {
+		t.Fatalf("v5 default should accept exp-less token, got %v", authErr)
 	}
 
 	strict, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{

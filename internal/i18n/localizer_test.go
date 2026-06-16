@@ -62,12 +62,12 @@ func TestLocalizer_Localize_MessageNotFound(t *testing.T) {
 
 	_, err := l.Localize("nonexistent.key", nil)
 	if err == nil {
-		t.Fatal("expected MessageNotFoundErr")
+		t.Fatal("expected MessageNotFoundError")
 	}
 
-	mnf, ok := errors.AsType[*MessageNotFoundErr](err)
+	mnf, ok := errors.AsType[*MessageNotFoundError](err)
 	if !ok {
-		t.Fatalf("expected *MessageNotFoundErr, got %T: %v", err, err)
+		t.Fatalf("expected *MessageNotFoundError, got %T: %v", err, err)
 	}
 	if mnf.ID != "nonexistent.key" {
 		t.Errorf("ID = %q, want %q", mnf.ID, "nonexistent.key")

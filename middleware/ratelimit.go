@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/credo-go/credo"
 	"github.com/sethvargo/go-limiter"
+
+	"github.com/credo-go/credo"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	headerRateLimitRemaining = "X-RateLimit-Remaining"
 	headerRateLimitReset     = "X-RateLimit-Reset"
 	headerRetryAfter         = "Retry-After"
+	maxUnixNano              = uint64(1<<63 - 1)
 )
 
 // RateLimitConfig defines configuration for RateLimit middleware.
@@ -114,6 +116,9 @@ func buildRateLimitMiddleware(config RateLimitConfig) credo.Middleware {
 				return config.InternalErrorHandler(ctx, fmt.Errorf("rate limit take: %w", err))
 			}
 
+			if reset > maxUnixNano {
+				reset = maxUnixNano
+			}
 			resetTime := time.Unix(0, int64(reset)).UTC()
 			headers := ctx.Response().Header()
 			headers.Set(headerRateLimitLimit, strconv.FormatUint(limit, 10))

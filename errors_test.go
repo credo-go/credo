@@ -86,19 +86,19 @@ func TestHandleError_ValidationErrors(t *testing.T) {
 	}
 }
 
-// httpStatusErr simulates a store-style error with HTTPStatus() int.
-type httpStatusErr struct {
+// httpStatusError simulates a store-style error with HTTPStatus() int.
+type httpStatusError struct {
 	msg    string
 	status int
 }
 
-func (e *httpStatusErr) Error() string   { return e.msg }
-func (e *httpStatusErr) HTTPStatus() int { return e.status }
+func (e *httpStatusError) Error() string   { return e.msg }
+func (e *httpStatusError) HTTPStatus() int { return e.status }
 
 func TestHandleError_HTTPStatusInterface(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/users/99", func(ctx *credo.Context) error {
-		return &httpStatusErr{msg: "store: record not found", status: http.StatusNotFound}
+		return &httpStatusError{msg: "store: record not found", status: http.StatusNotFound}
 	})
 
 	w := httptest.NewRecorder()
@@ -128,7 +128,7 @@ func TestHandleError_HTTPStatusInterface(t *testing.T) {
 func TestHandleError_HTTPStatusInterface_Wrapped(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/users/99", func(ctx *credo.Context) error {
-		inner := &httpStatusErr{msg: "store: duplicate record", status: http.StatusConflict}
+		inner := &httpStatusError{msg: "store: duplicate record", status: http.StatusConflict}
 		return errors.Join(errors.New("repo: create user"), inner)
 	})
 
@@ -728,7 +728,7 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusErr{msg: "store: not found", status: http.StatusNotFound}
+		return &httpStatusError{msg: "store: not found", status: http.StatusNotFound}
 	})
 
 	w := httptest.NewRecorder()
@@ -810,7 +810,7 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusErr{msg: "request timed out", status: http.StatusRequestTimeout}
+		return &httpStatusError{msg: "request timed out", status: http.StatusRequestTimeout}
 	})
 
 	w := httptest.NewRecorder()

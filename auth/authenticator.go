@@ -20,7 +20,7 @@ func isNilAuthenticator[T any](a Authenticator[T]) bool {
 	}
 	v := reflect.ValueOf(a)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface:
 		return v.IsNil()
 	default:
 		return false

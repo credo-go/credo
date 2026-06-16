@@ -224,7 +224,7 @@ func (c *Config) readDotenv() (map[string]string, error) {
 		path = ".env"
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // Dotenv path is intentionally caller/env configured at startup.
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if !explicit {

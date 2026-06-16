@@ -159,10 +159,7 @@ func ensurePool(app *credo.App) (*Pool, error) {
 func loadPoolConfig(app *credo.App) (poolConfig, error) {
 	cfg := poolConfig{RestartDelay: DefaultRestartDelay}
 
-	raw, err := credo.Resolve[credo.RawConfig](app)
-	if err != nil {
-		return cfg, nil
-	}
+	raw, _ := credo.Resolve[credo.RawConfig](app)
 	if raw == nil || !raw.Exists("worker") {
 		return cfg, nil
 	}

@@ -84,7 +84,7 @@ func Compress(cfg ...CompressConfig) credo.Middleware {
 				return next(ctx)
 			}
 
-			encoding := selectCompressionEncoding(ctx.Request().Request.Header.Get("Accept-Encoding"))
+			encoding := selectCompressionEncoding(ctx.Request().Header.Get("Accept-Encoding"))
 			if encoding == "" {
 				return next(ctx)
 			}

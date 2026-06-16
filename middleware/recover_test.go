@@ -2,6 +2,7 @@ package middleware_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,8 @@ func TestRecover_RepanicAbortHandler(t *testing.T) {
 
 	defer func() {
 		rvr := recover()
-		if rvr != http.ErrAbortHandler {
+		err, ok := rvr.(error)
+		if !ok || !errors.Is(err, http.ErrAbortHandler) {
 			t.Errorf("expected http.ErrAbortHandler re-panic, got %v", rvr)
 		}
 	}()

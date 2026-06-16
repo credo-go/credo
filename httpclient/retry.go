@@ -187,7 +187,7 @@ func backoffDelay(cfg RetryConfig, attempt int) time.Duration {
 			break
 		}
 	}
-	return rand.N(ceiling)
+	return rand.N(ceiling) //nolint:gosec // Retry jitter is not security-sensitive randomness.
 }
 
 // sleepBackoff waits for the given delay, aborting immediately with the

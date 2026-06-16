@@ -175,7 +175,7 @@ func (s *serverConfigRC) Unmarshal(key string, dst any) error {
 	}
 	// Use reflection to set fields on the destination struct based on "credo" tags.
 	rv := reflect.ValueOf(dst)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return fmt.Errorf("dst must be a non-nil pointer")
 	}
 	rv = rv.Elem()

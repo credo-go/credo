@@ -58,12 +58,6 @@ func (r *runner) update(fn func(*runner)) {
 	fn(r)
 }
 
-func (r *runner) getStatus() Status {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.status
-}
-
 func (r *runner) stopIfNotFailed(clearStaleError bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

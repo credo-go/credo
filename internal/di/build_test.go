@@ -1,6 +1,7 @@
 package di_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -94,7 +95,7 @@ func TestSeal_Idempotent(t *testing.T) {
 
 	err1 := c.Seal()
 	err2 := c.Seal()
-	if err1 != err2 {
+	if !errors.Is(err1, err2) {
 		t.Errorf("Seal should be idempotent, got err1=%v err2=%v", err1, err2)
 	}
 }

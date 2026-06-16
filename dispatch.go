@@ -2,6 +2,7 @@ package credo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -88,7 +89,7 @@ func (app *App) compileRoutes(m *mux) {
 		leafHandler := rh.handler
 		leaf := func(c *Context) error {
 			err := leafHandler(c)
-			if err == errRewrite && c.rewriteRequested {
+			if errors.Is(err, errRewrite) && c.rewriteRequested {
 				return nil // swallow: dispatch loop handles it
 			}
 			return err

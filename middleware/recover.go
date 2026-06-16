@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -55,7 +56,7 @@ func Recover(cfg ...RecoverConfig) credo.Middleware {
 				if rvr := recover(); rvr != nil {
 					// Re-panic http.ErrAbortHandler — this sentinel
 					// tells the HTTP server to abort the connection.
-					if rvr == http.ErrAbortHandler {
+					if err, ok := rvr.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 						panic(rvr)
 					}
 

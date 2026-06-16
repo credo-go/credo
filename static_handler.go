@@ -218,7 +218,7 @@ func (w *staticCacheResponseWriter) WriteHeader(code int) {
 }
 
 func (w *staticCacheResponseWriter) Write(b []byte) (int, error) {
-	if !w.Response.Committed() {
+	if !w.Committed() {
 		w.WriteHeader(http.StatusOK)
 	}
 	return w.Response.Write(b)

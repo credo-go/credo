@@ -48,7 +48,7 @@ func (mt *messageTemplate) execute(form plural.Form, data any) (string, error) {
 		// Fallback to Other form.
 		t, ok = mt.pluralTemplates[plural.Other]
 		if !ok {
-			return mt.Message.ID, nil
+			return mt.ID, nil
 		}
 	}
 	return t.execute(data)

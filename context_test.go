@@ -1308,8 +1308,8 @@ func TestBindQuery_PointerEmbeddedStruct(t *testing.T) {
 				}
 				page, sort := 0, ""
 				if q.Pagination != nil {
-					page = q.Pagination.Page
-					sort = q.Pagination.Sort
+					page = q.Page
+					sort = q.Sort
 				}
 				return ctx.Response().Text(200, fmt.Sprintf("name=%s page=%d sort=%s", q.Name, page, sort))
 			})

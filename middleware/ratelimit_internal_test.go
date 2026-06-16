@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/credo-go/credo"
 	"github.com/sethvargo/go-limiter"
+
+	"github.com/credo-go/credo"
 )
 
 type stubLimiterStore struct {
@@ -149,12 +150,12 @@ func TestInMemoryRateLimitStore_SetBurstGetCloseAndContext(t *testing.T) {
 		t.Fatalf("get = (limit=%d remaining=%d), want (2,2)", limit, remaining)
 	}
 
-	if _, _, _, ok, err := store.Take(bg, "k"); err != nil || !ok {
-		t.Fatalf("take after set = (ok=%v err=%v), want (true,nil)", ok, err)
+	if _, _, _, ok, takeErr := store.Take(bg, "k"); takeErr != nil || !ok {
+		t.Fatalf("take after set = (ok=%v err=%v), want (true,nil)", ok, takeErr)
 	}
 
-	if err := store.Burst(bg, "k", 3); err != nil {
-		t.Fatalf("burst: %v", err)
+	if burstErr := store.Burst(bg, "k", 3); burstErr != nil {
+		t.Fatalf("burst: %v", burstErr)
 	}
 
 	_, remaining, err = store.Get(bg, "k")

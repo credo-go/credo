@@ -52,7 +52,7 @@ func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules {
 // returns nil (valid). Passing a non-pointer or pointer to non-struct panics.
 func ValidateStruct(structPtr any, fields ...FieldRules) error {
 	v := reflect.ValueOf(structPtr)
-	if v.Kind() != reflect.Ptr {
+	if v.Kind() != reflect.Pointer {
 		panic("validation: ValidateStruct requires a pointer to a struct")
 	}
 	if v.IsNil() {
@@ -241,7 +241,7 @@ func buildFieldMappingList(t reflect.Type, baseOffset uintptr) []fieldMapping {
 		// Recurse into embedded (anonymous) struct fields.
 		if f.Anonymous {
 			ft := f.Type
-			if ft.Kind() == reflect.Ptr {
+			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {

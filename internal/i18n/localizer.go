@@ -15,13 +15,13 @@ import (
 	"golang.org/x/text/language"
 )
 
-// MessageNotFoundErr is returned when a message cannot be found in the bundle.
-type MessageNotFoundErr struct {
+// MessageNotFoundError is returned when a message cannot be found in the bundle.
+type MessageNotFoundError struct {
 	ID  string
 	Tag language.Tag
 }
 
-func (e *MessageNotFoundErr) Error() string {
+func (e *MessageNotFoundError) Error() string {
 	return fmt.Sprintf("i18n: message %q not found for %q", e.ID, e.Tag)
 }
 
@@ -47,7 +47,7 @@ func NewLocalizer(bundle *Bundle, langs ...string) *Localizer {
 }
 
 // Localize looks up a message by ID and renders it with the given data.
-// Returns MessageNotFoundErr if the message is not found in any language.
+// Returns MessageNotFoundError if the message is not found in any language.
 func (l *Localizer) Localize(id string, data map[string]any) (string, error) {
 	s, _, err := l.LocalizeWithTag(id, data)
 	return s, err
@@ -71,7 +71,7 @@ func (l *Localizer) LocalizeWithTag(id string, data map[string]any) (string, lan
 		}
 		return s, tag, nil
 	}
-	return "", language.Und, &MessageNotFoundErr{ID: id, Tag: l.primaryTag()}
+	return "", language.Und, &MessageNotFoundError{ID: id, Tag: l.primaryTag()}
 }
 
 // LocalizePlural looks up a message by ID and renders the correct plural form
@@ -113,7 +113,7 @@ func (l *Localizer) LocalizePlural(id string, count any, data map[string]any) (s
 		return s, nil
 	}
 
-	return "", &MessageNotFoundErr{ID: id, Tag: l.primaryTag()}
+	return "", &MessageNotFoundError{ID: id, Tag: l.primaryTag()}
 }
 
 // matchedTags returns the preferred tags matched against the bundle's available tags.

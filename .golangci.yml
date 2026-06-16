@@ -1,91 +1,58 @@
+version: "2"
+
 run:
-  timeout: 5m
   go: "1.26"
 
 linters:
+  default: none
   enable:
-    - errcheck
-    - govet
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
     - bodyclose
+    - copyloopvar
     - durationcheck
+    - errcheck
     - errname
     - errorlint
-    - exhaustive
-    - copyloopvar
-    - goconst
-    - gocritic
-    - gofmt
-    - goimports
     - gosec
+    - govet
+    - ineffassign
     - misspell
     - nilerr
-    - noctx
-    - prealloc
-    - predeclared
-    - revive
+    - staticcheck
     - unconvert
-    - unparam
+    - unused
     - whitespace
-
-linters-settings:
-  govet:
-    enable-all: true
-
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-
-  goimports:
-    local-prefixes: github.com/credo-go/credo
-
-  revive:
+  settings:
+    gosec:
+      excludes:
+        - G104
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        arguments:
-          - checkPrivateReceivers
-      - name: blank-imports
-      - name: context-as-argument
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: increment-decrement
-      - name: var-naming
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: superfluous-else
-      - name: unreachable-code
-
-  gosec:
-    excludes:
-      - G104  # Unhandled errors (covered by errcheck)
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - goconst
-    - path: examples/
-      linters:
-        - errcheck
-        - gosec
-
   max-issues-per-linter: 50
   max-same-issues: 5
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/credo-go/credo
+  exclusions:
+    generated: lax

@@ -1,6 +1,7 @@
 package validation_test
 
 import (
+	"errors"
 	"mime/multipart"
 	"net/textproto"
 	"testing"
@@ -152,7 +153,7 @@ func TestFileRules_StructIntegration(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for missing file")
 		}
-		errs, ok := err.(validation.Errors)
+		errs, ok := errors.AsType[validation.Errors](err)
 		if !ok {
 			t.Fatalf("expected validation.Errors, got %T", err)
 		}
@@ -167,7 +168,7 @@ func TestFileRules_StructIntegration(t *testing.T) {
 	t.Run("oversize and wrong extension both reported", func(t *testing.T) {
 		f := &uploadForm{Avatar: fileHeader("a.gif", "image/gif", 2048)}
 		err := f.Validate()
-		errs, ok := err.(validation.Errors)
+		errs, ok := errors.AsType[validation.Errors](err)
 		if !ok {
 			t.Fatalf("expected validation.Errors, got %T: %v", err, err)
 		}

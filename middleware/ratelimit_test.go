@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sethvargo/go-limiter/memorystore"
+
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/middleware"
-	"github.com/sethvargo/go-limiter/memorystore"
 )
 
 func TestRateLimit_DeniesAfterLimitReached(t *testing.T) {

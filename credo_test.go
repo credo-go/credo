@@ -1,6 +1,7 @@
 package credo_test
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -738,7 +739,7 @@ func TestHTTPError(t *testing.T) {
 
 	inner := credo.NewHTTPError(500)
 	wrapped := e.WithInternal(inner)
-	if wrapped.Internal != inner {
+	if !errors.Is(wrapped.Internal, inner) {
 		t.Error("expected Internal to be set")
 	}
 	if wrapped.Code != 400 {
@@ -1059,7 +1060,7 @@ func TestRequest_PathValue(t *testing.T) {
 		}
 		// Values set via the embedded stdlib API stay readable when no
 		// route param shadows them.
-		ctx.Request().Request.SetPathValue("extra", "stdlib")
+		ctx.Request().SetPathValue("extra", "stdlib")
 		if got := ctx.Request().PathValue("extra"); got != "stdlib" {
 			return ctx.Response().Text(200, "FAIL:fallback:"+got)
 		}
@@ -1322,7 +1323,7 @@ func TestRouting_Walk_ErrorPropagation(t *testing.T) {
 		return errStop // stop immediately
 	})
 
-	if err != errStop {
+	if !errors.Is(err, errStop) {
 		t.Errorf("Walk error = %v, want %v", err, errStop)
 	}
 	if count != 1 {

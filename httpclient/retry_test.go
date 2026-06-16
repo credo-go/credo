@@ -39,35 +39,42 @@ func scriptServer(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int3
 }
 
 func TestDefaultRetryIf(t *testing.T) {
-	resp := func(status int) *http.Response { return &http.Response{StatusCode: status} }
+	resp := func(status int) *http.Response {
+		return &http.Response{StatusCode: status, Body: http.NoBody}
+	}
 	tests := []struct {
 		name   string
 		method string
-		resp   *http.Response
+		status int
 		err    error
 		want   bool
 	}{
-		{"GET transport error", http.MethodGet, nil, errors.New("connection reset"), true},
-		{"GET 503", http.MethodGet, resp(503), nil, true},
-		{"GET 500", http.MethodGet, resp(500), nil, true},
-		{"GET 200", http.MethodGet, resp(200), nil, false},
-		{"GET 404", http.MethodGet, resp(404), nil, false},
-		{"GET 429 not retried", http.MethodGet, resp(429), nil, false},
-		{"HEAD 503", http.MethodHead, resp(503), nil, true},
-		{"OPTIONS 503", http.MethodOptions, resp(503), nil, true},
-		{"TRACE 503", http.MethodTrace, resp(503), nil, true},
-		{"PUT 503", http.MethodPut, resp(503), nil, true},
-		{"DELETE transport error", http.MethodDelete, nil, errors.New("eof"), true},
-		{"POST 503 not retried", http.MethodPost, resp(503), nil, false},
-		{"POST transport error not retried", http.MethodPost, nil, errors.New("eof"), false},
-		{"PATCH 503 not retried", http.MethodPatch, resp(503), nil, false},
-		{"GET canceled never retried", http.MethodGet, nil, fmt.Errorf("do: %w", context.Canceled), false},
-		{"GET deadline never retried", http.MethodGet, nil, fmt.Errorf("do: %w", context.DeadlineExceeded), false},
+		{"GET transport error", http.MethodGet, 0, errors.New("connection reset"), true},
+		{"GET 503", http.MethodGet, 503, nil, true},
+		{"GET 500", http.MethodGet, 500, nil, true},
+		{"GET 200", http.MethodGet, 200, nil, false},
+		{"GET 404", http.MethodGet, 404, nil, false},
+		{"GET 429 not retried", http.MethodGet, 429, nil, false},
+		{"HEAD 503", http.MethodHead, 503, nil, true},
+		{"OPTIONS 503", http.MethodOptions, 503, nil, true},
+		{"TRACE 503", http.MethodTrace, 503, nil, true},
+		{"PUT 503", http.MethodPut, 503, nil, true},
+		{"DELETE transport error", http.MethodDelete, 0, errors.New("eof"), true},
+		{"POST 503 not retried", http.MethodPost, 503, nil, false},
+		{"POST transport error not retried", http.MethodPost, 0, errors.New("eof"), false},
+		{"PATCH 503 not retried", http.MethodPatch, 503, nil, false},
+		{"GET canceled never retried", http.MethodGet, 0, fmt.Errorf("do: %w", context.Canceled), false},
+		{"GET deadline never retried", http.MethodGet, 0, fmt.Errorf("do: %w", context.DeadlineExceeded), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var testResp *http.Response
+			if tt.status != 0 {
+				testResp = resp(tt.status)
+				t.Cleanup(func() { _ = testResp.Body.Close() })
+			}
 			req := httptest.NewRequest(tt.method, "http://example.com/", nil)
-			if got := DefaultRetryIf(req, tt.resp, tt.err); got != tt.want {
+			if got := DefaultRetryIf(req, testResp, tt.err); got != tt.want {
 				t.Errorf("DefaultRetryIf() = %v, want %v", got, tt.want)
 			}
 		})
