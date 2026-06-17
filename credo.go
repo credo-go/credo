@@ -5,11 +5,8 @@
 package credo
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
 	"net/netip"
 	"reflect"
 	"sync"
@@ -62,40 +59,16 @@ type App struct {
 	// entering the Running state — the user may manage their own *http.Server.
 	frozen atomic.Bool
 
-	// state tracks the lifecycle: building → running → stopping → stopped.
-	state atomic.Uint32
-
-	// draining reports that graceful shutdown has begun. Set once at the start
-	// of shutdown and read by the readiness handler, which then reports the
-	// instance as unready so load balancers stop routing before the HTTP drain.
-	draining atomic.Bool
-
-	// server holds the *http.Server created by Run/RunTLS.
-	server *http.Server
-
-	// serverMu protects the server field.
-	serverMu sync.Mutex
-
-	// ctx is the app-level context, created at Run() time.
-	// Cancelled at the beginning of Shutdown(). Background services select on ctx.Done().
-	ctx    context.Context
-	cancel context.CancelFunc
+	// lifecycle owns the server-session state machine, the bound server and app
+	// context, the start/shutdown hooks, and the graceful-drain sequence. The
+	// public Run/Shutdown/State/Addr/OnStart/OnShutdown methods delegate to it.
+	lifecycle *lifecycleManager
 
 	// rawConfig holds the RawConfig passed via WithRawConfig option.
 	rawConfig RawConfig
 
 	// serverCfg holds the server configuration (host, port, timeouts).
 	serverCfg serverConfig
-
-	// onShutdown holds hooks called during graceful shutdown (LIFO order).
-	onShutdown []func(ctx context.Context) error
-
-	// onStart holds hooks called during startup after the port is bound (FIFO order).
-	onStart []func(ctx context.Context) error
-
-	// boundAddr is the actual address from net.Listener.Addr().
-	// Set after listen succeeds, cleared on shutdown. Protected by serverMu.
-	boundAddr net.Addr
 
 	// i18nBundle holds the loaded i18n message bundle (nil if i18n inactive).
 	i18nBundle *internali18n.Bundle
@@ -230,6 +203,7 @@ func New(opts ...Option) (*App, error) {
 		trustedProxies:        trustedProxies,
 	}
 	app.root = &Group{app: app}
+	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {
 		return &Context{
 			app: app,

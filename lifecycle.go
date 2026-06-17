@@ -6,55 +6,14 @@ import (
 	"net"
 )
 
-// appState represents the lifecycle state of an App.
-type appState uint32
-
-const (
-	// stateBuilding is the initial state. Route and middleware registration is allowed.
-	stateBuilding appState = iota
-
-	// stateStarting is a transient state entered after the state CAS but before
-	// the app context and *http.Server are written. Shutdown cannot operate in this
-	// state, closing the race window between the CAS and the serverMu writes.
-	stateStarting
-
-	// stateRunning means the server is listening. Registration is frozen.
-	// Shutdown may only be called in this state.
-	stateRunning
-
-	// stateStopping means the server is draining in-flight requests.
-	stateStopping
-
-	// stateStopped means the server has fully stopped.
-	stateStopped
-)
-
-// String returns a human-readable name for the state.
-func (s appState) String() string {
-	switch s {
-	case stateBuilding:
-		return "building"
-	case stateStarting:
-		return "starting"
-	case stateRunning:
-		return "running"
-	case stateStopping:
-		return "stopping"
-	case stateStopped:
-		return "stopped"
-	default:
-		return "unknown"
-	}
-}
-
 // State returns the current lifecycle state as a string.
 func (app *App) State() string {
-	return appState(app.state.Load()).String()
+	return app.lifecycle.currentState().String()
 }
 
 // IsRunning reports whether the server is in the running state.
 func (app *App) IsRunning() bool {
-	return appState(app.state.Load()) == stateRunning
+	return app.lifecycle.currentState() == stateRunning
 }
 
 // OnShutdown registers a function to be called during graceful shutdown.
@@ -63,7 +22,7 @@ func (app *App) IsRunning() bool {
 // Must be called before Run; panics if called after compile.
 func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 	app.checkFrozen("OnShutdown")
-	app.onShutdown = append(app.onShutdown, fn)
+	app.lifecycle.onShutdown = append(app.lifecycle.onShutdown, fn)
 }
 
 // OnStart registers a function to be called during startup, after the port
@@ -77,7 +36,7 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 // Must be called before Run; panics if called after compile.
 func (app *App) OnStart(fn func(ctx context.Context) error) {
 	app.checkFrozen("OnStart")
-	app.onStart = append(app.onStart, fn)
+	app.lifecycle.onStart = append(app.lifecycle.onStart, fn)
 }
 
 // Addr returns the actual network address the server is listening on.
@@ -85,9 +44,10 @@ func (app *App) OnStart(fn func(ctx context.Context) error) {
 // as the OS assigns an ephemeral port.
 // Returns nil before Run or after the server stops.
 func (app *App) Addr() net.Addr {
-	app.serverMu.Lock()
-	addr := app.boundAddr
-	app.serverMu.Unlock()
+	lm := app.lifecycle
+	lm.serverMu.Lock()
+	addr := lm.boundAddr
+	lm.serverMu.Unlock()
 	return addr
 }
 

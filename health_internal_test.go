@@ -30,7 +30,7 @@ func TestReadinessHandler_Draining(t *testing.T) {
 	}
 
 	// Draining: 503 with a shutting_down status.
-	app.draining.Store(true)
+	app.lifecycle.draining.Store(true)
 	w = httptest.NewRecorder()
 	c = NewContext(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
 	if err := app.readinessHandler(c); err != nil {
@@ -52,7 +52,7 @@ func TestLivenessHandler_UpWhileDraining(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.UseHealth()
-	app.draining.Store(true)
+	app.lifecycle.draining.Store(true)
 
 	w := httptest.NewRecorder()
 	c := NewContext(w, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -81,7 +81,7 @@ func TestShutdown_MarksDraining(t *testing.T) {
 	if !app.IsRunning() {
 		t.Fatal("server did not reach running state")
 	}
-	if app.draining.Load() {
+	if app.lifecycle.draining.Load() {
 		t.Error("draining should be false while running")
 	}
 
@@ -92,7 +92,7 @@ func TestShutdown_MarksDraining(t *testing.T) {
 	}
 	<-errCh
 
-	if !app.draining.Load() {
+	if !app.lifecycle.draining.Load() {
 		t.Error("draining should be true after shutdown")
 	}
 }
