@@ -165,7 +165,7 @@ func (c *Container) construct(reg *registration, stack []reflect.Type) (any, err
 		return reg.value, nil
 	}
 
-	// ProvideFunc constructors are opaque: no parameter injection, and any
+	// ProvideFactory constructors are opaque: no parameter injection, and any
 	// Resolve calls inside fn start a fresh cycle-detection stack.
 	if reg.funcCtor != nil {
 		instance, err := reg.funcCtor()

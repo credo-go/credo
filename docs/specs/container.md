@@ -45,7 +45,7 @@ functions such as `credo.Provide[T](app, constructor)`,
    express "a function with arbitrary parameters returning T"), so its
    signature is checked at registration time --- mistakes surface as an
    immediate error from `Provide`, and the dependency graph is validated at
-   `Finalize`; `ProvideFunc` offers a fully compiler-checked alternative.
+   `Finalize`; `ProvideFactory` offers a fully compiler-checked alternative.
    Reflection is used at registration time to inspect constructor signatures
    and once per singleton during first construction (`reflect.Value.Call`).
    Subsequent resolves of the same singleton are pure cache lookups --- zero
@@ -230,12 +230,12 @@ func Provide[T any](app *App, constructor any) error
 // startup (Composition Root) where a failed registration is fatal.
 func MustProvide[T any](app *App, constructor any)
 
-// ProvideFunc registers a compile-time-checked constructor for type T.
+// ProvideFactory registers a compile-time-checked factory for type T.
 // fn receives the App and resolves its own dependencies; T is inferred.
-func ProvideFunc[T any](app *App, fn func(*App) (T, error)) error
+func ProvideFactory[T any](app *App, fn func(*App) (T, error)) error
 
-// MustProvideFunc is like ProvideFunc but panics on error.
-func MustProvideFunc[T any](app *App, fn func(*App) (T, error))
+// MustProvideFactory is like ProvideFactory but panics on error.
+func MustProvideFactory[T any](app *App, fn func(*App) (T, error))
 
 // ProvideValue registers a pre-built value as a Singleton.
 func ProvideValue[T any](app *App, value T) error
@@ -261,7 +261,7 @@ of the same singleton are pure cache lookups with zero reflection cost.
 
 Because `constructor` is typed `any`, a signature mistake (wrong return type,
 not a function) is reported as an error by `Provide` at registration time ---
-not by the compiler. `ProvideFunc` closes that gap: `fn`'s signature is
+not by the compiler. `ProvideFactory` closes that gap: `fn`'s signature is
 enforced by the compiler, and `fn` resolves its own dependencies explicitly.
 The trade-off is that `fn` is opaque to the container --- dependencies
 resolved inside it do not participate in `Finalize` graph validation or cycle
@@ -270,7 +270,7 @@ calls `Resolve`), and `credo.Infra` is not auto-injected (use `app.NewInfra`
 inside `fn` instead):
 
 ```go
-credo.ProvideFunc(app, func(app *credo.App) (*UserService, error) {
+credo.ProvideFactory(app, func(app *credo.App) (*UserService, error) {
     repo, err := credo.Resolve[*UserRepository](app)
     if err != nil {
         return nil, err
@@ -358,14 +358,14 @@ The container has three phases:
    `ProvideValue` if not yet registered.
 2. **Finalize** --- `credo.Finalize(app)` freezes the container (internally
    calling `Seal()`) and validates the dependency graph. After Finalize,
-   `Provide`, `ProvideFunc`, `ProvideValue`, `Replace`, `Alias`, and
+   `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and
    `BindMany` return errors. If validation fails, subsequent `Resolve` and
    `ResolveAll` calls return the finalize error.
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The
    dependency graph is guaranteed valid. `app.Run()` and `app.RunTLS()` call
    Finalize implicitly.
 
-**Concurrency**: During bootstrap, `Provide`/`ProvideFunc`/`ProvideValue`/
+**Concurrency**: During bootstrap, `Provide`/`ProvideFactory`/`ProvideValue`/
 `Alias`/`BindMany` and `Resolve`/`ResolveAll` must not be called concurrently. The
 container uses internal locking for singleton resolution, but registration and
 bootstrap resolution are not designed for concurrent use. In practice, all
@@ -374,7 +374,7 @@ functions before `Run()`.
 
 ```go
 // Finalize freezes the container and validates the dependency graph.
-// After Finalize, no more Provide, ProvideFunc, ProvideValue, Replace, Alias,
+// After Finalize, no more Provide, ProvideFactory, ProvideValue, Replace, Alias,
 // or BindMany calls are allowed.
 // Finalize is idempotent --- subsequent calls return the same result via sync.Once.
 //
@@ -413,7 +413,7 @@ it implicitly before starting the HTTP server.
 Duplicate registration of the same type returns an error.
 
 Circular dependencies (A -> B -> A) are detected during Finalize and produce a
-clear error listing the cycle. (Edges hidden inside `ProvideFunc` constructors
+clear error listing the cycle. (Edges hidden inside `ProvideFactory` constructors
 are the exception --- see the registration section above.)
 
 ### Resolution (root package)
@@ -485,7 +485,7 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 ### Concurrency and Lifecycle
 
-- **`Provide` / `MustProvide` / `ProvideFunc` / `ProvideValue` / `Alias` /
+- **`Provide` / `MustProvide` / `ProvideFactory` / `ProvideValue` / `Alias` /
   `BindMany`**: Not concurrent-safe. Intended to be called sequentially at
   startup (Composition Root), before `credo.Finalize(app)` or `app.Run()`.
 - **`Finalize`**: Idempotent via `sync.Once`. Safe to call from multiple
@@ -608,7 +608,7 @@ registration time (cold path). Resolution uses cached type mappings --- the
 internal/di/
 +-- doc.go            <- package documentation (samber/do attribution)
 +-- container.go      <- Container struct, New(), findRegistration (alias-aware)
-+-- provide.go        <- Provide[T], ProvideFunc[T], ProvideValue[T], registration logic
++-- provide.go        <- Provide[T], ProvideFactory[T], ProvideValue[T], registration logic
 +-- resolve.go        <- Resolve[T], ResolveAll[I], dependency graph walk
 +-- bind.go           <- Alias[I,T], BindMany[I,T], binding management
 +-- build.go          <- Seal(), freeze + validate via sync.Once
@@ -621,7 +621,7 @@ internal/di/
 Root package:
 +-- infra.go          <- Infra struct, newInfra (default-logger fallback), defaultLogger
 +-- interfaces.go     <- Shutdowner, RawConfig alias
-+-- di.go             <- Provide[T], ProvideFunc[T], ProvideValue[T], Resolve[T], ResolveAll[I], Alias[I,T], BindMany[I,T]
++-- di.go             <- Provide[T], ProvideFactory[T], ProvideValue[T], Resolve[T], ResolveAll[I], Alias[I,T], BindMany[I,T]
 +-- infra_test.go
 ```
 
@@ -775,11 +775,11 @@ default-logger fallback applies only to container-produced Infra).
 - Duplicate `Provide[T]` for same type returns error
 - `ProvideValue[T]` registers value as Singleton
 - `Provide[T]` after `Finalize()` returns error (container frozen)
-- `ProvideFunc[T]` runs fn lazily, exactly once; instance is cached
-- `ProvideFunc[T]` fn can resolve dependencies from the container
-- `ProvideFunc[T]` propagates fn's error to the `Resolve` caller
-- `ProvideFunc[T]` rejects nil fn, duplicates, and frozen container
-- `ProvideFunc[T]`-built instances participate in reverse-order `Shutdown`
+- `ProvideFactory[T]` runs fn lazily, exactly once; instance is cached
+- `ProvideFactory[T]` fn can resolve dependencies from the container
+- `ProvideFactory[T]` propagates fn's error to the `Resolve` caller
+- `ProvideFactory[T]` rejects nil fn, duplicates, and frozen container
+- `ProvideFactory[T]`-built instances participate in reverse-order `Shutdown`
 
 ### Aliasing
 - `Alias[I, T]` succeeds when T is registered and implements I

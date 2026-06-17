@@ -16,7 +16,7 @@ type registration struct {
 	returnsError bool                // true if constructor returns (T, error)
 	isValue      bool                // true for ProvideValue (no constructor)
 	value        any                 // pre-built value for ProvideValue
-	funcCtor     func() (any, error) // typed constructor adapter (ProvideFunc)
+	funcCtor     func() (any, error) // typed factory adapter (ProvideFactory)
 }
 
 // Provide registers a constructor for type T. The constructor can accept
@@ -59,29 +59,29 @@ func MustProvide[T any](c *Container, constructor any) {
 	}
 }
 
-// ProvideFunc registers a compile-time-checked constructor for type T.
+// ProvideFactory registers a compile-time-checked factory for type T.
 // Unlike Provide, whose constructor is typed any and inspected via reflection
 // at registration time, fn's signature is enforced by the compiler. fn runs
 // lazily on first resolution, exactly once.
 //
 // fn is opaque to the container: dependencies it resolves internally are not
 // visible to Seal's graph validation or to resolve-time cycle detection.
-func ProvideFunc[T any](c *Container, fn func() (T, error)) error {
+func ProvideFactory[T any](c *Container, fn func() (T, error)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
 
 	if c.frozen {
-		return fmt.Errorf("di: ProvideFunc[%s]: container is frozen (container is sealed)", targetType)
+		return fmt.Errorf("di: ProvideFactory[%s]: container is frozen (container is sealed)", targetType)
 	}
 
 	if fn == nil {
-		return fmt.Errorf("di: ProvideFunc[%s]: constructor must not be nil", targetType)
+		return fmt.Errorf("di: ProvideFactory[%s]: factory must not be nil", targetType)
 	}
 
 	if _, exists := c.registrations[targetType]; exists {
-		return fmt.Errorf("di: ProvideFunc[%s]: already registered", targetType)
+		return fmt.Errorf("di: ProvideFactory[%s]: already registered", targetType)
 	}
 
 	c.registrations[targetType] = &registration{
@@ -96,9 +96,9 @@ func ProvideFunc[T any](c *Container, fn func() (T, error)) error {
 	return nil
 }
 
-// MustProvideFunc is like ProvideFunc but panics on error.
-func MustProvideFunc[T any](c *Container, fn func() (T, error)) {
-	if err := ProvideFunc[T](c, fn); err != nil {
+// MustProvideFactory is like ProvideFactory but panics on error.
+func MustProvideFactory[T any](c *Container, fn func() (T, error)) {
+	if err := ProvideFactory[T](c, fn); err != nil {
 		panic(err)
 	}
 }

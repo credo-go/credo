@@ -192,18 +192,18 @@ func TestProvide_NilConstructor(t *testing.T) {
 	}
 }
 
-// --- ProvideFunc tests ---
+// --- ProvideFactory tests ---
 
 type funcService struct {
 	Dep *SimpleService
 }
 
-func TestProvideFunc_ResolveAndCache(t *testing.T) {
+func TestProvideFactory_ResolveAndCache(t *testing.T) {
 	c := di.New()
 	di.MustProvide[*SimpleService](c, NewSimpleService)
 
 	calls := 0
-	err := di.ProvideFunc[*funcService](c, func() (*funcService, error) {
+	err := di.ProvideFactory[*funcService](c, func() (*funcService, error) {
 		calls++
 		dep, err := di.Resolve[*SimpleService](c)
 		if err != nil {
@@ -212,10 +212,10 @@ func TestProvideFunc_ResolveAndCache(t *testing.T) {
 		return &funcService{Dep: dep}, nil
 	})
 	if err != nil {
-		t.Fatalf("ProvideFunc failed: %v", err)
+		t.Fatalf("ProvideFactory failed: %v", err)
 	}
 	if calls != 0 {
-		t.Fatalf("constructor ran at registration time (calls = %d), want lazy", calls)
+		t.Fatalf("factory ran at registration time (calls = %d), want lazy", calls)
 	}
 
 	first := di.MustResolve[*funcService](c)
@@ -231,9 +231,9 @@ func TestProvideFunc_ResolveAndCache(t *testing.T) {
 	}
 }
 
-func TestProvideFunc_ConstructionError(t *testing.T) {
+func TestProvideFactory_ConstructionError(t *testing.T) {
 	c := di.New()
-	di.MustProvideFunc[*SimpleService](c, func() (*SimpleService, error) {
+	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
 		return nil, errors.New("boom")
 	})
 
@@ -243,11 +243,11 @@ func TestProvideFunc_ConstructionError(t *testing.T) {
 	}
 }
 
-func TestProvideFunc_Duplicate(t *testing.T) {
+func TestProvideFactory_Duplicate(t *testing.T) {
 	c := di.New()
 	di.MustProvide[*SimpleService](c, NewSimpleService)
 
-	err := di.ProvideFunc[*SimpleService](c, func() (*SimpleService, error) {
+	err := di.ProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 	if err == nil {
@@ -255,20 +255,20 @@ func TestProvideFunc_Duplicate(t *testing.T) {
 	}
 }
 
-func TestProvideFunc_Nil(t *testing.T) {
+func TestProvideFactory_Nil(t *testing.T) {
 	c := di.New()
-	if err := di.ProvideFunc[*SimpleService](c, nil); err == nil {
-		t.Fatal("expected error for nil constructor")
+	if err := di.ProvideFactory[*SimpleService](c, nil); err == nil {
+		t.Fatal("expected error for nil factory")
 	}
 }
 
-func TestProvideFunc_Frozen(t *testing.T) {
+func TestProvideFactory_Frozen(t *testing.T) {
 	c := di.New()
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed: %v", err)
 	}
 
-	err := di.ProvideFunc[*SimpleService](c, func() (*SimpleService, error) {
+	err := di.ProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 	if err == nil {
@@ -276,18 +276,18 @@ func TestProvideFunc_Frozen(t *testing.T) {
 	}
 }
 
-func TestMustProvideFunc_Panics(t *testing.T) {
+func TestMustProvideFactory_Panics(t *testing.T) {
 	c := di.New()
-	di.MustProvideFunc[*SimpleService](c, func() (*SimpleService, error) {
+	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for duplicate MustProvideFunc")
+			t.Fatal("expected panic for duplicate MustProvideFactory")
 		}
 	}()
-	di.MustProvideFunc[*SimpleService](c, func() (*SimpleService, error) {
+	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 }
@@ -301,10 +301,10 @@ func (s *funcShutdowner) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func TestProvideFunc_ShutdownParticipates(t *testing.T) {
+func TestProvideFactory_ShutdownParticipates(t *testing.T) {
 	c := di.New()
 	closed := false
-	di.MustProvideFunc[*funcShutdowner](c, func() (*funcShutdowner, error) {
+	di.MustProvideFactory[*funcShutdowner](c, func() (*funcShutdowner, error) {
 		return &funcShutdowner{closed: &closed}, nil
 	})
 	di.MustResolve[*funcShutdowner](c)
@@ -313,6 +313,6 @@ func TestProvideFunc_ShutdownParticipates(t *testing.T) {
 		t.Fatalf("Shutdown failed: %v", err)
 	}
 	if !closed {
-		t.Error("Shutdown was not called on the ProvideFunc-constructed instance")
+		t.Error("Shutdown was not called on the ProvideFactory-constructed instance")
 	}
 }

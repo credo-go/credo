@@ -45,7 +45,7 @@ Provide / ProvideValue / Alias / BindMany
 ```
 
 - `Provide[T]`: register a constructor
-- `ProvideFunc[T]`: register a compiler-checked constructor closure
+- `ProvideFactory[T]`: register a compiler-checked factory closure
 - `ProvideValue[T]`: register a pre-built singleton
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
@@ -227,7 +227,7 @@ not part of the v0.1 `Infra` surface.
 
 ---
 
-## `Provide` vs `ProvideValue` vs `ProvideFunc`
+## `Provide` vs `ProvideValue` vs `ProvideFactory`
 
 Use `Provide` when Credo should create the singleton for you:
 
@@ -250,16 +250,16 @@ Typical `ProvideValue` use cases:
 - test doubles
 - values created by another bootstrap system
 
-### `ProvideFunc`: compiler-checked registration
+### `ProvideFactory`: compiler-checked factory registration
 
 `Provide`'s `constructor` parameter is typed `any` — Go cannot express "a
 function with arbitrary parameters returning `T`" — so a signature mistake is
 reported as an error at registration time, not at compile time. When you want
-the whole registration checked by the compiler, use `ProvideFunc`: `fn`'s
+the whole registration checked by the compiler, use `ProvideFactory`: `fn`'s
 signature is enforced (and `T` inferred), and it resolves its own dependencies:
 
 ```go
-credo.MustProvideFunc(app, func(app *credo.App) (*UserService, error) {
+credo.MustProvideFactory(app, func(app *credo.App) (*UserService, error) {
     repo, err := credo.Resolve[*UserRepository](app)
     if err != nil {
         return nil, err
@@ -272,7 +272,7 @@ The trade-off: `fn` is opaque to the container. Dependencies resolved inside
 it are invisible to `Finalize`'s graph validation (a missing one surfaces at
 first resolution instead), and `credo.Infra` is not auto-injected — use
 `app.NewInfra` as shown. Prefer plain `Provide` with a named constructor as
-the default; reach for `ProvideFunc` when you want compiler-checked wiring or
+the default; reach for `ProvideFactory` when you want compiler-checked wiring or
 inline construction logic.
 
 Some Credo feature packages build on top of DI with package-level helpers

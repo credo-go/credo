@@ -70,12 +70,12 @@ func TestProvideValue_Resolve(t *testing.T) {
 	}
 }
 
-func TestProvideFunc_Resolve(t *testing.T) {
+func TestProvideFactory_Resolve(t *testing.T) {
 	app := mustNew(t)
 	credo.MustProvide[*diSimpleService](app, newDISimpleService)
 
 	// T is inferred from fn's signature — the compiler checks the whole chain.
-	err := credo.ProvideFunc(app, func(app *credo.App) (*diServiceWithDep, error) {
+	err := credo.ProvideFactory(app, func(app *credo.App) (*diServiceWithDep, error) {
 		simple, err := credo.Resolve[*diSimpleService](app)
 		if err != nil {
 			return nil, err
@@ -83,7 +83,7 @@ func TestProvideFunc_Resolve(t *testing.T) {
 		return &diServiceWithDep{Simple: simple}, nil
 	})
 	if err != nil {
-		t.Fatalf("ProvideFunc: %v", err)
+		t.Fatalf("ProvideFactory: %v", err)
 	}
 
 	svc, err := credo.Resolve[*diServiceWithDep](app)
@@ -95,18 +95,18 @@ func TestProvideFunc_Resolve(t *testing.T) {
 	}
 }
 
-func TestMustProvideFunc_PanicsOnDuplicate(t *testing.T) {
+func TestMustProvideFactory_PanicsOnDuplicate(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvideFunc(app, func(*credo.App) (*diSimpleService, error) {
+	credo.MustProvideFactory(app, func(*credo.App) (*diSimpleService, error) {
 		return &diSimpleService{}, nil
 	})
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for duplicate MustProvideFunc")
+			t.Fatal("expected panic for duplicate MustProvideFactory")
 		}
 	}()
-	credo.MustProvideFunc(app, func(*credo.App) (*diSimpleService, error) {
+	credo.MustProvideFactory(app, func(*credo.App) (*diSimpleService, error) {
 		return &diSimpleService{}, nil
 	})
 }

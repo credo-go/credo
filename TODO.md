@@ -127,7 +127,7 @@ Breaking changes may still happen before v1.
 - [x] Adapt samber/do core: container, lifecycle types
   - [x] **Key divergence**: typed constructor params (not `func(Injector)` signature)
   - [x] `credo.Provide[T](app, constructor)` — register with typed constructor
-  - [x] `credo.ProvideFunc[T](app, fn)` — compiler-checked constructor closure; fn resolves its own deps, opaque to Finalize graph validation
+  - [x] `credo.ProvideFactory[T](app, fn)` — compiler-checked factory closure; fn resolves its own deps, opaque to Finalize graph validation
   - [x] `credo.ProvideValue[T](app, value)` — register pre-built value
 - [x] `credo.Resolve[T](app)` — retrieve instance
 - [x] `credo.MustResolve[T](app)` — panics if not found

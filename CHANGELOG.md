@@ -35,7 +35,7 @@ Initial public release.
   Compress, Timeout, RateLimit, Rewrite, ContractGuard.
 - **Static files** — `os.Root`-sandboxed `app.Static`/`app.File`.
 - **Dependency injection** — generics-based container
-  (`Provide[T]`/`Resolve[T]`/`ProvideFunc`/`Alias`/`Replace`), validated
+  (`Provide[T]`/`Resolve[T]`/`ProvideFactory`/`Alias`/`Replace`), validated
   graph freeze (`Finalize`), reverse-order shutdown, and the `credo.Infra`
   carrier (per-service logger; tracer/metrics with noop fallbacks).
 - **Configuration** — koanf-adapted loader (`config.Load`), env-specific file

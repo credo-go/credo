@@ -1,7 +1,7 @@
 package di
 
 // Seal freezes the container and validates the dependency graph.
-// After Seal, no more Provide, ProvideFunc, ProvideValue, Replace, Alias, or
+// After Seal, no more Provide, ProvideFactory, ProvideValue, Replace, Alias, or
 // BindMany calls are allowed.
 // Seal is idempotent — subsequent calls return the same result.
 //

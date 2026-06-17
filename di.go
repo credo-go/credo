@@ -12,8 +12,8 @@ import "github.com/credo-go/credo/internal/di"
 // T" in the type system, constructor is typed any: signature mistakes (wrong
 // return type, not a function) are reported as an error at registration time,
 // not at compile time. The dependency graph itself is still validated at
-// [Finalize]. For a constructor checked entirely by the compiler, see
-// [ProvideFunc].
+// [Finalize]. For a factory checked entirely by the compiler, see
+// [ProvideFactory].
 func Provide[T any](app *App, constructor any) error {
 	return di.Provide[T](app.container, constructor)
 }
@@ -23,12 +23,12 @@ func MustProvide[T any](app *App, constructor any) {
 	di.MustProvide[T](app.container, constructor)
 }
 
-// ProvideFunc registers a compile-time-checked constructor for type T.
+// ProvideFactory registers a compile-time-checked factory for type T.
 // Unlike [Provide], whose constructor parameter is typed any and inspected at
 // registration time, fn's signature is enforced by the compiler — and T is
 // inferred from it. fn receives the App and resolves its own dependencies:
 //
-//	credo.ProvideFunc(app, func(app *credo.App) (*UserService, error) {
+//	credo.ProvideFactory(app, func(app *credo.App) (*UserService, error) {
 //		repo, err := credo.Resolve[*UserRepository](app)
 //		if err != nil {
 //			return nil, err
@@ -46,17 +46,17 @@ func MustProvide[T any](app *App, constructor any) {
 //     invisible to the resolver's cycle detection (the same holds for any
 //     constructor closure that captures app and calls [Resolve]).
 //   - [Infra] is not auto-injected; use [App.NewInfra] inside fn as shown.
-func ProvideFunc[T any](app *App, fn func(*App) (T, error)) error {
+func ProvideFactory[T any](app *App, fn func(*App) (T, error)) error {
 	if fn == nil {
 		// Normalize to the internal error message without calling fn.
-		return di.ProvideFunc[T](app.container, nil)
+		return di.ProvideFactory[T](app.container, nil)
 	}
-	return di.ProvideFunc[T](app.container, func() (T, error) { return fn(app) })
+	return di.ProvideFactory[T](app.container, func() (T, error) { return fn(app) })
 }
 
-// MustProvideFunc is like [ProvideFunc] but panics on error.
-func MustProvideFunc[T any](app *App, fn func(*App) (T, error)) {
-	if err := ProvideFunc[T](app, fn); err != nil {
+// MustProvideFactory is like [ProvideFactory] but panics on error.
+func MustProvideFactory[T any](app *App, fn func(*App) (T, error)) {
+	if err := ProvideFactory[T](app, fn); err != nil {
 		panic(err)
 	}
 }
@@ -151,7 +151,7 @@ func MustBindMany[I, T any](app *App) {
 }
 
 // Finalize freezes the DI container and validates the dependency graph.
-// After Finalize, no more Provide, ProvideFunc, ProvideValue, Replace, Alias,
+// After Finalize, no more Provide, ProvideFactory, ProvideValue, Replace, Alias,
 // or BindMany calls are allowed.
 // Finalize is idempotent. If not called explicitly, Run and RunTLS call it
 // implicitly.

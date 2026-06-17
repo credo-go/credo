@@ -114,7 +114,7 @@ Rules:
 ### Finalize Phase
 
 `credo.Finalize(app)` freezes the container and validates the dependency
-graph. After Finalize, `Provide`, `ProvideFunc`, `ProvideValue`, `Replace`,
+graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`,
 `Alias`, and `BindMany` calls are rejected. `Run()` and `RunTLS()` call Finalize implicitly. `Resolve` is
 allowed both before and after Finalize (bootstrap phase supports
 `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps
@@ -213,15 +213,16 @@ The developer chooses on a per-service basis.
 - `BindMany` adds ordering and empty-collection semantics that must be documented clearly
 - Container is in `internal/di` — cannot be used as a standalone DI library
 
-## ProvideFunc
+## ProvideFactory
 
 `Provide`'s `constructor` parameter is necessarily `any` — Go cannot express
 "a function with arbitrary parameters returning `T`" in the type system — so
 signature mistakes surface as registration-time errors, not compile errors.
-`ProvideFunc[T](app, fn func(*App) (T, error))` was added as the fully
-compiler-checked alternative: `fn`'s signature is enforced (with `T`
+`ProvideFactory[T](app, fn func(*App) (T, error))` is the fully
+compiler-checked factory alternative: `fn`'s signature is enforced (with `T`
 inferred), and `fn` resolves its own dependencies via `Resolve` inside the
-closure. The trade-off is that `fn` is opaque to the container: its
+closure. The factory name is intentional: the container cannot inspect its
+dependency graph. The trade-off is that `fn` is opaque to the container: its
 dependencies do not participate in `Finalize` graph validation or cycle
 detection, and `credo.Infra` is not auto-injected (`app.NewInfra` replaces
 Model 1 inside `fn`). Plain `Provide` with a named constructor remains the
