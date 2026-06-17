@@ -55,8 +55,15 @@ Invalid config (parse error, validation) returns error, never panics.
 
 `credo.New()` automatically loads configuration via `config.Load()` when no
 explicit `RawConfig` is provided. Use `credo.WithRawConfig(store)` to pass
-a pre-loaded config. `RawConfig` is always registered in the DI container.
-There is no `app.Config()` accessor.
+a pre-loaded config; doing so bypasses auto-load. `RawConfig` is always
+registered in the DI container. There is no `app.Config()` accessor.
+
+Root-level file controls are deliberately not duplicated. Applications that
+need explicit file selection call `config.Load(config.WithFiles(...))` and pass
+the result with `WithRawConfig`. There is no `credo.WithConfigFiles` option.
+There is also no `WithoutAutoConfig`: a missing explicit `RawConfig` means
+"use Credo's default config discovery," which keeps the default all-in-one
+experience simple.
 
 ### RawConfig Defined in config/ Package
 
@@ -88,6 +95,8 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 | `Get(key) any` | Type-unsafe, `.(int)` assertion risk, Unmarshal is sufficient |
 | `app.Config()` accessor | Encourages runtime key-based access, typed config via DI should be the only path |
 | User-facing CoreConfig type | Server config is a framework-internal concern — user should not be forced to embed it |
+| Root `WithConfigFiles` option | Duplicates `config.Load(config.WithFiles(...))` and expands root API surface |
+| `WithoutAutoConfig` option | Weak practical need; `WithRawConfig` covers explicit control without adding another mode |
 | Put Config in Infra | Each service requires different config sections, a single type is not enough |
 | ASP.NET `IOptions<T>` pattern | Extra abstraction layer, simple DI is sufficient in Go |
 | Global config instance | Makes multi-instance tests harder, independent Apps conflict |

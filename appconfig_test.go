@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -22,6 +24,32 @@ func TestNew_ZeroConfig(t *testing.T) {
 	}
 	if got := app.State(); got != "building" {
 		t.Errorf("State() = %q, want %q", got, "building")
+	}
+}
+
+func TestNew_WithRawConfig_BypassesAutoLoad(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("server: ["), 0o600); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	t.Chdir(dir)
+
+	if _, err := credo.New(); err == nil {
+		t.Fatal("New() should auto-load config.yaml and fail on invalid syntax")
+	}
+
+	rc := newServerConfigRC(map[string]any{})
+	app, err := credo.New(credo.WithRawConfig(rc))
+	if err != nil {
+		t.Fatalf("New(WithRawConfig) should bypass auto-load, got: %v", err)
+	}
+
+	resolved, err := credo.Resolve[credo.RawConfig](app)
+	if err != nil {
+		t.Fatalf("Resolve[RawConfig]: %v", err)
+	}
+	if resolved != rc {
+		t.Fatal("resolved RawConfig should be the explicit instance passed to WithRawConfig")
 	}
 }
 

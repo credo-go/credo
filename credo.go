@@ -142,8 +142,13 @@ type App struct {
 	trustedProxies []netip.Prefix
 }
 
-// New creates a new App with the given options. Returns an error if the
-// configuration contains invalid values (negative timeouts, invalid port).
+// New creates a new App with the given options. When no RawConfig is provided,
+// New auto-loads configuration with config.Load and registers the resulting
+// RawConfig in DI. Passing WithRawConfig bypasses auto-load and registers the
+// given RawConfig instead.
+//
+// New returns an error if configuration loading fails or if server settings
+// contain invalid values (negative timeouts, invalid port).
 //
 // Usage:
 //

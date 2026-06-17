@@ -203,10 +203,16 @@ Behavior contract:
 `credo.New()` automatically loads configuration via `config.Load()` when no
 explicit `RawConfig` is provided. Use `credo.WithRawConfig(store)` to pass
 a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data).
-`RawConfig` is always registered in the DI container.
+Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig`
+is registered in the DI container as-is.
 Server config is framework-internal (no user-facing `CoreConfig`). No
 `app.Config()` accessor — typed config via DI only. See
-[ADR-005](../adr/005-configuration-architecture.md#credonew-auto-registers-rawconfig).
+[ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
+
+Root `credo.New` intentionally does not expose `WithConfigFiles` or
+`WithoutAutoConfig` options. File selection belongs to `config.Load`
+(`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications
+load config first, then pass it with `credo.WithRawConfig`.
 
 Framework-read server keys include listen settings, debug mode, routing
 behavior, and `server.trusted_proxies` for reverse-proxy metadata trust.

@@ -111,6 +111,10 @@ credo.MustProvideValue(app, &cfg)
 
 String keys appear once. After that, everything is typed.
 
+For explicit file selection, call `config.Load(config.WithFiles(...))` yourself
+and pass the result with `credo.WithRawConfig(raw)`. Passing `WithRawConfig`
+bypasses `credo.New()`'s auto-load path.
+
 See [Configuration Guide](configuration.md) for env-specific files, `.env`
 loading, and environment variable conventions.
 

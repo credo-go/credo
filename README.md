@@ -86,6 +86,9 @@ func main() {
 }
 ```
 
+For explicit config control, load it first with `config.Load(...)` and pass it
+to `credo.New(credo.WithRawConfig(raw))`; this bypasses the default auto-load.
+
 ## Config: Typed Snapshot (Anti-Pattern-Free)
 
 Credo positions config as a startup-time snapshot, not a runtime service.

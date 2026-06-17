@@ -72,9 +72,13 @@ type appOptions struct {
 	trustedProxiesSet bool
 }
 
-// WithRawConfig sets the RawConfig for the application. The framework reads
-// server settings from the "server" key internally. When not provided,
-// [credo.New] automatically loads configuration via [config.Load].
+// WithRawConfig sets the RawConfig for the application. When provided,
+// New does not auto-load configuration from files, .env, or environment
+// variables; the given RawConfig is registered in DI as-is. The framework
+// still reads its internal server settings from the "server" key when present.
+//
+// Use this option when config has already been loaded explicitly, for example
+// via config.Load(config.WithFiles(...)) or config.LoadBytes(...).
 func WithRawConfig(rc RawConfig) Option {
 	return func(o *appOptions) { o.rawConfig = rc }
 }

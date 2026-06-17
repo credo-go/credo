@@ -27,6 +27,10 @@ directory, loads `.env` if present (all entries), and applies `CREDO_*` environm
 
 ### Explicit File
 
+Credo does not expose root-level file options such as `credo.WithConfigFiles`.
+When you want explicit file control, load config yourself and pass the result
+to `credo.New`:
+
 ```go
 store, err := config.Load(config.WithFiles("myconfig.json"))
 if err != nil {
@@ -34,6 +38,10 @@ if err != nil {
 }
 app, err := credo.New(credo.WithRawConfig(store))
 ```
+
+Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path. The provided
+`RawConfig` is registered in DI as-is, while framework server settings are
+still read from its `"server"` section when present.
 
 ### go:embed
 
@@ -53,7 +61,9 @@ func main() {
 }
 ```
 
-Environment variables still override embedded values.
+Environment variables still override embedded values because `config.LoadBytes`
+applies the `.env` and process environment layers before the `RawConfig` is
+passed to `credo.New`.
 
 ---
 
