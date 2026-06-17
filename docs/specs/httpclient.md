@@ -53,8 +53,8 @@ does.
 
 - **No OTel propagator / span creation / metrics** — Phase 3.5 hooks.
 - **No circuit breaker** — deferred until demanded (decision §4).
-- **No `app.HTTPClient()` sugar** — the client is constructed by the user
-  and registered via plain DI (explicit-first).
+- **No `app.HTTPClient()` sugar** — outbound clients sit at an application
+  boundary, so the user constructs the client and registers it via plain DI.
 - **No `Retry-After` honoring** — backoff is purely exponential+jitter in
   the lean core; revisit with real demand.
 - **No request hedging, no per-attempt timeout option** —

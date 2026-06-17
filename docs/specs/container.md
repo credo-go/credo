@@ -25,10 +25,11 @@ Credo's DI system consists of two parts:
    Uses Go 1.26+ generics for type-safe registration and resolution. No
    code generation. `Seal()` freezes and validates the graph at startup.
 
-2. **`credo.Infra`** --- An explicit infrastructure carrier defined in the root
-   package. Carries the per-service Logger (metrics/tracing carriers return
-   with the Phase 3.5 observability release). Produced automatically by
-   the container when seen as a constructor parameter.
+2. **`credo.Infra`** --- A framework-managed infrastructure carrier defined in
+   the root package. Carries the per-service Logger (metrics/tracing carriers
+   return with the Phase 3.5 observability release). Produced automatically by
+   the container when seen as a constructor parameter, but still visible in the
+   service constructor signature.
 
 The container lives in `internal/di` because it is Credo-specific --- not a
 standalone DI library. The public API is exposed through root package generic
@@ -50,9 +51,10 @@ functions such as `credo.Provide[T](app, constructor)`,
    and once per singleton during first construction (`reflect.Value.Call`).
    Subsequent resolves of the same singleton are pure cache lookups --- zero
    reflection.
-2. **Explicit infrastructure**: `credo.Infra` delivers cross-cutting
-   infrastructure (currently the Logger) as an explicit constructor
-   parameter. No implicit auto-populate, no struct tag scanning.
+2. **Framework-managed infrastructure, explicit boundary**: `credo.Infra`
+   delivers cross-cutting infrastructure (currently the Logger) as a visible
+   constructor parameter. The framework produces it by convention; services do
+   not receive hidden field population or struct-tag injection.
 3. **Composition Root first**: The container is primarily used at startup
    (`main()` or `App.Run()`). Credo's recommended pattern is constructor
    injection and bootstrap-time wiring. Runtime `Resolve` calls remain
@@ -501,9 +503,10 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 ## Design Decisions
 
-1. **Explicit Infra over implicit Base** --- Embedding a struct and auto-populating
-   via reflection (Spring `@Autowired`) violates Go's explicitness. `credo.Infra`
-   appears in constructor signatures --- visible, reviewable, mockable.
+1. **Framework-managed Infra over implicit Base** --- Embedding a struct and
+   auto-populating via reflection (Spring `@Autowired`) would hide the
+   dependency boundary. `credo.Infra` is produced by the framework but appears
+   in constructor signatures --- visible, reviewable, mockable.
 
 2. **Infra in root package** --- Infra must be referenceable without importing the
    DI package. Placing it in root keeps the dependency graph clean.

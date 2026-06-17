@@ -17,8 +17,8 @@ ecosystem offers two main approaches:
    field references. More verbose but type-safe, composable, and
    testable.
 
-Credo chooses programmatic validation to align with the explicit-first
-philosophy (ADR-001) and to leverage Go generics for type-safe rules.
+Credo chooses programmatic validation to keep validation boundaries typed and
+reviewable (ADR-001) and to leverage Go generics for type-safe rules.
 
 ## Decision
 

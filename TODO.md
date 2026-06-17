@@ -461,7 +461,7 @@ Breaking changes may still happen before v1.
 > enterprise services. Built as a composable `http.RoundTripper` chain — works
 > with existing stdlib tooling. **The lean core ships independently of Phase
 > 3.5**; tracing/metrics hooks land when observability does. No `app.HTTPClient()`
-> sugar — plain DI (explicit-first).
+> sugar — plain DI at application boundaries.
 - [x] `httpclient.New(opts...)` — `*http.Client` factory with canonical RoundTripper chain: Client.Timeout → retry → logging → trace → base; composable `NewRetryTransport`/`NewLoggingTransport`/`NewTraceTransport` exports; spec: [`docs/specs/httpclient.md`](docs/specs/httpclient.md)
 - [x] `WithTimeout`, `WithRetry(cfg ...RetryConfig)` — full-jitter backoff; `DefaultRetryIf` never retries POST/429/context cancellation; GetBody-only body replay; exhaustion returns the last response unchanged
 - [x] Structured request/response logging via `WithLogging(*slog.Logger)` — package is stdlib-only; one line per attempt, query string + userinfo stripped, 5xx→Error / 4xx→Warn / else Info

@@ -22,8 +22,10 @@ API mismatches, and integration maintenance burden fall on the developer.
 With the framework approach, this burden shifts to the framework, letting
 the developer focus on business logic.
 
-Credo's target audience is developer teams who want to focus on application
-business logic rather than dealing with technical infrastructure decisions.
+Credo's target audience includes both smaller teams that want low-boilerplate
+defaults and enterprise teams that need typed, reviewable boundaries for large
+applications. In both cases, the goal is to spend less time integrating
+technical infrastructure and more time building application behavior.
 
 ## Decision
 
@@ -46,7 +48,8 @@ precedence.
 Credo targets enterprise-grade support for mid-to-large scale projects.
 Clean architecture encouragement, structured dependency injection,
 built-in observability, and graceful lifecycle management are reflections
-of this goal.
+of this goal. These defaults should not make small services heavy: a minimal
+Credo app should still be `credo.New()`, route registration, and `Run()`.
 
 ### 3. stdlib as Secondary Priority
 
@@ -59,14 +62,18 @@ stdlib compatibility is not entirely abandoned — adapters such as
 own API. The position taken is: "you can be stdlib-compatible, but we
 recommend the Credo path."
 
-### 4. Explicit First
+### 4. Integrated First, Explicit Boundaries
 
-Credo prefers explicit APIs over implicit magic. Dependencies are visible
-in constructor signatures, config is distributed as typed structs via DI,
-and infrastructure is provided automatically but transparently.
+Credo does not optimize for users manually assembling every framework layer.
+The framework wires its own infrastructure by documented convention: default
+logging, request IDs, access logs, config bootstrap, health integration, and
+future observability carriers should work with minimal setup.
 
-This choice, aligned with Go's "explicit is better than implicit"
-philosophy, makes code review, testing, and onboarding easier.
+At application boundaries, Credo stays explicit. Business dependencies remain
+visible in constructor signatures, config crosses module boundaries as typed
+structs via DI, and framework-managed infrastructure is carried through the
+documented `credo.Infra` type. Those boundaries are typed, reviewable, and
+override-friendly.
 
 ### 5. Go 1.26+ Baseline
 
@@ -80,11 +87,13 @@ Credo targets Go 1.26+ and actively uses modern stdlib APIs:
 - Developers learn a single framework and use all layers
 - Compatibility between components is guaranteed by the framework
 - Consistent, predictable structure for enterprise projects
-- Explicit APIs make debugging and testing easier
+- Integrated defaults reduce setup work for small teams
+- Explicit application boundaries make debugging and testing easier
 
 **Negative:**
 - Larger API surface = greater maintenance burden
 - Not being stdlib-first contradicts some Go developers' expectations
 - All-in-one structure makes independent use of individual components harder
+- Framework-managed conventions must stay documented and override-friendly
 - Framework lock-in risk (mitigated: clean arch layers enable domain/service
   layers that are not dependent on the framework)

@@ -52,9 +52,8 @@ full middleware and error pipeline.
 
 ### `fs.FS` as the Source Interface
 
-The methods accept `fs.FS` — not a string directory path. This is
-consistent with Credo's explicit-first philosophy: the user controls the
-filesystem source and its lifecycle.
+The methods accept `fs.FS` — not a string directory path. This keeps the
+filesystem source and lifecycle visible at the application boundary.
 
 Supported sources:
 - `credo.DirFS(dir)` — production, symlink-safe convenience; returns an
@@ -146,8 +145,8 @@ Registers a single GET route that serves one file. Returns `*Route` (not
 Only `Download`, `MaxAge`, `Immutable`, `ImmutablePredicate`, and
 `HTMLCacheControl` fields of `StaticConfig` are supported.
 `Browse`, `SPA`, and `Index` panic at registration time if set — consistent
-with Credo's explicit-first principle and existing registration-time panic
-conventions (`Name` duplicate, `checkFrozen`, prefix validation).
+with Credo's "fail fast on developer configuration" convention (`Name`
+duplicate, `checkFrozen`, prefix validation).
 
 ### StaticConfig
 

@@ -17,7 +17,7 @@
 - **Enterprise defaults**: Clean Architecture is the recommended path (CLI scaffolding + docs), but not enforced.
 - **Errors are values**: handlers return `error`; centralized error handling renders RFC 7807 Problem Details.
 - **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI.
-- **Explicit-first (DX-balanced)**: business deps are normal constructor params; infra comes via `credo.Infra`.
+- **Integrated-first, explicit boundaries**: framework infrastructure is wired by convention; app deps and typed config stay visible and override-friendly.
 - **stdlib boundary compatibility**: `*credo.App` is an `http.Handler`; stdlib middleware can be adapted.
 
 ## Maturity by Area

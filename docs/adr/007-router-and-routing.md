@@ -181,7 +181,7 @@ Enabled by default. Disable via `WithRedirectTrailingSlash(false)` or
 `server.redirect_trailing_slash: false` in config.
 
 **Alternatives considered:**
-- *Silent fallback (rewrite)*: Conflicts with "explicit first" principle.
+- *Silent fallback (rewrite)*: Hides canonical URL decisions from clients.
   Client wouldn't know the canonical URL, making debugging harder and
   creating SEO duplicate-content risk.
 - *Middleware-based*: Would require either a blind path normalization

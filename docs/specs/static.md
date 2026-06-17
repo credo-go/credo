@@ -17,7 +17,7 @@ middleware, route meta, error handling, and access log systems.
 **Design principles**:
 - `fs.FS` as the source interface — works with `embed.FS`, `os.Root.FS()`,
   `os.DirFS`, custom implementations
-- Explicit-first — user controls filesystem lifecycle, no hidden `os.Root`
+- Visible ownership — user controls filesystem lifecycle, no hidden `os.Root`
   management
 - Secure defaults — no directory listing, `nosniff` header, path sanitization
 - SPA-aware — dot heuristic prevents assets from returning `index.html`
@@ -434,7 +434,7 @@ the root package alongside the existing handler/route/context code.
 
 ## Design Decisions
 
-1. **`fs.FS` not string path** — Explicit-first: user controls filesystem
+1. **`fs.FS` not string path** — user controls filesystem
    source and lifecycle. Supports embed, `os.Root`, `os.DirFS`, test
    doubles. See [ADR-017](../adr/017-static-file-serving.md).
 
@@ -444,7 +444,7 @@ the root package alongside the existing handler/route/context code.
    to both, ensuring uniform behavior.
 
 3. **`File` panics on unsupported config** — Silent ignore of `Browse`,
-   `SPA`, `Index` violates explicit-first. Registration-time panic
+   `SPA`, `Index` hides configuration mistakes. Registration-time panic
    matches existing conventions (`Name` duplicate, `checkFrozen`).
 
 4. **SPA dot heuristic** — Accept-header detection is unreliable

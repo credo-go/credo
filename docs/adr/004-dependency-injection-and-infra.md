@@ -190,7 +190,7 @@ The developer chooses on a per-service basis.
 | Pure constructor params (each infra separate) | 6-7 parameters are verbose, Infra consolidates them into a single parameter |
 | Container as separate public package | No standalone usage scenario, Credo-specific — internal is sufficient |
 | RequestScoped lifecycle | Go's `context.Context` + middleware pattern provides sufficient request-scoped dependency management without DI container complexity |
-| Model 3: Hybrid Embed (struct with embedded `credo.Infra` + resolved fields) | Reflective field population of struct parameters conflicts with Go's explicit-first philosophy. Model 1 with explicit constructor parameters is clearer and sufficient |
+| Model 3: Hybrid Embed (struct with embedded `credo.Infra` + resolved fields) | Reflective field population hides application boundaries. Model 1 with visible constructor parameters is clearer and sufficient |
 
 ## Consequences
 

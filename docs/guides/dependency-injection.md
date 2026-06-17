@@ -16,7 +16,7 @@ Credo's container exists to wire application components at startup:
 - services
 - controllers
 - typed config structs
-- framework infrastructure via `credo.Infra`
+- framework-managed infrastructure via `credo.Infra`
 
 Credo's DI is intentionally simple:
 
@@ -213,7 +213,9 @@ The recommended convention is to place it first.
 - `Logger`
 
 The container creates `credo.Infra` automatically when a constructor asks for it.
-You do not register it yourself.
+You do not register it yourself. This is framework-managed infrastructure, not
+a service locator: the boundary stays visible because `credo.Infra` appears in
+the constructor signature.
 
 Important rules:
 
@@ -221,6 +223,8 @@ Important rules:
 - config does not belong in `credo.Infra`
 - request data does not belong in `credo.Infra`
 - the logger is scoped per service automatically
+- services can still be tested by constructing `credo.Infra` directly or by
+  using `app.NewInfra(name)` outside DI
 
 Tracing and metrics carriers are planned for the observability release. They are
 not part of the v0.1 `Infra` surface.
