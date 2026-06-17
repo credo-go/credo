@@ -390,7 +390,7 @@ Breaking changes may still happen before v1.
 ### 4.2 Worker System (`worker/`)
 **Source**: robfig/cron v3 parser (MIT, expression parser only)
 - [x] Adapt cron expression parser from robfig/cron v3
-- [x] `worker.Register(app, w, opts...)` API
+- [x] `worker.Register(app, w, opts...) error` + `worker.MustRegister(app, w, opts...)` API
 - [x] Continuous + scheduled worker execution modes
 - [x] Graceful shutdown (wait for active workers)
 - [x] Integration with app lifecycle

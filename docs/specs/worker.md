@@ -44,7 +44,8 @@ Key design properties:
   bubbles (virtual clock), so scheduler and backoff tests are deterministic
   and instant without a clock-injection seam.
 - **DI-friendly** — workers are constructed by user (possibly via DI),
-  registered with `worker.Register(app, w, opts...)`.
+  registered with `worker.Register(app, w, opts...)` or fail-fast
+  `worker.MustRegister(app, w, opts...)`.
 - **Observable** — structured logging per execution, future metrics/tracing
   hooks (depends on Phase 3.5).
 
@@ -82,7 +83,7 @@ The worker system cleanly separates **immutable config**, **mutable runtime
 state**, and **read-only snapshots**:
 
 ```
-Register(app, w, opts...)
+Register(app, w, opts...) error
        │
        ▼
   ┌────────────┐   pool.Start()   ┌────────────┐   pool.Workers()   ┌────────────┐
@@ -141,9 +142,11 @@ type Worker interface {
 //
 // Usage:
 //
-//	worker.Register(app, worker.Func("cache-warm", func(ctx context.Context) error {
+//	if err := worker.Register(app, worker.Func("cache-warm", func(ctx context.Context) error {
 //	    return warmCache(ctx)
-//	}), worker.WithSchedule("@every 5m"))
+//	}), worker.WithSchedule("@every 5m")); err != nil {
+//	    return err
+//	}
 func Func(name string, fn func(ctx context.Context) error) Worker
 ```
 
@@ -488,17 +491,18 @@ synctest-aware primitives (channels, timers, mutexes) for time to advance.
 // started during app.Run() and stopped on app.Shutdown().
 //
 // Register must be called before app.Run(). Registration is startup
-// configuration, so misuse panics (per the root package's "Panics and
-// Errors" policy) when:
+// configuration, so invalid registration is returned as an error when:
 //   - app or w is nil
 //   - w.Name() is empty or duplicate
 //   - WithSchedule expression is invalid (parsed immediately)
 //   - Continuous-only options used with scheduled, or vice versa
 //
 // Pattern: sub-package function taking *credo.App, like store.Register.
-// (store.Register returns an error instead because it pings the
-// connection — an outside-world operation.)
-func Register(app *credo.App, w Worker, opts ...Option)
+// Use MustRegister for fail-fast bootstrap code that should panic on error.
+func Register(app *credo.App, w Worker, opts ...Option) error
+
+// MustRegister is like Register but panics on error.
+func MustRegister(app *credo.App, w Worker, opts ...Option)
 ```
 
 Internal flow:
@@ -506,9 +510,9 @@ Internal flow:
 ```
 1. Validate: nil checks, empty name
 2. Apply raw options → intermediate options struct
-3. If schedule option present → ParseSchedule(expr) — fail-fast on invalid
+3. If schedule option present → ParseSchedule(expr) — return error on invalid
 4. Classify mode: continuous (no schedule) or scheduled
-5. Reject cross-mode options → panic:
+5. Reject cross-mode options → error:
    • scheduled + WithMaxRestarts      → "WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures"
    • scheduled + WithRestartDelay     → "WithRestartDelay is for continuous workers"
    • continuous + WithMaxConsecFail   → "WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts"
@@ -516,7 +520,7 @@ Internal flow:
 6. Build restartPolicy / failurePolicy from validated options
 7. Build Definition (immutable)
 8. ensurePool(app) → resolve-or-create *Pool singleton in DI
-9. pool.addDefinition(def) — check name uniqueness, panic on duplicate
+9. pool.addDefinition(def) — check name uniqueness, error on duplicate
 ```
 
 ### ensurePool (internal)
@@ -882,7 +886,7 @@ make the entire app unready. If needed in the future:
 
 ```go
 // Future (v2): opt-in readiness binding per worker
-worker.Register(app, critical,
+worker.MustRegister(app, critical,
 	worker.WithSchedule("@every 30s"),
 	worker.WithCritical(), // failed → readiness probe fails
 )
@@ -948,7 +952,7 @@ func main() {
 	consumer := credo.MustResolve[*OrderConsumer](app)
 
 	// Continuous: unlimited restarts, 5s backoff between restarts
-	worker.Register(app, consumer,
+	worker.MustRegister(app, consumer,
 		worker.WithRestartDelay(5*time.Second),
 	)
 
@@ -993,7 +997,7 @@ func main() {
 	cleanup := credo.MustResolve[*SessionCleanup](app)
 
 	// Every 6 hours, run once at startup, fail permanently after 3 consecutive errors
-	worker.Register(app, cleanup,
+	worker.MustRegister(app, cleanup,
 		worker.WithSchedule("0 */6 * * *"),
 		worker.WithStartImmediately(),
 		worker.WithMaxConsecutiveFailures(3),
@@ -1011,7 +1015,7 @@ func main() {
 	app, _ := credo.New()
 
 	// Simple heartbeat logger — no struct needed
-	worker.Register(app,
+	worker.MustRegister(app,
 		worker.Func("heartbeat", func(ctx context.Context) error {
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
@@ -1029,7 +1033,7 @@ func main() {
 	)
 
 	// Scheduled metrics reporter — skips tick if previous report still running
-	worker.Register(app,
+	worker.MustRegister(app,
 		worker.Func("metrics-report", func(ctx context.Context) error {
 			return reportMetrics(ctx)
 		}),
@@ -1078,7 +1082,7 @@ func (w *ConfigWatcher) Run(ctx context.Context) error {
 func main() {
 	app, _ := credo.New()
 
-	worker.Register(app, &ConfigWatcher{path: "./configs", bus: myBus},
+	worker.MustRegister(app, &ConfigWatcher{path: "./configs", bus: myBus},
 		worker.WithMaxRestarts(5),
 		worker.WithRestartDelay(10*time.Second),
 	)
@@ -1199,13 +1203,13 @@ go func() {
 // Single system, clear semantics:
 
 // Scheduled task (replaces cron/)
-worker.Register(app, cleanup,
+worker.MustRegister(app, cleanup,
 	worker.WithSchedule("*/5 * * * *"),
 	worker.WithMaxConsecutiveFailures(5),
 )
 
 // Continuous background task
-worker.Register(app, consumer,
+worker.MustRegister(app, consumer,
 	worker.WithMaxRestarts(10),
 	worker.WithRestartDelay(5*time.Second),
 )

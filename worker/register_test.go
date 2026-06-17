@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,17 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// mustPanicContaining asserts fn panics with a message containing want.
+func requireErrContaining(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error containing %q", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want message containing %q", err, want)
+	}
+}
+
+// mustPanicContaining asserts fn panics with an error or string containing want.
 func mustPanicContaining(t *testing.T, want string, fn func()) {
 	t.Helper()
 	defer func() {
@@ -17,7 +28,7 @@ func mustPanicContaining(t *testing.T, want string, fn func()) {
 		if r == nil {
 			t.Fatalf("expected panic containing %q", want)
 		}
-		if msg, ok := r.(string); !ok || !strings.Contains(msg, want) {
+		if !strings.Contains(fmt.Sprint(r), want) {
 			t.Fatalf("panic = %v, want message containing %q", r, want)
 		}
 	}()
@@ -27,24 +38,38 @@ func mustPanicContaining(t *testing.T, want string, fn func()) {
 func TestRegister_RejectsCrossModeOptions(t *testing.T) {
 	app := newTestApp(t)
 
+	err := Register(app, Func("scheduled", func(context.Context) error { return nil }),
+		WithSchedule("@every 1m"),
+		WithRestartDelay(time.Second),
+	)
+	requireErrContaining(t, err, "WithRestartDelay is for continuous workers")
+
+	err = Register(app, Func("continuous", func(context.Context) error { return nil }), WithStartImmediately())
+	requireErrContaining(t, err, "WithStartImmediately is for scheduled workers")
+}
+
+func TestMustRegister_PanicsOnError(t *testing.T) {
+	app := newTestApp(t)
+
 	mustPanicContaining(t, "WithRestartDelay is for continuous workers", func() {
-		Register(app, Func("scheduled", func(context.Context) error { return nil }),
+		MustRegister(app, Func("scheduled", func(context.Context) error { return nil }),
 			WithSchedule("@every 1m"),
 			WithRestartDelay(time.Second),
 		)
-	})
-
-	mustPanicContaining(t, "WithStartImmediately is for scheduled workers", func() {
-		Register(app, Func("continuous", func(context.Context) error { return nil }), WithStartImmediately())
 	})
 }
 
 func TestRegister_DuplicateName(t *testing.T) {
 	app := newTestApp(t)
 
-	Register(app, Func("dup", func(context.Context) error { return nil }))
+	if err := Register(app, Func("dup", func(context.Context) error { return nil })); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
+	err := Register(app, Func("dup", func(context.Context) error { return nil }))
+	requireErrContaining(t, err, "duplicate worker name")
+
 	mustPanicContaining(t, "duplicate worker name", func() {
-		Register(app, Func("dup", func(context.Context) error { return nil }))
+		MustRegister(app, Func("dup", func(context.Context) error { return nil }))
 	})
 }
 
@@ -54,7 +79,9 @@ func TestRegister_UsesConfiguredRestartDelay(t *testing.T) {
 		worker: poolConfig{RestartDelay: 7 * time.Second},
 	}))
 
-	Register(app, Func("job", func(context.Context) error { return nil }))
+	if err := Register(app, Func("job", func(context.Context) error { return nil })); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
 
 	pool, err := credo.Resolve[*Pool](app)
 	if err != nil {
@@ -70,7 +97,9 @@ func TestRegister_UsesConfiguredRestartDelay(t *testing.T) {
 
 func TestPoolWorkers_BeforeStartReturnsIdleSnapshot(t *testing.T) {
 	app := newTestApp(t)
-	Register(app, Func("idle", func(context.Context) error { return nil }))
+	if err := Register(app, Func("idle", func(context.Context) error { return nil })); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
 
 	pool, err := credo.Resolve[*Pool](app)
 	if err != nil {

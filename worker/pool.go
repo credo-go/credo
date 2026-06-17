@@ -30,22 +30,20 @@ type Pool struct {
 
 // Register adds w to the application's worker pool.
 //
-// Registration is startup configuration, so misuse — nil worker, empty or
-// duplicate name, cross-mode options, malformed schedule or worker config —
-// panics rather than returning an error, per the credo package's "Panics
-// and Errors" policy. (store.Register returns an error instead because it
-// touches the outside world: it pings the connection.)
-func Register(app *credo.App, w Worker, opts ...Option) {
+// Workers are started during [credo.App.Run] and stopped during
+// [credo.App.Shutdown]. Register must be called before the app is finalized or
+// run. Use [MustRegister] when bootstrap code should fail fast by panicking.
+func Register(app *credo.App, w Worker, opts ...Option) error {
 	if app == nil {
-		panic("worker: app must not be nil")
+		return fmt.Errorf("worker: app must not be nil")
 	}
 	if isNilWorker(w) {
-		panic("worker: worker must not be nil")
+		return fmt.Errorf("worker: worker must not be nil")
 	}
 
 	name := strings.TrimSpace(w.Name())
 	if name == "" {
-		panic("worker: worker name must not be empty")
+		return fmt.Errorf("worker: worker name must not be empty")
 	}
 
 	o := options{}
@@ -56,43 +54,43 @@ func Register(app *credo.App, w Worker, opts ...Option) {
 	}
 
 	if o.hasMaxRestarts && o.maxRestarts < 0 {
-		panic(fmt.Sprintf("worker: max restarts must be >= 0, got %d", o.maxRestarts))
+		return fmt.Errorf("worker: max restarts must be >= 0, got %d", o.maxRestarts)
 	}
 	if o.hasRestartDelay && o.restartDelay < 0 {
-		panic(fmt.Sprintf("worker: restart delay must be >= 0, got %s", o.restartDelay))
+		return fmt.Errorf("worker: restart delay must be >= 0, got %s", o.restartDelay)
 	}
 	if o.hasMaxConsecutiveFailures && o.maxConsecutiveFailures < 0 {
-		panic(fmt.Sprintf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures))
+		return fmt.Errorf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures)
 	}
 
 	var schedule *Schedule
 	if o.hasSchedule {
 		parsed, err := ParseSchedule(o.scheduleExpr)
 		if err != nil {
-			panic(err.Error())
+			return err
 		}
 		schedule = parsed
 	}
 
 	if schedule != nil {
 		if o.hasMaxRestarts {
-			panic("worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures")
+			return fmt.Errorf("worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures")
 		}
 		if o.hasRestartDelay {
-			panic("worker: WithRestartDelay is for continuous workers")
+			return fmt.Errorf("worker: WithRestartDelay is for continuous workers")
 		}
 	} else {
 		if o.hasMaxConsecutiveFailures {
-			panic("worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts")
+			return fmt.Errorf("worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts")
 		}
 		if o.startImmediately {
-			panic("worker: WithStartImmediately is for scheduled workers")
+			return fmt.Errorf("worker: WithStartImmediately is for scheduled workers")
 		}
 	}
 
 	p, err := ensurePool(app)
 	if err != nil {
-		panic(err.Error())
+		return err
 	}
 
 	def := &Definition{
@@ -122,7 +120,15 @@ func Register(app *credo.App, w Worker, opts ...Option) {
 	}
 
 	if err := p.addDefinition(def); err != nil {
-		panic(err.Error())
+		return err
+	}
+	return nil
+}
+
+// MustRegister is like [Register] but panics on error.
+func MustRegister(app *credo.App, w Worker, opts ...Option) {
+	if err := Register(app, w, opts...); err != nil {
+		panic(err)
 	}
 }
 

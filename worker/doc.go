@@ -6,12 +6,12 @@
 //
 // # Quick Start
 //
-//	worker.Register(app, worker.Func("heartbeat", func(ctx context.Context) error {
+//	worker.MustRegister(app, worker.Func("heartbeat", func(ctx context.Context) error {
 //		<-ctx.Done()
 //		return nil
 //	}))
 //
-//	worker.Register(app, cleanup,
+//	worker.MustRegister(app, cleanup,
 //		worker.WithSchedule("@every 5m"),
 //		worker.WithStartImmediately(),
 //	)

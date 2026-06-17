@@ -99,10 +99,12 @@ func main() {
 
     consumer := &EmailConsumer{queue: newQueue(), sender: newSender()}
 
-    worker.Register(app, consumer,
+    if err := worker.Register(app, consumer,
         worker.WithMaxRestarts(0),
         worker.WithRestartDelay(5*time.Second),
-    )
+    ); err != nil {
+        log.Fatal(err)
+    }
 
     if err := app.Run(); err != nil {
         log.Fatal(err)
@@ -151,11 +153,13 @@ func main() {
 
     cleanup := &CleanupWorker{repo: newCleanupRepo()}
 
-    worker.Register(app, cleanup,
+    if err := worker.Register(app, cleanup,
         worker.WithSchedule("0 */6 * * *"),
         worker.WithStartImmediately(),
         worker.WithMaxConsecutiveFailures(5),
-    )
+    ); err != nil {
+        log.Fatal(err)
+    }
 
     if err := app.Run(); err != nil {
         log.Fatal(err)
@@ -176,7 +180,7 @@ Important points:
 For small jobs, you do not need a custom struct type:
 
 ```go
-worker.Register(app,
+if err := worker.Register(app,
     worker.Func("heartbeat", func(ctx context.Context) error {
         ticker := time.NewTicker(30 * time.Second)
         defer ticker.Stop()
@@ -190,7 +194,9 @@ worker.Register(app,
             }
         }
     }),
-)
+); err != nil {
+    log.Fatal(err)
+}
 ```
 
 `worker.Func` is especially useful for tiny continuous workers or simple
@@ -217,6 +223,8 @@ app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit
 ```
 
 Register workers before `credo.Finalize(app)` or before `Run()`/`RunTLS()`.
+Use `worker.MustRegister` when bootstrap code should panic on registration
+failure instead of returning an error.
 
 ---
 
@@ -245,9 +253,11 @@ func bootstrap(app *credo.App) error {
     credo.MustProvide[*InvoiceWorker](app, NewInvoiceWorker)
 
     invoiceWorker := credo.MustResolve[*InvoiceWorker](app)
-    worker.Register(app, invoiceWorker,
+    if err := worker.Register(app, invoiceWorker,
         worker.WithSchedule("@every 1m"),
-    )
+    ); err != nil {
+        return err
+    }
 
     return credo.Finalize(app)
 }
