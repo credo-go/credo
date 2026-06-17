@@ -1009,7 +1009,6 @@ the route on a sibling group or attach the middleware per-route instead.
 package main
 
 import (
-    "errors"
     "log"
     "log/slog"
     "net/http"
@@ -1089,10 +1088,9 @@ func main() {
         })
     })
 
-    if err := credo.RunWithSignals(app, 10*time.Second); err != nil {
-        if !errors.Is(err, http.ErrServerClosed) {
-            slog.Error("server error", "error", err)
-        }
+    // Run blocks until SIGINT/SIGTERM, then drains gracefully and returns nil.
+    if err := app.Run(); err != nil {
+        slog.Error("server error", "error", err)
     }
 }
 ```

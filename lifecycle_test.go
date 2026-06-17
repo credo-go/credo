@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -699,41 +700,48 @@ func TestApp_OnShutdown_IntegrationPattern(t *testing.T) {
 	}
 }
 
-// --- Context tests ---
+// --- Run/Shutdown lifecycle (the app context is internal, observed via OnStart) ---
 
-func TestApp_Context_BeforeRun(t *testing.T) {
-	app := mustNew(t)
-	ctx := app.Context()
-	if ctx == nil {
-		t.Fatal("Context() returned nil before Run")
+// lifecycleCtxKey is a private context key used by drain-context tests.
+type lifecycleCtxKey struct{}
+
+// waitRunning blocks until the app reports running, or fails the test.
+func waitRunning(t *testing.T, app *credo.App) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.IsRunning() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	// Should return context.Background() before Run.
-	select {
-	case <-ctx.Done():
-		t.Fatal("context should not be cancelled before Run")
-	default:
-	}
+	t.Fatal("server did not reach running state")
 }
 
-func TestApp_Context_DuringRunning(t *testing.T) {
+// TestApp_OnStart_ContextCancelledOnShutdown verifies the app lifecycle
+// context — handed to OnStart hooks — is live while running and cancelled when
+// shutdown begins. This is the behaviour background services rely on now that
+// the public App.Context() accessor is gone.
+func TestApp_OnStart_ContextCancelledOnShutdown(t *testing.T) {
 	host, port, _ := freePort(t)
 	app := mustNew(t, credo.WithAddr(host, port))
 	app.GET("/ping", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "pong")
 	})
 
+	var appCtx context.Context
+	app.OnStart(func(ctx context.Context) error {
+		appCtx = ctx
+		return nil
+	})
+
 	errCh := make(chan error, 1)
-	go func() { errCh <- app.Run() }()
+	go func() { errCh <- app.RunContext(context.Background()) }()
+	waitRunning(t, app)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if app.IsRunning() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if appCtx == nil {
+		t.Fatal("OnStart hook did not capture a context")
 	}
-
-	appCtx := app.Context()
 	select {
 	case <-appCtx.Done():
 		t.Fatal("app context should not be cancelled while running")
@@ -746,42 +754,189 @@ func TestApp_Context_DuringRunning(t *testing.T) {
 		t.Fatalf("Shutdown() error: %v", err)
 	}
 	<-errCh
+
+	select {
+	case <-appCtx.Done():
+		// good — cancelled at the start of shutdown
+	default:
+		t.Fatal("app context should be cancelled after shutdown")
+	}
 }
 
-func TestApp_Context_CancelledOnShutdown(t *testing.T) {
-	host, port, _ := freePort(t)
-	app := mustNew(t, credo.WithAddr(host, port))
+// TestApp_RunContext_CancelTriggersShutdown verifies cancelling the run
+// context drains the server gracefully and reaches the stopped state.
+func TestApp_RunContext_CancelTriggersShutdown(t *testing.T) {
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	app.GET("/ping", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "pong")
 	})
 
+	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- app.Run() }()
+	go func() { errCh <- app.RunContext(ctx) }()
+	waitRunning(t, app)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if app.IsRunning() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	cancel()
 
-	// Capture the app context while running.
-	appCtx := app.Context()
-
-	stopCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(stopCtx); err != nil {
-		t.Fatalf("Shutdown() error: %v", err)
-	}
-	<-errCh
-
-	// The app context must be cancelled after Shutdown.
 	select {
-	case <-appCtx.Done():
-		// good
-	default:
-		t.Fatal("app context should be cancelled after Shutdown")
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("RunContext() returned error on graceful cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunContext() did not return after context cancel")
+	}
+
+	if got := app.State(); got != "stopped" {
+		t.Errorf("State() = %q after cancel, want %q", got, "stopped")
+	}
+}
+
+// TestApp_RunContext_DrainContextDerivation verifies the drain context derived
+// on cancellation keeps the caller context's values, drops its cancellation
+// (WithoutCancel), and carries the WithShutdownTimeout deadline.
+func TestApp_RunContext_DrainContextDerivation(t *testing.T) {
+	const timeout = 3 * time.Second
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithShutdownTimeout(timeout))
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	var (
+		hookVal     any
+		hookDone    bool
+		remaining   time.Duration
+		hasDeadline bool
+	)
+	app.OnShutdown(func(ctx context.Context) error {
+		hookVal = ctx.Value(lifecycleCtxKey{})
+		select {
+		case <-ctx.Done():
+			hookDone = true
+		default:
+		}
+		var dl time.Time
+		dl, hasDeadline = ctx.Deadline()
+		remaining = time.Until(dl)
+		return nil
+	})
+
+	parent := context.WithValue(context.Background(), lifecycleCtxKey{}, "v1")
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.RunContext(ctx) }()
+	waitRunning(t, app)
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("RunContext() error: %v", err)
+	}
+
+	if hookVal != "v1" {
+		t.Errorf("drain ctx value = %v, want %q (WithoutCancel preserves values)", hookVal, "v1")
+	}
+	if hookDone {
+		t.Error("drain ctx should not be cancelled by the trigger (WithoutCancel)")
+	}
+	if !hasDeadline {
+		t.Fatal("drain ctx should carry the WithShutdownTimeout deadline")
+	}
+	if remaining <= 0 || remaining > timeout {
+		t.Errorf("drain deadline remaining = %v, want (0, %v]", remaining, timeout)
+	}
+}
+
+// TestApp_RunContext_AfterShutdown_SingleUse verifies an App cannot run again
+// after it has shut down — it is single-use.
+func TestApp_RunContext_AfterShutdown_SingleUse(t *testing.T) {
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.RunContext(ctx) }()
+	waitRunning(t, app)
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("RunContext() error: %v", err)
+	}
+
+	err := app.RunContext(context.Background())
+	if err == nil {
+		t.Fatal("second RunContext() after shutdown should return an error")
+	}
+	if !strings.Contains(err.Error(), "cannot be run after shutdown") {
+		t.Errorf("error = %q, want it to mention single-use", err.Error())
+	}
+}
+
+// TestApp_ServeContext_CustomListener verifies ServeContext serves on a
+// caller-provided listener and drains on context cancellation.
+func TestApp_ServeContext_CustomListener(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.ServeContext(ctx, l) }()
+	waitRunning(t, app)
+
+	resp, err := http.Get("http://" + addr + "/ping")
+	if err != nil {
+		t.Fatalf("request via custom listener failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("ServeContext() error: %v", err)
+	}
+	if got := app.State(); got != "stopped" {
+		t.Errorf("State() = %q, want stopped", got)
+	}
+}
+
+// TestApp_ServeContext_NilListener verifies ServeContext rejects a nil listener.
+func TestApp_ServeContext_NilListener(t *testing.T) {
+	app := mustNew(t)
+	if err := app.ServeContext(context.Background(), nil); err == nil {
+		t.Fatal("ServeContext(nil) should return an error")
+	}
+}
+
+// TestApp_RunTLSContext_BadCertFailFast verifies an invalid key pair is caught
+// before the server starts. A free port proves the failure is the preflight,
+// not a listen error, and state rolls back to building.
+func TestApp_RunTLSContext_BadCertFailFast(t *testing.T) {
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	err := app.RunTLSContext(context.Background(), "nonexistent.crt", "nonexistent.key")
+	if err == nil {
+		t.Fatal("RunTLSContext with a missing cert should fail")
+	}
+	if app.IsRunning() {
+		t.Error("server should not be running after preflight failure")
+	}
+	if got := app.State(); got != "building" {
+		t.Errorf("State() = %q after preflight failure, want building", got)
 	}
 }
 

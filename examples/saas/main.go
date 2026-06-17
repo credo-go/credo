@@ -289,6 +289,7 @@ func run() error {
 	app, err := credo.New(
 		credo.WithRawConfig(store),
 		credo.WithLogger(logger),
+		credo.WithShutdownTimeout(15*time.Second),
 	)
 	if err != nil {
 		return fmt.Errorf("credo.New: %w", err)
@@ -361,13 +362,15 @@ func run() error {
 		return nil
 	})
 
-	// 16. Start server with graceful shutdown (SIGINT/SIGTERM, 15s drain)
+	// 16. Start the server. Run blocks until SIGINT/SIGTERM, then drains
+	// gracefully within the configured 15s shutdown timeout. A second signal
+	// during shutdown force-kills the process.
 	logger.Info("starting application",
 		"app", appCfg.Name,
 		"env", appCfg.Environment,
 	)
 
-	return credo.RunWithSignals(app, 15*time.Second)
+	return app.Run()
 }
 
 func main() {

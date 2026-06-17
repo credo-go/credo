@@ -61,26 +61,50 @@ Reports whether the server is in the `running` state.
 
 ### `app.Run() error`
 
-Compiles the handler chain, transitions to `running`, and starts an HTTP server.
-Server address is derived from framework-internal server config (host + port).
-Returns `nil` on graceful shutdown (via `Shutdown`), or an error if the server
-fails to start or is already running.
+Compiles the handler chain, transitions to `running`, and serves HTTP until an
+interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown bounded
+by `WithShutdownTimeout`. A second signal during shutdown force-kills the
+process — signal handling is reset the moment the first signal arrives. Server
+address is derived from framework-internal server config (host + port). Returns
+`nil` on graceful shutdown, or an error if the server fails to start or the app
+has already run.
+
+`Run` is the safe default for a process whose lifetime is the server's. For
+explicit lifecycle control — tests, embedding, caller-driven cancellation — use
+`RunContext`.
 
 ### `app.RunTLS(certFile, keyFile string) error`
 
-Same as `Run` but starts an HTTPS server. Server address from framework-internal server config.
+TLS sibling of `Run`: serves HTTPS under the same signal handling. The
+certificate and key are validated **before** the server starts accepting
+connections, so a bad key pair fails fast (state rolls back to `building`).
 
-### `app.Context() context.Context`
+### `app.RunContext(ctx context.Context) error`
 
-Returns the app-level context. Created at `Run()` time via
-`context.WithCancel(context.Background())`. Cancelled at the beginning of
-`Shutdown()`. Background services (workers, pub/sub, gRPC) should select on
-`ctx.Done()` to detect graceful shutdown.
+Like `Run` but installs **no** signal handler — cancellation is entirely the
+caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic
+`Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values but drops its
+cancellation (so an already-cancelled `ctx` still drains), bounded by
+`WithShutdownTimeout`. This is the entry point for tests, embedding, and
+tracing contexts.
 
-Returns `context.Background()` if `Run()` has not been called yet.
+### `app.RunTLSContext(ctx context.Context, certFile, keyFile string) error`
 
-For manual signal handling, use `signal.NotifyContext` with `app.Shutdown`.
-For the common case, use the convenience wrappers below.
+TLS sibling of `RunContext`: caller-driven cancellation, no signal handler. Same
+fail-fast certificate preflight as `RunTLS`.
+
+### `app.ServeContext(ctx context.Context, l net.Listener) error`
+
+Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The
+escape hatch for listeners the framework does not create itself — Unix sockets,
+a preconfigured test listener, H2C, or an externally managed listener.
+`ServeContext` takes ownership of `l` and closes it when the server stops
+(matching `net/http.Server.Serve` semantics). A nil listener returns an error.
+
+The app context (created at `Run`/`RunContext` time, cancelled at the start of
+shutdown) is no longer exposed by a public accessor. Background services receive
+it through their `OnStart` hook's `ctx` parameter and select on `ctx.Done()` to
+detect graceful shutdown.
 
 ### `app.Addr() net.Addr`
 
@@ -103,6 +127,35 @@ Gracefully shuts down the server:
 
 The app context is cancelled **before** HTTP drain to give background services
 maximum lead time for shutdown.
+
+`Shutdown` is the single drain mechanism shared by every entry point. The
+signal-triggered drain of `Run`/`RunTLS` and the cancellation-triggered drain of
+`RunContext`/`RunTLSContext`/`ServeContext` run this exact sequence, made
+idempotent by the `running` → `stopping` CAS — a cancelled context racing a
+programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op).
+Idempotency comes from that one CAS, not a parallel `sync.Once`.
+
+#### Drain context derivation
+
+An explicit `Shutdown(ctx)` honours the caller's `ctx` deadline as-is. Signal-
+and cancellation-triggered drains instead derive a bounded context from
+`WithShutdownTimeout` (default 30s):
+
+| Trigger | Drain context |
+|---------|---------------|
+| Signal (`Run`, `RunTLS`) | `context.Background()` + `WithShutdownTimeout` |
+| Context cancel (`RunContext`, `RunTLSContext`, `ServeContext`) | `context.WithoutCancel(ctx)` + `WithShutdownTimeout` — keeps caller values, drops cancellation |
+| Explicit `Shutdown(ctx)` | the caller's `ctx`, unchanged |
+
+#### Single-use App
+
+An App is single-use: `New → Run → Shutdown → discard`. Once it reaches
+`stopping`/`stopped`, any further `Run`/`RunContext`/`RunTLS`/`RunTLSContext`/
+`ServeContext` call returns an error
+(`app cannot be run after shutdown; create a new App`). Tests that need a fresh
+server create a new `App` with `New()`. Re-run is intentionally unsupported:
+background components (e.g. `worker.Pool`) latch a started flag and would not
+reset cleanly on a second run.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
@@ -129,19 +182,13 @@ Registers a shutdown hook. Hooks are called in LIFO order during `Shutdown`.
 The `ctx` parameter carries the shutdown deadline from `Shutdown(ctx)`.
 Must be called before `compile()` (panics if frozen).
 
-### `credo.RunWithSignals(app *App, timeout time.Duration, signals ...os.Signal) error`
+### `credo.WithShutdownTimeout(d time.Duration) Option`
 
-Convenience wrapper: starts the HTTP server, blocks until a signal is received,
-then calls `app.Shutdown` with a deadline context derived from `timeout`.
-
-- Default signals (when none provided): `os.Interrupt` + `syscall.SIGTERM`
-- If `app.Run()` fails before a signal, the error is returned immediately.
-- A second signal terminates the process (signal handling is reset after the
-  first signal).
-
-### `credo.RunTLSWithSignals(app *App, certFile, keyFile string, timeout time.Duration, signals ...os.Signal) error`
-
-TLS variant of `RunWithSignals`. Same behavior, uses `app.RunTLS` internally.
+Construction option (passed to `New`) setting the graceful-shutdown drain budget
+for the signal-aware `Run`/`RunTLS` and the cancellation-triggered
+`RunContext`/`RunTLSContext`/`ServeContext`. Zero (the default) applies 30s. An
+explicit `Shutdown(ctx)` ignores it and honours the caller's deadline instead.
+Also settable via the `server.shutdown_timeout` config key.
 
 ## Registration Guards
 

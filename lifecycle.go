@@ -57,25 +57,6 @@ func (app *App) IsRunning() bool {
 	return appState(app.state.Load()) == stateRunning
 }
 
-// Context returns the app-level context. This context is created when Run
-// is called and cancelled at the beginning of Shutdown. Background services
-// (cron jobs, pub/sub subscribers, gRPC servers) should select on
-// ctx.Done() to detect graceful shutdown.
-//
-// WARNING: Context must be called after Run. Before Run returns (or from
-// another goroutine before Run is invoked), Context returns
-// context.Background(), which is never cancelled. Goroutines that capture
-// this pre-run value will not receive the shutdown signal.
-func (app *App) Context() context.Context {
-	app.serverMu.Lock()
-	ctx := app.ctx
-	app.serverMu.Unlock()
-	if ctx != nil {
-		return ctx
-	}
-	return context.Background()
-}
-
 // OnShutdown registers a function to be called during graceful shutdown.
 // Hooks are called in LIFO order (last registered, first called).
 // The ctx passed to each hook carries the shutdown deadline from Shutdown(ctx).

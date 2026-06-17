@@ -2,6 +2,10 @@
 
 **Status:** Accepted
 **Date:** 2026-03-01
+**Revised:** 2026-06-18 — context-aware run APIs (`RunContext`, `RunTLSContext`,
+`ServeContext`), signal-aware `Run`/`RunTLS` default, `WithShutdownTimeout`,
+`App.Context()` accessor removed, single-use App; `RunWithSignals` /
+`RunTLSWithSignals` removed.
 **Depends on:** ADR-001
 
 ## Context
@@ -41,43 +45,50 @@ no mutex on the hot path.
 ### API
 
 ```go
-app.Run()                                  // Start HTTP (addr from server config)
-app.RunTLS(certFile, keyFile)              // Start HTTPS
+app.Run()                                  // Serve HTTP; block on SIGINT/SIGTERM, then drain
+app.RunTLS(certFile, keyFile)              // Serve HTTPS; same signal handling
+app.RunContext(ctx)                        // Serve HTTP; caller-driven cancellation, no signals
+app.RunTLSContext(ctx, certFile, keyFile)  // Serve HTTPS; caller-driven cancellation
+app.ServeContext(ctx, l)                   // Serve on a caller-provided net.Listener
 app.Shutdown(ctx)                          // Graceful shutdown with deadline
 app.State() string                         // Current state name
 app.IsRunning() bool                       // Convenience check
-app.Context() context.Context              // App-level context
 app.Addr() net.Addr                        // Actual bound address (nil before Run)
-app.OnStart(fn func(ctx context.Context) error)    // FIFO startup hook
+app.OnStart(fn func(ctx context.Context) error)     // FIFO startup hook
 app.OnShutdown(fn func(ctx context.Context) error)  // LIFO shutdown hook
 
-// Convenience (package-level):
-credo.RunWithSignals(app, timeout, signals...)                    // Run + signal + Shutdown
-credo.RunTLSWithSignals(app, cert, key, timeout, signals...)     // RunTLS + signal + Shutdown
+// Construction option:
+credo.WithShutdownTimeout(d)               // Drain budget for signal/cancel shutdown (default 30s)
 ```
 
 ### App Context
 
-`app.Context()` returns an app-level context created at `Run()` and
-cancelled at the **beginning** of `Shutdown()`. Background services select
-on `ctx.Done()` to detect shutdown:
+The app-level context is created at `Run()`/`RunContext()` and cancelled at the
+**beginning** of `Shutdown()`. There is **no** public `Context()` accessor: the
+previous nullable accessor returned `context.Background()` before `Run`, a silent
+dead zone for any goroutine that captured it too early. Background services
+receive the context through their `OnStart` hook's `ctx` parameter and select on
+`ctx.Done()` to detect shutdown:
 
 ```go
-go func() {
-    ctx := app.Context()
-    for {
-        select {
-        case <-ctx.Done():
-            return
-        case msg := <-subscriber.Messages():
-            process(msg)
+app.OnStart(func(ctx context.Context) error {
+    go func() {
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case msg := <-subscriber.Messages():
+                process(msg)
+            }
         }
-    }
-}()
+    }()
+    return nil
+})
 ```
 
-Before `Run()` returns, `Context()` returns `context.Background()`
-(never cancelled) to avoid nil panics.
+Removing the accessor makes the dead zone structurally unreachable: there is no
+pre-`Run` context to capture. (A dedicated background-service abstraction that
+receives this context directly is planned.)
 
 ### Startup Sequence
 
@@ -150,7 +161,11 @@ conditions from concurrent registration during serving.
 
 | Decision | Rationale |
 |----------|-----------|
-| Optional signal handling | Credo is a library — signal handling defaults to the caller. `RunWithSignals` / `RunTLSWithSignals` provide an opt-in convenience wrapper |
+| Signal-aware `Run` default | `Run`/`RunTLS` handle SIGINT/SIGTERM and drain gracefully — the common case needs no boilerplate. `RunContext`/`RunTLSContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
+| `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, *before* the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
+| One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
+| Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
+| TLS cert preflight | `RunTLS`/`RunTLSContext` load the key pair before `stateRunning`, so a bad cert fails fast with listen-error rollback discipline |
 | No post-compile hook registration | Frozen guard prevents race conditions |
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
@@ -163,13 +178,14 @@ conditions from concurrent registration during serving.
 ## Consequences
 
 **Positive:**
+- Zero-boilerplate graceful shutdown: `Run` handles signals and drains within `WithShutdownTimeout`
 - Deterministic startup/shutdown sequence
-- Background services get clean shutdown signal via app context
+- Background services get clean shutdown signal via app context (delivered through `OnStart`)
 - LIFO hooks ensure correct resource cleanup order
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
 
 **Negative:**
-- Manual signal handling still needed for advanced cases (custom signal sets, multi-server coordination)
+- Advanced signal needs (custom signal sets, multi-server coordination) use `RunContext` with the caller's own `signal.NotifyContext` — the default `Run` covers SIGINT/SIGTERM
 - Sequential hooks may slow shutdown if a hook is slow (mitigate: deadline ctx)
 - No restart capability — must create new App after shutdown

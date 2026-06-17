@@ -33,6 +33,13 @@ type serverConfig struct {
 	// request headers.
 	ReadHeaderTimeout time.Duration `credo:"read_header_timeout"`
 
+	// ShutdownTimeout bounds graceful shutdown triggered by a signal
+	// (Run, RunTLS) or by context cancellation (RunContext, RunTLSContext):
+	// the drain has this long to finish before its deadline fires. Zero
+	// (the default) applies a 30s budget. An explicit Shutdown(ctx) call
+	// ignores this and honours the caller's context deadline instead.
+	ShutdownTimeout time.Duration `credo:"shutdown_timeout"`
+
 	// MaxHeaderBytes controls the maximum number of bytes the
 	// server will read parsing the request header's keys and values.
 	MaxHeaderBytes int `credo:"max_header_bytes"`
@@ -166,6 +173,17 @@ func WithMaxBodyBytes(n int64) Option {
 	return func(o *appOptions) { o.serverCfg.MaxBodyBytes = n }
 }
 
+// WithShutdownTimeout sets the graceful-shutdown drain budget used by the
+// signal-aware Run/RunTLS and by context-cancellation-triggered
+// RunContext/RunTLSContext. The drain (HTTP in-flight requests, DI singleton
+// cleanup, OnShutdown hooks) must complete within this duration. Zero (the
+// default) applies a 30s budget. An explicit Shutdown(ctx) call ignores this
+// and honours the caller's context deadline instead. Can also be set via the
+// server.shutdown_timeout config key.
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(o *appOptions) { o.serverCfg.ShutdownTimeout = d }
+}
+
 // buildServer creates an *http.Server from serverConfig.
 func buildServer(cfg serverConfig, handler http.Handler) *http.Server {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
@@ -189,6 +207,10 @@ const defaultReadHeaderTimeout = 10 * time.Second
 // config does not specify max_body_bytes, mitigating memory-exhaustion DoS.
 const defaultMaxBodyBytes = 4 << 20 // 4 MiB
 
+// defaultShutdownTimeout bounds graceful shutdown when none is configured,
+// matching the conventional 30s container stop-grace period.
+const defaultShutdownTimeout = 30 * time.Second
+
 // applyServerDefaults fills in safe defaults for server settings left at their
 // zero value (which would otherwise mean "no limit").
 func applyServerDefaults(c *serverConfig) {
@@ -197,6 +219,9 @@ func applyServerDefaults(c *serverConfig) {
 	}
 	if c.MaxBodyBytes == 0 {
 		c.MaxBodyBytes = defaultMaxBodyBytes
+	}
+	if c.ShutdownTimeout == 0 {
+		c.ShutdownTimeout = defaultShutdownTimeout
 	}
 }
 
@@ -216,6 +241,9 @@ func validateServerConfig(c *serverConfig) error {
 	}
 	if c.ReadHeaderTimeout < 0 {
 		return fmt.Errorf("credo: invalid ReadHeaderTimeout %v: must not be negative", c.ReadHeaderTimeout)
+	}
+	if c.ShutdownTimeout < 0 {
+		return fmt.Errorf("credo: invalid ShutdownTimeout %v: must not be negative", c.ShutdownTimeout)
 	}
 	if c.MaxHeaderBytes < 0 {
 		return fmt.Errorf("credo: invalid MaxHeaderBytes %d: must not be negative", c.MaxHeaderBytes)

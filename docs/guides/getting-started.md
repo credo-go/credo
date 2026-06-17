@@ -488,8 +488,9 @@ func main() {
         return nil
     })
 
-    // Blocks until SIGINT/SIGTERM, then shuts down with 15s deadline.
-    if err := credo.RunWithSignals(app, 15*time.Second); err != nil {
+    // Run blocks until SIGINT/SIGTERM, then drains gracefully (default 30s;
+    // pass credo.WithShutdownTimeout to New to change the budget).
+    if err := app.Run(); err != nil {
         log.Fatal(err)
     }
 }
@@ -552,7 +553,6 @@ package main
 import (
     "log"
     "net/http"
-    "time"
 
     "github.com/credo-go/credo"
     "github.com/credo-go/credo/middleware"
@@ -619,8 +619,8 @@ func main() {
     app.GET("/items", svc.List)
     app.POST("/items", svc.Create)
 
-    // Run with graceful shutdown (SIGINT/SIGTERM, 10s deadline).
-    if err := credo.RunWithSignals(app, 10*time.Second); err != nil {
+    // Run blocks until SIGINT/SIGTERM, then drains gracefully.
+    if err := app.Run(); err != nil {
         log.Fatal(err)
     }
 }
