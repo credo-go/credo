@@ -167,6 +167,13 @@ func (app *App) livenessHandler(ctx *Context) error {
 // Check error strings are masked unless HealthConfig.ExposeErrors is set;
 // failures are logged instead.
 func (app *App) readinessHandler(ctx *Context) error {
+	// During graceful shutdown, report unready immediately so load balancers
+	// stop routing to this instance. Liveness stays up — the process is alive,
+	// it is just no longer accepting new work.
+	if app.draining.Load() {
+		return ctx.Response().JSON(http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
+	}
+
 	status, checks, stores := app.healthEngine.checkReadiness(ctx.Request().Context(), app.storeHealthFunc())
 	code := http.StatusOK
 	if status != "up" {

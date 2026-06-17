@@ -97,6 +97,14 @@ explicit false.
 
 Status codes: 200 for "up", 503 for "down".
 
+### Graceful Shutdown
+
+When the application begins graceful shutdown, `/ready` immediately returns 503
+with `{"status": "shutting_down"}` — before in-flight requests are drained — so
+load balancers stop routing to the instance. Liveness (`/health`) stays 200: the
+process is alive and draining, and must not be killed mid-drain. See
+[ADR-006](006-application-lifecycle.md) for the full shutdown sequence.
+
 ### Store Integration
 
 `store.Register[R]()` calls `app.SetHealthStoreFunc()` to wire

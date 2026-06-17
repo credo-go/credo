@@ -5,7 +5,8 @@
 **Revised:** 2026-06-18 — context-aware run APIs (`RunContext`, `RunTLSContext`,
 `ServeContext`), signal-aware `Run`/`RunTLS` default, `WithShutdownTimeout`,
 `App.Context()` accessor removed, single-use App; `RunWithSignals` /
-`RunTLSWithSignals` removed.
+`RunTLSWithSignals` removed. Readiness reports unready at the start of graceful
+shutdown.
 **Depends on:** ADR-001
 
 ## Context
@@ -109,12 +110,13 @@ to `building`, the listener is closed, and `Run` returns the error.
 
 ```
 1. CAS running → stopping
-2. Cancel app context (signals background services)
-3. HTTP server drain (srv.Shutdown(ctx))
-4. DI container shutdown (reverse-order singleton cleanup)
-5. OnShutdown hooks in LIFO order (last registered, first called)
-6. Clear bound address
-7. Store state = stopped
+2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
+3. Cancel app context (signals background services)
+4. HTTP server drain (srv.Shutdown(ctx))
+5. DI container shutdown (reverse-order singleton cleanup)
+6. OnShutdown hooks in LIFO order (last registered, first called)
+7. Clear bound address
+8. Store state = stopped
 ```
 
 All errors are collected via `errors.Join` — no early return.
@@ -166,6 +168,8 @@ conditions from concurrent registration during serving.
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
 | TLS cert preflight | `RunTLS`/`RunTLSContext` load the key pair before `stateRunning`, so a bad cert fails fast with listen-error rollback discipline |
+| Readiness unready on shutdown | Drain step 0 flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
+| Lifecycle-`Service` abstraction deferred | Background work uses `OnStart` + `Shutdowner` today (`worker.Pool`). A public `Service` interface with a guaranteed services-before-infra drain waits for in-tree consumers (gRPC/WS/pub-sub) — no speculative carriers pre-v1 |
 | No post-compile hook registration | Frozen guard prevents race conditions |
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
@@ -179,6 +183,7 @@ conditions from concurrent registration during serving.
 
 **Positive:**
 - Zero-boilerplate graceful shutdown: `Run` handles signals and drains within `WithShutdownTimeout`
+- Readiness flips to 503 at shutdown start, so load balancers drain the instance before it stops accepting
 - Deterministic startup/shutdown sequence
 - Background services get clean shutdown signal via app context (delivered through `OnStart`)
 - LIFO hooks ensure correct resource cleanup order

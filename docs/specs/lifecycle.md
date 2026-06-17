@@ -117,13 +117,15 @@ Returns `nil` before `Run()` or after `Shutdown()`.
 Gracefully shuts down the server:
 
 1. Transitions from `running` → `stopping` (CAS; error if not running).
-2. Cancels app context — signals background services to shut down.
-3. Drains in-flight HTTP requests via `http.Server.Shutdown(ctx)`.
-4. Shuts down DI container singletons via `container.Shutdown(ctx)`.
-5. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
-6. Collects all errors via `errors.Join`.
-7. Clears bound address (`Addr()` returns nil).
-8. Transitions to `stopped`.
+2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so
+   load balancers stop routing here before the drain. Liveness stays up.
+3. Cancels app context — signals background services to shut down.
+4. Drains in-flight HTTP requests via `http.Server.Shutdown(ctx)`.
+5. Shuts down DI container singletons via `container.Shutdown(ctx)`.
+6. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
+7. Collects all errors via `errors.Join`.
+8. Clears bound address (`Addr()` returns nil).
+9. Transitions to `stopped`.
 
 The app context is cancelled **before** HTTP drain to give background services
 maximum lead time for shutdown.
@@ -156,6 +158,22 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches
 server create a new `App` with `New()`. Re-run is intentionally unsupported:
 background components (e.g. `worker.Pool`) latch a started flag and would not
 reset cleanly on a second run.
+
+#### Background services and shutdown ordering
+
+Background work is wired through the existing primitives: a component starts in
+an `OnStart` hook (receiving the app context) and stops by implementing
+`Shutdowner`, so the DI container drains it during the container-shutdown step.
+The `worker.Pool` follows exactly this pattern.
+
+A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with a
+guaranteed *services-drain-before-infrastructure* phase (so a worker can still
+reach the database while it winds down) and a restartable/start-once taxonomy —
+is deliberately **deferred** until there are in-tree consumers (gRPC server,
+WebSocket hub, pub/sub subscriber). Introducing that public surface now, for
+packages that are still placeholders, would be the kind of speculative carrier
+the framework avoids pre-v1. Until then, services-before-infra ordering within
+the container step follows reverse registration order.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 

@@ -65,6 +65,11 @@ type App struct {
 	// state tracks the lifecycle: building → running → stopping → stopped.
 	state atomic.Uint32
 
+	// draining reports that graceful shutdown has begun. Set once at the start
+	// of shutdown and read by the readiness handler, which then reports the
+	// instance as unready so load balancers stop routing before the HTTP drain.
+	draining atomic.Bool
+
 	// server holds the *http.Server created by Run/RunTLS.
 	server *http.Server
 

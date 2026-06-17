@@ -302,6 +302,11 @@ func (app *App) initiateShutdown(ctx context.Context) error {
 		return errShutdownNotRunning
 	}
 
+	// Phase 0: stop reporting ready so load balancers drain this instance
+	// before it stops accepting connections. Liveness stays up — the process
+	// is alive, just no longer taking new work.
+	app.draining.Store(true)
+
 	var errs []error
 
 	// Read cancel and server under the same lock that serve() wrote them.
