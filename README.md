@@ -88,7 +88,7 @@ Credo positions config as a startup-time snapshot, not a runtime service. String
 
 ```go
 type DatabaseConfig struct {
-    DSN string `credo:"dsn"`
+    DSN string
 }
 
 func SetupDatabase(app *credo.App, rawCfg credo.RawConfig) error {
@@ -99,6 +99,8 @@ func SetupDatabase(app *credo.App, rawCfg credo.RawConfig) error {
     return credo.ProvideValue(app, &cfg)
 }
 ```
+
+Field names map to snake_case config keys automatically, so struct tags are optional — add a `credo:"..."` tag only when the key differs from the field's snake_case name.
 
 ## Dependency Injection
 

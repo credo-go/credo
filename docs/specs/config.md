@@ -30,7 +30,7 @@ Business code accesses config as typed structs via DI. String keys in business c
 2. **Deterministic precedence**: Later sources always override earlier ones.
 3. **Zero-Config Local DX**: Automatic file discovery and silent `.env` ignore if missing.
 4. **Explicit Production Intent**: Surface errors if a custom `CREDO_ENV_FILE` is specified but missing.
-5. **Credo Branding**: Use `credo` struct tags for explicit mappings. `MapFieldName` auto-converts PascalCase to snake_case, making tags optional for standard field names.
+5. **Tagless by Default**: `MapFieldName` auto-converts PascalCase field names to snake_case, so config structs need no tags for standard names. The `credo` struct tag is an escape hatch for non-standard mappings — used only when the desired key differs from the field's snake_case name.
 6. **Source-appropriate normalization**: `.env` files and process env vars share the same key normalization (lowercase + `__` → `.`), but `.env` files do not require a prefix — they are project-scoped and need no namespace isolation. Process env vars are prefix-filtered to avoid collisions with system variables.
 
 ---
@@ -162,25 +162,25 @@ For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-c
 
 ## Key Model & Env Normalization
 
-- **Struct Tags**: Use the `credo` tag for explicit key mapping. Example: `credo:"read_timeout"`
-- **`MapFieldName` (auto-conversion)**: The decoder uses a `MapFieldName` function that converts PascalCase struct field names to snake_case before looking up config keys. This makes `credo` tags optional for standard field names:
+- **`MapFieldName` (auto-conversion, the default)**: The decoder converts PascalCase struct field names to snake_case before looking up config keys, so **struct tags are optional**. Field names alone resolve to the right keys:
 
-  | Field Name    | Auto Key       | Explicit Tag (if needed) |
-  | ------------- | -------------- | ------------------------ |
-  | `MaxOpen`     | `max_open`     | `credo:"max_open"`       |
-  | `SSLMode`     | `ssl_mode`     | `credo:"ssl_mode"`       |
-  | `APIKey`      | `api_key`      | `credo:"api_key"`        |
-  | `ReadTimeout` | `read_timeout` | `credo:"read_timeout"`   |
-  | `Port`        | `port`         | `credo:"port"`           |
+  | Field Name    | Auto Key       |
+  | ------------- | -------------- |
+  | `MaxOpen`     | `max_open`     |
+  | `SSLMode`     | `ssl_mode`     |
+  | `APIKey`      | `api_key`      |
+  | `ReadTimeout` | `read_timeout` |
+  | `Port`        | `port`         |
 
-  Explicit `credo` tags always take precedence over `MapFieldName` and can be used for documentation or non-standard mappings.
+- **Struct Tags (escape hatch)**: Add a `credo` tag only when the desired key **differs** from the field's snake_case name — for example, remapping to a vendor or legacy key, or a nested path. Explicit tags always take precedence over `MapFieldName`.
 
   ```go
   type AppConfig struct {
-      Port    int                       // auto: "port"
-      Debug   bool                      // auto: "debug"
-      APIKey  string                    // auto: "api_key"
-      MaxOpen int    `credo:"max_open"`  // explicit (same result, self-documenting)
+      Port   int    // auto → "port"
+      Debug  bool   // auto → "debug"
+      APIKey string // auto → "api_key"
+
+      Region string `credo:"aws_region"` // tag → key "aws_region", not "region"
   }
   ```
 

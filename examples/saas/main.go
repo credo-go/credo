@@ -36,23 +36,26 @@ import (
 
 // AppConfig holds user-defined application settings.
 type AppConfig struct {
-	Name        string `credo:"name"`
-	Environment string `credo:"environment"`
-	Debug       bool   `credo:"debug"`
+	Name        string
+	Environment string
+	Debug       bool
 }
 
-// DatabaseConfig holds database connection settings.
+// DatabaseConfig holds database connection settings. Field names map to
+// snake_case config keys automatically (e.g. MaxOpen → "max_open",
+// SSLMode → "ssl_mode"); a credo:"..." tag is only needed when the desired
+// key differs from the field's snake_case name.
 type DatabaseConfig struct {
-	Driver      string        `credo:"driver"`
-	Host        string        `credo:"host"`
-	Port        int           `credo:"port"`
-	Name        string        `credo:"name"`
-	User        string        `credo:"user"`
-	Password    string        `credo:"password"`
-	MaxOpen     int           `credo:"max_open"`
-	MaxIdle     int           `credo:"max_idle"`
-	MaxLifetime time.Duration `credo:"max_lifetime"`
-	SSLMode     string        `credo:"ssl_mode"`
+	Driver      string
+	Host        string
+	Port        int
+	Name        string
+	User        string
+	Password    string
+	MaxOpen     int
+	MaxIdle     int
+	MaxLifetime time.Duration
+	SSLMode     string
 }
 
 func (c DatabaseConfig) DSN() string {

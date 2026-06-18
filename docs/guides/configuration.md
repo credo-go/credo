@@ -157,13 +157,13 @@ CREDO_ENV_FILE=/etc/myapp/.env ./myapp
 
 ## Typed Config + DI
 
-The primary pattern is to unmarshal config once at the module boundary, then inject the typed struct via DI:
+The primary pattern is to unmarshal config once at the module boundary, then inject the typed struct via DI. Field names map to snake_case config keys automatically (e.g. `MaxOpen` → `max_open`), so struct tags are optional — add a `credo:"..."` tag only when the key differs from the field's snake_case name:
 
 ```go
 type DatabaseConfig struct {
-    Host     string        `credo:"host"`
-    Port     int           `credo:"port"`
-    MaxOpen  int           `credo:"max_open"`
+    Host    string
+    Port    int
+    MaxOpen int
 }
 
 func main() {
@@ -250,8 +250,8 @@ If your config struct implements `Validate() error`, it is called automatically 
 
 ```go
 type DatabaseConfig struct {
-    Host string `credo:"host"`
-    Port int    `credo:"port"`
+    Host string
+    Port int
 }
 
 func (c *DatabaseConfig) Validate() error {

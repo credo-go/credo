@@ -81,12 +81,12 @@ Credo auto-discovers `config.json` / `config.yaml` in the working directory, mer
 }
 ```
 
-Access config by unmarshalling into typed structs at the module boundary:
+Access config by unmarshalling into typed structs at the module boundary. Field names map to snake_case config keys automatically, so struct tags are optional:
 
 ```go
 type AppConfig struct {
-    Name  string `credo:"name"`
-    Debug bool   `credo:"debug"`
+    Name  string
+    Debug bool
 }
 
 rc := credo.MustResolve[credo.RawConfig](app)

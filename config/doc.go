@@ -17,8 +17,8 @@
 // # Quick Start
 //
 //	type AppConfig struct {
-//	    Port  int    `credo:"server.port"`
-//	    Debug bool   `credo:"debug"`
+//	    Debug bool                      // auto-mapped to key "debug"
+//	    Port  int `credo:"server.port"` // tag maps to the nested key "server.port"
 //	}
 //
 //	c, err := config.Load()

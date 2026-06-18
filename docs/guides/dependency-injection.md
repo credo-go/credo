@@ -77,7 +77,7 @@ import (
 )
 
 type DatabaseConfig struct {
-    DSN string `credo:"dsn"`
+    DSN string
 }
 
 type User struct {
