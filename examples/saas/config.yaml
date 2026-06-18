@@ -2,7 +2,7 @@
 #
 # Section categories:
 #   [framework-read]  Automatically consumed by credo.New()
-#   [user-read]       Read via store.Unmarshal("key", &cfg) at module boundary, injected via DI
+#   [user-read]       Read via rawCfg.Unmarshal("key", &cfg) at module boundary, injected via DI
 #   [aspirational]    Config struct exists but is currently code-only; shown for reference
 #
 # Precedence (lowest to highest):
@@ -12,7 +12,7 @@
 
 # ---------------------------------------------------------------------------
 # Server [framework-read]
-# Automatically consumed by credo.New(credo.WithRawConfig(store)).
+# Automatically consumed by credo.New(credo.WithRawConfig(rawCfg)).
 # The "server" key is the ONLY section read by the framework itself.
 # ---------------------------------------------------------------------------
 server:
@@ -28,7 +28,7 @@ server:
 # Databases [user-read]
 # Named database connections using sqldb.Config (store/sqldb package).
 # Each entry is unmarshalled into sqldb.Config and registered via store.Register.
-# Usage:  store.Unmarshal("databases.default", &cfg)
+# Usage:  rawCfg.Unmarshal("databases.default", &cfg)
 # ---------------------------------------------------------------------------
 databases:
   default:
@@ -57,7 +57,7 @@ databases:
 # ---------------------------------------------------------------------------
 # i18n [user-read]
 # Internationalization settings for i18n.Setup().
-# Usage:  store.Unmarshal("i18n", &cfg)
+# Usage:  rawCfg.Unmarshal("i18n", &cfg)
 # ---------------------------------------------------------------------------
 i18n:
   dir: "locales/"
@@ -67,7 +67,7 @@ i18n:
 # Auth [user-read]
 # Authentication strategy settings. Function fields (Validator, KeyFunc,
 # ParseUser) are code-only and cannot appear in config files.
-# Usage:  store.Unmarshal("auth.jwt", &cfg)
+# Usage:  rawCfg.Unmarshal("auth.jwt", &cfg)
 # ---------------------------------------------------------------------------
 auth:
   jwt:
@@ -149,7 +149,7 @@ middleware:
 # ---------------------------------------------------------------------------
 # Application [user-read]
 # User-defined application settings, injected via DI.
-# Usage:  store.Unmarshal("app", &cfg)
+# Usage:  rawCfg.Unmarshal("app", &cfg)
 # ---------------------------------------------------------------------------
 app:
   name: "My SaaS App"

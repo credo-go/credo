@@ -11,17 +11,17 @@ import (
 // between the root package and the config package. This alias ensures that
 // credo.RawConfig continues to work seamlessly throughout the framework.
 //
-// RawConfig provides low-level access to the merged configuration store.
+// RawConfig provides low-level access to the merged configuration.
 // This is a bootstrap mechanism — application code should use typed config
 // structs injected via DI instead of calling RawConfig directly.
 //
 // Unmarshal decodes both struct sections and primitive values:
 //
 //	var port int
-//	store.Unmarshal("server.port", &port)
+//	rawCfg.Unmarshal("server.port", &port)
 //
 //	var dbCfg DatabaseConfig
-//	store.Unmarshal("databases.default", &dbCfg)
+//	rawCfg.Unmarshal("databases.default", &dbCfg)
 type RawConfig = config.RawConfig
 
 // Shutdowner is implemented by services that need cleanup on shutdown.

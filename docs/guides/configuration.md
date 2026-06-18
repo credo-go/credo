@@ -26,11 +26,11 @@ This discovers `config.json`, `config.yaml`, or `config.yml` in the working dire
 Credo does not expose root-level file options such as `credo.WithConfigFiles`. When you want explicit file control, load config yourself and pass the result to `credo.New`:
 
 ```go
-store, err := config.Load(config.WithFiles("myconfig.json"))
+rawCfg, err := config.Load(config.WithFiles("myconfig.json"))
 if err != nil {
     log.Fatal(err)
 }
-app, err := credo.New(credo.WithRawConfig(store))
+app, err := credo.New(credo.WithRawConfig(rawCfg))
 ```
 
 Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path. The provided `RawConfig` is registered in DI as-is, while framework server settings are still read from its `"server"` section when present.
@@ -44,11 +44,11 @@ import "github.com/credo-go/credo/config"
 var configData []byte
 
 func main() {
-    store, err := config.LoadBytes(configData, config.FormatJSON)
+    rawCfg, err := config.LoadBytes(configData, config.FormatJSON)
     if err != nil {
         log.Fatal(err)
     }
-    app, err := credo.New(credo.WithRawConfig(store))
+    app, err := credo.New(credo.WithRawConfig(rawCfg))
     // ...
 }
 ```
@@ -120,7 +120,7 @@ Env-specific file derivation works in both discovery and explicit mode. In expli
 
 ```go
 // With CREDO_ENV=production (from process env or .env):
-store, err := config.Load(config.WithFiles("myapp.yaml"))
+rawCfg, err := config.Load(config.WithFiles("myapp.yaml"))
 // Loads: myapp.yaml (required) + myapp.production.yaml (optional overlay)
 ```
 
@@ -131,7 +131,7 @@ store, err := config.Load(config.WithFiles("myapp.yaml"))
 By default, Credo looks for `.env` in the working directory. For deployments where the binary runs from a different directory, use `WithDotenvPath`:
 
 ```go
-store, err := config.Load(
+rawCfg, err := config.Load(
     config.WithDotenvPath("/etc/myapp/.env"),
 )
 ```
@@ -139,7 +139,7 @@ store, err := config.Load(
 `WithDotenvPath` takes precedence over the `CREDO_ENV_FILE` environment variable. A missing file at the specified path is an error. To downgrade the missing-file error to a warning, combine with `WithDotenvOptional()`:
 
 ```go
-store, err := config.Load(
+rawCfg, err := config.Load(
     config.WithDotenvPath("/etc/myapp/.env"),
     config.WithDotenvOptional(),
 )

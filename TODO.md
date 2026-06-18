@@ -224,7 +224,7 @@
 
 **App Config Bootstrap** — [ADR-005](docs/adr/005-configuration-architecture.md), [ADR-006](docs/adr/006-application-lifecycle.md)
 
-- [x] `credo.New(credo.WithRawConfig(store))` — functional options, RawConfig auto-registered in DI
+- [x] `credo.New(credo.WithRawConfig(rawCfg))` — functional options, RawConfig auto-registered in DI
 - [x] Server config (host, port, timeouts) framework-internal — no user-facing CoreConfig
 - [x] `Run()` / `Shutdown()` / `RunTLS()` lifecycle
 - [x] `config.Load(opts...)` returns `credo.RawConfig`

@@ -262,19 +262,19 @@ func requireRole(role string) credo.Middleware {
 
 func run() error {
 	// 1. Load configuration (YAML/JSON file + .env + env vars)
-	store, err := config.Load()
+	rawCfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
 	}
 
 	// 2. Extract typed configs at module boundary
 	var appCfg AppConfig
-	if err := store.Unmarshal("app", &appCfg); err != nil {
+	if err := rawCfg.Unmarshal("app", &appCfg); err != nil {
 		return fmt.Errorf("unmarshal app config: %w", err)
 	}
 
 	var dbCfg DatabaseConfig
-	if err := store.Unmarshal("database", &dbCfg); err != nil {
+	if err := rawCfg.Unmarshal("database", &dbCfg); err != nil {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 
@@ -287,7 +287,7 @@ func run() error {
 
 	// 4. Create app with config and logger
 	app, err := credo.New(
-		credo.WithRawConfig(store),
+		credo.WithRawConfig(rawCfg),
 		credo.WithLogger(logger),
 		credo.WithShutdownTimeout(15*time.Second),
 	)

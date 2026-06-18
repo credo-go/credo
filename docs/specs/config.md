@@ -45,7 +45,7 @@ Configuration merges in this order (lowest to highest priority):
    - **Explicit mode**: derived from each specified file by inserting `.{env}` before the extension (e.g., `myapp.yaml` → `myapp.production.yaml`). Derived files are optional — missing files are silently skipped.
    - `CREDO_ENV` can be set via process environment variable or in the `.env` file. Process env takes precedence.
 3. **.env file**: Resolved via `CREDO_ENV_FILE` or default `.env`. All entries are loaded (no prefix filtering). Keys are normalized using the same lowercase + `__` → `.` pipeline (see [Key Model & Env Normalization](#key-model--env-normalization)).
-4. **Process environment variables**: Prefixed (default `CREDO_*`, overridable via `WithPrefix()`). Only variables matching the active prefix are loaded. Bootstrap environment variables (`CREDO_ENV_FILE`, `CREDO_ENV`) are always excluded from the merged configuration store.
+4. **Process environment variables**: Prefixed (default `CREDO_*`, overridable via `WithPrefix()`). Only variables matching the active prefix are loaded. Bootstrap environment variables (`CREDO_ENV_FILE`, `CREDO_ENV`) are always excluded from the merged configuration.
 
 Later sources override earlier sources on key conflicts.
 
@@ -70,8 +70,8 @@ To load specific files (bypassing discovery), use `WithFiles("path/to/myconfig.j
 
 - **Case 1: `CREDO_ENV_FILE` is set**: Credo attempts to load the file from the specified path. If the file is missing, `config.Load` returns an error (explicit intent).
 - **Case 2: `CREDO_ENV_FILE` is NOT set**: Credo attempts to load `.env` from the current working directory. If missing, it is silently ignored (zero-config local DX).
-- **Bootstrap key stability**: `CREDO_ENV_FILE` and `CREDO_ENV` are fixed bootstrap key names. They are intentionally not affected by `WithPrefix()` — bootstrap behavior is Credo's own concern, not the application's. They control loading behavior only and are never merged into the configuration store.
-- **Single-pass `.env` read**: The `.env` file is read and parsed exactly once per `Load`. `CREDO_ENV` is taken from the parsed pairs _before_ config files load (enabling `.env`-based environment selection), while the pairs themselves are merged into the store _after_ config files — so the precedence chain is unchanged. Process env var `CREDO_ENV` always takes precedence over the `.env` value. Because the read happens up front, `.env` errors (missing explicit file, parse failure) surface before config-file errors.
+- **Bootstrap key stability**: `CREDO_ENV_FILE` and `CREDO_ENV` are fixed bootstrap key names. They are intentionally not affected by `WithPrefix()` — bootstrap behavior is Credo's own concern, not the application's. They control loading behavior only and are never merged into the config tree.
+- **Single-pass `.env` read**: The `.env` file is read and parsed exactly once per `Load`. `CREDO_ENV` is taken from the parsed pairs _before_ config files load (enabling `.env`-based environment selection), while the pairs themselves are merged into the config tree _after_ config files — so the precedence chain is unchanged. Process env var `CREDO_ENV` always takes precedence over the `.env` value. Because the read happens up front, `.env` errors (missing explicit file, parse failure) surface before config-file errors.
 
 ### .env Prefix Policy
 
@@ -101,7 +101,7 @@ export CREDO_DEBUG=true
 ### config.Load() — Primary Entry Point
 
 ```go
-store, err := config.Load(opts...) // returns (credo.RawConfig, error)
+rawCfg, err := config.Load(opts...) // returns (credo.RawConfig, error)
 ```
 
 - Loads all sources (files, `.env`, env vars) and merges them.
@@ -132,7 +132,7 @@ Behavior contract:
 
 ### credo.New() Config Integration
 
-`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(store)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). No `app.Config()` accessor — typed config via DI only. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
+`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). No `app.Config()` accessor — typed config via DI only. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
 
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
@@ -194,14 +194,14 @@ For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-c
   - **Process env example**: `CREDO_SERVER__READ_TIMEOUT` → `server.read_timeout`
   - **.env example**: `SERVER__READ_TIMEOUT` → `server.read_timeout`
   - Both sources map to the same config keys; only the prefix handling differs.
-- **Dotted Keys**: Internal store uses dotted notation for nested lookups.
+- **Dotted Keys**: Internal config tree uses dotted notation for nested lookups.
 - **Map Key Constraint**: Map keys in `map[string]T` fields must **not** contain double underscores (`__`), as `__` is the nesting delimiter. A key like `my__db` would be misinterpreted as two nesting levels instead of a single map key. Use `_` or `-` instead (e.g., `my_db`, `read-replica`).
 
 ---
 
 ## Default Values
 
-`config.Load()` merges configuration sources into the internal store. `Unmarshal` merges into the provided struct, preserving fields not present in any source. This enables a clean default values pattern:
+`config.Load()` merges configuration sources into the internal config tree. `Unmarshal` merges into the provided struct, preserving fields not present in any source. This enables a clean default values pattern:
 
 ```go
 // 1. Define a factory that returns sensible defaults
@@ -268,7 +268,7 @@ The `config` package does not import `credo/validation`. The interface is checke
 
 ## Map[string]T Support (Dynamic Keys)
 
-Fields of type `map[string]T` are fully supported from all sources — config files, `.env`, and process env vars. The `__` delimiter creates nesting in the internal store, and map keys are resolved at the unmarshal step via mapstructure.
+Fields of type `map[string]T` are fully supported from all sources — config files, `.env`, and process env vars. The `__` delimiter creates nesting in the internal config tree, and map keys are resolved at the unmarshal step via mapstructure.
 
 **How it works**: Env vars like `CREDO_DATABASES__DEFAULT__HOST` are normalized to dotted keys (`databases.default.host`), unflattened into a nested `map[string]any`, and finally unmarshaled into `map[string]T` by mapstructure.
 

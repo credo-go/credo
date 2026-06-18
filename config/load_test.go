@@ -225,18 +225,18 @@ func TestGetReturnsCopies(t *testing.T) {
 	c := newConfig()
 	c.merge(map[string]any{"db": map[string]any{"host": "localhost"}})
 
-	// Mutating a sub-tree result must not affect the store.
+	// Mutating a sub-tree result must not affect the config tree.
 	got := c.get("db").(map[string]any)
 	got["host"] = "modified"
 	if c.get("db.host") != "localhost" {
-		t.Error("mutating get result affected the store")
+		t.Error("mutating get result affected the config tree")
 	}
 
-	// Mutating the full-tree result must not affect the store either.
+	// Mutating the full-tree result must not affect the config tree either.
 	root := c.get("").(map[string]any)
 	root["db"].(map[string]any)["host"] = "also-modified"
 	if c.get("db.host") != "localhost" {
-		t.Error("mutating full-tree result affected the store")
+		t.Error("mutating full-tree result affected the config tree")
 	}
 }
 

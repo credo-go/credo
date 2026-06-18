@@ -19,7 +19,7 @@ const (
 )
 
 // bootstrapKeys are framework-internal keys that control loading behavior
-// and must not leak into the configuration store.
+// and must not leak into the merged configuration.
 var bootstrapKeys = map[string]bool{
 	"CREDO_ENV":      true,
 	"CREDO_ENV_FILE": true,
@@ -35,7 +35,7 @@ var bootstrapKeys = map[string]bool{
 //
 // The .env file is read and parsed once: CREDO_ENV is taken from it before
 // file loading (the process environment wins), and its entries are merged
-// into the store after file loading.
+// into the config tree after file loading.
 //
 // Load is NOT concurrency-safe; call it once at startup.
 func Load(opts ...Option) (RawConfig, error) {
@@ -101,7 +101,7 @@ func parseConfig(data []byte, format string) (map[string]any, error) {
 
 // --- config files ---
 
-// loadFiles loads config files into the store. Both discovery mode
+// loadFiles loads config files into the config tree. Both discovery mode
 // (default) and explicit mode ([WithFiles]) merge env-specific files on
 // top of base files when env (the effective CREDO_ENV) is non-empty.
 func (c *Config) loadFiles(env string) error {
@@ -245,7 +245,7 @@ func (c *Config) readDotenv() (map[string]string, error) {
 	return pairs, nil
 }
 
-// mergeDotenv merges parsed .env pairs into the store. Keys are normalized
+// mergeDotenv merges parsed .env pairs into the config tree. Keys are normalized
 // (lowercase, "__" → "."); no prefix filtering is applied — .env files are
 // project-scoped and need no namespace isolation. Bootstrap keys
 // (CREDO_ENV, CREDO_ENV_FILE) are excluded.
@@ -268,7 +268,7 @@ func (c *Config) mergeDotenv(pairs map[string]string) {
 // --- process environment ---
 
 // mergeEnv merges process environment variables matching the configured
-// prefix into the store. The prefix is stripped and keys are normalized
+// prefix into the config tree. The prefix is stripped and keys are normalized
 // (lowercase, "__" → "."). Bootstrap keys are excluded.
 //
 //	CREDO_SERVER__PORT         → server.port

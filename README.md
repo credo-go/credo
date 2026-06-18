@@ -91,9 +91,9 @@ type DatabaseConfig struct {
     DSN string `credo:"dsn"`
 }
 
-func SetupDatabase(app *credo.App, store credo.RawConfig) error {
+func SetupDatabase(app *credo.App, rawCfg credo.RawConfig) error {
     var cfg DatabaseConfig
-    if err := store.Unmarshal("databases.default", &cfg); err != nil {
+    if err := rawCfg.Unmarshal("databases.default", &cfg); err != nil {
         return err
     }
     return credo.ProvideValue(app, &cfg)

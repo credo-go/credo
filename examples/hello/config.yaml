@@ -1,7 +1,7 @@
 # Minimal Credo configuration for a hello world app.
 # Only the server section is framework-read (consumed by credo.New automatically).
 # All other config sections follow the DI pattern:
-#   store.Unmarshal("section", &cfg) → credo.ProvideValue(app, &cfg)
+#   rawCfg.Unmarshal("section", &cfg) → credo.ProvideValue(app, &cfg)
 
 server:
   host: "0.0.0.0"

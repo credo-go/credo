@@ -494,12 +494,12 @@ Root package:
 
 ```go
 func main() {
-    store, err := config.Load()
+    rawCfg, err := config.Load()
     if err != nil {
         log.Fatal(err)
     }
 
-    app, err := credo.New(credo.WithRawConfig(store))
+    app, err := credo.New(credo.WithRawConfig(rawCfg))
     if err != nil {
         log.Fatal(err)
     }

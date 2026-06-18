@@ -202,10 +202,10 @@ func TestLoadExplicitFilesEmpty(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	// Store is empty, keyed Unmarshal should fail.
+	// Config is empty, keyed Unmarshal should fail.
 	var cfg testAppConfig
 	if err := c.Unmarshal("server", &cfg); err == nil {
-		t.Fatal("expected error for missing key on empty store")
+		t.Fatal("expected error for missing key on empty config")
 	}
 }
 
@@ -339,7 +339,7 @@ func TestUnmarshalKeyedPathValidation(t *testing.T) {
 	})
 
 	t.Run("keyed path validation fails", func(t *testing.T) {
-		// No config files loaded → store is empty.
+		// No config files loaded → config is empty.
 		emptyC, err := config.Load(
 			config.WithFiles(),
 			config.WithPrefix("NOTSET_"),
@@ -608,8 +608,8 @@ databases:
 	}
 }
 
-func TestUnmarshalEmptyStore(t *testing.T) {
-	// Unmarshal("", &cfg) on an empty store must return an error
+func TestUnmarshalEmptyConfig(t *testing.T) {
+	// Unmarshal("", &cfg) on an empty config must return an error
 	// instead of silently producing zero-value fields.
 	c, err := config.Load(
 		config.WithFiles(),
@@ -622,7 +622,7 @@ func TestUnmarshalEmptyStore(t *testing.T) {
 	var cfg testAppConfig
 	err = c.Unmarshal("", &cfg)
 	if err == nil {
-		t.Fatal("expected error for Unmarshal on empty store")
+		t.Fatal("expected error for Unmarshal on empty config")
 	}
 }
 
@@ -781,8 +781,8 @@ func TestLoadCascadeNoEnv(t *testing.T) {
 	}
 }
 
-func TestCREDO_ENV_ExcludedFromStore(t *testing.T) {
-	// CREDO_ENV should not leak into the config store as a key.
+func TestCREDO_ENV_ExcludedFromConfig(t *testing.T) {
+	// CREDO_ENV should not leak into the merged configuration as a key.
 	t.Setenv("CREDO_ENV", "production")
 
 	c, err := config.Load(config.WithFiles(), config.WithPrefix("CREDO_"))
@@ -791,7 +791,7 @@ func TestCREDO_ENV_ExcludedFromStore(t *testing.T) {
 	}
 
 	if c.Exists("env") {
-		t.Error("CREDO_ENV should be excluded from the config store")
+		t.Error("CREDO_ENV should be excluded from the merged configuration")
 	}
 }
 

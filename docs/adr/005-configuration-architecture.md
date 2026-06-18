@@ -34,7 +34,7 @@ Use of string keys in business code is documented as an **anti-pattern**.
 
 ### credo.New() Auto-Loads and Registers RawConfig
 
-`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(store)` to pass a pre-loaded config; doing so bypasses auto-load. `RawConfig` is always registered in the DI container. There is no `app.Config()` accessor.
+`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config; doing so bypasses auto-load. `RawConfig` is always registered in the DI container. There is no `app.Config()` accessor.
 
 Root-level file controls are deliberately not duplicated. Applications that need explicit file selection call `config.Load(config.WithFiles(...))` and pass the result with `WithRawConfig`. There is no `credo.WithConfigFiles` option. There is also no `WithoutAutoConfig`: a missing explicit `RawConfig` means "use Credo's default config discovery," which keeps the default all-in-one experience simple.
 
@@ -81,7 +81,7 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 - No global instance — multi-instance, independent Apps are safe
 - Server config is internal — user doesn't know CoreConfig, clean DX
 - `credo.New()` auto-loads config — zero-config works out of the box
-- `credo.New(WithRawConfig(store))` for explicit control — no risk of forgetting
+- `credo.New(WithRawConfig(rawCfg))` for explicit control — no risk of forgetting
 
 **Negative:**
 

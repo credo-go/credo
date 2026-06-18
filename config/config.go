@@ -12,24 +12,24 @@ import (
 // keyDelim is the fixed key path delimiter used throughout the config package.
 const keyDelim = "."
 
-// RawConfig provides low-level access to the merged configuration store.
+// RawConfig provides low-level access to the merged configuration.
 // This is a bootstrap mechanism — application code should use typed config
 // structs injected via DI instead of calling RawConfig directly.
 //
 // Unmarshal decodes both struct sections and primitive values:
 //
 //	var port int
-//	store.Unmarshal("server.port", &port)
+//	rawCfg.Unmarshal("server.port", &port)
 //
 //	var dbCfg DatabaseConfig
-//	store.Unmarshal("databases.default", &dbCfg)
+//	rawCfg.Unmarshal("databases.default", &dbCfg)
 type RawConfig interface {
 	// Unmarshal decodes the value or sub-tree at the given dotted key path
 	// into dst. dst must be a pointer (to a struct, map, slice, or primitive).
 	// Returns an error if the key does not exist or decoding fails.
 	Unmarshal(key string, dst any) error
 
-	// Exists reports whether the given key path exists in the config store.
+	// Exists reports whether the given key path exists in the merged configuration.
 	Exists(key string) bool
 }
 
@@ -133,14 +133,14 @@ func (c *Config) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// merge incorporates a string-keyed map layer into the store; values in m
+// merge incorporates a string-keyed map layer into the config tree; values in m
 // override existing ones, maps merge recursively.
 func (c *Config) merge(m map[string]any) {
 	mergeMaps(m, c.data)
 }
 
 // get returns the value at the given dotted key path, or nil if not found.
-// Map values are deep-copied to prevent mutation of the store's internal
+// Map values are deep-copied to prevent mutation of the config tree's internal
 // state. An empty key returns the entire nested tree.
 func (c *Config) get(key string) any {
 	if key == "" {
@@ -211,8 +211,8 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
-// Exists reports whether the given key path exists in the store. Dots in
-// the key always act as path separators.
+// Exists reports whether the given key path exists in the merged configuration.
+// Dots in the key always act as path separators.
 func (c *Config) Exists(key string) bool {
 	if c == nil || key == "" {
 		return false
@@ -245,11 +245,11 @@ func (c *Config) Unmarshal(key string, dst any) error {
 	if val == nil {
 		return fmt.Errorf("config: key %q not found", key)
 	}
-	// Guard against empty store for full-tree unmarshal. Without this,
+	// Guard against empty configuration for full-tree unmarshal. Without this,
 	// mapstructure would silently decode an empty map into zero-value fields.
 	if key == "" {
 		if m, ok := val.(map[string]any); ok && len(m) == 0 {
-			return fmt.Errorf("config: store is empty")
+			return fmt.Errorf("config: configuration is empty")
 		}
 	}
 	dec, err := c.newDecoder(dst)
