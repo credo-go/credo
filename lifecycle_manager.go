@@ -344,8 +344,11 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 		}
 	}
 
+	// Release the server-session references, mirroring the failure-path cleanup
+	// in serve(). The App is single-use, so nothing reads these after stopped;
+	// dropping them lets the closed server and cancelled context be collected.
 	lm.serverMu.Lock()
-	lm.boundAddr = nil
+	lm.ctx, lm.cancel, lm.server, lm.boundAddr = nil, nil, nil, nil
 	lm.serverMu.Unlock()
 
 	lm.state.Store(uint32(stateStopped))
