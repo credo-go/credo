@@ -80,6 +80,10 @@ func main() {
 
     // Server settings come from framework-internal server config.
     // Example: set `CREDO_SERVER__PORT=8080`.
+    //
+    // Run blocks until SIGINT/SIGTERM, then drains in-flight requests
+    // gracefully. For caller-driven cancellation (tests, custom signals),
+    // use app.RunContext(ctx) instead.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }

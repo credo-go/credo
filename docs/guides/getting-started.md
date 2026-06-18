@@ -500,35 +500,38 @@ OnStart hooks run after the port is bound (FIFO order). If any hook fails,
 the server does not start. `app.Addr()` is available inside hooks — useful
 when using port 0.
 
-For full control over signal handling, use `Run` + `Shutdown` directly:
+For full control over signal handling — a custom signal set, or coordinating
+shutdown across several servers — use `RunContext`, which installs **no** signal
+handler of its own. Cancel the context to trigger the same graceful drain
+(bounded by `WithShutdownTimeout`):
 
 ```go
 func main() {
     app, _ := credo.New()
 
-    sigCh := make(chan os.Signal, 1)
-    signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+    // The caller owns signals here. RunContext drains when ctx is cancelled;
+    // unlike Run it never installs its own handler.
+    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer stop()
 
-    errCh := make(chan error, 1)
-    go func() { errCh <- app.Run() }()
-
-    select {
-    case err := <-errCh:
+    if err := app.RunContext(ctx); err != nil {
         log.Fatal(err)
-    case <-sigCh:
-        ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-        defer cancel()
-        app.Shutdown(ctx)
     }
 }
 ```
 
+For programmatic shutdown — a test, or an admin endpoint — call
+`app.Shutdown(ctx)` from another goroutine; it runs the same drain and honours
+the deadline on the `ctx` you pass.
+
 Shutdown sequence:
 
-1. Cancel app context (signals background services)
-2. Drain in-flight HTTP requests
-3. DI Container shutdown (reverse-order singleton cleanup)
-4. OnShutdown hooks (LIFO)
+1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness
+   (`/health`) stays up, since the process is alive and draining
+2. Cancel app context (signals background services)
+3. Drain in-flight HTTP requests
+4. DI Container shutdown (reverse-order singleton cleanup)
+5. OnShutdown hooks (LIFO)
 
 Services that implement `credo.Shutdowner` are cleaned up automatically by
 the DI container. For components **not** managed by DI, use
