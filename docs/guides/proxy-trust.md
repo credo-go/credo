@@ -1,7 +1,6 @@
 # Proxy Trust
 
-Credo ignores forwarded client metadata by default. Configure trusted proxy CIDR
-ranges before using `X-Forwarded-*` or `X-Real-IP` values.
+Credo ignores forwarded client metadata by default. Configure trusted proxy CIDR ranges before using `X-Forwarded-*` or `X-Real-IP` values.
 
 ```go
 app, err := credo.New(credo.WithTrustedProxies(
@@ -23,8 +22,7 @@ server:
     - 192.168.0.0/16
 ```
 
-`WithTrustedProxies` overrides `server.trusted_proxies` when both are present.
-Invalid CIDR values make `credo.New()` return an error.
+`WithTrustedProxies` overrides `server.trusted_proxies` when both are present. Invalid CIDR values make `credo.New()` return an error.
 
 Use the request helpers everywhere application code needs client metadata:
 

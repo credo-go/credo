@@ -1,61 +1,36 @@
 # Pagination Spec
 
-**Status**: Planned
-**Package**: `pagination/` (core), adapter helper in `store/sqldb/`
-**Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
+**Status**: Planned **Package**: `pagination/` (core), adapter helper in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
 
 ---
 
 ## Canonical Source
 
-Implementation-level details for Credo's pagination abstraction are defined
-in this file. Other documents should keep only high-level references and link
-here.
+Implementation-level details for Credo's pagination abstraction are defined in this file. Other documents should keep only high-level references and link here.
 
 ---
 
 ## Overview
 
-The `pagination/` package provides generic, ORM-agnostic types and utilities
-for paginated API responses. Actual query execution (COUNT + LIMIT/OFFSET)
-lives in the ORM-specific adapter (`sqldb.Paginate` in `store/sqldb/`), keeping
-the core free of external dependencies.
+The `pagination/` package provides generic, ORM-agnostic types and utilities for paginated API responses. Actual query execution (COUNT + LIMIT/OFFSET) lives in the ORM-specific adapter (`sqldb.Paginate` in `store/sqldb/`), keeping the core free of external dependencies.
 
 Key design properties:
 
-- **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest` have zero ORM
-  dependencies. Only types, normalization, and sort validation.
-- **Adapter-level execution** — `sqldb.Paginate` / `sqldb.PaginateRequest`
-  in `store/sqldb/` handle the actual COUNT + LIMIT/OFFSET queries via Bun.
-- **No intermediate wrapper** — Adapter `Paginate` fills a `dest` slice and
-  returns `total int64`. `Page[T]` is constructed only once in the service
-  layer with the final DTO type. No model→DTO conversion step at the
-  pagination level. (`sqldb.PaginateRequest` is the deliberate exception
-  for flows that respond with the queried type directly — it returns a
-  ready `*Page[T]` built from a `PageRequest`.)
-- **Request binding** — `PageRequest` and `SortRequest` are embeddable structs
-  that work with `BindQuery` via `query:"..."` tags.
-- **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based
-  sort field validation. Only pre-approved DB columns can appear in ORDER BY.
+- **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest` have zero ORM dependencies. Only types, normalization, and sort validation.
+- **Adapter-level execution** — `sqldb.Paginate` / `sqldb.PaginateRequest` in `store/sqldb/` handle the actual COUNT + LIMIT/OFFSET queries via Bun.
+- **No intermediate wrapper** — Adapter `Paginate` fills a `dest` slice and returns `total int64`. `Page[T]` is constructed only once in the service layer with the final DTO type. No model→DTO conversion step at the pagination level. (`sqldb.PaginateRequest` is the deliberate exception for flows that respond with the queried type directly — it returns a ready `*Page[T]` built from a `PageRequest`.)
+- **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `BindQuery` via `query:"..."` tags.
+- **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based sort field validation. Only pre-approved DB columns can appear in ORDER BY.
 
 ---
 
 ## Goals
 
-1. **ORM-agnostic types**: `Page[T]`, `Meta`, `PageRequest` import only stdlib.
-   No GORM, Bun, or other ORM types leak into the core.
-2. **Single construction**: `Page[T]` is built once with the final response
-   type (DTO), never with intermediate model types. Adapters return raw
-   slices + total count, not wrapped pages.
-3. **BindQuery integration**: `PageRequest` and `SortRequest` use `query:"..."`
-   tags for automatic request binding via `ctx.Request().BindQuery(&filter)`.
-4. **Safe defaults**: `Normalize()` converts zero/negative values to defaults
-   and caps `PerPage` at `MaxPerPage` (50). `NormalizeWithMax(n)` applies a
-   custom cap per endpoint (shadow `Validate` on the embedding struct to use
-   it with BindQuery). Invalid input never causes panics or unbounded queries.
-5. **Sort safety**: `SortRequest.ValidateSort` rejects unknown sort fields,
-   preventing SQL injection via ORDER BY. Falls back to configured defaults
-   silently.
+1. **ORM-agnostic types**: `Page[T]`, `Meta`, `PageRequest` import only stdlib. No GORM, Bun, or other ORM types leak into the core.
+2. **Single construction**: `Page[T]` is built once with the final response type (DTO), never with intermediate model types. Adapters return raw slices + total count, not wrapped pages.
+3. **BindQuery integration**: `PageRequest` and `SortRequest` use `query:"..."` tags for automatic request binding via `ctx.Request().BindQuery(&filter)`.
+4. **Safe defaults**: `Normalize()` converts zero/negative values to defaults and caps `PerPage` at `MaxPerPage` (50). `NormalizeWithMax(n)` applies a custom cap per endpoint (shadow `Validate` on the embedding struct to use it with BindQuery). Invalid input never causes panics or unbounded queries.
+5. **Sort safety**: `SortRequest.ValidateSort` rejects unknown sort fields, preventing SQL injection via ORDER BY. Falls back to configured defaults silently.
 
 ---
 
@@ -251,18 +226,11 @@ func Paginate[T any](ctx context.Context, q *SelectQuery, page, perPage int, des
 
 ## Usage Example
 
-This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and
-the `sqldb.Paginate` adapter into the canonical Controller → Service →
-Repository layout. Domain types (`Product`, `ProductResponse`) and column
-names are illustrative; only the Credo imports are framework APIs.
+This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb.Paginate` adapter into the canonical Controller → Service → Repository layout. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
 
 ### Filter struct
 
-Embed `PageRequest` and `SortRequest` so a single `BindQuery` call decodes
-pagination, sort, and filter parameters at once. `PageRequest.Validate()`
-normalizes page / per_page automatically because it implements
-`validation.Validatable` — `BindQuery` invokes it after decode, so no
-manual `Normalize()` call is needed.
+Embed `PageRequest` and `SortRequest` so a single `BindQuery` call decodes pagination, sort, and filter parameters at once. `PageRequest.Validate()` normalizes page / per_page automatically because it implements `validation.Validatable` — `BindQuery` invokes it after decode, so no manual `Normalize()` call is needed.
 
 ```go
 type ProductFilter struct {
@@ -274,9 +242,7 @@ type ProductFilter struct {
 
 ### Sort whitelist
 
-`SortConfig` maps API field names to DB column names. `ValidateSort` returns
-the configured default when the request asks for a field that isn't in the
-whitelist — this is the SQL-injection guard for `ORDER BY`.
+`SortConfig` maps API field names to DB column names. `ValidateSort` returns the configured default when the request asks for a field that isn't in the whitelist — this is the SQL-injection guard for `ORDER BY`.
 
 ```go
 var productSortConfig = &pagination.SortConfig{
@@ -365,8 +331,7 @@ func (h *ProductHandler) List(ctx *credo.Context) error {
 
 ### Wiring
 
-Register the repo, service, and handler in the DI container; the
-constructor parameters drive resolution.
+Register the repo, service, and handler in the DI container; the constructor parameters drive resolution.
 
 ```go
 credo.Provide[*productRepo](app, func(infra credo.Infra, db *sqldb.DB) *productRepo {
@@ -383,23 +348,20 @@ handler := credo.Resolve[*ProductHandler](app)
 app.GET("/products", handler.List)
 ```
 
-`Product`, `ProductResponse`, and `toProductResponse` are deliberately
-left to the application — pagination is orthogonal to domain modelling.
+`Product`, `ProductResponse`, and `toProductResponse` are deliberately left to the application — pagination is orthogonal to domain modelling.
 
 ---
 
 ## Future: Cursor-Based Pagination
 
-Planned but not yet designed. Will use a separate type (`CursorPage[T]`) since
-the response shape differs (no `total_count`, has `next_cursor`). The core
-`pagination/` package will be extended when needed.
+Planned but not yet designed. Will use a separate type (`CursorPage[T]`) since the response shape differs (no `total_count`, has `next_cursor`). The core `pagination/` package will be extended when needed.
 
 ---
 
 ## Design Decisions
 
 | Decision | Rationale |
-|----------|-----------|
+| --- | --- |
 | Core has zero ORM deps | Consistent with store adapter pattern |
 | Adapter returns `(total, error)` not `Page[T]` | `Page[T]` would be an intermediate wrapper — always discarded after model→DTO conversion. Single construction with final type is cleaner |
 | `PageRequest` uses non-pointer `int` | `Normalize()` handles zero→default conversion. Pointer fields (`*int`) are supported by `BindQuery` but unnecessary here since zero is always normalized |

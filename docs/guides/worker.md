@@ -1,15 +1,12 @@
 # Worker Guide
 
-This guide explains how to run background tasks with Credo's `worker/` package.
-For low-level contracts and runtime semantics, see the
-[Worker Spec](../specs/worker.md).
+This guide explains how to run background tasks with Credo's `worker/` package. For low-level contracts and runtime semantics, see the [Worker Spec](../specs/worker.md).
 
 ---
 
 ## What Workers Are For
 
-Credo workers are for application work that should run outside the HTTP request
-path:
+Credo workers are for application work that should run outside the HTTP request path:
 
 - queue consumers
 - event processors
@@ -17,8 +14,7 @@ path:
 - cache warmers
 - reconciliation / sync loops
 
-Workers are optional. If your app only serves HTTP requests, you do not need
-the package.
+Workers are optional. If your app only serves HTTP requests, you do not need the package.
 
 ---
 
@@ -43,10 +39,8 @@ Use this for long-lived background processes such as consumers and watchers.
 
 - Credo calls `Run(ctx)` once per cron tick.
 - Each call should represent one execution, not an internal infinite loop.
-- If a tick fires while the previous execution is still running, Credo skips the
-  new tick and logs the skip.
-- `worker.WithStartImmediately()` adds one synthetic startup execution before
-  the normal schedule begins.
+- If a tick fires while the previous execution is still running, Credo skips the new tick and logs the skip.
+- `worker.WithStartImmediately()` adds one synthetic startup execution before the normal schedule begins.
 
 Use this for cleanup, reporting, backfills, and other periodic jobs.
 
@@ -199,8 +193,7 @@ if err := worker.Register(app,
 }
 ```
 
-`worker.Func` is especially useful for tiny continuous workers or simple
-scheduled tasks created directly in bootstrap code.
+`worker.Func` is especially useful for tiny continuous workers or simple scheduled tasks created directly in bootstrap code.
 
 ---
 
@@ -222,9 +215,7 @@ worker.Register(...) -> app.Run() -> workers start
 app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit
 ```
 
-Register workers before `credo.Finalize(app)` or before `Run()`/`RunTLS()`.
-Use `worker.MustRegister` when bootstrap code should panic on registration
-failure instead of returning an error.
+Register workers before `credo.Finalize(app)` or before `Run()`/`RunTLS()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
 
 ---
 
@@ -306,15 +297,11 @@ Behavior:
 
 Credo supports:
 
-- standard 5-field cron: `0 */6 * * *` — with lists (`1,15`), ranges (`1-5`),
-  steps (`*/10`), month/weekday names (`jan`, `sat`), `?` as `*`, and `7` as Sunday
+- standard 5-field cron: `0 */6 * * *` — with lists (`1,15`), ranges (`1-5`), steps (`*/10`), month/weekday names (`jan`, `sat`), `?` as `*`, and `7` as Sunday
 - descriptors: `@hourly`, `@daily` (alias `@midnight`), `@weekly`, `@monthly`
 - intervals: `@every 5m`, `@every 1h30m`
 
-Schedules run in the server's local time and fire at second 0 of the
-matching minute. The 6-field seconds form is not supported — for sub-minute
-periods use `@every`. As in crontab(5), when both day-of-month and
-day-of-week are restricted, the schedule fires when either matches.
+Schedules run in the server's local time and fire at second 0 of the matching minute. The 6-field seconds form is not supported — for sub-minute periods use `@every`. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
 
 ---
 
@@ -391,11 +378,7 @@ Example:
 }
 ```
 
-Currently, `worker.restart_delay` is used as the default restart delay for
-continuous workers. `worker.WithRestartDelay(...)` overrides it per worker.
-A zero delay (`WithRestartDelay(0)`) falls back to the default
-(`DefaultRestartDelay`, 3s), so a worker that fails immediately is throttled
-instead of busy-looping.
+Currently, `worker.restart_delay` is used as the default restart delay for continuous workers. `worker.WithRestartDelay(...)` overrides it per worker. A zero delay (`WithRestartDelay(0)`) falls back to the default (`DefaultRestartDelay`, 3s), so a worker that fails immediately is throttled instead of busy-looping.
 
 ---
 

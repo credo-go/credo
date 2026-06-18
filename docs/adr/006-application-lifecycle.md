@@ -1,26 +1,12 @@
 # ADR-006: Application Lifecycle
 
-**Status:** Accepted
-**Date:** 2026-03-01
-**Revised:** 2026-06-18 — context-aware run APIs (`RunContext`, `RunTLSContext`,
-`ServeContext`), signal-aware `Run`/`RunTLS` default, `WithShutdownTimeout`,
-`App.Context()` accessor removed, single-use App; `RunWithSignals` /
-`RunTLSWithSignals` removed. Readiness reports unready at the start of graceful
-shutdown.
-**Depends on:** ADR-001
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
 
 ## Context
 
-An enterprise framework (ADR-001) must provide a well-defined application
-lifecycle: startup, runtime, and graceful shutdown. Background services
-(workers, pub/sub subscribers, gRPC servers) need a signal to stop
-accepting work. In-flight HTTP requests need time to complete. Shutdown
-hooks must release resources (DB connections, caches, file handles) in a
-deterministic order.
+An enterprise framework (ADR-001) must provide a well-defined application lifecycle: startup, runtime, and graceful shutdown. Background services (workers, pub/sub subscribers, gRPC servers) need a signal to stop accepting work. In-flight HTTP requests need time to complete. Shutdown hooks must release resources (DB connections, caches, file handles) in a deterministic order.
 
-Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but
-has no concept of application-level context, lifecycle state, or shutdown
-hooks. Credo fills this gap.
+Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but has no concept of application-level context, lifecycle state, or shutdown hooks. Credo fills this gap.
 
 ## Decision
 
@@ -33,15 +19,14 @@ building → starting → running → stopping → stopped
 ```
 
 | State | Meaning |
-|-------|---------|
+| --- | --- |
 | `building` | Initial. Route/middleware registration allowed |
 | `starting` | Transient. CAS claimed, ctx/server being written. Shutdown blocked |
 | `running` | Port bound, server accepting. Registration frozen. Shutdown allowed |
 | `stopping` | Draining HTTP, running hooks |
 | `stopped` | Fully stopped |
 
-State is stored as `atomic.Uint32` with `CompareAndSwap` transitions —
-no mutex on the hot path.
+State is stored as `atomic.Uint32` with `CompareAndSwap` transitions — no mutex on the hot path.
 
 ### API
 
@@ -64,12 +49,7 @@ credo.WithShutdownTimeout(d)               // Drain budget for signal/cancel shu
 
 ### App Context
 
-The app-level context is created at `Run()`/`RunContext()` and cancelled at the
-**beginning** of `Shutdown()`. There is **no** public `Context()` accessor: the
-previous nullable accessor returned `context.Background()` before `Run`, a silent
-dead zone for any goroutine that captured it too early. Background services
-receive the context through their `OnStart` hook's `ctx` parameter and select on
-`ctx.Done()` to detect shutdown:
+The app-level context is created at `Run()`/`RunContext()` and cancelled at the **beginning** of `Shutdown()`. Credo deliberately exposes **no** public `Context()` accessor: a nullable accessor would have to return `context.Background()` before `Run`, a silent dead zone for any goroutine that captured it too early. Background services receive the context through their `OnStart` hook's `ctx` parameter and select on `ctx.Done()` to detect shutdown:
 
 ```go
 app.OnStart(func(ctx context.Context) error {
@@ -87,9 +67,7 @@ app.OnStart(func(ctx context.Context) error {
 })
 ```
 
-Removing the accessor makes the dead zone structurally unreachable: there is no
-pre-`Run` context to capture. (A dedicated background-service abstraction that
-receives this context directly is planned.)
+Without an accessor the dead zone is structurally unreachable: there is no pre-`Run` context to capture. (A dedicated background-service abstraction that receives this context directly is planned.)
 
 ### Startup Sequence
 
@@ -103,8 +81,7 @@ receives this context directly is planned.)
 7. Store state = running
 ```
 
-If any OnStart hook returns an error, startup aborts: state rolls back
-to `building`, the listener is closed, and `Run` returns the error.
+If any OnStart hook returns an error, startup aborts: state rolls back to `building`, the listener is closed, and `Run` returns the error.
 
 ### Shutdown Sequence
 
@@ -146,25 +123,20 @@ app.OnShutdown(func(ctx context.Context) error {
 ```
 
 - Hooks receive the shutdown deadline context from `Shutdown(ctx)`
-- LIFO order (reverse registration order) — resources opened last are
-  closed first
+- LIFO order (reverse registration order) — resources opened last are closed first
 - Must be called before `Run()`; panics after compile (frozen guard)
-- Sequential execution — for parallel shutdown, wrap in a single hook
-  with `errgroup`
+- Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
 
 ### Frozen Guard
 
-After `compile()` (triggered by first `ServeHTTP` or `Run`), the app
-is frozen. Late registration of routes, middleware, meta, status handlers,
-or shutdown hooks panics with a clear message. This prevents subtle race
-conditions from concurrent registration during serving.
+After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. Late registration of routes, middleware, meta, status handlers, or shutdown hooks panics with a clear message. This prevents subtle race conditions from concurrent registration during serving.
 
 ### Design Decisions
 
 | Decision | Rationale |
-|----------|-----------|
+| --- | --- |
 | Signal-aware `Run` default | `Run`/`RunTLS` handle SIGINT/SIGTERM and drain gracefully — the common case needs no boilerplate. `RunContext`/`RunTLSContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
-| `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, *before* the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
+| `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, _before_ the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
 | TLS cert preflight | `RunTLS`/`RunTLSContext` load the key pair before `stateRunning`, so a bad cert fails fast with listen-error rollback discipline |
@@ -182,6 +154,7 @@ conditions from concurrent registration during serving.
 ## Consequences
 
 **Positive:**
+
 - Zero-boilerplate graceful shutdown: `Run` handles signals and drains within `WithShutdownTimeout`
 - Readiness flips to 503 at shutdown start, so load balancers drain the instance before it stops accepting
 - Deterministic startup/shutdown sequence
@@ -191,6 +164,7 @@ conditions from concurrent registration during serving.
 - State machine prevents double-run and double-shutdown
 
 **Negative:**
+
 - Advanced signal needs (custom signal sets, multi-server coordination) use `RunContext` with the caller's own `signal.NotifyContext` — the default `Run` covers SIGINT/SIGTERM
 - Sequential hooks may slow shutdown if a hook is slow (mitigate: deadline ctx)
 - No restart capability — must create new App after shutdown

@@ -1,9 +1,6 @@
 # Dependency Injection Guide
 
-This guide explains how to use Credo's DI container in real applications.
-For low-level contracts and internal rationale, see the
-[DI Container Spec](../specs/container.md) and
-[ADR-004](../adr/004-dependency-injection-and-infra.md).
+This guide explains how to use Credo's DI container in real applications. For low-level contracts and internal rationale, see the [DI Container Spec](../specs/container.md) and [ADR-004](../adr/004-dependency-injection-and-infra.md).
 
 ---
 
@@ -25,8 +22,7 @@ Credo's DI is intentionally simple:
 - **No request scope**: request data belongs in `*credo.Context` / `context.Context`
 - **No `Context.Resolve` helper**: Credo does not push service locator usage into handlers
 
-DI is optional. You can use Credo without the container and wire dependencies
-manually if you prefer.
+DI is optional. You can use Credo without the container and wire dependencies manually if you prefer.
 
 ---
 
@@ -53,8 +49,7 @@ Provide / ProvideValue / Alias / BindMany
 - `Resolve[T]`: retrieve a fully wired singleton
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
 
-`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit
-`Finalize(app)` is recommended so dependency errors fail fast during startup.
+`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit `Finalize(app)` is recommended so dependency errors fail fast during startup.
 
 ---
 
@@ -201,8 +196,7 @@ func NewUserService(infra credo.Infra, repo UserRepository) *UserService {
 }
 ```
 
-Use `credo.Infra` when a type needs framework infrastructure such as logging.
-The recommended convention is to place it first.
+Use `credo.Infra` when a type needs framework infrastructure such as logging. The recommended convention is to place it first.
 
 ---
 
@@ -212,10 +206,7 @@ The recommended convention is to place it first.
 
 - `Logger`
 
-The container creates `credo.Infra` automatically when a constructor asks for it.
-You do not register it yourself. This is framework-managed infrastructure, not
-a service locator: the boundary stays visible because `credo.Infra` appears in
-the constructor signature.
+The container creates `credo.Infra` automatically when a constructor asks for it. You do not register it yourself. This is framework-managed infrastructure, not a service locator: the boundary stays visible because `credo.Infra` appears in the constructor signature.
 
 Important rules:
 
@@ -223,11 +214,9 @@ Important rules:
 - config does not belong in `credo.Infra`
 - request data does not belong in `credo.Infra`
 - the logger is scoped per service automatically
-- services can still be tested by constructing `credo.Infra` directly or by
-  using `app.NewInfra(name)` outside DI
+- services can still be tested by constructing `credo.Infra` directly or by using `app.NewInfra(name)` outside DI
 
-Tracing and metrics carriers are planned for the observability release. They are
-not part of the v0.1 `Infra` surface.
+Tracing and metrics carriers are planned for the observability release. They are not part of the v0.1 `Infra` surface.
 
 ---
 
@@ -256,11 +245,7 @@ Typical `ProvideValue` use cases:
 
 ### `ProvideFactory`: compiler-checked factory registration
 
-`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a
-function with arbitrary parameters returning `T`" — so a signature mistake is
-reported as an error at registration time, not at compile time. When you want
-the whole registration checked by the compiler, use `ProvideFactory`: `fn`'s
-signature is enforced (and `T` inferred), and it resolves its own dependencies:
+`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake is reported as an error at registration time, not at compile time. When you want the whole registration checked by the compiler, use `ProvideFactory`: `fn`'s signature is enforced (and `T` inferred), and it resolves its own dependencies:
 
 ```go
 credo.MustProvideFactory(app, func(app *credo.App) (*UserService, error) {
@@ -272,31 +257,20 @@ credo.MustProvideFactory(app, func(app *credo.App) (*UserService, error) {
 })
 ```
 
-The trade-off: `fn` is opaque to the container. Dependencies resolved inside
-it are invisible to `Finalize`'s graph validation (a missing one surfaces at
-first resolution instead), and `credo.Infra` is not auto-injected — use
-`app.NewInfra` as shown. Prefer plain `Provide` with a named constructor as
-the default; reach for `ProvideFactory` when you want compiler-checked wiring or
-inline construction logic.
+The trade-off: `fn` is opaque to the container. Dependencies resolved inside it are invisible to `Finalize`'s graph validation (a missing one surfaces at first resolution instead), and `credo.Infra` is not auto-injected — use `app.NewInfra` as shown. Prefer plain `Provide` with a named constructor as the default; reach for `ProvideFactory` when you want compiler-checked wiring or inline construction logic.
 
-Some Credo feature packages build on top of DI with package-level helpers
-instead of asking you to wire every internal singleton manually. Examples:
+Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
 
 - `store.Register[*sqldb.DB](app, db)`
 - `worker.Register(app, myWorker, opts...)`
 
-These helpers still use the DI container under the hood, but they also attach
-extra framework behavior such as startup validation, lifecycle tracking, and
-shutdown integration. Use them before `credo.Finalize(app)`. See the
-[Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the
-user-facing patterns.
+These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `credo.Finalize(app)`. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
 
 ---
 
 ## Interface Wiring with `Alias`
 
-In most applications, constructors return concrete types while services depend
-on interfaces. `Alias` connects those two worlds without duplicate registration.
+In most applications, constructors return concrete types while services depend on interfaces. `Alias` connects those two worlds without duplicate registration.
 
 ```go
 type UserRepository interface {
@@ -317,15 +291,13 @@ func NewUserService(infra credo.Infra, repo UserRepository) *UserService {
 }
 ```
 
-`Alias` is the preferred way to program to interfaces while keeping
-constructor return types concrete.
+`Alias` is the preferred way to program to interfaces while keeping constructor return types concrete.
 
 ---
 
 ## Ordered Interface Collections with `BindMany`
 
-Use `BindMany` when a component needs an ordered set of implementations rather
-than one default interface implementation.
+Use `BindMany` when a component needs an ordered set of implementations rather than one default interface implementation.
 
 Typical examples:
 
@@ -372,16 +344,13 @@ Important rules:
 - `ResolveAll[I]` returns `[]I{}` when no bindings exist
 - constructor injection of `[]I` also receives `[]I{}` when no bindings exist
 
-This makes collection dependencies explicit while avoiding manual bootstrap
-registries built from repeated `Resolve` calls.
+This makes collection dependencies explicit while avoiding manual bootstrap registries built from repeated `Resolve` calls.
 
 ---
 
 ## Multiple Instances Of The Same Type
 
-Credo DI keys services by Go type. If you need two instances of the same
-concrete type, register semantic wrapper types instead of trying to register
-the same type twice.
+Credo DI keys services by Go type. If you need two instances of the same concrete type, register semantic wrapper types instead of trying to register the same type twice.
 
 This is especially common with data stores:
 
@@ -390,12 +359,9 @@ type PrimaryDB struct{ *sqldb.DB }
 type AnalyticsDB struct{ *sqldb.DB }
 ```
 
-Then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed. If those
-wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per
-database instance, so same-type Bun connections do not collide implicitly.
+Then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed. If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
 
-For the full multi-database pattern, see the
-[Data Access Guide](data-access.md).
+For the full multi-database pattern, see the [Data Access Guide](data-access.md).
 
 ---
 
@@ -421,8 +387,7 @@ Validation catches startup problems early:
 - dependency cycles
 - invalid constructor signatures
 
-`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit finalize is
-the recommended pattern:
+`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit finalize is the recommended pattern:
 
 ```go
 if err := credo.Finalize(app); err != nil {
@@ -449,12 +414,9 @@ Credo's **recommended** use of `Resolve` is bootstrap/composition-root code:
 - resolving a controller before route registration
 - resolving a top-level service in `main()`
 
-Runtime `Resolve` is technically allowed because the API is public, but it is
-not Credo's primary application pattern.
+Runtime `Resolve` is technically allowed because the API is public, but it is not Credo's primary application pattern.
 
-`ResolveAll[I]` follows the same guidance: use it mainly in bootstrap/setup
-code when you explicitly need the whole ordered collection. Inside normal
-application code, prefer constructor injection of `[]I`.
+`ResolveAll[I]` follows the same guidance: use it mainly in bootstrap/setup code when you explicitly need the whole ordered collection. Inside normal application code, prefer constructor injection of `[]I`.
 
 Recommended:
 
@@ -482,8 +444,7 @@ Why Credo discourages request-time `Resolve` as the main style:
 - it moves toward service locator usage
 - constructor injection becomes less meaningful
 
-Credo does **not** provide `Context.Resolve`, which keeps this as an advanced,
-explicit choice instead of a framework-default pattern.
+Credo does **not** provide `Context.Resolve`, which keeps this as an advanced, explicit choice instead of a framework-default pattern.
 
 ---
 
@@ -491,8 +452,7 @@ explicit choice instead of a framework-default pattern.
 
 Credo intentionally does not have `RequestScoped` DI.
 
-In Go, request-bound state belongs in `context.Context` and `*credo.Context`,
-not in the container.
+In Go, request-bound state belongs in `context.Context` and `*credo.Context`, not in the container.
 
 Put these in request context, middleware state, or method parameters:
 
@@ -542,16 +502,13 @@ Use manual wiring when:
 - you prefer direct construction
 - you do not need container validation or lifecycle management
 
-Use `app.NewInfra(name)` to get a scoped Infra with Logger from the app's base
-infrastructure. For tests without an App instance, construct `credo.Infra`
-directly with the fields your code uses.
+Use `app.NewInfra(name)` to get a scoped Infra with Logger from the app's base infrastructure. For tests without an App instance, construct `credo.Infra` directly with the fields your code uses.
 
 ---
 
 ## Shutdown and Lifecycle
 
-All DI-managed objects are singletons. If a singleton needs cleanup, implement
-`credo.Shutdowner`:
+All DI-managed objects are singletons. If a singleton needs cleanup, implement `credo.Shutdowner`:
 
 ```go
 type Cache struct{}
@@ -573,11 +530,10 @@ This is useful for:
 
 ### Shutdowner vs OnShutdown
 
-Credo offers two shutdown mechanisms. Choose based on how the component is
-created:
+Credo offers two shutdown mechanisms. Choose based on how the component is created:
 
 | Mechanism | When to use | Order |
-|-----------|-------------|-------|
+| --- | --- | --- |
 | `credo.Shutdowner` interface | DI-managed singletons (registered via `credo.Provide` / `credo.ProvideValue`) | Reverse registration order |
 | `app.OnShutdown(fn)` | Components created outside DI — manual connections, background goroutines, third-party handles | LIFO (last registered, first called) |
 
@@ -588,12 +544,9 @@ During graceful shutdown the full sequence is:
 3. **Container shutdown** — calls `Shutdown(ctx)` on every singleton that implements `Shutdowner`
 4. **OnShutdown hooks** — runs registered hook functions in LIFO order
 
-Container shutdown (step 3) always runs before OnShutdown hooks (step 4),
-so DI-managed resources are released first.
+Container shutdown (step 3) always runs before OnShutdown hooks (step 4), so DI-managed resources are released first.
 
-If your service is already in the container, prefer `Shutdowner` — it
-requires no extra registration and the container handles ordering
-automatically. Use `OnShutdown` only for things the container does not own.
+If your service is already in the container, prefer `Shutdowner` — it requires no extra registration and the container handles ordering automatically. Use `OnShutdown` only for things the container does not own.
 
 ---
 
@@ -636,28 +589,23 @@ Good rule:
 
 ### Using DI for request state
 
-Do not try to inject request ID, auth user, or transactions through DI.
-Use `*credo.Context` / `context.Context`.
+Do not try to inject request ID, auth user, or transactions through DI. Use `*credo.Context` / `context.Context`.
 
 ### Putting config into `credo.Infra`
 
-RawConfig should be unmarshaled into typed structs and registered with
-`ProvideValue`.
+RawConfig should be unmarshaled into typed structs and registered with `ProvideValue`.
 
 ### Skipping `Finalize`
 
-`Run()` will finalize implicitly, but explicit `Finalize(app)` gives earlier
-feedback and clearer startup failures.
+`Run()` will finalize implicitly, but explicit `Finalize(app)` gives earlier feedback and clearer startup failures.
 
 ### Overusing `Resolve`
 
-Prefer constructor injection. Reach for `Resolve` mainly in bootstrap/setup
-code, not as the primary way handlers find services.
+Prefer constructor injection. Reach for `Resolve` mainly in bootstrap/setup code, not as the primary way handlers find services.
 
 ### Returning interfaces from every constructor
 
-Usually return a concrete type and use `Alias` when another component depends
-on an interface.
+Usually return a concrete type and use `Alias` when another component depends on an interface.
 
 ---
 
@@ -674,8 +622,7 @@ For medium and large Credo applications, the default shape should be:
 7. resolve top-level controllers/services needed for startup wiring
 8. start the app
 
-This keeps dependency graphs explicit, startup failures early, and runtime
-behavior simple.
+This keeps dependency graphs explicit, startup failures early, and runtime behavior simple.
 
 ---
 

@@ -2,14 +2,9 @@
 
 **An all-in-one Go web framework for modern, enterprise-grade applications.**
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/credo-go/credo)](https://goreportcard.com/report/github.com/credo-go/credo)
-[![GoDoc](https://pkg.go.dev/badge/github.com/credo-go/credo)](https://pkg.go.dev/github.com/credo-go/credo)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev) [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Go Report Card](https://goreportcard.com/badge/github.com/credo-go/credo)](https://goreportcard.com/report/github.com/credo-go/credo) [![GoDoc](https://pkg.go.dev/badge/github.com/credo-go/credo)](https://pkg.go.dev/github.com/credo-go/credo)
 
-> **Status: Beta** -- Core APIs are stable enough for real application development.
-> Breaking changes may still happen before v1, but should be documented with migration notes.
-> Feedback from active pilot projects continues to shape the framework.
+> **Status: Beta** -- Core APIs are stable enough for real application development. Breaking changes may still happen before v1, but should be documented with migration notes. Feedback from active pilot projects continues to shape the framework.
 
 ## What Credo Optimizes For
 
@@ -22,12 +17,10 @@
 
 ## Maturity by Area
 
-Credo is **Beta** overall. Shipped packages are usable for real development; the
-table below is explicit about what is solid, what is still experimental, and what
-is on the roadmap.
+Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what is solid, what is still experimental, and what is on the roadmap.
 
 | Area | Status |
-|------|--------|
+| --- | --- |
 | Routing, Context, Handlers, Middleware | Beta |
 | Dependency Injection (`Provide`/`Resolve`, `Infra`) | Beta |
 | Configuration (`config`, typed snapshot) | Beta |
@@ -51,10 +44,7 @@ is on the roadmap.
 go get github.com/credo-go/credo@latest
 ```
 
-> **Requires Go 1.26+.** Credo tracks the current Go release to build on the modern
-> standard library (e.g. `os.Root`, structured `log/slog`). It targets new and
-> actively-maintained services rather than legacy codebases pinned to older
-> toolchains — enterprise-grade in capability, modern in its baseline.
+> **Requires Go 1.26+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
 
 ## Quick Start (Target API)
 
@@ -90,13 +80,11 @@ func main() {
 }
 ```
 
-For explicit config control, load it first with `config.Load(...)` and pass it
-to `credo.New(credo.WithRawConfig(raw))`; this bypasses the default auto-load.
+For explicit config control, load it first with `config.Load(...)` and pass it to `credo.New(credo.WithRawConfig(raw))`; this bypasses the default auto-load.
 
 ## Config: Typed Snapshot (Anti-Pattern-Free)
 
-Credo positions config as a startup-time snapshot, not a runtime service.
-String keys should appear only at module boundaries; everything beyond that boundary is typed.
+Credo positions config as a startup-time snapshot, not a runtime service. String keys should appear only at module boundaries; everything beyond that boundary is typed.
 
 ```go
 type DatabaseConfig struct {
@@ -114,10 +102,7 @@ func SetupDatabase(app *credo.App, store credo.RawConfig) error {
 
 ## Dependency Injection
 
-Credo uses generics-based DI. Cross-cutting infrastructure is carried explicitly via
-`credo.Infra`; business dependencies (including typed config) are normal constructor parameters.
-Single-interface wiring uses `Alias[I, T]`, and ordered interface collections use
-`BindMany[I, T]` + `ResolveAll[I]` or `[]I` constructor injection.
+Credo uses generics-based DI. Cross-cutting infrastructure is carried explicitly via `credo.Infra`; business dependencies (including typed config) are normal constructor parameters. Single-interface wiring uses `Alias[I, T]`, and ordered interface collections use `BindMany[I, T]` + `ResolveAll[I]` or `[]I` constructor injection.
 
 ```go
 func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *OrderService {
@@ -153,10 +138,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting instructions, and
-[SECURITY-UPSTREAMS.md](SECURITY-UPSTREAMS.md) for how Credo tracks the upstream
-projects its adapted code derives from. Reports are triaged by severity on a
-best-effort basis — there is no fixed response-time guarantee.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting instructions, and [SECURITY-UPSTREAMS.md](SECURITY-UPSTREAMS.md) for how Credo tracks the upstream projects its adapted code derives from. Reports are triaged by severity on a best-effort basis — there is no fixed response-time guarantee.
 
 ## License
 

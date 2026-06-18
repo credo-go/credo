@@ -1,12 +1,8 @@
 # Routing Guide
 
-This guide explains how to use Credo's routing features in application code:
-path routing, route groups, host-based routing, pre-dispatch rewrite, and
-handler-driven internal forwarding.
+This guide explains how to use Credo's routing features in application code: path routing, route groups, host-based routing, pre-dispatch rewrite, and handler-driven internal forwarding.
 
-For internal design rationale, see the [Router Spec](../specs/router.md),
-[Middleware Spec](../specs/middleware.md), [Context Spec](../specs/context.md),
-and [ADR-018](../adr/018-host-routing-and-rewrite.md).
+For internal design rationale, see the [Router Spec](../specs/router.md), [Middleware Spec](../specs/middleware.md), [Context Spec](../specs/context.md), and [ADR-018](../adr/018-host-routing-and-rewrite.md).
 
 ---
 
@@ -56,11 +52,11 @@ func main() {
 
 Credo supports three path parameter forms:
 
-| Syntax | Example | Meaning |
-|--------|---------|---------|
-| `{name}` | `/users/{id}` | single segment |
+| Syntax         | Example              | Meaning             |
+| -------------- | -------------------- | ------------------- |
+| `{name}`       | `/users/{id}`        | single segment      |
 | `{name:regex}` | `/users/{id:[0-9]+}` | constrained segment |
-| `{name...}` | `/files/{path...}` | catch-all remainder |
+| `{name...}`    | `/files/{path...}`   | catch-all remainder |
 
 ```go
 app.GET("/users/{id}", getUser)
@@ -77,29 +73,23 @@ func getUser(ctx *credo.Context) error {
 }
 ```
 
-`ctx.Request().RouteParams()` returns all params as a `map[string]string`. The
-map is owned by the framework and recycled after the request completes, so
-prefer `RouteParam` for single values.
+`ctx.Request().RouteParams()` returns all params as a `map[string]string`. The map is owned by the framework and recycled after the request completes, so prefer `RouteParam` for single values.
 
-Keep dynamic segment names consistent at the same path level. These routes are
-valid because the dynamic segment under `/customers/` is named `{id}` in both
-patterns:
+Keep dynamic segment names consistent at the same path level. These routes are valid because the dynamic segment under `/customers/` is named `{id}` in both patterns:
 
 ```go
 app.GET("/v1/crm/customers/{id}", showCustomer)
 app.GET("/v1/crm/customers/{id}/timeline", customerTimeline)
 ```
 
-These routes conflict because `{id}` and `{customer_id}` occupy the same path
-level:
+These routes conflict because `{id}` and `{customer_id}` occupy the same path level:
 
 ```go
 app.GET("/v1/crm/customers/{id}", showCustomer)
 app.GET("/v1/crm/customers/{customer_id}/timeline", customerTimeline) // panics
 ```
 
-Prefer keeping the route parameter as `{id}` and mapping it to a domain-specific
-variable name inside the handler.
+Prefer keeping the route parameter as `{id}` and mapping it to a domain-specific variable name inside the handler.
 
 ---
 
@@ -158,20 +148,13 @@ tenantless := app.Host("*.acme.io")
 tenantless.GET("/status", statusHandler)
 ```
 
-Wildcard `*` matches one anonymous host label and does not add anything to
-`RouteParams()`. `*.acme.io` matches `api.acme.io`, but not
-`acme.io` or `a.b.acme.io`.
+Wildcard `*` matches one anonymous host label and does not add anything to `RouteParams()`. `*.acme.io` matches `api.acme.io`, but not `acme.io` or `a.b.acme.io`.
 
-The wildcard must be the leftmost complete label and may appear only once.
-Patterns such as `api*.acme.io`, `foo.*.io`, `*.*.acme.io`,
-`*.{tenant}.acme.io`, and `{tenant}.*.acme.io` panic at registration.
+The wildcard must be the leftmost complete label and may appear only once. Patterns such as `api*.acme.io`, `foo.*.io`, `*.*.acme.io`, `*.{tenant}.acme.io`, and `{tenant}.*.acme.io` panic at registration.
 
-`*` and `*.io` are allowed, but they are broad patterns and are usually best
-reserved for local development or carefully controlled environments.
+`*` and `*.io` are allowed, but they are broad patterns and are usually best reserved for local development or carefully controlled environments.
 
-Wildcard host patterns are matching-only. `BuildURL` cannot turn
-`*.acme.io` into a concrete host; use `{tenant}.acme.io` when URL
-generation needs a subdomain value.
+Wildcard host patterns are matching-only. `BuildURL` cannot turn `*.acme.io` into a concrete host; use `{tenant}.acme.io` when URL generation needs a subdomain value.
 
 ### Matching Rules
 
@@ -182,8 +165,7 @@ generation needs a subdomain value.
 - Matching is case-insensitive.
 - Request ports are stripped before matching.
 - Host patterns may not include a port.
-- Host patterns with identical match semantics panic at registration time:
-  `{a}.acme.io`, `{b}.acme.io`, and `*.acme.io` are equivalent.
+- Host patterns with identical match semantics panic at registration time: `{a}.acme.io`, `{b}.acme.io`, and `*.acme.io` are equivalent.
 
 ### Important: Shared Param Namespace
 
@@ -249,8 +231,7 @@ app.GlobalMiddleware(middleware.Rewrite(
 ### Query Behavior
 
 - If `To` contains a query string, it replaces the current query string.
-- If `To` has no query string and `PreserveQuery` is true, Credo keeps the
-  original query string.
+- If `To` has no query string and `PreserveQuery` is true, Credo keeps the original query string.
 
 ---
 
@@ -287,8 +268,7 @@ app.GET("/checkout", func(ctx *credo.Context) error {
 
 ## Original Path and Logging
 
-`ctx.OriginalPath()` always returns the path that entered the framework before
-any rewrite happened.
+`ctx.OriginalPath()` always returns the path that entered the framework before any rewrite happened.
 
 ```go
 app.GET("/debug", func(ctx *credo.Context) error {
@@ -310,8 +290,7 @@ This works in the built-in access log and in `middleware.AccessLog`.
 
 ## Middleware Gotchas with `ctx.Rewrite()`
 
-If a handler calls `ctx.Rewrite()`, group and route middleware for the target
-route execute again.
+If a handler calls `ctx.Rewrite()`, group and route middleware for the target route execute again.
 
 That means `after` logic is per dispatch round, not per whole request:
 
@@ -335,8 +314,7 @@ Use app/global middleware when you want one measurement for the whole request.
 
 ## Introspection
 
-Use `Walk` for simple method/pattern traversal and `WalkRoutes` when you also
-need the host pattern.
+Use `Walk` for simple method/pattern traversal and `WalkRoutes` when you also need the host pattern.
 
 ```go
 credo.Walk(app.Mux(), func(method, pattern string) error {

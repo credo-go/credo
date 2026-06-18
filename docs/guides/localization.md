@@ -1,9 +1,6 @@
 # Internationalization Guide
 
-This guide explains how to use Credo's built-in internationalization support
-in application code. For low-level design details, see the
-[i18n Spec](../specs/i18n.md) and
-[ADR-013](../adr/013-internationalization.md).
+This guide explains how to use Credo's built-in internationalization support in application code. For low-level design details, see the [i18n Spec](../specs/i18n.md) and [ADR-013](../adr/013-internationalization.md).
 
 All locale examples in this guide use JSON.
 
@@ -11,8 +8,7 @@ All locale examples in this guide use JSON.
 
 ## What Credo Gives You
 
-Credo's i18n support is intentionally small from the application's point of
-view:
+Credo's i18n support is intentionally small from the application's point of view:
 
 - `app.UseI18n(...)` initializes i18n during startup
 - `ctx.Locale()` returns the resolved locale for the current request
@@ -101,8 +97,7 @@ func main() {
 }
 ```
 
-With no arguments, `UseI18n` reads from `RawConfig` if the `i18n` key exists.
-If that key is missing, Credo falls back to:
+With no arguments, `UseI18n` reads from `RawConfig` if the `i18n` key exists. If that key is missing, Credo falls back to:
 
 - `dir = "locales/"`
 - `default = "en"`
@@ -129,9 +124,7 @@ Files:
 - `messages.json`: normal application messages plus validation and HTTP error keys
 - `fields.json`: optional display names for field-aware validation messages
 
-If the locale directory does not exist, or exists but contains no valid
-language folders with messages, `UseI18n` returns `nil` and Credo keeps i18n
-inactive.
+If the locale directory does not exist, or exists but contains no valid language folders with messages, `UseI18n` returns `nil` and Credo keeps i18n inactive.
 
 ---
 
@@ -182,12 +175,9 @@ Template variables use Go's `text/template` syntax:
 ctx.T("messages.hello_name", map[string]any{"name": "Ada"})
 ```
 
-Template syntax is validated eagerly while locale files are loaded. Invalid
-templates fail startup instead of silently breaking later at request time.
+Template syntax is validated eagerly while locale files are loaded. Invalid templates fail startup instead of silently breaking later at request time.
 
-For count-dependent messages, define CLDR plural forms as an object and use
-`ctx.TPlural` — it picks the right form for the detected locale and exposes
-the count as `{{.count}}`:
+For count-dependent messages, define CLDR plural forms as an object and use `ctx.TPlural` — it picks the right form for the detected locale and exposes the count as `{{.count}}`:
 
 ```json
 {
@@ -200,25 +190,15 @@ ctx.TPlural("messages.items", 1) // "1 item"
 ctx.TPlural("messages.items", 5) // "5 items"
 ```
 
-`ctx.T` always renders the `other` form; reach for `ctx.TPlural` whenever the
-text varies with a number. If the count cannot be interpreted as a number,
-`ctx.TPlural` renders the `other` form rather than failing — like the key
-fallback, the helpers degrade gracefully instead of surfacing i18n errors to
-end users.
+`ctx.T` always renders the `other` form; reach for `ctx.TPlural` whenever the text varies with a number. If the count cannot be interpreted as a number, `ctx.TPlural` renders the `other` form rather than failing — like the key fallback, the helpers degrade gracefully instead of surfacing i18n errors to end users.
 
-> **Trust model.** Locale files are code: templates can call methods on the
-> data you pass to `ctx.T`, so review translation files (including
-> community-contributed ones) like any other code change. Messages render as
-> plain text (`text/template`); when you embed them in HTML, escape at the
-> rendering layer — `html/template` does this automatically for interpolated
-> strings.
+> **Trust model.** Locale files are code: templates can call methods on the data you pass to `ctx.T`, so review translation files (including community-contributed ones) like any other code change. Messages render as plain text (`text/template`); when you embed them in HTML, escape at the rendering layer — `html/template` does this automatically for interpolated strings.
 
 ---
 
 ## `fields.json` (Optional)
 
-`fields.json` is only needed when your validation messages reference a field
-label.
+`fields.json` is only needed when your validation messages reference a field label.
 
 `locales/en/fields.json`:
 
@@ -256,8 +236,7 @@ Important behavior:
 
 ## Enabling i18n
 
-Call `UseI18n` during startup, before the first request and before `Run()`.
-Treat it as a one-time setup step.
+Call `UseI18n` during startup, before the first request and before `Run()`. Treat it as a one-time setup step.
 
 ### Zero-Config
 
@@ -311,8 +290,7 @@ Only `dir` and `default` are config-driven. `DirFS` and `Detect` are code-only.
 
 ## Embedded Locales with `go:embed`
 
-When shipping a single binary, embed the locale files and pass an `fs.FS` to
-`DirFS`.
+When shipping a single binary, embed the locale files and pass an `fs.FS` to `DirFS`.
 
 ```go
 package main
@@ -348,8 +326,7 @@ func main() {
 }
 ```
 
-`DirFS` is read from the root of the provided filesystem, so `fs.Sub(...)` is
-the usual choice when your embedded files live under a `locales/` subdirectory.
+`DirFS` is read from the root of the provided filesystem, so `fs.Sub(...)` is the usual choice when your embedded files live under a `locales/` subdirectory.
 
 ---
 
@@ -363,8 +340,7 @@ If the client sends:
 Accept-Language: tr-TR,tr;q=0.9,en;q=0.8
 ```
 
-and you only provide `tr/` and `en/`, Credo resolves the request locale to
-`tr`. `ctx.Locale()` returns that resolved locale, not the raw header value.
+and you only provide `tr/` and `en/`, Credo resolves the request locale to `tr`. `ctx.Locale()` returns that resolved locale, not the raw header value.
 
 ### Custom Detection
 
@@ -421,9 +397,7 @@ That fallback makes it safe to adopt i18n incrementally.
 
 ## Automatic Validation Translation
 
-Credo translates field-level validation messages automatically when a handler
-returns `validation.Errors`. The most common way this happens is through
-`BindBody()` or `BindQuery()`.
+Credo translates field-level validation messages automatically when a handler returns `validation.Errors`. The most common way this happens is through `BindBody()` or `BindQuery()`.
 
 ```go
 package main
@@ -497,8 +471,7 @@ Notes:
 
 ## Automatic HTTP Error Translation
 
-Credo translates `HTTPError.MessageKey` automatically via the `resolveMessage`
-3-level fallback: i18n bundle → builtInMessages → key itself.
+Credo translates `HTTPError.MessageKey` automatically via the `resolveMessage` 3-level fallback: i18n bundle → builtInMessages → key itself.
 
 ```go
 app.GET("/users/{id}", func(ctx *credo.Context) error {

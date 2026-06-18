@@ -1,23 +1,15 @@
 # Upstream Security Provenance
 
-Credo **adapts** (forks-and-owns) source code from several upstream projects
-rather than importing them as dependencies. Standard dependency scanners
-(Dependabot, `govulncheck`) only see the modules in `go.mod` / `go.sum` — they do
-**not** see adapted code. This file records the provenance of adapted code so
-that upstream security advisories can be triaged against Credo's copies.
+Credo **adapts** (forks-and-owns) source code from several upstream projects rather than importing them as dependencies. Standard dependency scanners (Dependabot, `govulncheck`) only see the modules in `go.mod` / `go.sum` — they do **not** see adapted code. This file records the provenance of adapted code so that upstream security advisories can be triaged against Credo's copies.
 
-> **Wrapped (imported) dependencies** — bun, golang-jwt, go-limiter, yaml,
-> mapstructure, x/text, and the SQL drivers — are covered by `go.mod` and standard
-> tooling, so they are not repeated here.
+> **Wrapped (imported) dependencies** — bun, golang-jwt, go-limiter, yaml, mapstructure, x/text, and the SQL drivers — are covered by `go.mod` and standard tooling, so they are not repeated here.
 
 ## Adapted sources
 
-Exact upstream commits are **not** pinned: this code was adapted and has since
-diverged, so it is maintained as Credo's own. The "Adapted from" column records the
-upstream version/era referenced (per [NOTICES](NOTICES)) to help scope an advisory.
+Exact upstream commits are **not** pinned: this code was adapted and has since diverged, so it is maintained as Credo's own. The "Adapted from" column records the upstream version/era referenced (per [NOTICES](NOTICES)) to help scope an advisory.
 
 | Upstream | License | Adapted into | Adapted from |
-|----------|---------|--------------|--------------|
+| --- | --- | --- | --- |
 | [Chi](https://github.com/go-chi/chi) | MIT | `internal/radix/`, root router (`mux.go`, `walk.go`, `routectx.go`, `credo.go`), parts of `middleware/` | tree.go / mux.go era 2024 |
 | [httprouter](https://github.com/julienschmidt/httprouter) | BSD-3 | `internal/radix/` — algorithmic **reference only, no code copied** | — |
 | [Echo](https://github.com/labstack/echo) | MIT | `context.go`, `request.go`, `response.go`, parts of `middleware/` | v4, 2024 |
@@ -33,12 +25,7 @@ See [NOTICES](NOTICES) for the full per-file breakdown and copyright notices.
 
 ## How adapted code is monitored
 
-1. The scheduled [`upstream-watch`](.github/workflows/upstream-watch.yml) workflow
-   runs `govulncheck` (covering the wrapped dependencies and the standard library)
-   and prints the upstream list above as a monthly manual-review reminder.
-2. When an upstream advisory is published, the maintainer checks — using the NOTICES
-   per-file map — whether the affected logic was adapted into Credo, and patches
-   Credo's copy if so.
+1. The scheduled [`upstream-watch`](.github/workflows/upstream-watch.yml) workflow runs `govulncheck` (covering the wrapped dependencies and the standard library) and prints the upstream list above as a monthly manual-review reminder.
+2. When an upstream advisory is published, the maintainer checks — using the NOTICES per-file map — whether the affected logic was adapted into Credo, and patches Credo's copy if so.
 
-Advisories are triaged by severity on a best-effort basis. There is **no fixed
-response-time guarantee** (see [SECURITY.md](SECURITY.md)).
+Advisories are triaged by severity on a best-effort basis. There is **no fixed response-time guarantee** (see [SECURITY.md](SECURITY.md)).

@@ -1,10 +1,8 @@
 # Configuration Guide
 
-This guide covers how to configure a Credo application. For internal design
-rationale, see [Configuration Spec](../specs/config.md).
+This guide covers how to configure a Credo application. For internal design rationale, see [Configuration Spec](../specs/config.md).
 
-All config examples in this guide use JSON for consistency. Credo also
-supports YAML/YML with the same structure.
+All config examples in this guide use JSON for consistency. Credo also supports YAML/YML with the same structure.
 
 ---
 
@@ -12,8 +10,7 @@ supports YAML/YML with the same structure.
 
 ### Zero-Config
 
-`credo.New()` automatically loads configuration from files, `.env`, and
-environment variables:
+`credo.New()` automatically loads configuration from files, `.env`, and environment variables:
 
 ```go
 app, err := credo.New()
@@ -22,14 +19,11 @@ if err != nil {
 }
 ```
 
-This discovers `config.json`, `config.yaml`, or `config.yml` in the working
-directory, loads `.env` if present (all entries), and applies `CREDO_*` environment variables.
+This discovers `config.json`, `config.yaml`, or `config.yml` in the working directory, loads `.env` if present (all entries), and applies `CREDO_*` environment variables.
 
 ### Explicit File
 
-Credo does not expose root-level file options such as `credo.WithConfigFiles`.
-When you want explicit file control, load config yourself and pass the result
-to `credo.New`:
+Credo does not expose root-level file options such as `credo.WithConfigFiles`. When you want explicit file control, load config yourself and pass the result to `credo.New`:
 
 ```go
 store, err := config.Load(config.WithFiles("myconfig.json"))
@@ -39,9 +33,7 @@ if err != nil {
 app, err := credo.New(credo.WithRawConfig(store))
 ```
 
-Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path. The provided
-`RawConfig` is registered in DI as-is, while framework server settings are
-still read from its `"server"` section when present.
+Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path. The provided `RawConfig` is registered in DI as-is, while framework server settings are still read from its `"server"` section when present.
 
 ### go:embed
 
@@ -61,9 +53,7 @@ func main() {
 }
 ```
 
-Environment variables still override embedded values because `config.LoadBytes`
-applies the `.env` and process environment layers before the `RawConfig` is
-passed to `credo.New`.
+Environment variables still override embedded values because `config.LoadBytes` applies the `.env` and process environment layers before the `RawConfig` is passed to `credo.New`.
 
 ---
 
@@ -78,8 +68,7 @@ Configuration sources are merged in this order (later overrides earlier):
 4. Environment variables ← CREDO_* prefix (prefix-filtered)
 ```
 
-For overlapping keys, higher-numbered sources win. Non-overlapping keys from
-all sources are preserved.
+For overlapping keys, higher-numbered sources win. Non-overlapping keys from all sources are preserved.
 
 ---
 
@@ -91,9 +80,7 @@ Set `CREDO_ENV` to load environment-specific overrides automatically:
 CREDO_ENV=production ./myapp
 ```
 
-This loads the base files first, then merges any found files matching
-`config.production.json`, `config.production.yaml`, or
-`config.production.yml`.
+This loads the base files first, then merges any found files matching `config.production.json`, `config.production.yaml`, or `config.production.yml`.
 
 **Example directory layout:**
 
@@ -127,12 +114,9 @@ config.staging.json          ← staging overrides
 }
 ```
 
-With `CREDO_ENV=production`, the effective config is port=8080,
-read_timeout=60s, debug=false.
+With `CREDO_ENV=production`, the effective config is port=8080, read_timeout=60s, debug=false.
 
-Env-specific file derivation works in both discovery and explicit mode.
-In explicit mode, the env-specific filename is derived by inserting `.{env}`
-before the file extension:
+Env-specific file derivation works in both discovery and explicit mode. In explicit mode, the env-specific filename is derived by inserting `.{env}` before the file extension:
 
 ```go
 // With CREDO_ENV=production (from process env or .env):
@@ -144,8 +128,7 @@ store, err := config.Load(config.WithFiles("myapp.yaml"))
 
 ### Custom .env Path
 
-By default, Credo looks for `.env` in the working directory. For deployments
-where the binary runs from a different directory, use `WithDotenvPath`:
+By default, Credo looks for `.env` in the working directory. For deployments where the binary runs from a different directory, use `WithDotenvPath`:
 
 ```go
 store, err := config.Load(
@@ -153,9 +136,7 @@ store, err := config.Load(
 )
 ```
 
-`WithDotenvPath` takes precedence over the `CREDO_ENV_FILE` environment
-variable. A missing file at the specified path is an error. To downgrade
-the missing-file error to a warning, combine with `WithDotenvOptional()`:
+`WithDotenvPath` takes precedence over the `CREDO_ENV_FILE` environment variable. A missing file at the specified path is an error. To downgrade the missing-file error to a warning, combine with `WithDotenvOptional()`:
 
 ```go
 store, err := config.Load(
@@ -176,8 +157,7 @@ CREDO_ENV_FILE=/etc/myapp/.env ./myapp
 
 ## Typed Config + DI
 
-The primary pattern is to unmarshal config once at the module boundary,
-then inject the typed struct via DI:
+The primary pattern is to unmarshal config once at the module boundary, then inject the typed struct via DI:
 
 ```go
 type DatabaseConfig struct {
@@ -212,15 +192,13 @@ func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
 }
 ```
 
-String keys appear **once** at the module boundary. Beyond that, everything
-is typed and compile-time safe.
+String keys appear **once** at the module boundary. Beyond that, everything is typed and compile-time safe.
 
 ---
 
 ## Multi-Database Config
 
-For multiple databases, keep each config section separate and unmarshal them
-independently at the module boundary:
+For multiple databases, keep each config section separate and unmarshal them independently at the module boundary:
 
 ```go
 func setupDatabases(app *credo.App) error {
@@ -262,16 +240,13 @@ Example config structure:
 }
 ```
 
-Use one section per logical connection. The
-[Data Access Guide](data-access.md) shows how these configs map to DI wrapper
-types such as `PrimaryDB` and `AnalyticsDB`.
+Use one section per logical connection. The [Data Access Guide](data-access.md) shows how these configs map to DI wrapper types such as `PrimaryDB` and `AnalyticsDB`.
 
 ---
 
 ## Validation
 
-If your config struct implements `Validate() error`, it is called
-automatically by `Unmarshal`:
+If your config struct implements `Validate() error`, it is called automatically by `Unmarshal`:
 
 ```go
 type DatabaseConfig struct {
@@ -300,8 +275,7 @@ if err := rc.Unmarshal("databases.default", &cfg); err != nil {
 
 ## Default Values
 
-Pre-initialize your struct before unmarshalling. Fields not present in any
-config source keep their default values:
+Pre-initialize your struct before unmarshalling. Fields not present in any config source keep their default values:
 
 ```go
 func DefaultDatabaseConfig() DatabaseConfig {
@@ -321,25 +295,24 @@ rc.Unmarshal("databases.default", &cfg)
 
 ## Environment Variables
 
-Process environment variables use the `CREDO_` prefix (configurable via
-`config.WithPrefix()`). Naming convention:
+Process environment variables use the `CREDO_` prefix (configurable via `config.WithPrefix()`). Naming convention:
 
 - Strip prefix, lowercase
 - `__` (double underscore) = nesting separator (becomes `.`)
 - `_` (single underscore) = stays as-is within a segment
 
-| Env Var | Config Key |
-|---------|-----------|
-| `CREDO_SERVER__PORT` | `server.port` |
-| `CREDO_SERVER__READ_TIMEOUT` | `server.read_timeout` |
+| Env Var                          | Config Key               |
+| -------------------------------- | ------------------------ |
+| `CREDO_SERVER__PORT`             | `server.port`            |
+| `CREDO_SERVER__READ_TIMEOUT`     | `server.read_timeout`    |
 | `CREDO_DATABASES__DEFAULT__HOST` | `databases.default.host` |
 
 `.env` file entries use the same normalization but **without** the prefix:
 
-| .env Entry | Config Key |
-|------------|-----------|
-| `SERVER__PORT=8080` | `server.port` |
-| `SERVER__READ_TIMEOUT=30s` | `server.read_timeout` |
+| .env Entry                           | Config Key               |
+| ------------------------------------ | ------------------------ |
+| `SERVER__PORT=8080`                  | `server.port`            |
+| `SERVER__READ_TIMEOUT=30s`           | `server.read_timeout`    |
 | `DATABASES__DEFAULT__HOST=localhost` | `databases.default.host` |
 
 ---
@@ -353,7 +326,7 @@ Quick-lookup of the commonly used config keys.
 Consumed automatically by `credo.New()`.
 
 | Key | Type | Default | Description |
-|-----|------|---------|-------------|
+| --- | --- | --- | --- |
 | `host` | string | `""` (all interfaces) | Listen address |
 | `port` | int | `0` (OS-assigned) | Listen port (0–65535) |
 | `read_timeout` | duration | `0` | Max duration for reading entire request |
@@ -370,7 +343,7 @@ Consumed automatically by `credo.New()`.
 User-read via `rc.Unmarshal("databases.<name>", &cfg)`.
 
 | Key | Type | Default | Description |
-|-----|------|---------|-------------|
+| --- | --- | --- | --- |
 | `driver` | string | `""` | `"postgres"`, `"mysql"`, `"sqlite"` |
 | `dsn` | string | `""` | Raw DSN (overrides host/port/name) |
 | `host` | string | `""` | Server hostname or IP |
@@ -389,10 +362,10 @@ User-read via `rc.Unmarshal("databases.<name>", &cfg)`.
 
 Auto-read by `app.UseI18n()`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `dir` | string | `"locales/"` | Locale file directory |
-| `default` | string | `"en"` | Default language (BCP 47) |
+| Key       | Type   | Default      | Description               |
+| --------- | ------ | ------------ | ------------------------- |
+| `dir`     | string | `"locales/"` | Locale file directory     |
+| `default` | string | `"en"`       | Default language (BCP 47) |
 
 ### Auth — `auth.*`
 
@@ -400,26 +373,26 @@ User-read via `rc.Unmarshal("auth.<strategy>", &cfg)`.
 
 **JWT** — `auth.jwt`:
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `header` | string | `"Authorization"` | Token header |
-| `prefix` | string | `"Bearer"` | Scheme prefix |
-| `query` | string | `""` | Query param fallback |
-| `cookie` | string | `""` | Cookie fallback |
-| `signing_method` | string | `"HS256"` | Signing algorithm |
+| Key              | Type   | Default           | Description          |
+| ---------------- | ------ | ----------------- | -------------------- |
+| `header`         | string | `"Authorization"` | Token header         |
+| `prefix`         | string | `"Bearer"`        | Scheme prefix        |
+| `query`          | string | `""`              | Query param fallback |
+| `cookie`         | string | `""`              | Cookie fallback      |
+| `signing_method` | string | `"HS256"`         | Signing algorithm    |
 
 **API Key** — `auth.api_key`:
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `header` | string | `"X-API-Key"` | Key header |
-| `prefix` | string | `""` | Scheme prefix |
-| `query` | string | `""` | Query param fallback |
+| Key      | Type   | Default       | Description          |
+| -------- | ------ | ------------- | -------------------- |
+| `header` | string | `"X-API-Key"` | Key header           |
+| `prefix` | string | `""`          | Scheme prefix        |
+| `query`  | string | `""`          | Query param fallback |
 
 **Basic** — `auth.basic`:
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
+| Key     | Type   | Default        | Description            |
+| ------- | ------ | -------------- | ---------------------- |
 | `realm` | string | `"Restricted"` | WWW-Authenticate realm |
 
 ---

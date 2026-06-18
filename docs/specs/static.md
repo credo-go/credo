@@ -1,24 +1,17 @@
 # Static File Serving Spec
 
-**Status**: Approved
-**Package**: Root (`github.com/credo-go/credo`)
-**Sources**: Original design (no external code adapted)
-**Depends on**: Root package (`App`, `Group`, `Route`, `Handler`, `Context`, `HTTPError`)
-**ADR**: [017-static-file-serving](../adr/017-static-file-serving.md)
+**Status**: Approved **Package**: Root (`github.com/credo-go/credo`) **Sources**: Original design (no external code adapted) **Depends on**: Root package (`App`, `Group`, `Route`, `Handler`, `Context`, `HTTPError`) **ADR**: [017-static-file-serving](../adr/017-static-file-serving.md)
 
 ---
 
 ## Overview
 
-Credo provides first-class static file serving through `Static` and `File`
-methods on `App` and `Group`. Static routes are full participants in Credo's
-middleware, route meta, error handling, and access log systems.
+Credo provides first-class static file serving through `Static` and `File` methods on `App` and `Group`. Static routes are full participants in Credo's middleware, route meta, error handling, and access log systems.
 
 **Design principles**:
-- `fs.FS` as the source interface — works with `embed.FS`, `os.Root.FS()`,
-  `os.DirFS`, custom implementations
-- Visible ownership — user controls filesystem lifecycle, no hidden `os.Root`
-  management
+
+- `fs.FS` as the source interface — works with `embed.FS`, `os.Root.FS()`, `os.DirFS`, custom implementations
+- Visible ownership — user controls filesystem lifecycle, no hidden `os.Root` management
 - Secure defaults — no directory listing, `nosniff` header, path sanitization
 - SPA-aware — dot heuristic prevents assets from returning `index.html`
 
@@ -101,11 +94,10 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 Registers routes that serve files from `fsys` under the given URL prefix.
 
 **Registration-time panics:**
+
 - `prefix` contains `{` or `}` (route parameters in static prefix)
 
-(The cache presets panic at their own call site on invalid durations:
-`StaticCacheMaxAge` on negative, `StaticCacheImmutableAssets` on anything
-that floors below 1 second.)
+(The cache presets panic at their own call site on invalid durations: `StaticCacheMaxAge` on negative, `StaticCacheImmutableAssets` on anything that floors below 1 second.)
 
 ### File (single file serving)
 
@@ -114,12 +106,12 @@ func (app *App) File(path string, fsys fs.FS, name string, cfgs ...StaticConfig)
 func (g *Group) File(path string, fsys fs.FS, name string, cfgs ...StaticConfig) *Route
 ```
 
-Registers a single GET route that serves one named file from `fsys`.
-Returns `*Route` for standard fluent chaining.
+Registers a single GET route that serves one named file from `fsys`. Returns `*Route` for standard fluent chaining.
 
 **Supported config fields:** `Download`, `CacheControl`.
 
 **Registration-time panics:**
+
 - `cfg.Browse` is `true`
 - `cfg.SPA` is `true`
 - `cfg.Index` is not empty
@@ -134,8 +126,7 @@ type StaticRoute struct {
 }
 ```
 
-Wraps the two internal GET routes created by `Static` (catch-all + exact
-match) and proxies fluent operations to both.
+Wraps the two internal GET routes created by `Static` (catch-all + exact match) and proxies fluent operations to both.
 
 ```go
 // Name sets the route name on the primary (catch-all) route only.
@@ -206,27 +197,23 @@ app.Static("/", sub, credo.StaticConfig{SPA: true})
 
 SPA fallback behavior (CSR shell only — no prerender output):
 
-| Request path | Has dot? | Result |
-|---|---|---|
-| `/dashboard` | no | `index.html` (SPA fallback) |
-| `/users/123` | no | `index.html` (SPA fallback) |
-| `/app.js` | yes | 404 (missing asset) |
-| `/css/style.css` | yes | 404 (missing asset) |
+| Request path     | Has dot? | Result                      |
+| ---------------- | -------- | --------------------------- |
+| `/dashboard`     | no       | `index.html` (SPA fallback) |
+| `/users/123`     | no       | `index.html` (SPA fallback) |
+| `/app.js`        | yes      | 404 (missing asset)         |
+| `/css/style.css` | yes      | 404 (missing asset)         |
 
-When the build output also contains prerendered HTML (SvelteKit static
-adapter, Next.js export, Astro static, Eleventy, Hugo, etc.), Credo
-prefers the prerender over the SPA shell. Sibling `<route>.html` files
-take precedence in both the missing-file branch and the directory branch:
+When the build output also contains prerendered HTML (SvelteKit static adapter, Next.js export, Astro static, Eleventy, Hugo, etc.), Credo prefers the prerender over the SPA shell. Sibling `<route>.html` files take precedence in both the missing-file branch and the directory branch:
 
-| Request path | Filesystem entry served       | Reason                                          |
-|---|---|---|
-| `/admin/users` | `admin/users.html`           | Sibling `.html` (prerendered route)             |
-| `/reports`     | `reports.html`               | Sibling `.html` parent route, dir lacks `index` |
-| `/reports/crm` | `reports/crm.html`           | Sibling `.html` child route                     |
-| `/missing`     | `index.html` (SPA shell)     | No sibling, SPA fallback                        |
+| Request path | Filesystem entry served | Reason |
+| --- | --- | --- |
+| `/admin/users` | `admin/users.html` | Sibling `.html` (prerendered route) |
+| `/reports` | `reports.html` | Sibling `.html` parent route, dir lacks `index` |
+| `/reports/crm` | `reports/crm.html` | Sibling `.html` child route |
+| `/missing` | `index.html` (SPA shell) | No sibling, SPA fallback |
 
-The sibling check is gated on the same dot heuristic and method
-restriction (GET/HEAD only) as the SPA shell fallback.
+The sibling check is gated on the same dot heuristic and method restriction (GET/HEAD only) as the SPA shell fallback.
 
 ### Pattern 4: Download Zone
 
@@ -243,8 +230,7 @@ app.Static("/downloads", root.FS(), credo.StaticConfig{
 app.Static("/files", root.FS(), credo.StaticConfig{Browse: true})
 ```
 
-Renders a minimal HTML directory listing with file name, size, and
-modification date.
+Renders a minimal HTML directory listing with file name, size, and modification date.
 
 ### Pattern 6: Single Files
 
@@ -290,12 +276,7 @@ GET /static/{_static...}   → staticHandler(fsys, cfg)   [catch-all]
 GET /static                → staticIndexHandler(fsys, cfg) [exact match]
 ```
 
-Both routes share the same serving logic. HEAD routes are auto-registered by
-the existing `addHeadRoute` mechanism and stored on each GET's
-`Route.headTwin`. `StaticRoute.SetMeta` and `StaticRoute.Middleware`
-delegate to `Route.SetMeta` / `Route.Middleware`, which propagate to the
-HEAD twins automatically — there are no separate HEAD references inside
-`StaticRoute`.
+Both routes share the same serving logic. HEAD routes are auto-registered by the existing `addHeadRoute` mechanism and stored on each GET's `Route.headTwin`. `StaticRoute.SetMeta` and `StaticRoute.Middleware` delegate to `Route.SetMeta` / `Route.Middleware`, which propagate to the HEAD twins automatically — there are no separate HEAD references inside `StaticRoute`.
 
 ### Request Flow
 
@@ -342,64 +323,41 @@ Uses `path.Clean` (not `filepath.Clean`) for platform-independent behavior.
 
 ### Headers
 
-All static responses include `X-Content-Type-Options: nosniff` without
-exception — regular files, index files, SPA fallback, and directory listings.
-`Content-Disposition` is applied to directory listings when configured.
+All static responses include `X-Content-Type-Options: nosniff` without exception — regular files, index files, SPA fallback, and directory listings. `Content-Disposition` is applied to directory listings when configured.
 
-`Cache-Control` is decided entirely by the `CacheControl` hook. It is called
-once per successfully served response (status below 400, including 206
-partial content) with the resolved `StaticCacheContext` — request path,
-resolved file path, file name, and whether the response is an HTML entry
-point or listing. The returned string is written verbatim; `""` writes no
-header; a nil hook disables `Cache-Control` entirely. Error responses never
-consult the hook, so a missing hashed asset cannot inherit a long-lived
-cache policy.
+`Cache-Control` is decided entirely by the `CacheControl` hook. It is called once per successfully served response (status below 400, including 206 partial content) with the resolved `StaticCacheContext` — request path, resolved file path, file name, and whether the response is an HTML entry point or listing. The returned string is written verbatim; `""` writes no header; a nil hook disables `Cache-Control` entirely. Error responses never consult the hook, so a missing hashed asset cannot inherit a long-lived cache policy.
 
-Hooks run per request and should be pure and deterministic. They must not
-depend on mutable counters, clocks, random values, or other side effects;
-otherwise identical assets may receive inconsistent cache policies.
+Hooks run per request and should be pure and deterministic. They must not depend on mutable counters, clocks, random values, or other side effects; otherwise identical assets may receive inconsistent cache policies.
 
 The presets encode the two common policies:
 
 | Preset | Successful non-HTML response | Successful HTML response / listing |
-|---|---|---|
+| --- | --- | --- |
 | `StaticCacheMaxAge(d)` | `public, max-age=N` | `public, max-age=N` |
 | `StaticCacheImmutableAssets(d)` | `public, max-age=N, immutable` | `no-cache, must-revalidate` |
 
-Anything finer-grained — e.g. marking only `_app/immutable/` as immutable —
-is a custom hook over `StaticCacheContext.FilePath`.
+Anything finer-grained — e.g. marking only `_app/immutable/` as immutable — is a custom hook over `StaticCacheContext.FilePath`.
 
-As a global defense-in-depth rule, Credo rewrites inherited `immutable`
-`Cache-Control` directives on 4xx/5xx responses to `no-cache, must-revalidate`.
-This protects missing hashed assets from being cached for a full immutable
-lifetime if an application middleware set cache headers before the final status
-was known.
-This guard only covers headers present before Credo writes the response.
-Reverse proxies or CDNs that add `Cache-Control` after Credo must be configured
-separately.
+As a global defense-in-depth rule, Credo rewrites inherited `immutable` `Cache-Control` directives on 4xx/5xx responses to `no-cache, must-revalidate`. This protects missing hashed assets from being cached for a full immutable lifetime if an application middleware set cache headers before the final status was known. This guard only covers headers present before Credo writes the response. Reverse proxies or CDNs that add `Cache-Control` after Credo must be configured separately.
 
 ### Preset Duration Resolution
 
-Both presets floor the duration to whole seconds at construction time.
-`StaticCacheMaxAge` panics on negative durations and emits no header when
-the floor is 0; `StaticCacheImmutableAssets` panics unless the floor is at
-least 1 second. Invalid cache configuration is a programmer error, caught
-at the preset call site (which is the registration site).
+Both presets floor the duration to whole seconds at construction time. `StaticCacheMaxAge` panics on negative durations and emits no header when the floor is 0; `StaticCacheImmutableAssets` panics unless the floor is at least 1 second. Invalid cache configuration is a programmer error, caught at the preset call site (which is the registration site).
 
-| Input | Seconds | `StaticCacheMaxAge` header |
-|---|---|---|
-| `0` | 0 | (none) |
-| `24 * time.Hour` | 86400 | `max-age=86400` |
-| `1500 * time.Millisecond` | 1 | `max-age=1` |
-| `500 * time.Millisecond` | 0 | (none) |
-| `-1 * time.Second` | — | panic |
+| Input                     | Seconds | `StaticCacheMaxAge` header |
+| ------------------------- | ------- | -------------------------- |
+| `0`                       | 0       | (none)                     |
+| `24 * time.Hour`          | 86400   | `max-age=86400`            |
+| `1500 * time.Millisecond` | 1       | `max-age=1`                |
+| `500 * time.Millisecond`  | 0       | (none)                     |
+| `-1 * time.Second`        | —       | panic                      |
 
 ---
 
 ## Security
 
 | Threat | Mitigation |
-|---|---|
+| --- | --- |
 | Path traversal (`../`) | Explicit `..` segments rejected with 400 Bad Request |
 | Symlink escape | `os.Root.FS()` recommended; `os.DirFS` risk documented |
 | Encoded path tricks (`%2e`, `%5c`, `%00`) | URL-decoded before sanitization, then validated |
@@ -411,9 +369,7 @@ at the preset call site (which is the registration site).
 
 **Production recommendation** (documented in godoc):
 
-> Use `os.Root.FS()` for disk serving in production. `os.DirFS` does not
-> prevent symlink-based path traversal. See the Go blog post
-> "Traversal-Resistant File APIs" for details.
+> Use `os.Root.FS()` for disk serving in production. `os.DirFS` does not prevent symlink-based path traversal. See the Go blog post "Traversal-Resistant File APIs" for details.
 
 ---
 
@@ -427,45 +383,28 @@ at the preset call site (which is the registration site).
 └── static_test.go    tests
 ```
 
-No `internal/` package needed — the implementation is small and lives in
-the root package alongside the existing handler/route/context code.
+No `internal/` package needed — the implementation is small and lives in the root package alongside the existing handler/route/context code.
 
 ---
 
 ## Design Decisions
 
-1. **`fs.FS` not string path** — user controls filesystem
-   source and lifecycle. Supports embed, `os.Root`, `os.DirFS`, test
-   doubles. See [ADR-017](../adr/017-static-file-serving.md).
+1. **`fs.FS` not string path** — user controls filesystem source and lifecycle. Supports embed, `os.Root`, `os.DirFS`, test doubles. See [ADR-017](../adr/017-static-file-serving.md).
 
-2. **`*StaticRoute` wrapper, not `*Route`** — `Static` registers two
-   internal routes (catch-all + exact). A single `*Route` return would
-   make `SetMeta` and `Middleware` inconsistent. The wrapper proxies
-   to both, ensuring uniform behavior.
+2. **`*StaticRoute` wrapper, not `*Route`** — `Static` registers two internal routes (catch-all + exact). A single `*Route` return would make `SetMeta` and `Middleware` inconsistent. The wrapper proxies to both, ensuring uniform behavior.
 
-3. **`File` panics on unsupported config** — Silent ignore of `Browse`,
-   `SPA`, `Index` hides configuration mistakes. Registration-time panic
-   matches existing conventions (`Name` duplicate, `checkFrozen`).
+3. **`File` panics on unsupported config** — Silent ignore of `Browse`, `SPA`, `Index` hides configuration mistakes. Registration-time panic matches existing conventions (`Name` duplicate, `checkFrozen`).
 
-4. **SPA dot heuristic** — Accept-header detection is unreliable
-   (`*/*` includes `text/html`). File extension check is deterministic,
-   debug-friendly, and used by industry-standard tools (Vite, CRA).
+4. **SPA dot heuristic** — Accept-header detection is unreliable (`*/*` includes `text/html`). File extension check is deterministic, debug-friendly, and used by industry-standard tools (Vite, CRA).
 
-5. **No built-in compression** — `middleware.Compress()` handles this
-   as a cross-cutting concern. Static-specific compression would
-   duplicate functionality.
+5. **No built-in compression** — `middleware.Compress()` handles this as a cross-cutting concern. Static-specific compression would duplicate functionality.
 
-6. **No config file integration** — Static config is per-route. Multiple
-   `Static()` calls may have different configs. Global config file
-   keys don't map to this pattern.
+6. **No config file integration** — Static config is per-route. Multiple `Static()` calls may have different configs. Global config file keys don't map to this pattern.
 
-7. **Directory listing is minimal** — Framework provides a simple HTML
-   table. Custom listings are built with regular handlers. No template
-   override mechanism (YAGNI).
+7. **Directory listing is minimal** — Framework provides a simple HTML table. Custom listings are built with regular handlers. No template override mechanism (YAGNI).
 
 ---
 
 ## Implementation Phase
 
-- **Phase 3+**: `Static`, `File`, `StaticRoute`, `StaticConfig`,
-  path sanitization, SPA fallback, directory listing, security headers.
+- **Phase 3+**: `Static`, `File`, `StaticRoute`, `StaticConfig`, path sanitization, SPA fallback, directory listing, security headers.

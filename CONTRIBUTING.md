@@ -1,7 +1,6 @@
 # Contributing to Credo
 
-Thank you for your interest in contributing to Credo! This guide will help you
-get started.
+Thank you for your interest in contributing to Credo! This guide will help you get started.
 
 ## Development Setup
 
@@ -52,27 +51,19 @@ refactor(middleware): simplify chain composition
 Credo is a multi-module repository:
 
 - `github.com/credo-go/credo` is the root framework module.
-- `github.com/credo-go/credo/store/sqldb` is a submodule for the Bun SQL wrapper
-  and its heavier database dependencies.
+- `github.com/credo-go/credo/store/sqldb` is a submodule for the Bun SQL wrapper and its heavier database dependencies.
 
-Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap
-`replace github.com/credo-go/credo => ../..` so the submodule can test against
-the in-tree root module. Do not commit `go.work`; it is for local development
-only and is ignored by Git.
+Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace github.com/credo-go/credo => ../..` so the submodule can test against the in-tree root module. Do not commit `go.work`; it is for local development only and is ignored by Git.
 
 Release both modules in this order:
 
 1. Ensure `main` is green and the working tree is clean.
-2. Finalize `CHANGELOG.md` by replacing the version's `Unreleased` marker with
-   the release date.
+2. Finalize `CHANGELOG.md` by replacing the version's `Unreleased` marker with the release date.
 3. Tag and push the root module, for example `git tag v0.1.0`.
-4. In `store/sqldb/go.mod`, require the published root version and remove the
-   bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit.
-5. Tag and push the submodule with its path prefix, for example
-   `git tag store/sqldb/v0.1.0`.
+4. In `store/sqldb/go.mod`, require the published root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit.
+5. Tag and push the submodule with its path prefix, for example `git tag store/sqldb/v0.1.0`.
 
-After the first release, local cross-module development can use an ignored
-workspace:
+After the first release, local cross-module development can use an ignored workspace:
 
 ```sh
 go work init . ./store/sqldb
@@ -94,5 +85,4 @@ go work init . ./store/sqldb
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
-Be respectful. We are building this together.
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be respectful. We are building this together.

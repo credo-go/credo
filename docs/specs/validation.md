@@ -1,20 +1,12 @@
 # Validation Spec
 
-**Status**: Approved
-**Package**: `validation/`
-**Sources**: ozzo-validation (MIT, API design), Goyave (MIT, organization),
-govy (architecture inspiration only, no code adapted)
-**Depends on**: Root package (`Validatable` interface)
-**ADR**: [011-validation-strategy](../adr/011-validation-strategy.md)
+**Status**: Approved **Package**: `validation/` **Sources**: ozzo-validation (MIT, API design), Goyave (MIT, organization), govy (architecture inspiration only, no code adapted) **Depends on**: Root package (`Validatable` interface) **ADR**: [011-validation-strategy](../adr/011-validation-strategy.md)
 
 ---
 
 ## Overview
 
-Credo uses **programmatic-only** validation with **generic type-safe rules** and
-compile-time safe pointer-based field references. No struct tags for rule
-definition. Reflection limited to field name extraction (cached). Integrated
-with Context via the "Parse, don't validate" pattern.
+Credo uses **programmatic-only** validation with **generic type-safe rules** and compile-time safe pointer-based field references. No struct tags for rule definition. Reflection limited to field name extraction (cached). Integrated with Context via the "Parse, don't validate" pattern.
 
 ---
 
@@ -36,9 +28,7 @@ type Validatable interface {
 }
 ```
 
-When `ctx.Request().BindBody(&input)` is called and `input` implements `Validatable`,
-`Validate()` is called automatically after decoding. The handler only receives
-data that has already been validated.
+When `ctx.Request().BindBody(&input)` is called and `input` implements `Validatable`, `Validate()` is called automatically after decoding. The handler only receives data that has already been validated.
 
 ---
 
@@ -53,9 +43,7 @@ type Rule[T any] interface {
 }
 ```
 
-`Rule[T]` is generic — the type parameter `T` matches the field type. This
-provides compile-time type safety: applying a `Rule[int]` to a `*string`
-field is a compiler error, not a runtime panic.
+`Rule[T]` is generic — the type parameter `T` matches the field type. This provides compile-time type safety: applying a `Rule[int]` to a `*string` field is a compiler error, not a runtime panic.
 
 ### FieldRules (type-erased container)
 
@@ -67,9 +55,7 @@ type FieldRules interface {
 }
 ```
 
-`FieldRules` is a non-generic interface returned by `Field[T]`. It erases
-the type parameter so that `ValidateStruct` can accept fields of different
-types in a single variadic call.
+`FieldRules` is a non-generic interface returned by `Field[T]`. It erases the type parameter so that `ValidateStruct` can accept fields of different types in a single variadic call.
 
 ### ValidateStruct + Field (ozzo-inspired, pointer-based field refs)
 
@@ -81,6 +67,7 @@ func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules
 ```
 
 **Two layers of compile-time safety**:
+
 1. `&c.Name` — Go compiler checks the field exists on the struct.
 2. `Rule[T]` — Go compiler checks the rule type matches the field type.
 
@@ -119,9 +106,7 @@ validation/
 └── doc.go
 ```
 
-**Single package model**: All types, functions, and rules live in the `validation`
-package. There is no `validation/rule` sub-package. For concise examples, use an
-import alias:
+**Single package model**: All types, functions, and rules live in the `validation` package. There is no `validation/rule` sub-package. For concise examples, use an import alias:
 
 ```go
 import v "github.com/credo-go/credo/validation"
@@ -131,15 +116,9 @@ v.ValidateStruct(c,
 )
 ```
 
-**Note**: `Required[T]` lives in `string_rules.go` because it is most commonly
-used with strings, but it is generic and works with any comparable type.
+**Note**: `Required[T]` lives in `string_rules.go` because it is most commonly used with strings, but it is generic and works with any comparable type.
 
-**Required vs NotEmpty**: `Required[T]`'s `comparable` constraint excludes
-slices and maps by language rules. `NotEmptySlice[E]()` and
-`NotEmptyMap[K, V]()` are their counterparts: they fail when the
-collection is nil or has length zero (error code `not_empty`). The check
-is `len`-based — no reflection, consistent with the zero-reflection rule
-execution policy.
+**Required vs NotEmpty**: `Required[T]`'s `comparable` constraint excludes slices and maps by language rules. `NotEmptySlice[E]()` and `NotEmptyMap[K, V]()` are their counterparts: they fail when the collection is nil or has length zero (error code `not_empty`). The check is `len`-based — no reflection, consistent with the zero-reflection rule execution policy.
 
 ### Custom Rules
 
@@ -165,23 +144,18 @@ validation.Field(&c.Code, validation.By(func(code string) error {
 }))
 ```
 
-Note: `validation.By` uses type inference — no explicit type parameter needed when
-the closure signature makes the type clear.
+Note: `validation.By` uses type inference — no explicit type parameter needed when the closure signature makes the type clear.
 
 ### Validation Boundary — Stateless Only
 
-`Validate()` handles **all validation that can be determined from the struct
-fields alone** — this includes both format checks and pure business rules:
+`Validate()` handles **all validation that can be determined from the struct fields alone** — this includes both format checks and pure business rules:
 
 - **Format**: required, email, length, regex, UUID, URL
-- **Cross-field business rules**: "end date must be after start date",
-  "card number required when payment method is card", "discount <= 50%"
+- **Cross-field business rules**: "end date must be after start date", "card number required when payment method is card", "discount <= 50%"
 
-These are all **stateless** — they depend only on the payload, require no
-external state, and are deterministic.
+These are all **stateless** — they depend only on the payload, require no external state, and are deterministic.
 
-**Stateful validation** (anything requiring I/O) belongs in the **service
-layer**:
+**Stateful validation** (anything requiring I/O) belongs in the **service layer**:
 
 - Uniqueness checks (DB query)
 - Referential integrity (does this product ID exist?)
@@ -246,9 +220,7 @@ func (o *Order) Validate() error {
 
 ### PATCH / Partial Update Support
 
-For PATCH requests, input structs use pointer fields to distinguish "not sent"
-(nil) from "sent as empty". `NilSafe` wraps rules to skip validation when the
-pointer is nil:
+For PATCH requests, input structs use pointer fields to distinguish "not sent" (nil) from "sent as empty". `NilSafe` wraps rules to skip validation when the pointer is nil:
 
 ```go
 type UpdateUserInput struct {
@@ -264,8 +236,7 @@ func (u *UpdateUserInput) Validate() error {
 }
 ```
 
-`NilSafe[T](rules ...Rule[T]) Rule[*T]` — when the pointer is nil, validation
-is skipped. When non-nil, the value is unwrapped and inner rules execute.
+`NilSafe[T](rules ...Rule[T]) Rule[*T]` — when the pointer is nil, validation is skipped. When non-nil, the value is unwrapped and inner rules execute.
 
 ### Nested Struct Validation
 
@@ -295,16 +266,13 @@ func (c *CreateUserInput) Validate() error {
 }
 ```
 
-When a field has no rules but implements `Validatable`, `ValidateStruct`
-auto-calls `Validate()` on it, enabling recursive nested validation.
+When a field has no rules but implements `Validatable`, `ValidateStruct` auto-calls `Validate()` on it, enabling recursive nested validation.
 
 ---
 
 ## Error Format — RFC 7807
 
-Validation errors are classified by the framework's internal error
-pipeline and rendered as RFC 7807 Problem Details by the default
-renderer (or a custom `ErrorRenderer` if configured):
+Validation errors are classified by the framework's internal error pipeline and rendered as RFC 7807 Problem Details by the default renderer (or a custom `ErrorRenderer` if configured):
 
 ```json
 {
@@ -340,67 +308,40 @@ func (e Errors) Error() string  // implements error interface
 func (e Errors) MarshalJSON() ([]byte, error)
 ```
 
-The `Code` field enables i18n translation in Phase 3 without changing the
-error type. `Params` provides template variables for localized messages
-(e.g., `"must be between {{min}} and {{max}} characters"`).
+The `Code` field enables i18n translation in Phase 3 without changing the error type. `Params` provides template variables for localized messages (e.g., `"must be between {{min}} and {{max}} characters"`).
 
-**Field names are NOT translated** — `Field` is a stable technical identifier
-for frontend form-input matching. See [ADR-013](../adr/013-internationalization.md).
+**Field names are NOT translated** — `Field` is a stable technical identifier for frontend form-input matching. See [ADR-013](../adr/013-internationalization.md).
 
-**Translation trigger** — Translation is triggered automatically by the
-framework's internal error handling when i18n is configured (via `app.UseI18n()`).
-Error types implementing `TranslationKeyer` provide their own lookup key.
-Translation never happens inside the validation engine.
-See [ADR-013](../adr/013-internationalization.md).
+**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Error types implementing `TranslationKeyer` provide their own lookup key. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
 
 ---
 
 ## Design Decisions
 
-1. **Programmatic only — no struct tags** — Struct tags for validation require
-   reflection and are not compile-time safe. See [ADR-011](../adr/011-validation-strategy.md).
+1. **Programmatic only — no struct tags** — Struct tags for validation require reflection and are not compile-time safe. See [ADR-011](../adr/011-validation-strategy.md).
 
-2. **Generic `Rule[T]` over non-generic `Rule`** — ozzo's `Rule.Validate(any)`
-   loses type information. Generic rules catch type mismatches at compile time.
-   See [ADR-011](../adr/011-validation-strategy.md).
+2. **Generic `Rule[T]` over non-generic `Rule`** — ozzo's `Rule.Validate(any)` loses type information. Generic rules catch type mismatches at compile time. See [ADR-011](../adr/011-validation-strategy.md).
 
-3. **Pointer field refs (ozzo-style)** — `validation.Field(&c.Name, ...)` is
-   familiar and compile-time safe for field existence. Reflection is used only
-   for field name extraction and is cached per struct type.
+3. **Pointer field refs (ozzo-style)** — `validation.Field(&c.Name, ...)` is familiar and compile-time safe for field existence. Reflection is used only for field name extraction and is cached per struct type.
 
-4. **Validatable interface for auto-validation** — `Bind*` methods auto-call
-   `Validate()` on target structs. Handlers never need a separate validation step.
+4. **Validatable interface for auto-validation** — `Bind*` methods auto-call `Validate()` on target structs. Handlers never need a separate validation step.
 
-5. **No `ValidateBody`/`ValidateQuery` on Route** — The Bind pattern handles
-   this cleanly in the handler.
+5. **No `ValidateBody`/`ValidateQuery` on Route** — The Bind pattern handles this cleanly in the handler.
 
-6. **Topic-based rule grouping** — Rules grouped by domain (`string_rules.go`,
-   `numeric_rules.go`, etc.) rather than one file per rule. Reduces file count
-   while keeping related rules together.
+6. **Topic-based rule grouping** — Rules grouped by domain (`string_rules.go`, `numeric_rules.go`, etc.) rather than one file per rule. Reduces file count while keeping related rules together.
 
-7. **i18n-ready `ValidationError`** — `Code` + `Params` fields enable
-   translation without breaking changes. Default English messages work out of
-   the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
+7. **i18n-ready `ValidationError`** — `Code` + `Params` fields enable translation without breaking changes. Default English messages work out of the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
 
-8. **NilSafe for PATCH support** — `NilSafe[T]` wrapper provides first-class
-   partial update support via pointer fields, without requiring separate rule
-   sets for create vs update.
+8. **NilSafe for PATCH support** — `NilSafe[T]` wrapper provides first-class partial update support via pointer fields, without requiring separate rule sets for create vs update.
 
-9. **Fluent API targeted at v1 (Go 1.27)** — the long-term direction is a
-   fluent builder built on generic methods (golang/go#77273, Go 1.27).
-   The current rule set is the substrate that any fluent shape will wrap,
-   so v0 additions stay deliberately small and fully portable
-   (`NotEmptySlice`/`NotEmptyMap` are `len`-based rules the fluent layer
-   can reuse as-is). Convenience helpers that a fluent API would obsolete
-   (e.g. a `RequiredField` shorthand) are intentionally not added —
-   shipping an API that is born deprecated helps no one.
+9. **Fluent API targeted at v1 (Go 1.27)** — the long-term direction is a fluent builder built on generic methods (golang/go#77273, Go 1.27). The current rule set is the substrate that any fluent shape will wrap, so v0 additions stay deliberately small and fully portable (`NotEmptySlice`/`NotEmptyMap` are `len`-based rules the fluent layer can reuse as-is). Convenience helpers that a fluent API would obsolete (e.g. a `RequiredField` shorthand) are intentionally not added — shipping an API that is born deprecated helps no one.
 
 ---
 
 ## Comparison with Alternatives
 
 | Criteria | go-playground | ozzo | govy | Goyave | **Credo** |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Rule definition | Tag strings | Programmatic | Programmatic | Programmatic | **Programmatic** |
 | Field reference | Reflection | Pointer | Getter func | Path string | **Pointer** |
 | Compile-time safe | No | Partial | Full | No | **Full (per field)** |
@@ -418,5 +359,4 @@ See [ADR-013](../adr/013-internationalization.md).
 
 - **Phase 2.3**: Core validation engine (`validation/` package)
 - **Phase 2.4**: RFC 7807 error integration with `ErrorRenderer`
-- **Phase 1.3** (completed): `Validatable` interface + `BindBody`/`BindQuery`
-  (Context methods, auto-call Validate)
+- **Phase 1.3** (completed): `Validatable` interface + `BindBody`/`BindQuery` (Context methods, auto-call Validate)

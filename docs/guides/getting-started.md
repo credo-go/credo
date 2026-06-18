@@ -1,9 +1,6 @@
 # Getting Started
 
-This guide walks through building a Credo application from scratch. By the
-end, you will have a working HTTP server with routing, middleware, dependency
-injection, validation, health checks, error handling, graceful shutdown, and
-clear extension points for background work.
+This guide walks through building a Credo application from scratch. By the end, you will have a working HTTP server with routing, middleware, dependency injection, validation, health checks, error handling, graceful shutdown, and clear extension points for background work.
 
 For deeper coverage of individual topics, see the linked guides and specs.
 
@@ -50,8 +47,7 @@ func main() {
 }
 ```
 
-`credo.New()` auto-loads configuration, creates a DI container, and sets up
-defaults. `Run()` binds the port and blocks until shutdown.
+`credo.New()` auto-loads configuration, creates a DI container, and sets up defaults. `Run()` binds the port and blocks until shutdown.
 
 ---
 
@@ -59,21 +55,16 @@ defaults. `Run()` binds the port and blocks until shutdown.
 
 Before going further, a few definitions:
 
-- **Handler**: `func(*credo.Context) error` — every handler returns an error.
-  Returning `nil` means success; returning an error triggers the centralized
-  error handler.
-- **Context**: request-scoped struct with `Request()` and `Response()`
-  accessors. Pooled for zero allocation.
+- **Handler**: `func(*credo.Context) error` — every handler returns an error. Returning `nil` means success; returning an error triggers the centralized error handler.
+- **Context**: request-scoped struct with `Request()` and `Response()` accessors. Pooled for zero allocation.
 - **Middleware**: `func(credo.Handler) credo.Handler` — wraps handlers.
-- **Route**: returned by `app.GET(...)` etc. Fluent API for naming, metadata,
-  and per-route middleware.
+- **Route**: returned by `app.GET(...)` etc. Fluent API for naming, metadata, and per-route middleware.
 
 ---
 
 ## Configuration
 
-Credo auto-discovers `config.json` / `config.yaml` in the working directory,
-merges `.env` and `CREDO_*` environment variables on top.
+Credo auto-discovers `config.json` / `config.yaml` in the working directory, merges `.env` and `CREDO_*` environment variables on top.
 
 ```json
 {
@@ -111,12 +102,9 @@ credo.MustProvideValue(app, &cfg)
 
 String keys appear once. After that, everything is typed.
 
-For explicit file selection, call `config.Load(config.WithFiles(...))` yourself
-and pass the result with `credo.WithRawConfig(raw)`. Passing `WithRawConfig`
-bypasses `credo.New()`'s auto-load path.
+For explicit file selection, call `config.Load(config.WithFiles(...))` yourself and pass the result with `credo.WithRawConfig(raw)`. Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path.
 
-See [Configuration Guide](configuration.md) for env-specific files, `.env`
-loading, and environment variable conventions.
+See [Configuration Guide](configuration.md) for env-specific files, `.env` loading, and environment variable conventions.
 
 ---
 
@@ -134,8 +122,7 @@ app.DELETE("/users/{id}", deleteUser)
 
 ### Path Parameters
 
-`{name}` captures a segment. `{name:[0-9]+}` adds a regex constraint.
-`{path...}` is a catch-all.
+`{name}` captures a segment. `{name:[0-9]+}` adds a regex constraint. `{path...}` is a catch-all.
 
 ```go
 app.GET("/files/{path...}", func(ctx *credo.Context) error {
@@ -185,9 +172,7 @@ app.GlobalMiddleware(middleware.Rewrite(
 ))
 ```
 
-For conditional handler-driven forwards, use `ctx.Rewrite("/new-path")`.
-See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and
-`OriginalPath()`.
+For conditional handler-driven forwards, use `ctx.Rewrite("/new-path")`. See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and `OriginalPath()`.
 
 ---
 
@@ -215,15 +200,9 @@ api.Middleware(authMiddleware)
 app.GET("/admin", adminHandler).Middleware(requireAdmin)
 ```
 
-Credo includes built-in request IDs, access logging, and panic recovery
-(`WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`).
-Additional middleware: `CORS`, `Secure`, `Compress`, `Timeout`, `RateLimit`.
-Use `middleware.RequestID()` / `middleware.AccessLog()` when you disable the
-built-ins and need custom configuration. `middleware.Recover()` is available
-for per-group/route custom recovery config.
+Credo includes built-in request IDs, access logging, and panic recovery (`WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`). Additional middleware: `CORS`, `Secure`, `Compress`, `Timeout`, `RateLimit`. Use `middleware.RequestID()` / `middleware.AccessLog()` when you disable the built-ins and need custom configuration. `middleware.Recover()` is available for per-group/route custom recovery config.
 
-See the [Middleware Guide](middleware.md) for the full list, configuration
-options, and custom middleware patterns.
+See the [Middleware Guide](middleware.md) for the full list, configuration options, and custom middleware patterns.
 
 ---
 
@@ -266,11 +245,9 @@ ctx.Response().Redirect(302, "/login")   // redirect
 
 ## Validation
 
-Credo uses programmatic validation — no struct tags. Implement the
-`Validatable` interface and `BindBody` calls it automatically.
+Credo uses programmatic validation — no struct tags. Implement the `Validatable` interface and `BindBody` calls it automatically.
 
-> **Tip:** Enable `WithDebug()` or `server.debug: true` to get a warning
-> when a bind target does not implement `Validatable`.
+> **Tip:** Enable `WithDebug()` or `server.debug: true` to get a warning when a bind target does not implement `Validatable`.
 
 ```go
 type CreateUserRequest struct {
@@ -288,8 +265,7 @@ func (r *CreateUserRequest) Validate() error {
 }
 ```
 
-Validation errors are automatically converted to RFC 7807 Problem Details
-with a 422 status code:
+Validation errors are automatically converted to RFC 7807 Problem Details with a 422 status code:
 
 ```json
 {
@@ -308,8 +284,7 @@ See [Validation Spec](../specs/validation.md) for the full rule catalog.
 
 ## Error Handling
 
-Handlers return errors. The internal error handling pipeline converts them
-to RFC 7807 JSON responses:
+Handlers return errors. The internal error handling pipeline converts them to RFC 7807 JSON responses:
 
 ```go
 func getUser(ctx *credo.Context) error {
@@ -331,9 +306,7 @@ return credo.ErrForbidden       // 403
 return credo.ErrBadRequest      // 400
 ```
 
-Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`).
-Custom keys are supported: `credo.NewHTTPError(404, "user.not_found")`.
-When i18n is configured, MessageKey is used as the translation key.
+Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`). Custom keys are supported: `credo.NewHTTPError(404, "user.not_found")`. When i18n is configured, MessageKey is used as the translation key.
 
 Internal errors (5xx) are logged but never leaked to the client.
 
@@ -380,12 +353,9 @@ svc := credo.MustResolve[*UserService](app)
 app.GET("/users/{id}", svc.GetUser)
 ```
 
-`credo.Infra` is injected automatically. Today it carries a service-scoped
-`Logger`; tracing and metrics carriers are planned for the observability
-release.
+`credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
 
-See [Dependency Injection Guide](dependency-injection.md) for `Alias`,
-`BindMany`/`ResolveAll`, `ProvideValue`, testing patterns, and the full mental model.
+See [Dependency Injection Guide](dependency-injection.md) for `Alias`, `BindMany`/`ResolveAll`, `ProvideValue`, testing patterns, and the full mental model.
 
 ---
 
@@ -424,8 +394,7 @@ app.UseHealth(credo.HealthConfig{
 })
 ```
 
-Register health routes on a specific group to apply shared middleware
-(e.g., IP restriction) and a path prefix:
+Register health routes on a specific group to apply shared middleware (e.g., IP restriction) and a path prefix:
 
 ```go
 ops := app.Group("/-").Middleware(ipRestrict)
@@ -447,9 +416,7 @@ app.UseHealth(credo.HealthConfig{
 
 ### Store Integration
 
-When using `store.Register`, store health is automatically wired into the
-readiness endpoint. No extra code needed — registered stores appear in the
-`/ready` response:
+When using `store.Register`, store health is automatically wired into the readiness endpoint. No extra code needed — registered stores appear in the `/ready` response:
 
 ```json
 {
@@ -460,8 +427,7 @@ readiness endpoint. No extra code needed — registered stores appear in the
 }
 ```
 
-For multi-database wiring and transaction behavior, see the
-[Data Access Guide](data-access.md).
+For multi-database wiring and transaction behavior, see the [Data Access Guide](data-access.md).
 
 ### Response Codes
 
@@ -496,14 +462,9 @@ func main() {
 }
 ```
 
-OnStart hooks run after the port is bound (FIFO order). If any hook fails,
-the server does not start. `app.Addr()` is available inside hooks — useful
-when using port 0.
+OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start. `app.Addr()` is available inside hooks — useful when using port 0.
 
-For full control over signal handling — a custom signal set, or coordinating
-shutdown across several servers — use `RunContext`, which installs **no** signal
-handler of its own. Cancel the context to trigger the same graceful drain
-(bounded by `WithShutdownTimeout`):
+For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain (bounded by `WithShutdownTimeout`):
 
 ```go
 func main() {
@@ -520,29 +481,19 @@ func main() {
 }
 ```
 
-For programmatic shutdown — a test, or an admin endpoint — call
-`app.Shutdown(ctx)` from another goroutine; it runs the same drain and honours
-the deadline on the `ctx` you pass.
+For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdown(ctx)` from another goroutine; it runs the same drain and honours the deadline on the `ctx` you pass.
 
 Shutdown sequence:
 
-1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness
-   (`/health`) stays up, since the process is alive and draining
+1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
 2. Cancel app context (signals background services)
 3. Drain in-flight HTTP requests
 4. DI Container shutdown (reverse-order singleton cleanup)
 5. OnShutdown hooks (LIFO)
 
-Services that implement `credo.Shutdowner` are cleaned up automatically by
-the DI container. For components **not** managed by DI, use
-`app.OnShutdown(fn)` instead. See the
-[Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle)
-for a detailed comparison.
+Services that implement `credo.Shutdowner` are cleaned up automatically by the DI container. For components **not** managed by DI, use `app.OnShutdown(fn)` instead. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
 
-If you need managed background tasks, use `worker.Register(...)` instead of
-manually starting goroutines in `main()`. Registered workers receive the app
-shutdown signal automatically and the worker pool waits for them during
-shutdown. See the [Worker Guide](worker.md).
+If you need managed background tasks, use `worker.Register(...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
 
 ---
 

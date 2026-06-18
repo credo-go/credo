@@ -1,43 +1,20 @@
 # ADR-004: Dependency Injection & credo.Infra
 
-**Status:** Accepted (amended 2026-06-11)
-**Date:** 2026-03-01
-**Depends on:** ADR-001, ADR-003
-
-> **Amendment (2026-06-11):** The `Metrics`/`Tracer` fields of `Infra` — and
-> with them the root-package `MeterProvider`/`TracerProvider`/`Counter`/
-> `Histogram`/`Span` interfaces and the `WithMetrics`/`WithTracer` options —
-> were removed before v1. They were speculative: no real adapter existed, and
-> shipping placeholder interfaces would have frozen an untested API surface.
-> `Infra` now carries the Logger only; the observability release (Phase 3.5,
-> aligned with the v1 / Go 1.27 window) will redesign these carriers against
-> real OpenTelemetry and Prometheus adapters. `Infra`'s keyed-literal guard
-> (`_ struct{}`) lets the new fields land without breaking constructors.
-> Code snippets below show the original design and are retained as the
-> decision record; the carrier mechanism itself (Model 1, scoping, fallback)
-> is unchanged.
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-003
 
 ## Context
 
-Dependency injection is a fundamental need for enterprise applications
-(ADR-001, ADR-003). Credo's DI mechanism must address two distinct needs:
+Dependency injection is a fundamental need for enterprise applications (ADR-001, ADR-003). Credo's DI mechanism must address two distinct needs:
 
-1. **Business dependencies** (DB, repo, service): Each service requires
-   different combinations. Must be explicit, mockable, and type-safe.
+1. **Business dependencies** (DB, repo, service): Each service requires different combinations. Must be explicit, mockable, and type-safe.
 
-2. **Infrastructure dependencies** (Logger, Metrics, Tracer): Nearly every
-   service needs them. Passing 3-4 infra parameters to every constructor is
-   verbose, but implicit injection (auto-populate) in Go conflicts with Go's
-   philosophy.
+2. **Infrastructure dependencies** (Logger, Metrics, Tracer): Nearly every service needs them. Passing 3-4 infra parameters to every constructor is verbose, but implicit injection (auto-populate) in Go conflicts with Go's philosophy.
 
 ### Why Not Implicit Base?
 
-An embeddable `Base` struct auto-populated via reflection (similar to
-Spring's `@Autowired`) may seem attractive at first glance, but it has
-serious problems in Go:
+An embeddable `Base` struct auto-populated via reflection (similar to Spring's `@Autowired`) may seem attractive at first glance, but it has serious problems in Go:
 
-- **Implicit**: Not visible in the constructor signature — it's unclear
-  what is being injected
+- **Implicit**: Not visible in the constructor signature — it's unclear what is being injected
 - **Reflection**: Requires scanning struct fields via reflect
 - **God object tendency**: Logger + Config + Metrics + Tracer all in one struct
 - **Testing difficulty**: Requires special mechanisms for mocking
@@ -47,28 +24,21 @@ serious problems in Go:
 
 ### Container: Generics-Based DI
 
-The DI container implementation lives in the `internal/di` package. Type-safe
-generic functions are exposed through the root package:
+The DI container implementation lives in the `internal/di` package. Type-safe generic functions are exposed through the root package:
 
 ```go
 credo.Provide[T](app, constructor)  // Register
 credo.Resolve[T](app)               // Resolve
 ```
 
-The container is a Credo-specific component — it is not intended for
-standalone use as an independent DI library. For this reason, `internal/di`
-is preferred over a public `container/` package.
+The container is a Credo-specific component — it is not intended for standalone use as an independent DI library. For this reason, `internal/di` is preferred over a public `container/` package.
 
 - **Lifecycle**: Singleton
-- Reflection is used at registration time (constructor inspection) and once
-  per singleton during first construction (`reflect.Value.Call`). Subsequent
-  resolves are pure cache lookups — zero reflection.
+- Reflection is used at registration time (constructor inspection) and once per singleton during first construction (`reflect.Value.Call`). Subsequent resolves are pure cache lookups — zero reflection.
 
 ### Interface Alias
 
-Interface alias via `Alias[I, T]()` creates an alias so `Resolve[I]`
-returns T's singleton. Contract: I is an interface, T implements I, and T
-is already registered via `Provide`.
+Interface alias via `Alias[I, T]()` creates an alias so `Resolve[I]` returns T's singleton. Contract: I is an interface, T implements I, and T is already registered via `Provide`.
 
 ```go
 credo.Provide[*UserRepo](app, NewUserRepo)
@@ -77,9 +47,7 @@ credo.Alias[UserRepository, *UserRepo](app)  // Resolve[UserRepository] returns 
 
 ### Ordered Interface Collections
 
-Some application components need an ordered set of implementations rather than
-one default implementation: notification senders, hooks, subscribers, policy
-evaluators, or plugin chains.
+Some application components need an ordered set of implementations rather than one default implementation: notification senders, hooks, subscribers, policy evaluators, or plugin chains.
 
 Credo supports this via `BindMany[I, T]()` and `ResolveAll[I]()`:
 
@@ -93,8 +61,7 @@ credo.BindMany[Sender, *InAppSender](app)
 senders := credo.MustResolveAll[Sender](app)
 ```
 
-The same ordered collection is also injectable via constructor parameters of
-type `[]I`:
+The same ordered collection is also injectable via constructor parameters of type `[]I`:
 
 ```go
 func NewSenderRegistry(senders []Sender) *SenderRegistry {
@@ -113,36 +80,26 @@ Rules:
 
 ### Finalize Phase
 
-`credo.Finalize(app)` freezes the container and validates the dependency
-graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`,
-`Alias`, and `BindMany` calls are rejected. `Run()` and `RunTLS()` call Finalize implicitly. `Resolve` is
-allowed both before and after Finalize (bootstrap phase supports
-`Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps
-`Resolve` in bootstrap/composition-root code; runtime `Resolve` remains
-available but is not the preferred application pattern. After a failed
-Finalize, `Resolve` returns the error.
+`credo.Finalize(app)` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunTLS()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
 
 ### credo.Infra: Explicit Infrastructure Carrier
 
-`credo.Infra` is a fixed struct defined by the framework. It carries
-infrastructure dependencies such as Logger, Metrics, and Tracer:
+`credo.Infra` is a fixed struct defined by the framework. It carries framework-managed infrastructure. Today that is the service-scoped Logger; the observability release (Phase 3.5, aligned with the v1 / Go 1.27 window) extends the same carrier with metrics and tracing, designed against real OpenTelemetry and Prometheus adapters rather than speculative placeholders:
 
 ```go
-// Defined by the framework, not extensible by the user
+// Defined by the framework, not extensible by the user.
 type Infra struct {
-    _ struct{} // forces keyed literals so new fields can be added compatibly
+    _ struct{} // forces keyed literals so new fields (metrics, tracing) land compatibly
 
-    Logger  *slog.Logger
-    Metrics MeterProvider
-    Tracer  TracerProvider
+    Logger *slog.Logger
 }
 ```
 
-When the container sees the `credo.Infra` type as a constructor parameter,
-it runs a special code path:
+The `_ struct{}` keyed-literal guard is deliberate: it lets Phase 3.5 add the metrics and tracing fields without breaking existing `credo.Infra{Logger: ...}` construction sites.
 
-1. Resolves Logger, Metrics, Tracer from the container (or uses noop
-   fallbacks)
+When the container sees the `credo.Infra` type as a constructor parameter, it runs a special code path:
+
+1. Resolves the Logger from the container (or uses the framework default)
 2. Scopes the Logger with a `service=<name>` attribute
 3. Places the produced `Infra` value into the parameter
 
@@ -156,23 +113,20 @@ func NewUserService(infra credo.Infra, repo UserRepo) *UserService {
 
 ### Container Detection Logic
 
-The container automatically determines which injection model is being used
-by inspecting the constructor signature:
+The container automatically determines which injection model is being used by inspecting the constructor signature:
 
-1. If the first parameter type is `credo.Infra` -> **Model 1**: Produce Infra
-   specially, resolve remaining parameters normally
-2. Otherwise -> **Pure constructor injection**: All parameters resolved
-   normally (no Infra magic)
+1. If the first parameter type is `credo.Infra` -> **Model 1**: Produce Infra specially, resolve remaining parameters normally
+2. Otherwise -> **Pure constructor injection**: All parameters resolved normally (no Infra magic)
 
 The developer chooses on a per-service basis.
 
 ### Infra Design Decisions
 
 | Decision | Rationale |
-|----------|-----------|
+| --- | --- |
 | **Fixed struct, not extensible** | Fields are known, no field-scan/tag needed |
 | **Always available** | Like `context.Context` — no need to register, container knows how to produce it |
-| **Noop fallback** | If Logger/Metrics/Tracer are not registered, noop is used, no panic |
+| **Default fallback** | If no Logger is registered, the framework default logger is used — no panic |
 | **Scoped Logger** | Each service gets a logger scoped with its own name |
 | **First parameter convention** | Like Go's `context.Context` convention, Infra is always the first parameter |
 | **Reflection constrained to cold path** | Constructor inspection at registration + `reflect.Call` once per singleton first construction; subsequent resolves are cache lookups |
@@ -182,7 +136,7 @@ The developer chooses on a per-service basis.
 ### Considered and Rejected
 
 | Alternative | Reason for rejection |
-|-------------|---------------------|
+| --- | --- |
 | Implicit Base (auto-populate) | Conflicts with Go philosophy, reflection-based field population, implicit |
 | Container as parameter (service locator) | Dependencies not visible in signature, unclear what to mock in tests |
 | Struct tag injection (`credo:"inject"`) | Tag typos not caught at compile time, visual noise, field-scan reflection |
@@ -195,6 +149,7 @@ The developer chooses on a per-service basis.
 ## Consequences
 
 **Positive:**
+
 - Every dependency is visible in the constructor signature — explicit, reviewable
 - `credo.Infra` consolidates infra boilerplate into a single parameter — not verbose
 - Reflection is limited to constructor/infra metadata inspection; resolve hot path uses cached mappings
@@ -207,6 +162,7 @@ The developer chooses on a per-service basis.
 - `Finalize()` catches dependency graph errors at startup, not at first request
 
 **Negative:**
+
 - `credo.Infra` parameter must be added to every constructor (minimal boilerplate)
 - Infra is not extensible — adding a new infra type requires a framework change
 - Special code path in container for `credo.Infra` — but it's a simple type switch
@@ -215,15 +171,4 @@ The developer chooses on a per-service basis.
 
 ## ProvideFactory
 
-`Provide`'s `constructor` parameter is necessarily `any` — Go cannot express
-"a function with arbitrary parameters returning `T`" in the type system — so
-signature mistakes surface as registration-time errors, not compile errors.
-`ProvideFactory[T](app, fn func(*App) (T, error))` is the fully
-compiler-checked factory alternative: `fn`'s signature is enforced (with `T`
-inferred), and `fn` resolves its own dependencies via `Resolve` inside the
-closure. The factory name is intentional: the container cannot inspect its
-dependency graph. The trade-off is that `fn` is opaque to the container: its
-dependencies do not participate in `Finalize` graph validation or cycle
-detection, and `credo.Infra` is not auto-injected (`app.NewInfra` replaces
-Model 1 inside `fn`). Plain `Provide` with a named constructor remains the
-recommended default. See `docs/specs/container.md` for details.
+`Provide`'s `constructor` parameter is necessarily `any` — Go cannot express "a function with arbitrary parameters returning `T`" in the type system — so signature mistakes surface as registration-time errors, not compile errors. `ProvideFactory[T](app, fn func(*App) (T, error))` is the fully compiler-checked factory alternative: `fn`'s signature is enforced (with `T` inferred), and `fn` resolves its own dependencies via `Resolve` inside the closure. The factory name is intentional: the container cannot inspect its dependency graph. The trade-off is that `fn` is opaque to the container: its dependencies do not participate in `Finalize` graph validation or cycle detection, and `credo.Infra` is not auto-injected (`app.NewInfra` replaces Model 1 inside `fn`). Plain `Provide` with a named constructor remains the recommended default. See `docs/specs/container.md` for details.

@@ -1,9 +1,6 @@
 # Worker Spec
 
-**Status**: Draft (API sketch — under discussion)
-**Package**: `worker/`
-**Sources**: robfig/cron v3 (MIT, cron expression parser only)
-**ADR**: TBD
+**Status**: Draft (API sketch — under discussion) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: TBD
 
 ---
 
@@ -15,54 +12,31 @@ This file is the single source of truth for Credo's worker system design.
 
 ## Overview
 
-The `worker/` package provides a unified background task system for Credo
-applications. It replaces the originally planned separate `cron/` package
-by supporting both **continuous** and **scheduled** workers through a single
-interface.
+The `worker/` package provides a unified background task system for Credo applications. It replaces the originally planned separate `cron/` package by supporting both **continuous** and **scheduled** workers through a single interface.
 
 Key design properties:
 
-- **Single interface** — `Worker` with `Name()` + `Run(ctx)`. Continuous
-  vs scheduled is a registration option, not a type distinction.
-- **Three-layer model** — `Definition` (immutable registration record) →
-  `runner` (runtime executor) → `Info` (read-only snapshot). Config and
-  live state never share a struct.
-- **Fail-fast** — cron expressions are parsed at `Register` time. Invalid
-  schedules are rejected immediately, not at startup.
-- **Lifecycle integrated** — workers start during `app.Run()` via OnStart
-  hook, stop via context cancellation on `app.Shutdown()`.
+- **Single interface** — `Worker` with `Name()` + `Run(ctx)`. Continuous vs scheduled is a registration option, not a type distinction.
+- **Three-layer model** — `Definition` (immutable registration record) → `runner` (runtime executor) → `Info` (read-only snapshot). Config and live state never share a struct.
+- **Fail-fast** — cron expressions are parsed at `Register` time. Invalid schedules are rejected immediately, not at startup.
+- **Lifecycle integrated** — workers start during `app.Run()` via OnStart hook, stop via context cancellation on `app.Shutdown()`.
 - **Panic-safe** — automatic panic recovery per worker execution.
-- **Shutdown-aware** — context cancellation from app shutdown is recognized
-  as a graceful stop, never counted as a failure or restart.
-- **Distinct error policies** — continuous workers have a `restartPolicy`
-  (restart count + backoff), scheduled workers have a `failurePolicy`
-  (consecutive error limit). Same `Worker` interface, different
-  operational semantics.
-- **Overlap-safe** — scheduled workers unconditionally skip-if-still-running.
-  No silent parallel execution. Allow/Queue deferred to v2.
-- **Testable by design** — all timing tests run under `testing/synctest`
-  bubbles (virtual clock), so scheduler and backoff tests are deterministic
-  and instant without a clock-injection seam.
-- **DI-friendly** — workers are constructed by user (possibly via DI),
-  registered with `worker.Register(app, w, opts...)` or fail-fast
-  `worker.MustRegister(app, w, opts...)`.
-- **Observable** — structured logging per execution, future metrics/tracing
-  hooks (depends on Phase 3.5).
+- **Shutdown-aware** — context cancellation from app shutdown is recognized as a graceful stop, never counted as a failure or restart.
+- **Distinct error policies** — continuous workers have a `restartPolicy` (restart count + backoff), scheduled workers have a `failurePolicy` (consecutive error limit). Same `Worker` interface, different operational semantics.
+- **Overlap-safe** — scheduled workers unconditionally skip-if-still-running. No silent parallel execution. Allow/Queue deferred to v2.
+- **Testable by design** — all timing tests run under `testing/synctest` bubbles (virtual clock), so scheduler and backoff tests are deterministic and instant without a clock-injection seam.
+- **DI-friendly** — workers are constructed by user (possibly via DI), registered with `worker.Register(app, w, opts...)` or fail-fast `worker.MustRegister(app, w, opts...)`.
+- **Observable** — structured logging per execution, future metrics/tracing hooks (depends on Phase 3.5).
 
 ---
 
 ## Goals
 
-1. Provide a single, clean abstraction for background tasks (continuous
-   loops, queue consumers, scheduled cleanups, periodic reports).
-2. Eliminate the need for a separate `cron/` package — cron is a scheduling
-   strategy, not a separate system.
-3. Follow established Credo patterns: `store.Register`-style registration,
-   `ensurePool` singleton pattern, `OnStart`/context cancellation lifecycle.
-4. Keep the package self-contained with zero root-package changes beyond
-   the integration point.
-5. Ensure every time-dependent code path is deterministically testable
-   (via `testing/synctest` virtual time).
+1. Provide a single, clean abstraction for background tasks (continuous loops, queue consumers, scheduled cleanups, periodic reports).
+2. Eliminate the need for a separate `cron/` package — cron is a scheduling strategy, not a separate system.
+3. Follow established Credo patterns: `store.Register`-style registration, `ensurePool` singleton pattern, `OnStart`/context cancellation lifecycle.
+4. Keep the package self-contained with zero root-package changes beyond the integration point.
+5. Ensure every time-dependent code path is deterministically testable (via `testing/synctest` virtual time).
 
 ---
 
@@ -72,15 +46,13 @@ Key design properties:
 - Persistent job state / job storage.
 - Cluster-aware scheduling (single-instance only).
 - Worker-specific DI scope (workers use app-level DI like everything else).
-- Health check integration in v1 (snapshot API is sufficient; opt-in
-  readiness binding deferred to v2).
+- Health check integration in v1 (snapshot API is sufficient; opt-in readiness binding deferred to v2).
 
 ---
 
 ## Three-Layer Model
 
-The worker system cleanly separates **immutable config**, **mutable runtime
-state**, and **read-only snapshots**:
+The worker system cleanly separates **immutable config**, **mutable runtime state**, and **read-only snapshots**:
 
 ```
 Register(app, w, opts...) error
@@ -97,10 +69,7 @@ Register(app, w, opts...) error
   • startImmediately               • (serial run loop → overlap skip)
 ```
 
-**Why**: Mixing config with live state causes the struct to accumulate
-temporal fields (attempt counters, last-error, running-flags). Over time
-the boundary between "what was configured" and "what is happening now"
-blurs. Three layers keep each concern in its own scope.
+**Why**: Mixing config with live state causes the struct to accumulate temporal fields (attempt counters, last-error, running-flags). Over time the boundary between "what was configured" and "what is happening now" blurs. Three layers keep each concern in its own scope.
 
 ---
 
@@ -154,9 +123,7 @@ func Func(name string, fn func(ctx context.Context) error) Worker
 
 ## Execution Context
 
-The `ctx` passed to `Worker.Run()` carries lightweight execution metadata.
-Services and dependencies come from DI constructors — context is NOT a
-service locator.
+The `ctx` passed to `Worker.Run()` carries lightweight execution metadata. Services and dependencies come from DI constructors — context is NOT a service locator.
 
 ```go
 // Context value accessors (worker package)
@@ -178,17 +145,13 @@ func WorkerName(ctx context.Context) string
 func ScheduledAt(ctx context.Context) time.Time
 ```
 
-**What goes in context**: execution metadata only (run_id, attempt,
-worker_name, scheduled_at).
-**What does NOT go in context**: logger, tracer, services, config — these
-are injected via DI constructor.
+**What goes in context**: execution metadata only (run_id, attempt, worker_name, scheduled_at). **What does NOT go in context**: logger, tracer, services, config — these are injected via DI constructor.
 
 ---
 
 ## Schedule (Compiled)
 
-Cron expressions are parsed at `Register` time and stored as a compiled
-`Schedule` object. No raw string survives into runtime.
+Cron expressions are parsed at `Register` time and stored as a compiled `Schedule` object. No raw string survives into runtime.
 
 ```go
 // Schedule represents a compiled cron schedule.
@@ -216,19 +179,13 @@ func (s *Schedule) String() string
 func ParseSchedule(expr string) (*Schedule, error)
 ```
 
-**Why compile at registration**: Invalid cron expressions are caught
-immediately with a clear error message and stack trace pointing to the
-`Register` call site, not a cryptic runtime failure minutes later when the
-scheduler first tries to compute the next tick.
+**Why compile at registration**: Invalid cron expressions are caught immediately with a clear error message and stack trace pointing to the `Register` call site, not a cryptic runtime failure minutes later when the scheduler first tries to compute the next tick.
 
 ---
 
 ## Options
 
-Options are **mode-specific**. Using a continuous-only option with a
-scheduled worker (or vice versa) makes `Register` panic.
-This makes misconfiguration a compile-time-adjacent problem, not a
-silent default.
+Options are **mode-specific**. Using a continuous-only option with a scheduled worker (or vice versa) makes `Register` panic. This makes misconfiguration a compile-time-adjacent problem, not a silent default.
 
 ```go
 import "time"
@@ -276,26 +233,13 @@ func WithStartImmediately() Option
 
 ### Overlap Handling
 
-v1 unconditionally skips an activation if the previous execution is still
-running. No configuration needed — this is the only safe default.
+v1 unconditionally skips an activation if the previous execution is still running. No configuration needed — this is the only safe default.
 
-Each scheduled worker is a single goroutine: sleep until the next
-activation, run it synchronously, recompute. Because runs are serial,
-overlap is impossible by construction. Activations whose time passes while
-a run is still in flight are **skipped with a log message** ("worker tick
-skipped") when the loop resumes — real, observable skip semantics, never a
-queue of stale runs.
+Each scheduled worker is a single goroutine: sleep until the next activation, run it synchronously, recompute. Because runs are serial, overlap is impossible by construction. Activations whose time passes while a run is still in flight are **skipped with a log message** ("worker tick skipped") when the loop resumes — real, observable skip semantics, never a queue of stale runs.
 
-Short-interval scheduled jobs (e.g., `@every 30s`) can easily overlap if a
-single execution takes longer than expected. Allow-by-default would give
-users silent parallel workers competing for the same resources. The serial
-loop makes the implementation trivial and the semantics unambiguous.
+Short-interval scheduled jobs (e.g., `@every 30s`) can easily overlap if a single execution takes longer than expected. Allow-by-default would give users silent parallel workers competing for the same resources. The serial loop makes the implementation trivial and the semantics unambiguous.
 
-`OverlapAllow` and `OverlapQueue` are deferred to v2. Allow would require
-per-execution state tracking (multiple concurrent `running` flags, multiple
-`lastError` values, completion-order-dependent failure counting) — the
-single-runner model breaks down. Queue adds internal buffering and staleness
-edge cases. Neither is justified for v1.
+`OverlapAllow` and `OverlapQueue` are deferred to v2. Allow would require per-execution state tracking (multiple concurrent `running` flags, multiple `lastError` values, completion-order-dependent failure counting) — the single-runner model breaks down. Queue adds internal buffering and staleness edge cases. Neither is justified for v1.
 
 ### Error Policy Separation
 
@@ -312,12 +256,7 @@ type failurePolicy struct {
 }
 ```
 
-**Why separate**: `WithMaxAttempts(3)` on a continuous worker means
-"restart up to 3 times after crashes". On a scheduled worker it would mean
-"stop after 3 consecutive errors". Same option name, two different
-semantics — confusing API. Explicit `WithMaxRestarts` / `WithMaxConsecutiveFailures`
-make the intent unambiguous at every call site. Cross-mode usage returns
-an error at registration rather than being silently ignored.
+**Why separate**: `WithMaxAttempts(3)` on a continuous worker means "restart up to 3 times after crashes". On a scheduled worker it would mean "stop after 3 consecutive errors". Same option name, two different semantics — confusing API. Explicit `WithMaxRestarts` / `WithMaxConsecutiveFailures` make the intent unambiguous at every call site. Cross-mode usage returns an error at registration rather than being silently ignored.
 
 ---
 
@@ -383,20 +322,11 @@ func (r *runner) snapshot() Info {
 }
 ```
 
-**Why mutex, not atomic.Value**: `atomic.Value` requires every `Store` to
-use the same concrete type. Storing `nil` and then an `*errors.errorString`
-panics at runtime. Storing `error` as interface is equally fragile — different
-concrete error types across stores. A mutex-guarded `string` field is simple,
-correct, and makes the snapshot read (`Pool.Workers()`) trivially safe.
+**Why mutex, not atomic.Value**: `atomic.Value` requires every `Store` to use the same concrete type. Storing `nil` and then an `*errors.errorString` panics at runtime. Storing `error` as interface is equally fragile — different concrete error types across stores. A mutex-guarded `string` field is simple, correct, and makes the snapshot read (`Pool.Workers()`) trivially safe.
 
-**No per-runner cancel**: The pool context governs all runners. Individual
-runner termination (e.g., worker transitions to `StatusFailed`) is handled
-by the goroutine returning, not by cancellation. A `cancel` field would add
-unused API surface; if per-worker cancellation is needed in v2 (e.g., admin
-stop-single-worker), it can be added then.
+**No per-runner cancel**: The pool context governs all runners. Individual runner termination (e.g., worker transitions to `StatusFailed`) is handled by the goroutine returning, not by cancellation. A `cancel` field would add unused API surface; if per-worker cancellation is needed in v2 (e.g., admin stop-single-worker), it can be added then.
 
-The runner is an internal type. Users interact with `Definition` at
-registration time and `Info` at query time — never with the runner directly.
+The runner is an internal type. Users interact with `Definition` at registration time and `Info` at query time — never with the runner directly.
 
 ---
 
@@ -417,10 +347,7 @@ type Info struct {
 }
 ```
 
-**Why `LastError string` not `error`**: Info is a snapshot meant for
-display, logging, and serialization. Carrying a live `error` value leaks
-implementation details and prevents clean JSON marshaling. The string is
-the error's message at snapshot time.
+**Why `LastError string` not `error`**: Info is a snapshot meant for display, logging, and serialization. Carrying a live `error` value leaks implementation details and prevents clean JSON marshaling. The string is the error's message at snapshot time.
 
 ### Status
 
@@ -437,22 +364,13 @@ const (
 )
 ```
 
-**Removed `StatusDisabled`**: The original draft had "disabled until next
-successful tick" which is self-contradictory — a disabled worker cannot
-have a successful tick. Instead, `StatusFailed` is permanent: the worker
-is done until app restart. There is no intermediate "paused/suppressed"
-state. If auto-recovery is needed, users set `maxRestarts: 0` (unlimited)
-or `maxConsecutiveFailures: 0` (unlimited) and handle degradation in their
-own logic.
+**Removed `StatusDisabled`**: The original draft had "disabled until next successful tick" which is self-contradictory — a disabled worker cannot have a successful tick. Instead, `StatusFailed` is permanent: the worker is done until app restart. There is no intermediate "paused/suppressed" state. If auto-recovery is needed, users set `maxRestarts: 0` (unlimited) or `maxConsecutiveFailures: 0` (unlimited) and handle degradation in their own logic.
 
 ---
 
 ## Time and Testing (synctest)
 
-The pool and runners call the `time` package directly (`time.Now`,
-`time.NewTimer`); there is no clock-injection seam. Determinism comes from
-`testing/synctest` (Go 1.26+): timing tests run inside a bubble whose
-virtual clock advances only when every goroutine is durably blocked.
+The pool and runners call the `time` package directly (`time.Now`, `time.NewTimer`); there is no clock-injection seam. Determinism comes from `testing/synctest` (Go 1.26+): timing tests run inside a bubble whose virtual clock advances only when every goroutine is durably blocked.
 
 ```go
 func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
@@ -469,15 +387,7 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 }
 ```
 
-**Why synctest over a Clock interface**: the earlier design carried a
-`Clock` abstraction (`Now()` / `After()`) plus a hand-rolled `fakeClock`
-with its own timer bookkeeping — production indirection whose only purpose
-was testability, and `time.After` in the runner leaked timers until they
-fired. `testing/synctest` gives deterministic, instant timing tests against
-the real `time` package, so the seam (and `clock.go`) was deleted outright.
-Two rules of thumb inside bubbles: `synctest.Wait` does **not** advance the
-clock (sleep past a deadline to fire timers), and goroutines must block on
-synctest-aware primitives (channels, timers, mutexes) for time to advance.
+**Why synctest over a Clock interface**: the earlier design carried a `Clock` abstraction (`Now()` / `After()`) plus a hand-rolled `fakeClock` with its own timer bookkeeping — production indirection whose only purpose was testability, and `time.After` in the runner leaked timers until they fired. `testing/synctest` gives deterministic, instant timing tests against the real `time` package, so the seam (and `clock.go`) was deleted outright. Two rules of thumb inside bubbles: `synctest.Wait` does **not** advance the clock (sleep past a deadline to fire timers), and goroutines must block on synctest-aware primitives (channels, timers, mutexes) for time to advance.
 
 ---
 
@@ -562,11 +472,7 @@ func ensurePool(app *credo.App) (*Pool, error) {
 }
 ```
 
-> **Root package change required**: `App.Logger() *slog.Logger` — a trivial
-> accessor for the existing `app.logger` field. This is consistent with how
-> `store.Register` wires store health through the module-internal
-> `internal/health.StoreFunc` DI seam (sub-packages need limited access to
-> app internals without expanding the public API).
+> **Root package change required**: `App.Logger() *slog.Logger` — a trivial accessor for the existing `app.logger` field. This is consistent with how `store.Register` wires store health through the module-internal `internal/health.StoreFunc` DI seam (sub-packages need limited access to app internals without expanding the public API).
 
 ---
 
@@ -690,12 +596,7 @@ runContinuous(ctx, runner):
 
 ### Scheduled Worker
 
-Each scheduled worker is a **single goroutine** running a serial loop:
-sleep until the next activation, run it synchronously, recompute. (An
-earlier design used two goroutines per worker — a scheduler handing fire
-times to an executor over an unbuffered channel — plus three coordination
-channels for startup, failure, and tick handoff. The serial loop provides
-the same observable semantics with none of that choreography.)
+Each scheduled worker is a **single goroutine** running a serial loop: sleep until the next activation, run it synchronously, recompute. (An earlier design used two goroutines per worker — a scheduler handing fire times to an executor over an unbuffered channel — plus three coordination channels for startup, failure, and tick handoff. The serial loop provides the same observable semantics with none of that choreography.)
 
 ```
 runScheduled(ctx, runner):
@@ -760,22 +661,12 @@ runScheduled(ctx, runner):
 
 **Key properties of this model:**
 
-- **Overlap is impossible by construction.** Runs are serial; there is no
-  concurrent executor to race against.
-- **Skips are real and observable.** Activations that pass while a run is
-  in flight are logged ("worker tick skipped") and dropped — never queued
-  as stale back-to-back runs.
-- **@every stays anchored.** The next activation is computed from the last
-  intended time, so a 10s-long run under `@every 1m` still fires on the
-  original minute grid instead of drifting by run duration. (Cron
-  expressions are wall-clock anchored either way.)
-- **Shutdown waits for real work.** The pool waitgroup tracks the single
-  goroutine, which is either sleeping (exits on `ctx.Done()`) or inside
-  `Run()` (returns via the same parent context).
-- **No timer leak.** One reusable `time.Timer` per worker, stopped on exit
-  — no `time.After` channels left behind.
-- **startImmediately is just a first run** with `ScheduledAt` = zero time,
-  executed before the loop starts.
+- **Overlap is impossible by construction.** Runs are serial; there is no concurrent executor to race against.
+- **Skips are real and observable.** Activations that pass while a run is in flight are logged ("worker tick skipped") and dropped — never queued as stale back-to-back runs.
+- **@every stays anchored.** The next activation is computed from the last intended time, so a 10s-long run under `@every 1m` still fires on the original minute grid instead of drifting by run duration. (Cron expressions are wall-clock anchored either way.)
+- **Shutdown waits for real work.** The pool waitgroup tracks the single goroutine, which is either sleeping (exits on `ctx.Done()`) or inside `Run()` (returns via the same parent context).
+- **No timer leak.** One reusable `time.Timer` per worker, stopped on exit — no `time.After` channels left behind.
+- **startImmediately is just a first run** with `ScheduledAt` = zero time, executed before the loop starts.
 
 ### Graceful Stop Detection
 
@@ -869,20 +760,15 @@ app.Shutdown(ctx)
   └─ OnShutdown hooks (LIFO)
 ```
 
-Workers receive shutdown signal via context cancellation. The pool's
-`Shutdown` is called automatically because `Pool` implements
-`credo.Shutdowner` and is registered in the DI container.
+Workers receive shutdown signal via context cancellation. The pool's `Shutdown` is called automatically because `Pool` implements `credo.Shutdowner` and is registered in the DI container.
 
 ---
 
 ## Health Integration (deferred)
 
-v1 exposes only `Pool.Workers() []Info` — a snapshot API sufficient for
-logging, debugging, and admin endpoints.
+v1 exposes only `Pool.Workers() []Info` — a snapshot API sufficient for logging, debugging, and admin endpoints.
 
-Health check binding is **not** wired automatically. Not every failed
-worker should degrade readiness — a failed metrics-reporter should not
-make the entire app unready. If needed in the future:
+Health check binding is **not** wired automatically. Not every failed worker should degrade readiness — a failed metrics-reporter should not make the entire app unready. If needed in the future:
 
 ```go
 // Future (v2): opt-in readiness binding per worker
@@ -892,9 +778,7 @@ worker.MustRegister(app, critical,
 )
 ```
 
-`WithCritical()` is reserved for a future version. Until then, users who
-need worker health in readiness can add a custom `ReadinessCheck` that
-inspects `Pool.Workers()`.
+`WithCritical()` is reserved for a future version. Until then, users who need worker health in readiness can add a custom `ReadinessCheck` that inspects `Pool.Workers()`.
 
 ---
 
@@ -1095,22 +979,16 @@ func main() {
 
 ## Configuration (Optional)
 
-Workers can optionally read defaults from RawConfig under the `worker` key.
-Per-worker options always take precedence.
+Workers can optionally read defaults from RawConfig under the `worker` key. Per-worker options always take precedence.
 
 ```yaml
 worker:
   restart_delay: "5s"           # default restart delay (continuous)
 ```
 
-Config is read once at pool creation (inside `ensurePool`). Individual
-`WithRestartDelay` etc. options override config defaults.
+Config is read once at pool creation (inside `ensurePool`). Individual `WithRestartDelay` etc. options override config defaults.
 
-**No `shutdown_timeout` config**: The pool's `Shutdown(ctx)` receives the
-global shutdown context from `app.Shutdown(ctx)`, which already carries a
-deadline. Adding a worker-specific timeout would create ambiguity about
-which deadline wins. The pool respects `ctx.Done()` and that is the single
-source of truth for shutdown deadlines.
+**No `shutdown_timeout` config**: The pool's `Shutdown(ctx)` receives the global shutdown context from `app.Shutdown(ctx)`, which already carries a deadline. Adding a worker-specific timeout would create ambiguity about which deadline wins. The pool respects `ctx.Done()` and that is the single source of truth for shutdown deadlines.
 
 ---
 
@@ -1140,41 +1018,29 @@ worker/ ──imports──→ credo (root)   ✓  (same as store/)
 credo (root) ──does NOT import──→ worker/  ✓  (no cycle)
 ```
 
-Worker package calls `credo.Resolve`, `credo.ProvideValue`, `app.OnStart`.
-Root package has zero awareness of worker package.
+Worker package calls `credo.Resolve`, `credo.ProvideValue`, `app.OnStart`. Root package has zero awareness of worker package.
 
 ---
 
 ## Cron Expression Parser
 
-Adapted from robfig/cron v3 (MIT) and trimmed to the expected default Unix
-cron surface. Only expression parsing and next-fire calculation are taken,
-not the scheduler/runner. Compiled into `Schedule` at registration time.
+Adapted from robfig/cron v3 (MIT) and trimmed to the expected default Unix cron surface. Only expression parsing and next-fire calculation are taken, not the scheduler/runner. Compiled into `Schedule` at registration time.
 
-| Format | Example | Description |
-|--------|---------|-------------|
-| Standard (5-field) | `0 */6 * * *` | min hour dom month dow |
-| Predefined | `@hourly` | Every hour at minute 0 |
-| Predefined | `@daily` / `@midnight` | Every day at 00:00 |
-| Predefined | `@weekly` | Every Sunday at 00:00 |
-| Predefined | `@monthly` | First of month at 00:00 |
-| Interval | `@every 5m` | Every 5 minutes |
-| Interval | `@every 1h30m` | Every 1.5 hours |
+| Format             | Example                | Description             |
+| ------------------ | ---------------------- | ----------------------- |
+| Standard (5-field) | `0 */6 * * *`          | min hour dom month dow  |
+| Predefined         | `@hourly`              | Every hour at minute 0  |
+| Predefined         | `@daily` / `@midnight` | Every day at 00:00      |
+| Predefined         | `@weekly`              | Every Sunday at 00:00   |
+| Predefined         | `@monthly`             | First of month at 00:00 |
+| Interval           | `@every 5m`            | Every 5 minutes         |
+| Interval           | `@every 1h30m`         | Every 1.5 hours         |
 
-Field syntax: lists (`1,15`), ranges (`1-5`), steps (`*/10`, `8-18/2`),
-month/weekday names (`jan`, `sat`), `?` as an alias for `*`, and `7`
-accepted as Sunday. Schedules are evaluated in the server's local time
-zone and fire at second 0 of the matching minute.
+Field syntax: lists (`1,15`), ranges (`1-5`), steps (`*/10`, `8-18/2`), month/weekday names (`jan`, `sat`), `?` as an alias for `*`, and `7` accepted as Sunday. Schedules are evaluated in the server's local time zone and fire at second 0 of the matching minute.
 
-As in crontab(5), when both day-of-month and day-of-week are restricted
-(neither is `*`), the schedule fires when **either** matches: `0 0 13 * fri`
-runs on the 13th AND on every Friday. A step applied to `*` (e.g. `*/2` in
-day-of-month) counts as restricted for this rule.
+As in crontab(5), when both day-of-month and day-of-week are restricted (neither is `*`), the schedule fires when **either** matches: `0 0 13 * fri` runs on the 13th AND on every Friday. A step applied to `*` (e.g. `*/2` in day-of-month) counts as restricted for this rule.
 
-Deliberately not supported (trimmed from the robfig heritage): the 6-field
-seconds form (sub-minute periods → `@every`), `@yearly`/`@annually`
-(→ `0 0 1 1 *`), and `TZ=`/`CRON_TZ=` prefixes (schedules always run in
-server local time). Each is rejected with a targeted error message.
+Deliberately not supported (trimmed from the robfig heritage): the 6-field seconds form (sub-minute periods → `@every`), `@yearly`/`@annually` (→ `0 0 1 1 *`), and `TZ=`/`CRON_TZ=` prefixes (schedules always run in server local time). Each is rejected with a targeted error message.
 
 ---
 
@@ -1222,25 +1088,13 @@ worker.MustRegister(app, consumer,
 
 ## Test Strategy
 
-- **synctest-based tests**: All timing tests run in `testing/synctest`
-  bubbles. Virtual time, no `time.Sleep` flakiness, deterministic
-  interleaving via `synctest.Wait`.
-- **Unit tests**: Worker interface mock, option parsing, schedule parsing,
-  option conflict rejection.
+- **synctest-based tests**: All timing tests run in `testing/synctest` bubbles. Virtual time, no `time.Sleep` flakiness, deterministic interleaving via `synctest.Wait`.
+- **Unit tests**: Worker interface mock, option parsing, schedule parsing, option conflict rejection.
 - **Definition tests**: Immutability, Kind(), policy defaults.
-- **Runner tests**: restart count, consecutive failures, overlap skip
-  (activations elapsing during a long run → skipped + logged, next future
-  activation proceeds normally), panic recovery, status transitions
-  (Idle→Running→Waiting→Failed, Idle→Waiting→Running→Stopped),
-  graceful stop detection (context.Canceled from parent → Stopped not Failed,
-  context.DeadlineExceeded from worker sub-ctx → counted as failure),
-  startImmediately with ScheduledAt=zero.
-- **Pool tests**: Start/Shutdown lifecycle, concurrent workers, `Workers()`
-  snapshot correctness, duplicate name rejection.
-- **Schedule tests**: cron expression parsing, `Next()` calculation, edge
-  cases (DST, leap seconds, end-of-month).
-- **Integration**: `testutil.NewApp` + `worker.Register` + verify execution
-  via channels/atomics.
+- **Runner tests**: restart count, consecutive failures, overlap skip (activations elapsing during a long run → skipped + logged, next future activation proceeds normally), panic recovery, status transitions (Idle→Running→Waiting→Failed, Idle→Waiting→Running→Stopped), graceful stop detection (context.Canceled from parent → Stopped not Failed, context.DeadlineExceeded from worker sub-ctx → counted as failure), startImmediately with ScheduledAt=zero.
+- **Pool tests**: Start/Shutdown lifecycle, concurrent workers, `Workers()` snapshot correctness, duplicate name rejection.
+- **Schedule tests**: cron expression parsing, `Next()` calculation, edge cases (DST, leap seconds, end-of-month).
+- **Integration**: `testutil.NewApp` + `worker.Register` + verify execution via channels/atomics.
 - **Benchmark**: Pool startup/shutdown overhead, schedule calculation.
 
 Testing helpers for users:
@@ -1270,68 +1124,32 @@ func (s *Spy) CallCount() int64         { return s.Calls.Load() }
 
 ## Resolved Decisions
 
-1. **Overlap policy**: v1 is skip-only. `OverlapAllow` requires per-execution
-   state tracking (multiple running flags, completion-order failure counting)
-   that breaks the single-runner model. `OverlapQueue` adds buffering and
-   staleness. Both deferred to v2 when real usage patterns emerge.
-   The serial loop makes overlap impossible by construction, and skipped
-   activations are still observable: each one is logged when the loop
-   resumes ("worker tick skipped").
+1. **Overlap policy**: v1 is skip-only. `OverlapAllow` requires per-execution state tracking (multiple running flags, completion-order failure counting) that breaks the single-runner model. `OverlapQueue` adds buffering and staleness. Both deferred to v2 when real usage patterns emerge. The serial loop makes overlap impossible by construction, and skipped activations are still observable: each one is logged when the loop resumes ("worker tick skipped").
 
-2. **Option cross-mode usage**: Returns error, not silently ignored.
-   `WithRestartDelay` on a scheduled worker → error at `Register`. Makes
-   misconfiguration visible immediately.
+2. **Option cross-mode usage**: Returns error, not silently ignored. `WithRestartDelay` on a scheduled worker → error at `Register`. Makes misconfiguration visible immediately.
 
-3. **StatusFailed is permanent**: No intermediate "paused/suppressed" state.
-   A failed worker requires app restart. Users who need auto-recovery use
-   `maxRestarts: 0` (unlimited).
+3. **StatusFailed is permanent**: No intermediate "paused/suppressed" state. A failed worker requires app restart. Users who need auto-recovery use `maxRestarts: 0` (unlimited).
 
-4. **scheduledAt = intended fire time**: The `next` value from
-   `Schedule.Next()` is passed to context, not `time.Now()` at execution.
-   `lastRun` on the runner stores actual execution time for monitoring.
-   For `WithStartImmediately`, `ScheduledAt` returns `time.Time{}` (zero)
-   — this is a synthetic startup tick with no cron-computed fire time.
-   Callers distinguish startup ticks via `worker.ScheduledAt(ctx).IsZero()`.
+4. **scheduledAt = intended fire time**: The `next` value from `Schedule.Next()` is passed to context, not `time.Now()` at execution. `lastRun` on the runner stores actual execution time for monitoring. For `WithStartImmediately`, `ScheduledAt` returns `time.Time{}` (zero) — this is a synthetic startup tick with no cron-computed fire time. Callers distinguish startup ticks via `worker.ScheduledAt(ctx).IsZero()`.
 
-5. **No shutdown_timeout config**: Pool respects the global shutdown context
-   deadline. Worker-specific timeout would conflict.
+5. **No shutdown_timeout config**: Pool respects the global shutdown context deadline. Worker-specific timeout would conflict.
 
-6. **Shutdown/cancel ≠ failure**: `isGracefulStop(err, parentCtx)` checks
-   both `errors.Is(err, context.Canceled || DeadlineExceeded)` AND parent
-   ctx is done. Prevents false positives from worker-internal sub-contexts.
-   Graceful stops transition to `StatusStopped`, not `StatusFailed`.
+6. **Shutdown/cancel ≠ failure**: `isGracefulStop(err, parentCtx)` checks both `errors.Is(err, context.Canceled || DeadlineExceeded)` AND parent ctx is done. Prevents false positives from worker-internal sub-contexts. Graceful stops transition to `StatusStopped`, not `StatusFailed`.
 
-7. **Runner uses mutex, not atomic.Value**: `atomic.Value` panics on
-   mixed-type Store (nil vs concrete error). Mutex-guarded fields with
-   string error are simple and correct. `running` stays atomic (lock-free
-   overlap check).
+7. **Runner uses mutex, not atomic.Value**: `atomic.Value` panics on mixed-type Store (nil vs concrete error). Mutex-guarded fields with string error are simple and correct. `running` stays atomic (lock-free overlap check).
 
-8. **No per-runner cancel**: Pool context governs all runners. Failed
-   workers return from their goroutine. Per-worker cancel deferred to v2.
+8. **No per-runner cancel**: Pool context governs all runners. Failed workers return from their goroutine. Per-worker cancel deferred to v2.
 
-9. **App.Logger() accessor**: `App.Logger() *slog.Logger` is the correct
-   mechanism. Registering `*slog.Logger` in DI would let users bypass
-   `credo.Infra`'s service-scoped logger pattern — services would inject
-   the raw logger instead of getting a properly tagged one via Infra.
-   `App.Logger()` keeps the logger accessible to framework internals
-   (worker pool, error handler) without polluting the DI container.
+9. **App.Logger() accessor**: `App.Logger() *slog.Logger` is the correct mechanism. Registering `*slog.Logger` in DI would let users bypass `credo.Infra`'s service-scoped logger pattern — services would inject the raw logger instead of getting a properly tagged one via Infra. `App.Logger()` keeps the logger accessible to framework internals (worker pool, error handler) without polluting the DI container.
 
 ---
 
 ## Design Questions
 
-1. **Worker.Run() loop semantics**: Should continuous workers manage their
-   own loop, or should `Run()` represent a single execution that the
-   framework loops? Current proposal: worker manages own loop (more
-   flexible, simpler framework code).
+1. **Worker.Run() loop semantics**: Should continuous workers manage their own loop, or should `Run()` represent a single execution that the framework loops? Current proposal: worker manages own loop (more flexible, simpler framework code).
 
-2. **Registration via DI**: Should there be a `worker.Provide[T]` shortcut
-   that combines `credo.Provide + credo.Resolve + worker.Register`? Or is
-   the 3-step explicit approach more aligned with Credo's philosophy?
+2. **Registration via DI**: Should there be a `worker.Provide[T]` shortcut that combines `credo.Provide + credo.Resolve + worker.Register`? Or is the 3-step explicit approach more aligned with Credo's philosophy?
 
-3. **Pool start timing**: OnStart (after port bind) or separate phase?
-   Current proposal: OnStart — workers start alongside HTTP server.
+3. **Pool start timing**: OnStart (after port bind) or separate phase? Current proposal: OnStart — workers start alongside HTTP server.
 
-4. **Config key reads**: Should pool read `worker.*` config from RawConfig
-   automatically, or require explicit config? Current proposal: auto-read
-   with option override (consistent with middleware config pattern).
+4. **Config key reads**: Should pool read `worker.*` config from RawConfig automatically, or require explicit config? Current proposal: auto-read with option override (consistent with middleware config pattern).

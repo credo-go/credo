@@ -1,20 +1,12 @@
 # Middleware Spec
 
-**Status**: Approved
-**Package**: `middleware/`
-**Sources**: Chi (MIT), Echo (MIT), Goyave (MIT)
-**Depends on**: Root package
-**ADRs**: [010-middleware-architecture](../adr/010-middleware-architecture.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md)
+**Status**: Approved **Package**: `middleware/` **Sources**: Chi (MIT), Echo (MIT), Goyave (MIT) **Depends on**: Root package **ADRs**: [010-middleware-architecture](../adr/010-middleware-architecture.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md)
 
 ---
 
 ## Overview
 
-Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib
-middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model
-(Global / Group / Route) provides fine-grained control over which middleware
-runs where. URL rewriting is implemented as middleware at the global/group
-layer when path normalization must happen before route matching.
+Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model (Global / Group / Route) provides fine-grained control over which middleware runs where. URL rewriting is implemented as middleware at the global/group layer when path normalization must happen before route matching.
 
 ---
 
@@ -24,13 +16,11 @@ layer when path normalization must happen before route matching.
 type Middleware func(Handler) Handler
 ```
 
-The single middleware type used throughout Credo. Has full access to
-`credo.Context`, can return errors, and can read route Meta declaratively.
+The single middleware type used throughout Credo. Has full access to `credo.Context`, can return errors, and can read route Meta declaratively.
 
 ### Stdlib Adapter
 
-Existing Go middleware (chi, gorilla, etc.) can be adapted via
-`WrapStdMiddleware`:
+Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddleware`:
 
 ```go
 app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
@@ -40,21 +30,17 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
 
 ## Built-in Tier (Auto-Enabled)
 
-Three built-in middleware are applied automatically by `compile()` and
-require zero configuration:
+Three built-in middleware are applied automatically by `compile()` and require zero configuration:
 
-| Built-in | Purpose | Opt-out |
-|----------|---------|---------|
-| `builtinRecover` | Outermost panic recovery | `WithoutRecover()` |
+| Built-in           | Purpose                        | Opt-out              |
+| ------------------ | ------------------------------ | -------------------- |
+| `builtinRecover`   | Outermost panic recovery       | `WithoutRecover()`   |
 | `builtinRequestID` | Request ID + logger enrichment | `WithoutRequestID()` |
-| `builtinAccessLog` | Structured access logging | `WithoutAccessLog()` |
+| `builtinAccessLog` | Structured access logging      | `WithoutAccessLog()` |
 
-**Execution chain:**
-`builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispatch`
+**Execution chain:** `builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispatch`
 
-These built-in variants are zero-config. For custom configuration (custom
-header, custom generator, skipper, custom logger), disable the built-in and use the
-`middleware` package equivalents instead:
+These built-in variants are zero-config. For custom configuration (custom header, custom generator, skipper, custom logger), disable the built-in and use the `middleware` package equivalents instead:
 
 ```go
 app, err := credo.New(
@@ -67,30 +53,18 @@ app.GlobalMiddleware(
 )
 ```
 
-`middleware.RequestID` behaves like the built-in tier: it also enriches the
-request-scoped logger with `request_id` (via `ctx.AddLogAttrs`), so handler
-logs and the access log carry the ID automatically.
+`middleware.RequestID` behaves like the built-in tier: it also enriches the request-scoped logger with `request_id` (via `ctx.AddLogAttrs`), so handler logs and the access log carry the ID automatically.
 
-**request_id sourcing rule** (shared by built-in and `middleware`
-AccessLog/Recover): the `request_id` attribute is added explicitly only when
-the target logger does not already carry it — that is, when a custom
-`Logger` was configured, or when no request-scoped logger was set
-(`ctx.HasRequestLogger()`). This keeps `request_id` appearing exactly once
-per log record in every combination.
+**request_id sourcing rule** (shared by built-in and `middleware` AccessLog/Recover): the `request_id` attribute is added explicitly only when the target logger does not already carry it — that is, when a custom `Logger` was configured, or when no request-scoped logger was set (`ctx.HasRequestLogger()`). This keeps `request_id` appearing exactly once per log record in every combination.
 
-The rule is convention-based: `HasRequestLogger` reports only that a
-request-scoped logger was set, not which attributes it carries (slog
-loggers are opaque). Middleware that replaces the logger without deriving
-from `ctx.Logger()` silently drops `request_id`, and the framework cannot
-detect it — enrich via `ctx.AddLogAttrs`, which derives by construction,
-and reserve `ctx.SetLogger` for genuine wholesale replacement.
+The rule is convention-based: `HasRequestLogger` reports only that a request-scoped logger was set, not which attributes it carries (slog loggers are opaque). Middleware that replaces the logger without deriving from `ctx.Logger()` silently drops `request_id`, and the framework cannot detect it — enrich via `ctx.AddLogAttrs`, which derives by construction, and reserve `ctx.SetLogger` for genuine wholesale replacement.
 
 ---
 
 ## 3-Tier Model (Goyave-inspired)
 
 | Tier | Registration | Scope | Runs on 404/405? |
-|------|-------------|-------|-------------------|
+| --- | --- | --- | --- |
 | **Built-in** | Automatic (compile-time) | Every request | **Yes** |
 | **Global** | `app.GlobalMiddleware(m...)` | Every request | **Yes** |
 | **Group** | `group.Middleware(m...)` | Routes under this group | No |
@@ -114,21 +88,11 @@ Response
 
 ### Group Middleware Is Collected at Compile Time
 
-A route's chain is assembled when the app compiles (at `Run()` or the
-first request), by walking the route's group parent chain — the same
-model `LookupMeta` uses for metadata. Middleware added to a group after
-routes were registered or sub-groups created therefore still applies to
-them. Registration order determines middleware *order* (parent groups
-before children, append order within a group), never *membership*. To
-exclude one route from a group middleware, register it on a sibling
-group or attach middleware per-route.
+A route's chain is assembled when the app compiles (at `Run()` or the first request), by walking the route's group parent chain — the same model `LookupMeta` uses for metadata. Middleware added to a group after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
 
 ### Why Global Tier Matters
 
-Without a global tier, 404/405 responses bypass all group/route middleware —
-no CORS headers, no compression. The global tier ensures these
-cross-cutting concerns always run. (Request ID, access logging, and panic
-recovery are built-in and always active unless opted out.)
+Without a global tier, 404/405 responses bypass all group/route middleware — no CORS headers, no compression. The global tier ensures these cross-cutting concerns always run. (Request ID, access logging, and panic recovery are built-in and always active unless opted out.)
 
 ```go
 app, err := credo.New()
@@ -152,8 +116,7 @@ api.Middleware(middleware.Compress())
 
 ## Meta-Driven Middleware (Goyave-inspired)
 
-Middleware can read Route Meta to change behavior per-route declaratively,
-instead of hardcoding path checks.
+Middleware can read Route Meta to change behavior per-route declaratively, instead of hardcoding path checks.
 
 ```go
 // Auth middleware — checks Meta instead of path list
@@ -180,13 +143,13 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 
 ### Common Meta Keys
 
-| Key | Type | Used by |
-|-----|------|---------|
-| `"auth"` | `bool` | Auth middleware |
-| `"cors"` | `*CORSConfig` | CORS middleware |
-| `"ratelimit"` | `int` | Rate limiter |
-| `"cache"` | `int` (seconds) | Cache middleware |
-| `"timeout"` | `time.Duration` | Timeout middleware |
+| Key           | Type            | Used by            |
+| ------------- | --------------- | ------------------ |
+| `"auth"`      | `bool`          | Auth middleware    |
+| `"cors"`      | `*CORSConfig`   | CORS middleware    |
+| `"ratelimit"` | `int`           | Rate limiter       |
+| `"cache"`     | `int` (seconds) | Cache middleware   |
+| `"timeout"`   | `time.Duration` | Timeout middleware |
 
 ---
 
@@ -212,7 +175,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 ### Auto-Enabled (Framework Built-in)
 
 | Built-in | Description | Opt-out |
-|---|---|---|
+| --- | --- | --- |
 | Panic recovery | Outermost layer, catches all panics | `WithoutRecover()` |
 | Request ID | `X-Request-Id` header + `ctx.Logger()` enrichment | `WithoutRequestID()` |
 | Access log | Structured request logging via `slog` using `Request.RealIP()` for `remote_addr` | `WithoutAccessLog()` |
@@ -220,7 +183,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 ### Configurable (middleware package)
 
 | Middleware | Source | Description |
-|---|---|---|
+| --- | --- | --- |
 | `AccessLog` | Chi | Structured request logging with Skipper, custom logger, `Request.RealIP()` client IP |
 | `Recover` | Chi | Per-group/route panic recovery with custom config |
 | `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
@@ -244,9 +207,7 @@ type RewriteConfig struct {
 }
 ```
 
-`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees
-the rewritten path on the first lookup. `Rewrite(rules...)` is the rule-list
-shortcut; `RewriteWithConfig` adds a `Skipper` alongside the rules.
+`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. `Rewrite(rules...)` is the rule-list shortcut; `RewriteWithConfig` adds a `Skipper` alongside the rules.
 
 ```go
 type RewriteRule struct {
@@ -263,21 +224,16 @@ type RewriteRule struct {
 **Semantics:**
 
 - Rules are evaluated in order; first match wins.
-- `From` uses Credo route syntax (`{name}`, `{name...}`, `{name:regex}`) unless
-  `Regexp` is provided. Brace matching follows the same parser as the router,
-  including regex quantifiers, escaped braces, and character classes.
+- `From` uses Credo route syntax (`{name}`, `{name...}`, `{name:regex}`) unless `Regexp` is provided. Brace matching follows the same parser as the router, including regex quantifiers, escaped braces, and character classes.
 - `To` expands named placeholders (`{name}`) from the matched captures.
-- `Host` is an optional exact host filter. Matching is case-insensitive, with
-  request ports stripped before comparison.
+- `Host` is an optional exact host filter. Matching is case-insensitive, with request ports stripped before comparison.
 - If `To` contains a query string, it replaces the current query string.
-- If `To` does not contain a query string and `PreserveQuery` is true, the
-  original query string is preserved.
+- If `To` does not contain a query string and `PreserveQuery` is true, the original query string is preserved.
 - `Rewrite()`/`RewriteWithConfig()` panic when called with zero rules.
 
 **Placement:**
 
-Register rewrite as global middleware when it should affect routing for the
-whole app:
+Register rewrite as global middleware when it should affect routing for the whole app:
 
 ```go
 app.GlobalMiddleware(middleware.Rewrite(
@@ -285,14 +241,9 @@ app.GlobalMiddleware(middleware.Rewrite(
 ))
 ```
 
-Register `Rewrite` as global middleware when routing must see the rewritten
-path. When attached at group or route scope, it only mutates the request seen
-by downstream middleware/handler for an already matched route. It does not
-trigger a re-dispatch loop.
+Register `Rewrite` as global middleware when routing must see the rewritten path. When attached at group or route scope, it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.
 
-When a handler later calls `ctx.Rewrite()`, built-in and global middleware do
-not run again. Group and route middleware for the newly matched route do run
-again, so `after` logic must be written with per-dispatch semantics in mind.
+When a handler later calls `ctx.Rewrite()`, built-in and global middleware do not run again. Group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind.
 
 ### CSRF
 
@@ -307,52 +258,35 @@ type CSRFConfig struct {
 }
 ```
 
-Wraps the standard library's `net/http.CrossOriginProtection`: cross-origin
-detection via the `Sec-Fetch-Site` header (all modern browsers) with an
-Origin/Host comparison fallback. **No tokens, cookies, or session state** —
-the per-request cost is a header check.
+Wraps the standard library's `net/http.CrossOriginProtection`: cross-origin detection via the `Sec-Fetch-Site` header (all modern browsers) with an Origin/Host comparison fallback. **No tokens, cookies, or session state** — the per-request cost is a header check.
 
 **Semantics (inherited from the stdlib detector):**
 
-- `GET`/`HEAD`/`OPTIONS` always pass (safe methods — handlers must not
-  perform state changes in them).
+- `GET`/`HEAD`/`OPTIONS` always pass (safe methods — handlers must not perform state changes in them).
 - `Sec-Fetch-Site: same-origin` / `none` pass.
-- Requests with neither `Sec-Fetch-Site` nor `Origin` pass — non-browser
-  clients (curl, server-to-server, mobile SDKs) are unaffected.
+- Requests with neither `Sec-Fetch-Site` nor `Origin` pass — non-browser clients (curl, server-to-server, mobile SDKs) are unaffected.
 - `Origin` matching the `Host` header passes (pre-2023 browsers).
-- Everything else is rejected — **including `Sec-Fetch-Site: same-site`**:
-  subdomains are cross-origin, so `app.example.com` → `api.example.com`
-  needs `TrustedOrigins: []string{"https://app.example.com"}`.
+- Everything else is rejected — **including `Sec-Fetch-Site: same-site`**: subdomains are cross-origin, so `app.example.com` → `api.example.com` needs `TrustedOrigins: []string{"https://app.example.com"}`.
 
-**Credo integration:** the middleware calls the detector's `Check` method
-and routes rejections through the framework error pipeline — the default
-`ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason
-attached as internal error (RFC 7807 response, reason logged but never
-exposed). The stdlib deny handler is not used.
+**Credo integration:** the middleware calls the detector's `Check` method and routes rejections through the framework error pipeline — the default `ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason attached as internal error (RFC 7807 response, reason logged but never exposed). The stdlib deny handler is not used.
 
-**Panics** if a `TrustedOrigins` entry is malformed or an
-`InsecureBypassPatterns` entry is invalid/conflicting — middleware
-construction is startup configuration (fail-fast, panic-vs-error policy).
+**Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 
-CSRF and CORS are complementary: CORS governs whether a browser may *read*
-a cross-origin response; CSRF protection stops state-changing cross-origin
-requests from being *processed*.
+CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
 
 ### Planned (Not Yet Implemented)
 
-| Middleware | Source | Description |
-|---|---|---|
-| `BasicAuth` | Echo | HTTP Basic authentication |
-| `APIKey` | Echo | API key (header/query) |
-| `JWT` | Echo | JWT token validation |
-| `Metrics` | GoFr | Prometheus request metrics |
-| `Tracer` | GoFr | OpenTelemetry trace propagation |
+| Middleware  | Source | Description                     |
+| ----------- | ------ | ------------------------------- |
+| `BasicAuth` | Echo   | HTTP Basic authentication       |
+| `APIKey`    | Echo   | API key (header/query)          |
+| `JWT`       | Echo   | JWT token validation            |
+| `Metrics`   | GoFr   | Prometheus request metrics      |
+| `Tracer`    | GoFr   | OpenTelemetry trace propagation |
 
 ### RateLimit Lifecycle
 
-`RateLimit()` is a convenience constructor.
-For explicit lifecycle management, use `NewRateLimiter(...)` and register
-shutdown on app stop:
+`RateLimit()` is a convenience constructor. For explicit lifecycle management, use `NewRateLimiter(...)` and register shutdown on app stop:
 
 ```go
 rl := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
@@ -364,32 +298,17 @@ app.OnShutdown(rl.Shutdown)
 
 ## Design Decisions
 
-1. **Credo-native signature as primary** — `func(Handler) Handler` provides full
-   access to `credo.Context` and error returns. Stdlib middleware is adapted via
-   `WrapStdMiddleware`, keeping the community ecosystem accessible.
+1. **Credo-native signature as primary** — `func(Handler) Handler` provides full access to `credo.Context` and error returns. Stdlib middleware is adapted via `WrapStdMiddleware`, keeping the community ecosystem accessible.
 
-2. **3-tier model from Goyave** — Global/Router/Route tiers give precise
-   control. Global tier solves the 404/405 middleware gap present in Chi/Echo.
+2. **3-tier model from Goyave** — Global/Router/Route tiers give precise control. Global tier solves the 404/405 middleware gap present in Chi/Echo.
 
-3. **Meta-driven behavior from Goyave** — Middleware reads route metadata
-   instead of maintaining allowlists/denylists. Declarative and composable.
+3. **Meta-driven behavior from Goyave** — Middleware reads route metadata instead of maintaining allowlists/denylists. Declarative and composable.
 
-4. **Config struct pattern** — `Middleware(cfg ...Config)` for optional
-   configuration. Zero args for defaults, one arg for custom config.
+4. **Config struct pattern** — `Middleware(cfg ...Config)` for optional configuration. Zero args for defaults, one arg for custom config.
 
-5. **Rewrite lives in middleware, not router config** — Stateless path
-   normalization belongs in the middleware tier so it can be registered,
-   scoped, and composed like other cross-cutting concerns. Conditional
-   internal forwarding remains on `ctx.Rewrite()`.
+5. **Rewrite lives in middleware, not router config** — Stateless path normalization belongs in the middleware tier so it can be registered, scoped, and composed like other cross-cutting concerns. Conditional internal forwarding remains on `ctx.Rewrite()`.
 
-6. **CSRF via stdlib `CrossOriginProtection`, not token plumbing** —
-   token/double-submit-cookie CSRF requires session state, template
-   helpers, and header plumbing across the stack; `Sec-Fetch-Site` has
-   shipped in all browsers since 2023 and reduces the problem to a header
-   check. Credo wraps the stdlib detector (maintained upstream, security
-   patches ride Go releases) and only adds config-struct ergonomics plus
-   error-pipeline integration. Older-browser fallback (Origin/Host
-   comparison) is inherited from the stdlib.
+6. **CSRF via stdlib `CrossOriginProtection`, not token plumbing** — token/double-submit-cookie CSRF requires session state, template helpers, and header plumbing across the stack; `Sec-Fetch-Site` has shipped in all browsers since 2023 and reduces the problem to a header check. Credo wraps the stdlib detector (maintained upstream, security patches ride Go releases) and only adds config-struct ergonomics plus error-pipeline integration. Older-browser fallback (Origin/Host comparison) is inherited from the stdlib.
 
 ---
 

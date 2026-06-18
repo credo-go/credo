@@ -1,17 +1,12 @@
 # Store Spec
 
-**Status**: Implemented
-**Package**: `store/` (core contracts), `store/sqldb/` (Bun wrapper, separate submodule)
-**Sources**: GoFr (Apache-2.0, health/interface design), Goyave (MIT, connection patterns)
-**ADRs**: [015-data-access.md](../adr/015-data-access.md)
+**Status**: Implemented **Package**: `store/` (core contracts), `store/sqldb/` (Bun wrapper, separate submodule) **Sources**: GoFr (Apache-2.0, health/interface design), Goyave (MIT, connection patterns) **ADRs**: [015-data-access.md](../adr/015-data-access.md)
 
 ---
 
 ## Canonical Source
 
-Implementation-level details for Credo's data access layer are defined
-in this file. Other documents should keep only high-level references and
-link here.
+Implementation-level details for Credo's data access layer are defined in this file. Other documents should keep only high-level references and link here.
 
 ---
 
@@ -19,52 +14,28 @@ link here.
 
 Credo's data access layer is split into two packages:
 
-- **`store/`** — universal contracts with zero external dependencies. Part
-  of the main `github.com/credo-go/credo` module. Defines error sentinels,
-  lifecycle/health interfaces, a connection registry, registration API,
-  and context-based TX helpers.
-- **`store/sqldb/`** — Bun SQL wrapper in a separate Go submodule
-  (`github.com/credo-go/credo/store/sqldb`). Wraps `*bun.DB` with lifecycle
-  management, query builder proxies, error mapping, and transaction
-  management.
+- **`store/`** — universal contracts with zero external dependencies. Part of the main `github.com/credo-go/credo` module. Defines error sentinels, lifecycle/health interfaces, a connection registry, registration API, and context-based TX helpers.
+- **`store/sqldb/`** — Bun SQL wrapper in a separate Go submodule (`github.com/credo-go/credo/store/sqldb`). Wraps `*bun.DB` with lifecycle management, query builder proxies, error mapping, and transaction management.
 
 Key design properties:
 
-- **Universal errors** — `ErrNotFound`, `ErrDuplicate`, `ErrConflict`,
-  `ErrTimeout`, `ErrReadOnly` implement `HTTPStatus() int`; the framework's
-  internal error handler detects this interface without importing `store/`.
-- **Context-based TX** — opt-in convenience via `Conn[T]` for simple cases
-  and `ConnInScope[T]` for same-type multi-connection cases. Native ORM TX
-  API also works.
-- **3-tier wrapping** — own (lifecycle), enrich (query proxies),
-  passthrough (`Client()` escape hatch).
+- **Universal errors** — `ErrNotFound`, `ErrDuplicate`, `ErrConflict`, `ErrTimeout`, `ErrReadOnly` implement `HTTPStatus() int`; the framework's internal error handler detects this interface without importing `store/`.
+- **Context-based TX** — opt-in convenience via `Conn[T]` for simple cases and `ConnInScope[T]` for same-type multi-connection cases. Native ORM TX API also works.
+- **3-tier wrapping** — own (lifecycle), enrich (query proxies), passthrough (`Client()` escape hatch).
 - **Single ORM focus** — deep Bun integration. Other ORMs via raw DI.
 
 ---
 
 ## Goals
 
-1. **Universal error types**: Errors in `store/` implement `HTTPStatus()
-   int`. The framework's internal error handler detects this interface via
-   `errors.As` without importing `store/`, avoiding circular dependencies.
-   Adapters translate ORM/driver errors to these sentinels.
-2. **Context-based TX**: `db.InTx` / `RunInTx` + `Conn[T]` / `ConnInScope[T]`
-   for opt-in transaction participation. Repositories that don't need TX are
-   unaffected.
-3. **3-tier Bun wrapping**: Own lifecycle, enrich queries (TX injection,
-   error mapping, tracing hooks), passthrough via `Client()`.
-4. **Clean module boundary**: `store/` is stdlib-only in the main module.
-   `store/sqldb/` is a separate submodule with the Bun dependency.
-5. **Unified registration**: `store.Register[R]` handles ping, DI
-   registration, and lifecycle tracking in one call.
-6. **Lifecycle management**: startup ping and health aggregation in the
-   Registry; closing owned solely by the DI container (registered values
-   implementing `Shutdowner` are closed in reverse registration order).
-7. **Escape hatch**: `Client() *bun.DB` for raw SQL, model registration,
-   advanced migration operations, and any Bun feature not covered by proxies.
-8. **Migrations without a second engine**: a thin wrapper over `bun/migrate`
-   (`RegisterMigrations` + `Migrate`) whose signature plugs straight into
-   `app.OnStart` — no goose, no new dependency.
+1. **Universal error types**: Errors in `store/` implement `HTTPStatus() int`. The framework's internal error handler detects this interface via `errors.As` without importing `store/`, avoiding circular dependencies. Adapters translate ORM/driver errors to these sentinels.
+2. **Context-based TX**: `db.InTx` / `RunInTx` + `Conn[T]` / `ConnInScope[T]` for opt-in transaction participation. Repositories that don't need TX are unaffected.
+3. **3-tier Bun wrapping**: Own lifecycle, enrich queries (TX injection, error mapping, tracing hooks), passthrough via `Client()`.
+4. **Clean module boundary**: `store/` is stdlib-only in the main module. `store/sqldb/` is a separate submodule with the Bun dependency.
+5. **Unified registration**: `store.Register[R]` handles ping, DI registration, and lifecycle tracking in one call.
+6. **Lifecycle management**: startup ping and health aggregation in the Registry; closing owned solely by the DI container (registered values implementing `Shutdowner` are closed in reverse registration order).
+7. **Escape hatch**: `Client() *bun.DB` for raw SQL, model registration, advanced migration operations, and any Bun feature not covered by proxies.
+8. **Migrations without a second engine**: a thin wrapper over `bun/migrate` (`RegisterMigrations` + `Migrate`) whose signature plugs straight into `app.OnStart` — no goose, no new dependency.
 
 ---
 
@@ -72,11 +43,7 @@ Key design properties:
 
 ### Universal Errors
 
-Store errors implement `error` and `HTTPStatus() int`. The framework's internal
-error handler detects this via type-safe error-chain matching
-(`errors.AsType`) — no import of `store/` needed, avoiding circular
-dependencies (`store → credo` for DI registration is fine; `credo → store`
-would be a cycle).
+Store errors implement `error` and `HTTPStatus() int`. The framework's internal error handler detects this via type-safe error-chain matching (`errors.AsType`) — no import of `store/` needed, avoiding circular dependencies (`store → credo` for DI registration is fine; `credo → store` would be a cycle).
 
 ```go
 package store
@@ -111,18 +78,17 @@ if se, ok := errors.AsType[httpStatusProvider](err); ok {
 }
 ```
 
-> `errors.Is` still works: `errors.Is(err, store.ErrNotFound)` matches
-> pointer identity. `errors.As` unwraps `fmt.Errorf("%w", err)` chains.
+> `errors.Is` still works: `errors.Is(err, store.ErrNotFound)` matches pointer identity. `errors.As` unwraps `fmt.Errorf("%w", err)` chains.
 
 **HTTP mapping:**
 
-| Error | HTTP Status | RFC 7807 Type |
-|-------|-------------|---------------|
-| `ErrNotFound` | 404 Not Found | `not-found` |
-| `ErrDuplicate` | 409 Conflict | `duplicate` |
-| `ErrConflict` | 409 Conflict | `conflict` |
-| `ErrTimeout` | 504 Gateway Timeout | `timeout` |
-| `ErrReadOnly` | 503 Service Unavailable | `read-only` |
+| Error          | HTTP Status             | RFC 7807 Type |
+| -------------- | ----------------------- | ------------- |
+| `ErrNotFound`  | 404 Not Found           | `not-found`   |
+| `ErrDuplicate` | 409 Conflict            | `duplicate`   |
+| `ErrConflict`  | 409 Conflict            | `conflict`    |
+| `ErrTimeout`   | 504 Gateway Timeout     | `timeout`     |
+| `ErrReadOnly`  | 503 Service Unavailable | `read-only`   |
 
 ### Lifecycle Interface
 
@@ -158,17 +124,14 @@ type Health struct {
 
 ### Registry
 
-The `Registry` tracks data store connections for startup ping and health
-aggregation. Created automatically on the first `Register` call and
-stored in the DI container.
+The `Registry` tracks data store connections for startup ping and health aggregation. Created automatically on the first `Register` call and stored in the DI container.
 
 Behavior:
+
 - `Add(name, lifecycle)` — append an entry; reject duplicate names
 - `HealthAll(ctx)` — return health status for all entries, keyed by name
 
-The Registry does not close connections. Shutdown ownership lies with the
-DI container alone: registered values implementing `credo.Shutdowner` are
-closed during app shutdown, in reverse registration order.
+The Registry does not close connections. Shutdown ownership lies with the DI container alone: registered values implementing `credo.Shutdowner` are closed during app shutdown, in reverse registration order.
 
 ```go
 // Registry tracks store connections for startup ping and health
@@ -194,22 +157,16 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error
 ```
 
 Steps:
-1. **Resolve Lifecycle** — use `value` if it implements `Lifecycle`,
-   otherwise use the handle from `WithLifecycle` (error if neither)
+
+1. **Resolve Lifecycle** — use `value` if it implements `Lifecycle`, otherwise use the handle from `WithLifecycle` (error if neither)
 2. **Ping** — verify connection is alive (fail-fast at startup)
 3. **Ensure Registry** — resolve or create `Registry` in DI
 4. **Track** — add `Lifecycle` handle to Registry for ping/health aggregation
 5. **DI register** — register `value` as type `R` via `credo.ProvideValue[R]`
 
-Shutdown ownership: closing is the DI container's job alone. A value that
-implements `credo.Shutdowner` (every `Lifecycle` does) is closed by the
-container during app shutdown, in reverse registration order. The Registry
-never closes connections. When `value` does not implement `Shutdowner` —
-possible only with `WithLifecycle` — `Register` logs a warning and closing
-stays with the caller (e.g. via `app.OnShutdown`).
+Shutdown ownership: closing is the DI container's job alone. A value that implements `credo.Shutdowner` (every `Lifecycle` does) is closed by the container during app shutdown, in reverse registration order. The Registry never closes connections. When `value` does not implement `Shutdowner` — possible only with `WithLifecycle` — `Register` logs a warning and closing stays with the caller (e.g. via `app.OnShutdown`).
 
-On failure, framework-owned state is rolled back. Caller-owned lifecycle
-values are not shut down automatically.
+On failure, framework-owned state is rolled back. Caller-owned lifecycle values are not shut down automatically.
 
 ```go
 type RegisterOption func(*registerOptions)
@@ -228,9 +185,7 @@ func WithPingTimeout(d time.Duration) RegisterOption
 func WithLifecycle(lc Lifecycle) RegisterOption
 ```
 
-> **Health/readiness options** (`WithCritical`, `WithTags`) are deferred
-> to [ADR-016](../adr/016-health-checks.md). They will be added to
-> `RegisterOption` when the health package design is finalized.
+> **Health/readiness options** (`WithCritical`, `WithTags`) are deferred to [ADR-016](../adr/016-health-checks.md). They will be added to `RegisterOption` when the health package design is finalized.
 
 ### TX Context
 
@@ -262,9 +217,7 @@ func GetTxInScope[T any](ctx context.Context, scope *TxScope) (T, bool)
 func ConnInScope[T any](ctx context.Context, scope *TxScope, fallback T) T
 ```
 
-`WithTx` / `GetTx` / `Conn` remain useful for simple type-keyed flows.
-Adapters such as `store/sqldb` should prefer scoped helpers so that two
-connections using the same Go type do not collide in `context.Context`.
+`WithTx` / `GetTx` / `Conn` remain useful for simple type-keyed flows. Adapters such as `store/sqldb` should prefer scoped helpers so that two connections using the same Go type do not collide in `context.Context`.
 
 ---
 
@@ -327,42 +280,26 @@ func (db *DB) Delete(model ...any) *DeleteQuery
 ```
 
 Each proxy type:
-- Proxies a curated subset of builder methods for clean chaining.
-  Methods not in the proxy set are available via `Apply`.
+
+- Proxies a curated subset of builder methods for clean chaining. Methods not in the proxy set are available via `Apply`.
 - Injects TX from context via `store.Conn` on terminal operations
 - Maps errors to `store.Err*` sentinels after execution
 
-**Visibility policy: Credo does not hide Bun — it integrates it.** The
-proxy exists to attach the two terminal guarantees above, not to abstract
-Bun away; bun types appear in proxy signatures by design. A missing
-builder method is reached via `Apply`/`ApplyQueryBuilder` (guarantees
-preserved); a missing *terminal* method is a request to extend the curated
-set — the guarantees live in the terminals, so terminals must be on the
-proxy. `Unwrap` and `Client()` are deliberate opt-outs from both
-guarantees.
+**Visibility policy: Credo does not hide Bun — it integrates it.** The proxy exists to attach the two terminal guarantees above, not to abstract Bun away; bun types appear in proxy signatures by design. A missing builder method is reached via `Apply`/`ApplyQueryBuilder` (guarantees preserved); a missing _terminal_ method is a request to extend the curated set — the guarantees live in the terminals, so terminals must be on the proxy. `Unwrap` and `Client()` are deliberate opt-outs from both guarantees.
 
-**SelectQuery proxy methods** (~20):
-`Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`,
-`Join`, `JoinOn`, `JoinOnOr`,
-`Where`, `WhereOr`, `WherePK`, `OrderExpr`,
-`Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`,
-`Clone`, `Conn`.
+**SelectQuery proxy methods** (~20): `Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`, `Join`, `JoinOn`, `JoinOnOr`, `Where`, `WhereOr`, `WherePK`, `OrderExpr`, `Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`, `Clone`, `Conn`.
 
-**Terminal methods** (Scan, Exec, Count, Exists) execute the query and
-return mapped errors. Driver errors are translated to `store.Err*`
-sentinels before returning, so callers can branch with `errors.Is`
-without importing `database/sql` or driver-specific packages:
+**Terminal methods** (Scan, Exec, Count, Exists) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
 
-| Driver error                | Mapped sentinel       |
-|-----------------------------|-----------------------|
-| `sql.ErrNoRows`             | `store.ErrNotFound`   |
-| Unique violation            | `store.ErrDuplicate`  |
-| Foreign-key violation       | `store.ErrConflict`   |
-| Read-only / replica         | `store.ErrReadOnly`   |
-| `context.DeadlineExceeded`  | `store.ErrTimeout`    |
+| Driver error               | Mapped sentinel      |
+| -------------------------- | -------------------- |
+| `sql.ErrNoRows`            | `store.ErrNotFound`  |
+| Unique violation           | `store.ErrDuplicate` |
+| Foreign-key violation      | `store.ErrConflict`  |
+| Read-only / replica        | `store.ErrReadOnly`  |
+| `context.DeadlineExceeded` | `store.ErrTimeout`   |
 
-`Update.Exec` and `Delete.Exec` do **not** convert "no rows affected"
-into `ErrNotFound` — callers must inspect `sql.Result` for that.
+`Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
 
 **Escape hatches** on each query type:
 
@@ -385,41 +322,15 @@ func (q *SelectQuery) Unwrap() *bun.SelectQuery
 
 ### 6 Guardrails
 
-1. **TX inject: clone, don't mutate** — terminal methods copy the
-   underlying query before applying the TX connection. `SelectQuery`
-   uses Bun's `Clone()` (deep copy). `InsertQuery`, `UpdateQuery`, and
-   `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`)
-   since Bun does not provide `Clone()` on these types — this isolates
-   the `conn` field without affecting shared slices; it suffices because
-   bun reads, never mutates, the builder while generating SQL. The
-   original `q.raw` is never modified, so query builders can be reused
-   safely — including executing the same builder inside a transaction
-   and again after that transaction finished (pinned by the
-   `Test*Exec_BuilderReusableAfterTxRollback` tests in
-   `query_copy_test.go`). The wrapper tracks a `connSet` bool; if the
-   user explicitly called `.Conn()` on the wrapper, context TX does not
-   override it.
+1. **TX inject: clone, don't mutate** — terminal methods copy the underlying query before applying the TX connection. `SelectQuery` uses Bun's `Clone()` (deep copy). `InsertQuery`, `UpdateQuery`, and `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`) since Bun does not provide `Clone()` on these types — this isolates the `conn` field without affecting shared slices; it suffices because bun reads, never mutates, the builder while generating SQL. The original `q.raw` is never modified, so query builders can be reused safely — including executing the same builder inside a transaction and again after that transaction finished (pinned by the `Test*Exec_BuilderReusableAfterTxRollback` tests in `query_copy_test.go`). The wrapper tracks a `connSet` bool; if the user explicitly called `.Conn()` on the wrapper, context TX does not override it.
 
-2. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery)
-   *bun.XQuery)` matches Bun's own varargs signature. Delegates directly
-   via `q.raw.Apply(fns...)`. Nil functions are filtered out to prevent
-   panics.
+2. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery) *bun.XQuery)` matches Bun's own varargs signature. Delegates directly via `q.raw.Apply(fns...)`. Nil functions are filtered out to prevent panics.
 
-3. **Unwrap: builder-only escape** — `Unwrap()` returns the underlying
-   `bun.*Query` for use as a subquery or parameter to other Bun methods.
-   Calling terminal methods on the unwrapped query bypasses all Credo
-   interceptors (TX injection, error mapping). Documented as advanced-only.
-   `Apply` is the primary escape hatch (interceptors preserved).
+3. **Unwrap: builder-only escape** — `Unwrap()` returns the underlying `bun.*Query` for use as a subquery or parameter to other Bun methods. Calling terminal methods on the unwrapped query bypasses all Credo interceptors (TX injection, error mapping). Documented as advanced-only. `Apply` is the primary escape hatch (interceptors preserved).
 
-4. **Trace: DB-level QueryHook** — observability is implemented via
-   `bun.QueryHook` attached at `Open()` time, not in terminal wrapper
-   methods. This covers 100% of queries including `Client()` escape
-   hatch, raw SQL, migrations, and create table operations.
+4. **Trace: DB-level QueryHook** — observability is implemented via `bun.QueryHook` attached at `Open()` time, not in terminal wrapper methods. This covers 100% of queries including `Client()` escape hatch, raw SQL, migrations, and create table operations.
 
-5. **Raw terminal wrappers** — `DB` exposes `Exec`, `QueryRow`, and
-   `Query` methods for raw SQL that go through the same TX inject and
-   error mapping pipeline as query builder terminals. Without these,
-   error mapping behavior would split between wrapped and raw queries.
+5. **Raw terminal wrappers** — `DB` exposes `Exec`, `QueryRow`, and `Query` methods for raw SQL that go through the same TX inject and error mapping pipeline as query builder terminals. Without these, error mapping behavior would split between wrapped and raw queries.
 
 ```go
 // Raw SQL with TX injection and error mapping.
@@ -428,21 +339,7 @@ func (db *DB) QueryRow(ctx context.Context, dest any, query string, args ...any)
 func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) error
 ```
 
-6. **ApplyQueryBuilder: cross-type filter reuse** — `Apply` is typed per
-   query type, so a WHERE predicate shared across read and write had to be
-   duplicated three times. `ApplyQueryBuilder(fn func(bun.QueryBuilder)
-   bun.QueryBuilder)` on `SelectQuery`/`UpdateQuery`/`DeleteQuery` surfaces
-   Bun's shared `bun.QueryBuilder` so one predicate (tenant scope,
-   soft-delete filter, ownership check) applies to all three. It is
-   implemented as `q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.XQuery)`,
-   mirroring Bun's own `ApplyQueryBuilder`. Conditions land on the proxied
-   query, so terminal methods still apply TX injection and error mapping —
-   interceptors are preserved, exactly like `Apply`. A nil fn is a no-op.
-   The form is preferred over a raw `QueryBuilder()` accessor: it stays in
-   the proxy fluent chain and contains the bun type inside a function
-   boundary, whereas `QueryBuilder()` would break the chain and act as a
-   second `Unwrap` (the interface carries `Unwrap() any`). `InsertQuery` is
-   excluded — no WHERE clause.
+6. **ApplyQueryBuilder: cross-type filter reuse** — `Apply` is typed per query type, so a WHERE predicate shared across read and write had to be duplicated three times. `ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder)` on `SelectQuery`/`UpdateQuery`/`DeleteQuery` surfaces Bun's shared `bun.QueryBuilder` so one predicate (tenant scope, soft-delete filter, ownership check) applies to all three. It is implemented as `q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.XQuery)`, mirroring Bun's own `ApplyQueryBuilder`. Conditions land on the proxied query, so terminal methods still apply TX injection and error mapping — interceptors are preserved, exactly like `Apply`. A nil fn is a no-op. The form is preferred over a raw `QueryBuilder()` accessor: it stays in the proxy fluent chain and contains the bun type inside a function boundary, whereas `QueryBuilder()` would break the chain and act as a second `Unwrap` (the interface carries `Unwrap() any`). `InsertQuery` is excluded — no WHERE clause.
 
 ### TX Management
 
@@ -463,14 +360,13 @@ func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx con
 
 **Semantics:**
 
-| Callback return | Action |
-|-----------------|--------|
-| `nil` | Commit |
-| `error` | Rollback, return error |
-| `panic` | Rollback, re-panic |
+| Callback return | Action                 |
+| --------------- | ---------------------- |
+| `nil`           | Commit                 |
+| `error`         | Rollback, return error |
+| `panic`         | Rollback, re-panic     |
 
-**Nested TX:** When `RunInTx` is called within an existing TX context,
-Bun creates a `SAVEPOINT` automatically.
+**Nested TX:** When `RunInTx` is called within an existing TX context, Bun creates a `SAVEPOINT` automatically.
 
 ### Migrations (bun/migrate wrapper)
 
@@ -491,45 +387,24 @@ func (db *DB) Migrate(ctx context.Context) error
 
 **Design points:**
 
-- **Thin wrapper**: the `*migrate.Migrations` set is Bun's own type — populated via
-  `Discover(fsys)` for SQL files (works with `embed.FS`) or
-  `MustRegister` for Go migrations. Credo does not re-wrap it.
-- **Mark-applied-on-success by default**: the wrapper passes
-  `migrate.WithMarkAppliedOnSuccess(true)`. Bun's bare default records a
-  migration *before* running it, so a failed migration would be skipped
-  as "applied" on the next start — wrong for unattended `OnStart`
-  auto-run. With the wrapper default, a failed migration is retried on
-  the next run. Users can pass `WithMarkAppliedOnSuccess(false)` through
-  `RegisterMigrations` to restore Bun's behavior.
-- **Lock semantics**: if another instance holds the lock (second replica
-  starting concurrently), `Migrate` fails immediately rather than
-  waiting; the failed instance can be restarted. Unlock runs under
-  `context.WithoutCancel` so a cancelled ctx cannot leak the lock row;
-  an unlock failure is joined into the returned error.
-- **Seeding** is a plain migration file (e.g. `2_seed_plans.up.sql`) —
-  no separate mechanism.
-- **No CLI here**: `credo migrate:*` (Phase 5.1) is optional sugar over
-  this wrapper. Rollback / status / file generation stay on Bun's
-  migrator via the escape hatch: `migrate.NewMigrator(db.Client(), ms)`.
-- **OnStart integration is signature compatibility**, not coupling:
-  `sqldb` still imports only `credo/store`, never the root framework
-  package.
+- **Thin wrapper**: the `*migrate.Migrations` set is Bun's own type — populated via `Discover(fsys)` for SQL files (works with `embed.FS`) or `MustRegister` for Go migrations. Credo does not re-wrap it.
+- **Mark-applied-on-success by default**: the wrapper passes `migrate.WithMarkAppliedOnSuccess(true)`. Bun's bare default records a migration _before_ running it, so a failed migration would be skipped as "applied" on the next start — wrong for unattended `OnStart` auto-run. With the wrapper default, a failed migration is retried on the next run. Users can pass `WithMarkAppliedOnSuccess(false)` through `RegisterMigrations` to restore Bun's behavior.
+- **Lock semantics**: if another instance holds the lock (second replica starting concurrently), `Migrate` fails immediately rather than waiting; the failed instance can be restarted. Unlock runs under `context.WithoutCancel` so a cancelled ctx cannot leak the lock row; an unlock failure is joined into the returned error.
+- **Seeding** is a plain migration file (e.g. `2_seed_plans.up.sql`) — no separate mechanism.
+- **No CLI here**: `credo migrate:*` (Phase 5.1) is optional sugar over this wrapper. Rollback / status / file generation stay on Bun's migrator via the escape hatch: `migrate.NewMigrator(db.Client(), ms)`.
+- **OnStart integration is signature compatibility**, not coupling: `sqldb` still imports only `credo/store`, never the root framework package.
 
 ### Error Mapping
 
-| Bun/Driver Error | store.Err* |
-|------------------|------------|
-| `sql.ErrNoRows` | `store.ErrNotFound` |
+| Bun/Driver Error                                     | store.Err\*          |
+| ---------------------------------------------------- | -------------------- |
+| `sql.ErrNoRows`                                      | `store.ErrNotFound`  |
 | Unique constraint violation (PG: 23505, MySQL: 1062) | `store.ErrDuplicate` |
-| Foreign key violation (PG: 23503) | `store.ErrConflict` |
-| Context deadline exceeded | `store.ErrTimeout` |
-| Read-only transaction error | `store.ErrReadOnly` |
+| Foreign key violation (PG: 23503)                    | `store.ErrConflict`  |
+| Context deadline exceeded                            | `store.ErrTimeout`   |
+| Read-only transaction error                          | `store.ErrReadOnly`  |
 
-Unmapped errors pass through unwrapped. Mapped errors preserve the original
-driver/ORM cause while still matching `store.Err*` via `errors.Is` and still
-reporting the sentinel's `HTTPStatus()`. Mapping remains best-effort:
-driver-specific codes are detected via string/code matching without
-importing driver packages directly.
+Unmapped errors pass through unwrapped. Mapped errors preserve the original driver/ORM cause while still matching `store.Err*` via `errors.Is` and still reporting the sentinel's `HTTPStatus()`. Mapping remains best-effort: driver-specific codes are detected via string/code matching without importing driver packages directly.
 
 ### Client Escape Hatch
 
@@ -540,13 +415,7 @@ importing driver packages directly.
 db.Client() *bun.DB
 ```
 
-**Warning**: queries executed via the returned `*bun.DB` bypass the proxy
-interceptors. There is no automatic TX injection from context (so
-`InTx` / `RunInTx` will not affect them) and no error mapping to
-`store.Err*` sentinels. Reserve `Client()` for model registration, raw
-SQL the proxy layer cannot express, and migration operations beyond
-`Migrate` (rollback, status, file generation); use the proxy layer for
-normal repository code.
+**Warning**: queries executed via the returned `*bun.DB` bypass the proxy interceptors. There is no automatic TX injection from context (so `InTx` / `RunInTx` will not affect them) and no error mapping to `store.Err*` sentinels. Reserve `Client()` for model registration, raw SQL the proxy layer cannot express, and migration operations beyond `Migrate` (rollback, status, file generation); use the proxy layer for normal repository code.
 
 ---
 
@@ -704,49 +573,27 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 
 ## Design Decisions
 
-1. **Single ORM (Bun) over multi-ORM adapters** — deep integration
-   (query proxies, error mapping, pagination) is more valuable than
-   shallow generic interfaces. Escape hatch for other ORMs via raw DI.
+1. **Single ORM (Bun) over multi-ORM adapters** — deep integration (query proxies, error mapping, pagination) is more valuable than shallow generic interfaces. Escape hatch for other ORMs via raw DI.
 
-2. **Error interface over import-based detection** — store errors
-   implement `HTTPStatus() int`. The framework's internal error handler
-   detects this via `errors.As` without importing `store/`, avoiding
-   circular dependencies (`store → credo` is fine; `credo → store` would
-   be a cycle).
+2. **Error interface over import-based detection** — store errors implement `HTTPStatus() int`. The framework's internal error handler detects this via `errors.As` without importing `store/`, avoiding circular dependencies (`store → credo` is fine; `credo → store` would be a cycle).
 
-3. **Context-based TX over explicit TX passing** — `Conn[T]` is opt-in
-   and keeps repository method signatures clean. Trade-off: TX
-   participation is less visible in function signatures. See
-   [ADR-015](../adr/015-data-access.md) for rationale.
+3. **Context-based TX over explicit TX passing** — `Conn[T]` is opt-in and keeps repository method signatures clean. Trade-off: TX participation is less visible in function signatures. See [ADR-015](../adr/015-data-access.md) for rationale.
 
-4. **Query builder proxies over raw pass-through** — proxies inject TX,
-   map errors, and add tracing. `Client()` escape hatch prevents the
-   proxy from becoming a bottleneck.
+4. **Query builder proxies over raw pass-through** — proxies inject TX, map errors, and add tracing. `Client()` escape hatch prevents the proxy from becoming a bottleneck.
 
-5. **Separate submodule for store/sqldb/** — Bun dependency is opt-in.
-   Applications not using SQL don't pull in Bun.
+5. **Separate submodule for store/sqldb/** — Bun dependency is opt-in. Applications not using SQL don't pull in Bun.
 
-6. **Config over DSN-only** — structured `Config` enables validation,
-   env var mapping, and consistent documentation. `DSN` field is an
-   override for advanced use cases.
+6. **Config over DSN-only** — structured `Config` enables validation, env var mapping, and consistent documentation. `DSN` field is an override for advanced use cases.
 
-7. **Fail-fast at startup** — `Register[R]` pings the connection
-   immediately. Misconfigured databases surface as startup errors.
+7. **Fail-fast at startup** — `Register[R]` pings the connection immediately. Misconfigured databases surface as startup errors.
 
-8. **Registry with LIFO shutdown** — connections are closed in reverse
-   registration order. Dependent connections shut down before their
-   dependencies.
+8. **Registry with LIFO shutdown** — connections are closed in reverse registration order. Dependent connections shut down before their dependencies.
 
-9. **Health returns struct, not error** — structured data (status,
-   latency, pool stats) for dashboards and readiness probes.
+9. **Health returns struct, not error** — structured data (status, latency, pool stats) for dashboards and readiness probes.
 
-10. **Wrapper types for multi-DB** — applications define distinct struct
-    types (`PrimaryDB`, `AnalyticsDB`). Compile-time DI safety with zero
-    string keys.
+10. **Wrapper types for multi-DB** — applications define distinct struct types (`PrimaryDB`, `AnalyticsDB`). Compile-time DI safety with zero string keys.
 
-11. **Best-effort error mapping** — driver-specific error codes (PG 23505,
-    MySQL 1062) are detected via string/code matching without importing
-    driver packages. Unmapped errors pass through.
+11. **Best-effort error mapping** — driver-specific error codes (PG 23505, MySQL 1062) are detected via string/code matching without importing driver packages. Unmapped errors pass through.
 
 ---
 
@@ -783,9 +630,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
   - Execute queries correctly
   - Inject TX from context
   - Map errors to `store.Err*` sentinels
-  - `ApplyQueryBuilder` reuses one predicate across Select/Update/Delete,
-    preserves error mapping, treats a nil fn as a no-op, and reaches
-    `WhereGroup` (not in the curated set)
+  - `ApplyQueryBuilder` reuses one predicate across Select/Update/Delete, preserves error mapping, treats a nil fn as a no-op, and reaches `WhereGroup` (not in the curated set)
 - `RunInTx` commits on nil return
 - `RunInTxWith` commits on nil return
 - `RunInTx` rolls back on error return
@@ -793,8 +638,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - `RunInTx` stores TX in context with per-DB scoping
 - `InTx` / `InTxWith` method forms commit on nil, roll back on error
 - `Migrate` applies pending migrations; re-run is a no-op
-- `Migrate` retries a failed migration on the next run (mark-on-success)
-  and releases the advisory lock after failure
+- `Migrate` retries a failed migration on the next run (mark-on-success) and releases the advisory lock after failure
 - `Migrate` discovers SQL migrations from `embed.FS` (incl. a seed file)
 - `Migrate` without registration returns an error
 - `RegisterMigrations` panics on nil set or double registration
@@ -802,5 +646,4 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - Error mapping covers all documented driver errors
 - `Config.DSN` override takes precedence
 - `Paginate` validates query, destination, page, and per-page inputs
-- `PaginateRequest` builds a `pagination.Page` from a normalized
-  `PageRequest`; rejects nil requests; empty result keeps a non-nil slice
+- `PaginateRequest` builds a `pagination.Page` from a normalized `PageRequest`; rejects nil requests; empty result keeps a non-nil slice

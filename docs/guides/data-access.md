@@ -1,12 +1,8 @@
 # Data Access Guide
 
-This guide explains how to use Credo's data access stack in application code.
-For low-level contracts and design rationale, see the
-[Store Spec](../specs/store.md) and
-[ADR-015](../adr/015-data-access.md).
+This guide explains how to use Credo's data access stack in application code. For low-level contracts and design rationale, see the [Store Spec](../specs/store.md) and [ADR-015](../adr/015-data-access.md).
 
-All config examples in this guide use JSON for consistency. Credo also
-supports YAML/YML with the same structure.
+All config examples in this guide use JSON for consistency. Credo also supports YAML/YML with the same structure.
 
 Credo's data access story has two layers:
 
@@ -20,8 +16,7 @@ Credo's data access story has two layers:
 Use `store/sqldb` when:
 
 - you want Credo's first-class SQL integration
-- you want startup ping, automatic close on shutdown (via DI), and health
-  registration
+- you want startup ping, automatic close on shutdown (via DI), and health registration
 - you want Bun query builders with Credo error mapping
 - you want Credo's `InTx` / `RunInTx` convenience
 - you want migrations to run on app start (`bun/migrate` wrapper)
@@ -32,8 +27,7 @@ Use raw DI instead when:
 - you want to register an existing client directly
 - you do not need the Bun wrapper
 
-For example, `store/sqldb` is first-class. GORM, sqlx, sqlc, or a custom
-client can still be injected through Credo DI without using `store/sqldb`.
+For example, `store/sqldb` is first-class. GORM, sqlx, sqlc, or a custom client can still be injected through Credo DI without using `store/sqldb`.
 
 ---
 
@@ -100,8 +94,7 @@ Important points:
 
 - pings the connection at startup
 - tracks it in the store registry for health reporting
-- leaves closing to the DI container: `*sqldb.DB` implements
-  `credo.Shutdowner`, so the container closes it on app shutdown
+- leaves closing to the DI container: `*sqldb.DB` implements `credo.Shutdowner`, so the container closes it on app shutdown
 
 ---
 
@@ -193,20 +186,11 @@ These proxies add:
 
 ### The Terminal Contract
 
-Both guarantees are attached by the **terminal** methods (`Scan`, `Count`,
-`Exists`, `Exec`): the connection is resolved from the context at
-execution time — inside an `InTx` block that is the transaction — and the
-returned error is already mapped. Terminals execute a *copy* of the
-builder, never the builder itself, so a built query can be executed more
-than once and even reused across transaction boundaries: running the same
-builder first inside `InTx` and again after the transaction finished is
-safe.
+Both guarantees are attached by the **terminal** methods (`Scan`, `Count`, `Exists`, `Exec`): the connection is resolved from the context at execution time — inside an `InTx` block that is the transaction — and the returned error is already mapped. Terminals execute a _copy_ of the builder, never the builder itself, so a built query can be executed more than once and even reused across transaction boundaries: running the same builder first inside `InTx` and again after the transaction finished is safe.
 
 ### Automatic Error Mapping
 
-Terminal methods (`Scan`, `Count`, `Exists`, `Exec`) translate driver errors
-into `store.Err*` sentinels before returning, so you can branch with
-`errors.Is` without importing `database/sql` or driver-specific packages:
+Terminal methods (`Scan`, `Count`, `Exists`, `Exec`) translate driver errors into `store.Err*` sentinels before returning, so you can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
 
 ```go
 var user User
@@ -216,16 +200,15 @@ if errors.Is(err, store.ErrNotFound) {
 }
 ```
 
-| Driver error                | Mapped sentinel       |
-|-----------------------------|-----------------------|
-| `sql.ErrNoRows`             | `store.ErrNotFound`   |
-| Unique violation            | `store.ErrDuplicate`  |
-| Foreign-key violation       | `store.ErrConflict`   |
-| Read-only / replica         | `store.ErrReadOnly`   |
-| `context.DeadlineExceeded`  | `store.ErrTimeout`    |
+| Driver error               | Mapped sentinel      |
+| -------------------------- | -------------------- |
+| `sql.ErrNoRows`            | `store.ErrNotFound`  |
+| Unique violation           | `store.ErrDuplicate` |
+| Foreign-key violation      | `store.ErrConflict`  |
+| Read-only / replica        | `store.ErrReadOnly`  |
+| `context.DeadlineExceeded` | `store.ErrTimeout`   |
 
-`Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into
-`ErrNotFound`. If you need that behavior, inspect the returned `sql.Result`:
+`Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound`. If you need that behavior, inspect the returned `sql.Result`:
 
 ```go
 res, err := db.Update().Model(&user).WherePK().Exec(ctx)
@@ -240,8 +223,7 @@ if n == 0 {
 
 ### Joining Tables
 
-JOIN methods are part of the curated proxy set, so no `Apply` escape
-hatch is needed:
+JOIN methods are part of the curated proxy set, so no `Apply` escape hatch is needed:
 
 ```go
 var results []UserWithOrder
@@ -262,8 +244,7 @@ n, err := db.Select((*User)(nil)).
     Count(ctx)
 ```
 
-For model-less queries (reporting, ad-hoc projections), use `TableExpr`
-and `ColumnExpr`:
+For model-less queries (reporting, ad-hoc projections), use `TableExpr` and `ColumnExpr`:
 
 ```go
 var total int
@@ -295,9 +276,7 @@ It performs these steps:
 4. tracks the connection for health reporting
 5. registers the value in DI
 
-Closing has a single owner — the DI container: the registered value
-implements `credo.Shutdowner`, so it is closed during app shutdown in
-reverse registration order. The registry never closes connections.
+Closing has a single owner — the DI container: the registered value implements `credo.Shutdowner`, so it is closed during app shutdown in reverse registration order. The registry never closes connections.
 
 Useful options:
 
@@ -310,15 +289,13 @@ store.Register[*sqldb.DB](
 )
 ```
 
-Use raw `credo.ProvideValue` only when you intentionally do not want store
-registry integration.
+Use raw `credo.ProvideValue` only when you intentionally do not want store registry integration.
 
 ---
 
 ## Multiple Databases
 
-When you need more than one `sqldb.DB`, do not register both as `*sqldb.DB`.
-Credo DI keys services by Go type, so two values of the same type collide.
+When you need more than one `sqldb.DB`, do not register both as `*sqldb.DB`. Credo DI keys services by Go type, so two values of the same type collide.
 
 The solution is to introduce semantic wrapper types:
 
@@ -375,13 +352,7 @@ func setupMultiDB(app *credo.App) error {
 }
 ```
 
-`WithLifecycle(...)` is optional here: a wrapper that *embeds* `*sqldb.DB`
-inherits its methods and therefore already implements `store.Lifecycle`
-(and `credo.Shutdowner` — the DI container closes it automatically). The
-option becomes required when the wrapper keeps the connection in a named
-field instead. Such a named-field wrapper has no `Shutdown` method either,
-so the container cannot close it — `Register` logs a warning and closing
-stays with you (e.g. via `app.OnShutdown`).
+`WithLifecycle(...)` is optional here: a wrapper that _embeds_ `*sqldb.DB` inherits its methods and therefore already implements `store.Lifecycle` (and `credo.Shutdowner` — the DI container closes it automatically). The option becomes required when the wrapper keeps the connection in a named field instead. Such a named-field wrapper has no `Shutdown` method either, so the container cannot close it — `Register` logs a warning and closing stays with you (e.g. via `app.OnShutdown`).
 
 Inject the specific database where it is needed:
 
@@ -432,18 +403,13 @@ func (s *OrderService) Place(ctx context.Context, order *Order) error {
 }
 ```
 
-From a handler, pass the request context: `db.InTx(ctx.Context(), fn)`.
-The package-level `sqldb.RunInTx(ctx, db, fn)` is equivalent; `InTxWith` /
-`RunInTxWith` accept `sql.TxOptions` for isolation level and read-only mode.
+From a handler, pass the request context: `db.InTx(ctx.Context(), fn)`. The package-level `sqldb.RunInTx(ctx, db, fn)` is equivalent; `InTxWith` / `RunInTxWith` accept `sql.TxOptions` for isolation level and read-only mode.
 
-Repository methods do not need a separate transaction parameter when they use
-`sqldb.DB` query proxies or raw helpers. The active transaction is picked up
-from `context.Context`.
+Repository methods do not need a separate transaction parameter when they use `sqldb.DB` query proxies or raw helpers. The active transaction is picked up from `context.Context`.
 
 For multi-database applications, be careful:
 
-- `store/sqldb` scopes transaction context per `*sqldb.DB`, so two Bun
-  connections of the same Go type do not collide implicitly
+- `store/sqldb` scopes transaction context per `*sqldb.DB`, so two Bun connections of the same Go type do not collide implicitly
 - `store/sqldb` uses Bun transaction types under the hood
 - a single context does not become a distributed transaction coordinator
 
@@ -457,9 +423,7 @@ Practical rule:
 
 ## Migrations
 
-`store/sqldb` wraps Bun's migration engine (`bun/migrate` — part of the
-already-pinned Bun module, not a new dependency). Register the set at
-wiring time, then opt in to auto-run on application start:
+`store/sqldb` wraps Bun's migration engine (`bun/migrate` — part of the already-pinned Bun module, not a new dependency). Register the set at wiring time, then opt in to auto-run on application start:
 
 ```go
 import "github.com/uptrace/bun/migrate"
@@ -483,34 +447,25 @@ func main() {
 }
 ```
 
-SQL migration files follow Bun's naming scheme — `1_create_users.up.sql`,
-`2_add_index.up.sql` (optionally with matching `.down.sql`). Go migrations
-use `migrations.MustRegister(up, down)` from files named the same way.
+SQL migration files follow Bun's naming scheme — `1_create_users.up.sql`, `2_add_index.up.sql` (optionally with matching `.down.sql`). Go migrations use `migrations.MustRegister(up, down)` from files named the same way.
 
 What the wrapper does on each `Migrate` call:
 
 1. creates Bun's bookkeeping tables if missing (`IF NOT EXISTS`)
-2. takes a table-based advisory lock — if another replica is migrating,
-   `Migrate` fails immediately instead of waiting (restart the instance)
+2. takes a table-based advisory lock — if another replica is migrating, `Migrate` fails immediately instead of waiting (restart the instance)
 3. applies unapplied migrations in order
 4. releases the lock (even when the context was cancelled)
 
-A migration is recorded as applied only **after** it succeeds, so a failed
-migration aborts startup and is retried on the next start. (This is the
-wrapper's default — Bun's bare default records first; pass
-`migrate.WithMarkAppliedOnSuccess(false)` to `RegisterMigrations` to
-restore it.)
+A migration is recorded as applied only **after** it succeeds, so a failed migration aborts startup and is retried on the next start. (This is the wrapper's default — Bun's bare default records first; pass `migrate.WithMarkAppliedOnSuccess(false)` to `RegisterMigrations` to restore it.)
 
-**Seeding** is just another migration file — there is no separate seed
-mechanism:
+**Seeding** is just another migration file — there is no separate seed mechanism:
 
 ```sql
 -- migrations/3_seed_plans.up.sql
 INSERT INTO plans (name, price) VALUES ('free', 0), ('pro', 1900);
 ```
 
-For rollback, status inspection, or generating migration files, drop down
-to Bun's migrator via the escape hatch:
+For rollback, status inspection, or generating migration files, drop down to Bun's migrator via the escape hatch:
 
 ```go
 migrator := migrate.NewMigrator(db.Client(), migrations)
@@ -521,12 +476,7 @@ group, err := migrator.Rollback(ctx)
 
 ## Reusing Filters Across Queries
 
-`Apply(...)` is typed per query — a `func(*bun.SelectQuery)
-*bun.SelectQuery` cannot be applied to an update or delete. When the
-*same* WHERE logic must run across reads and writes — tenant scoping,
-soft-delete filters, ownership checks — use `ApplyQueryBuilder`, which
-accepts Bun's shared `bun.QueryBuilder` (the builder-only interface common
-to select, update, and delete):
+`Apply(...)` is typed per query — a `func(*bun.SelectQuery) *bun.SelectQuery` cannot be applied to an update or delete. When the _same_ WHERE logic must run across reads and writes — tenant scoping, soft-delete filters, ownership checks — use `ApplyQueryBuilder`, which accepts Bun's shared `bun.QueryBuilder` (the builder-only interface common to select, update, and delete):
 
 ```go
 // One predicate, reused everywhere.
@@ -544,13 +494,9 @@ _, err = db.Update((*User)(nil)).Set("status = ?", "archived").
 _, err = db.Delete((*User)(nil)).ApplyQueryBuilder(scope).Exec(ctx)
 ```
 
-Conditions added through the builder land on the proxied query, so the
-terminal methods still apply TX injection and error mapping — interceptors
-are preserved, exactly like `Apply`. A nil predicate is a no-op.
+Conditions added through the builder land on the proxied query, so the terminal methods still apply TX injection and error mapping — interceptors are preserved, exactly like `Apply`. A nil predicate is a no-op.
 
-`bun.QueryBuilder` also exposes `WhereOr`, `WherePK`, `WhereDeleted`,
-`WhereAllWithDeleted`, and `WhereGroup` — including `WhereGroup`, which the
-curated proxy set does not surface directly:
+`bun.QueryBuilder` also exposes `WhereOr`, `WherePK`, `WhereDeleted`, `WhereAllWithDeleted`, and `WhereGroup` — including `WhereGroup`, which the curated proxy set does not surface directly:
 
 ```go
 err := db.Select(&users).
@@ -562,22 +508,13 @@ err := db.Select(&users).
     Scan(ctx)
 ```
 
-Because the predicate signature mentions `bun.QueryBuilder`, this path
-imports `bun` into repository code — it is an escape hatch like `Apply`,
-not the default. The builder's `Unwrap() any` returns the concrete query;
-calling terminal methods on it bypasses interceptors, the same caveat as
-`Unwrap()`.
+Because the predicate signature mentions `bun.QueryBuilder`, this path imports `bun` into repository code — it is an escape hatch like `Apply`, not the default. The builder's `Unwrap() any` returns the concrete query; calling terminal methods on it bypasses interceptors, the same caveat as `Unwrap()`.
 
 ---
 
 ## Raw SQL And Bun Escape Hatch
 
-Credo does not hide Bun — it integrates it. If the proxy layer does not
-cover a Bun feature you need, use the escape hatches: a missing *builder*
-method is reached with `Apply`/`ApplyQueryBuilder` (proxy guarantees
-preserved); a missing *terminal* method is worth a feature request — the
-guarantees live in the terminals, so they belong on the proxy. `Unwrap()`
-and `Client()` opt out of the guarantees entirely.
+Credo does not hide Bun — it integrates it. If the proxy layer does not cover a Bun feature you need, use the escape hatches: a missing _builder_ method is reached with `Apply`/`ApplyQueryBuilder` (proxy guarantees preserved); a missing _terminal_ method is worth a feature request — the guarantees live in the terminals, so they belong on the proxy. `Unwrap()` and `Client()` opt out of the guarantees entirely.
 
 Raw helpers:
 
@@ -597,21 +534,12 @@ Use `Client()` for:
 - migration operations beyond `db.Migrate` (rollback, status, file generation)
 - raw Bun APIs not exposed by the proxy layer
 
-**What you lose when you bypass the proxy layer**: queries executed via
-`db.Client()` skip both interceptors that the proxy layer provides:
+**What you lose when you bypass the proxy layer**: queries executed via `db.Client()` skip both interceptors that the proxy layer provides:
 
-- **No automatic TX injection** — an `InTx` / `RunInTx` block does not
-  affect raw `*bun.DB` calls. The query runs against the base connection,
-  outside any active transaction.
-- **No error mapping** — `sql.ErrNoRows` is returned as-is, not as
-  `store.ErrNotFound`. Driver-specific constraint codes leak through
-  unchanged. Calling code must import `database/sql` (or the driver
-  package) to interpret them.
+- **No automatic TX injection** — an `InTx` / `RunInTx` block does not affect raw `*bun.DB` calls. The query runs against the base connection, outside any active transaction.
+- **No error mapping** — `sql.ErrNoRows` is returned as-is, not as `store.ErrNotFound`. Driver-specific constraint codes leak through unchanged. Calling code must import `database/sql` (or the driver package) to interpret them.
 
-Reserve `Client()` for model registration, advanced migration operations,
-and raw SQL the proxy layer cannot express. Use the proxy layer
-(`db.Select` / `db.Insert` / `db.Update` / `db.Delete`) for normal
-repository code, even when the query is non-trivial.
+Reserve `Client()` for model registration, advanced migration operations, and raw SQL the proxy layer cannot express. Use the proxy layer (`db.Select` / `db.Insert` / `db.Update` / `db.Delete`) for normal repository code, even when the query is non-trivial.
 
 ---
 
@@ -656,8 +584,7 @@ For multiple databases:
 1. create wrapper types such as `PrimaryDB` and `AnalyticsDB`
 2. register each wrapper separately with `store.Register[R]`
 3. inject wrappers explicitly in constructors
-4. keep transaction boundaries local to a single database unless you have a
-   very deliberate explicit strategy
+4. keep transaction boundaries local to a single database unless you have a very deliberate explicit strategy
 
 ---
 

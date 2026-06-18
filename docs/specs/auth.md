@@ -1,21 +1,15 @@
 # Auth Spec
 
-**Status**: Approved
-**Package**: `auth/`
-**Sources**: Original design (no external code adapted)
-**Depends on**: Root package (`Context`, `Handler`, `Middleware`, `HTTPError`)
-**ADR**: [012-authentication-and-authorization](../adr/012-authentication-and-authorization.md)
+**Status**: Approved **Package**: `auth/` **Sources**: Original design (no external code adapted) **Depends on**: Root package (`Context`, `Handler`, `Middleware`, `HTTPError`) **ADR**: [012-authentication-and-authorization](../adr/012-authentication-and-authorization.md)
 
 ---
 
 ## Overview
 
-The `auth/` package provides authentication infrastructure for Credo
-applications. It does NOT provide a built-in `User` field on Context.
-Instead, it offers generic helper functions and an optional
-`Authenticator[T]` interface with a middleware factory.
+The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, it offers generic helper functions and an optional `Authenticator[T]` interface with a middleware factory.
 
 **Design principles**:
+
 - Generic type parameter `T` — works with any user type
 - `context.WithValue` internally — stdlib compatible
 - Unexported key type — collision-proof
@@ -44,13 +38,7 @@ func GetUser[T any](ctx context.Context) (T, bool)
 func RequireUser[T any](ctx context.Context) (T, error)
 ```
 
-**Internal implementation**: Uses `context.WithValue` with an
-unexported generic `userKey[T] struct{}` type. The generic type parameter
-eliminates runtime type assertions at the call site, and because the key
-itself is parameterized by T, every user type gets its own context slot —
-a JWT user and an API-key service account can coexist in one request.
-Retrieve with the same T that was stored: a value stored under a concrete
-type is not visible through an interface type parameter.
+**Internal implementation**: Uses `context.WithValue` with an unexported generic `userKey[T] struct{}` type. The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own context slot — a JWT user and an API-key service account can coexist in one request. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter.
 
 ### Authenticator Interface (generic)
 
@@ -62,8 +50,8 @@ type Authenticator[T any] interface {
 }
 ```
 
-The interface is intentionally minimal — a single method that takes
-an `*http.Request` and returns the user or an error. This supports:
+The interface is intentionally minimal — a single method that takes an `*http.Request` and returns the user or an error. This supports:
+
 - JWT validation (read Authorization header, parse token)
 - Session lookup (read cookie, query session store)
 - API key check (read X-API-Key header, query database)
@@ -78,8 +66,7 @@ an `*http.Request` and returns the user or an error. This supports:
 type ErrorFunc func(err error, ctx *credo.Context) error
 ```
 
-When `nil` (or when it returns `nil`), the middleware returns
-`credo.ErrUnauthorized` by default.
+When `nil` (or when it returns `nil`), the middleware returns `credo.ErrUnauthorized` by default.
 
 ### Middleware Factory
 
@@ -95,35 +82,16 @@ func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware
 
 ### JWT Configuration (two tiers)
 
-`JWTConfig[T]` separates a Credo-typed simple tier from a golang-jwt
-escape hatch:
+`JWTConfig[T]` separates a Credo-typed simple tier from a golang-jwt escape hatch:
 
-- **Simple tier** — extraction (`Header`/`Prefix`/`Query`/`Cookie`), key
-  material (`SigningMethod`/`SigningKey`/`SigningKeys`), registered-claim
-  validation (`Issuer`, `Audience`, `Leeway`, `RequireExpiry`), and user
-  extraction via `ParseClaims func(JWTClaims) (T, error)`. `JWTClaims` is
-  a read-only accessor view: registered claims come back with proper Go
-  types (`ExpiresAt() time.Time` — never the raw float64 that JSON
-  decoding produces), and `Get`/`GetString` read custom claims from the
-  default map representation.
-- **Advanced tier** — `Advanced JWTAdvanced[T]` exposes golang-jwt
-  primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims
-  structs), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions`
-  (appended after the options derived from the simple tier, so they win
-  on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken`
-  is a constructor error. When neither is set, the raw claims value is
-  type-asserted to `T`.
+- **Simple tier** — extraction (`Header`/`Prefix`/`Query`/`Cookie`), key material (`SigningMethod`/`SigningKey`/`SigningKeys`), registered-claim validation (`Issuer`, `Audience`, `Leeway`, `RequireExpiry`), and user extraction via `ParseClaims func(JWTClaims) (T, error)`. `JWTClaims` is a read-only accessor view: registered claims come back with proper Go types (`ExpiresAt() time.Time` — never the raw float64 that JSON decoding produces), and `Get`/`GetString` read custom claims from the default map representation.
+- **Advanced tier** — `Advanced JWTAdvanced[T]` exposes golang-jwt primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims structs), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions` (appended after the options derived from the simple tier, so they win on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken` is a constructor error. When neither is set, the raw claims value is type-asserted to `T`.
 
 Validation semantics:
 
-- `Audience` is **any-of** (RFC 7519 §4.1.3 validator practice): the
-  token is accepted when its `aud` list contains at least one configured
-  value.
-- `Leeway` widens `exp`/`nbf`/`iat` checks in both directions to absorb
-  clock skew between issuer and server.
-- `RequireExpiry` rejects tokens without `exp`. The golang-jwt v5
-  default — pinned by tests — validates `exp` only when present, so an
-  exp-less token never expires unless this is set.
+- `Audience` is **any-of** (RFC 7519 §4.1.3 validator practice): the token is accepted when its `aud` list contains at least one configured value.
+- `Leeway` widens `exp`/`nbf`/`iat` checks in both directions to absorb clock skew between issuer and server.
+- `RequireExpiry` rejects tokens without `exp`. The golang-jwt v5 default — pinned by tests — validates `exp` only when present, so an exp-less token never expires unless this is set.
 
 ---
 
@@ -187,8 +155,7 @@ func CreateOrder(ctx *credo.Context) error {
 
 ### Pattern 4: RBAC with Route Meta
 
-Auth middleware sets the user, RBAC middleware reads meta and checks
-permissions:
+Auth middleware sets the user, RBAC middleware reads meta and checks permissions:
 
 ```go
 // Route registration
@@ -264,59 +231,27 @@ auth/
 
 ## Design Decisions
 
-1. **No built-in User field** — Progressive disclosure, zero cost,
-   type safety via generics. See [ADR-012](../adr/012-authentication-and-authorization.md).
+1. **No built-in User field** — Progressive disclosure, zero cost, type safety via generics. See [ADR-012](../adr/012-authentication-and-authorization.md).
 
-2. **`context.WithValue` over `ctx.Set`** — Auth middleware may be
-   stdlib-compatible (via `WrapStdMiddleware`). `context.WithValue`
-   works across both Credo and stdlib boundaries. `ctx.Set` only works
-   within Credo middleware.
+2. **`context.WithValue` over `ctx.Set`** — Auth middleware may be stdlib-compatible (via `WrapStdMiddleware`). `context.WithValue` works across both Credo and stdlib boundaries. `ctx.Set` only works within Credo middleware.
 
-3. **Unexported generic key type** — `type userKey[T any] struct{}`
-   prevents key collisions (no other package can accidentally overwrite
-   the user) and gives each user type its own slot, so multiple
-   authentication identities can coexist per request.
+3. **Unexported generic key type** — `type userKey[T any] struct{}` prevents key collisions (no other package can accidentally overwrite the user) and gives each user type its own slot, so multiple authentication identities can coexist per request.
 
-4. **`Authenticator[T]` is optional** — The interface is a convenience,
-   not a requirement. Users can write custom middleware and use
-   `SetUser`/`GetUser` directly.
+4. **`Authenticator[T]` is optional** — The interface is a convenience, not a requirement. Users can write custom middleware and use `SetUser`/`GetUser` directly.
 
-5. **`ErrorFunc` callback** — Different apps need different error
-    responses (JSON, redirect to login, custom headers). The callback
-    provides this flexibility without subclassing. If callback returns
-    `nil`, middleware falls back to default `ErrUnauthorized` behavior.
+5. **`ErrorFunc` callback** — Different apps need different error responses (JSON, redirect to login, custom headers). The callback provides this flexibility without subclassing. If callback returns `nil`, middleware falls back to default `ErrUnauthorized` behavior.
 
-6. **JWT key selection policy** — `SigningKeys` is selected by token `kid`
-   when `kid` is present; unknown `kid` is rejected. If token has no
-   `kid`, middleware falls back to `SigningKey` when configured.
+6. **JWT key selection policy** — `SigningKeys` is selected by token `kid` when `kid` is present; unknown `kid` is rejected. If token has no `kid`, middleware falls back to `SigningKey` when configured.
 
-7. **Separate from `middleware/`** — Auth is a cross-cutting concern
-    with its own types (Authenticator, ErrorFunc) and helpers
-    (`SetUser`, `GetUser`, `RequireUser`). It deserves its own package rather than being
-    scattered across `middleware/`.
+7. **Separate from `middleware/`** — Auth is a cross-cutting concern with its own types (Authenticator, ErrorFunc) and helpers (`SetUser`, `GetUser`, `RequireUser`). It deserves its own package rather than being scattered across `middleware/`.
 
-8. **`SecureCompare` helper** — Basic/API-key validators are user code, and
-   the natural `==` comparison leaks timing information. The framework
-   ships `SecureCompare(x, y string) bool` (hash-then-`subtle.ConstantTimeCompare`,
-   masking both content and length) and the validator type godocs point to
-   it. Password verification should instead use a dedicated password hash
-   (bcrypt/argon2id); JWT signature comparison is already constant-time
-   inside `golang-jwt`.
+8. **`SecureCompare` helper** — Basic/API-key validators are user code, and the natural `==` comparison leaks timing information. The framework ships `SecureCompare(x, y string) bool` (hash-then-`subtle.ConstantTimeCompare`, masking both content and length) and the validator type godocs point to it. Password verification should instead use a dedicated password hash (bcrypt/argon2id); JWT signature comparison is already constant-time inside `golang-jwt`.
 
-9. **Two-tier `JWTConfig`** — Credo does not hide golang-jwt, it
-   integrates it (the same visibility policy as Bun in `store/sqldb`):
-   the simple tier is fully Credo-typed for the common path, while the
-   nested `Advanced JWTAdvanced[T]` struct keeps the library's full power
-   one explicit step away. Structural nesting (rather than a doc-only
-   convention) keeps the simple/advanced boundary visible in config
-   literals and code review, and `_ = config.Advanced` usage is easy to
-   grep for when auditing library coupling.
+9. **Two-tier `JWTConfig`** — Credo does not hide golang-jwt, it integrates it (the same visibility policy as Bun in `store/sqldb`): the simple tier is fully Credo-typed for the common path, while the nested `Advanced JWTAdvanced[T]` struct keeps the library's full power one explicit step away. Structural nesting (rather than a doc-only convention) keeps the simple/advanced boundary visible in config literals and code review, and `_ = config.Advanced` usage is easy to grep for when auditing library coupling.
 
 ---
 
 ## Implementation Phase
 
-- **Phase 3.2**: Generic user accessors + Authenticator interface +
-  middleware factory
-- **Phase 3.2** (also): JWT, API Key, Basic Auth implementations
-  (these use the Authenticator interface)
+- **Phase 3.2**: Generic user accessors + Authenticator interface + middleware factory
+- **Phase 3.2** (also): JWT, API Key, Basic Auth implementations (these use the Authenticator interface)
