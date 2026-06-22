@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 The `store/sqldb` submodule is versioned in lockstep with the root module (path-prefixed `store/sqldb/vX.Y.Z` tags — see [CONTRIBUTING.md#releasing](CONTRIBUTING.md#releasing)); its changes are recorded here.
 
+## [Unreleased]
+
+### Changed
+
+- **Lifecycle** — a failed startup (an `OnStart` hook returning an error) or a non-graceful `Serve` failure after the server reached `running` now runs the full teardown chain (DI container shutdown + `OnShutdown` hooks) and ends in the terminal `stopped` state, instead of rolling back to `building`. This releases resources an earlier `OnStart` hook started (workers, locks, connections) instead of leaking them. `OnShutdown` hooks consequently run on every teardown, including a failed startup, so they must be idempotent and must not assume any particular `OnStart` hook completed. Pre-session failures (TLS preflight, listener bind) still roll back to `building` and remain retryable. See [ADR-006](docs/adr/006-application-lifecycle.md).
+
 ## [0.1.0] - 2026-06-10
 
 Initial public release.
@@ -32,4 +38,5 @@ Initial public release.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/credo-go/credo/releases/tag/v0.1.0

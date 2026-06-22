@@ -178,7 +178,11 @@ var errShutdownNotRunning = errors.New("credo: shutdown: server not running")
 //
 // State machine: building → starting → running → stopping → stopped
 //
-//	↘ (preflight/listen/OnStart/serve error) → building
+//	↘ pre-session failure (preflight/listen)              → building (may run again)
+//	↘ session failure (OnStart hook / post-running serve) → drain → stopped (terminal)
+//
+// A pre-session failure rolls back to building because nothing has started; a
+// session failure runs the full teardown and the App is terminal (ADR-006).
 //
 // Race safety: stateStarting prevents Shutdown from reading nil ctx/server.
 // stateRunning is stored only after the listener is bound and OnStart hooks
@@ -228,7 +232,10 @@ func (lm *lifecycleManager) serve(
 	lm.server = srv
 	lm.serverMu.Unlock()
 
-	// cleanup rolls back ctx and server fields on failure.
+	// cleanup rolls back the ctx and server fields for a pre-session failure (a
+	// listen error): nothing has started, so there is nothing to drain and the
+	// App stays in building, free to run again. Session failures (OnStart/serve)
+	// instead run the full drain — see Phase 5 and Phase 6.
 	cleanup := func() {
 		appCancel()
 		lm.serverMu.Lock()
@@ -253,12 +260,29 @@ func (lm *lifecycleManager) serve(
 
 	// Phase 5: startup hooks (FIFO), before stateRunning to avoid racing
 	// Shutdown. Hooks receive the app context, cancelled when shutdown begins.
+	//
+	// A hook failure here is a session failure, not a pre-session one: an
+	// earlier hook may have produced externally visible side effects (started
+	// workers, acquired a migration lock, opened a subscription). So we run the
+	// full teardown chain — the same one a graceful shutdown runs — and the App
+	// becomes terminally stopped (ADR-006), rather than rolling back to building.
+	// State is stateStarting, so a concurrent Shutdown (which requires
+	// stateRunning) cannot race this drain; we store stateStopping and drain
+	// directly instead of going through initiateShutdown's CAS.
 	for i, fn := range lm.onStart {
-		if startErr := fn(lm.ctx); startErr != nil {
-			cleanup()
-			lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
-			return fmt.Errorf("credo: %s: OnStart hook [%d]: %w", label, i, startErr)
+		startErr := fn(lm.ctx)
+		if startErr == nil {
+			continue
 		}
+		lm.state.Store(uint32(stateStopping))
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), lm.shutdownTimeout())
+		teardownErr := lm.drain(drainCtx)
+		drainCancel()
+		err := fmt.Errorf("credo: %s: OnStart hook [%d]: %w", label, i, startErr)
+		if teardownErr != nil {
+			err = errors.Join(err, teardownErr)
+		}
+		return err
 	}
 
 	// Phase 6: open the Shutdown gate. IsRunning() is now true.
@@ -272,13 +296,22 @@ func (lm *lifecycleManager) serve(
 	case serveErr := <-serveErrCh:
 		// Serve returned without us triggering shutdown. ErrServerClosed means
 		// a programmatic Shutdown (from another goroutine) owns the drain and
-		// the state transition — report graceful. Any other error is a serve
-		// failure: roll back to building.
+		// the state transition — report graceful.
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			return nil
 		}
-		cleanup()
-		lm.state.CompareAndSwap(uint32(stateRunning), uint32(stateBuilding))
+		// A real serve failure on a running app is a terminal session failure
+		// (ADR-006): run the same teardown as a graceful shutdown, then report
+		// the serve error. initiateShutdown's running → stopping CAS claims
+		// ownership against a racing programmatic Shutdown; if it lost the race
+		// (errShutdownNotRunning), that caller owns the drain and we report only
+		// the serve error.
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), lm.shutdownTimeout())
+		teardownErr := lm.initiateShutdown(drainCtx)
+		drainCancel()
+		if teardownErr != nil && !errors.Is(teardownErr, errShutdownNotRunning) {
+			return errors.Join(serveErr, teardownErr)
+		}
 		return serveErr
 	case <-ctx.Done():
 		// Caller cancelled (or a signal, via runSignal). We own the drain. The
@@ -296,16 +329,34 @@ func (lm *lifecycleManager) serve(
 	}
 }
 
-// initiateShutdown is the single drain sequence shared by Shutdown and the
-// context-cancellation path of serve. The running → stopping CAS makes it
-// idempotent and is the sole source of truth for shutdown-once: concurrent
-// callers (a cancelled context racing a programmatic Shutdown) cannot run the
-// sequence twice. The loser receives errShutdownNotRunning.
+// initiateShutdown is the CAS-guarded entry to the shared drain sequence. The
+// running → stopping CAS is the sole source of truth for shutdown-once:
+// concurrent callers (a cancelled context, a serve failure, and a programmatic
+// Shutdown racing each other) cannot run the sequence twice. The loser receives
+// errShutdownNotRunning. The startup-failure path does not go through here — it
+// is in stateStarting, where no Shutdown can race it, so it calls drain directly.
 func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 	if !lm.state.CompareAndSwap(uint32(stateRunning), uint32(stateStopping)) {
 		return errShutdownNotRunning
 	}
+	return lm.drain(ctx)
+}
 
+// drain runs the teardown chain shared by every shutdown path — graceful
+// Shutdown, context cancellation, a runtime serve failure, and a failed startup:
+// mark unready, cancel the app context, drain the HTTP server, tear down DI
+// singletons (reverse order), run OnShutdown hooks (LIFO), release the
+// server-session references, and store stateStopped.
+//
+// The caller must have already moved the state out of the live states
+// (running/starting) so drain runs exactly once: initiateShutdown does this via
+// its running → stopping CAS; the startup-failure path stores stateStopping
+// directly (a non-running app cannot be reached by Shutdown).
+//
+// OnShutdown hooks run on *every* teardown, including a failed startup. They are
+// the session teardown point, not an OnStart mirror, so they must be idempotent
+// and must not assume any particular OnStart hook completed (ADR-006).
+func (lm *lifecycleManager) drain(ctx context.Context) error {
 	// Phase 0: stop reporting ready so load balancers drain this instance
 	// before it stops accepting connections. Liveness stays up — the process
 	// is alive, just no longer taking new work.
@@ -325,7 +376,10 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 		cancelFn()
 	}
 
-	// 2. Drain in-flight HTTP requests (stop accepting, wait for handlers).
+	// 2. Drain in-flight HTTP requests (stop accepting, wait for handlers). On a
+	// failed-startup teardown Serve was never called, so srv has no registered
+	// listener and this is a near no-op; serve()'s deferred l.Close() closes the
+	// bound listener.
 	if srv != nil {
 		if err := srv.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("credo: server drain: %w", err))
@@ -344,7 +398,7 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 		}
 	}
 
-	// Release the server-session references, mirroring the failure-path cleanup
+	// Release the server-session references, mirroring the pre-session cleanup
 	// in serve(). The App is single-use, so nothing reads these after stopped;
 	// dropping them lets the closed server and cancelled context be collected.
 	lm.serverMu.Lock()

@@ -14,9 +14,14 @@ Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but has no co
 
 ```
 building → starting → running → stopping → stopped
-              ↓ (listen error)
-           building
+
+Failure transitions:
+  preflight / listen error      → building   (pre-session: nothing started, retryable)
+  OnStart hook error            → stopped    (session: full teardown, terminal)
+  serve error (after running)   → stopped    (session: full teardown, terminal)
 ```
+
+A failure is classed by how far startup progressed. **Pre-session** failures (TLS preflight, listener bind) happen before any OnStart hook runs and before startup resolves any singleton, so they roll back to `building` and the App may run again. **Session** failures — any error once the OnStart phase has begun (a hook returning an error, regardless of position) or a non-`ErrServerClosed` error from `Serve` after the app reached `running` — run the full teardown chain (the same one a graceful shutdown runs) and the App becomes terminally `stopped`; retry means a new App.
 
 | State | Meaning |
 | --- | --- |
@@ -81,7 +86,7 @@ Without an accessor the dead zone is structurally unreachable: there is no pre-`
 7. Store state = running
 ```
 
-If any OnStart hook returns an error, startup aborts: state rolls back to `building`, the listener is closed, and `Run` returns the error.
+If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (cancel app context → HTTP drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
 
 ### Shutdown Sequence
 
@@ -111,7 +116,7 @@ app.OnStart(func(ctx context.Context) error {
 
 - FIFO order (first registered, first called)
 - Receives the app context (created at `Run` time)
-- Fail-fast: first error aborts startup, remaining hooks are skipped
+- Fail-fast: the first error aborts startup, remaining hooks are skipped, the full teardown chain runs, and the App ends terminally `stopped` (a session that began tears down rather than rolling back)
 - Must be called before `Run()`; panics after compile (frozen guard)
 
 **OnShutdown** — called during graceful shutdown:
@@ -124,6 +129,7 @@ app.OnShutdown(func(ctx context.Context) error {
 
 - Hooks receive the shutdown deadline context from `Shutdown(ctx)`
 - LIFO order (reverse registration order) — resources opened last are closed first
+- Run on **every** teardown, including a failed startup — OnShutdown is the session teardown point, not an OnStart mirror, so hooks must be idempotent and must not assume any particular OnStart hook completed
 - Must be called before `Run()`; panics after compile (frozen guard)
 - Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
 
@@ -145,11 +151,12 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | No post-compile hook registration | Frozen guard prevents race conditions |
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
-| OnStart fail-fast | Startup hooks are sequential and dependent — first error aborts |
+| OnStart fail-fast | Startup hooks are sequential and dependent — the first error aborts the rest and triggers full teardown |
 | OnStart before stateRunning | Hooks run in `stateStarting` — avoids race with `Shutdown()` which requires `stateRunning` |
 | `stateStarting` transient state | Closes race window between CAS and server field writes — Shutdown cannot read nil fields |
 | `http.ErrServerClosed` → nil | Graceful shutdown is not an error condition |
-| Listen error → rollback to building | Failed run allows retry |
+| Pre-session failure → building | Preflight/listen errors start nothing — rolling back to `building` keeps the App retryable |
+| Session failure → terminal stopped | An OnStart-hook error or a post-running serve error runs the full teardown (DI shutdown + OnShutdown) and ends `stopped`; a session that began may hold side effects, and `building` is unsound once `container.Shutdown` has run. Rejected: uniform rollback to `building`, which skipped teardown and leaked started resources |
 
 ## Consequences
 
@@ -162,6 +169,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - LIFO hooks ensure correct resource cleanup order
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
+- Startup and runtime serve failures tear down resources through the same chain as graceful shutdown — a started worker, an open connection, or an acquired lock is released even when startup later fails, instead of leaking
 
 **Negative:**
 

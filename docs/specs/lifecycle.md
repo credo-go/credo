@@ -9,15 +9,19 @@ Credo uses a state machine to govern the application lifecycle. This prevents un
 ## State Machine
 
 ```
-             compile()             Run()                                          Shutdown()
-  building ------------ [frozen] ---> starting ---> [OnStart] ---> running ---> stopping ---> stopped
-      |                                  |              |             |                          |
-      | ServeHTTP()                      | listen       | hook        | 2nd Run()                | 2nd Shutdown()
-      | (compile only,                   | error        | error       | -> error                  | -> error
-      |  state unchanged)                v              v             v                          v
-      v                               building       building      [error]                    [error]
-  [frozen=true]
+             compile()          Run()                                  Shutdown()
+  building ----[frozen]----> starting ---[OnStart]---> running ---> stopping ---> stopped
+      |                         |             |           |                         ^
+      | ServeHTTP()             |             |           | serve error             |
+      | (compile only,          |             |           |  (non-graceful)         |
+      |  state unchanged)       |             |           └────────── drain ────────┤
+      v                         |             |                                     |
+  [frozen=true]                 |             └─────────── OnStart error ── drain ──┘
+                                |                                            → stopped
+                                └─ preflight / listen error → building (retryable)
 ```
+
+Failures split by how far startup got. A **pre-session** failure (TLS preflight or listener bind) starts nothing, so it rolls back to `building` and the App may run again. A **session** failure — an OnStart hook returning an error, or a non-`ErrServerClosed` error from `Serve` after `running` — runs the full teardown chain (the drain shared with graceful shutdown) and ends in the terminal `stopped` state. A second `Run` after shutdown and a second `Shutdown` both return an error (state unchanged).
 
 ### States
 
@@ -27,7 +31,7 @@ Credo uses a state machine to govern the application lifecycle. This prevents un
 | `starting` | 1 | Transient startup state. Run claimed; server/ctx being written; OnStart hooks executing. |
 | `running` | 2 | Server is listening. Registration frozen. |
 | `stopping` | 3 | Draining in-flight requests + running hooks. |
-| `stopped` | 4 | Fully stopped. Terminal state. |
+| `stopped` | 4 | Fully stopped. Terminal state — reached by graceful shutdown or by a session-failure teardown (OnStart hook error / post-running serve error). |
 
 ## `frozen` vs `state`
 
@@ -106,6 +110,7 @@ An explicit `Shutdown(ctx)` honours the caller's `ctx` deadline as-is. Signal- a
 | --- | --- |
 | Signal (`Run`, `RunTLS`) | `context.Background()` + `WithShutdownTimeout` |
 | Context cancel (`RunContext`, `RunTLSContext`, `ServeContext`) | `context.WithoutCancel(ctx)` + `WithShutdownTimeout` — keeps caller values, drops cancellation |
+| Session failure (OnStart hook error / post-running serve error) | `context.Background()` + `WithShutdownTimeout` |
 | Explicit `Shutdown(ctx)` | the caller's `ctx`, unchanged |
 
 #### Single-use App
@@ -122,7 +127,7 @@ A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with 
 
 Registers a startup hook. Hooks are called in **FIFO** order after the port is bound but before the server starts accepting connections (state is still `starting`). The `ctx` parameter is the app context (created at `Run` time).
 
-If any hook returns an error, startup aborts: state rolls back to `building`, the listener is closed, and `Run` returns the error. Remaining hooks are skipped (fail-fast).
+If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (cancel app context → HTTP drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), bounded by `WithShutdownTimeout`.
 
 `app.Addr()` is available inside hooks — critical for port-0 scenarios.
 
@@ -133,6 +138,8 @@ Must be called before `compile()` (panics if frozen).
 ### `app.OnShutdown(fn func(ctx context.Context) error)`
 
 Registers a shutdown hook. Hooks are called in LIFO order during `Shutdown`. The `ctx` parameter carries the shutdown deadline from `Shutdown(ctx)`. Must be called before `compile()` (panics if frozen).
+
+OnShutdown hooks run on **every** teardown, including a failed startup (an OnStart hook erroring after an earlier one ran). OnShutdown is therefore the session teardown point, not an OnStart mirror: hooks must be idempotent and must not assume any particular OnStart hook completed. (Because `onStart` and `onShutdown` are independent lists — not paired by index — a hook running without its conceptual counterpart was always possible; session-failure teardown only makes it routine.)
 
 ### `credo.WithShutdownTimeout(d time.Duration) Option`
 

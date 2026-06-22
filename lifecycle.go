@@ -19,6 +19,12 @@ func (app *App) IsRunning() bool {
 // OnShutdown registers a function to be called during graceful shutdown.
 // Hooks are called in LIFO order (last registered, first called).
 // The ctx passed to each hook carries the shutdown deadline from Shutdown(ctx).
+//
+// Hooks run on every teardown, including a failed startup (an OnStart hook
+// erroring after an earlier one ran). OnShutdown is the session teardown point,
+// not an OnStart mirror, so hooks must be idempotent and must not assume any
+// particular OnStart hook completed.
+//
 // Must be called before Run; panics if called after compile.
 func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 	app.checkFrozen("OnShutdown")
@@ -29,8 +35,11 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 // is bound but before the server starts accepting connections. Hooks are
 // called in FIFO order (first registered, first called).
 // The ctx passed to each hook is the app context (created at Run time).
-// If any hook returns an error, the server does not start and Run returns
-// the error.
+// If any hook returns an error, the server does not start: remaining hooks are
+// skipped, the App runs the full teardown chain (the same as graceful shutdown,
+// including DI shutdown and OnShutdown hooks), and Run returns the error. The
+// App ends terminally stopped — a session that began tears down rather than
+// rolling back, so it cannot be run again (create a new App).
 // Typical uses are cache warm-up and database migrations — the store/sqldb
 // migration wrapper plugs in directly: app.OnStart(db.Migrate).
 // Must be called before Run; panics if called after compile.

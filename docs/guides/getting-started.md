@@ -462,7 +462,7 @@ func main() {
 }
 ```
 
-OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start. `app.Addr()` is available inside hooks — useful when using port 0.
+OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so resources an earlier hook started are released — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
 
 For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain (bounded by `WithShutdownTimeout`):
 

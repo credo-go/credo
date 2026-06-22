@@ -627,31 +627,27 @@ func TestApp_Run_ListenFailure_RollsBackState(t *testing.T) {
 	}
 }
 
-func TestApp_RunTLS_ListenFailure_RollsBackState(t *testing.T) {
-	// Occupy a port
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
-	port, _ := strconv.Atoi(portStr)
-
-	app := mustNew(t, credo.WithAddr(host, port))
+// TestApp_RunTLS_PreflightFailure_RollsBackState verifies that a TLS key-pair
+// preflight failure is a pre-session failure: RunTLS rolls back to building
+// (free to run again), not the terminal stopped state used for session
+// failures. The missing cert files fail the preflight before any listener is
+// bound, so this exercises the preflight path specifically (genuine RunTLS
+// listen-failure shares tcpListen with plain Run — see
+// TestApp_Run_ListenFailure_RollsBackState).
+func TestApp_RunTLS_PreflightFailure_RollsBackState(t *testing.T) {
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	app.GET("/ping", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "pong")
 	})
 
-	// RunTLS should fail (bad cert files + occupied port)
-	err = app.RunTLS("nonexistent.crt", "nonexistent.key")
+	err := app.RunTLS("nonexistent.crt", "nonexistent.key")
 	if err == nil {
-		t.Fatal("RunTLS() should fail")
+		t.Fatal("RunTLS() should fail with a missing key pair")
 	}
 
-	// State should be rolled back to "building"
+	// Pre-session failure → building (may run again), not stopped.
 	if got := app.State(); got != "building" {
-		t.Errorf("State() = %q after failed RunTLS, want %q", got, "building")
+		t.Errorf("State() = %q after preflight failure, want %q", got, "building")
 	}
 }
 
@@ -919,6 +915,56 @@ func TestApp_ServeContext_NilListener(t *testing.T) {
 	}
 }
 
+// TestApp_ServeContext_ServeError_RunsTeardown verifies that a non-graceful
+// Serve failure after the app reached running (here: the listener is closed out
+// from under Serve) runs the full teardown chain and the App reaches the
+// terminal stopped state, rather than rolling back to building (ADR-006).
+func TestApp_ServeContext_ServeError_RunsTeardown(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	var shutdownCalled atomic.Bool
+	app.OnShutdown(func(ctx context.Context) error {
+		shutdownCalled.Store(true)
+		return nil
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.ServeContext(context.Background(), l) }()
+	waitRunning(t, app)
+
+	// Close the listener out from under Serve: Accept fails with a non-graceful
+	// error (not http.ErrServerClosed), i.e. a runtime serve failure.
+	l.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("ServeContext should return the serve error, got nil")
+		}
+		if errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("expected a non-graceful serve error, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeContext did not return after the listener was closed")
+	}
+
+	// Full teardown ran and the App is terminal.
+	if !shutdownCalled.Load() {
+		t.Error("OnShutdown hook should run on a serve-failure teardown")
+	}
+	if got := app.State(); got != "stopped" {
+		t.Errorf("State() = %q after serve failure, want %q", got, "stopped")
+	}
+}
+
 // TestApp_RunTLSContext_BadCertFailFast verifies an invalid key pair is caught
 // before the server starts. A free port proves the failure is the preflight,
 // not a listen error, and state rolls back to building.
@@ -1058,9 +1104,10 @@ func TestApp_OnStart_ErrorPreventsServing(t *testing.T) {
 		t.Errorf("Run() error should wrap hookErr: got %v", err)
 	}
 
-	// State should be rolled back to "building".
-	if got := app.State(); got != "building" {
-		t.Errorf("State() = %q after failed OnStart, want %q", got, "building")
+	// A failed OnStart hook is a session failure: the App runs full teardown
+	// and reaches the terminal stopped state (ADR-006), not building.
+	if got := app.State(); got != "stopped" {
+		t.Errorf("State() = %q after failed OnStart, want %q", got, "stopped")
 	}
 }
 
@@ -1081,6 +1128,56 @@ func TestApp_OnStart_ErrorStopsAtFirst(t *testing.T) {
 
 	if hook3Called.Load() {
 		t.Error("hook 3 should not have been called after hook 2 failed")
+	}
+}
+
+// TestApp_OnStart_Failure_RunsTeardown verifies that when an OnStart hook fails
+// after an earlier hook has run, the App runs the full teardown chain — DI
+// Shutdowners are torn down and the app context is cancelled — rather than a
+// bare local rollback, and reaches the terminal stopped state (ADR-006).
+func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
+	host, port, _ := freePort(t)
+	app := mustNew(t, credo.WithAddr(host, port))
+	app.GET("/ping", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "pong")
+	})
+
+	var order []string
+	credo.MustProvideValue[*diShutdownTracker](app, &diShutdownTracker{order: &order, name: "svc"})
+
+	var hookCtx context.Context
+	app.OnStart(func(ctx context.Context) error { hookCtx = ctx; return nil }) // hook 0: ok, captures ctx
+	hookErr := fmt.Errorf("boom")
+	app.OnStart(func(ctx context.Context) error { return hookErr }) // hook 1: fails
+
+	err := app.Run()
+	if !errors.Is(err, hookErr) {
+		t.Fatalf("Run() error should wrap hookErr, got %v", err)
+	}
+
+	// Full teardown ran: the DI Shutdowner was invoked.
+	if len(order) != 1 || order[0] != "svc" {
+		t.Errorf("DI Shutdowner not run on OnStart-failure teardown: order = %v, want [svc]", order)
+	}
+
+	// Session failure → terminal stopped, not building.
+	if got := app.State(); got != "stopped" {
+		t.Errorf("State() = %q after failed OnStart, want %q", got, "stopped")
+	}
+
+	// The app context handed to earlier hooks was cancelled by teardown.
+	if hookCtx == nil {
+		t.Fatal("hook 0 did not capture the app context")
+	}
+	select {
+	case <-hookCtx.Done():
+	default:
+		t.Error("app context should be cancelled after teardown")
+	}
+
+	// Single-use: a terminally stopped App cannot be run again.
+	if err := app.Run(); err == nil {
+		t.Error("second Run() after terminal stopped should error")
 	}
 }
 
