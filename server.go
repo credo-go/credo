@@ -45,6 +45,10 @@ func (app *App) Run() error {
 // cancellation the drain keeps ctx's values but drops its cancellation
 // (so an already-cancelled ctx still drains), bounded by [WithShutdownTimeout].
 // Returns nil on graceful shutdown.
+//
+// Cancelling ctx during startup does not abort an in-progress [App.OnStart]
+// hook: hooks receive the app context, not ctx, so the cancellation takes
+// effect only after all hooks complete.
 func (app *App) RunContext(ctx context.Context) error {
 	return app.lifecycle.serve(ctx, "RunContext", nil, tcpListen, plainServe)
 }
