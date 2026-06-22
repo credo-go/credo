@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/middleware"
@@ -381,5 +382,182 @@ func TestBuiltinAccessLog_FallbackRequestID(t *testing.T) {
 	}
 	if got := w.Header().Get("X-Request-Id"); got != reqID {
 		t.Errorf("header = %q, log request_id = %q", got, reqID)
+	}
+}
+
+// --- MetaAccessLog (per-route/group silencing) ---
+
+func TestMetaAccessLog_ConstantValue(t *testing.T) {
+	if credo.MetaAccessLog != "credo.accesslog" {
+		t.Errorf("MetaAccessLog = %q, want %q", credo.MetaAccessLog, "credo.accesslog")
+	}
+}
+
+func TestBuiltinAccessLog_MetaSilencesRoute(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.GET("/silent", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).SetMeta(credo.MetaAccessLog, false)
+	app.GET("/loud", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	// Silenced route → no access log line.
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/silent", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no log for silenced route, got: %s", buf.String())
+	}
+
+	// Sibling route without the meta → logged.
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/loud", nil))
+	if buf.Len() == 0 {
+		t.Error("expected log for non-silenced sibling route")
+	}
+}
+
+func TestBuiltinAccessLog_MetaSilencesGroup(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	g := app.Group("/internal")
+	g.SetMeta(credo.MetaAccessLog, false)
+	g.GET("/metrics", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/internal/metrics", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no log for route under silenced group (meta inheritance), got: %s", buf.String())
+	}
+}
+
+func TestBuiltinAccessLog_RouteMetaOverridesGroup(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// A silenced group with one route that re-enables logging at the route
+	// level. LookupMeta reads the route before its parents, so the route's
+	// true overrides the group's false.
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	g := app.Group("/internal")
+	g.SetMeta(credo.MetaAccessLog, false)
+	g.GET("/audit", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).SetMeta(credo.MetaAccessLog, true)
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/internal/audit", nil))
+	if buf.Len() == 0 {
+		t.Error("expected log: route-level true must override group-level false")
+	}
+}
+
+func TestBuiltinAccessLog_NonBoolMetaFailsOpen(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// A non-bool meta value is ignored (fail-open): the request is logged.
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.GET("/x", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).SetMeta(credo.MetaAccessLog, "false") // string, not bool
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/x", nil))
+	if buf.Len() == 0 {
+		t.Error("expected log: a non-bool MetaAccessLog value must fail open")
+	}
+}
+
+func TestBuiltinAccessLog_StaticRouteMetaSilences(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	fsys := fstest.MapFS{
+		"app.js": {Data: []byte("console.log('x')")},
+	}
+	app.Static("/assets", fsys).SetMeta(credo.MetaAccessLog, false)
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/assets/app.js", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no access log for silenced static route, got: %s", buf.String())
+	}
+}
+
+func TestBuiltinAccessLog_SkipperOption(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t,
+		credo.WithLogger(logger),
+		credo.WithoutRequestID(),
+		credo.WithAccessLogSkipper(func(ctx *credo.Context) bool {
+			return ctx.Request().URL.Path == "/skip"
+		}),
+	)
+	app.GET("/skip", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+	app.GET("/keep", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	// Skipped path → no log.
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/skip", nil))
+	if buf.Len() != 0 {
+		t.Errorf("expected no log for skipped path, got: %s", buf.String())
+	}
+
+	// Other path → logged.
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/keep", nil))
+	if buf.Len() == 0 {
+		t.Error("expected log for non-skipped path")
+	}
+}
+
+func TestBuiltinAccessLog_SilencedRoutePanicStillRecovers(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// builtinRecover is on by default. A silenced route that panics must not
+	// emit an access-log line, but the recover layer still logs the panic.
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.GET("/boom", func(ctx *credo.Context) error {
+		panic("boom")
+	}).SetMeta(credo.MetaAccessLog, false)
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/boom", nil))
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+
+	entries := parseJSONLines(t, buf.Bytes())
+	for _, e := range entries {
+		if e["msg"] == "request completed" {
+			t.Errorf("silenced route must not emit an access-log line on panic; got: %s", buf.String())
+		}
+	}
+	var sawPanic bool
+	for _, e := range entries {
+		if e["msg"] == "panic recovered" {
+			sawPanic = true
+		}
+	}
+	if !sawPanic {
+		t.Errorf("expected 'panic recovered' log even for a silenced route; got: %s", buf.String())
 	}
 }

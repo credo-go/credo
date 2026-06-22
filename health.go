@@ -42,6 +42,16 @@ type HealthConfig struct {
 	// app root. Routes inherit the group's prefix and middleware chain.
 	// nil (default) = routes are registered on the app root.
 	Group *Group
+
+	// LogRequests includes health and readiness probe requests in the access
+	// log. Default false: probe traffic (such as Kubernetes liveness and
+	// readiness checks) is silenced via the MetaAccessLog route meta to keep
+	// logs clean. The endpoints remain registered and responsive either way.
+	//
+	// The meta is set at the route level, so LogRequests:true re-enables
+	// logging even when the health routes sit under a group that silenced
+	// access logging (a route-level value overrides its group's).
+	LogRequests bool
 }
 
 // HealthChecker checks the health of a component.
@@ -107,11 +117,20 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 	livenessEnabled := cfg.Liveness == nil || *cfg.Liveness
 	readinessEnabled := cfg.Readiness == nil || *cfg.Readiness
 
+	// Silence probe access logging by default; LogRequests re-enables it. The
+	// meta is always set (not only when false) so an explicit true overrides a
+	// silenced parent group — LookupMeta reads the route before its parents.
+	// SetMeta propagates to the auto-generated HEAD twin, so HEAD probes follow
+	// the same rule as GET.
 	if livenessEnabled {
-		registerGET(cfg.LivenessPath, app.livenessHandler).Name("credo.health")
+		registerGET(cfg.LivenessPath, app.livenessHandler).
+			Name("credo.health").
+			SetMeta(MetaAccessLog, cfg.LogRequests)
 	}
 	if readinessEnabled {
-		registerGET(cfg.ReadinessPath, app.readinessHandler).Name("credo.ready")
+		registerGET(cfg.ReadinessPath, app.readinessHandler).
+			Name("credo.ready").
+			SetMeta(MetaAccessLog, cfg.LogRequests)
 	}
 }
 

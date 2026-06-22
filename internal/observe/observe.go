@@ -1,6 +1,7 @@
 package observe
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,28 @@ func Level(status int) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// EmitAccessLog assembles the standard access-log attributes and writes a
+// single "request completed" entry at the status-derived level. It is the one
+// source for the attribute set, message, and level shared by the built-in
+// access logger and middleware.AccessLog; callers collect the per-request
+// primitives (this package cannot import the root credo package).
+func EmitAccessLog(
+	ctx context.Context,
+	logger *slog.Logger,
+	method string,
+	path string,
+	status int,
+	bytes int64,
+	duration time.Duration,
+	remoteAddr string,
+	userAgent string,
+	originalPath string,
+	requestID string,
+) {
+	attrs, n := AccessLogAttrs(method, path, status, bytes, duration, remoteAddr, userAgent, originalPath, requestID)
+	logger.LogAttrs(ctx, Level(status), "request completed", attrs[:n]...)
 }
 
 // PanicError converts a recovered panic value into an error.

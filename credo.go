@@ -112,6 +112,11 @@ type App struct {
 	// Set via WithoutAccessLog option.
 	disableAccessLog bool
 
+	// accessLogSkipper, when non-nil, is consulted by the built-in access
+	// logger before routing; a true result skips logging for that request.
+	// Set via WithAccessLogSkipper option.
+	accessLogSkipper func(*Context) bool
+
 	// debug enables development-mode warnings.
 	// Set via WithDebug option or server.debug config key.
 	debug bool
@@ -199,6 +204,7 @@ func New(opts ...Option) (*App, error) {
 		disableRecover:        o.disableRecover,
 		disableRequestID:      o.disableRequestID,
 		disableAccessLog:      o.disableAccessLog,
+		accessLogSkipper:      o.accessLogSkipper,
 		debug:                 o.debug || o.serverCfg.Debug,
 		trustedProxies:        trustedProxies,
 	}

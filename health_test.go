@@ -107,6 +107,104 @@ func TestUseHealth_ReadinessOnly(t *testing.T) {
 	}
 }
 
+// --- Access-log silencing (HealthConfig.LogRequests) ---
+
+func TestUseHealth_DefaultSilencesAccessLog(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.UseHealth()
+
+	for _, path := range []string{"/health", "/ready"} {
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", path, w.Code)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no access log for health probes by default, got: %s", buf.String())
+	}
+}
+
+func TestUseHealth_DefaultSilencesHeadProbes(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// SetMeta on the GET route propagates to its auto-generated HEAD twin, so
+	// HEAD probes must be silenced too.
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.UseHealth()
+
+	for _, path := range []string{"/health", "/ready"} {
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest("HEAD", path, nil))
+		if w.Code != http.StatusOK {
+			t.Errorf("HEAD %s status = %d, want 200", path, w.Code)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no access log for HEAD health probes, got: %s", buf.String())
+	}
+}
+
+func TestUseHealth_LogRequestsEnablesAccessLog(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app.UseHealth(credo.HealthConfig{LogRequests: true})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
+	if buf.Len() == 0 {
+		t.Error("expected access log for GET health probe when LogRequests is true")
+	}
+
+	buf.Reset()
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("HEAD", "/health", nil))
+	if buf.Len() == 0 {
+		t.Error("expected access log for HEAD health probe when LogRequests is true (twin propagation)")
+	}
+}
+
+func TestUseHealth_GroupDefaultSilencesAccessLog(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	g := app.Group("/sys")
+	app.UseHealth(credo.HealthConfig{Group: g})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/sys/health", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /sys/health status = %d, want 200", w.Code)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no access log for group-registered health probe by default, got: %s", buf.String())
+	}
+}
+
+func TestUseHealth_LogRequestsOverridesSilencedGroup(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// Health routes under a group that silenced access logging, but
+	// LogRequests:true sets the meta at the route level, which overrides the
+	// group's false (LookupMeta reads the route before its parents).
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	g := app.Group("/sys")
+	g.SetMeta(credo.MetaAccessLog, false)
+	app.UseHealth(credo.HealthConfig{Group: g, LogRequests: true})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/sys/health", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /sys/health status = %d, want 200", w.Code)
+	}
+	if buf.Len() == 0 {
+		t.Error("expected access log: LogRequests:true must override a silenced parent group")
+	}
+}
+
 func TestLiveness_NoChecks_Up(t *testing.T) {
 	app := mustNew(t)
 	app.UseHealth()

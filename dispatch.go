@@ -63,7 +63,7 @@ func (app *App) compile() {
 	// so its defer fires after both builtinErrorHandler and builtinRecover
 	// have written the final response.
 	if !app.disableAccessLog {
-		handler = builtinAccessLog(handler)
+		handler = app.builtinAccessLog(handler)
 	}
 
 	// Built-in request ID (enriches ctx.Logger with request_id).

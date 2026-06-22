@@ -400,3 +400,50 @@ func TestAccessLog_DefaultConfig(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	app.ServeHTTP(w, r) // should not panic
 }
+
+func TestAccessLog_MetaSilencesRoute(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// Built-in access logger disabled; the configurable middleware honours the
+	// MetaAccessLog route meta (read after next, once the route is known),
+	// matching the built-in logger's behaviour.
+	app := mustNew(t, credo.WithoutAccessLog())
+	app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{Logger: logger}))
+	app.GET("/silent", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).SetMeta(credo.MetaAccessLog, false)
+	app.GET("/loud", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/silent", nil))
+	if buf.Len() != 0 {
+		t.Errorf("expected no log for silenced route, got: %s", buf.String())
+	}
+
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/loud", nil))
+	if buf.Len() == 0 {
+		t.Error("expected log for non-silenced sibling route")
+	}
+}
+
+func TestAccessLog_MetaSilenceWithCustomLogger(t *testing.T) {
+	logger, buf := newTestLogger(t)
+
+	// AccessLog attached as route middleware with a custom Logger; the route
+	// meta still silences it (covers the route-attached, custom-logger path).
+	app := mustNew(t)
+	app.GET("/silent", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).
+		Middleware(middleware.AccessLog(middleware.AccessLogConfig{Logger: logger})).
+		SetMeta(credo.MetaAccessLog, false)
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/silent", nil))
+	if buf.Len() != 0 {
+		t.Errorf("expected no log for silenced route with custom logger, got: %s", buf.String())
+	}
+}

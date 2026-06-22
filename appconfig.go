@@ -74,6 +74,7 @@ type appOptions struct {
 	disableRecover    bool
 	disableRequestID  bool
 	disableAccessLog  bool
+	accessLogSkipper  func(*Context) bool
 	debug             bool
 	trustedProxies    []string
 	trustedProxiesSet bool
@@ -91,7 +92,9 @@ func WithRawConfig(rc RawConfig) Option {
 }
 
 // WithLogger sets the application-level logger. Each service receives a
-// scoped copy with a "service" attribute. If not set, a nop logger is used.
+// scoped copy with a "service" attribute. If not set, the framework default
+// logger (a text handler writing to stderr) is used, so access and request
+// logging are on by default without any configuration.
 func WithLogger(l *slog.Logger) Option {
 	return func(o *appOptions) { o.logger = l }
 }
@@ -148,6 +151,25 @@ func WithoutRequestID() Option {
 // loggers produces duplicate log entries.
 func WithoutAccessLog() Option {
 	return func(o *appOptions) { o.disableAccessLog = true }
+}
+
+// WithAccessLogSkipper installs a predicate consulted by the built-in access
+// logger; when it returns true the request is not logged. Use it to silence
+// noisy paths (metrics scrape, static assets) without disabling the logger
+// entirely. For per-route or per-group silencing prefer the [MetaAccessLog]
+// route meta, and note that health probes are already silenced by default
+// (see [HealthConfig.LogRequests]).
+//
+// The predicate runs BEFORE routing, so only request-level data is reliable
+// (method, path, and headers via ctx.Request()); ctx.Route(), route params,
+// and the response status are not yet set. For route-based decisions use
+// MetaAccessLog; status-based filtering is a separate, deferred concern.
+//
+// This has no effect when the built-in access logger is disabled via
+// [WithoutAccessLog]; the configurable [middleware.AccessLog] has its own
+// Skipper field.
+func WithAccessLogSkipper(skip func(*Context) bool) Option {
+	return func(o *appOptions) { o.accessLogSkipper = skip }
 }
 
 // WithDebug enables development-mode warnings. When active, the framework

@@ -40,6 +40,11 @@ func DefaultAccessLogConfig() AccessLogConfig {
 // remote_addr (from Request.RealIP), user_agent, request_id (if RequestID middleware is active),
 // and path_original when the final served path differs from the client path.
 //
+// Requests can be excluded two ways: the [AccessLogConfig.Skipper] predicate
+// (consulted before the handler runs) and the [credo.MetaAccessLog] route meta
+// set to false (consulted after the handler, once the route is known), which
+// also silences a whole group via LookupMeta inheritance.
+//
 // The log level varies by response status code:
 //   - 2xx, 3xx: slog.LevelInfo
 //   - 4xx:      slog.LevelWarn
@@ -56,6 +61,20 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 			start := time.Now()
 
 			err := next(ctx)
+
+			// Honour per-route/group silencing (MetaAccessLog) once the
+			// matched route is known. The pre-dispatch Skipper above covers
+			// request-level skips; this mirrors the built-in access logger so
+			// both share the same route-meta opt-out. The key is the single
+			// source of truth; the bool decode is duplicated here only because
+			// internal/observe cannot import the root credo package.
+			if r := ctx.Route(); r != nil {
+				if v, ok := r.LookupMeta(credo.MetaAccessLog); ok {
+					if enabled, ok := v.(bool); ok && !enabled {
+						return err
+					}
+				}
+			}
 
 			duration := time.Since(start)
 
@@ -79,7 +98,9 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 				requestID = GetRequestID(ctx)
 			}
 
-			attrs, attrCount := internalobserve.AccessLogAttrs(
+			internalobserve.EmitAccessLog(
+				r.Context(),
+				logger,
 				r.Method,
 				r.URL.Path,
 				status,
@@ -90,7 +111,6 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 				ctx.OriginalPath(),
 				requestID,
 			)
-			logger.LogAttrs(r.Context(), internalobserve.Level(status), "request completed", attrs[:attrCount]...)
 
 			return err
 		}
