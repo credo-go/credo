@@ -275,6 +275,12 @@ func (lm *lifecycleManager) serve(
 			continue
 		}
 		lm.state.Store(uint32(stateStopping))
+		// Serve never started, so drain's srv.Shutdown cannot close the bound
+		// listener. Close it now — before the possibly slow DI/OnShutdown
+		// teardown — so the port is released promptly, matching the graceful path
+		// where srv.Shutdown closes the listener before those steps. The deferred
+		// l.Close() then no-ops.
+		l.Close()
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), lm.shutdownTimeout())
 		teardownErr := lm.drain(drainCtx)
 		drainCancel()

@@ -1143,21 +1143,25 @@ func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
 	})
 
 	var order []string
-	credo.MustProvideValue[*diShutdownTracker](app, &diShutdownTracker{order: &order, name: "svc"})
+	credo.MustProvideValue[*diShutdownTracker](app, &diShutdownTracker{order: &order, name: "di:svc"})
 
 	var hookCtx context.Context
 	app.OnStart(func(ctx context.Context) error { hookCtx = ctx; return nil }) // hook 0: ok, captures ctx
 	hookErr := fmt.Errorf("boom")
-	app.OnStart(func(ctx context.Context) error { return hookErr }) // hook 1: fails
+	app.OnStart(func(ctx context.Context) error { return hookErr })                                     // hook 1: fails
+	app.OnShutdown(func(ctx context.Context) error { order = append(order, "onShutdown"); return nil }) // must still run
 
 	err := app.Run()
 	if !errors.Is(err, hookErr) {
 		t.Fatalf("Run() error should wrap hookErr, got %v", err)
 	}
 
-	// Full teardown ran: the DI Shutdowner was invoked.
-	if len(order) != 1 || order[0] != "svc" {
-		t.Errorf("DI Shutdowner not run on OnStart-failure teardown: order = %v, want [svc]", order)
+	// Full teardown ran on the failure path, in shutdown order: DI container
+	// shutdown (step 3) then OnShutdown hooks (step 4). The OnShutdown hook must
+	// run even though startup failed — it is the session teardown point (ADR-006),
+	// which is the crux of the decision and not implied by the DI step alone.
+	if len(order) != 2 || order[0] != "di:svc" || order[1] != "onShutdown" {
+		t.Errorf("teardown order = %v, want [di:svc onShutdown]", order)
 	}
 
 	// Session failure → terminal stopped, not building.
