@@ -263,7 +263,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 Credo auto-enables three built-in middleware with zero configuration. They form the outermost layer of every request:
 
 ```
-builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispatch
+builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch
 ```
 
 | Built-in | What it does | Opt-out |

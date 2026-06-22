@@ -38,7 +38,7 @@ Three built-in middleware are applied automatically by `compile()` and require z
 | `builtinRequestID` | Request ID + logger enrichment | `WithoutRequestID()` |
 | `builtinAccessLog` | Structured access logging      | `WithoutAccessLog()` |
 
-**Execution chain:** `builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispatch`
+**Execution chain:** `builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch`
 
 These built-in variants are zero-config. For custom configuration (custom header, custom generator, skipper, custom logger), disable the built-in and use the `middleware` package equivalents instead:
 
@@ -76,7 +76,7 @@ The rule is convention-based: `HasRequestLogger` reports only that a request-sco
 
 ```
 Request
-  → Built-in middleware (recover → requestID → accessLog)
+  → Built-in middleware (requestID → accessLog → recover)
     → Global middleware (outer to inner)
       → Group middleware (outer to inner, parent to child)
         → Route middleware (outer to inner)

@@ -48,7 +48,7 @@ Middleware chains are precompiled at startup (during `compile()`):
 The built-in tier wraps the global chain:
 
 ```
-builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispatch
+builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch
 ```
 
 Each built-in has an opt-out: `WithoutRecover()`, `WithoutRequestID()`, `WithoutAccessLog()`. This supports "observable by default" — every request gets an ID and access log entry with zero configuration.
