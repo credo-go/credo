@@ -274,6 +274,30 @@ builtinRecover → builtinRequestID → builtinAccessLog → globalMW → dispat
 
 The built-in RequestID enriches `ctx.Logger()` with a `request_id` attribute. All downstream logging (including the access log and panic recovery) automatically includes the request ID.
 
+### Silencing the Built-in Access Log
+
+You rarely need to disable the access logger to quiet noisy traffic — two filters keep it on while skipping selected requests:
+
+- **A skipper predicate.** `credo.WithAccessLogSkipper(func(*credo.Context) bool)` runs before routing, so decide from request-level data (path, headers). Return `true` to skip:
+
+```go
+app, _ := credo.New(credo.WithAccessLogSkipper(func(ctx *credo.Context) bool {
+    return ctx.Request().URL.Path == "/metrics"
+}))
+```
+
+- **Route or group meta.** Set `credo.MetaAccessLog` to `false` on a route, or on a whole group through inheritance:
+
+```go
+app.GET("/metrics", metricsHandler).SetMeta(credo.MetaAccessLog, false)
+
+internal := app.Group("/internal")
+internal.SetMeta(credo.MetaAccessLog, false)                          // silence everything under /internal
+internal.GET("/audit", auditHandler).SetMeta(credo.MetaAccessLog, true) // ...except this one
+```
+
+A route-level value overrides its group's, so you can silence a group and keep one route loud. Only a bool `false` silences; any other value is ignored (the request is logged). The same meta is honoured by `middleware.AccessLog`. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
+
 ### Using Custom Configuration
 
 When you need custom headers, custom generators, or access-log skippers, disable the built-in and use the `middleware` package version:
@@ -362,6 +386,8 @@ app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
     },
 }))
 ```
+
+The `credo.MetaAccessLog` route meta (`SetMeta(credo.MetaAccessLog, false)`) also silences logging here, exactly as it does for the built-in logger — useful for muting a route or group without a path check.
 
 When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, Credo includes `path_original` in the log entry.
 

@@ -68,6 +68,10 @@ func main() {
         return ctx.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
     })
 
+    // Every request is access-logged out of the box. Silence one route or group
+    // with .SetMeta(credo.MetaAccessLog, false), or a noisy path with
+    // credo.WithAccessLogSkipper(...). Health probes are silent by default.
+
     // Server settings come from framework-internal server config.
     // Example: set `CREDO_SERVER__PORT=8080`.
     //

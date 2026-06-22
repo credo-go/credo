@@ -94,6 +94,23 @@ app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
 }))
 ```
 
+### Access-Log Filtering
+
+Access logging is on by default (philosophy #6, "observable by default"): the built-in tier logs every request through the framework default logger even when `WithLogger` is not called. Two opt-out mechanisms keep that default while taming log volume, and both the built-in logger and the configurable `middleware.AccessLog` honour them:
+
+- **`WithAccessLogSkipper(func(*Context) bool)`** — a predicate consulted by the built-in logger before routing. Because it runs pre-dispatch, only request-level data is reliable (method, path, headers); `ctx.Route()` and the response status are not yet set. It suits blanket path/header skips (metrics scrape, static assets). The configurable middleware has the equivalent `AccessLogConfig.Skipper`.
+- **`MetaAccessLog` route meta** — `route.SetMeta(credo.MetaAccessLog, false)` silences a single route, and the same call on a `Group` silences everything under it via `LookupMeta` inheritance. A route-level value overrides a group-level one (the route is read before its parents), so a noisy group can be silenced while one route inside it stays logged. Only a bool `false` silences; any non-bool value is ignored and the request is logged (fail-open). The built-in logger reads this in its defer (after the route is known); the configurable middleware reads it after `next`.
+
+The attribute set, message, and status-derived level are produced once in `internal/observe.EmitAccessLog`, shared by both loggers; only the per-request primitive collection differs (the internal package cannot import the root `credo` package). Status drives the log _level_ (2xx/3xx → Info, 4xx → Warn, 5xx → Error), never whether a line is emitted.
+
+Health probes use `MetaAccessLog` internally: `UseHealth` registers `/health` and `/ready` with the meta set to `HealthConfig.LogRequests` (default `false`), so probe traffic is silent unless re-enabled. See [ADR-016](016-health-checks.md).
+
+#### Alternatives considered
+
+A **default-off** access logger was considered and rejected. The framework's nearest philosophical peer, GoFr (all-in-one), logs requests by default; the frameworks that default off — Goyave, Hertz, Echo, Chi — are all composable toolkits, the model Credo positions against (philosophy #1). Keeping the log on but easy to scope preserves "observable by default" without the volume cost.
+
+A **status-code skip list** was also rejected. Across the ecosystem the skip mechanism is a predicate — Hertz `WithLogConditionFunc(func(ctx, c) bool)`, Echo `Skipper`, Gin `Skip`/`SkipPaths` — while status codes drive _level_ mapping, not skipping. Credo follows the same split: a predicate (`Skipper`) and route meta for skipping, plus `Level()` for status. A success-level/sampling control (2xx → Debug, or 1/N sampling) remains an open question — it changes default semantics and is tracked separately.
+
 ### Stdlib Adapter
 
 `WrapStdMiddleware` converts stdlib middleware for use with Credo:
@@ -117,7 +134,7 @@ The adapter handles request/response writer updates that stdlib middleware may a
 | Middleware  | Purpose                                           |
 | ----------- | ------------------------------------------------- |
 | `Recover`   | Per-group/route panic recovery with custom config |
-| `AccessLog` | Request logging with Skipper and custom logger    |
+| `AccessLog` | Request logging with Skipper, `MetaAccessLog` silencing, and custom logger |
 | `RequestID` | X-Request-Id with custom header/generator/limit   |
 
 ### Frozen Guard

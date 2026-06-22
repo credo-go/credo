@@ -106,7 +106,7 @@ Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, mult
 
 ### Logger
 
-`ctx.Logger()` returns a request-scoped `*slog.Logger`. Middleware (e.g., RequestID) enriches this logger with request attributes. Fallback chain: request logger → app logger (from `WithLogger`) → `slog.Default()`.
+`ctx.Logger()` returns a request-scoped `*slog.Logger`. Middleware (e.g., RequestID) enriches this logger with request attributes. Fallback chain: request logger → app logger (from `WithLogger`) → the framework default logger (a text handler on stderr).
 
 ### Request Context Access
 

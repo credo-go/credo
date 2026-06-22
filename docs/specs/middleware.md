@@ -57,6 +57,8 @@ app.GlobalMiddleware(
 
 **request_id sourcing rule** (shared by built-in and `middleware` AccessLog/Recover): the `request_id` attribute is added explicitly only when the target logger does not already carry it — that is, when a custom `Logger` was configured, or when no request-scoped logger was set (`ctx.HasRequestLogger()`). This keeps `request_id` appearing exactly once per log record in every combination.
 
+**Access-log filtering.** The built-in access logger stays on by default but can skip requests two ways without `WithoutAccessLog()`: `WithAccessLogSkipper(func(*Context) bool)` (a pre-dispatch predicate, so only request-level data is reliable) and the `credo.MetaAccessLog` route meta set to `false` (per route, or per group via `LookupMeta` inheritance; a route value overrides its group; a non-bool value fails open and is logged). `middleware.AccessLog` honours both its `AccessLogConfig.Skipper` and `MetaAccessLog`. The emit core — attribute set, `"request completed"` message, and status→level mapping — is shared via `internal/observe.EmitAccessLog`; status drives the level, never whether a line is emitted.
+
 The rule is convention-based: `HasRequestLogger` reports only that a request-scoped logger was set, not which attributes it carries (slog loggers are opaque). Middleware that replaces the logger without deriving from `ctx.Logger()` silently drops `request_id`, and the framework cannot detect it — enrich via `ctx.AddLogAttrs`, which derives by construction, and reserve `ctx.SetLogger` for genuine wholesale replacement.
 
 ---
@@ -150,6 +152,7 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 | `"ratelimit"` | `int`           | Rate limiter       |
 | `"cache"`     | `int` (seconds) | Cache middleware   |
 | `"timeout"`   | `time.Duration` | Timeout middleware |
+| `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access logger (built-in + `middleware.AccessLog`) |
 
 ---
 
@@ -178,13 +181,13 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | --- | --- | --- |
 | Panic recovery | Outermost layer, catches all panics | `WithoutRecover()` |
 | Request ID | `X-Request-Id` header + `ctx.Logger()` enrichment | `WithoutRequestID()` |
-| Access log | Structured request logging via `slog` using `Request.RealIP()` for `remote_addr` | `WithoutAccessLog()` |
+| Access log | Structured request logging via `slog` using `Request.RealIP()` for `remote_addr`; filter with `WithAccessLogSkipper` or the `MetaAccessLog` route meta | `WithoutAccessLog()` |
 
 ### Configurable (middleware package)
 
 | Middleware | Source | Description |
 | --- | --- | --- |
-| `AccessLog` | Chi | Structured request logging with Skipper, custom logger, `Request.RealIP()` client IP |
+| `AccessLog` | Chi | Structured request logging with Skipper, `MetaAccessLog` silencing, custom logger, `Request.RealIP()` client IP |
 | `Recover` | Chi | Per-group/route panic recovery with custom config |
 | `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |

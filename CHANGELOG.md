@@ -8,9 +8,19 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ## [Unreleased]
 
+### Added
+
+- **Access logging** — `WithAccessLogSkipper(func(*credo.Context) bool)` installs a pre-dispatch predicate that excludes matching requests from the built-in access log without disabling it. The new `credo.MetaAccessLog` route meta (`route.SetMeta(credo.MetaAccessLog, false)`) silences a single route or, by `LookupMeta` inheritance, a whole group; a route-level value overrides its group's, and `middleware.AccessLog` honours the same meta. See [ADR-010](docs/adr/010-middleware-architecture.md).
+- **Health checks** — `HealthConfig.LogRequests` (default `false`) keeps `/health` and `/ready` probe requests out of the access log; set it to `true` to log them. Because the meta is applied per route, `true` re-enables logging even under a group that silenced access logging. See [ADR-016](docs/adr/016-health-checks.md).
+
 ### Changed
 
 - **Lifecycle** — a failed startup (an `OnStart` hook returning an error) or a non-graceful `Serve` failure after the server reached `running` now runs the full teardown chain (DI container shutdown + `OnShutdown` hooks) and ends in the terminal `stopped` state, instead of rolling back to `building`. This releases resources an earlier `OnStart` hook started (workers, locks, connections) instead of leaking them. `OnShutdown` hooks consequently run on every teardown, including a failed startup, so they must be idempotent and must not assume any particular `OnStart` hook completed. Pre-session failures (TLS preflight, listener bind) still roll back to `building` and remain retryable. See [ADR-006](docs/adr/006-application-lifecycle.md).
+- **Access logging** — the built-in access logger and `middleware.AccessLog` now share a single emit core (`internal/observe.EmitAccessLog`), keeping their attribute set, `"request completed"` message, and status→level mapping identical. No behavior change for existing callers.
+
+### Fixed
+
+- **Docs** — `WithLogger`'s godoc no longer claims a "nop logger" is used when it is left unset; the framework default logger (a text handler on stderr) is, so access and request logging are on by default with no configuration.
 
 ## [0.1.0] - 2026-06-10
 

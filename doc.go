@@ -42,6 +42,27 @@
 //   - Route: fluent API with Name(), SetMeta(), Middleware()
 //   - ErrorRenderer: customizes error response formatting via App.SetErrorRenderer (classification/logging handled by framework)
 //
+// # API Naming
+//
+// Credo uses a consistent verb convention so a method's name signals when and
+// how it runs:
+//
+//   - With<X> / Without<X> — construction-time [Option] values passed to [New].
+//     They only set configuration and perform no I/O, so their order does not
+//     matter (e.g. [WithLogger], [WithAccessLogSkipper], [WithoutAccessLog]).
+//   - Use<X> — post-construction setup that mounts a subsystem: it registers
+//     routes or an engine and may read files. It therefore can fail — panicking
+//     on developer misuse, or returning an error when it touches the outside
+//     world (e.g. [App.UseHealth], [App.UseI18n]).
+//   - Set<X> / Remove<X> — imperative mutators for a single value or a
+//     replaceable component (e.g. [App.SetErrorRenderer], [Route.SetMeta]).
+//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnShutdown]).
+//
+// Request logging is on by default (see [WithLogger]). Silence individual
+// routes or whole groups with the [MetaAccessLog] route meta, or noisy paths
+// with [WithAccessLogSkipper]; health probes are silent by default
+// ([HealthConfig.LogRequests] re-enables them).
+//
 // # Panics and Errors
 //
 // Credo separates developer errors from runtime failures:

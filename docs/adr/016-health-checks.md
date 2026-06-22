@@ -49,6 +49,7 @@ There is no public store-bridge method — store health is wired through the mod
 - `CheckTimeout time.Duration` — default 5s.
 - `ExposeErrors bool` — default false. Failing readiness checks report only `"status": "down"`; the underlying error is written to the application log. Check errors often carry internal details (hostnames, connection targets) that must not reach unauthenticated probe endpoints. Opt in only when the endpoint is network-restricted.
 - `Group *Group` — nil = app root. Routes registered on this group, inheriting its prefix and middleware.
+- `LogRequests bool` — default false. Probe requests are excluded from the access log: `UseHealth` sets the `MetaAccessLog` route meta on `/health` and `/ready` to this value, so probe traffic (Kubernetes liveness/readiness polling, often once per second per replica) does not flood the log. The endpoints stay registered and responsive regardless, and the meta propagates to each route's auto-generated HEAD twin. Because the meta is set at the route level, `LogRequests: true` re-enables logging even when the probes sit under a `Group` that silenced access logging — a route-level meta value overrides its group's (see [ADR-010](010-middleware-architecture.md)).
 
 `*bool` toggles allow distinguishing "not set" (use default) from explicit false.
 
