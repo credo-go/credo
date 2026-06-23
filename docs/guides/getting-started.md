@@ -108,6 +108,51 @@ See [Configuration Guide](configuration.md) for env-specific files, `.env` loadi
 
 ---
 
+## Serving HTTPS
+
+For HTTPS, configure TLS when you create the app. `Run()` and `RunContext()` serve TLS automatically when a certificate source is configured; there is no separate TLS run method.
+
+```go
+app, err := credo.New(
+    credo.WithTLSFiles("/etc/tls/server.crt", "/etc/tls/server.key"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+Use `WithTLSConfig` when you need the full `crypto/tls` surface, such as mTLS, SNI, embedded certificates, or dynamic certificate reload:
+
+```go
+app, err := credo.New(credo.WithTLSConfig(tlsConfig))
+```
+
+You can also configure file-based TLS through config:
+
+```json
+{
+  "server": {
+    "tls": {
+      "cert_file": "/etc/tls/server.crt",
+      "key_file": "/etc/tls/server.key"
+    }
+  }
+}
+```
+
+To redirect plaintext HTTP callers to HTTPS, add a redirect-only listener:
+
+```go
+app, err := credo.New(
+    credo.WithTLSFiles("/etc/tls/server.crt", "/etc/tls/server.key"),
+    credo.WithHTTPRedirect(":80"),
+)
+```
+
+HSTS is not enabled automatically. If you want browsers to prefer HTTPS on future requests, opt in via `middleware.Secure`.
+
+---
+
 ## Routing
 
 Register routes with HTTP method shortcuts:

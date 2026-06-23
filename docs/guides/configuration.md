@@ -305,6 +305,8 @@ Process environment variables use the `CREDO_` prefix (configurable via `config.
 | -------------------------------- | ------------------------ |
 | `CREDO_SERVER__PORT`             | `server.port`            |
 | `CREDO_SERVER__READ_TIMEOUT`     | `server.read_timeout`    |
+| `CREDO_SERVER__TLS__CERT_FILE`   | `server.tls.cert_file`   |
+| `CREDO_SERVER__TLS__KEY_FILE`    | `server.tls.key_file`    |
 | `CREDO_DATABASES__DEFAULT__HOST` | `databases.default.host` |
 
 `.env` file entries use the same normalization but **without** the prefix:
@@ -313,7 +315,40 @@ Process environment variables use the `CREDO_` prefix (configurable via `config.
 | ------------------------------------ | ------------------------ |
 | `SERVER__PORT=8080`                  | `server.port`            |
 | `SERVER__READ_TIMEOUT=30s`           | `server.read_timeout`    |
+| `SERVER__TLS__CERT_FILE=/cert.pem`   | `server.tls.cert_file`   |
+| `SERVER__TLS__KEY_FILE=/key.pem`     | `server.tls.key_file`    |
 | `DATABASES__DEFAULT__HOST=localhost` | `databases.default.host` |
+
+---
+
+## TLS Server Config
+
+File-based TLS can be configured through the `server.tls` section:
+
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 443,
+    "tls": {
+      "cert_file": "/etc/tls/server.crt",
+      "key_file": "/etc/tls/server.key"
+    }
+  }
+}
+```
+
+When both paths are set, `Run()` and `RunContext()` serve HTTPS automatically. The key pair is loaded and validated at startup; missing files, mismatched pairs, and partial config fail before the server starts accepting connections.
+
+TLS sources resolve by precedence:
+
+```text
+WithTLSConfig(*tls.Config) > WithTLSFiles(cert, key) > server.tls.* > plaintext
+```
+
+Each source is a whole-source override. For example, `WithTLSFiles` replaces both `server.tls.cert_file` and `server.tls.key_file`; it does not merge one path from the option with one path from config.
+
+Use `WithTLSConfig` for embedded certificates, mTLS, SNI, custom TLS versions, or dynamic certificate reload. To redirect plaintext HTTP callers to HTTPS, configure TLS and add `credo.WithHTTPRedirect(":80")`.
 
 ---
 
@@ -337,6 +372,8 @@ Consumed automatically by `credo.New()`.
 | `redirect_trailing_slash` | bool | `true` | Auto-redirect when trailing slash variant matches (301/308) |
 | `debug` | bool | `false` | Enable development warnings |
 | `trusted_proxies` | []string | `[]` | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
+| `tls.cert_file` | string | `""` | PEM certificate file for HTTPS |
+| `tls.key_file` | string | `""` | PEM private key file for HTTPS |
 
 ### Databases — `databases.<name>`
 
