@@ -80,7 +80,7 @@ Rules:
 
 ### Finalize Phase
 
-`credo.Finalize(app)` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunTLS()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
+`credo.Finalize(app)` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunContext()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
 
 ### credo.Infra: Explicit Infrastructure Carrier
 

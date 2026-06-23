@@ -78,6 +78,11 @@ func main() {
     // Run blocks until SIGINT/SIGTERM, then drains in-flight requests
     // gracefully. For caller-driven cancellation (tests, custom signals),
     // use app.RunContext(ctx) instead.
+    //
+    // For HTTPS, configure TLS at construction — credo.WithTLSFiles(cert, key)
+    // or credo.WithTLSConfig(cfg) (or the server.tls.* config keys) — and Run
+    // serves TLS automatically; there is no separate RunTLS. Add
+    // credo.WithHTTPRedirect(":80") to redirect plaintext HTTP to HTTPS.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }

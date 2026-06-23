@@ -527,6 +527,23 @@ app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
 }))
 ```
 
+#### HSTS (Strict-Transport-Security)
+
+HSTS tells browsers to use HTTPS for all future requests to your domain. It is **opt-in and never enabled automatically** — the framework sets the header only when you give `HSTSMaxAge` a non-zero value. The header is also sent **only over HTTPS** (guarded by `ctx.Request().Scheme()`), per RFC 6797; it is never emitted on a plaintext response.
+
+```go
+// Enable HSTS only — set HSTSMaxAge; the other Secure headers stay off because
+// the zero-value config does not apply the X-XSS/nosniff/frame defaults.
+app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
+    HSTSMaxAge:            31536000, // 1 year, in seconds
+    HSTSExcludeSubdomains: false,    // includeSubDomains on (the default)
+}))
+```
+
+To actually serve HTTPS, configure TLS at construction (`credo.WithTLSFiles` / `credo.WithTLSConfig`); to bounce plaintext callers to HTTPS, add `credo.WithHTTPRedirect(":80")`. HSTS is the complementary, client-side half: it makes browsers _prefer_ HTTPS on their own.
+
+> **`HSTSPreloadEnabled` is a near-permanent commitment.** Submitting your domain to the browser preload list (which requires `max-age` ≥ 1 year, `includeSubDomains`, and the `preload` token) is slow and painful to undo — every subdomain becomes HTTPS-only in shipped browsers. Only enable it once every subdomain can serve HTTPS and you understand the rollback cost.
+
 When running behind a reverse proxy, configure trusted proxy CIDRs on the app so `Secure` can use `ctx.Request().Scheme()` safely:
 
 ```go

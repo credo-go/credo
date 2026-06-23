@@ -153,8 +153,8 @@ func MustBindMany[I, T any](app *App) {
 // Finalize freezes the DI container and validates the dependency graph.
 // After Finalize, no more Provide, ProvideFactory, ProvideValue, Replace, Alias,
 // or BindMany calls are allowed.
-// Finalize is idempotent. If not called explicitly, Run and RunTLS call it
-// implicitly.
+// Finalize is idempotent. If not called explicitly, the Run* entry points call
+// it implicitly.
 //
 //	credo.Finalize(app)
 func Finalize(app *App) error {

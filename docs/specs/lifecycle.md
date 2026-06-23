@@ -58,27 +58,34 @@ Reports whether the server is in the `running` state.
 
 ### `app.Run() error`
 
-Compiles the handler chain, transitions to `running`, and serves HTTP until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown bounded by `WithShutdownTimeout`. A second signal during shutdown force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
+Compiles the handler chain, transitions to `running`, and serves HTTP — or HTTPS when TLS is configured (see [TLS](#tls)) — until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown bounded by `WithShutdownTimeout`. A second signal during shutdown force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
 
 `Run` is the safe default for a process whose lifetime is the server's. For explicit lifecycle control — tests, embedding, caller-driven cancellation — use `RunContext`.
-
-### `app.RunTLS(certFile, keyFile string) error`
-
-TLS sibling of `Run`: serves HTTPS under the same signal handling. The certificate and key are validated **before** the server starts accepting connections, so a bad key pair fails fast (state rolls back to `building`).
 
 ### `app.RunContext(ctx context.Context) error`
 
 Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values but drops its cancellation (so an already-cancelled `ctx` still drains), bounded by `WithShutdownTimeout`. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the app context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
 
-### `app.RunTLSContext(ctx context.Context, certFile, keyFile string) error`
-
-TLS sibling of `RunContext`: caller-driven cancellation, no signal handler. Same fail-fast certificate preflight as `RunTLS`.
-
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
-Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, H2C, or an externally managed listener. `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error.
+Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, H2C, or an externally managed listener. `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
 
 The app context (created at `Run`/`RunContext` time, cancelled at the start of shutdown) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `ctx` parameter and select on `ctx.Done()` to detect graceful shutdown.
+
+### TLS
+
+TLS is server configuration, not a serve method. When a certificate source is configured, `Run` and `RunContext` serve HTTPS; otherwise they serve plaintext. `ServeContext` is exempt (see above). Three sources resolve by precedence — highest wins, whole-source override, never a conflict error:
+
+| Source | Precedence | Notes |
+| --- | --- | --- |
+| `WithTLSConfig(*tls.Config)` | highest | Full `crypto/tls` surface: mTLS, SNI, `GetCertificate` reload, ALPN. Cloned before use |
+| `WithTLSFiles(cert, key)` | middle | PEM file paths; overrides the config keys (resolved after unmarshal) |
+| `server.tls.cert_file` / `server.tls.key_file` | lowest | The same paths via config |
+| _(none)_ | — | Plaintext |
+
+All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is loaded once and reused by the serve goroutine — no double load.
+
+`WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
 
 ### `app.Addr() net.Addr`
 
@@ -100,7 +107,7 @@ Gracefully shuts down the server:
 
 The app context is cancelled **before** HTTP drain to give background services maximum lead time for shutdown.
 
-`Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run`/`RunTLS` and the cancellation-triggered drain of `RunContext`/`RunTLSContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
+`Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 
 #### Drain context derivation
 
@@ -108,14 +115,14 @@ An explicit `Shutdown(ctx)` honours the caller's `ctx` deadline as-is. Signal- a
 
 | Trigger | Drain context |
 | --- | --- |
-| Signal (`Run`, `RunTLS`) | `context.Background()` + `WithShutdownTimeout` |
-| Context cancel (`RunContext`, `RunTLSContext`, `ServeContext`) | `context.WithoutCancel(ctx)` + `WithShutdownTimeout` — keeps caller values, drops cancellation |
+| Signal (`Run`) | `context.Background()` + `WithShutdownTimeout` |
+| Context cancel (`RunContext`, `ServeContext`) | `context.WithoutCancel(ctx)` + `WithShutdownTimeout` — keeps caller values, drops cancellation |
 | Session failure (OnStart hook error / post-running serve error) | `context.Background()` + `WithShutdownTimeout` |
 | Explicit `Shutdown(ctx)` | the caller's `ctx`, unchanged |
 
 #### Single-use App
 
-An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `stopping`/`stopped`, any further `Run`/`RunContext`/`RunTLS`/`RunTLSContext`/ `ServeContext` call returns an error (`app cannot be run after shutdown; create a new App`). Tests that need a fresh server create a new `App` with `New()`. Re-run is intentionally unsupported: background components (e.g. `worker.Pool`) latch a started flag and would not reset cleanly on a second run.
+An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `stopping`/`stopped`, any further `Run`/`RunContext`/`ServeContext` call returns an error (`app cannot be run after shutdown; create a new App`). Tests that need a fresh server create a new `App` with `New()`. Re-run is intentionally unsupported: background components (e.g. `worker.Pool`) latch a started flag and would not reset cleanly on a second run.
 
 #### Background services and shutdown ordering
 
@@ -127,7 +134,7 @@ A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with 
 
 Registers a startup hook. Hooks are called in **FIFO** order after the port is bound but before the server starts accepting connections (state is still `starting`). The `ctx` parameter is the app context (created at `Run` time).
 
-The hook `ctx` is the **app context** — created from `context.Background()` and cancelled at shutdown start — not the `ctx` passed to `RunContext`/`RunTLSContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the app-lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
+The hook `ctx` is the **app context** — created from `context.Background()` and cancelled at shutdown start — not the `ctx` passed to `RunContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the app-lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
 
 If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (cancel app context → HTTP drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), bounded by `WithShutdownTimeout`.
 
@@ -145,7 +152,19 @@ OnShutdown hooks run on **every** teardown, including a failed startup (an OnSta
 
 ### `credo.WithShutdownTimeout(d time.Duration) Option`
 
-Construction option (passed to `New`) setting the graceful-shutdown drain budget for the signal-aware `Run`/`RunTLS` and the cancellation-triggered `RunContext`/`RunTLSContext`/`ServeContext`. Zero (the default) applies 30s. An explicit `Shutdown(ctx)` ignores it and honours the caller's deadline instead. Also settable via the `server.shutdown_timeout` config key.
+Construction option (passed to `New`) setting the graceful-shutdown drain budget for the signal-aware `Run` and the cancellation-triggered `RunContext`/`ServeContext`. Zero (the default) applies 30s. An explicit `Shutdown(ctx)` ignores it and honours the caller's deadline instead. Also settable via the `server.shutdown_timeout` config key.
+
+### `credo.WithTLSFiles(certFile, keyFile string) Option`
+
+Construction option configuring HTTPS from a PEM certificate/key file pair. When set, `Run`/`RunContext` serve TLS. Performs no I/O at construction — the pair is loaded and validated at preflight. Overrides the `server.tls.cert_file` / `server.tls.key_file` config keys; shadowed by `WithTLSConfig`. An empty cert or key path is a preflight error, not a silent fall-back to the config keys or plaintext. See [TLS](#tls).
+
+### `credo.WithTLSConfig(cfg *tls.Config) Option`
+
+Construction option configuring HTTPS from a fully-formed `*tls.Config` — the full `crypto/tls` surface (mTLS, SNI, custom versions/cipher suites, ALPN, `GetCertificate` reload). Highest TLS precedence; when set, `WithTLSFiles` and `server.tls.*` are ignored. The config must carry a certificate source (validated at preflight) and is cloned before use. A nil config is a preflight error, not a silent fall-back to the lower-precedence sources. See [TLS](#tls).
+
+### `credo.WithHTTPRedirect(addr string) Option`
+
+Construction option running a second, plaintext listener on `addr` (e.g. `":80"`) that permanently redirects every request to its HTTPS equivalent — 301 for GET/HEAD, 308 for other methods. Requires TLS (preflight fails fast otherwise); binds, serves, and drains with the main server, and a runtime failure of the listener tears the app down like a main-listener failure. Does not apply to `ServeContext`. See [TLS](#tls).
 
 ## Registration Guards
 

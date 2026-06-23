@@ -5,6 +5,7 @@
 package credo
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -69,6 +70,27 @@ type App struct {
 
 	// serverCfg holds the server configuration (host, port, timeouts).
 	serverCfg serverConfig
+
+	// tlsConfig is the *tls.Config set via WithTLSConfig; it has the highest
+	// TLS precedence. nil means TLS comes from server.tls.* / WithTLSFiles
+	// (serverCfg.TLS) or, if those are empty too, the server serves plaintext.
+	// Resolved and cloned at preflight (see resolveTLSConfig).
+	tlsConfig *tls.Config
+
+	// tlsConfigSet records that WithTLSConfig was called (even with nil). It lets
+	// preflight reject an explicit WithTLSConfig(nil) as a fail-fast error rather
+	// than silently falling through to the lower-precedence file sources.
+	tlsConfigSet bool
+
+	// tlsFilesSet records that WithTLSFiles was called (even with empty paths).
+	// It lets preflight reject explicit empty paths as a fail-fast error rather
+	// than silently falling through to the server.tls.* config keys or plaintext.
+	tlsFilesSet bool
+
+	// httpRedirectAddr, when non-empty, is the plaintext listen address for the
+	// HTTP→HTTPS redirect listener (set via WithHTTPRedirect). Requires TLS;
+	// applies to Run/RunContext only (not ServeContext).
+	httpRedirectAddr string
 
 	// i18nBundle holds the loaded i18n message bundle (nil if i18n inactive).
 	i18nBundle *internali18n.Bundle
@@ -168,6 +190,15 @@ func New(opts ...Option) (*App, error) {
 	if o.trustedProxiesSet {
 		o.serverCfg.TrustedProxies = append([]string(nil), o.trustedProxies...)
 	}
+	// WithTLSFiles overrides the server.tls.* keys as a whole pair (not merged).
+	// It runs after unmarshal so the option wins over config, and fires whenever
+	// the option was set — even with empty paths, which preflight then rejects
+	// rather than letting them silently fall back to the config keys.
+	// WithTLSConfig (o.tlsConfig) outranks both and is resolved later at preflight.
+	if o.tlsFilesSet {
+		o.serverCfg.TLS.CertFile = o.tlsCertFile
+		o.serverCfg.TLS.KeyFile = o.tlsKeyFile
+	}
 	applyServerDefaults(&o.serverCfg)
 
 	if err := validateServerConfig(&o.serverCfg); err != nil {
@@ -200,6 +231,10 @@ func New(opts ...Option) (*App, error) {
 		namedRoutes:           make(map[string]*Route),
 		rawConfig:             o.rawConfig,
 		serverCfg:             o.serverCfg,
+		tlsConfig:             o.tlsConfig,
+		tlsConfigSet:          o.tlsConfigSet,
+		tlsFilesSet:           o.tlsFilesSet,
+		httpRedirectAddr:      o.httpRedirectAddr,
 		redirectTrailingSlash: o.serverCfg.RedirectTrailingSlash == nil || *o.serverCfg.RedirectTrailingSlash,
 		disableRecover:        o.disableRecover,
 		disableRequestID:      o.disableRequestID,

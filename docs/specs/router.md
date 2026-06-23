@@ -287,7 +287,7 @@ internal/radix/
 
 (root package)
 ├── credo.go         App struct, New(), HTTP shortcuts, Groups, Meta
-├── server.go       ServeHTTP, Run, RunTLS, Shutdown
+├── server.go       ServeHTTP, Run, RunContext, ServeContext, Shutdown
 ├── host.go         Host pattern parsing, normalization, matching, specificity sort
 ├── dispatch.go     compile, dispatch, addRoute, Mount
 ├── mux.go          Radix tree storage (insert, Routes)

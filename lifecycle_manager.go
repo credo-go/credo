@@ -85,6 +85,11 @@ type lifecycleManager struct {
 	// server holds the *http.Server created by serve.
 	server *http.Server
 
+	// redirectServer holds the optional HTTP→HTTPS redirect server created by
+	// serve when WithHTTPRedirect is set. nil when no redirect listener runs.
+	// Protected by serverMu; drained alongside server.
+	redirectServer *http.Server
+
 	// ctx is the app-level context, created at Run() time. Cancelled at the
 	// beginning of Shutdown(). Background services select on ctx.Done().
 	ctx    context.Context
@@ -116,22 +121,106 @@ func plainServe(srv *http.Server, l net.Listener) error {
 	return srv.Serve(l)
 }
 
-// tlsServe returns a serve function that serves HTTPS using the given files.
-func tlsServe(certFile, keyFile string) func(*http.Server, net.Listener) error {
-	return func(srv *http.Server, l net.Listener) error {
-		return srv.ServeTLS(l, certFile, keyFile)
+// resolveTLSConfig returns the effective *tls.Config to serve with, or nil for
+// plaintext. Precedence: WithTLSConfig > WithTLSFiles / server.tls.* > plaintext.
+// All TLS validation lives here so it runs at preflight (Phase 2 of serve) and a
+// failure rolls the lifecycle back to building, exactly like a listen error.
+func (app *App) resolveTLSConfig() (*tls.Config, error) {
+	// Highest precedence: a caller-supplied *tls.Config (WithTLSConfig). Because
+	// the option records that it was set, an explicit nil is a fail-fast misuse
+	// error rather than a silent fall through to the lower-precedence sources.
+	if app.tlsConfigSet {
+		if app.tlsConfig == nil {
+			return nil, errors.New("WithTLSConfig given a nil *tls.Config")
+		}
+		// Clone it so we validate and serve a snapshot — the caller's live
+		// pointer is never bound to the runtime server, and later caller
+		// mutations do not affect serving.
+		cfg := app.tlsConfig.Clone()
+		// Mirror net/http (*Server).ServeTLS's configHasCert check
+		// (Go 1.26 net/http/server.go): any of these three is a valid source.
+		if len(cfg.Certificates) == 0 && cfg.GetCertificate == nil && cfg.GetConfigForClient == nil {
+			return nil, errors.New("WithTLSConfig has no certificate source (set Certificates, GetCertificate, or GetConfigForClient)")
+		}
+		return cfg, nil
 	}
+
+	// File-based TLS, from WithTLSFiles or the server.tls.* config keys (already
+	// merged in New, WithTLSFiles winning). Both paths required, or neither.
+	cf, kf := app.serverCfg.TLS.CertFile, app.serverCfg.TLS.KeyFile
+
+	// WithTLSFiles was called explicitly: empty paths are a misuse error, not a
+	// silent fall through to plaintext — symmetric with the cert-source check
+	// above and the partial-pair guard below.
+	if app.tlsFilesSet && (cf == "" || kf == "") {
+		return nil, fmt.Errorf("WithTLSFiles given an empty cert or key path (cert=%q key=%q)", cf, kf)
+	}
+
+	switch {
+	case cf == "" && kf == "":
+		return nil, nil // plaintext
+	case cf == "" || kf == "":
+		return nil, fmt.Errorf("TLS requires both cert_file and key_file (cert=%q key=%q)", cf, kf)
+	}
+	cert, err := tls.LoadX509KeyPair(cf, kf)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS key pair: %w", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
 }
 
-// tlsPreflight returns a preflight that loads the key pair so an invalid
-// certificate or key fails before the server reaches the running state.
-func tlsPreflight(certFile, keyFile string) func() error {
-	return func() error {
-		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
-			return fmt.Errorf("load TLS key pair: %w", err)
+// serveFuncs builds the (preflight, serveFn) pair shared by Run and RunContext.
+// Preflight resolves the TLS config once — before stateRunning, so an invalid
+// certificate fails fast and rolls back to building. serveFn then serves HTTPS
+// with that resolved config when TLS is configured, or plaintext otherwise. The
+// key pair is loaded exactly once: ServeTLS reuses srv.TLSConfig rather than
+// reading the files again.
+func (app *App) serveFuncs() (func() error, func(*http.Server, net.Listener) error) {
+	var cfg *tls.Config
+	preflight := func() error {
+		c, err := app.resolveTLSConfig()
+		if err != nil {
+			return err
 		}
+		if c == nil && app.httpRedirectAddr != "" {
+			return errors.New("WithHTTPRedirect requires TLS (set WithTLSFiles, WithTLSConfig, or server.tls.*)")
+		}
+		cfg = c
 		return nil
 	}
+	serveFn := func(srv *http.Server, l net.Listener) error {
+		if cfg != nil {
+			srv.TLSConfig = cfg
+			return srv.ServeTLS(l, "", "")
+		}
+		return srv.Serve(l)
+	}
+	return preflight, serveFn
+}
+
+// httpRedirectHandler returns a handler that permanently redirects every request
+// to its HTTPS equivalent. It reuses the request host (its port stripped) and
+// appends httpsPort unless that is empty or 443. GET and HEAD get 301; other
+// methods get 308 so the method and body survive the redirect. Used by the
+// optional WithHTTPRedirect listener.
+func httpRedirectHandler(httpsPort string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		target := "https://" + host
+		if httpsPort != "" && httpsPort != "443" {
+			target += ":" + httpsPort
+		}
+		target += r.URL.RequestURI()
+
+		code := http.StatusMovedPermanently // 301 for GET/HEAD
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			code = http.StatusPermanentRedirect // 308 preserves method and body
+		}
+		http.Redirect(w, r, target, code)
+	})
 }
 
 // runSignal runs a context-aware run function under SIGINT/SIGTERM handling.
@@ -193,6 +282,7 @@ func (lm *lifecycleManager) serve(
 	preflight func() error,
 	listen func(*http.Server) (net.Listener, error),
 	serveFn func(*http.Server, net.Listener) error,
+	redirectAddr string,
 ) error {
 	app := lm.app
 	app.handlerOnce.Do(app.compile)
@@ -258,6 +348,41 @@ func (lm *lifecycleManager) serve(
 	lm.boundAddr = l.Addr()
 	lm.serverMu.Unlock()
 
+	// Phase 4b: optional HTTP→HTTPS redirect listener (WithHTTPRedirect). Bind
+	// fail-fast like the main listener — a pre-session failure rolls back to
+	// building. The redirect target reuses the main listener's (HTTPS) port.
+	// ServeContext passes an empty redirectAddr, so it stays redirect-exempt.
+	//
+	// redirectErrCh stays nil when no redirect listener runs; a nil channel never
+	// fires in the Phase 6 select. When the listener does run, a runtime Serve
+	// failure (anything but the ErrServerClosed of a graceful drain) is reported
+	// here and handled like a main serve failure: the operator opted into the
+	// redirect, so its silent loss must not leave the app reporting healthy.
+	var redirectErrCh chan error
+	if redirectAddr != "" {
+		rl, rerr := net.Listen("tcp", redirectAddr)
+		if rerr != nil {
+			cleanup()
+			l.Close()
+			lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+			return fmt.Errorf("credo: %s: HTTP redirect listen on %q: %w", label, redirectAddr, rerr)
+		}
+		_, httpsPort, _ := net.SplitHostPort(l.Addr().String())
+		rsrv := &http.Server{
+			Handler:           httpRedirectHandler(httpsPort),
+			ReadHeaderTimeout: app.serverCfg.ReadHeaderTimeout,
+		}
+		lm.serverMu.Lock()
+		lm.redirectServer = rsrv
+		lm.serverMu.Unlock()
+		redirectErrCh = make(chan error, 1)
+		go func() {
+			if rserveErr := rsrv.Serve(rl); rserveErr != nil && !errors.Is(rserveErr, http.ErrServerClosed) {
+				redirectErrCh <- rserveErr
+			}
+		}()
+	}
+
 	// Phase 5: startup hooks (FIFO), before stateRunning to avoid racing
 	// Shutdown. Hooks receive the app context, cancelled when shutdown begins.
 	//
@@ -319,6 +444,21 @@ func (lm *lifecycleManager) serve(
 			return errors.Join(serveErr, teardownErr)
 		}
 		return serveErr
+	case redirectErr := <-redirectErrCh:
+		// The redirect listener died at runtime. Handle it like a main serve
+		// failure (ADR-006 terminal session failure): drain — which stops the
+		// main server — and report the redirect error. The running → stopping
+		// CAS in initiateShutdown guards against a racing programmatic Shutdown;
+		// draining serveErrCh lets the main serve goroutine unwind.
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), lm.shutdownTimeout())
+		teardownErr := lm.initiateShutdown(drainCtx)
+		drainCancel()
+		<-serveErrCh
+		redirectFail := fmt.Errorf("credo: %s: HTTP redirect server failed: %w", label, redirectErr)
+		if teardownErr != nil && !errors.Is(teardownErr, errShutdownNotRunning) {
+			return errors.Join(redirectFail, teardownErr)
+		}
+		return redirectFail
 	case <-ctx.Done():
 		// Caller cancelled (or a signal, via runSignal). We own the drain. The
 		// drain context drops the trigger's cancellation but keeps its values,
@@ -370,10 +510,11 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 
 	var errs []error
 
-	// Read cancel and server under the same lock that serve() wrote them.
+	// Read cancel and servers under the same lock that serve() wrote them.
 	lm.serverMu.Lock()
 	cancelFn := lm.cancel
 	srv := lm.server
+	redirectSrv := lm.redirectServer
 	lm.serverMu.Unlock()
 
 	// 1. Cancel the app context — signals background services, and the context
@@ -382,10 +523,18 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 		cancelFn()
 	}
 
-	// 2. Drain in-flight HTTP requests (stop accepting, wait for handlers). On a
-	// failed-startup teardown Serve was never called, so srv has no registered
-	// listener and this is a near no-op; serve()'s deferred l.Close() closes the
-	// bound listener.
+	// 2. Drain the HTTP servers (stop accepting, wait for in-flight handlers).
+	// Stop the redirect listener first so that, during the main server's drain
+	// window, no client is redirected to an HTTPS server that has just stopped
+	// accepting connections; a redirect response is instant, so its Shutdown
+	// returns near-immediately. On a failed-startup teardown Serve was never
+	// called, so the main srv has no registered listener and its Shutdown is a
+	// near no-op — serve()'s deferred l.Close() closes the bound listener.
+	if redirectSrv != nil {
+		if err := redirectSrv.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("credo: HTTP redirect drain: %w", err))
+		}
+	}
 	if srv != nil {
 		if err := srv.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("credo: server drain: %w", err))
@@ -408,7 +557,7 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 	// in serve(). The App is single-use, so nothing reads these after stopped;
 	// dropping them lets the closed server and cancelled context be collected.
 	lm.serverMu.Lock()
-	lm.ctx, lm.cancel, lm.server, lm.boundAddr = nil, nil, nil, nil
+	lm.ctx, lm.cancel, lm.server, lm.redirectServer, lm.boundAddr = nil, nil, nil, nil, nil
 	lm.serverMu.Unlock()
 
 	lm.state.Store(uint32(stateStopped))

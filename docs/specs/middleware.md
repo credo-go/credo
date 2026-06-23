@@ -145,13 +145,13 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 
 ### Common Meta Keys
 
-| Key           | Type            | Used by            |
-| ------------- | --------------- | ------------------ |
-| `"auth"`      | `bool`          | Auth middleware    |
-| `"cors"`      | `*CORSConfig`   | CORS middleware    |
-| `"ratelimit"` | `int`           | Rate limiter       |
-| `"cache"`     | `int` (seconds) | Cache middleware   |
-| `"timeout"`   | `time.Duration` | Timeout middleware |
+| Key | Type | Used by |
+| --- | --- | --- |
+| `"auth"` | `bool` | Auth middleware |
+| `"cors"` | `*CORSConfig` | CORS middleware |
+| `"ratelimit"` | `int` | Rate limiter |
+| `"cache"` | `int` (seconds) | Cache middleware |
+| `"timeout"` | `time.Duration` | Timeout middleware |
 | `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access logger (built-in + `middleware.AccessLog`) |
 
 ---

@@ -276,7 +276,7 @@ The container has three phases:
 
 1. **Bootstrap** --- `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Resolve`, and `ResolveAll` are all allowed. This supports patterns like `ensureRegistry` where code probes with `Resolve` and falls back to `ProvideValue` if not yet registered.
 2. **Finalize** --- `credo.Finalize(app)` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` return errors. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error.
-3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()` and `app.RunTLS()` call Finalize implicitly.
+3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()` and `app.RunContext()` call Finalize implicitly.
 
 **Concurrency**: During bootstrap, `Provide`/`ProvideFactory`/`ProvideValue`/ `Alias`/`BindMany` and `Resolve`/`ResolveAll` must not be called concurrently. The container uses internal locking for singleton resolution, but registration and bootstrap resolution are not designed for concurrent use. In practice, all registration and bootstrap resolution happens sequentially in `main()` or setup functions before `Run()`.
 
@@ -289,7 +289,7 @@ The container has three phases:
 // Finalize is side-effect-free: it does not instantiate singletons or perform I/O.
 // It only freezes the container (via Seal) and validates the graph.
 //
-// app.Run() and app.RunTLS() call Finalize implicitly. Explicit Finalize is
+// app.Run() and app.RunContext() call Finalize implicitly. Explicit Finalize is
 // optional but recommended for fail-fast at startup.
 func Finalize(app *App) error
 ```
@@ -315,7 +315,7 @@ userSvc := credo.MustResolve[*UserService](app)
 // credo.BindMany[Qux, *Baz](app)    // error: container is frozen
 ```
 
-If `credo.Finalize(app)` is not called explicitly, `Run()` and `RunTLS()` call it implicitly before starting the HTTP server.
+If `credo.Finalize(app)` is not called explicitly, `Run()` and `RunContext()` call it implicitly before starting the HTTP server.
 
 Duplicate registration of the same type returns an error.
 

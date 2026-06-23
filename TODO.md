@@ -226,7 +226,8 @@
 
 - [x] `credo.New(credo.WithRawConfig(rawCfg))` — functional options, RawConfig auto-registered in DI
 - [x] Server config (host, port, timeouts) framework-internal — no user-facing CoreConfig
-- [x] `Run()` / `Shutdown()` / `RunTLS()` lifecycle
+- [x] `Run()` / `RunContext()` / `ServeContext()` / `Shutdown()` lifecycle
+- [x] TLS as server config — `WithTLSFiles` / `WithTLSConfig` / `server.tls.*` (precedence; `Run`/`RunContext` serve HTTPS, no separate `RunTLS`)
 - [x] `config.Load(opts...)` returns `credo.RawConfig`
 
 **Import Boundary Fitness Test**

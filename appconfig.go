@@ -1,6 +1,7 @@
 package credo
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -34,7 +35,7 @@ type serverConfig struct {
 	ReadHeaderTimeout time.Duration `credo:"read_header_timeout"`
 
 	// ShutdownTimeout bounds graceful shutdown triggered by a signal
-	// (Run, RunTLS) or by context cancellation (RunContext, RunTLSContext):
+	// (Run) or by context cancellation (RunContext):
 	// the drain has this long to finish before its deadline fires. Zero
 	// (the default) applies a 30s budget. An explicit Shutdown(ctx) call
 	// ignores this and honours the caller's context deadline instead.
@@ -61,6 +62,19 @@ type serverConfig struct {
 
 	// TrustedProxies configures CIDR ranges whose forwarded headers are trusted.
 	TrustedProxies []string `credo:"trusted_proxies"`
+
+	// TLS holds the certificate and key file paths for serving HTTPS. When both
+	// are set — via WithTLSFiles or the server.tls.cert_file / key_file keys —
+	// Run and RunContext serve TLS. WithTLSFiles takes precedence over the config
+	// keys; both are shadowed by WithTLSConfig.
+	TLS serverTLS `credo:"tls"`
+}
+
+// serverTLS holds file-based TLS material, also populated from the
+// server.tls.cert_file and server.tls.key_file config keys.
+type serverTLS struct {
+	CertFile string `credo:"cert_file"`
+	KeyFile  string `credo:"key_file"`
 }
 
 // Option configures the App during construction.
@@ -78,6 +92,12 @@ type appOptions struct {
 	debug             bool
 	trustedProxies    []string
 	trustedProxiesSet bool
+	tlsConfig         *tls.Config
+	tlsConfigSet      bool
+	tlsCertFile       string
+	tlsKeyFile        string
+	tlsFilesSet       bool
+	httpRedirectAddr  string
 }
 
 // WithRawConfig sets the RawConfig for the application. When provided,
@@ -188,6 +208,64 @@ func WithAddr(host string, port int) Option {
 	}
 }
 
+// WithTLSFiles configures HTTPS by loading the certificate and private key from
+// the given PEM file paths. When set, Run and RunContext serve TLS; the key pair
+// is loaded and validated at startup (before the server accepts connections), so
+// a missing file or mismatched pair fails fast. The same paths may instead come
+// from the server.tls.cert_file / server.tls.key_file config keys — WithTLSFiles
+// takes precedence over those. It is in turn shadowed by WithTLSConfig.
+//
+// Calling it with an empty cert or key path is a configuration error caught at
+// startup: an explicit but empty WithTLSFiles does not silently fall back to the
+// config keys or to plaintext. For conditional TLS, omit the option entirely
+// rather than passing empty strings.
+//
+// This option performs no I/O; the files are read when the server starts.
+func WithTLSFiles(certFile, keyFile string) Option {
+	return func(o *appOptions) {
+		o.tlsCertFile = certFile
+		o.tlsKeyFile = keyFile
+		o.tlsFilesSet = true
+	}
+}
+
+// WithTLSConfig configures HTTPS from a fully-formed *tls.Config, exposing the
+// complete crypto/tls surface: mutual TLS, SNI via GetCertificate, custom
+// minimum version and cipher suites, ALPN, and hot certificate reload. It has
+// the highest TLS precedence — when set, WithTLSFiles and the server.tls.* keys
+// are ignored.
+//
+// The config must carry a certificate source (Certificates, GetCertificate, or
+// GetConfigForClient), validated at startup. It is cloned before use, so the
+// framework never mutates the caller's value and later caller mutations do not
+// affect the running server. Passing a nil config is a configuration error
+// caught at startup: an explicit WithTLSConfig(nil) does not silently fall back
+// to WithTLSFiles, the config keys, or plaintext.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *appOptions) {
+		o.tlsConfig = cfg
+		o.tlsConfigSet = true
+	}
+}
+
+// WithHTTPRedirect runs a second, plaintext listener on addr (for example
+// ":80") whose only job is to permanently redirect every request to its HTTPS
+// equivalent. GET and HEAD receive 301; other methods receive 308 so the method
+// (and body) are preserved — matching the framework's trailing-slash redirect
+// convention. The redirect target reuses the request host with the TLS server's
+// port (omitted when it is 443).
+//
+// TLS must be configured (via WithTLSFiles, WithTLSConfig, or server.tls.*);
+// otherwise startup fails fast at preflight, since redirecting to an HTTPS
+// server that does not exist makes no sense. The redirect listener starts and
+// drains with the main server, and a runtime failure of the redirect listener
+// tears the whole app down — the same as a failure of the main listener — so a
+// requested redirect can never silently die while the app reports healthy. It
+// does not apply to ServeContext, which serves the caller's listener as-is.
+func WithHTTPRedirect(addr string) Option {
+	return func(o *appOptions) { o.httpRedirectAddr = addr }
+}
+
 // WithMaxBodyBytes sets the maximum number of bytes read from any request body.
 // Requests whose body exceeds the limit receive 413 Request Entity Too Large.
 // A negative value disables the limit; zero (the default) applies a 4 MiB cap.
@@ -196,8 +274,8 @@ func WithMaxBodyBytes(n int64) Option {
 }
 
 // WithShutdownTimeout sets the graceful-shutdown drain budget used by the
-// signal-aware Run/RunTLS and by context-cancellation-triggered
-// RunContext/RunTLSContext. The drain (HTTP in-flight requests, DI singleton
+// signal-aware Run and by context-cancellation-triggered RunContext. The
+// drain (HTTP in-flight requests, DI singleton
 // cleanup, OnShutdown hooks) must complete within this duration. Zero (the
 // default) applies a 30s budget. An explicit Shutdown(ctx) call ignores this
 // and honours the caller's context deadline instead. Can also be set via the

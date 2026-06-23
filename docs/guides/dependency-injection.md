@@ -49,7 +49,7 @@ Provide / ProvideValue / Alias / BindMany
 - `Resolve[T]`: retrieve a fully wired singleton
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
 
-`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit `Finalize(app)` is recommended so dependency errors fail fast during startup.
+`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit `Finalize(app)` is recommended so dependency errors fail fast during startup.
 
 ---
 
@@ -387,7 +387,7 @@ Validation catches startup problems early:
 - dependency cycles
 - invalid constructor signatures
 
-`Run()` and `RunTLS()` call `Finalize()` implicitly, but explicit finalize is the recommended pattern:
+`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit finalize is the recommended pattern:
 
 ```go
 if err := credo.Finalize(app); err != nil {

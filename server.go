@@ -29,13 +29,20 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // [WithShutdownTimeout]. A second signal during shutdown force-kills the
 // process. Returns nil on graceful shutdown.
 //
+// Run serves HTTPS automatically when TLS is configured via [WithTLSFiles],
+// [WithTLSConfig], or the server.tls.* config keys; otherwise it serves
+// plaintext. A misconfigured certificate (missing file, mismatched pair, or a
+// WithTLSConfig with no certificate source) fails fast before the server
+// accepts connections, rolling the lifecycle back so the App can run again.
+//
 // Run is the safe default for a process whose lifetime is the server's. For
 // explicit lifecycle control — tests, embedding, or caller-driven
 // cancellation — use [App.RunContext].
 func (app *App) Run() error {
 	lm := app.lifecycle
+	preflight, serveFn := app.serveFuncs()
 	return lm.runSignal(func(ctx context.Context) error {
-		return lm.serve(ctx, "Run", nil, tcpListen, plainServe)
+		return lm.serve(ctx, "Run", preflight, tcpListen, serveFn, app.httpRedirectAddr)
 	})
 }
 
@@ -46,30 +53,16 @@ func (app *App) Run() error {
 // (so an already-cancelled ctx still drains), bounded by [WithShutdownTimeout].
 // Returns nil on graceful shutdown.
 //
+// Like [App.Run], RunContext serves HTTPS when TLS is configured (via
+// [WithTLSFiles], [WithTLSConfig], or server.tls.*) and plaintext otherwise,
+// with the same fail-fast certificate validation.
+//
 // Cancelling ctx during startup does not abort an in-progress [App.OnStart]
 // hook: hooks receive the app context, not ctx, so the cancellation takes
 // effect only after all hooks complete.
 func (app *App) RunContext(ctx context.Context) error {
-	return app.lifecycle.serve(ctx, "RunContext", nil, tcpListen, plainServe)
-}
-
-// RunTLS is the TLS sibling of [App.Run]: it serves HTTPS and blocks until a
-// signal arrives, then shuts down gracefully. The certificate and key are
-// validated before the server starts accepting connections, so a bad key pair
-// fails fast. Returns nil on graceful shutdown.
-func (app *App) RunTLS(certFile, keyFile string) error {
-	lm := app.lifecycle
-	return lm.runSignal(func(ctx context.Context) error {
-		return lm.serve(ctx, "RunTLS", tlsPreflight(certFile, keyFile), tcpListen, tlsServe(certFile, keyFile))
-	})
-}
-
-// RunTLSContext is the TLS sibling of [App.RunContext]: caller-driven
-// cancellation, no signal handler. The certificate and key are validated
-// before stateRunning, with the same fail-fast rollback as a listen error.
-// Returns nil on graceful shutdown.
-func (app *App) RunTLSContext(ctx context.Context, certFile, keyFile string) error {
-	return app.lifecycle.serve(ctx, "RunTLSContext", tlsPreflight(certFile, keyFile), tcpListen, tlsServe(certFile, keyFile))
+	preflight, serveFn := app.serveFuncs()
+	return app.lifecycle.serve(ctx, "RunContext", preflight, tcpListen, serveFn, app.httpRedirectAddr)
 }
 
 // ServeContext serves on a caller-provided listener, sharing the same
@@ -79,13 +72,18 @@ func (app *App) RunTLSContext(ctx context.Context, certFile, keyFile string) err
 //
 // ServeContext takes ownership of l: it is closed when the server stops,
 // matching net/http.Server.Serve semantics. Returns nil on graceful shutdown.
+//
+// ServeContext serves l exactly as given and is TLS-exempt: TLS configured via
+// [WithTLSFiles] or [WithTLSConfig] does not apply here, nor does the
+// [WithHTTPRedirect] listener. For HTTPS on a custom listener, wrap it yourself
+// — e.g. tls.NewListener(l, cfg).
 func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 	if l == nil {
 		return errors.New("credo: ServeContext: nil listener")
 	}
 	return app.lifecycle.serve(ctx, "ServeContext", nil,
 		func(*http.Server) (net.Listener, error) { return l, nil },
-		plainServe,
+		plainServe, "",
 	)
 }
 

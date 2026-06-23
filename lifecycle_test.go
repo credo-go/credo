@@ -627,30 +627,6 @@ func TestApp_Run_ListenFailure_RollsBackState(t *testing.T) {
 	}
 }
 
-// TestApp_RunTLS_PreflightFailure_RollsBackState verifies that a TLS key-pair
-// preflight failure is a pre-session failure: RunTLS rolls back to building
-// (free to run again), not the terminal stopped state used for session
-// failures. The missing cert files fail the preflight before any listener is
-// bound, so this exercises the preflight path specifically (genuine RunTLS
-// listen-failure shares tcpListen with plain Run — see
-// TestApp_Run_ListenFailure_RollsBackState).
-func TestApp_RunTLS_PreflightFailure_RollsBackState(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
-	app.GET("/ping", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "pong")
-	})
-
-	err := app.RunTLS("nonexistent.crt", "nonexistent.key")
-	if err == nil {
-		t.Fatal("RunTLS() should fail with a missing key pair")
-	}
-
-	// Pre-session failure → building (may run again), not stopped.
-	if got := app.State(); got != "building" {
-		t.Errorf("State() = %q after preflight failure, want %q", got, "building")
-	}
-}
-
 // --- Container integration pattern ---
 
 func TestApp_OnShutdown_IntegrationPattern(t *testing.T) {
@@ -962,27 +938,6 @@ func TestApp_ServeContext_ServeError_RunsTeardown(t *testing.T) {
 	}
 	if got := app.State(); got != "stopped" {
 		t.Errorf("State() = %q after serve failure, want %q", got, "stopped")
-	}
-}
-
-// TestApp_RunTLSContext_BadCertFailFast verifies an invalid key pair is caught
-// before the server starts. A free port proves the failure is the preflight,
-// not a listen error, and state rolls back to building.
-func TestApp_RunTLSContext_BadCertFailFast(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
-	app.GET("/ping", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "pong")
-	})
-
-	err := app.RunTLSContext(context.Background(), "nonexistent.crt", "nonexistent.key")
-	if err == nil {
-		t.Fatal("RunTLSContext with a missing cert should fail")
-	}
-	if app.IsRunning() {
-		t.Error("server should not be running after preflight failure")
-	}
-	if got := app.State(); got != "building" {
-		t.Errorf("State() = %q after preflight failure, want building", got)
 	}
 }
 

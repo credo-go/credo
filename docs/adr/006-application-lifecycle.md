@@ -36,11 +36,9 @@ State is stored as `atomic.Uint32` with `CompareAndSwap` transitions — no mute
 ### API
 
 ```go
-app.Run()                                  // Serve HTTP; block on SIGINT/SIGTERM, then drain
-app.RunTLS(certFile, keyFile)              // Serve HTTPS; same signal handling
-app.RunContext(ctx)                        // Serve HTTP; caller-driven cancellation, no signals
-app.RunTLSContext(ctx, certFile, keyFile)  // Serve HTTPS; caller-driven cancellation
-app.ServeContext(ctx, l)                   // Serve on a caller-provided net.Listener
+app.Run()                                  // Serve HTTP/HTTPS; block on SIGINT/SIGTERM, then drain
+app.RunContext(ctx)                        // Serve HTTP/HTTPS; caller-driven cancellation, no signals
+app.ServeContext(ctx, l)                   // Serve on a caller-provided net.Listener (TLS-exempt)
 app.Shutdown(ctx)                          // Graceful shutdown with deadline
 app.State() string                         // Current state name
 app.IsRunning() bool                       // Convenience check
@@ -48,9 +46,31 @@ app.Addr() net.Addr                        // Actual bound address (nil before R
 app.OnStart(fn func(ctx context.Context) error)     // FIFO startup hook
 app.OnShutdown(fn func(ctx context.Context) error)  // LIFO shutdown hook
 
-// Construction option:
+// Construction options:
 credo.WithShutdownTimeout(d)               // Drain budget for signal/cancel shutdown (default 30s)
+credo.WithTLSFiles(certFile, keyFile)      // Serve HTTPS from a PEM cert/key pair
+credo.WithTLSConfig(cfg)                    // Serve HTTPS from a *tls.Config (mTLS, SNI, reload)
+credo.WithHTTPRedirect(addr)               // Second listener: redirect HTTP→HTTPS (requires TLS)
 ```
+
+`Run` and `RunContext` serve plaintext or TLS from the same call: there is no separate TLS serve method. Whether a request is served over HTTPS is decided by configuration (see [TLS](#tls)), which is orthogonal to the control-flow choice (signal-aware vs caller-driven) those methods actually encode.
+
+### TLS
+
+TLS is **server configuration, not a serve-method variant**. `Run`/`RunContext` serve HTTPS when a certificate source is configured and plaintext otherwise. Three sources populate it, resolved by **precedence** — highest wins, whole-source override (never field-merged), never a conflict error:
+
+```
+WithTLSConfig(*tls.Config)   →  highest: full crypto/tls surface (mTLS, SNI, GetCertificate reload, ALPN)
+WithTLSFiles(cert, key)      →  PEM file paths via option
+server.tls.cert_file/key_file →  the same paths via config
+(none)                       →  plaintext
+```
+
+`WithTLSFiles` overrides the `server.tls.*` keys at construction (the option is resolved after config unmarshal so it wins); `WithTLSConfig` outranks both and is resolved later, so when it is set the file sources are never examined. All TLS validation happens once, at **preflight** (a missing/mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source, or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path), making a bad cert a pre-session failure that rolls back to `building`. Because each explicit option records that it was set, an empty or nil explicit source fails loud here rather than silently falling through to a lower-precedence source or to plaintext — the security-sensitive failure mode (accidentally serving plaintext) is never reached silently. The resolved `*tls.Config` is loaded once and, for `WithTLSConfig`, cloned — the caller's live pointer is never bound to the running server, and later caller mutations do not affect serving. The certificate-source check mirrors `net/http`'s own (`Certificates`, `GetCertificate`, or `GetConfigForClient`).
+
+`ServeContext` is TLS-exempt: it serves the listener it is handed exactly as given. For HTTPS on a custom listener, wrap it yourself with `tls.NewListener`.
+
+**HTTP→HTTPS redirect.** `WithHTTPRedirect(addr)` runs a second, plaintext listener whose only job is to permanently redirect every request to its HTTPS equivalent (301 for GET/HEAD, 308 for other methods — matching the trailing-slash redirect convention; the target reuses the request host with the TLS server's port, omitted when 443). It requires TLS (else preflight fails fast, like a missing cert) and starts and drains with the main server; on drain the redirect listener is closed _before_ the main server so no client is redirected to an HTTPS server that has just stopped accepting. A runtime failure of the redirect listener tears the app down — the same terminal teardown as a main-listener failure — so a requested redirect can never silently die while the app reports healthy. It is a deliberately narrow redirect-only listener, not a second application listener serving plaintext traffic — HTTP-without-TLS is not a supported app mode. `ServeContext` ignores it (the caller owns its listener). HSTS — making clients _prefer_ HTTPS on their own — is a separate, orthogonal concern handled by `middleware.Secure` (opt-in, sent only over HTTPS), never auto-enabled.
 
 ### App Context
 
@@ -141,11 +161,14 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 
 | Decision | Rationale |
 | --- | --- |
-| Signal-aware `Run` default | `Run`/`RunTLS` handle SIGINT/SIGTERM and drain gracefully — the common case needs no boilerplate. `RunContext`/`RunTLSContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
+| Signal-aware `Run` default | `Run` handles SIGINT/SIGTERM and drains gracefully — the common case needs no boilerplate. `RunContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
 | `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, _before_ the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
-| TLS cert preflight | `RunTLS`/`RunTLSContext` load the key pair before `stateRunning`, so a bad cert fails fast with listen-error rollback discipline |
+| TLS as server config | TLS is configured (`WithTLSFiles`/`WithTLSConfig`/`server.tls.*`), not selected by a serve method. Transport (plain vs TLS) is orthogonal to control flow (signal vs context) — folding it into `Run`/`RunContext` removes the `RunTLS`/`RunTLSContext` combinatorial pair. Rejected: separate `RunTLS*` methods (mirror stdlib `ListenAndServeTLS`, but TLS belongs to the same category as host/port — configuration) |
+| TLS source precedence, not conflict | `WithTLSConfig` > `WithTLSFiles` > `server.tls.*` > plaintext, whole-source override. Rejected: erroring when two sources are set — precedence lets an option cleanly override a config-file default, the common case, and avoids a brittle "set exactly one" rule |
+| TLS cert preflight | The resolved config is built and validated before `stateRunning`, so a bad cert (missing/mismatched files, partial cert-without-key, a `WithTLSConfig` with no certificate source, or an explicit-but-empty/nil source — `WithTLSConfig(nil)`, `WithTLSFiles("", "")`) fails fast with the same pre-session rollback as a listen error. An explicit option recording that it was set lets an empty/nil value fail loud rather than silently downgrade to a lower-precedence source or plaintext |
+| HTTP→HTTPS via redirect listener, not dual-serve | `WithHTTPRedirect` adds a redirect-only second listener (301/308 to HTTPS), requiring TLS; its runtime failure tears the app down like the main listener (a requested redirect must not silently die while the app reports healthy), and on drain it closes before the main server. Rejected: a second listener serving the _app_ over plaintext (HTTP-without-TLS invites accidental cleartext traffic — not a supported mode) and auto-HSTS (a near-permanent client-side commitment — opt-in via `middleware.Secure` only, never automatic) |
 | Readiness unready on shutdown | Drain step 0 flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
 | Lifecycle-`Service` abstraction deferred | Background work uses `OnStart` + `Shutdowner` today (`worker.Pool`). A public `Service` interface with a guaranteed services-before-infra drain waits for in-tree consumers (gRPC/WS/pub-sub) — no speculative carriers pre-v1 |
 | No post-compile hook registration | Frozen guard prevents race conditions |

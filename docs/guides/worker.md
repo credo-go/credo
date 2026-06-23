@@ -215,7 +215,7 @@ worker.Register(...) -> app.Run() -> workers start
 app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit
 ```
 
-Register workers before `credo.Finalize(app)` or before `Run()`/`RunTLS()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
+Register workers before `credo.Finalize(app)` or before `Run()`/`RunContext()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
 
 ---
 
