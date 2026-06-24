@@ -219,7 +219,7 @@ func httpRedirectHandler(httpsPort string) http.Handler {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			code = http.StatusPermanentRedirect // 308 preserves method and body
 		}
-		http.Redirect(w, r, target, code)
+		http.Redirect(w, r, target, code) //nolint:gosec // HTTP-to-HTTPS redirect intentionally preserves the request host.
 	})
 }
 
