@@ -15,6 +15,12 @@
 - **Integrated-first, explicit boundaries**: framework infrastructure is wired by convention; app deps and typed config stay visible and override-friendly.
 - **stdlib boundary compatibility**: `*credo.App` is an `http.Handler`; stdlib middleware can be adapted.
 
+## Why Credo Exists
+
+Go teams often assemble production web applications from many excellent but separate libraries: routing, configuration, dependency injection, validation, observability, data access, workers, and middleware. Credo packages those concerns into one integrated framework so teams can spend less time maintaining glue code and more time building application logic.
+
+The project is early but actively maintained, with a focus on clear APIs, documented architecture decisions, security-conscious upstream adaptation, and production-oriented defaults for modern Go services.
+
 ## Maturity by Area
 
 Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what is solid, what is still experimental, and what is on the roadmap.
