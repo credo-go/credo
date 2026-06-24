@@ -72,16 +72,16 @@ server.tls.cert_file/key_file →  the same paths via config
 
 **HTTP→HTTPS redirect.** `WithHTTPRedirect(addr)` runs a second, plaintext listener whose only job is to permanently redirect every request to its HTTPS equivalent (301 for GET/HEAD, 308 for other methods — matching the trailing-slash redirect convention; the target reuses the request host with the TLS server's port, omitted when 443). It requires TLS (else preflight fails fast, like a missing cert) and starts and drains with the main server; on drain the redirect listener is closed _before_ the main server so no client is redirected to an HTTPS server that has just stopped accepting. A runtime failure of the redirect listener tears the app down — the same terminal teardown as a main-listener failure — so a requested redirect can never silently die while the app reports healthy. It is a deliberately narrow redirect-only listener, not a second application listener serving plaintext traffic — HTTP-without-TLS is not a supported app mode. `ServeContext` ignores it (the caller owns its listener). HSTS — making clients _prefer_ HTTPS on their own — is a separate, orthogonal concern handled by `middleware.Secure` (opt-in, sent only over HTTPS), never auto-enabled.
 
-### App Context
+### Lifecycle Context
 
-The app-level context is created at `Run()`/`RunContext()` and cancelled at the **beginning** of `Shutdown()`. Credo deliberately exposes **no** public `Context()` accessor: a nullable accessor would have to return `context.Background()` before `Run`, a silent dead zone for any goroutine that captured it too early. Background services receive the context through their `OnStart` hook's `ctx` parameter and select on `ctx.Done()` to detect shutdown:
+The lifecycle context is created at `Run()`/`RunContext()` and cancelled at the **beginning** of `Shutdown()`. Credo deliberately exposes **no** public `Context()` accessor: a nullable accessor would have to return `context.Background()` before `Run`, a silent dead zone for any goroutine that captured it too early. Background services receive the context through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect shutdown:
 
 ```go
-app.OnStart(func(ctx context.Context) error {
+app.OnStart(func(lifecycleCtx context.Context) error {
     go func() {
         for {
             select {
-            case <-ctx.Done():
+            case <-lifecycleCtx.Done():
                 return
             case msg := <-subscriber.Messages():
                 process(msg)
@@ -99,21 +99,21 @@ Without an accessor the dead zone is structurally unreachable: there is no pre-`
 ```
 1. DI Finalize (idempotent)
 2. CAS building → starting
-3. Create app context
+3. Create lifecycle context
 4. Bind port (net.Listen)
 5. Store bound address (app.Addr() now returns the real address)
 6. OnStart hooks in FIFO order (first registered, first called)
 7. Store state = running
 ```
 
-If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (cancel app context → HTTP drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
+If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (cancel lifecycle context → HTTP drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
 
 ### Shutdown Sequence
 
 ```
 1. CAS running → stopping
 2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
-3. Cancel app context (signals background services)
+3. Cancel lifecycle context (signals background services)
 4. HTTP server drain (srv.Shutdown(ctx))
 5. DI container shutdown (reverse-order singleton cleanup)
 6. OnShutdown hooks in LIFO order (last registered, first called)
@@ -128,14 +128,14 @@ All errors are collected via `errors.Join` — no early return.
 **OnStart** — called after the port is bound, before the server accepts connections:
 
 ```go
-app.OnStart(func(ctx context.Context) error {
+app.OnStart(func(lifecycleCtx context.Context) error {
     log.Println("server ready on", app.Addr())
-    return consul.Register(ctx, app.Addr())
+    return consul.Register(lifecycleCtx, app.Addr())
 })
 ```
 
 - FIFO order (first registered, first called)
-- Receives the app context (created at `Run` time)
+- Receives the lifecycle context (created at `Run` time)
 - Fail-fast: the first error aborts startup, remaining hooks are skipped, the full teardown chain runs, and the App ends terminally `stopped` (a session that began tears down rather than rolling back)
 - Must be called before `Run()`; panics after compile (frozen guard)
 
@@ -188,7 +188,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - Zero-boilerplate graceful shutdown: `Run` handles signals and drains within `WithShutdownTimeout`
 - Readiness flips to 503 at shutdown start, so load balancers drain the instance before it stops accepting
 - Deterministic startup/shutdown sequence
-- Background services get clean shutdown signal via app context (delivered through `OnStart`)
+- Background services get clean shutdown signal via lifecycle context (delivered through `OnStart`)
 - LIFO hooks ensure correct resource cleanup order
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown

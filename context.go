@@ -20,6 +20,10 @@ import (
 // pool safety. Because it is pooled, Context deliberately does not implement
 // context.Context; call [Context.Context] to obtain the request's
 // context.Context for context-taking APIs.
+//
+// Context is Credo's HTTP request context. Lifecycle hooks such as
+// [App.OnStart] and [App.OnShutdown] receive a standard context.Context,
+// not *Context.
 type Context struct {
 	app              *App
 	request          *Request

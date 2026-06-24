@@ -539,7 +539,7 @@ Credo offers two shutdown mechanisms. Choose based on how the component is creat
 
 During graceful shutdown the full sequence is:
 
-1. Cancel app context
+1. Cancel lifecycle context
 2. Drain in-flight HTTP requests
 3. **Container shutdown** — calls `Shutdown(ctx)` on every singleton that implements `Shutdowner`
 4. **OnShutdown hooks** — runs registered hook functions in LIFO order

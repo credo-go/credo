@@ -155,8 +155,8 @@ func ensurePool(app *credo.App) (*Pool, error) {
 		return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
 	}
 
-	app.OnStart(func(ctx context.Context) error {
-		return p.Start(ctx)
+	app.OnStart(func(lifecycleCtx context.Context) error {
+		return p.Start(lifecycleCtx)
 	})
 
 	return p, nil

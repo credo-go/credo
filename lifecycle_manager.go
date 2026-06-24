@@ -23,8 +23,8 @@ const (
 	stateBuilding appState = iota
 
 	// stateStarting is a transient state entered after the state CAS but before
-	// the app context and *http.Server are written. Shutdown cannot operate in this
-	// state, closing the race window between the CAS and the serverMu writes.
+	// the lifecycle context and *http.Server are written. Shutdown cannot operate
+	// in this state, closing the race window between the CAS and the serverMu writes.
 	stateStarting
 
 	// stateRunning means the server is listening. Registration is frozen.
@@ -57,7 +57,7 @@ func (s appState) String() string {
 }
 
 // lifecycleManager owns the App's server-session lifecycle: the state machine,
-// the bound *http.Server and app context, the start/shutdown hooks, and the
+// the bound *http.Server and lifecycle context, the start/shutdown hooks, and the
 // graceful-drain sequence shared by every Run* entry point and Shutdown.
 //
 // It is held by exactly one App and references it back through app for the
@@ -90,7 +90,7 @@ type lifecycleManager struct {
 	// Protected by serverMu; drained alongside server.
 	redirectServer *http.Server
 
-	// ctx is the app-level context, created at Run() time. Cancelled at the
+	// ctx is the lifecycle context, created at Run() time. Cancelled at the
 	// beginning of Shutdown(). Background services select on ctx.Done().
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -384,7 +384,7 @@ func (lm *lifecycleManager) serve(
 	}
 
 	// Phase 5: startup hooks (FIFO), before stateRunning to avoid racing
-	// Shutdown. Hooks receive the app context, cancelled when shutdown begins.
+	// Shutdown. Hooks receive the lifecycle context, cancelled when shutdown begins.
 	//
 	// A hook failure here is a session failure, not a pre-session one: an
 	// earlier hook may have produced externally visible side effects (started
@@ -490,7 +490,7 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 
 // drain runs the teardown chain shared by every shutdown path — graceful
 // Shutdown, context cancellation, a runtime serve failure, and a failed startup:
-// mark unready, cancel the app context, drain the HTTP server, tear down DI
+// mark unready, cancel the lifecycle context, drain the HTTP server, tear down DI
 // singletons (reverse order), run OnShutdown hooks (LIFO), release the
 // server-session references, and store stateStopped.
 //
@@ -517,7 +517,7 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 	redirectSrv := lm.redirectServer
 	lm.serverMu.Unlock()
 
-	// 1. Cancel the app context — signals background services, and the context
+	// 1. Cancel the lifecycle context — signals background services, and the context
 	// handed to OnStart hooks, to begin stopping.
 	if cancelFn != nil {
 		cancelFn()

@@ -58,7 +58,7 @@ func (app *App) Run() error {
 // with the same fail-fast certificate validation.
 //
 // Cancelling ctx during startup does not abort an in-progress [App.OnStart]
-// hook: hooks receive the app context, not ctx, so the cancellation takes
+// hook: hooks receive the lifecycle context, not ctx, so the cancellation takes
 // effect only after all hooks complete.
 func (app *App) RunContext(ctx context.Context) error {
 	preflight, serveFn := app.serveFuncs()
@@ -87,7 +87,7 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 	)
 }
 
-// Shutdown gracefully shuts down the server: it cancels the app context,
+// Shutdown gracefully shuts down the server: it cancels the lifecycle context,
 // drains in-flight requests, tears down DI singletons (reverse order), then
 // runs OnShutdown hooks (LIFO). The caller's ctx carries the deadline; unlike
 // signal/cancellation-triggered shutdown it is not bounded by

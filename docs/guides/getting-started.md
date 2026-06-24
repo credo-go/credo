@@ -489,7 +489,7 @@ Credo provides `OnStart` and `OnShutdown` hooks for startup and shutdown logic:
 func main() {
     app, _ := credo.New()
 
-    app.OnStart(func(ctx context.Context) error {
+    app.OnStart(func(lifecycleCtx context.Context) error {
         log.Println("server ready on", app.Addr())
         return nil
     })
@@ -531,7 +531,7 @@ For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdow
 Shutdown sequence:
 
 1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
-2. Cancel app context (signals background services)
+2. Cancel lifecycle context (signals background services)
 3. Drain in-flight HTTP requests
 4. DI Container shutdown (reverse-order singleton cleanup)
 5. OnShutdown hooks (LIFO)

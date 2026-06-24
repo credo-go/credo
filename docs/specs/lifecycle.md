@@ -64,13 +64,13 @@ Compiles the handler chain, transitions to `running`, and serves HTTP — or HTT
 
 ### `app.RunContext(ctx context.Context) error`
 
-Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values but drops its cancellation (so an already-cancelled `ctx` still drains), bounded by `WithShutdownTimeout`. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the app context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
+Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values but drops its cancellation (so an already-cancelled `ctx` still drains), bounded by `WithShutdownTimeout`. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the lifecycle context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
 
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
 Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, H2C, or an externally managed listener. `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
 
-The app context (created at `Run`/`RunContext` time, cancelled at the start of shutdown) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `ctx` parameter and select on `ctx.Done()` to detect graceful shutdown.
+The lifecycle context (created at `Run`/`RunContext` time, cancelled at the start of shutdown) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect graceful shutdown.
 
 ### TLS
 
@@ -97,7 +97,7 @@ Gracefully shuts down the server:
 
 1. Transitions from `running` → `stopping` (CAS; error if not running).
 2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so load balancers stop routing here before the drain. Liveness stays up.
-3. Cancels app context — signals background services to shut down.
+3. Cancels lifecycle context — signals background services to shut down.
 4. Drains in-flight HTTP requests via `http.Server.Shutdown(ctx)`.
 5. Shuts down DI container singletons via `container.Shutdown(ctx)`.
 6. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
@@ -105,7 +105,7 @@ Gracefully shuts down the server:
 8. Clears bound address (`Addr()` returns nil).
 9. Transitions to `stopped`.
 
-The app context is cancelled **before** HTTP drain to give background services maximum lead time for shutdown.
+The lifecycle context is cancelled **before** HTTP drain to give background services maximum lead time for shutdown.
 
 `Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 
@@ -126,17 +126,17 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 
 #### Background services and shutdown ordering
 
-Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the app context) and stops by implementing `Shutdowner`, so the DI container drains it during the container-shutdown step. The `worker.Pool` follows exactly this pattern.
+Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the lifecycle context) and stops by implementing `Shutdowner`, so the DI container drains it during the container-shutdown step. The `worker.Pool` follows exactly this pattern.
 
 A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with a guaranteed _services-drain-before-infrastructure_ phase (so a worker can still reach the database while it winds down) and a restartable/start-once taxonomy — is deliberately **deferred** until there are in-tree consumers (gRPC server, WebSocket hub, pub/sub subscriber). Introducing that public surface now, for packages that are still placeholders, would be the kind of speculative carrier the framework avoids pre-v1. Until then, services-before-infra ordering within the container step follows reverse registration order.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
-Registers a startup hook. Hooks are called in **FIFO** order after the port is bound but before the server starts accepting connections (state is still `starting`). The `ctx` parameter is the app context (created at `Run` time).
+Registers a startup hook. Hooks are called in **FIFO** order after the port is bound but before the server starts accepting connections (state is still `starting`). The `lifecycleCtx` parameter is the lifecycle context (created at `Run` time).
 
-The hook `ctx` is the **app context** — created from `context.Background()` and cancelled at shutdown start — not the `ctx` passed to `RunContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the app-lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
+The hook `lifecycleCtx` is the **lifecycle context** — created from `context.Background()` and cancelled at shutdown start — not the `ctx` passed to `RunContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
 
-If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (cancel app context → HTTP drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), bounded by `WithShutdownTimeout`.
+If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (cancel lifecycle context → HTTP drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), bounded by `WithShutdownTimeout`.
 
 `app.Addr()` is available inside hooks — critical for port-0 scenarios.
 

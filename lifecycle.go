@@ -34,10 +34,10 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 // OnStart registers a function to be called during startup, after the port
 // is bound but before the server starts accepting connections. Hooks are
 // called in FIFO order (first registered, first called).
-// The ctx passed to each hook is the app context (created at Run time). It is
-// derived independently from any ctx passed to RunContext, so cancelling that
-// ctx during startup does not abort a running hook; the cancellation is observed
-// only after all hooks complete.
+// The ctx passed to each hook is the lifecycle context (created at Run time).
+// It is derived independently from any ctx passed to RunContext, so cancelling
+// that ctx during startup does not abort a running hook; the cancellation is
+// observed only after all hooks complete.
 // If any hook returns an error, the server does not start: remaining hooks are
 // skipped, the App runs the full teardown chain (the same as graceful shutdown,
 // including DI shutdown and OnShutdown hooks), and Run returns the error. The

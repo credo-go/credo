@@ -464,8 +464,8 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	}
 
 	// Start workers after port is bound (after store connections, before accepting).
-	app.OnStart(func(ctx context.Context) error {
-		return p.Start(ctx)
+	app.OnStart(func(lifecycleCtx context.Context) error {
+		return p.Start(lifecycleCtx)
 	})
 
 	return p, nil
@@ -496,7 +496,7 @@ type Pool struct {
 }
 
 // Start creates a runner for each Definition and launches goroutines.
-// Called via OnStart hook. The ctx is the app context — cancelled on Shutdown.
+// Called via OnStart hook. The ctx is the lifecycle context — cancelled on Shutdown.
 func (p *Pool) Start(ctx context.Context) error
 
 // Shutdown stops all workers gracefully. Cancels the pool context and

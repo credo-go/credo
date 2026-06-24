@@ -356,7 +356,7 @@ func run() error {
 	})
 
 	// 15. Lifecycle hooks
-	app.OnStart(func(ctx context.Context) error {
+	app.OnStart(func(lifecycleCtx context.Context) error {
 		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr())
 		return nil
 	})
