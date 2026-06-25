@@ -1448,6 +1448,176 @@ func TestRouting_WalkRoutes_IncludesHostRoutes(t *testing.T) {
 	}
 }
 
+// noopHandler is a do-nothing Credo handler for introspection tests.
+func noopHandler(ctx *credo.Context) error { return nil }
+
+// noopMount is a do-nothing http.Handler for Mount-based tests.
+func noopMount() http.Handler {
+	return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+}
+
+// routeKey renders a RouteInfo as a stable string for order comparison.
+func routeKey(ri credo.RouteInfo) string {
+	return strings.Join([]string{
+		ri.Host, ri.Pattern, ri.Method, string(ri.Kind), strings.Join(ri.Methods, ","),
+	}, "|")
+}
+
+func routeKeys(routes []credo.RouteInfo) []string {
+	keys := make([]string, len(routes))
+	for i, ri := range routes {
+		keys[i] = routeKey(ri)
+	}
+	return keys
+}
+
+func TestApp_Routes_MountAppearsAsSingleCleanEntry(t *testing.T) {
+	app := mustNew(t)
+	app.Mount("/admin", noopMount())
+
+	var mounts []credo.RouteInfo
+	for _, ri := range app.Routes() {
+		if strings.Contains(ri.Pattern, "_mount") {
+			t.Errorf("internal mount pattern leaked into introspection: %q", ri.Pattern)
+		}
+		if ri.Kind == credo.RouteKindMount {
+			mounts = append(mounts, ri)
+		}
+	}
+
+	if len(mounts) != 1 {
+		t.Fatalf("mount entry count = %d, want exactly 1", len(mounts))
+	}
+	m := mounts[0]
+	if m.Pattern != "/admin" {
+		t.Errorf("mount Pattern = %q, want %q", m.Pattern, "/admin")
+	}
+	if m.Method != "" {
+		t.Errorf("mount Method = %q, want empty (see Methods)", m.Method)
+	}
+	want := []string{"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
+	if !slices.Equal(m.Methods, want) {
+		t.Errorf("mount Methods = %v, want %v", m.Methods, want)
+	}
+}
+
+func TestApp_Routes_MountPrefixNormalization(t *testing.T) {
+	cases := []struct {
+		mount string
+		want  string
+	}{
+		{"/admin", "/admin"},
+		{"/admin/", "/admin"},
+		{"/", "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mount, func(t *testing.T) {
+			app := mustNew(t)
+			app.Mount(tc.mount, noopMount())
+
+			got, found := "", false
+			for _, ri := range app.Routes() {
+				if ri.Kind == credo.RouteKindMount {
+					got, found = ri.Pattern, true
+				}
+			}
+			if !found {
+				t.Fatal("no mount entry found")
+			}
+			if got != tc.want {
+				t.Errorf("Mount(%q) → Pattern %q, want %q", tc.mount, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApp_Mount_RegistryRollbackOnPanic(t *testing.T) {
+	app := mustNew(t)
+	app.Mount("/dup", noopMount())
+
+	// A second identical mount panics (duplicate radix registration).
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic on duplicate Mount")
+			}
+		}()
+		app.Mount("/dup", noopMount())
+	}()
+
+	// The failed mount must not leave a stale introspection entry.
+	count := 0
+	for _, ri := range app.Routes() {
+		if ri.Kind == credo.RouteKindMount && ri.Pattern == "/dup" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("mount entry count after failed duplicate = %d, want 1", count)
+	}
+}
+
+func TestApp_Routes_TotalOrderDeterministic(t *testing.T) {
+	app := mustNew(t)
+	// Host routes make app.hosts non-empty so compile() sorts it in place; the
+	// Routes() output must stay identical before and after that sort.
+	app.Host("b.example.com").GET("/x", noopHandler)
+	app.Host("a.example.com").GET("/y", noopHandler)
+	app.GET("/z", noopHandler)
+	app.Mount("/m", noopMount())
+
+	before := routeKeys(app.Routes())
+
+	// First ServeHTTP triggers compile (which sorts app.hosts in place).
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/z", nil))
+
+	after := routeKeys(app.Routes())
+	if !slices.Equal(before, after) {
+		t.Errorf("Routes() order changed across compile:\n before=%v\n after =%v", before, after)
+	}
+
+	// Determinism: consecutive calls are byte-identical (no map-range jitter).
+	if !slices.Equal(routeKeys(app.Routes()), routeKeys(app.Routes())) {
+		t.Error("consecutive Routes() calls differ")
+	}
+}
+
+func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/users", noopHandler)
+	app.Mount("/admin", noopMount())
+
+	// Walk: routes only — a mount would surface as a misleading empty method.
+	sawUsers := false
+	_ = credo.Walk(app.Mux(), func(method, pattern string) error {
+		if method == "" {
+			t.Errorf("Walk yielded empty method for %q — a mount leaked", pattern)
+		}
+		if method == "GET" && pattern == "/users" {
+			sawUsers = true
+		}
+		return nil
+	})
+	if !sawUsers {
+		t.Error("Walk missing GET /users")
+	}
+
+	// WalkRoutes: the mount is visible with its forwarded method set.
+	sawMount := false
+	_ = credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
+		if ri.Kind == credo.RouteKindMount && ri.Pattern == "/admin" {
+			sawMount = true
+			if len(ri.Methods) != 7 {
+				t.Errorf("mount Methods length = %d, want 7", len(ri.Methods))
+			}
+		}
+		return nil
+	})
+	if !sawMount {
+		t.Error("WalkRoutes did not yield the /admin mount")
+	}
+}
+
 func TestRouting_URLParam(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/items/{id}", func(ctx *credo.Context) error {

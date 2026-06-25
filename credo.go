@@ -5,11 +5,13 @@
 package credo
 
 import (
+	"cmp"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -113,6 +115,10 @@ type App struct {
 
 	// namedRoutes maps route names to Route pointers.
 	namedRoutes map[string]*Route
+
+	// mounts records mounted prefixes (App.Mount) for route introspection.
+	// Appended only after a mount's radix registration succeeds.
+	mounts []mountInfo
 
 	// statusHandlers holds app-level custom handlers for 404/405/5xx
 	// responses, set via StatusHandler.
@@ -426,7 +432,7 @@ func (app *App) Mux() Routes {
 // mux and all host-scoped muxes.
 func (app *App) Routes() []RouteInfo {
 	routes := app.mux.Routes()
-	count := len(routes)
+	count := len(routes) + len(app.mounts)
 	hostRoutes := make([][]RouteInfo, 0, len(app.hosts))
 	for _, h := range app.hosts {
 		hostView := h.mux.Routes()
@@ -439,7 +445,29 @@ func (app *App) Routes() []RouteInfo {
 	for _, hostView := range hostRoutes {
 		out = append(out, hostView...)
 	}
+	for _, m := range app.mounts {
+		out = append(out, RouteInfo{
+			Kind:    RouteKindMount,
+			Pattern: m.prefix,
+			Methods: mountForwardedMethods(),
+		})
+	}
+
+	// Total order independent of registration order, host compile-sort state,
+	// and mount fan-out — catalog and golden-file generation need determinism.
+	slices.SortStableFunc(out, compareRouteInfo)
 	return out
+}
+
+// compareRouteInfo orders RouteInfo by (Host, Pattern, Method, Kind), giving
+// App.Routes a stable, deterministic total order.
+func compareRouteInfo(a, b RouteInfo) int {
+	return cmp.Or(
+		cmp.Compare(a.Host, b.Host),
+		cmp.Compare(a.Pattern, b.Pattern),
+		cmp.Compare(a.Method, b.Method),
+		cmp.Compare(string(a.Kind), string(b.Kind)),
+	)
 }
 
 // --- Named Routes ---

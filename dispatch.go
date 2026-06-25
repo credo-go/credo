@@ -492,6 +492,10 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	})
 
 	app.mountRoutes(subPattern, exactHandler)
+
+	// Record the mount for introspection only after both registrations
+	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
+	app.mounts = append(app.mounts, mountInfo{prefix: cleanMountPrefix(pattern)})
 }
 
 // mountChildRequest creates a child request for a mounted sub-handler.
@@ -515,16 +519,51 @@ func rewriteRequest(r *http.Request, newPath string) *http.Request {
 	return r2
 }
 
-// mountRoutes registers a handler for all known HTTP methods on the given
-// pattern, except CONNECT and TRACE: CONNECT is reserved for proxy tunnels
-// and TRACE echoes requests back (cross-site tracing exposure) — neither
-// should reach a mounted sub-handler implicitly.
+// mountInfo records a mounted prefix for route introspection. [App.Mount] adds
+// an entry only after the radix registration succeeds, so a registration panic
+// (duplicate or conflicting mount) leaves no stale introspection entry. There
+// is no host field: Group.Mount does not exist, so mounts are always
+// default-scope.
+type mountInfo struct {
+	prefix string
+}
+
+// mountForwardedMethods returns the sorted set of HTTP methods a mount answers:
+// every standard method except CONNECT and TRACE. CONNECT is reserved for proxy
+// tunnels and TRACE echoes requests back (cross-site tracing exposure) —
+// neither should reach a mounted sub-handler implicitly. A fresh slice is
+// returned on each call, and it is the single source of truth shared by
+// mountRoutes (registration) and [App.Routes] (introspection), so the two can
+// never drift.
+func mountForwardedMethods() []string {
+	return []string{
+		http.MethodDelete,
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodPatch,
+		http.MethodPost,
+		http.MethodPut,
+	}
+}
+
+// cleanMountPrefix normalizes a mount pattern to its user-facing prefix for
+// introspection: a trailing slash is trimmed, but the root mount "/" is
+// preserved rather than collapsing to "". So "/admin" and "/admin/" both yield
+// "/admin", and "/" yields "/".
+func cleanMountPrefix(pattern string) string {
+	s := strings.TrimSuffix(pattern, "/")
+	if s == "" {
+		return "/"
+	}
+	return s
+}
+
+// mountRoutes registers a handler on the given pattern for every method in
+// mountForwardedMethods.
 func (app *App) mountRoutes(pattern string, handler http.Handler) {
 	rh := &routeHandler{mounted: handler}
-	for method := range radix.AllMethods() {
-		if method == http.MethodConnect || method == http.MethodTrace {
-			continue
-		}
+	for _, method := range mountForwardedMethods() {
 		app.mux.insert(method, pattern, rh)
 	}
 }

@@ -7,9 +7,15 @@ package credo
 // of each registered route. Return a non-nil error to stop walking.
 type WalkFunc func(method, pattern string) error
 
-// Walk iterates over all registered routes, calling fn for each one.
+// Walk iterates over registered routes, calling fn with the method and pattern
+// of each one. Mounts (Kind == RouteKindMount) are skipped: the method+pattern
+// shape cannot represent a mount, which answers many methods at a prefix. Use
+// [WalkRoutes] for the full surface, mounts included.
 func Walk(r Routes, fn WalkFunc) error {
 	for _, ri := range r.Routes() {
+		if ri.Kind == RouteKindMount {
+			continue
+		}
 		if err := fn(ri.Method, ri.Pattern); err != nil {
 			return err
 		}
