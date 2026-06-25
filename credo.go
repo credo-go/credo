@@ -458,9 +458,10 @@ func (app *App) Routes() []RouteInfo {
 	}
 	for _, m := range app.mounts {
 		out = append(out, RouteInfo{
-			Kind:    RouteKindMount,
-			Pattern: m.prefix,
-			Methods: mountForwardedMethods(),
+			Kind:         RouteKindMount,
+			Pattern:      m.prefix,
+			Methods:      mountForwardedMethods(),
+			RegisteredAt: m.registeredAt.String(),
 		})
 	}
 

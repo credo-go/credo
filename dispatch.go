@@ -24,6 +24,11 @@ type routeHandler struct {
 	// mounted is the stdlib handler for Mount-registered endpoints.
 	// nil for regular Credo routes; when non-nil all other fields are zero.
 	mounted http.Handler
+
+	// srcLoc is the user call site that registered this endpoint, captured at
+	// registration. It feeds RouteInfo.RegisteredAt and the two-location
+	// duplicate-route panic.
+	srcLoc sourceLocation
 }
 
 // compile builds the handler chain: globalMW[0] → ... → globalMW[n] → dispatch.
@@ -316,7 +321,7 @@ func (app *App) addRoute(method, pattern string, h Handler, g *Group) *Route {
 		hostPattern: g.hostPattern,
 	}
 
-	rh := &routeHandler{route: route, handler: h}
+	rh := &routeHandler{route: route, handler: h, srcLoc: callerLocation()}
 	m := g.mux
 	if m == nil {
 		m = app.mux
@@ -367,7 +372,7 @@ func (app *App) addHeadRoute(pattern string, h Handler, g *Group) *Route {
 		autoHead:    true,
 	}
 
-	rh := &routeHandler{route: route, handler: headHandler}
+	rh := &routeHandler{route: route, handler: headHandler, srcLoc: callerLocation()}
 	m := g.mux
 	if m == nil {
 		m = app.mux
@@ -505,7 +510,7 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// Record the mount for introspection only after both registrations
 	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
 	// The prefix is the same cleaned value the exact match was registered on.
-	app.mounts = append(app.mounts, mountInfo{prefix: exact})
+	app.mounts = append(app.mounts, mountInfo{prefix: exact, registeredAt: callerLocation()})
 }
 
 // mountChildRequest creates a child request for a mounted sub-handler.
@@ -535,7 +540,8 @@ func rewriteRequest(r *http.Request, newPath string) *http.Request {
 // is no host field: Group.Mount does not exist, so mounts are always
 // default-scope.
 type mountInfo struct {
-	prefix string
+	prefix       string
+	registeredAt sourceLocation
 }
 
 // mountForwardedMethods returns the sorted set of HTTP methods a mount answers:
@@ -572,7 +578,7 @@ func cleanMountPrefix(pattern string) string {
 // mountRoutes registers a handler on the given pattern for every method in
 // mountForwardedMethods.
 func (app *App) mountRoutes(pattern string, handler http.Handler) {
-	rh := &routeHandler{mounted: handler}
+	rh := &routeHandler{mounted: handler, srcLoc: callerLocation()}
 	for _, method := range mountForwardedMethods() {
 		app.mux.insert(method, pattern, rh)
 	}
