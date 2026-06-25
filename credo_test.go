@@ -1667,6 +1667,34 @@ func assertSingleExplicitHead(t *testing.T, app *credo.App, pattern string) {
 	}
 }
 
+func TestApp_Routes_HostScopedRouteHasHostAndResolvedMeta(t *testing.T) {
+	app := mustNew(t)
+	h := app.Host("api.example.com")
+	h.SetMeta("scope", "host")
+	h.GET("/users", noopHandler).SetMeta("permission", "users:read")
+
+	var ri credo.RouteInfo
+	found := false
+	for _, r := range app.Routes() {
+		if r.Method == "GET" && r.Pattern == "/users" && r.Host == "api.example.com" {
+			ri, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("host-scoped GET /users not found in Routes()")
+	}
+	if ri.Kind != credo.RouteKindRoute {
+		t.Errorf("Kind = %q, want %q", ri.Kind, credo.RouteKindRoute)
+	}
+	// Resolved meta on a host-scoped route: route-level + host-group level.
+	if got := ri.Meta["permission"]; got != "users:read" {
+		t.Errorf("Meta[permission] = %v, want %q", got, "users:read")
+	}
+	if got := ri.Meta["scope"]; got != "host" {
+		t.Errorf("Meta[scope] = %v, want %q (host-group inherited)", got, "host")
+	}
+}
+
 func TestRouting_URLParam(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/items/{id}", func(ctx *credo.Context) error {
