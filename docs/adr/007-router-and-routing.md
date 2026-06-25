@@ -138,6 +138,19 @@ Stdlib `http.Handler` can be mounted at a prefix:
 app.Mount("/debug", http.DefaultServeMux)
 ```
 
+### Route Introspection
+
+`app.Routes()` returns the live route surface as `[]RouteInfo`; `Walk` (method + pattern) and `WalkRoutes` (full `RouteInfo`) iterate it. Because a route's `Name` and `SetMeta` are chained onto the `*Route` after the registration call returns, `RouteInfo` is derived live from the route store at call time rather than snapshotted at registration. Each `RouteInfo` carries `Method` for a normal route (a mount leaves it empty and lists its sorted forwarded method set — every standard method except CONNECT and TRACE — in `Methods`); the route `Name`; the fully resolved `Meta` (route ← group ← app) as a fresh, shallow, nil-if-none map whose values are read-only by convention; `Kind` (`RouteKindRoute` or `RouteKindMount`); and `AutoHead`, true only for the auto-generated HEAD twin of a GET route.
+
+Mounts are opaque: a single `RouteKindMount` entry reports the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`; `/` stays `/`) and forwarded methods, never the internal catch-all pattern or method fan-out. `Walk` skips mounts because the method+pattern shape cannot represent them; `WalkRoutes` includes them. `Routes()` output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring (or post-freeze) operation and must not run concurrently with route registration or configuration.
+
+**Alternatives considered:**
+
+- _Snapshot meta at registration_: rejected — `Name`/`SetMeta` are chained after the registration call returns, so a registration-time snapshot would miss them; deriving `RouteInfo` live from the store is the only correct option.
+- _A separate `LocalMeta` field (route-only, unresolved)_: deferred (YAGNI) — consumers need the resolved view (route ← group ← app); a local-only view can be added later if a use case appears.
+- _Deep-cloning `Meta` values_: rejected — selectively cloning `[]string`/map values gives false confidence for custom types (`[]Permission`, `*T`) that cannot be cloned generically, so `Meta` is a shallow copy with a documented read-only-by-convention contract.
+- _Registration-order output_: rejected — `compile()` sorts host entries in place, so registration order is not stable across the first request; a total-order sort guarantees deterministic output regardless of compile state.
+
 ### Compile & Freeze
 
 On first `ServeHTTP` (or `Run`), the router compiles:
@@ -171,6 +184,7 @@ Enabled by default. Disable via `WithRedirectTrailingSlash(false)` or `server.re
 - Named routes + URL generation prevent hardcoded paths
 - Fluent API is readable and chainable
 - HEAD auto-handling follows HTTP spec
+- Live route introspection (`Routes`/`WalkRoutes`) exposes `Name`, resolved `Meta`, and mounts — enabling drift-free route/permission catalogs
 
 **Negative:**
 

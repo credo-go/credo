@@ -213,12 +213,13 @@ func (mx *mux) Routes() []RouteInfo {
 			continue
 		}
 		out = append(out, RouteInfo{
-			Method:  e.method,
-			Pattern: e.pattern,
-			Host:    route.hostPattern,
-			Name:    route.name,
-			Meta:    route.resolveAllMeta(),
-			Kind:    RouteKindRoute,
+			Method:   e.method,
+			Pattern:  e.pattern,
+			Host:     route.hostPattern,
+			Name:     route.name,
+			Meta:     route.resolveAllMeta(),
+			Kind:     RouteKindRoute,
+			AutoHead: route.autoHead,
 		})
 	}
 	return out

@@ -48,6 +48,11 @@ type Route struct {
 	// to the twin so HEAD and GET share identical behavior — preventing
 	// silent bypass of auth, rate-limiting, and meta-driven middleware.
 	headTwin *Route
+
+	// autoHead marks this route as an auto-generated HEAD twin of a GET route.
+	// Surfaced via RouteInfo.AutoHead so introspection can distinguish it from
+	// an explicitly registered HEAD route (which keeps autoHead false).
+	autoHead bool
 }
 
 // Name sets the route name for URL generation.

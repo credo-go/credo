@@ -1618,6 +1618,55 @@ func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
 	}
 }
 
+func TestApp_Routes_AutoHeadTwinMarked(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/users", noopHandler)
+
+	// The GET registration auto-generates a HEAD twin.
+	get := findRouteInfo(t, app.Routes(), "GET", "/users")
+	if get.AutoHead {
+		t.Error("GET /users marked AutoHead, want false")
+	}
+	head := findRouteInfo(t, app.Routes(), "HEAD", "/users")
+	if !head.AutoHead {
+		t.Error("auto-generated HEAD /users not marked AutoHead")
+	}
+}
+
+func TestApp_Routes_ExplicitHeadOverridesAutoHead(t *testing.T) {
+	// Either registration order must yield a single HEAD entry, AutoHead=false.
+	t.Run("GET then explicit HEAD", func(t *testing.T) {
+		app := mustNew(t)
+		app.GET("/x", noopHandler)
+		app.HEAD("/x", noopHandler)
+		assertSingleExplicitHead(t, app, "/x")
+	})
+	t.Run("explicit HEAD then GET", func(t *testing.T) {
+		app := mustNew(t)
+		app.HEAD("/y", noopHandler)
+		app.GET("/y", noopHandler)
+		assertSingleExplicitHead(t, app, "/y")
+	})
+}
+
+func assertSingleExplicitHead(t *testing.T, app *credo.App, pattern string) {
+	t.Helper()
+	count := 0
+	var head credo.RouteInfo
+	for _, ri := range app.Routes() {
+		if ri.Method == "HEAD" && ri.Pattern == pattern {
+			count++
+			head = ri
+		}
+	}
+	if count != 1 {
+		t.Fatalf("HEAD %s entry count = %d, want 1", pattern, count)
+	}
+	if head.AutoHead {
+		t.Errorf("explicit HEAD %s marked AutoHead, want false", pattern)
+	}
+}
+
 func TestRouting_URLParam(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/items/{id}", func(ctx *credo.Context) error {

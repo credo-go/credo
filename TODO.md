@@ -557,7 +557,7 @@
 
 ### Router Improvements
 
-- [ ] **Mount introspection**: `Mount()` routes don't appear in `Routes()` — at minimum record mount point pattern in routeStore
+- [x] **Mount introspection**: mounts now appear as a single clean `RouteKindMount` entry in `Routes()`/`WalkRoutes` (cleaned prefix + sorted forwarded method set); internal catch-all/fan-out hidden. Shipped with route introspection v2 (`RouteInfo` gained `Name`/`Meta`/`Methods`/`Kind`/`AutoHead`, deterministic total-order output)
 - [x] **Document middleware ordering**: group middleware is collected at compile time from the group parent chain — registration order affects execution order only, never membership (semantics changed 2026-06-11 from registration-time capture; documented in `doc.go`, the middleware spec, and the guide)
 
 ### Deferred Features (from specs/ADRs)

@@ -364,6 +364,7 @@ func (app *App) addHeadRoute(pattern string, h Handler, g *Group) *Route {
 		parent:      g,
 		app:         app,
 		hostPattern: g.hostPattern,
+		autoHead:    true,
 	}
 
 	rh := &routeHandler{route: route, handler: headHandler}

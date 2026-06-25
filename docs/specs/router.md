@@ -250,12 +250,12 @@ credo.Walk(app.Mux(), func(method, pattern string) error {
 })
 
 credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
-    fmt.Println(ri.Method, ri.Host, ri.Pattern)
+    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, ri.Meta)
     return nil
 })
 ```
 
-`app.Mux()` returns a route registry view across the default mux and all host-scoped muxes. `Walk` preserves the original simple callback; `WalkRoutes` exposes full `RouteInfo`, including `Host`.
+`app.Mux()` returns a route registry view across the default mux and all host-scoped muxes. `Walk` keeps the simple `(method, pattern)` callback and visits real routes only; `WalkRoutes` (like `app.Routes()`) exposes the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the route `Name`; the resolved `Meta` (route ← group ← app) as a fresh shallow map (nil if none, values read-only by convention); `Kind` (`RouteKindRoute` or `RouteKindMount`); and `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD). Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden, and `Walk` skips mounts entirely. `Routes()` output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration.
 
 ---
 
