@@ -40,6 +40,24 @@ type ErrorInfo struct {
 // Register a custom renderer with [App.SetErrorRenderer].
 type ErrorRenderer func(ctx *Context, info ErrorInfo)
 
+// SuccessRenderer formats a successful response, given the status code and the
+// payload a handler wants to send. It is the success-side mirror of
+// [ErrorRenderer]: opt-in, never installed by default, and consulted only
+// through [Context.Render] — the raw [Response] helpers ([Response.JSON],
+// [Response.XML], [Response.Text], [Response.Blob], and the streaming writers)
+// stay un-intercepted so webhooks, health probes, and third-party response
+// shapes always bypass any house envelope.
+//
+// A non-nil error returned by the renderer flows into the normal error pipeline
+// (classification, logging, [ErrorRenderer]), exactly as if the handler had
+// returned it. The renderer owns committing the response; if it writes nothing,
+// the framework treats the call as complete.
+//
+// Register a custom renderer with [App.SetSuccessRenderer]. The single
+// status+data seam is also the integration point a future typed-endpoint layer
+// would route its typed result through, so one envelope policy covers both.
+type SuccessRenderer func(c *Context, status int, data any) error
+
 // Middleware is the single middleware type used throughout Credo.
 // All middleware — global, group, and route level — uses this signature.
 type Middleware func(next Handler) Handler

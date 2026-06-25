@@ -39,6 +39,11 @@ type App struct {
 	// nil = default RFC 7807 JSON renderer.
 	errorRenderer ErrorRenderer
 
+	// successRenderer formats successful responses sent via Context.Render,
+	// set via SetSuccessRenderer. nil = default JSON (no envelope). Raw
+	// Response helpers (JSON/XML/Text/Blob/...) never consult it.
+	successRenderer SuccessRenderer
+
 	// pool reuses Context instances.
 	ctxPool *pool[*Context]
 
@@ -406,6 +411,19 @@ func (app *App) StatusHandler(code int, h Handler) {
 func (app *App) SetErrorRenderer(r ErrorRenderer) {
 	app.checkFrozen("SetErrorRenderer")
 	app.errorRenderer = r
+}
+
+// SetSuccessRenderer sets the renderer that formats successful responses sent
+// through [Context.Render]. It is opt-in: with no renderer installed, Render
+// falls back to plain JSON and the framework imposes no response envelope. The
+// raw [Response] helpers ([Response.JSON] and friends) are never routed through
+// it, so an enterprise envelope ({code,message,data}, HAL, JSON:API, …) applies
+// only where handlers opt in via Render. Passing nil restores the default.
+//
+// Must be called before the server starts; panics if called after compile.
+func (app *App) SetSuccessRenderer(r SuccessRenderer) {
+	app.checkFrozen("SetSuccessRenderer")
+	app.successRenderer = r
 }
 
 // --- Meta ---

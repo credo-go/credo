@@ -136,6 +136,25 @@ func (r *Response) JSON(code int, v any) error {
 	return json.NewEncoder(r).Encode(v)
 }
 
+// Render sends a successful response through the app's [SuccessRenderer] when
+// one is installed via [App.SetSuccessRenderer], letting an application apply a
+// uniform response envelope at a single seam. With no renderer installed (the
+// default), it falls back to plain JSON via [Response.JSON] and imposes no
+// envelope.
+//
+// Render is the only success path that consults the renderer: the raw helpers
+// ([Response.JSON], [Response.XML], [Response.Text], [Response.Blob], and the
+// streaming writers) stay un-intercepted, so handlers serving webhooks, health
+// probes, or third-party-dictated shapes can always bypass the envelope by
+// calling them directly. A renderer error propagates to the caller (and thus
+// the error pipeline) like any handler error.
+func (c *Context) Render(status int, data any) error {
+	if c.app != nil && c.app.successRenderer != nil {
+		return c.app.successRenderer(c, status, data)
+	}
+	return c.response.JSON(status, data)
+}
+
 // Text sends a plain text response with the given status code.
 // Named Text (not String) to avoid conflict with the fmt.Stringer interface.
 func (r *Response) Text(code int, s string) error {
