@@ -314,19 +314,21 @@ Use app/global middleware when you want one measurement for the whole request.
 
 ## Introspection
 
-Use `Walk` for simple method/pattern traversal and `WalkRoutes` when you also need the host pattern.
+`Walk` takes a simple `(method, pattern)` callback and visits real routes only — mounts are skipped because the method/pattern shape cannot represent them. `WalkRoutes` (and the equivalent `app.Routes()`) hands you the full `RouteInfo`: the route `Name`, the resolved `Meta` (route ← group ← app), `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. Reach for `WalkRoutes`/`Routes` whenever you need anything beyond method and pattern, or you need mounts to appear.
 
 ```go
 credo.Walk(app.Mux(), func(method, pattern string) error {
-    fmt.Println(method, pattern)
+    fmt.Println(method, pattern) // real routes only; mounts skipped
     return nil
 })
 
 credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
-    fmt.Println(ri.Method, ri.Host, ri.Pattern)
+    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, ri.Meta)
     return nil
 })
 ```
+
+`app.Routes()` returns the same data as a slice in a deterministic total order (`Host`, `Pattern`, `Method`, `Kind`), so it is a stable source for route/permission catalogs and golden-file tests. Introspection reads live route state, so call it once wiring is complete — not concurrently with route registration.
 
 ---
 

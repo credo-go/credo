@@ -428,8 +428,19 @@ func (app *App) Mux() Routes {
 	return app
 }
 
-// Routes returns introspection data for all registered routes across the default
-// mux and all host-scoped muxes.
+// Routes returns introspection data for every registered route across the
+// default mux and all host-scoped muxes, plus one entry per [App.Mount] prefix.
+// See [RouteInfo] for the per-entry fields, including the route Name, the
+// resolved and shallow-copied Meta, and a mount's forwarded method set.
+//
+// The result is a deterministic total order — sorted by (Host, Pattern, Method,
+// Kind), independent of registration order and host compile-sort state — so
+// route/permission catalogs and golden-file tests stay stable. The returned
+// slice and each RouteInfo.Meta map are freshly allocated; the caller owns them.
+//
+// Routes reads live *Route fields (Name, metadata) without locking, so it must
+// not run concurrently with route registration or configuration (Name, SetMeta,
+// Mount). It is a post-wiring (or post-freeze) operation.
 func (app *App) Routes() []RouteInfo {
 	routes := app.mux.Routes()
 	count := len(routes) + len(app.mounts)
