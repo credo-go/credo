@@ -138,6 +138,8 @@ Stdlib `http.Handler` can be mounted at a prefix:
 app.Mount("/debug", http.DefaultServeMux)
 ```
 
+A mounted handler answers both its exact prefix (`/debug`) and every path beneath it (`/debug/...`), receiving the request with the prefix stripped. A root mount (`Mount("/", h)`) therefore forwards the entire path space, including the bare `/`.
+
 ### Route Introspection
 
 `app.Routes()` returns the live route surface as `[]RouteInfo`; `Walk` (method + pattern) and `WalkRoutes` (full `RouteInfo`) iterate it. Because a route's `Name` and `SetMeta` are chained onto the `*Route` after the registration call returns, `RouteInfo` is derived live from the route store at call time rather than snapshotted at registration. Each `RouteInfo` carries `Method` for a normal route (a mount leaves it empty and lists its sorted forwarded method set — every standard method except CONNECT and TRACE — in `Methods`); the route `Name`; the fully resolved `Meta` (route ← group ← app) as a fresh, shallow, nil-if-none map whose values are read-only by convention; `Kind` (`RouteKindRoute` or `RouteKindMount`); and `AutoHead`, true only for the auto-generated HEAD twin of a GET route.

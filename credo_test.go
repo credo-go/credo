@@ -1101,6 +1101,59 @@ func TestRouting_Mount(t *testing.T) {
 	}
 }
 
+func TestRouting_Mount_Root(t *testing.T) {
+	// A root mount ("/") must dispatch the bare root path, not just sub-paths.
+	// Regression: TrimSuffix("/", "/") yielded "", so the exact handler was
+	// registered on an empty pattern and GET / returned 404 while GET /foo
+	// worked. The cleaned prefix keeps the exact match on "/".
+	sub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("sub:" + r.URL.Path))
+	})
+
+	app := mustNew(t)
+	app.Mount("/", sub)
+
+	tests := []struct {
+		method string
+		path   string
+		code   int
+		body   string
+	}{
+		{"GET", "/", 200, "sub:/"},
+		{"GET", "/foo", 200, "sub:/foo"},
+		{"GET", "/foo/bar", 200, "sub:/foo/bar"},
+		{"POST", "/", 200, "sub:/"},
+		// CONNECT and TRACE are excluded from Mount on every prefix, root included.
+		{"TRACE", "/", 405, ""},
+		{"CONNECT", "/", 405, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(tt.method, tt.path, nil)
+			app.ServeHTTP(w, r)
+
+			if w.Code != tt.code {
+				t.Errorf("status = %d, want %d", w.Code, tt.code)
+			}
+			if tt.body != "" {
+				if got := w.Body.String(); got != tt.body {
+					t.Errorf("body = %q, want %q", got, tt.body)
+				}
+			}
+		})
+	}
+
+	// The fix unifies dispatch with introspection: Routes() reports the "/"
+	// prefix (mounts carry an empty Method), and that prefix now actually
+	// answers requests.
+	if ri := findRouteInfo(t, app.Routes(), "", "/"); ri.Kind != credo.RouteKindMount {
+		t.Fatalf("mount entry Kind = %q, want %q", ri.Kind, credo.RouteKindMount)
+	}
+}
+
 func TestRequest_RouteParam(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/users/{id}/posts/{postID}", func(ctx *credo.Context) error {

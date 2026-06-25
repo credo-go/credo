@@ -472,9 +472,17 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	if handler == nil {
 		panic(fmt.Sprintf("credo: nil handler for Mount %s", pattern))
 	}
-	// Ensure the pattern ends with a catch-all for sub-routing
-	subPattern := strings.TrimSuffix(pattern, "/")
-	catchAll := subPattern + "/{_mount...}"
+	// Compute the cleaned prefix once and reuse it for both registrations and
+	// introspection, so dispatch and Routes() can never disagree. The exact
+	// match is registered on the cleaned prefix itself ("/admin", or "/" for a
+	// root mount); the catch-all carries the "/{_mount...}" suffix. A root mount
+	// is special-cased so the catch-all stays "/{_mount...}" instead of the
+	// invalid "//{_mount...}".
+	exact := cleanMountPrefix(pattern)
+	catchAll := exact + "/{_mount...}"
+	if exact == "/" {
+		catchAll = "/{_mount...}"
+	}
 
 	mountHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rctx := getRouteContext(r)
@@ -492,11 +500,12 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 		handler.ServeHTTP(w, mountChildRequest(r, "/"))
 	})
 
-	app.mountRoutes(subPattern, exactHandler)
+	app.mountRoutes(exact, exactHandler)
 
 	// Record the mount for introspection only after both registrations
 	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
-	app.mounts = append(app.mounts, mountInfo{prefix: cleanMountPrefix(pattern)})
+	// The prefix is the same cleaned value the exact match was registered on.
+	app.mounts = append(app.mounts, mountInfo{prefix: exact})
 }
 
 // mountChildRequest creates a child request for a mounted sub-handler.
