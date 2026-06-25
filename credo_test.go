@@ -271,6 +271,86 @@ func TestApp_RouteMetaInheritance(t *testing.T) {
 	}
 }
 
+// findRouteInfo locates the RouteInfo for a method+pattern, failing the test
+// if absent. Shared by the route-introspection tests.
+func findRouteInfo(t *testing.T, routes []credo.RouteInfo, method, pattern string) credo.RouteInfo {
+	t.Helper()
+	for _, ri := range routes {
+		if ri.Method == method && ri.Pattern == pattern {
+			return ri
+		}
+	}
+	t.Fatalf("route %s %s not found among %d routes", method, pattern, len(routes))
+	return credo.RouteInfo{}
+}
+
+func TestApp_Routes_ExposesNameAndResolvedMeta(t *testing.T) {
+	app := mustNew(t)
+	app.SetMeta("scope", "app") // root-group meta
+
+	api := app.Group("/api")
+	api.SetMeta("group-flag", true)
+
+	// Name and SetMeta are chained AFTER registration — exercising the live
+	// read path that a registration-time snapshot would miss.
+	api.GET("/users", func(ctx *credo.Context) error { return nil }).
+		Name("users.list").
+		SetMeta("permission", "users:read")
+
+	ri := findRouteInfo(t, app.Routes(), "GET", "/api/users")
+
+	if ri.Kind != credo.RouteKindRoute {
+		t.Errorf("Kind = %q, want %q", ri.Kind, credo.RouteKindRoute)
+	}
+	if ri.Name != "users.list" {
+		t.Errorf("Name = %q, want %q", ri.Name, "users.list")
+	}
+	if ri.Methods != nil {
+		t.Errorf("Methods = %v, want nil for a normal route", ri.Methods)
+	}
+	// Resolved meta: route-level, group-level, and app-level all visible.
+	if got := ri.Meta["permission"]; got != "users:read" {
+		t.Errorf("Meta[permission] = %v, want %q", got, "users:read")
+	}
+	if got := ri.Meta["group-flag"]; got != true {
+		t.Errorf("Meta[group-flag] = %v, want true", got)
+	}
+	if got := ri.Meta["scope"]; got != "app" {
+		t.Errorf("Meta[scope] = %v, want %q", got, "app")
+	}
+}
+
+func TestApp_Routes_UnnamedRouteWithoutMeta(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ping", func(ctx *credo.Context) error { return nil })
+
+	ri := findRouteInfo(t, app.Routes(), "GET", "/ping")
+	if ri.Name != "" {
+		t.Errorf("Name = %q, want empty", ri.Name)
+	}
+	if ri.Meta != nil {
+		t.Errorf("Meta = %v, want nil when no metadata is defined", ri.Meta)
+	}
+}
+
+func TestApp_Routes_MetaIsDefensiveCopy(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/x", func(ctx *credo.Context) error { return nil }).SetMeta("k", "v")
+
+	// Mutating the returned Meta map must not corrupt framework state.
+	ri := findRouteInfo(t, app.Routes(), "GET", "/x")
+	ri.Meta["injected"] = "bad"
+	delete(ri.Meta, "k")
+
+	ri2 := findRouteInfo(t, app.Routes(), "GET", "/x")
+	if ri2.Meta["k"] != "v" {
+		t.Errorf("delete on returned Meta leaked into framework state: %v", ri2.Meta)
+	}
+	if _, ok := ri2.Meta["injected"]; ok {
+		t.Errorf("insert on returned Meta leaked into framework state: %v", ri2.Meta)
+	}
+}
+
 func TestApp_GlobalMiddleware(t *testing.T) {
 	app := mustNew(t)
 	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {

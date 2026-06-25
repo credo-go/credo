@@ -35,20 +35,28 @@ func TestJoinPath(t *testing.T) {
 func TestRouteStore_UpsertDeduplicates(t *testing.T) {
 	rs := &routeStore{}
 
-	// Simulate auto-HEAD then explicit HEAD
-	rs.add(RouteInfo{Method: "HEAD", Pattern: "/users"})
-	rs.add(RouteInfo{Method: "HEAD", Pattern: "/users"})
+	// Simulate auto-HEAD then explicit HEAD: same method+pattern, so the later
+	// registration's handler must win and the entry must not duplicate.
+	auto := &routeHandler{route: &Route{method: "HEAD", pattern: "/users"}}
+	explicit := &routeHandler{route: &Route{method: "HEAD", pattern: "/users"}}
+	rs.add("HEAD", "/users", auto)
+	rs.add("HEAD", "/users", explicit)
 
-	routes := rs.snapshot()
+	entries := rs.snapshot()
 
-	headCount := 0
-	for _, ri := range routes {
-		if ri.Method == "HEAD" && ri.Pattern == "/users" {
-			headCount++
+	count := 0
+	var got *routeHandler
+	for _, e := range entries {
+		if e.method == "HEAD" && e.pattern == "/users" {
+			count++
+			got = e.rh
 		}
 	}
-	if headCount != 1 {
-		t.Errorf("HEAD /users count = %d, want 1", headCount)
+	if count != 1 {
+		t.Errorf("HEAD /users entry count = %d, want 1", count)
+	}
+	if got != explicit {
+		t.Error("upsert did not keep the later (explicit) routeHandler")
 	}
 }
 

@@ -4,6 +4,7 @@ package credo
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/credo-go/credo/internal/radix"
@@ -151,6 +152,48 @@ func (r *Route) LookupMeta(key string) (any, bool) {
 		return r.parent.lookupMeta(key)
 	}
 	return nil, false
+}
+
+// resolveAllMeta returns the route's fully resolved metadata, merging the
+// group parent chain (route → group → ... → root) the same way LookupMeta
+// resolves a single key: nearer scopes override farther ones, and the route's
+// own meta wins over every group. The returned map is freshly allocated and
+// owned by the caller.
+//
+// It returns nil when neither the route nor any ancestor group defines
+// metadata, mirroring the "nil if none" contract of [RouteInfo.Meta] — an
+// empty (but non-nil) map is never returned.
+//
+// For any key, the presence and value of resolveAllMeta()[key] match
+// LookupMeta(key): both walk the identical chain.
+func (r *Route) resolveAllMeta() map[string]any {
+	// Collect the group parent chain, nearest first.
+	var groups []*Group
+	for g := r.parent; g != nil; g = g.parent {
+		groups = append(groups, g)
+	}
+
+	var result map[string]any
+
+	// Merge farthest (root) → nearest group so nearer scopes override farther
+	// ones, then apply the route's own meta last so it wins over every group.
+	for i := len(groups) - 1; i >= 0; i-- {
+		if len(groups[i].meta) == 0 {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]any)
+		}
+		maps.Copy(result, groups[i].meta)
+	}
+	if len(r.meta) > 0 {
+		if result == nil {
+			result = make(map[string]any)
+		}
+		maps.Copy(result, r.meta)
+	}
+
+	return result
 }
 
 // BuildURI generates a URI from the route pattern by replacing named
