@@ -127,7 +127,11 @@ A mount answers both its exact prefix (`/admin`) and everything beneath it (`/ad
 app.Mount("/", legacyApp) // every path, "/" included, goes to legacyApp
 ```
 
-Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405. Mounted handlers run outside the per-route compiled chain, so only built-in and global middleware apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)). In introspection a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix, never its internal routes.
+Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405.
+
+Mounted handlers run outside the per-route compiled chain, so only built-in and global middleware apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).
+
+In introspection, a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix, never its internal routes.
 
 ---
 
