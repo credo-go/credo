@@ -110,6 +110,27 @@ Nested groups inherit parent middleware and meta.
 
 ---
 
+## Mounting
+
+Attach a plain `http.Handler` — a stdlib `ServeMux`, a legacy application, or any third-party handler — under a path prefix with `app.Mount()`. The mounted handler receives the request with the prefix stripped, so it routes against its own path space:
+
+```go
+admin := http.NewServeMux()
+admin.HandleFunc("/dashboard", dashboardHandler) // reached at /admin/dashboard
+
+app.Mount("/admin", admin)
+```
+
+A mount answers both its exact prefix (`/admin`) and everything beneath it (`/admin/...`). A root mount forwards the entire path space, including the bare `/`:
+
+```go
+app.Mount("/", legacyApp) // every path, "/" included, goes to legacyApp
+```
+
+Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405. Mounted handlers run outside the per-route compiled chain, so only built-in and global middleware apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)). In introspection a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix, never its internal routes.
+
+---
+
 ## Host-Based Routing
 
 `app.Host(pattern)` returns a normal `*Group`, but scoped to a host pattern.
