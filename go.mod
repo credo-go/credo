@@ -1,6 +1,8 @@
 module github.com/credo-go/credo
 
-go 1.26.0
+go 1.27
+
+toolchain go1.27rc1
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.5.0
