@@ -161,24 +161,24 @@ This is a type check on the cold path --- no extra reflection beyond what the co
 ```go
 // Provide registers a constructor for type T. The constructor's parameters
 // are resolved from the container automatically. Lifecycle: Singleton.
-func Provide[T any](app *App, constructor any) error
+func (app *App) Provide[T any](constructor any) error
 
 // MustProvide is like Provide but panics on error. Intended for use at
 // startup (Composition Root) where a failed registration is fatal.
-func MustProvide[T any](app *App, constructor any)
+func (app *App) MustProvide[T any](constructor any)
 
 // ProvideFactory registers a compile-time-checked factory for type T.
 // fn receives the App and resolves its own dependencies; T is inferred.
-func ProvideFactory[T any](app *App, fn func(*App) (T, error)) error
+func (app *App) ProvideFactory[T any](fn func(*App) (T, error)) error
 
 // MustProvideFactory is like ProvideFactory but panics on error.
-func MustProvideFactory[T any](app *App, fn func(*App) (T, error))
+func (app *App) MustProvideFactory[T any](fn func(*App) (T, error))
 
 // ProvideValue registers a pre-built value as a Singleton.
-func ProvideValue[T any](app *App, value T) error
+func (app *App) ProvideValue[T any](value T) error
 
 // MustProvideValue is like ProvideValue but panics on error.
-func MustProvideValue[T any](app *App, value T)
+func (app *App) MustProvideValue[T any](value T)
 ```
 
 The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
@@ -212,10 +212,10 @@ app.ProvideFactory(func(app *credo.App) (*UserService, error) {
 // Alias creates an alias so that Resolve[I] returns the instance registered
 // for concrete type T. I must be an interface, T must implement I, and T
 // must already be registered.
-func Alias[I, T any](app *App) error
+func (app *App) Alias[I, T any]() error
 
 // MustAlias is like Alias but panics on error.
-func MustAlias[I, T any](app *App)
+func (app *App) MustAlias[I, T any]()
 ```
 
 Alias enables resolving by interface without requiring the constructor to return the interface type:
@@ -245,10 +245,10 @@ Contract rules enforced by `Alias`:
 // BindMany adds concrete type T to the ordered collection for interface I.
 // I must be an interface, T must be registered already, T must be concrete,
 // and T must implement I.
-func BindMany[I, T any](app *App) error
+func (app *App) BindMany[I, T any]() error
 
 // MustBindMany is like BindMany but panics on error.
-func MustBindMany[I, T any](app *App)
+func (app *App) MustBindMany[I, T any]()
 ```
 
 `BindMany[I, T]` is collection wiring, not default resolution. It does not change `Resolve[I]`; it only affects `ResolveAll[I]` and constructor injection of `[]I`.
@@ -291,7 +291,7 @@ The container has three phases:
 //
 // app.Run() and app.RunContext() call Finalize implicitly. Explicit Finalize is
 // optional but recommended for fail-fast at startup.
-func Finalize(app *App) error
+func (app *App) Finalize() error
 ```
 
 ```go
@@ -325,19 +325,19 @@ Circular dependencies (A -> B -> A) are detected during Finalize and produce a c
 
 ```go
 // Resolve returns the instance of T, creating it if necessary.
-func Resolve[T any](app *App) (T, error)
+func (app *App) Resolve[T any]() (T, error)
 
 // MustResolve panics if T cannot be resolved. It is primarily intended for
 // bootstrap/composition-root code. Runtime use is supported, but Credo's
 // recommended application pattern is constructor injection.
-func MustResolve[T any](app *App) T
+func (app *App) MustResolve[T any]() T
 
 // ResolveAll returns all instances bound to interface I via BindMany,
 // preserving bind order. When no bindings exist, it returns []I{}.
-func ResolveAll[I any](app *App) ([]I, error)
+func (app *App) ResolveAll[I any]() ([]I, error)
 
 // MustResolveAll panics if the collection cannot be resolved.
-func MustResolveAll[I any](app *App) []I
+func (app *App) MustResolveAll[I any]() []I
 ```
 
 `Resolve` remains public after `Finalize()` and can be called at runtime. Credo intentionally keeps that low-level capability available, but does not make it part of the preferred request-time programming model. There is no `Context.Resolve` helper, and the recommended approach remains wiring dependencies through constructors during bootstrap.

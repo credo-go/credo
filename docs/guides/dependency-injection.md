@@ -45,11 +45,11 @@ Provide / ProvideValue / Alias / BindMany
 - `ProvideValue[T]`: register a pre-built singleton
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
-- `Finalize(app)`: freeze registrations and validate the dependency graph
+- `app.Finalize()`: freeze registrations and validate the dependency graph
 - `Resolve[T]`: retrieve a fully wired singleton
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
 
-`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit `Finalize(app)` is recommended so dependency errors fail fast during startup.
+`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit `app.Finalize()` is recommended so dependency errors fail fast during startup.
 
 ---
 
@@ -597,7 +597,7 @@ RawConfig should be unmarshaled into typed structs and registered with `ProvideV
 
 ### Skipping `Finalize`
 
-`Run()` will finalize implicitly, but explicit `Finalize(app)` gives earlier feedback and clearer startup failures.
+`Run()` will finalize implicitly, but explicit `app.Finalize()` gives earlier feedback and clearer startup failures.
 
 ### Overusing `Resolve`
 
@@ -618,7 +618,7 @@ For medium and large Credo applications, the default shape should be:
 3. register config with `ProvideValue`
 4. register concrete constructors with `Provide`
 5. connect single implementations with `Alias` and collections with `BindMany` when needed
-6. call `Finalize(app)`
+6. call `app.Finalize()`
 7. resolve top-level controllers/services needed for startup wiring
 8. start the app
 

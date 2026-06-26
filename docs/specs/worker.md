@@ -735,7 +735,7 @@ func enrichContext(
 ```
 app.Run()
   ├─ compile()
-  ├─ Finalize(app) — DI freeze
+  ├─ app.Finalize() — DI freeze
   ├─ net.Listen() — bind port
   ├─ OnStart hooks (FIFO):
   │   ├─ ... (store ping, other hooks)
