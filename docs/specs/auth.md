@@ -6,39 +6,40 @@
 
 ## Overview
 
-The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, it offers generic helper functions and an optional `Authenticator[T]` interface with a middleware factory.
+The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface and a middleware factory that populates them.
 
 **Design principles**:
 
 - Generic type parameter `T` — works with any user type
-- `context.WithValue` internally — stdlib compatible
-- Unexported key type — collision-proof
-- Zero cost when unused — no Context struct changes
+- Principal access is a `*credo.Context` method, not a `context.Context` helper — a first-class Context feature like `RequestID()`/`Route()`
+- Per-type unexported key — collision-proof, and multiple identities coexist per request
+- Zero cost when unused — no Context struct changes (the slot lives on the request's `context.Context`)
 
 ---
 
 ## API Surface
 
-### User Accessors (generic)
+### User Accessors (generic Context methods)
+
+The principal accessors are methods on `*credo.Context` (root package), not functions in `auth`:
 
 ```go
-package auth
+package credo
 
-// SetUser stores the authenticated user in the context.
-// Returns a new context.Context with the user value set.
-func SetUser[T any](ctx context.Context, user T) context.Context
+// SetUser stores the authenticated user on the request, keyed by type T.
+// T is inferred, so the blessed call is ctx.SetUser(user).
+func (c *Context) SetUser[T any](user T)
 
-// GetUser retrieves the authenticated user from the context.
-// Returns the user and true if found and type matches, zero value
-// and false otherwise.
-func GetUser[T any](ctx context.Context) (T, bool)
+// GetUser returns the user stored under type T and whether one was present.
+// The type argument is required: ctx.GetUser[*User]().
+func (c *Context) GetUser[T any]() (T, bool)
 
-// RequireUser retrieves the authenticated user from the context.
-// Returns ErrUserMissing when user is absent or type mismatches.
-func RequireUser[T any](ctx context.Context) (T, error)
+// RequireUser is GetUser plus a handler-ready error: ErrUnauthorized
+// wrapping ErrUserMissing when the user is absent.
+func (c *Context) RequireUser[T any]() (T, error)
 ```
 
-**Internal implementation**: Uses `context.WithValue` with an unexported generic `userKey[T] struct{}` type. The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own context slot — a JWT user and an API-key service account can coexist in one request. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter.
+**Internal implementation**: `SetUser` stores the user on the request's `context.Context` via `context.WithValue` with an unexported generic `userKey[T] struct{}` key (defined in the root package). The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The backing store is private; the only public access path is these methods (there is no `context.Context`-based accessor).
 
 ### Authenticator Interface (generic)
 
@@ -126,10 +127,8 @@ func MyAuthMiddleware(next credo.Handler) credo.Handler {
         if err != nil {
             return credo.ErrUnauthorized
         }
-        // Store user in request context
-        r := ctx.Request().Request
-        r = r.WithContext(auth.SetUser(r.Context(), user))
-        ctx.Request().Request = r
+        // Attach the authenticated user to the request.
+        ctx.SetUser(user)
         return next(ctx)
     }
 }
@@ -140,7 +139,7 @@ func MyAuthMiddleware(next credo.Handler) credo.Handler {
 ```go
 func CreateOrder(ctx *credo.Context) error {
     // Type-safe — generic parameter, no assertion needed
-    user, ok := auth.GetUser[*User](ctx.Context())
+    user, ok := ctx.GetUser[*User]()
     if !ok {
         return credo.ErrUnauthorized
     }
@@ -170,7 +169,7 @@ admin.GET("/users", listUsers).
 // RBAC middleware
 func RBACMiddleware(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
-        user, ok := auth.GetUser[*User](ctx.Context())
+        user, ok := ctx.GetUser[*User]()
         if !ok {
             return credo.ErrUnauthorized
         }
@@ -200,7 +199,7 @@ Some routes need the user if present but don't require it:
 ```go
 func ViewProduct(ctx *credo.Context) error {
     // User is optional — don't return error if missing
-    user, authenticated := auth.GetUser[*User](ctx.Context())
+    user, authenticated := ctx.GetUser[*User]()
 
     product := getProduct(ctx)
     if authenticated {
@@ -216,7 +215,6 @@ func ViewProduct(ctx *credo.Context) error {
 
 ```
 auth/
-├── auth.go          SetUser, GetUser, RequireUser, userKey
 ├── authenticator.go Authenticator[T] interface, ErrorFunc, Middleware[T]
 ├── basic.go         Basic Auth authenticator
 ├── apikey.go        API key authenticator
@@ -233,17 +231,17 @@ auth/
 
 1. **No built-in User field** — Progressive disclosure, zero cost, type safety via generics. See [ADR-012](../adr/012-authentication-and-authorization.md).
 
-2. **`context.WithValue` over `ctx.Set`** — Auth middleware may be stdlib-compatible (via `WrapStdMiddleware`). `context.WithValue` works across both Credo and stdlib boundaries. `ctx.Set` only works within Credo middleware.
+2. **`context.WithValue` backing, exposed as a Context method** — The user is stored on the request's `context.Context` (so it rides along with the request and survives `ctx.Context()` hand-offs), but the only public access is `ctx.SetUser`/`GetUser`. Principal is a first-class Context feature, not a `context.Context` helper; stdlib middleware adapted via `WrapStdMiddleware` is intentionally second-class here and cannot set or read it (see [ADR-010](../adr/010-middleware-architecture.md)).
 
-3. **Unexported generic key type** — `type userKey[T any] struct{}` prevents key collisions (no other package can accidentally overwrite the user) and gives each user type its own slot, so multiple authentication identities can coexist per request.
+3. **Unexported generic key type** — `type userKey[T any] struct{}` (root-private) prevents key collisions (no other package can read or overwrite the user) and gives each user type its own slot, so multiple authentication identities can coexist per request.
 
-4. **`Authenticator[T]` is optional** — The interface is a convenience, not a requirement. Users can write custom middleware and use `SetUser`/`GetUser` directly.
+4. **`Authenticator[T]` is optional** — The interface is a convenience, not a requirement. Users can write custom middleware and call `ctx.SetUser`/`ctx.GetUser` directly.
 
 5. **`ErrorFunc` callback** — Different apps need different error responses (JSON, redirect to login, custom headers). The callback provides this flexibility without subclassing. If callback returns `nil`, middleware falls back to default `ErrUnauthorized` behavior.
 
 6. **JWT key selection policy** — `SigningKeys` is selected by token `kid` when `kid` is present; unknown `kid` is rejected. If token has no `kid`, middleware falls back to `SigningKey` when configured.
 
-7. **Separate from `middleware/`** — Auth is a cross-cutting concern with its own types (Authenticator, ErrorFunc) and helpers (`SetUser`, `GetUser`, `RequireUser`). It deserves its own package rather than being scattered across `middleware/`.
+7. **Separate from `middleware/`** — Auth is a cross-cutting concern with its own types (Authenticator, ErrorFunc) and strategy implementations. It deserves its own package rather than being scattered across `middleware/`. (The principal accessors themselves live on the root Context, since the user slot is a Context primitive.)
 
 8. **`SecureCompare` helper** — Basic/API-key validators are user code, and the natural `==` comparison leaks timing information. The framework ships `SecureCompare(x, y string) bool` (hash-then-`subtle.ConstantTimeCompare`, masking both content and length) and the validator type godocs point to it. Password verification should instead use a dedicated password hash (bcrypt/argon2id); JWT signature comparison is already constant-time inside `golang-jwt`.
 

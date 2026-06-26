@@ -39,8 +39,9 @@ type Authenticator[T any] interface {
 type ErrorFunc func(err error, ctx *credo.Context) error
 
 // Middleware creates an credo.Middleware that authenticates requests
-// using the given Authenticator. If authentication succeeds, the user
-// is stored in the request context and accessible via GetUser[T].
+// using the given Authenticator. If authentication succeeds, the user is
+// stored on the request via ctx.SetUser and is then accessible to
+// downstream handlers via ctx.GetUser[T]().
 //
 // When authentication fails and onError is nil (or returns nil), the middleware returns
 // credo.ErrUnauthorized with the authenticator's error as Internal.
@@ -70,10 +71,8 @@ func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware {
 				return handleAuthError(err, ctx)
 			}
 
-			// Store user in request context.
-			r := ctx.Request().Request
-			rCtx := SetUser(r.Context(), user)
-			ctx.Request().Request = r.WithContext(rCtx)
+			// Attach the authenticated user to the request.
+			ctx.SetUser(user)
 
 			return next(ctx)
 		}

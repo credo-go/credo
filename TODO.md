@@ -260,16 +260,16 @@
 
 **Spec**: [`docs/specs/auth.md`](docs/specs/auth.md) **ADR**: [`docs/adr/012-authentication-and-authorization.md`](docs/adr/012-authentication-and-authorization.md) **Source**: Original (user accessors), Echo `middleware/` (MIT, implementations)
 
-**Auth User Accessors** (`auth/`):
+**Auth User Accessors** (root `*credo.Context`):
 
-- [x] `auth.SetUser[T](ctx, user)` — store user via `context.WithValue` (unexported key)
-- [x] `auth.GetUser[T](ctx)` — retrieve user with generic type safety
-- [x] `auth.RequireUser[T](ctx)` — retrieve or return `ErrUserMissing`
+- [x] `(*credo.Context).SetUser[T](user)` — store user on the request (root-private generic key); `ctx.SetUser(user)` blessed inference form
+- [x] `(*credo.Context).GetUser[T]()` — retrieve user with generic type safety
+- [x] `(*credo.Context).RequireUser[T]()` — retrieve or return `credo.ErrUnauthorized` wrapping `credo.ErrUserMissing`
 - [x] `Authenticator[T]` interface: `Authenticate(r *http.Request) (T, error)`
 - [x] `ErrorFunc` type for custom auth failure responses
-- [x] `auth.Middleware[T](authenticator, onError)` — middleware factory
+- [x] `auth.Middleware[T](authenticator, onError)` — middleware factory, calls `ctx.SetUser`
 - [x] `auth/doc.go`
-- [x] Tests (14 tests: set/get, type mismatch, nil, middleware factory, integration)
+- [x] Tests: accessor unit tests (root `user_test.go`) + middleware factory + integration
 
 **Auth Implementations** (`auth/`):
 
@@ -547,7 +547,7 @@
   - [ ] Detect duplicate route patterns / conflicting registrations
   - [ ] Warn on routes without any middleware (optional strict mode)
   - [ ] **Param conflict detection**: same segment with different param names or regexes (e.g., `/{id:[0-9]+}` vs `/{name:[a-z]+}`) — warn or error at registration time
-  - [ ] **Duplicate route warning**: `setEndpoint` currently overwrites silently — strict mode should error, lenient mode should log warning
+  - [ ] **Duplicate route diagnostics**: radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. Decide whether any lenient/debug warning mode is still wanted.
 
 ### Performance Budgets
 
@@ -559,6 +559,7 @@
 
 - [x] **Mount introspection**: mounts now appear as a single clean `RouteKindMount` entry in `Routes()`/`WalkRoutes` (cleaned prefix + sorted forwarded method set); internal catch-all/fan-out hidden. Shipped with route introspection v2 (`RouteInfo` gained `Name`/`Meta`/`Methods`/`Kind`/`AutoHead`, deterministic total-order output)
 - [x] **Document middleware ordering**: group middleware is collected at compile time from the group parent chain — registration order affects execution order only, never membership (semantics changed 2026-06-11 from registration-time capture; documented in `doc.go`, the middleware spec, and the guide)
+- [ ] **Mount registration atomicity**: preflight or rollback `Mount`'s exact + catch-all method fan-out so a duplicate exact route panic cannot leave partial radix/store entries when callers recover and reuse the same `App`. Add regression test for pre-existing exact route + overlapping `Mount`.
 
 ### Deferred Features (from specs/ADRs)
 

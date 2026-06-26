@@ -67,7 +67,7 @@ func (c DatabaseConfig) DSN() string {
 // Domain types
 // ---------------------------------------------------------------------------
 
-// User represents an authenticated user (stored in context via auth.SetUser).
+// User represents an authenticated user (attached to the request via ctx.SetUser).
 type User struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
@@ -196,7 +196,7 @@ func loginHandler(ctx *credo.Context) error {
 }
 
 func meHandler(ctx *credo.Context) error {
-	user, ok := auth.GetUser[User](ctx.Context())
+	user, ok := ctx.GetUser[User]()
 	if !ok {
 		return credo.ErrUnauthorized
 	}
@@ -230,7 +230,7 @@ func listTenantsHandler(svc *TenantService) credo.Handler {
 }
 
 func adminDashboardHandler(ctx *credo.Context) error {
-	user, _ := auth.GetUser[User](ctx.Context())
+	user, _ := ctx.GetUser[User]()
 	return ctx.Response().JSON(http.StatusOK, map[string]any{
 		"message": "Welcome to the admin dashboard",
 		"user":    user,
@@ -246,7 +246,7 @@ func adminDashboardHandler(ctx *credo.Context) error {
 func requireRole(role string) credo.Middleware {
 	return func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			user, ok := auth.GetUser[User](ctx.Context())
+			user, ok := ctx.GetUser[User]()
 			if !ok {
 				return credo.ErrUnauthorized
 			}

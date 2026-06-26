@@ -27,131 +27,6 @@ func (m *mockAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
 	return m.user, m.err
 }
 
-// --- SetUser / GetUser tests ---
-
-func TestSetUser_GetUser_Success(t *testing.T) {
-	ctx := t.Context()
-	user := &testUser{ID: 1, Name: "alice"}
-
-	ctx = auth.SetUser(ctx, user)
-	got, ok := auth.GetUser[*testUser](ctx)
-
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.ID != 1 || got.Name != "alice" {
-		t.Errorf("got %+v, want {ID:1, Name:alice}", got)
-	}
-}
-
-func TestGetUser_NotSet(t *testing.T) {
-	ctx := t.Context()
-
-	got, ok := auth.GetUser[*testUser](ctx)
-	if ok {
-		t.Error("expected ok=false when no user set")
-	}
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
-	}
-}
-
-func TestGetUser_TypeMismatch(t *testing.T) {
-	ctx := t.Context()
-	ctx = auth.SetUser(ctx, "string-user")
-
-	got, ok := auth.GetUser[*testUser](ctx)
-	if ok {
-		t.Error("expected ok=false for type mismatch")
-	}
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
-	}
-}
-
-func TestSetUser_NilPointer(t *testing.T) {
-	ctx := t.Context()
-	ctx = auth.SetUser[*testUser](ctx, nil)
-
-	got, ok := auth.GetUser[*testUser](ctx)
-	if !ok {
-		t.Fatal("expected ok=true for nil pointer")
-	}
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
-	}
-}
-
-func TestSetUser_DistinctTypesCoexist(t *testing.T) {
-	type serviceAccount struct{ Name string }
-
-	ctx := t.Context()
-	ctx = auth.SetUser(ctx, &testUser{ID: 1, Name: "alice"})
-	ctx = auth.SetUser(ctx, &serviceAccount{Name: "ci-bot"})
-
-	u, ok := auth.GetUser[*testUser](ctx)
-	if !ok || u.Name != "alice" {
-		t.Errorf("user slot = (%+v, %v), want alice", u, ok)
-	}
-	sa, ok := auth.GetUser[*serviceAccount](ctx)
-	if !ok || sa.Name != "ci-bot" {
-		t.Errorf("service account slot = (%+v, %v), want ci-bot", sa, ok)
-	}
-}
-
-func TestSetUser_StructValue(t *testing.T) {
-	ctx := t.Context()
-	user := testUser{ID: 42, Name: "bob"}
-
-	ctx = auth.SetUser(ctx, user)
-	got, ok := auth.GetUser[testUser](ctx)
-
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.ID != 42 || got.Name != "bob" {
-		t.Errorf("got %+v, want {ID:42, Name:bob}", got)
-	}
-}
-
-func TestRequireUser_Success(t *testing.T) {
-	ctx := t.Context()
-	user := &testUser{ID: 1, Name: "alice"}
-	ctx = auth.SetUser(ctx, user)
-
-	got, err := auth.RequireUser[*testUser](ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.ID != 1 || got.Name != "alice" {
-		t.Errorf("got %+v, want {ID:1, Name:alice}", got)
-	}
-}
-
-func TestRequireUser_NotSet(t *testing.T) {
-	ctx := t.Context()
-
-	got, err := auth.RequireUser[*testUser](ctx)
-	if !errors.Is(err, auth.ErrUserMissing) {
-		t.Fatalf("expected ErrUserMissing, got %v", err)
-	}
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
-	}
-}
-
-func TestRequireUser_TypeMismatch(t *testing.T) {
-	ctx := auth.SetUser(t.Context(), "string-user")
-
-	got, err := auth.RequireUser[*testUser](ctx)
-	if !errors.Is(err, auth.ErrUserMissing) {
-		t.Fatalf("expected ErrUserMissing, got %v", err)
-	}
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
-	}
-}
-
 // --- Middleware tests ---
 
 func TestMiddleware_AuthSuccess(t *testing.T) {
@@ -161,7 +36,7 @@ func TestMiddleware_AuthSuccess(t *testing.T) {
 	var captured *testUser
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
+		u, ok := ctx.GetUser[*testUser]()
 		if !ok {
 			t.Error("expected user in context")
 		}
@@ -307,7 +182,7 @@ func TestMiddleware_UserAccessibleInHandler(t *testing.T) {
 
 	app := mustNew(t)
 	app.GET("/profile", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
+		u, ok := ctx.GetUser[*testUser]()
 		if !ok {
 			t.Fatal("expected user in handler context")
 		}
@@ -336,7 +211,7 @@ func TestMiddleware_IntegrationWithApp(t *testing.T) {
 	g := app.Group("/api")
 	g.Middleware(auth.Middleware[*testUser](authenticator, nil))
 	g.GET("/me", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Request().Context())
+		u, ok := ctx.GetUser[*testUser]()
 		if !ok {
 			return credo.ErrUnauthorized
 		}
@@ -354,16 +229,16 @@ func TestMiddleware_IntegrationWithApp(t *testing.T) {
 
 // --- Edge case tests ---
 
-func TestGetUser_ViaContext(t *testing.T) {
-	// Verify GetUser works through the ctx.Context() accessor — the
-	// blessed path for handing the request's context.Context to auth.
+func TestMiddleware_PrincipalViaContextMethod(t *testing.T) {
+	// Verify the user stored by auth.Middleware is readable in the handler
+	// through the ctx.GetUser method — the only public principal accessor.
 	user := &testUser{ID: 5, Name: "dave"}
 
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
-		u, ok := auth.GetUser[*testUser](ctx.Context())
+		u, ok := ctx.GetUser[*testUser]()
 		if !ok {
-			t.Error("expected user via ctx.Context()")
+			t.Error("expected user via ctx.GetUser")
 		}
 		if u.ID != 5 {
 			t.Errorf("got ID=%d, want 5", u.ID)

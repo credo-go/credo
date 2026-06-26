@@ -10,14 +10,16 @@ Embedding a `User` field into Context forces all applications to use the same us
 
 ## Decision
 
-### Generic User Accessors
+### Generic User Accessors on Context
 
-The `auth` package provides generic context-based user accessors:
+The authenticated principal is accessed through generic `*credo.Context`
+methods — a first-class part of the Context model, alongside `RequestID()`,
+`Route()`, and `Logger()`:
 
 ```go
-auth.SetUser[T](ctx, user)        // store user in context
-auth.GetUser[T](ctx) (T, bool)    // retrieve user from context
-auth.RequireUser[T](ctx) (T, error) // retrieve or return ErrUserMissing
+ctx.SetUser(user)                  // store user (T inferred — blessed form)
+ctx.GetUser[T]() (T, bool)         // retrieve user (explicit [T] required)
+ctx.RequireUser[T]() (T, error)    // retrieve or return ErrUnauthorized/ErrUserMissing
 ```
 
 These work with any user type — the application defines what a "user" is:
@@ -29,31 +31,34 @@ type User struct {
     Roles []string
 }
 
-// In auth middleware
-reqCtx := auth.SetUser[User](r.Context(), authenticatedUser)
-r = r.WithContext(reqCtx)
+// In auth middleware (auth.Middleware calls this for you)
+ctx.SetUser(authenticatedUser)
 
 // In handler
-user, ok := auth.GetUser[User](ctx.Context())
+user, ok := ctx.GetUser[User]()
 ```
+
+The `auth` package keeps the authentication *strategy* (`Authenticator[T]`,
+`Middleware[T]`, `ErrorFunc`); only the typed user slot — the primitive — lives
+on the root Context. The dependency direction is `auth → root` (no cycle).
 
 ### No Built-in User Type on Context
 
-Context has no `User` field or `User()` method. User access is always through the `auth` package. This avoids:
+Context has no concrete `User` field or `User()` method — only the generic `SetUser`/`GetUser`/`RequireUser` methods. This avoids:
 
 - Forcing a specific user model on all applications
 - `any` type assertions (`ctx.User().(MyUser)`)
-- Import cycles between root package and auth implementations
+- Coupling the root package to any concrete auth implementation
 
-### Context Key
+### Backing Store
 
-User is stored using `context.WithValue` with a package-private `struct{}` key — allocation-free and collision-proof:
+`SetUser` stores the user on the request's `context.Context` using a root-private, generic key — allocation-free and collision-proof. The type parameter gives every user type its own slot, so distinct principals (a JWT end-user and an API-key service account) coexist in one request:
 
 ```go
-type userKey struct{}
+type userKey[T any] struct{}
 ```
 
-The accessors accept `context.Context`, not `*credo.Context`. Credo handlers pass `ctx.Context()` explicitly; `*credo.Context` deliberately does not implement `context.Context` because it is pooled and reused across requests (ADR-008).
+The backing store is an implementation detail: the only public access path is the Context methods. There is deliberately no `context.Context`-based accessor (no `credo.UserFrom`, no `auth.GetUser(ctx)`) — the principal is an HTTP-boundary feature reached through `*credo.Context`, not a value propagated down the `context.Context` chain (contrast `store.GetTx`, which is).
 
 ### Authenticator Interface
 
@@ -74,7 +79,7 @@ auth.Middleware[T](authenticator, onError) credo.Middleware
 Creates middleware that:
 
 1. Calls `authenticator.Authenticate(r)`
-2. On success: stores user via `auth.SetUser[T]` in request context
+2. On success: stores the user via `ctx.SetUser` on the request
 3. On failure: calls `onError` (or defaults to 401 Unauthorized)
 
 ```go
@@ -96,7 +101,7 @@ func RBAC(next credo.Handler) credo.Handler {
         if perm == "" {
             return next(ctx) // no permission required
         }
-        user, err := auth.RequireUser[User](ctx.Context())
+        user, err := ctx.RequireUser[User]()
         if err != nil {
             return credo.ErrUnauthorized
         }
@@ -113,8 +118,8 @@ func RBAC(next credo.Handler) credo.Handler {
 | Decision | Rationale |
 | --- | --- |
 | Generic accessors, not Context field | Works with any user type, no forced model |
-| `context.Context` param, not `*credo.Context` | Works outside Credo handlers; Credo handlers pass `ctx.Context()` |
-| `struct{}` context key | Allocation-free, collision-proof |
+| `*credo.Context` methods, not a `context.Context` helper | Principal is an HTTP-boundary feature, like `RequestID()`/`Route()`; no `xFromContext` ceremony |
+| Per-type generic `userKey[T]` | Allocation-free, collision-proof, multiple identities coexist |
 | RBAC via Route Meta | Declarative, no separate system, inherits via `LookupMeta` |
 | Default 401 on auth failure | `ErrUnauthorized.WithInternal(err)` — safe, logged |
 
@@ -126,10 +131,10 @@ func RBAC(next credo.Handler) credo.Handler {
 - Type-safe via generics — no `any` assertions
 - RBAC via existing Meta system — no new concepts
 - Middleware factory is reusable across auth strategies (JWT, API key, etc.)
-- `context.Context` param enables use outside Credo handlers
+- Principal access is a first-class Context method — no `ctx.Context()` ceremony
 
 **Negative:**
 
 - Callers must handle `ErrUserMissing` when auth middleware did not run or the user type mismatches
-- Single user type per context — applications with multiple simultaneous user identities must define separate context keys
+- The principal is reachable only where a `*credo.Context` exists (handlers, Credo middleware); stdlib middleware adapted via `WrapStdMiddleware` cannot read or set it
 - RBAC is string-based (`"permission"` key) — no compile-time permission checking

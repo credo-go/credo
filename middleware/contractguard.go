@@ -67,7 +67,7 @@ type ContractConfig struct {
 	// ScopeChecker enforces the MetaScope contract. It receives the request
 	// context and a single required scope and reports whether the request
 	// satisfies it. Because authenticated users are stored generically
-	// (auth.GetUser[T]), the framework cannot inspect scopes on its own —
+	// (ctx.GetUser[T]), the framework cannot inspect scopes on its own —
 	// supply this to bridge to your auth model. When nil, any route that
 	// declares a scope contract is rejected with 403.
 	ScopeChecker func(ctx *credo.Context, requiredScope string) bool

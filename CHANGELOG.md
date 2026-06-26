@@ -24,6 +24,7 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 ### Removed
 
 - **BREAKING — `App.RunTLS` and `App.RunTLSContext` are removed.** TLS is now server configuration rather than a serve-method variant. Migrate by configuring TLS at construction and calling the plain entry points: `app.RunTLS(cert, key)` → `credo.New(credo.WithTLSFiles(cert, key))` then `app.Run()`; `app.RunTLSContext(ctx, cert, key)` → `WithTLSFiles` then `app.RunContext(ctx)`. For full `crypto/tls` control use `WithTLSConfig`. See [ADR-006](docs/adr/006-application-lifecycle.md).
+- **BREAKING — `auth.SetUser` / `auth.GetUser` / `auth.RequireUser` are removed.** The authenticated principal is now reached through generic `*credo.Context` methods instead of `context.Context` helpers: `ctx.SetUser(user)` (T inferred), `ctx.GetUser[T]()`, and `ctx.RequireUser[T]()` (returns `credo.ErrUnauthorized` wrapping the new `credo.ErrUserMissing`). `auth.Middleware` is unchanged at the call site — it now stores the user via `ctx.SetUser`. Migrate handler reads: `auth.GetUser[T](ctx.Context())` → `ctx.GetUser[T]()`. See [ADR-012](docs/adr/012-authentication-and-authorization.md).
 
 ### Fixed
 

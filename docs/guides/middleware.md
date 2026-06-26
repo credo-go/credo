@@ -702,7 +702,7 @@ func RequirePermission(next credo.Handler) credo.Handler {
             return next(ctx)
         }
 
-        user, ok := auth.GetUser[*User](ctx.Context())
+        user, ok := ctx.GetUser[*User]()
         if !ok || user == nil || !user.HasPermission(perm.(string)) {
             return credo.ErrForbidden
         }
@@ -760,12 +760,12 @@ Register ContractGuard at the **group or route level**, not via `app.GlobalMiddl
 
 `MetaMaxBody` complements the global body limit (`WithMaxBodyBytes`) as defense in depth: the global cap protects every route, while the per-route contract can tighten (or, with a negative value, lift) it for a specific endpoint.
 
-Because authenticated users are stored generically (`auth.GetUser[T]`), ContractGuard cannot inspect scopes on its own. Supply a `ScopeChecker` to bridge to your auth model; a route that declares `MetaScope` without a configured checker is denied (a declared scope is never silently bypassed). Use `CustomChecks` for contracts beyond the built-ins:
+Because authenticated users are stored generically (`ctx.GetUser[T]`), ContractGuard cannot inspect scopes on its own. Supply a `ScopeChecker` to bridge to your auth model; a route that declares `MetaScope` without a configured checker is denied (a declared scope is never silently bypassed). Use `CustomChecks` for contracts beyond the built-ins:
 
 ```go
 api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
     ScopeChecker: func(ctx *credo.Context, scope string) bool {
-        u, ok := auth.GetUser[*User](ctx.Context())
+        u, ok := ctx.GetUser[*User]()
         return ok && u.HasScope(scope)
     },
     CustomChecks: []func(*credo.Context) error{

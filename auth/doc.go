@@ -1,19 +1,20 @@
 // Package auth provides authentication infrastructure for Credo applications.
 //
-// Instead of a built-in User field on Context, this package offers generic
-// helper functions and an optional Authenticator[T] interface with a
-// middleware factory. See ADR-012 for the design rationale.
+// Instead of a built-in User field on Context, Credo exposes the
+// authenticated principal through generic *credo.Context methods, and this
+// package provides the Authenticator[T] strategy interface and a middleware
+// factory that populates it. See ADR-012 for the design rationale.
 //
 // # User Accessors
 //
-// Store and retrieve the authenticated user with compile-time type safety:
+// The authenticated user is attached and read through Context methods, with
+// compile-time type safety:
 //
-//	// In middleware
-//	reqCtx := auth.SetUser(r.Context(), myUser)
-//	r = r.WithContext(reqCtx)
+//	// In middleware (auth.Middleware calls SetUser for you)
+//	ctx.SetUser(myUser)
 //
-//	// In Credo handler
-//	user, err := auth.RequireUser[*MyUser](ctx.Context())
+//	// In a Credo handler
+//	user, err := ctx.RequireUser[*MyUser]()
 //	if err != nil { ... }
 //
 // # Authenticator Interface
