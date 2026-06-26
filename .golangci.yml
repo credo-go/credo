@@ -17,10 +17,18 @@ linters:
     - ineffassign
     - misspell
     - nilerr
-    - staticcheck
     - unconvert
-    - unused
     - whitespace
+    # staticcheck and unused are temporarily disabled on the Go 1.27 release
+    # candidate: their shared honnef.co/go/tools IR builder (bundled in
+    # golangci-lint v2.12.2 as v0.7.0) panics while building IR for the go1.27rc1
+    # standard library — "buildir: unexpected expr: *ast.KeyValueExpr" on
+    # internal/poll. install-mode: goinstall rebuilds the linter frontend against
+    # 1.27, but cannot patch staticcheck's own IR construction. The framework code
+    # itself is clean under `go vet` on go1.27rc1. Re-enable once golangci-lint
+    # ships a staticcheck release that supports Go 1.27 (expected around 1.27 GA).
+    # - staticcheck
+    # - unused
   settings:
     gosec:
       excludes:
