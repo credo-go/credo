@@ -1,6 +1,7 @@
 package radix
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -267,11 +268,34 @@ func TestInsertRoute_Error(t *testing.T) {
 func TestInsertRoute_DuplicateMethodPattern(t *testing.T) {
 	tree := newTree()
 
-	if _, err := tree.InsertRoute(MGet, "/users", dummyValue); err != nil {
+	if _, err := tree.InsertRoute(MGet, "/users", "first"); err != nil {
 		t.Fatalf("InsertRoute first: %v", err)
 	}
-	if _, err := tree.InsertRoute(MGet, "/users", dummyValue); err == nil {
+
+	// A duplicate explicit registration must return a typed *DuplicateRouteError
+	// (the mechanism layer), not panic — the framework policy layer (mux) turns
+	// it into a fail-loud, two-location panic. The error must carry the prior
+	// payload so that policy layer can name the original registration site.
+	_, err := tree.InsertRoute(MGet, "/users", "second")
+	if err == nil {
 		t.Fatal("expected duplicate route error")
+	}
+
+	dup, ok := errors.AsType[*DuplicateRouteError[string]](err)
+	if !ok {
+		t.Fatalf("error = %T (%v), want *DuplicateRouteError[string]", err, err)
+	}
+	if dup.Method != MGet {
+		t.Errorf("Method = %v, want MGet", dup.Method)
+	}
+	if dup.Pattern != "/users" {
+		t.Errorf("Pattern = %q, want %q", dup.Pattern, "/users")
+	}
+	if dup.ExistingPattern != "/users" {
+		t.Errorf("ExistingPattern = %q, want %q", dup.ExistingPattern, "/users")
+	}
+	if dup.Existing != "first" {
+		t.Errorf("Existing = %q, want the prior payload %q", dup.Existing, "first")
 	}
 }
 
