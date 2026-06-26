@@ -76,7 +76,7 @@ func TestRegister_Success(t *testing.T) {
 	}
 
 	// Verify the value is in DI.
-	resolved, err := credo.Resolve[*testDB](app)
+	resolved, err := app.Resolve[*testDB]()
 	if err != nil {
 		t.Fatalf("Resolve() = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestRegister_Success(t *testing.T) {
 	}
 
 	// Verify the registry is in DI.
-	reg, err := credo.Resolve[*store.Registry](app)
+	reg, err := app.Resolve[*store.Registry]()
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
 	}
@@ -115,7 +115,7 @@ func TestRegister_PingFailure_Cleanup(t *testing.T) {
 	}
 
 	// Value should NOT be in DI.
-	_, resolveErr := credo.Resolve[*testDB](app)
+	_, resolveErr := app.Resolve[*testDB]()
 	if resolveErr == nil {
 		t.Error("value should not be in DI after failed registration")
 	}
@@ -153,7 +153,7 @@ func TestRegister_WithName(t *testing.T) {
 		t.Fatalf("Register() = %v", err)
 	}
 
-	reg, _ := credo.Resolve[*store.Registry](app)
+	reg, _ := app.Resolve[*store.Registry]()
 	health := reg.HealthAll(context.Background())
 	if _, ok := health["custom-db"]; !ok {
 		t.Error("HealthAll should contain entry with custom name")
@@ -195,7 +195,7 @@ func TestRegister_WithLifecycle(t *testing.T) {
 		t.Fatalf("Register() = %v", err)
 	}
 
-	resolved, err := credo.Resolve[*wrapperDB](app)
+	resolved, err := app.Resolve[*wrapperDB]()
 	if err != nil {
 		t.Fatalf("Resolve() = %v", err)
 	}

@@ -11,7 +11,7 @@ package di
 // Resolve is allowed both before and after Seal. Before Seal,
 // Resolve works during bootstrap (e.g. ensureRegistry pattern).
 // After a failed Seal, Resolve returns the seal error.
-// app.Run() calls Seal implicitly via credo.Finalize.
+// app.Run() calls Seal implicitly via credo.App.Finalize.
 func (c *Container) Seal() error {
 	c.sealOnce.Do(c.doSeal)
 	c.mu.RLock()

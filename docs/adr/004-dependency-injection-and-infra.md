@@ -27,8 +27,8 @@ An embeddable `Base` struct auto-populated via reflection (similar to Spring's `
 The DI container implementation lives in the `internal/di` package. Type-safe generic functions are exposed through the root package:
 
 ```go
-credo.Provide[T](app, constructor)  // Register
-credo.Resolve[T](app)               // Resolve
+app.Provide[T](constructor)  // Register
+app.Resolve[T]()               // Resolve
 ```
 
 The container is a Credo-specific component — it is not intended for standalone use as an independent DI library. For this reason, `internal/di` is preferred over a public `container/` package.
@@ -41,8 +41,8 @@ The container is a Credo-specific component — it is not intended for standalon
 Interface alias via `Alias[I, T]()` creates an alias so `Resolve[I]` returns T's singleton. Contract: I is an interface, T implements I, and T is already registered via `Provide`.
 
 ```go
-credo.Provide[*UserRepo](app, NewUserRepo)
-credo.Alias[UserRepository, *UserRepo](app)  // Resolve[UserRepository] returns *UserRepo
+app.Provide[*UserRepo](NewUserRepo)
+app.Alias[UserRepository, *UserRepo]()  // Resolve[UserRepository] returns *UserRepo
 ```
 
 ### Ordered Interface Collections
@@ -52,13 +52,13 @@ Some application components need an ordered set of implementations rather than o
 Credo supports this via `BindMany[I, T]()` and `ResolveAll[I]()`:
 
 ```go
-credo.Provide[*EmailSender](app, NewEmailSender)
-credo.Provide[*InAppSender](app, NewInAppSender)
+app.Provide[*EmailSender](NewEmailSender)
+app.Provide[*InAppSender](NewInAppSender)
 
-credo.BindMany[Sender, *EmailSender](app)
-credo.BindMany[Sender, *InAppSender](app)
+app.BindMany[Sender, *EmailSender]()
+app.BindMany[Sender, *InAppSender]()
 
-senders := credo.MustResolveAll[Sender](app)
+senders := app.MustResolveAll[Sender]()
 ```
 
 The same ordered collection is also injectable via constructor parameters of type `[]I`:
@@ -80,7 +80,7 @@ Rules:
 
 ### Finalize Phase
 
-`credo.Finalize(app)` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunContext()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
+`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunContext()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
 
 ### credo.Infra: Explicit Infrastructure Carrier
 

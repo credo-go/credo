@@ -21,9 +21,9 @@ func newModel1Service(infra credo.Infra) *model1Service {
 
 func TestInfra_Model1_Injection(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*model1Service](app, newModel1Service)
+	app.MustProvide[*model1Service](newModel1Service)
 
-	svc, err := credo.Resolve[*model1Service](app)
+	svc, err := app.Resolve[*model1Service]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -44,8 +44,8 @@ func TestInfra_Model1_LoggerScoping(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	credo.MustProvide[*model1Service](app, newModel1Service)
-	svc := credo.MustResolve[*model1Service](app)
+	app.MustProvide[*model1Service](newModel1Service)
+	svc := app.MustResolve[*model1Service]()
 
 	svc.Infra.Logger.Info("test message")
 	output := buf.String()
@@ -67,10 +67,10 @@ func newModel1WithDep(infra credo.Infra, s *diSimpleService) *model1WithDep {
 
 func TestInfra_Model1_WithOtherDeps(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
-	credo.MustProvide[*model1WithDep](app, newModel1WithDep)
+	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.MustProvide[*model1WithDep](newModel1WithDep)
 
-	svc, err := credo.Resolve[*model1WithDep](app)
+	svc, err := app.Resolve[*model1WithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -89,10 +89,10 @@ func TestInfra_Model1_WithOtherDeps(t *testing.T) {
 
 func TestInfra_PureConstructor_StillWorks(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
-	credo.MustProvide[*diServiceWithDep](app, newDIServiceWithDep)
+	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
 
-	svc, err := credo.Resolve[*diServiceWithDep](app)
+	svc, err := app.Resolve[*diServiceWithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -105,9 +105,9 @@ func TestInfra_PureConstructor_StillWorks(t *testing.T) {
 
 func TestInfra_DefaultLoggerFallback(t *testing.T) {
 	app := mustNew(t) // no WithLogger
-	credo.MustProvide[*model1Service](app, newModel1Service)
+	app.MustProvide[*model1Service](newModel1Service)
 
-	svc := credo.MustResolve[*model1Service](app)
+	svc := app.MustResolve[*model1Service]()
 
 	// Logger should fall back to the framework default logger (non-nil).
 	if svc.Infra.Logger == nil {
@@ -153,9 +153,9 @@ func TestApp_NewInfra_NilSafety(t *testing.T) {
 
 func TestInfra_Finalize_Model1_Valid(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*model1Service](app, newModel1Service)
+	app.MustProvide[*model1Service](newModel1Service)
 
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize should pass for Model 1: %v", err)
 	}
 }

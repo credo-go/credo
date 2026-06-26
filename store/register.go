@@ -70,7 +70,7 @@ func WithLifecycle(lc Lifecycle) RegisterOption {
 //  2. Ping — verify connection is alive (fail-fast at startup)
 //  3. Ensure Registry — resolve or create Registry in DI
 //  4. Track — add Lifecycle handle to Registry for ping/health aggregation
-//  5. DI register — register value as type R via credo.ProvideValue
+//  5. DI register — register value as type R via [credo.App.ProvideValue]
 //
 // Shutdown ownership: closing is the DI container's job alone. A value
 // that implements [credo.Shutdowner] (every Lifecycle does) is closed by
@@ -200,7 +200,7 @@ func trackLifecycle(app *credo.App, plan registerPlan) (func() error, error) {
 }
 
 func publishValue[R any](app *credo.App, name string, value R, rollbackTrack func() error) error {
-	if err := credo.ProvideValue[R](app, value); err != nil {
+	if err := app.ProvideValue[R](value); err != nil {
 		mainErr := fmt.Errorf("store: register %q: %w", name, err)
 		if rollbackTrack != nil {
 			if rollbackErr := rollbackTrack(); rollbackErr != nil {
@@ -234,7 +234,7 @@ func wireStoreHealth(app *credo.App, reg *Registry) error {
 	})
 	// The readiness handler resolves this lazily on each check; providing it
 	// here (instead of pushing into the app) keeps the wiring module-internal.
-	if err := credo.ProvideValue[internalhealth.StoreFunc](app, fn); err != nil {
+	if err := app.ProvideValue[internalhealth.StoreFunc](fn); err != nil {
 		return fmt.Errorf("store: wire health reporting: %w", err)
 	}
 	return nil
@@ -246,16 +246,16 @@ func wireStoreHealth(app *credo.App, reg *Registry) error {
 // The Registry has no Shutdown method, so the container's shutdown pass
 // skips it — closing tracked connections is not its job.
 func ensureRegistry(app *credo.App) (*Registry, error) {
-	reg, err := credo.Resolve[*Registry](app)
+	reg, err := app.Resolve[*Registry]()
 	if err == nil {
 		return reg, nil
 	}
 
 	// First store connection — create and register the registry.
 	reg = &Registry{}
-	if err := credo.ProvideValue[*Registry](app, reg); err != nil {
+	if err := app.ProvideValue[*Registry](reg); err != nil {
 		// Race: another goroutine may have registered between our Resolve and ProvideValue.
-		resolved, resolveErr := credo.Resolve[*Registry](app)
+		resolved, resolveErr := app.Resolve[*Registry]()
 		if resolveErr == nil {
 			return resolved, nil
 		}

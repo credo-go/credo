@@ -31,11 +31,11 @@ func newDIServiceWithDep(s *diSimpleService) *diServiceWithDep {
 
 func TestProvide_Resolve(t *testing.T) {
 	app := mustNew(t)
-	if err := credo.Provide[*diSimpleService](app, newDISimpleService); err != nil {
+	if err := app.Provide[*diSimpleService](newDISimpleService); err != nil {
 		t.Fatalf("Provide: %v", err)
 	}
 
-	svc, err := credo.Resolve[*diSimpleService](app)
+	svc, err := app.Resolve[*diSimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -46,9 +46,9 @@ func TestProvide_Resolve(t *testing.T) {
 
 func TestMustProvide_MustResolve(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
+	app.MustProvide[*diSimpleService](newDISimpleService)
 
-	svc := credo.MustResolve[*diSimpleService](app)
+	svc := app.MustResolve[*diSimpleService]()
 	if svc.Value != "hello" {
 		t.Errorf("Value = %q, want %q", svc.Value, "hello")
 	}
@@ -57,11 +57,11 @@ func TestMustProvide_MustResolve(t *testing.T) {
 func TestProvideValue_Resolve(t *testing.T) {
 	app := mustNew(t)
 	original := &diSimpleService{Value: "pre-built"}
-	if err := credo.ProvideValue[*diSimpleService](app, original); err != nil {
+	if err := app.ProvideValue[*diSimpleService](original); err != nil {
 		t.Fatalf("ProvideValue: %v", err)
 	}
 
-	svc, err := credo.Resolve[*diSimpleService](app)
+	svc, err := app.Resolve[*diSimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -72,11 +72,11 @@ func TestProvideValue_Resolve(t *testing.T) {
 
 func TestProvideFactory_Resolve(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
+	app.MustProvide[*diSimpleService](newDISimpleService)
 
 	// T is inferred from fn's signature — the compiler checks the whole chain.
-	err := credo.ProvideFactory(app, func(app *credo.App) (*diServiceWithDep, error) {
-		simple, err := credo.Resolve[*diSimpleService](app)
+	err := app.ProvideFactory(func(app *credo.App) (*diServiceWithDep, error) {
+		simple, err := app.Resolve[*diSimpleService]()
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +86,7 @@ func TestProvideFactory_Resolve(t *testing.T) {
 		t.Fatalf("ProvideFactory: %v", err)
 	}
 
-	svc, err := credo.Resolve[*diServiceWithDep](app)
+	svc, err := app.Resolve[*diServiceWithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestProvideFactory_Resolve(t *testing.T) {
 
 func TestMustProvideFactory_PanicsOnDuplicate(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvideFactory(app, func(*credo.App) (*diSimpleService, error) {
+	app.MustProvideFactory(func(*credo.App) (*diSimpleService, error) {
 		return &diSimpleService{}, nil
 	})
 
@@ -106,16 +106,16 @@ func TestMustProvideFactory_PanicsOnDuplicate(t *testing.T) {
 			t.Fatal("expected panic for duplicate MustProvideFactory")
 		}
 	}()
-	credo.MustProvideFactory(app, func(*credo.App) (*diSimpleService, error) {
+	app.MustProvideFactory(func(*credo.App) (*diSimpleService, error) {
 		return &diSimpleService{}, nil
 	})
 }
 
 func TestMustProvideValue(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvideValue[*diSimpleService](app, &diSimpleService{Value: "v"})
+	app.MustProvideValue[*diSimpleService](&diSimpleService{Value: "v"})
 
-	svc := credo.MustResolve[*diSimpleService](app)
+	svc := app.MustResolve[*diSimpleService]()
 	if svc.Value != "v" {
 		t.Errorf("Value = %q, want %q", svc.Value, "v")
 	}
@@ -123,10 +123,10 @@ func TestMustProvideValue(t *testing.T) {
 
 func TestProvide_DependencyChain(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
-	credo.MustProvide[*diServiceWithDep](app, newDIServiceWithDep)
+	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
 
-	svc, err := credo.Resolve[*diServiceWithDep](app)
+	svc, err := app.Resolve[*diServiceWithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -140,9 +140,9 @@ func TestProvide_DependencyChain(t *testing.T) {
 
 func TestProvide_Duplicate(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
+	app.MustProvide[*diSimpleService](newDISimpleService)
 
-	err := credo.Provide[*diSimpleService](app, newDISimpleService)
+	err := app.Provide[*diSimpleService](newDISimpleService)
 	if err == nil {
 		t.Fatal("expected error for duplicate registration")
 	}
@@ -151,7 +151,7 @@ func TestProvide_Duplicate(t *testing.T) {
 func TestResolve_NotRegistered(t *testing.T) {
 	app := mustNew(t)
 
-	_, err := credo.Resolve[*diSimpleService](app)
+	_, err := app.Resolve[*diSimpleService]()
 	if err == nil {
 		t.Fatal("expected error for unregistered service")
 	}
@@ -173,10 +173,10 @@ func newDIPgUserRepo() *diPgUserRepo           { return &diPgUserRepo{} }
 
 func TestAlias_ResolveByInterface(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diPgUserRepo](app, newDIPgUserRepo)
-	credo.MustAlias[diUserRepo, *diPgUserRepo](app)
+	app.MustProvide[*diPgUserRepo](newDIPgUserRepo)
+	app.MustAlias[diUserRepo, *diPgUserRepo]()
 
-	repo, err := credo.Resolve[diUserRepo](app)
+	repo, err := app.Resolve[diUserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[diUserRepo]: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 func TestAlias_Error(t *testing.T) {
 	app := mustNew(t)
 
-	err := credo.Alias[diUserRepo, *diPgUserRepo](app)
+	err := app.Alias[diUserRepo, *diPgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error when T is not registered")
 	}
@@ -198,14 +198,14 @@ func TestAlias_Error(t *testing.T) {
 
 func TestFinalize(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
+	app.MustProvide[*diSimpleService](newDISimpleService)
 
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
 	// Resolve after Finalize works.
-	svc, err := credo.Resolve[*diSimpleService](app)
+	svc, err := app.Resolve[*diSimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve after Finalize: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestFinalize(t *testing.T) {
 	}
 
 	// Provide after Finalize should fail.
-	err = credo.Provide[*diServiceWithDep](app, newDIServiceWithDep)
+	err = app.Provide[*diServiceWithDep](newDIServiceWithDep)
 	if err == nil {
 		t.Fatal("expected error for Provide after Finalize")
 	}
@@ -224,10 +224,10 @@ func TestFinalize(t *testing.T) {
 
 func TestFinalize_ValidGraph(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvide[*diSimpleService](app, newDISimpleService)
-	credo.MustProvide[*diServiceWithDep](app, newDIServiceWithDep)
+	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
 
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 }
@@ -235,9 +235,9 @@ func TestFinalize_ValidGraph(t *testing.T) {
 func TestFinalize_MissingDep(t *testing.T) {
 	app := mustNew(t)
 	// diServiceWithDep depends on diSimpleService which is not registered.
-	credo.MustProvide[*diServiceWithDep](app, newDIServiceWithDep)
+	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
 
-	err := credo.Finalize(app)
+	err := app.Finalize()
 	if err == nil {
 		t.Fatal("expected Finalize error")
 	}
@@ -248,7 +248,7 @@ func TestFinalize_MissingDep(t *testing.T) {
 
 func TestFinalize_Empty(t *testing.T) {
 	app := mustNew(t)
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize on empty container: %v", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestNew_WithRawConfig_AutoRegistersRawConfig(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	resolved, err := credo.Resolve[credo.RawConfig](app)
+	resolved, err := app.Resolve[credo.RawConfig]()
 	if err != nil {
 		t.Fatalf("Resolve[RawConfig]: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestNew_WithRawConfig_AutoRegistersRawConfig(t *testing.T) {
 
 func TestNew_NoConfig_AutoLoadsRawConfig(t *testing.T) {
 	app := mustNew(t)
-	rc, err := credo.Resolve[credo.RawConfig](app)
+	rc, err := app.Resolve[credo.RawConfig]()
 	if err != nil {
 		t.Fatalf("Resolve[RawConfig]: %v (auto-load should always register RawConfig)", err)
 	}
@@ -299,7 +299,7 @@ func TestApp_Shutdown_ShutdownsContainer(t *testing.T) {
 	app := mustNew(t, credo.WithAddr(host, port))
 
 	var order []string
-	credo.MustProvideValue[*diShutdownTracker](app, &diShutdownTracker{
+	app.MustProvideValue[*diShutdownTracker](&diShutdownTracker{
 		order: &order,
 		name:  "svc",
 	})

@@ -19,7 +19,7 @@
 // New returns a *http.Client — anything that accepts one (SDKs, generated
 // API clients, stdlib helpers) works unchanged. Register it via plain DI:
 //
-//	credo.ProvideValue(app, client)
+//	app.ProvideValue(client)
 //
 // or wrap it in a named type when an application needs several clients.
 //

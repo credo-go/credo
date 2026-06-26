@@ -18,7 +18,7 @@ The primary pattern is:
 
 1. **`credo.New()`** — auto-loads config via `config.Load()`, or use `credo.WithRawConfig(rc)` for explicit control
 2. **`rc.Unmarshal("section", &typed)`** — typed config at module boundary
-3. **`credo.ProvideValue(app, &typed)`** — register typed config in DI
+3. **`app.ProvideValue(&typed)`** — register typed config in DI
 
 Business code accesses config as typed structs via DI. String keys in business code are an explicit anti-pattern.
 

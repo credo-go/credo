@@ -123,11 +123,11 @@
 
 - [x] Adapt samber/do core: container, lifecycle types
   - [x] **Key divergence**: typed constructor params (not `func(Injector)` signature)
-  - [x] `credo.Provide[T](app, constructor)` — register with typed constructor
-  - [x] `credo.ProvideFactory[T](app, fn)` — compiler-checked factory closure; fn resolves its own deps, opaque to Finalize graph validation
-  - [x] `credo.ProvideValue[T](app, value)` — register pre-built value
-- [x] `credo.Resolve[T](app)` — retrieve instance
-- [x] `credo.MustResolve[T](app)` — panics if not found
+  - [x] `app.Provide[T](constructor)` — register with typed constructor
+  - [x] `app.ProvideFactory[T](fn)` — compiler-checked factory closure; fn resolves its own deps, opaque to Finalize graph validation
+  - [x] `app.ProvideValue[T](value)` — register pre-built value
+- [x] `app.Resolve[T]()` — retrieve instance
+- [x] `app.MustResolve[T]()` — panics if not found
 - [x] Lifecycle support: `Singleton` (only — RequestScoped removed)
 - [x] `Alias[I, T]()` — interface-to-concrete type alias
 - [x] `BindMany[I, T]()` / `ResolveAll[I]()` — ordered interface collections

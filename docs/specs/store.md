@@ -162,7 +162,7 @@ Steps:
 2. **Ping** — verify connection is alive (fail-fast at startup)
 3. **Ensure Registry** — resolve or create `Registry` in DI
 4. **Track** — add `Lifecycle` handle to Registry for ping/health aggregation
-5. **DI register** — register `value` as type `R` via `credo.ProvideValue[R]`
+5. **DI register** — register `value` as type `R` via `app.ProvideValue[R]`
 
 Shutdown ownership: closing is the DI container's job alone. A value that implements `credo.Shutdowner` (every `Lifecycle` does) is closed by the container during app shutdown, in reverse registration order. The Registry never closes connections. When `value` does not implement `Shutdowner` — possible only with `WithLifecycle` — `Register` logs a warning and closing stays with the caller (e.g. via `app.OnShutdown`).
 

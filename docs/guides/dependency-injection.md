@@ -146,25 +146,25 @@ func main() {
         log.Fatal(err)
     }
 
-    raw := credo.MustResolve[credo.RawConfig](app)
+    raw := app.MustResolve[credo.RawConfig]()
 
     var dbCfg DatabaseConfig
     if err := raw.Unmarshal("databases.default", &dbCfg); err != nil {
         log.Fatal(err)
     }
 
-    credo.MustProvideValue(app, &dbCfg)
-    credo.MustProvide[*DB](app, NewDB)
-    credo.MustProvide[*PgUserRepository](app, NewPgUserRepository)
-    credo.MustAlias[UserRepository, *PgUserRepository](app)
-    credo.MustProvide[*UserService](app, NewUserService)
-    credo.MustProvide[*UserController](app, NewUserController)
+    app.MustProvideValue(&dbCfg)
+    app.MustProvide[*DB](NewDB)
+    app.MustProvide[*PgUserRepository](NewPgUserRepository)
+    app.MustAlias[UserRepository, *PgUserRepository]()
+    app.MustProvide[*UserService](NewUserService)
+    app.MustProvide[*UserController](NewUserController)
 
-    if err := credo.Finalize(app); err != nil {
+    if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
 
-    users := credo.MustResolve[*UserController](app)
+    users := app.MustResolve[*UserController]()
     app.GET("/users/{id}", users.Show)
 
     if err := app.Run(); err != nil {
@@ -225,15 +225,15 @@ Tracing and metrics carriers are planned for the observability release. They are
 Use `Provide` when Credo should create the singleton for you:
 
 ```go
-credo.MustProvide[*DB](app, NewDB)
-credo.MustProvide[*UserService](app, NewUserService)
+app.MustProvide[*DB](NewDB)
+app.MustProvide[*UserService](NewUserService)
 ```
 
 Use `ProvideValue` when you already have the instance:
 
 ```go
 cfg := &DatabaseConfig{DSN: "postgres://localhost/app"}
-credo.MustProvideValue(app, cfg)
+app.MustProvideValue(cfg)
 ```
 
 Typical `ProvideValue` use cases:
@@ -248,8 +248,8 @@ Typical `ProvideValue` use cases:
 `Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake is reported as an error at registration time, not at compile time. When you want the whole registration checked by the compiler, use `ProvideFactory`: `fn`'s signature is enforced (and `T` inferred), and it resolves its own dependencies:
 
 ```go
-credo.MustProvideFactory(app, func(app *credo.App) (*UserService, error) {
-    repo, err := credo.Resolve[*UserRepository](app)
+app.MustProvideFactory(func(app *credo.App) (*UserService, error) {
+    repo, err := app.Resolve[*UserRepository]()
     if err != nil {
         return nil, err
     }
@@ -264,7 +264,7 @@ Some Credo feature packages build on top of DI with package-level helpers instea
 - `store.Register[*sqldb.DB](app, db)`
 - `worker.Register(app, myWorker, opts...)`
 
-These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `credo.Finalize(app)`. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
+These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `app.Finalize()`. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
 
 ---
 
@@ -279,8 +279,8 @@ type UserRepository interface {
 
 type PgUserRepository struct{ /* ... */ }
 
-credo.MustProvide[*PgUserRepository](app, NewPgUserRepository)
-credo.MustAlias[UserRepository, *PgUserRepository](app)
+app.MustProvide[*PgUserRepository](NewPgUserRepository)
+app.MustAlias[UserRepository, *PgUserRepository]()
 ```
 
 After that:
@@ -320,19 +320,19 @@ func NewSenderRegistry(senders []Sender) *SenderRegistry {
     return &SenderRegistry{senders: senders}
 }
 
-credo.MustProvide[*EmailSender](app, NewEmailSender)
-credo.MustProvide[*InAppSender](app, NewInAppSender)
+app.MustProvide[*EmailSender](NewEmailSender)
+app.MustProvide[*InAppSender](NewInAppSender)
 
-credo.MustBindMany[Sender, *EmailSender](app)
-credo.MustBindMany[Sender, *InAppSender](app)
+app.MustBindMany[Sender, *EmailSender]()
+app.MustBindMany[Sender, *InAppSender]()
 
-credo.MustProvide[*SenderRegistry](app, NewSenderRegistry)
+app.MustProvide[*SenderRegistry](NewSenderRegistry)
 ```
 
 You can also resolve the same collection explicitly:
 
 ```go
-senders := credo.MustResolveAll[Sender](app)
+senders := app.MustResolveAll[Sender]()
 ```
 
 Important rules:
@@ -367,7 +367,7 @@ For the full multi-database pattern, see the [Data Access Guide](data-access.md)
 
 ## `Finalize`
 
-`credo.Finalize(app)` does two things:
+`app.Finalize()` does two things:
 
 1. freezes the container
 2. validates the dependency graph
@@ -390,7 +390,7 @@ Validation catches startup problems early:
 `Run()` and `RunContext()` call `Finalize()` implicitly, but explicit finalize is the recommended pattern:
 
 ```go
-if err := credo.Finalize(app); err != nil {
+if err := app.Finalize(); err != nil {
     log.Fatal(err)
 }
 ```
@@ -402,7 +402,7 @@ if err := credo.Finalize(app); err != nil {
 `Resolve` retrieves a singleton from the container:
 
 ```go
-svc, err := credo.Resolve[*UserService](app)
+svc, err := app.Resolve[*UserService]()
 if err != nil {
     return err
 }
@@ -421,7 +421,7 @@ Runtime `Resolve` is technically allowed because the API is public, but it is no
 Recommended:
 
 ```go
-controller := credo.MustResolve[*UserController](app)
+controller := app.MustResolve[*UserController]()
 app.GET("/users/{id}", controller.Show)
 ```
 
@@ -429,7 +429,7 @@ Not recommended as the default style:
 
 ```go
 app.GET("/users/{id}", func(ctx *credo.Context) error {
-    svc, err := credo.Resolve[*UserService](app)
+    svc, err := app.Resolve[*UserService]()
     if err != nil {
         return err
     }
@@ -534,7 +534,7 @@ Credo offers two shutdown mechanisms. Choose based on how the component is creat
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
-| `credo.Shutdowner` interface | DI-managed singletons (registered via `credo.Provide` / `credo.ProvideValue`) | Reverse registration order |
+| `credo.Shutdowner` interface | DI-managed singletons (registered via `app.Provide` / `app.ProvideValue`) | Reverse registration order |
 | `app.OnShutdown(fn)` | Components created outside DI — manual connections, background goroutines, third-party handles | LIFO (last registered, first called) |
 
 During graceful shutdown the full sequence is:
@@ -567,14 +567,14 @@ if err != nil {
     t.Fatal(err)
 }
 
-credo.MustProvideValue(app, &DatabaseConfig{DSN: "test"})
-credo.MustProvide[*UserService](app, NewUserService)
+app.MustProvideValue(&DatabaseConfig{DSN: "test"})
+app.MustProvide[*UserService](NewUserService)
 
-if err := credo.Finalize(app); err != nil {
+if err := app.Finalize(); err != nil {
     t.Fatal(err)
 }
 
-svc := credo.MustResolve[*UserService](app)
+svc := app.MustResolve[*UserService]()
 _ = svc
 ```
 

@@ -6,5 +6,5 @@
 // resolution, interface aliases, and ordered interface collections.
 //
 // This package is internal to the Credo module. Use the public API in the
-// root package: [credo.Provide], [credo.Resolve], etc.
+// root package: [credo.App.Provide], [credo.App.Resolve], etc.
 package di

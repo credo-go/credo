@@ -1,10 +1,6 @@
 package credo_test
 
-import (
-	"testing"
-
-	"github.com/credo-go/credo"
-)
+import "testing"
 
 type replaceService struct {
 	name string
@@ -12,38 +8,38 @@ type replaceService struct {
 
 func TestReplace_NewBinding(t *testing.T) {
 	app := mustNew(t)
-	if err := credo.Replace[*replaceService](app, &replaceService{name: "x"}); err != nil {
+	if err := app.Replace[*replaceService](&replaceService{name: "x"}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
-	if got := credo.MustResolve[*replaceService](app); got.name != "x" {
+	if got := app.MustResolve[*replaceService](); got.name != "x" {
 		t.Errorf("name = %q, want x", got.name)
 	}
 }
 
 func TestReplace_OverridesExisting(t *testing.T) {
 	app := mustNew(t)
-	credo.MustProvideValue[*replaceService](app, &replaceService{name: "real"})
-	if err := credo.Replace[*replaceService](app, &replaceService{name: "mock"}); err != nil {
+	app.MustProvideValue[*replaceService](&replaceService{name: "real"})
+	if err := app.Replace[*replaceService](&replaceService{name: "mock"}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
-	if got := credo.MustResolve[*replaceService](app); got.name != "mock" {
+	if got := app.MustResolve[*replaceService](); got.name != "mock" {
 		t.Errorf("name = %q, want mock", got.name)
 	}
 }
 
 func TestReplace_AfterFinalizeErrors(t *testing.T) {
 	app := mustNew(t)
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
-	if err := credo.Replace[*replaceService](app, &replaceService{name: "mock"}); err == nil {
+	if err := app.Replace[*replaceService](&replaceService{name: "mock"}); err == nil {
 		t.Fatal("expected error replacing after Finalize")
 	}
 }
 
 func TestMustReplace_PanicsAfterFinalize(t *testing.T) {
 	app := mustNew(t)
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	defer func() {
@@ -51,5 +47,5 @@ func TestMustReplace_PanicsAfterFinalize(t *testing.T) {
 			t.Fatal("expected MustReplace to panic after Finalize")
 		}
 	}()
-	credo.MustReplace[*replaceService](app, &replaceService{name: "mock"})
+	app.MustReplace[*replaceService](&replaceService{name: "mock"})
 }

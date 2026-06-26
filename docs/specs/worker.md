@@ -446,7 +446,7 @@ Internal flow:
 // and i18n setup). Worker execution logs are tagged with "module"="worker"
 // to distinguish them from framework-internal logs.
 func ensurePool(app *credo.App) (*Pool, error) {
-	p, err := credo.Resolve[*Pool](app)
+	p, err := app.Resolve[*Pool]()
 	if err == nil {
 		return p, nil
 	}
@@ -454,9 +454,9 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	// First worker registration — create pool and wire lifecycle.
 	logger := app.Logger().With("module", "worker")
 	p = newPool(logger, cfg.RestartDelay)
-	if err := credo.ProvideValue[*Pool](app, p); err != nil {
+	if err := app.ProvideValue[*Pool](p); err != nil {
 		// Race: another goroutine may have registered between Resolve and ProvideValue.
-		resolved, resolveErr := credo.Resolve[*Pool](app)
+		resolved, resolveErr := app.Resolve[*Pool]()
 		if resolveErr == nil {
 			return resolved, nil
 		}
@@ -829,11 +829,11 @@ func (w *OrderConsumer) Run(ctx context.Context) error {
 func main() {
 	app, _ := credo.New()
 
-	credo.MustProvide[*Queue](app, NewQueue)
-	credo.MustProvide[*OrderService](app, NewOrderService)
-	credo.MustProvide[*OrderConsumer](app, NewOrderConsumer)
+	app.MustProvide[*Queue](NewQueue)
+	app.MustProvide[*OrderService](NewOrderService)
+	app.MustProvide[*OrderConsumer](NewOrderConsumer)
 
-	consumer := credo.MustResolve[*OrderConsumer](app)
+	consumer := app.MustResolve[*OrderConsumer]()
 
 	// Continuous: unlimited restarts, 5s backoff between restarts
 	worker.MustRegister(app, consumer,
@@ -877,8 +877,8 @@ func (w *SessionCleanup) Run(ctx context.Context) error {
 func main() {
 	app, _ := credo.New()
 
-	credo.MustProvide[*SessionCleanup](app, NewSessionCleanup)
-	cleanup := credo.MustResolve[*SessionCleanup](app)
+	app.MustProvide[*SessionCleanup](NewSessionCleanup)
+	cleanup := app.MustResolve[*SessionCleanup]()
 
 	// Every 6 hours, run once at startup, fail permanently after 3 consecutive errors
 	worker.MustRegister(app, cleanup,
@@ -1018,7 +1018,7 @@ worker/ ──imports──→ credo (root)   ✓  (same as store/)
 credo (root) ──does NOT import──→ worker/  ✓  (no cycle)
 ```
 
-Worker package calls `credo.Resolve`, `credo.ProvideValue`, `app.OnStart`. Root package has zero awareness of worker package.
+Worker package calls `app.Resolve`, `app.ProvideValue`, `app.OnStart`. Root package has zero awareness of worker package.
 
 ---
 
@@ -1148,7 +1148,7 @@ func (s *Spy) CallCount() int64         { return s.Calls.Load() }
 
 1. **Worker.Run() loop semantics**: Should continuous workers manage their own loop, or should `Run()` represent a single execution that the framework loops? Current proposal: worker manages own loop (more flexible, simpler framework code).
 
-2. **Registration via DI**: Should there be a `worker.Provide[T]` shortcut that combines `credo.Provide + credo.Resolve + worker.Register`? Or is the 3-step explicit approach more aligned with Credo's philosophy?
+2. **Registration via DI**: Should there be a `worker.Provide[T]` shortcut that combines `app.Provide + app.Resolve + worker.Register`? Or is the 3-step explicit approach more aligned with Credo's philosophy?
 
 3. **Pool start timing**: OnStart (after port bind) or separate phase? Current proposal: OnStart — workers start alongside HTTP server.
 

@@ -164,7 +164,7 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
 // are registered. Resolved lazily on each readiness check so the relative
 // order of store.Register and UseHealth does not matter.
 func (app *App) storeHealthFunc() internalhealth.StoreFunc {
-	fn, err := Resolve[internalhealth.StoreFunc](app)
+	fn, err := app.Resolve[internalhealth.StoreFunc]()
 	if err != nil {
 		return nil
 	}

@@ -215,7 +215,7 @@ worker.Register(...) -> app.Run() -> workers start
 app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit
 ```
 
-Register workers before `credo.Finalize(app)` or before `Run()`/`RunContext()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
+Register workers before `app.Finalize()` or before `Run()`/`RunContext()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
 
 ---
 
@@ -241,16 +241,16 @@ func (w *InvoiceWorker) Run(ctx context.Context) error {
 }
 
 func bootstrap(app *credo.App) error {
-    credo.MustProvide[*InvoiceWorker](app, NewInvoiceWorker)
+    app.MustProvide[*InvoiceWorker](NewInvoiceWorker)
 
-    invoiceWorker := credo.MustResolve[*InvoiceWorker](app)
+    invoiceWorker := app.MustResolve[*InvoiceWorker]()
     if err := worker.Register(app, invoiceWorker,
         worker.WithSchedule("@every 1m"),
     ); err != nil {
         return err
     }
 
-    return credo.Finalize(app)
+    return app.Finalize()
 }
 ```
 
@@ -344,7 +344,7 @@ Always check `ctx.Done()` in long-running workers.
 The worker pool is available from DI as `*worker.Pool`.
 
 ```go
-pool := credo.MustResolve[*worker.Pool](app)
+pool := app.MustResolve[*worker.Pool]()
 
 app.GET("/admin/workers", func(ctx *credo.Context) error {
     return ctx.Response().JSON(200, pool.Workers())

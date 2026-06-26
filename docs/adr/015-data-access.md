@@ -69,13 +69,13 @@ The `sqldb.DB` wrapper applies three strategies to Bun's API:
 1. **Ping** — fail-fast health check at startup
 2. **Ensure Registry** — resolve or create `Registry` in DI
 3. **Track** — add `Lifecycle` handle for ping and health aggregation
-4. **DI register** — register as type `R` via `credo.ProvideValue[R]`
+4. **DI register** — register as type `R` via `app.ProvideValue[R]`
 
 Closing has a single owner: the DI container shuts down registered values implementing `credo.Shutdowner` in reverse registration order. The `Registry` never closes connections — this removes the historical double shutdown (DI + Registry both closing the same connection).
 
 ### Bun-Only
 
-The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI registration (`credo.ProvideValue[*gorm.DB](app, db)`). The `store/` contracts (errors, health, registry) are ORM-agnostic and can be used with any backend.
+The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI registration (`app.ProvideValue[*gorm.DB](db)`). The `store/` contracts (errors, health, registry) are ORM-agnostic and can be used with any backend.
 
 ## Consequences
 

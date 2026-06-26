@@ -89,7 +89,7 @@ type AppConfig struct {
     Debug bool
 }
 
-rc := credo.MustResolve[credo.RawConfig](app)
+rc := app.MustResolve[credo.RawConfig]()
 
 var cfg AppConfig
 if err := rc.Unmarshal("app", &cfg); err != nil {
@@ -97,7 +97,7 @@ if err := rc.Unmarshal("app", &cfg); err != nil {
 }
 
 // Register in DI so services can receive it.
-credo.MustProvideValue(app, &cfg)
+app.MustProvideValue(&cfg)
 ```
 
 String keys appear once. After that, everything is typed.
@@ -385,16 +385,16 @@ func NewUserService(infra credo.Infra, repo *UserRepository) *UserService {
 }
 
 // 2. Register
-credo.MustProvide[*UserRepository](app, NewUserRepository)
-credo.MustProvide[*UserService](app, NewUserService)
+app.MustProvide[*UserRepository](NewUserRepository)
+app.MustProvide[*UserService](NewUserService)
 
 // 3. Finalize (catches missing deps, cycles)
-if err := credo.Finalize(app); err != nil {
+if err := app.Finalize(); err != nil {
     log.Fatal(err)
 }
 
 // 4. Resolve for route wiring
-svc := credo.MustResolve[*UserService](app)
+svc := app.MustResolve[*UserService]()
 app.GET("/users/{id}", svc.GetUser)
 ```
 
@@ -598,11 +598,11 @@ func main() {
     }
 
     // DI
-    credo.MustProvide[*ItemService](app, NewItemService)
-    if err := credo.Finalize(app); err != nil {
+    app.MustProvide[*ItemService](NewItemService)
+    if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
-    svc := credo.MustResolve[*ItemService](app)
+    svc := app.MustResolve[*ItemService]()
 
     // Global middleware you add yourself.
     // Request IDs, access logging, and panic recovery are already built in.

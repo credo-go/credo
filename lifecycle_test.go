@@ -1098,7 +1098,7 @@ func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
 	})
 
 	var order []string
-	credo.MustProvideValue[*diShutdownTracker](app, &diShutdownTracker{order: &order, name: "di:svc"})
+	app.MustProvideValue[*diShutdownTracker](&diShutdownTracker{order: &order, name: "di:svc"})
 
 	var hookCtx context.Context
 	app.OnStart(func(ctx context.Context) error { hookCtx = ctx; return nil }) // hook 0: ok, captures lifecycle context

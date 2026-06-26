@@ -353,7 +353,7 @@ func TestReadiness_StoreIntegration(t *testing.T) {
 	// Store health arrives through the module-internal DI seam, the same
 	// way store.Register provides it.
 	app := mustNew(t)
-	err := credo.ProvideValue[internalhealth.StoreFunc](app, func(context.Context) []internalhealth.StoreResult {
+	err := app.ProvideValue[internalhealth.StoreFunc](func(context.Context) []internalhealth.StoreResult {
 		return []internalhealth.StoreResult{
 			{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
 		}

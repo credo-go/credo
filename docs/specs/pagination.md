@@ -334,17 +334,17 @@ func (h *ProductHandler) List(ctx *credo.Context) error {
 Register the repo, service, and handler in the DI container; the constructor parameters drive resolution.
 
 ```go
-credo.Provide[*productRepo](app, func(infra credo.Infra, db *sqldb.DB) *productRepo {
+app.Provide[*productRepo](func(infra credo.Infra, db *sqldb.DB) *productRepo {
     return &productRepo{db: db}
 })
-credo.Provide[*productService](app, func(infra credo.Infra, repo *productRepo) *productService {
+app.Provide[*productService](func(infra credo.Infra, repo *productRepo) *productService {
     return &productService{repo: repo}
 })
-credo.Provide[*ProductHandler](app, func(infra credo.Infra, svc *productService) *ProductHandler {
+app.Provide[*ProductHandler](func(infra credo.Infra, svc *productService) *ProductHandler {
     return &ProductHandler{service: svc}
 })
 
-handler := credo.Resolve[*ProductHandler](app)
+handler := app.Resolve[*ProductHandler]()
 app.GET("/products", handler.List)
 ```
 

@@ -173,17 +173,17 @@ func main() {
     }
 
     // Resolve the auto-loaded RawConfig from DI.
-    rc := credo.MustResolve[credo.RawConfig](app)
+    rc := app.MustResolve[credo.RawConfig]()
 
     // Unmarshal and register typed config.
     var dbCfg DatabaseConfig
     if err := rc.Unmarshal("databases.default", &dbCfg); err != nil {
         log.Fatal(err)
     }
-    credo.MustProvideValue(app, &dbCfg)
+    app.MustProvideValue(&dbCfg)
 
     // Services receive *DatabaseConfig via constructor injection.
-    credo.MustProvide[*MyService](app, NewMyService)
+    app.MustProvide[*MyService](NewMyService)
 }
 
 func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
@@ -202,7 +202,7 @@ For multiple databases, keep each config section separate and unmarshal them ind
 
 ```go
 func setupDatabases(app *credo.App) error {
-    rc := credo.MustResolve[credo.RawConfig](app)
+    rc := app.MustResolve[credo.RawConfig]()
 
     var primaryCfg sqldb.Config
     if err := rc.Unmarshal("databases.primary", &primaryCfg); err != nil {

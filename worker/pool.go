@@ -133,7 +133,7 @@ func MustRegister(app *credo.App, w Worker, opts ...Option) {
 }
 
 func ensurePool(app *credo.App) (*Pool, error) {
-	p, err := credo.Resolve[*Pool](app)
+	p, err := app.Resolve[*Pool]()
 	if err == nil {
 		return p, nil
 	}
@@ -147,8 +147,8 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	// ProvideValue also hands the pool's shutdown to the container: Pool
 	// implements credo.Shutdowner, so app.Shutdown stops all workers without
 	// an explicit OnShutdown hook.
-	if err := credo.ProvideValue[*Pool](app, p); err != nil {
-		resolved, resolveErr := credo.Resolve[*Pool](app)
+	if err := app.ProvideValue[*Pool](p); err != nil {
+		resolved, resolveErr := app.Resolve[*Pool]()
 		if resolveErr == nil {
 			return resolved, nil
 		}
@@ -165,7 +165,7 @@ func ensurePool(app *credo.App) (*Pool, error) {
 func loadPoolConfig(app *credo.App) (poolConfig, error) {
 	cfg := poolConfig{RestartDelay: DefaultRestartDelay}
 
-	raw, _ := credo.Resolve[credo.RawConfig](app)
+	raw, _ := app.Resolve[credo.RawConfig]()
 	if raw == nil || !raw.Exists("worker") {
 		return cfg, nil
 	}

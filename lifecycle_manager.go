@@ -288,7 +288,7 @@ func (lm *lifecycleManager) serve(
 	app.handlerOnce.Do(app.compile)
 
 	// Implicit DI finalize (idempotent).
-	if err := Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		return fmt.Errorf("credo: %s: DI finalize: %w", label, err)
 	}
 

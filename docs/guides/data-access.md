@@ -49,7 +49,7 @@ import (
 )
 
 func setupStore(app *credo.App) error {
-    raw := credo.MustResolve[credo.RawConfig](app)
+    raw := app.MustResolve[credo.RawConfig]()
 
     var cfg sqldb.Config
     if err := raw.Unmarshal("databases.default", &cfg); err != nil {
@@ -74,7 +74,7 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := credo.Finalize(app); err != nil {
+    if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
 
@@ -289,7 +289,7 @@ store.Register[*sqldb.DB](
 )
 ```
 
-Use raw `credo.ProvideValue` only when you intentionally do not want store registry integration.
+Use raw `app.ProvideValue` only when you intentionally do not want store registry integration.
 
 ---
 
@@ -308,7 +308,7 @@ Then register each wrapper separately:
 
 ```go
 func setupMultiDB(app *credo.App) error {
-    raw := credo.MustResolve[credo.RawConfig](app)
+    raw := app.MustResolve[credo.RawConfig]()
 
     var primaryCfg sqldb.Config
     if err := raw.Unmarshal("databases.primary", &primaryCfg); err != nil {
@@ -560,7 +560,7 @@ if err != nil {
     return err
 }
 
-if err := credo.ProvideValue(app, gormDB); err != nil {
+if err := app.ProvideValue(gormDB); err != nil {
     return err
 }
 ```

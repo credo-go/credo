@@ -20,7 +20,7 @@ func TestNewApp_Defaults(t *testing.T) {
 
 	// Hermetic: the injected RawConfig is empty, so nothing was auto-loaded
 	// from the working directory.
-	rc := credo.MustResolve[credo.RawConfig](app)
+	rc := app.MustResolve[credo.RawConfig]()
 	if rc.Exists("server") {
 		t.Error("expected hermetic config: the server key should not exist")
 	}
@@ -42,13 +42,13 @@ func TestWithOverride_ReplacesWiredDep(t *testing.T) {
 	app := testutil.NewApp(t,
 		// Wiring establishes the "real" binding...
 		testutil.WithWiring(func(app *credo.App) {
-			credo.MustProvideValue[*greeter](app, &greeter{msg: "real"})
+			app.MustProvideValue[*greeter](&greeter{msg: "real"})
 		}),
 		// ...and the override replaces it (overrides run after wiring).
 		testutil.WithOverride[*greeter](&greeter{msg: "fake"}),
 	)
 
-	got := credo.MustResolve[*greeter](app)
+	got := app.MustResolve[*greeter]()
 	if got.msg != "fake" {
 		t.Errorf("greeter.msg = %q, want %q (override should win over wiring)", got.msg, "fake")
 	}
@@ -59,7 +59,7 @@ func TestWithOverride_AddsWhenAbsent(t *testing.T) {
 	// binding when it is absent.
 	app := testutil.NewApp(t, testutil.WithOverride[*greeter](&greeter{msg: "only"}))
 
-	if got := credo.MustResolve[*greeter](app); got.msg != "only" {
+	if got := app.MustResolve[*greeter](); got.msg != "only" {
 		t.Errorf("greeter.msg = %q, want %q", got.msg, "only")
 	}
 }
@@ -76,7 +76,7 @@ func TestWithConfig_Injection(t *testing.T) {
 		testutil.WithConfig("app.env", "testing"),
 	)
 
-	rc := credo.MustResolve[credo.RawConfig](app)
+	rc := app.MustResolve[credo.RawConfig]()
 
 	var cfg appCfg
 	if err := rc.Unmarshal("app", &cfg); err != nil {

@@ -111,7 +111,7 @@ func SetupDatabase(app *credo.App, rawCfg credo.RawConfig) error {
     if err := rawCfg.Unmarshal("databases.default", &cfg); err != nil {
         return err
     }
-    return credo.ProvideValue(app, &cfg)
+    return app.ProvideValue(&cfg)
 }
 ```
 

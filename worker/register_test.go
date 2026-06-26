@@ -83,7 +83,7 @@ func TestRegister_UsesConfiguredRestartDelay(t *testing.T) {
 		t.Fatalf("Register() = %v", err)
 	}
 
-	pool, err := credo.Resolve[*Pool](app)
+	pool, err := app.Resolve[*Pool]()
 	if err != nil {
 		t.Fatalf("Resolve[*Pool]() = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestPoolWorkers_BeforeStartReturnsIdleSnapshot(t *testing.T) {
 		t.Fatalf("Register() = %v", err)
 	}
 
-	pool, err := credo.Resolve[*Pool](app)
+	pool, err := app.Resolve[*Pool]()
 	if err != nil {
 		t.Fatalf("Resolve[*Pool]() = %v", err)
 	}

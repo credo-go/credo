@@ -1,6 +1,6 @@
 # DI Container & credo.Infra Spec
 
-**Status**: Approved **Implementation**: `internal/di/` (private), Root package API (`credo.Provide[T]`, `credo.Resolve[T]`, `credo.BindMany[I, T]`, `credo.ResolveAll[I]`) **Sources**: samber/do (MIT) **Depends on**: --- **ADRs**: [004-dependency-injection-and-infra](../adr/004-dependency-injection-and-infra.md) **Roadmap**: [`TODO.md` Phase 2.1, 2.2](../../TODO.md)
+**Status**: Approved **Implementation**: `internal/di/` (private), Root package API (`app.Provide[T]`, `app.Resolve[T]`, `app.BindMany[I, T]`, `app.ResolveAll[I]`) **Sources**: samber/do (MIT) **Depends on**: --- **ADRs**: [004-dependency-injection-and-infra](../adr/004-dependency-injection-and-infra.md) **Roadmap**: [`TODO.md` Phase 2.1, 2.2](../../TODO.md)
 
 ---
 
@@ -18,7 +18,7 @@ Credo's DI system consists of two parts:
 
 2. **`credo.Infra`** --- A framework-managed infrastructure carrier defined in the root package. Carries the per-service Logger (metrics/tracing carriers return with the Phase 3.5 observability release). Produced automatically by the container when seen as a constructor parameter, but still visible in the service constructor signature.
 
-The container lives in `internal/di` because it is Credo-specific --- not a standalone DI library. The public API is exposed through root package generic functions such as `credo.Provide[T](app, constructor)`, `credo.BindMany[I, T](app)`, `credo.Resolve[T](app)`, and `credo.ResolveAll[I](app)`.
+The container lives in `internal/di` because it is Credo-specific --- not a standalone DI library. The public API is exposed through root package generic functions such as `app.Provide[T](constructor)`, `app.BindMany[I, T]()`, `app.Resolve[T]()`, and `app.ResolveAll[I]()`.
 
 ---
 
@@ -195,8 +195,8 @@ Constructor parameter types are inspected via reflection at registration time an
 Because `constructor` is typed `any`, a signature mistake (wrong return type, not a function) is reported as an error by `Provide` at registration time --- not by the compiler. `ProvideFactory` closes that gap: `fn`'s signature is enforced by the compiler, and `fn` resolves its own dependencies explicitly. The trade-off is that `fn` is opaque to the container --- dependencies resolved inside it do not participate in `Finalize` graph validation or cycle detection (the same holds for any constructor closure that captures `app` and calls `Resolve`), and `credo.Infra` is not auto-injected (use `app.NewInfra` inside `fn` instead):
 
 ```go
-credo.ProvideFactory(app, func(app *credo.App) (*UserService, error) {
-    repo, err := credo.Resolve[*UserRepository](app)
+app.ProvideFactory(func(app *credo.App) (*UserService, error) {
+    repo, err := app.Resolve[*UserRepository]()
     if err != nil {
         return nil, err
     }
@@ -222,13 +222,13 @@ Alias enables resolving by interface without requiring the constructor to return
 
 ```go
 // Register the concrete type.
-credo.MustProvide[*PgUserRepo](app, NewPgUserRepo)
+app.MustProvide[*PgUserRepo](NewPgUserRepo)
 
 // Alias interface to concrete type.
-credo.MustAlias[UserRepo, *PgUserRepo](app)
+app.MustAlias[UserRepo, *PgUserRepo]()
 
 // Now resolving by interface returns the *PgUserRepo singleton.
-repo := credo.MustResolve[UserRepo](app)
+repo := app.MustResolve[UserRepo]()
 ```
 
 Contract rules enforced by `Alias`:
@@ -254,11 +254,11 @@ func MustBindMany[I, T any](app *App)
 `BindMany[I, T]` is collection wiring, not default resolution. It does not change `Resolve[I]`; it only affects `ResolveAll[I]` and constructor injection of `[]I`.
 
 ```go
-credo.MustProvide[*EmailSender](app, NewEmailSender)
-credo.MustProvide[*InAppSender](app, NewInAppSender)
+app.MustProvide[*EmailSender](NewEmailSender)
+app.MustProvide[*InAppSender](NewInAppSender)
 
-credo.MustBindMany[Sender, *EmailSender](app)
-credo.MustBindMany[Sender, *InAppSender](app)
+app.MustBindMany[Sender, *EmailSender]()
+app.MustBindMany[Sender, *InAppSender]()
 ```
 
 Contract rules enforced by `BindMany`:
@@ -275,7 +275,7 @@ Contract rules enforced by `BindMany`:
 The container has three phases:
 
 1. **Bootstrap** --- `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Resolve`, and `ResolveAll` are all allowed. This supports patterns like `ensureRegistry` where code probes with `Resolve` and falls back to `ProvideValue` if not yet registered.
-2. **Finalize** --- `credo.Finalize(app)` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` return errors. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error.
+2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` return errors. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error.
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()` and `app.RunContext()` call Finalize implicitly.
 
 **Concurrency**: During bootstrap, `Provide`/`ProvideFactory`/`ProvideValue`/ `Alias`/`BindMany` and `Resolve`/`ResolveAll` must not be called concurrently. The container uses internal locking for singleton resolution, but registration and bootstrap resolution are not designed for concurrent use. In practice, all registration and bootstrap resolution happens sequentially in `main()` or setup functions before `Run()`.
@@ -296,26 +296,26 @@ func Finalize(app *App) error
 
 ```go
 // Registration phase
-credo.MustProvide[*sql.DB](app, NewDB)
-credo.MustProvide[*UserRepo](app, NewUserRepo)
-credo.MustProvide[*UserService](app, NewUserService)
-credo.MustAlias[UserRepo, *PgUserRepo](app)
+app.MustProvide[*sql.DB](NewDB)
+app.MustProvide[*UserRepo](NewUserRepo)
+app.MustProvide[*UserService](NewUserService)
+app.MustAlias[UserRepo, *PgUserRepo]()
 
 // Finalize phase --- freeze + validate
-if err := credo.Finalize(app); err != nil {
+if err := app.Finalize(); err != nil {
     log.Fatal(err) // "missing dependency: *UserRepo required by *UserService"
 }
 
 // Runtime phase --- safe to resolve
-userSvc := credo.MustResolve[*UserService](app)
+userSvc := app.MustResolve[*UserService]()
 
 // These would fail after Finalize:
-// credo.Provide[*Foo](app, NewFoo)  // error: container is frozen
-// credo.Alias[Bar, *Baz](app)       // error: container is frozen
-// credo.BindMany[Qux, *Baz](app)    // error: container is frozen
+// app.Provide[*Foo](NewFoo)  // error: container is frozen
+// app.Alias[Bar, *Baz]()       // error: container is frozen
+// app.BindMany[Qux, *Baz]()    // error: container is frozen
 ```
 
-If `credo.Finalize(app)` is not called explicitly, `Run()` and `RunContext()` call it implicitly before starting the HTTP server.
+If `app.Finalize()` is not called explicitly, `Run()` and `RunContext()` call it implicitly before starting the HTTP server.
 
 Duplicate registration of the same type returns an error.
 
@@ -383,7 +383,7 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 ### Concurrency and Lifecycle
 
-- **`Provide` / `MustProvide` / `ProvideFactory` / `ProvideValue` / `Alias` / `BindMany`**: Not concurrent-safe. Intended to be called sequentially at startup (Composition Root), before `credo.Finalize(app)` or `app.Run()`.
+- **`Provide` / `MustProvide` / `ProvideFactory` / `ProvideValue` / `Alias` / `BindMany`**: Not concurrent-safe. Intended to be called sequentially at startup (Composition Root), before `app.Finalize()` or `app.Run()`.
 - **`Finalize`**: Idempotent via `sync.Once`. Safe to call from multiple goroutines but typically called once at startup.
 - **`Resolve` / `MustResolve` / `ResolveAll` / `MustResolveAll`**: Safe for concurrent use after Finalize. Per-singleton `sync.Once` ensures each constructor runs exactly once, even under concurrent access. Different singletons resolve concurrently without blocking each other.
 - **`Shutdown(ctx)`**: Should be called once during graceful shutdown with a deadline context.
@@ -406,7 +406,7 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 7. **Typed constructors over injector parameter** --- samber/do uses `func(do.Injector) (T, error)` which is a service locator inside the constructor. Credo uses `func(dep1 T1, dep2 T2) T` --- dependencies are visible in the signature.
 
-8. **Finalize/Seal lifecycle** --- `credo.Finalize(app)` seals the container and validates the graph. This separates registration from runtime and catches errors (missing deps, cycles, forbidden params) before the first request.
+8. **Finalize/Seal lifecycle** --- `app.Finalize()` seals the container and validates the graph. This separates registration from runtime and catches errors (missing deps, cycles, forbidden params) before the first request.
 
 9. **Composition Root enforcement** --- The container is designed for startup use. Business code receives resolved services via constructors and Infra, never via `Resolve[T]` calls.
 
@@ -505,17 +505,17 @@ func main() {
     }
 
     // Register services (all Singleton)
-    credo.MustProvide[*sql.DB](app, NewDB)
-    credo.MustProvide[*UserRepo](app, NewUserRepo)
-    credo.MustProvide[*UserService](app, NewUserService)
+    app.MustProvide[*sql.DB](NewDB)
+    app.MustProvide[*UserRepo](NewUserRepo)
+    app.MustProvide[*UserService](NewUserService)
 
     // Finalize: freeze container + validate dependency graph
-    if err := credo.Finalize(app); err != nil {
+    if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
 
     // Resolve services for handler setup
-    userSvc := credo.MustResolve[*UserService](app)
+    userSvc := app.MustResolve[*UserService]()
 
     app.GET("/users/{id}", func(ctx *credo.Context) error {
         user, err := userSvc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
@@ -563,10 +563,10 @@ type UserRepo interface {
 }
 
 // Register the concrete implementation.
-credo.MustProvide[*PgUserRepo](app, NewPgUserRepo)
+app.MustProvide[*PgUserRepo](NewPgUserRepo)
 
 // Alias interface to concrete type.
-credo.MustAlias[UserRepo, *PgUserRepo](app)
+app.MustAlias[UserRepo, *PgUserRepo]()
 
 // Services depend on the interface, resolved via the alias.
 func NewUserService(infra credo.Infra, repo UserRepo) *UserService {
@@ -589,16 +589,16 @@ func NewSenderRegistry(senders []Sender) *SenderRegistry {
     return &SenderRegistry{senders: senders}
 }
 
-credo.MustProvide[*EmailSender](app, NewEmailSender)
-credo.MustProvide[*InAppSender](app, NewInAppSender)
+app.MustProvide[*EmailSender](NewEmailSender)
+app.MustProvide[*InAppSender](NewInAppSender)
 
-credo.MustBindMany[Sender, *EmailSender](app)
-credo.MustBindMany[Sender, *InAppSender](app)
+app.MustBindMany[Sender, *EmailSender]()
+app.MustBindMany[Sender, *InAppSender]()
 
-credo.MustProvide[*SenderRegistry](app, NewSenderRegistry)
+app.MustProvide[*SenderRegistry](NewSenderRegistry)
 
-registry := credo.MustResolve[*SenderRegistry](app)
-allSenders := credo.MustResolveAll[Sender](app)
+registry := app.MustResolve[*SenderRegistry]()
+allSenders := app.MustResolveAll[Sender]()
 
 _ = registry
 _ = allSenders
@@ -668,12 +668,12 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 
 ### Finalize / Seal
 
-- `credo.Finalize(app)` returns nil when dependency graph is valid
-- `credo.Finalize(app)` returns error listing missing dependencies
+- `app.Finalize()` returns nil when dependency graph is valid
+- `app.Finalize()` returns error listing missing dependencies
 - `Seal()` detects circular dependencies with clear cycle description
 - `Seal()` detects `context.Context` constructor parameters and returns error
-- `credo.Finalize(app)` is idempotent --- second call returns same result
-- `credo.Finalize(app)` freezes container --- subsequent `Provide`/`Alias` return errors
+- `app.Finalize()` is idempotent --- second call returns same result
+- `app.Finalize()` freezes container --- subsequent `Provide`/`Alias` return errors
 - `Run()` calls `Finalize()` implicitly
 
 ### Validation (via Seal)

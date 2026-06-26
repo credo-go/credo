@@ -156,7 +156,7 @@ Manual W3C Trace Context (version `00`) — no OTel types:
 4. **Returned response over wrapped error on exhaustion** — keeps stdlib semantics (`resp, nil` for HTTP-level failures); callers already must check status codes.
 5. **Query strings stripped from logs** — URLs routinely carry tokens (`?api_key=`, signed URLs). Path+host is enough for diagnostics.
 6. **Stdlib-only, logger injected** — no `credo` import keeps the dependency direction clean (feature packages may import root, but this one needs nothing from it); `infra.Logger` is passed by the user at wiring time.
-7. **Plain DI registration** — `credo.ProvideValue[*http.Client]` or a named wrapper type for multiple clients; no framework sugar.
+7. **Plain DI registration** — `app.ProvideValue[*http.Client]` or a named wrapper type for multiple clients; no framework sugar.
 
 ---
 

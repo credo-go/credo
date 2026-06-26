@@ -299,17 +299,17 @@ func run() error {
 	}
 
 	// 5. Register typed configs in DI container
-	credo.MustProvideValue(app, &appCfg)
-	credo.MustProvideValue(app, &dbCfg)
+	app.MustProvideValue(&appCfg)
+	app.MustProvideValue(&dbCfg)
 
 	// 6. Register services via DI
-	credo.MustProvide[*TenantService](app, NewTenantService)
+	app.MustProvide[*TenantService](NewTenantService)
 
 	// 7. Resolve services for handler wiring
-	tenantSvc := credo.MustResolve[*TenantService](app)
+	tenantSvc := app.MustResolve[*TenantService]()
 
 	// 8. Finalize DI container (freeze + validate: catches missing deps, cycles)
-	if err := credo.Finalize(app); err != nil {
+	if err := app.Finalize(); err != nil {
 		return fmt.Errorf("DI finalize: %w", err)
 	}
 

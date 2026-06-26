@@ -23,16 +23,16 @@
 // Use [WithWiring] to register the dependencies under test and [WithOverride]
 // to swap any of them for a fake. Overrides run after wiring, so they win;
 // [WithOverride] also adds a binding when none was wired. It is built on
-// [credo.Replace].
+// [credo.App.Replace].
 //
 //	app := testutil.NewApp(t,
 //		testutil.WithWiring(func(app *credo.App) {
-//			credo.MustProvide[*UserService](app, NewUserService)
-//			credo.MustProvide[UserRepo](app, NewPostgresRepo)
+//			app.MustProvide[*UserService](NewUserService)
+//			app.MustProvide[UserRepo](NewPostgresRepo)
 //		}),
 //		testutil.WithOverride[UserRepo](fakeRepo),
 //	)
-//	svc := credo.MustResolve[*UserService](app) // built with fakeRepo
+//	svc := app.MustResolve[*UserService]() // built with fakeRepo
 //
 // # Injecting config
 //
