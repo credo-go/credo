@@ -13,17 +13,13 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.26", "stable"]
-
     steps:
       - uses: actions/checkout@v6
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
 
       - name: Download dependencies
         run: go mod download
@@ -34,17 +30,13 @@ jobs:
   test-sqldb:
     name: Test (store/sqldb)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.26", "stable"]
-
     steps:
       - uses: actions/checkout@v6
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: store/sqldb/go.mod
 
       - name: Run submodule tests
         working-directory: store/sqldb
@@ -60,12 +52,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
+      # install-mode goinstall builds golangci-lint from source with the Go
+      # toolchain set up above, so it links a go/types that understands Go 1.27
+      # generic methods (a prebuilt binary may lag the toolchain).
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+          install-mode: goinstall
 
   build:
     name: Build
@@ -77,7 +73,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
       - name: Build
         run: go build ./...
