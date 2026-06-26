@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc1`
+# directive in go.mod (the bare `1.27rc1` spec is not valid semver, so both the
+# manifest lookup and the direct download fail). Pin the release candidate with
+# the semver-prerelease form setup-go accepts; it maps to the go1.27rc1 build.
+# Once 1.27 GA ships and go.mod drops the rc toolchain line, the setup-go steps
+# can return to `go-version-file: go.mod`.
+env:
+  GO_VERSION: "1.27.0-rc.1"
+
 jobs:
   test:
     name: Test
@@ -19,7 +28,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Download dependencies
         run: go mod download
@@ -36,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: store/sqldb/go.mod
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Run submodule tests
         working-directory: store/sqldb
@@ -52,7 +61,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
 
       # install-mode goinstall builds golangci-lint from source with the Go
       # toolchain set up above, so it links a go/types that understands Go 1.27
@@ -73,7 +82,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Build
         run: go build ./...
