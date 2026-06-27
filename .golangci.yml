@@ -12,23 +12,25 @@ linters:
     - errcheck
     - errname
     - errorlint
-    - gosec
     - govet
     - ineffassign
     - misspell
     - nilerr
     - unconvert
     - whitespace
-    # staticcheck and unused are temporarily disabled on the Go 1.27 release
-    # candidate: their shared honnef.co/go/tools IR builder (bundled in
-    # golangci-lint v2.12.2 as v0.7.0) panics while building IR for the go1.27rc1
-    # standard library — "buildir: unexpected expr: *ast.KeyValueExpr" on
-    # internal/poll. install-mode: goinstall rebuilds the linter frontend against
-    # 1.27, but cannot patch staticcheck's own IR construction. The framework code
-    # itself is clean under `go vet` on go1.27rc1. Re-enable once golangci-lint
-    # ships a staticcheck release that supports Go 1.27 (expected around 1.27 GA).
+    # staticcheck, unused, and gosec are temporarily disabled on the Go 1.27
+    # release candidate: their SSA/IR analysis engines panic while building IR for
+    # go1.27rc1 code. staticcheck and unused share honnef.co/go/tools v0.7.0's IR
+    # builder ("buildir: unexpected expr: *ast.KeyValueExpr" on internal/poll);
+    # gosec's SSA taint analysis panics ("panic: T") in its callgraph builder.
+    # install-mode: goinstall rebuilds the linter frontend against 1.27 but cannot
+    # patch these engines. The framework code is clean under `go vet` on go1.27rc1,
+    # and the lint-full-canary CI job keeps running all three (non-blocking) so the
+    # upstream fix is caught early. Re-enable here — and drop the canary job — once
+    # golangci-lint ships staticcheck/gosec releases that support Go 1.27.
     # - staticcheck
     # - unused
+    # - gosec
   settings:
     gosec:
       excludes:

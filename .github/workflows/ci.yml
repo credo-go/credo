@@ -36,6 +36,9 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
+      - name: Vet
+        run: go vet ./...
+
   test-sqldb:
     name: Test (store/sqldb)
     runs-on: ubuntu-latest
@@ -51,6 +54,46 @@ jobs:
         working-directory: store/sqldb
         run: go test -race -count=1 ./...
 
+      - name: Vet
+        working-directory: store/sqldb
+        run: go vet ./...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build
+        run: go build ./...
+
+  tidy:
+    name: Tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: go mod tidy (root)
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: go mod tidy (store/sqldb)
+        working-directory: store/sqldb
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -65,16 +108,26 @@ jobs:
 
       # install-mode goinstall builds golangci-lint from source with the Go
       # toolchain set up above, so it links a go/types that understands Go 1.27
-      # generic methods (a prebuilt binary may lag the toolchain).
+      # generic methods (a prebuilt binary may lag the toolchain). The config
+      # disables the linters whose SSA/IR engines panic on the 1.27 RC; the
+      # lint-full-canary job below runs those non-blocking. See .golangci.yml.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           install-mode: goinstall
 
-  build:
-    name: Build
+  lint-full-canary:
+    name: Lint (full, canary)
     runs-on: ubuntu-latest
+
+    # Non-blocking early-warning job: runs the linters the required Lint job
+    # disables on the Go 1.27 RC (staticcheck, unused, gosec — their SSA/IR
+    # engines currently panic; see .golangci.yml). It must NOT be a required
+    # check in branch protection. When this turns green, the upstream tooling
+    # supports 1.27: restore the three linters to the required job and delete
+    # this canary.
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v6
@@ -84,5 +137,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build
-        run: go build ./...
+      - name: Run golangci-lint (full)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-mode: goinstall
+          args: --enable=staticcheck,unused,gosec
