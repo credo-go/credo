@@ -1610,6 +1610,69 @@ func TestApp_Mount_RegistryRollbackOnPanic(t *testing.T) {
 	}
 }
 
+// TestApp_Mount_PreflightAtomicOnConflict locks the launch-readiness guarantee
+// that a Mount conflicting with a pre-existing route registers nothing. Mount
+// makes 14 radix registrations (every forwarded method on the catch-all and the
+// exact prefix), and the tree has no delete. Mounting over an existing GET
+// /admin conflicts only on the exact GET — after the catch-all and the exact
+// DELETE would already have been inserted — so without the preflight those leak
+// as orphan routes that dispatch can still reach (they carry no *Route, so
+// introspection hides them; only a request exposes them). Preflight must reject
+// the whole Mount, leaving the tree exactly as it was.
+func TestApp_Mount_PreflightAtomicOnConflict(t *testing.T) {
+	app := mustNew(t)
+
+	var subHits int
+	sub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		subHits++
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	app.GET("/admin", func(ctx *credo.Context) error {
+		return ctx.Response().Text(http.StatusOK, "admin-route")
+	})
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic mounting over the existing GET /admin")
+			}
+		}()
+		app.Mount("/admin", sub)
+	}()
+
+	// The failed Mount must leave the app fully usable: a valid mount elsewhere
+	// still registers and serves.
+	app.Mount("/svc", sub)
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantSub    bool
+	}{
+		{"original route intact", "GET", "/admin", http.StatusOK, false},
+		{"no orphan catch-all", "GET", "/admin/x", http.StatusNotFound, false},
+		{"no orphan exact DELETE", "DELETE", "/admin", http.StatusMethodNotAllowed, false},
+		{"unrelated mount still serves", "GET", "/svc/x", http.StatusNoContent, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := subHits
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("%s %s → status %d, want %d", tc.method, tc.path, rec.Code, tc.wantStatus)
+			}
+			if got := subHits > before; got != tc.wantSub {
+				t.Errorf("%s %s → mounted sub-handler reached = %v, want %v", tc.method, tc.path, got, tc.wantSub)
+			}
+		})
+	}
+}
+
 func TestApp_Routes_TotalOrderDeterministic(t *testing.T) {
 	app := mustNew(t)
 	// Host routes make app.hosts non-empty so compile() sorts it in place; the

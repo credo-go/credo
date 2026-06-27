@@ -202,6 +202,92 @@ func (n *Node[V]) InsertRoute(method MethodTyp, pattern string, value V, autoGen
 	}
 }
 
+// FindEndpoint walks the tree read-only along pattern, using the same
+// edge-selection logic as [Node.InsertRoute] but without creating or splitting
+// any node. It returns the endpoint already registered for method at the exact
+// pattern location, or (nil, false) when an InsertRoute of pattern would
+// instead build new structure (a fresh child or a node split) — in which case
+// no endpoint can pre-exist there.
+//
+// It is the read-only twin of the duplicate check in setEndpoint: a non-nil,
+// non-auto-generated result means InsertRoute(method, pattern) would return a
+// [DuplicateRouteError]. FindEndpoint reports only endpoint existence; it does
+// not surface the structural conflicts (mismatched parameter keys or regexp
+// matchers) that InsertRoute also rejects — a mismatch during navigation simply
+// yields (nil, false), since no endpoint exists at the resulting location.
+func (n *Node[V]) FindEndpoint(method MethodTyp, pattern string) (*Endpoint[V], bool) {
+	search := pattern
+
+	for {
+		if len(search) == 0 {
+			ep, ok := n.Endpoints[method]
+			return ep, ok
+		}
+
+		if search[0] == '{' {
+			seg, err := patNextSegment(search)
+			if err != nil {
+				return nil, false
+			}
+			child := n.findParamChild(seg)
+			if child == nil {
+				return nil, false
+			}
+			n = child
+			search = seg.Suffix
+			continue
+		}
+
+		// Static segment — follow the edge by first byte.
+		child := n.Children[NtStatic].FindEdge(search[0])
+		if child == nil {
+			return nil, false
+		}
+		commonLen := longestPrefix(search, child.Prefix)
+		if commonLen < len(child.Prefix) {
+			// InsertRoute would split child into an intermediate node, so no
+			// endpoint exists at the exact pattern yet.
+			return nil, false
+		}
+		n = child
+		search = search[commonLen:]
+	}
+}
+
+// findParamChild returns the existing parameter, catch-all, or regexp child
+// that matches seg, or nil if none does. It is the read-only counterpart of
+// [Node.findOrUpdateParamChild]: it never updates a regexp tail and never
+// reports a conflict — a parameter-key or matcher mismatch simply yields nil,
+// because an InsertRoute would then create a sibling or reject the pattern,
+// neither of which is an endpoint already present at the matched location.
+func (n *Node[V]) findParamChild(seg PatternSegment) *Node[V] {
+	children := n.Children[seg.Typ]
+
+	switch seg.Typ {
+	case NtParam, NtCatchAll:
+		if len(children) == 0 || children[0].ParamKey != seg.ParamKey {
+			return nil
+		}
+		return children[0]
+
+	case NtRegexp:
+		for _, ch := range children {
+			if ch.RegexpSeg == nil || ch.RegexpSeg.Regexp == nil {
+				continue
+			}
+			if ch.RegexpSeg.Regexp.String() != seg.Regexp.String() {
+				continue
+			}
+			if ch.ParamKey != seg.ParamKey {
+				return nil
+			}
+			return ch
+		}
+	}
+
+	return nil
+}
+
 // findOrUpdateParamChild finds an existing parameter child that matches the
 // given segment, or returns nil if none exists. For regexp nodes with a
 // matching pattern, it may update the existing node's TailByte if previously

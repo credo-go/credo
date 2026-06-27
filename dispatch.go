@@ -489,6 +489,27 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 		catchAll = "/{_mount...}"
 	}
 
+	// Preflight: the 14 registrations below — every forwarded method on both
+	// catchAll and exact — mutate a radix tree that has no delete. A duplicate
+	// route detected partway through would strand the registrations that already
+	// succeeded as orphan routes: reachable by dispatch yet invisible to
+	// introspection. So probe every pair, in registration order, and panic
+	// before touching the tree if any explicit endpoint is already registered.
+	//
+	// Only duplicate endpoints need this guard. A structural conflict (a
+	// mismatched parameter key or regexp matcher in the prefix) always fires on
+	// the very first insert: catchAll is registered before exact and shares its
+	// entire prefix, so any such conflict is hit by catchAll's first method —
+	// before any registration commits — and so cannot leave a partial state.
+	for _, pat := range [...]string{catchAll, exact} {
+		for _, method := range mountForwardedMethods() {
+			if existing, ok := app.mux.wouldConflict(method, pat); ok {
+				incoming := &routeHandler{srcLoc: callerLocation()}
+				panic(duplicateRoutePanic(method, pat, incoming, existing))
+			}
+		}
+	}
+
 	mountHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rctx := getRouteContext(r)
 		remaining := "/"

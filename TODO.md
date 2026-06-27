@@ -559,7 +559,7 @@
 
 - [x] **Mount introspection**: mounts now appear as a single clean `RouteKindMount` entry in `Routes()`/`WalkRoutes` (cleaned prefix + sorted forwarded method set); internal catch-all/fan-out hidden. Shipped with route introspection v2 (`RouteInfo` gained `Name`/`Meta`/`Methods`/`Kind`/`AutoHead`, deterministic total-order output)
 - [x] **Document middleware ordering**: group middleware is collected at compile time from the group parent chain — registration order affects execution order only, never membership (semantics changed 2026-06-11 from registration-time capture; documented in `doc.go`, the middleware spec, and the guide)
-- [ ] **Mount registration atomicity**: preflight or rollback `Mount`'s exact + catch-all method fan-out so a duplicate exact route panic cannot leave partial radix/store entries when callers recover and reuse the same `App`. Add regression test for pre-existing exact route + overlapping `Mount`.
+- [x] **Mount registration atomicity**: `Mount` now preflights its exact + catch-all method fan-out (read-only `radix.Node.FindEndpoint` + `mux.wouldConflict`) and panics before mutating the tree when an explicit route already conflicts, so a recovered duplicate panic leaves no partial radix/store entries (the radix tree has no delete — guarantee is check-before-insert, not rollback). Regression test covers a pre-existing exact route + overlapping `Mount`; structural conflicts need no preflight because the catch-all registers first and shares the exact prefix, so they always fire on the first insert. See [ADR-007](docs/adr/007-router-and-routing.md).
 
 ### Deferred Features (from specs/ADRs)
 

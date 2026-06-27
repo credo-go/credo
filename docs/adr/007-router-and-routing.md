@@ -138,7 +138,7 @@ Stdlib `http.Handler` can be mounted at a prefix:
 app.Mount("/debug", http.DefaultServeMux)
 ```
 
-A mounted handler answers both its exact prefix (`/debug`) and every path beneath it (`/debug/...`), receiving the request with the prefix stripped. A root mount (`Mount("/", h)`) therefore forwards the entire path space, including the bare `/`.
+A mounted handler answers both its exact prefix (`/debug`) and every path beneath it (`/debug/...`), receiving the request with the prefix stripped. A root mount (`Mount("/", h)`) therefore forwards the entire path space, including the bare `/`. Registration is atomic: `Mount` preflights all of its method/pattern registrations and panics before mutating the tree if any explicit route already conflicts, so a conflicting mount leaves no orphan routes behind (the radix tree has no delete, so the guarantee is check-before-insert, not rollback).
 
 ### Route Introspection
 

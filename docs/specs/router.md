@@ -187,6 +187,8 @@ app.Mount("/admin", adminMux)
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
+**Atomic registration:** a single `Mount` makes fourteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a mismatched parameter key or regexp matcher in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state.
+
 ### HEAD Auto-handling
 
 GET routes automatically respond to HEAD requests (body discarded). Explicit HEAD registration overrides the auto-generated one.

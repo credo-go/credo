@@ -30,6 +30,7 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ### Fixed
 
+- **Routing** — `App.Mount` is now atomic: a mount that conflicts with an existing explicit route registers nothing. `Mount` makes fourteen radix registrations (every forwarded method on both the exact prefix and the catch-all), and the radix tree has no delete, so a conflict discovered partway through previously stranded the earlier registrations as orphan routes — reachable by dispatch yet hidden from introspection. `Mount` now preflights every method/pattern pair and panics before mutating the tree if any explicit route already occupies one, leaving the router exactly as it was. See [ADR-007](docs/adr/007-router-and-routing.md).
 - **Docs** — `WithLogger`'s godoc no longer claims a "nop logger" is used when it is left unset; the framework default logger (a text handler on stderr) is, so access and request logging are on by default with no configuration.
 
 ## [0.1.0] - 2026-06-10
