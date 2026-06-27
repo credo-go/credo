@@ -144,7 +144,7 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 ## Repository Layout (High Level)
 
 - Root package (`github.com/credo-go/credo`): `App`, `Context`, routing, handler/middleware types
-- `config/`: config loading; returns `credo.RawConfig`
+- `config/`: config loading; `config.Load` returns `*config.Config` (satisfies `credo.RawConfig`), with typed `Get[T]` access
 - `middleware/`, `validation/`, `auth/`, `store/`, ...: feature packages
 - `internal/`: private implementations (router radix tree, DI internals, etc.)
 - `docs/`: ADRs (`docs/adr/`) and detailed specs (`docs/specs/`)

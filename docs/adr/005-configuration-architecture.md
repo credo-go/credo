@@ -26,15 +26,21 @@ Use of string keys in business code is documented as an **anti-pattern**.
 
 ### RawConfig: 2-Method Interface
 
-`RawConfig` is limited to `Unmarshal(key, &dst) error` + `Exists(key) bool`. No typed getters, no `Get(key) any`. `Unmarshal` supports both structs and primitives, following the `encoding/json.Unmarshal` precedent.
+`RawConfig` is limited to `Unmarshal(key, &dst) error` + `Exists(key) bool`. No scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. `Unmarshal` supports both structs and primitives, following the `encoding/json.Unmarshal` precedent. The ergonomic typed-snapshot getter (`Get[T]`/`GetConfig[T]`, below) is a generic method on the concrete `*config.Config` and `*App` — not on the `RawConfig` interface, which stays minimal so custom implementations remain trivial (a generic method cannot live on an interface anyway).
 
 ### config.Load() Returns Error, Not Panic
 
-`config.Load()` performs I/O and returns `(credo.RawConfig, error)`. No package-global instance — each call produces an independent `RawConfig`. Invalid config (parse error, validation) returns error, never panics.
+`config.Load()` performs I/O and returns `(*config.Config, error)` — the concrete type, which satisfies `RawConfig`. No package-global instance — each call produces an independent `Config`. Invalid config (parse error, validation) returns error, never panics. There is no `MustLoad`: a load that touches the filesystem must surface its error, not panic.
 
 ### credo.New() Auto-Loads and Registers RawConfig
 
-`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config; doing so bypasses auto-load. `RawConfig` is always registered in the DI container. There is no `app.Config()` accessor.
+`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config; doing so bypasses auto-load. `RawConfig` is always registered in the DI container. There is no whole-config `app.Config()` accessor; for keyed reads at the composition root, `app.GetConfig[T](key)` decodes a section on demand (see below).
+
+### Typed Snapshot Getter: Get[T] / GetConfig[T]
+
+Go 1.27 concrete-type generic methods add an ergonomic typed-snapshot getter over `Unmarshal`: `(*config.Config).Get[T](key) (T, error)` plus `MustGet[T]`, and `(*App).GetConfig[T](key) (T, error)` plus `MustGetConfig[T]`. Each decodes a key into a value of `T` and returns it, collapsing the `var x T; rawCfg.Unmarshal(key, &x)` two-step into one call that still returns the decode error.
+
+These are positioned as bootstrap/composition-root sugar, not a runtime service locator. There is no `App()` accessor on `*credo.Context` (ADR-008), so handlers and services cannot reach `app.GetConfig` through the request — config reads stay at the composition root, and typed structs still flow to business code via DI. `MustGet`/`MustGetConfig` panic on error, matching the `MustProvide`/`MustResolve` family for fail-fast startup wiring; `Get`/`GetConfig` return the error and the zero value of `T`. The getter lives on the concrete types only: `App.GetConfig` delegates through `RawConfig.Unmarshal`, so it works identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
 
 Root-level file controls are deliberately not duplicated. Applications that need explicit file selection call `config.Load(config.WithFiles(...))` and pass the result with `WithRawConfig`. There is no `credo.WithConfigFiles` option. There is also no `WithoutAutoConfig`: a missing explicit `RawConfig` means "use Credo's default config discovery," which keeps the default all-in-one experience simple.
 
@@ -58,9 +64,10 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 | Alternative | Reason for rejection |
 | --- | --- |
-| Typed getters (GetString/GetInt/GetBool) | Error-swallowing API, returns zero value, facilitates abuse |
-| `Get(key) any` | Type-unsafe, `.(int)` assertion risk, Unmarshal is sufficient |
-| `app.Config()` accessor | Encourages runtime key-based access, typed config via DI should be the only path |
+| Scalar getters (GetString/GetInt/GetBool) | Error-swallowing API, returns zero value, facilitates abuse. Distinct from the generic `Get[T]`, which returns `(T, error)` and decodes whole sections, not loose scalars |
+| `Get(key) any` | Type-unsafe, `.(int)` assertion risk, the generic `Get[T]`/Unmarshal is sufficient |
+| Whole-config `app.Config()` accessor | Returns the entire config object, encouraging runtime key-based access. The keyed `app.GetConfig[T]` stays composition-root-only (no `Context.App()`), so typed config via DI remains the path into business code |
+| `MustLoad` (panic on load) | `config.Load` performs I/O; its error must be handled. `MustGet`/`MustGetConfig` panic only when decoding an already-loaded config |
 | User-facing CoreConfig type | Server config is a framework-internal concern — user should not be forced to embed it |
 | Root `WithConfigFiles` option | Duplicates `config.Load(config.WithFiles(...))` and expands root API surface |
 | `WithoutAutoConfig` option | Weak practical need; `WithRawConfig` covers explicit control without adding another mode |

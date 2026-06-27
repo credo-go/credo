@@ -111,6 +111,38 @@ func WithRawConfig(rc RawConfig) Option {
 	return func(o *appOptions) { o.rawConfig = rc }
 }
 
+// GetConfig decodes the configuration value or sub-tree at the given dotted key
+// path into a value of type T and returns it. It is a convenience wrapper over
+// the application's [RawConfig] (auto-loaded or supplied via [WithRawConfig]),
+// saving an explicit app.MustResolve[RawConfig]() plus Unmarshal:
+//
+//	db, err := app.GetConfig[DatabaseConfig]("database")
+//
+// Like config.(*Config).Get, this is a bootstrap/composition-root helper: read
+// config here and inject typed structs into services via DI rather than reading
+// string keys inside business code (a handler cannot reach this method — there
+// is no App accessor on *Context). A missing key or decode failure returns an
+// error; on error the zero value of T is returned.
+func (app *App) GetConfig[T any](key string) (T, error) {
+	var dst T
+	if err := app.rawConfig.Unmarshal(key, &dst); err != nil {
+		var zero T
+		return zero, err
+	}
+	return dst, nil
+}
+
+// MustGetConfig is like [App.GetConfig] but panics on error. It suits
+// composition-root code where a missing or invalid required key should abort
+// startup.
+func (app *App) MustGetConfig[T any](key string) T {
+	v, err := app.GetConfig[T](key)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // WithLogger sets the application-level logger. Each service receives a
 // scoped copy with a "service" attribute. If not set, the framework default
 // logger (a text handler writing to stderr) is used, so access and request

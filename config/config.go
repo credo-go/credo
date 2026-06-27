@@ -266,3 +266,37 @@ func (c *Config) Unmarshal(key string, dst any) error {
 	}
 	return nil
 }
+
+// Get decodes the value or sub-tree at the given dotted key path into a value
+// of type T and returns it. It is the typed-snapshot form of [Config.Unmarshal]:
+//
+//	db, err := cfg.Get[DatabaseConfig]("database")
+//	port, err := cfg.Get[int]("server.port")
+//
+// T may be a struct, map, slice, or primitive. The same rules as
+// [Config.Unmarshal] apply: a missing key or decode failure returns an error,
+// type coercion uses WeaklyTypedInput, and a T implementing Validate() error is
+// validated after decoding. On error the zero value of T is returned.
+//
+// Get is a bootstrap/composition-root helper. Prefer extracting typed config
+// here and injecting it into services via DI over reading string keys inside
+// business code.
+func (c *Config) Get[T any](key string) (T, error) {
+	var dst T
+	if err := c.Unmarshal(key, &dst); err != nil {
+		var zero T
+		return zero, err
+	}
+	return dst, nil
+}
+
+// MustGet is like [Config.Get] but panics on error. It suits bootstrap and
+// composition-root code where a missing or invalid required key should abort
+// startup.
+func (c *Config) MustGet[T any](key string) T {
+	v, err := c.Get[T](key)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}

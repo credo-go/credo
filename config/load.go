@@ -38,7 +38,10 @@ var bootstrapKeys = map[string]bool{
 // into the config tree after file loading.
 //
 // Load is NOT concurrency-safe; call it once at startup.
-func Load(opts ...Option) (RawConfig, error) {
+//
+// The returned *Config satisfies [RawConfig]; use [Config.Get] for typed
+// snapshot access or pass it to credo.WithRawConfig as-is.
+func Load(opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
 	dotenv, err := c.readDotenv()
 	if err != nil {
@@ -60,7 +63,10 @@ func Load(opts ...Option) (RawConfig, error) {
 //	var configData []byte
 //
 //	rc, err := config.LoadBytes(configData, config.FormatJSON)
-func LoadBytes(data []byte, format string, opts ...Option) (RawConfig, error) {
+//
+// The returned *Config satisfies [RawConfig]; use [Config.Get] for typed
+// snapshot access or pass it to credo.WithRawConfig as-is.
+func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
 	m, err := parseConfig(data, format)
 	if err != nil {

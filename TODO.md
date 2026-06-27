@@ -155,7 +155,7 @@
 - [x] Default-logger fallback: Logger defaults to the framework stderr logger when not configured
 - [x] Tests: Infra production, scoping, noop fallback, direct construction in tests
 - [x] `app.NewInfra(name)` — scoped Infra outside DI (middleware, startup code)
-- [x] `config.Load()` returns `credo.RawConfig` (compile-time verified)
+- [x] `config.Load()` returns `*config.Config` (satisfies `credo.RawConfig`; compile-time verified)
 - [x] ~346 total tests across all packages, all passing with `-race`
 
 ### 2.3 Validation Engine (`validation/`)
@@ -228,7 +228,7 @@
 - [x] Server config (host, port, timeouts) framework-internal — no user-facing CoreConfig
 - [x] `Run()` / `RunContext()` / `ServeContext()` / `Shutdown()` lifecycle
 - [x] TLS as server config — `WithTLSFiles` / `WithTLSConfig` / `server.tls.*` (precedence; `Run`/`RunContext` serve HTTPS, no separate `RunTLS`)
-- [x] `config.Load(opts...)` returns `credo.RawConfig`
+- [x] `config.Load(opts...)` returns `*config.Config` (satisfies `credo.RawConfig`); typed getters `Config.Get[T]` / `App.GetConfig[T]`
 
 **Import Boundary Fitness Test**
 

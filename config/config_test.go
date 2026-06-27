@@ -275,7 +275,8 @@ func TestUnmarshalValidation(t *testing.T) {
 }
 
 func TestLoadReturnsRawConfig(t *testing.T) {
-	// config.Load() returns credo.RawConfig interface.
+	// config.Load() returns *config.Config, which satisfies the RawConfig
+	// interface — assigning it to a RawConfig variable must keep compiling.
 	dir := t.TempDir()
 	yamlPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(yamlPath, []byte("name: test\n"), 0o644); err != nil {
@@ -1144,4 +1145,67 @@ func TestLoadExplicitEmptyFilesWithCredoEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (empty files + CREDO_ENV should not error)", err)
 	}
+}
+
+func TestConfigGet(t *testing.T) {
+	data := []byte(`{"database":{"host":"db","port":5432},"server":{"port":8080}}`)
+	c, err := config.LoadBytes(data, config.FormatJSON, config.WithPrefix("NOTSET_"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	t.Run("struct sub-tree", func(t *testing.T) {
+		type dbCfg struct {
+			Host string `credo:"host"`
+			Port int    `credo:"port"`
+		}
+		got, err := c.Get[dbCfg]("database")
+		if err != nil {
+			t.Fatalf("Get[dbCfg]: %v", err)
+		}
+		if got.Host != "db" || got.Port != 5432 {
+			t.Errorf("Get[dbCfg] = %+v, want {Host:db Port:5432}", got)
+		}
+	})
+
+	t.Run("primitive leaf", func(t *testing.T) {
+		port, err := c.Get[int]("server.port")
+		if err != nil {
+			t.Fatalf("Get[int]: %v", err)
+		}
+		if port != 8080 {
+			t.Errorf("Get[int](server.port) = %d, want 8080", port)
+		}
+	})
+
+	t.Run("missing key returns error and zero value", func(t *testing.T) {
+		got, err := c.Get[int]("does.not.exist")
+		if err == nil {
+			t.Fatal("expected error for missing key")
+		}
+		if got != 0 {
+			t.Errorf("error path should return zero value, got %d", got)
+		}
+	})
+}
+
+func TestConfigMustGet(t *testing.T) {
+	data := []byte(`{"server":{"port":8080}}`)
+	c, err := config.LoadBytes(data, config.FormatJSON, config.WithPrefix("NOTSET_"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	if got := c.MustGet[int]("server.port"); got != 8080 {
+		t.Errorf("MustGet[int](server.port) = %d, want 8080", got)
+	}
+
+	t.Run("panics on missing key", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("MustGet on missing key should panic")
+			}
+		}()
+		_ = c.MustGet[int]("missing")
+	})
 }

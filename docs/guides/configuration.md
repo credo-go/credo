@@ -194,6 +194,26 @@ func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
 
 String keys appear **once** at the module boundary. Beyond that, everything is typed and compile-time safe.
 
+### Typed Getter Shorthand
+
+`app.GetConfig[T](key)` collapses the resolve-then-unmarshal step into a single call. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
+
+```go
+app, err := credo.New()
+if err != nil {
+    log.Fatal(err)
+}
+
+// One call replaces MustResolve[RawConfig] + var + Unmarshal.
+dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
+if err != nil {
+    log.Fatal(err)
+}
+app.MustProvideValue(&dbCfg)
+```
+
+Use `MustGetConfig[T]` (or `cfg.MustGet[T]`) to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustProvide`/`MustResolve`. These getters are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed structs via DI.
+
 ---
 
 ## Multi-Database Config

@@ -32,7 +32,10 @@
 //
 // # Sub-Tree Access
 //
-// For granular key access, use [Config.Unmarshal]:
+// Read a typed section in one call with the generic [Config.Get] method, or
+// decode into an existing value with [Config.Unmarshal]:
+//
+//	serverCfg, err := c.Get[ServerConfig]("server")
 //
 //	var serverCfg ServerConfig
 //	c.Unmarshal("server", &serverCfg)

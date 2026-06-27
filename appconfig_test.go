@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/config"
 )
 
 func TestNew_ZeroConfig(t *testing.T) {
@@ -228,4 +229,88 @@ func (s *serverConfigRC) Unmarshal(key string, dst any) error {
 
 func (s *serverConfigRC) Exists(key string) bool {
 	return key == "server"
+}
+
+func TestApp_GetConfig(t *testing.T) {
+	data := []byte(`{"app":{"name":"acme","debug":true},"server":{"port":8080}}`)
+	rc, err := config.LoadBytes(data, config.FormatJSON, config.WithPrefix("NOTSET_"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	app := mustNew(t, credo.WithRawConfig(rc))
+
+	t.Run("struct sub-tree", func(t *testing.T) {
+		type appCfg struct {
+			Name  string `credo:"name"`
+			Debug bool   `credo:"debug"`
+		}
+		got, err := app.GetConfig[appCfg]("app")
+		if err != nil {
+			t.Fatalf("GetConfig[appCfg]: %v", err)
+		}
+		if got.Name != "acme" || !got.Debug {
+			t.Errorf("GetConfig[appCfg] = %+v, want {Name:acme Debug:true}", got)
+		}
+	})
+
+	t.Run("primitive leaf", func(t *testing.T) {
+		port, err := app.GetConfig[int]("server.port")
+		if err != nil {
+			t.Fatalf("GetConfig[int]: %v", err)
+		}
+		if port != 8080 {
+			t.Errorf("GetConfig[int](server.port) = %d, want 8080", port)
+		}
+	})
+
+	t.Run("missing key returns error and zero value", func(t *testing.T) {
+		got, err := app.GetConfig[int]("does.not.exist")
+		if err == nil {
+			t.Fatal("expected error for missing key")
+		}
+		if got != 0 {
+			t.Errorf("error path should return zero value, got %d", got)
+		}
+	})
+}
+
+// TestApp_GetConfig_CustomRawConfig proves GetConfig delegates through the
+// RawConfig interface, so it works identically for the auto-loaded *config.Config
+// and a custom WithRawConfig implementation.
+func TestApp_GetConfig_CustomRawConfig(t *testing.T) {
+	rc := newServerConfigRC(map[string]any{"port": 8080})
+	app := mustNew(t, credo.WithRawConfig(rc))
+
+	type serverCfg struct {
+		Port int `credo:"port"`
+	}
+	got, err := app.GetConfig[serverCfg]("server")
+	if err != nil {
+		t.Fatalf("GetConfig[serverCfg] via custom RawConfig: %v", err)
+	}
+	if got.Port != 8080 {
+		t.Errorf("Port = %d, want 8080", got.Port)
+	}
+}
+
+func TestApp_MustGetConfig(t *testing.T) {
+	data := []byte(`{"server":{"port":8080}}`)
+	rc, err := config.LoadBytes(data, config.FormatJSON, config.WithPrefix("NOTSET_"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	app := mustNew(t, credo.WithRawConfig(rc))
+
+	if got := app.MustGetConfig[int]("server.port"); got != 8080 {
+		t.Errorf("MustGetConfig[int](server.port) = %d, want 8080", got)
+	}
+
+	t.Run("panics on missing key", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("MustGetConfig on missing key should panic")
+			}
+		}()
+		_ = app.MustGetConfig[int]("missing")
+	})
 }

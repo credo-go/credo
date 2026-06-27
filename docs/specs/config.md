@@ -101,13 +101,13 @@ export CREDO_DEBUG=true
 ### config.Load() — Primary Entry Point
 
 ```go
-rawCfg, err := config.Load(opts...) // returns (credo.RawConfig, error)
+cfg, err := config.Load(opts...) // returns (*config.Config, error)
 ```
 
 - Loads all sources (files, `.env`, env vars) and merges them.
-- Returns `credo.RawConfig` — the sole mechanism for accessing loaded config.
-- Returns error on I/O failure, parse error, or invalid config. Never panics.
-- No package-global instance — each call produces an independent `RawConfig`.
+- Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
+- Returns error on I/O failure, parse error, or invalid config. Never panics. There is no `MustLoad` — a filesystem-touching load surfaces its error.
+- No package-global instance — each call produces an independent `Config`.
 - **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning).
 
 ### config.RawConfig Interface
@@ -122,7 +122,7 @@ type RawConfig interface {
 }
 ```
 
-Limited to 2 methods by design — no typed getters, no `Get(key) any`. For design rationale and rejected alternatives, see [ADR-005](../adr/005-configuration-architecture.md).
+Limited to 2 methods by design — no scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. The ergonomic typed-snapshot getter `Get[T]`/`GetConfig[T]` (below) is a generic method on the concrete `*config.Config` and `*App`, not on this interface — a generic method cannot live on an interface, and keeping `RawConfig` at two methods keeps custom implementations trivial. For design rationale and rejected alternatives, see [ADR-005](../adr/005-configuration-architecture.md).
 
 Behavior contract:
 
@@ -132,7 +132,7 @@ Behavior contract:
 
 ### credo.New() Config Integration
 
-`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). No `app.Config()` accessor — typed config via DI only. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
+`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; the keyed `app.GetConfig[T](key)` (below) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
 
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
@@ -145,6 +145,33 @@ rc, err := config.LoadBytes(data, config.FormatJSON, opts...)
 ```
 
 Creates a Config from raw bytes. After parsing, `.env` and env var layers are applied on top (same precedence as `Load`). Useful with `go:embed`.
+
+### Typed Snapshot Getter — Get[T] / GetConfig[T]
+
+A generic, one-call form of `Unmarshal` for reading a typed section at the composition root:
+
+```go
+cfg, err := config.Load(config.WithFiles("app.yaml"))
+// ...
+db, err := cfg.Get[DatabaseConfig]("database")   // (*config.Config).Get[T]
+port := cfg.MustGet[int]("server.port")           // MustGet panics on error
+
+// Or straight from the App, over its registered RawConfig:
+db, err := app.GetConfig[DatabaseConfig]("database")
+db := app.MustGetConfig[DatabaseConfig]("database")
+```
+
+| Method | Signature | On error |
+| --- | --- | --- |
+| `(*config.Config).Get[T]` | `(key string) (T, error)` | returns zero `T` + error |
+| `(*config.Config).MustGet[T]` | `(key string) T` | panics |
+| `(*App).GetConfig[T]` | `(key string) (T, error)` | returns zero `T` + error |
+| `(*App).MustGetConfig[T]` | `(key string) T` | panics |
+
+- `T` may be a struct, map, slice, or primitive — same decode rules, weak typing, and `Validate()` hook as `Unmarshal`.
+- `App.GetConfig` decodes through the registered `RawConfig.Unmarshal`, so it behaves identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
+- These are **bootstrap/composition-root** sugar, not a runtime service locator: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach `GetConfig` through the request. Read config here; inject typed structs into services via DI (next section).
+- `MustGet`/`MustGetConfig` mirror the `MustProvide`/`MustResolve` family — panic for fail-fast startup wiring. There is no `MustLoad` (the load step performs I/O; its error must be handled).
 
 ### Typed Config via DI — Primary Pattern
 
@@ -316,7 +343,7 @@ The provider/parser architecture, the byte/map provider interfaces, and the per-
 
 | koanf source | Reason |
 | --- | --- |
-| `getters.go` (~15KB, ~40 functions) | Pre-generics API; `Unmarshal` with primitive support replaces all typed getters |
+| `getters.go` (~15KB, ~40 functions) | Pre-generics scalar getters; `Unmarshal` with primitive support and the generic `Get[T]` replace them all |
 | `koanf.Conf.StrictMerge` | Credo always uses loose merge; complexity not needed |
 | `koanf.NewWithConf()` | `New()` with options is sufficient; `Conf` becomes internal |
 | `koanf.Sprint()`, `Print()` | Debug utilities, not part of Credo's public API |
@@ -338,7 +365,7 @@ The provider/parser architecture, the byte/map provider interfaces, and the per-
 ```text
 config/
 ├── doc.go
-├── config.go   ← RawConfig, Config, Option types, Unmarshal/Exists, decoder
+├── config.go   ← RawConfig, Config, Option types, Unmarshal/Exists/Get, decoder
 ├── load.go     ← Load()/LoadBytes(), file/.env/env source loading and merging
 ├── dotenv.go   ← .env line parser (parseDotenv)
 ├── maps.go     ← internal maps helpers (lookup, unflatten, merge, copy)
@@ -359,7 +386,8 @@ config/
 - Env-specific files loaded when CREDO_ENV is set
 - `MapFieldName`: fields without `credo` tag use auto-converted snake_case name
 - `Validatable` integration: `Validate()` is called and its error is propagated
-- `config.Load()` returns independent `RawConfig` instances (no shared state)
+- `config.Load()` returns independent `*config.Config` instances (no shared state)
+- `Get[T]`/`GetConfig[T]`: typed snapshot decode for struct and primitive, missing key returns error + zero value, `MustGet`/`MustGetConfig` panic on missing key
 - `Unmarshal` with empty key `""` returns full config tree
 - `Unmarshal` with primitive types (`int`, `string`, `bool`) works correctly
 - `Exists` returns correct values for leaf and intermediate keys
