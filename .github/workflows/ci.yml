@@ -94,6 +94,38 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [examples/saas, examples/hello]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Each example is its own module (replace github.com/credo-go/credo => ../..),
+      # so it exercises the framework's generic-method call sites across a module
+      # boundary — the gate that would break first on a Go 1.27 migration slip.
+      - name: Build
+        working-directory: ${{ matrix.module }}
+        run: go build ./...
+
+      - name: Vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Tidy
+        working-directory: ${{ matrix.module }}
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -142,4 +174,4 @@ jobs:
         with:
           version: v2.12.2
           install-mode: goinstall
-          args: --enable=staticcheck,unused,gosec
+          args: --enable=staticcheck --enable=unused --enable=gosec
