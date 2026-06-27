@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -766,6 +767,156 @@ func TestSelectQuery_Reuse(t *testing.T) {
 	}
 	if u2.Name != "reuse2" {
 		t.Errorf("u2.Name = %q, want %q", u2.Name, "reuse2")
+	}
+}
+
+func TestSelectQuery_One(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b.c"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
+	}
+
+	t.Run("found returns the row via the model-less Select form", func(t *testing.T) {
+		user, err := db.Select().Where("name = ?", "alice").One[User](ctx)
+		if err != nil {
+			t.Fatalf("One() = %v", err)
+		}
+		if user.Name != "alice" {
+			t.Errorf("One().Name = %q, want %q", user.Name, "alice")
+		}
+	})
+
+	t.Run("no row maps to ErrNotFound and returns the zero value", func(t *testing.T) {
+		user, err := db.Select().Where("name = ?", "nobody").One[User](ctx)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("One() error = %v, want store.ErrNotFound", err)
+		}
+		if user != (User{}) {
+			t.Errorf("One() value on error = %+v, want the zero User", user)
+		}
+	})
+
+	t.Run("multiple matches return the first row (LIMIT 1, not an error)", func(t *testing.T) {
+		// Both rows match; One applies LIMIT 1 so this is not an error, and
+		// OrderExpr makes the single returned row deterministic.
+		user, err := db.Select().Where("id > ?", 0).OrderExpr("name DESC").One[User](ctx)
+		if err != nil {
+			t.Fatalf("One() with multiple matches = %v, want the first row", err)
+		}
+		if user.Name != "bob" {
+			t.Errorf("One().Name = %q, want %q (first by name DESC)", user.Name, "bob")
+		}
+	})
+}
+
+func TestSelectQuery_All(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	t.Run("empty result is a non-nil empty slice with nil error", func(t *testing.T) {
+		users, err := db.Select().All[User](ctx)
+		if err != nil {
+			t.Fatalf("All() on empty table = %v", err)
+		}
+		if users == nil {
+			t.Error("All() = nil, want a non-nil empty slice")
+		}
+		if len(users) != 0 {
+			t.Errorf("All() len = %d, want 0", len(users))
+		}
+	})
+
+	for _, name := range []string{"anna", "beth", "cara"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
+	}
+
+	t.Run("returns every matching row in order", func(t *testing.T) {
+		users, err := db.Select().OrderExpr("name ASC").All[User](ctx)
+		if err != nil {
+			t.Fatalf("All() = %v", err)
+		}
+		got := make([]string, len(users))
+		for i, u := range users {
+			got[i] = u.Name
+		}
+		if want := []string{"anna", "beth", "cara"}; !slices.Equal(got, want) {
+			t.Errorf("All() names = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestSelectQuery_TypedTerminals_AmbientTx(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	// Seed one row outside the transaction.
+	if _, err := db.Insert(&User{Name: "outside", Email: "o@b"}).Exec(ctx); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+		if _, err := db.Insert(&User{Name: "inside", Email: "i@b"}).Exec(txCtx); err != nil {
+			return err
+		}
+
+		// One/All must join the ambient TX and see the uncommitted row.
+		u, err := db.Select().Where("name = ?", "inside").One[User](txCtx)
+		if err != nil {
+			t.Errorf("One() inside TX = %v, want the uncommitted row", err)
+		}
+		if u.Name != "inside" {
+			t.Errorf("One().Name = %q, want %q", u.Name, "inside")
+		}
+
+		all, err := db.Select().All[User](txCtx)
+		if err != nil {
+			t.Errorf("All() inside TX = %v", err)
+		}
+		if len(all) != 2 {
+			t.Errorf("All() inside TX len = %d, want 2 (outside + inside)", len(all))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunInTx() = %v", err)
+	}
+}
+
+func TestSelectQuery_TypedTerminals_Reuse(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	db.Insert(&User{Name: "reuseA", Email: "a@b"}).Exec(ctx)
+	db.Insert(&User{Name: "reuseB", Email: "b@b"}).Exec(ctx)
+
+	base := db.Select().OrderExpr("name ASC")
+
+	// One clones internally and applies LIMIT 1 to the clone, not to base.
+	first, err := base.One[User](ctx)
+	if err != nil {
+		t.Fatalf("One() = %v", err)
+	}
+	if first.Name != "reuseA" {
+		t.Errorf("One().Name = %q, want %q", first.Name, "reuseA")
+	}
+
+	// If One had mutated base, this All would inherit LIMIT 1 and return one row.
+	all, err := base.All[User](ctx)
+	if err != nil {
+		t.Fatalf("All() after One() = %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("All() len = %d, want 2 — One must not leak LIMIT 1 into the base query", len(all))
 	}
 }
 

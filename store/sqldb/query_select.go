@@ -219,3 +219,39 @@ func (q *SelectQuery) Exists(ctx context.Context) (bool, error) {
 	ok, err := q.prepareTerminal(ctx).Exists(ctx)
 	return ok, mapError(err)
 }
+
+// --- Typed terminal methods (generic) ---
+
+// One executes the query and returns its first matching row as a value of T.
+// T drives both the table and the scan destination, so the query is built
+// model-less and One owns the destination:
+//
+//	user, err := db.Select().Where("id = ?", id).One[User](ctx)
+//
+// One applies LIMIT 1, so multiple matches are not an error — it returns the
+// first row; add an OrderExpr for a deterministic choice. A missing row maps
+// [sql.ErrNoRows] to [store.ErrNotFound], so callers branch with
+// errors.Is(err, store.ErrNotFound); other driver errors map to the store.Err*
+// sentinels. The receiver is not mutated: the query is cloned and the ambient
+// transaction from ctx injected, exactly as for [SelectQuery.Scan].
+func (q *SelectQuery) One[T any](ctx context.Context) (T, error) {
+	var out T
+	err := q.prepareTerminal(ctx).Model(&out).Limit(1).Scan(ctx)
+	return out, mapError(err)
+}
+
+// All executes the query and returns every matching row as a []T. T drives
+// both the table and the scan destination, so the query is built model-less
+// and All owns the destination:
+//
+//	users, err := db.Select().Where("active = ?", true).OrderExpr("id").All[User](ctx)
+//
+// No matching rows yield an empty, non-nil slice and a nil error — unlike One,
+// an empty result is not [store.ErrNotFound]. Driver errors map to the
+// store.Err* sentinels. The receiver is not mutated: the query is cloned and
+// the ambient transaction from ctx injected, exactly as for [SelectQuery.Scan].
+func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
+	out := []T{}
+	err := q.prepareTerminal(ctx).Model(&out).Scan(ctx)
+	return out, mapError(err)
+}

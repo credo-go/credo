@@ -121,6 +121,21 @@ func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuild
 
 **Scope**: select/update/delete only. `InsertQuery` is excluded — it has no WHERE clause, matching Bun's own `QueryBuilder` interface assertions. No API breakage; additive only, all three return the proxy type (fluent), and a nil fn is a no-op.
 
+## Typed Terminals (One[T] / All[T])
+
+**`One[T]` and `All[T]` added** to `SelectQuery` as generic terminal methods (Go 1.27 concrete-type generic methods):
+
+```go
+func (q *SelectQuery) One[T any](ctx context.Context) (T, error)
+func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error)
+```
+
+**Rationale**: the existing terminals (`Scan(ctx, &dest)`) require the caller to declare a destination and pass it back in — `var u User; err := db.Select(&u).Where(...).Scan(ctx)`. With generic methods finally usable on a concrete type, the destination becomes the type parameter: `u, err := db.Select().Where(...).One[User](ctx)`. `T` drives both the FROM table (model inferred from `T`) and the scan destination, so `Select` is called model-less and the terminal owns the destination — a model passed to `Select` is overridden.
+
+**Semantics (locked by tests, not left to Bun)**: `One` applies an explicit `LIMIT 1` and returns the first matching row, so multiple matches are not an error (callers add `OrderExpr` for a deterministic choice); a missing row maps `sql.ErrNoRows` to `store.ErrNotFound` and returns the zero `T`. `All` returns a non-nil empty slice with a nil error when nothing matches — an empty list is not `ErrNotFound`. Both go through the same `prepareTerminal` clone + ambient-TX injection + error mapping as `Scan`, so the receiver is never mutated and a terminal's `Model`/`LIMIT 1` never leaks into a reused query.
+
+**Name — `One`, not `First`**: the terminal is named for its return shape (`One → T`, `All → []T`), consistent with the result-shape naming used elsewhere in the data layer; it is a single-row read, not an exactly-one assertion. For "exactly one or error", a caller composes `Count`/`Exists`. No API breakage; additive only, and `Scan` stays for projection/DTO cases where `T` is not the table model.
+
 ## Migrations and TX Ergonomics
 
 **Method-form TX sugar added**: `(*DB).InTx(ctx, fn)` and `(*DB).InTxWith(ctx, opts, fn)` delegate to `RunInTx` / `RunInTxWith`. Rationale: handler-side ergonomics (`db.InTx(ctx.Context(), fn)`) and discoverability — the operation lives on the value the developer already holds. The distinct name also avoids signature confusion with Bun's native `(*bun.DB).RunInTx(ctx, opts, fn(ctx, tx))` reachable via `Client()`.

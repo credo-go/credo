@@ -289,7 +289,7 @@ Each proxy type:
 
 **SelectQuery proxy methods** (~20): `Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`, `Join`, `JoinOn`, `JoinOnOr`, `Where`, `WhereOr`, `WherePK`, `OrderExpr`, `Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`, `Clone`, `Conn`.
 
-**Terminal methods** (Scan, Exec, Count, Exists) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
+**Terminal methods** (Scan, Exec, Count, Exists, plus the generic `One[T]`/`All[T]` below) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
 
 | Driver error               | Mapped sentinel      |
 | -------------------------- | -------------------- |
@@ -300,6 +300,15 @@ Each proxy type:
 | `context.DeadlineExceeded` | `store.ErrTimeout`   |
 
 `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
+
+**Typed terminals: `One[T]` / `All[T]`.** Two generic terminals (Go 1.27 concrete-type generic methods) return the queried type directly instead of scanning into a caller-provided destination. `T` drives both the table and the scan destination, so the query is built model-less and the terminal owns the destination:
+
+```go
+user, err := db.Select().Where("id = ?", id).One[User](ctx)        // (User, error)
+users, err := db.Select().Where("active = ?", true).All[User](ctx) // ([]User, error)
+```
+
+`One` applies `LIMIT 1` and returns the first matching row, so multiple matches are not an error — add `OrderExpr` for a deterministic choice; no row returns `store.ErrNotFound` with the zero `T`. `All` returns every matching row, or a non-nil empty slice with a nil error when none match (an empty result is not `ErrNotFound`). Both clone the query and inject the ambient transaction exactly like `Scan`, so the receiver is never mutated and a terminal's `Model`/`LIMIT 1` never leaks back into a reused query. Pass no model to `Select` — one passed there is overridden. For a model→DTO projection where `T` is not the table model, set the source first (`Model`/`TableExpr`) or stay on `Scan(ctx, &dest)`.
 
 **Escape hatches** on each query type:
 
