@@ -547,7 +547,7 @@
   - [ ] Detect duplicate route patterns / conflicting registrations
   - [ ] Warn on routes without any middleware (optional strict mode)
   - [ ] **Param conflict detection**: same segment with different param names or regexes (e.g., `/{id:[0-9]+}` vs `/{name:[a-z]+}`) — warn or error at registration time
-  - [ ] **Duplicate route diagnostics**: radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. Decide whether any lenient/debug warning mode is still wanted.
+  - [ ] **Duplicate route diagnostics** (decision closed — strict stays): radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. A lenient/debug warning mode is rejected — it would legitimize silent route shadowing, which breaks named-route, route-meta, and middleware resolution. Only diagnostic _quality_ may still improve (clearer message, both conflicting locations, source position); the fail-loud behavior never changes.
 
 ### Performance Budgets
 

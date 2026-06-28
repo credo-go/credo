@@ -121,6 +121,8 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
 
 The adapter handles request/response writer updates that stdlib middleware may apply (e.g., wrapping the writer, modifying the request).
 
+`WrapStdMiddleware` is kept as a deliberate ecosystem escape hatch — the large `func(http.Handler) http.Handler` corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the "integrated first, override-friendly boundaries" philosophy and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), the renderer, or the error pipeline. A short-circuit that writes directly to the `ResponseWriter` therefore bypasses RFC 7807 formatting; only responses produced by calling `next` flow back through Credo's error handling. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`.
+
 ### Built-in Middleware (Auto-Enabled)
 
 | Built-in           | Purpose                          | Opt-out              |

@@ -807,6 +807,8 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(pkg.SomeMiddleware))
 
 The adapter handles request and response writer synchronization between the stdlib and Credo worlds.
 
+Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`ctx.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's RFC 7807 error pipeline (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
+
 ---
 
 ## Recommended Middleware Stack

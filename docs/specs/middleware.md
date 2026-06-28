@@ -26,6 +26,8 @@ Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddlewar
 app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
 ```
 
+Adapted stdlib middleware is deliberately second-class: it sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), or the renderer. If it short-circuits by writing to the `ResponseWriter` directly, that response bypasses the RFC 7807 error pipeline — only responses produced by calling `next` flow back through Credo's error handling. The first-class path for anything that needs the principal or the error pipeline is a native `func(Handler) Handler`. See [ADR-010](../adr/010-middleware-architecture.md) and [ADR-012](../adr/012-authentication-and-authorization.md).
+
 ---
 
 ## Built-in Tier (Auto-Enabled)

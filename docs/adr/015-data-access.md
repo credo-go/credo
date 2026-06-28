@@ -73,6 +73,8 @@ The `sqldb.DB` wrapper applies three strategies to Bun's API:
 
 Closing has a single owner: the DI container shuts down registered values implementing `credo.Shutdowner` in reverse registration order. The `Registry` never closes connections — this removes the historical double shutdown (DI + Registry both closing the same connection).
 
+`store.Register` is a free function rather than a root `App` method, even though the DI surface itself is method-based (`app.Provide[T]` / `app.Resolve[T]`): the `store` package cannot add methods to `*credo.App` (Go forbids methods on a type from another package), and having the root import `store` to host the method would invert the dependency direction the architecture enforces. `worker.Register` stays a function for the same reason — feature-package registration lives in the feature package, while only the generic container surface lives on `App`.
+
 ### Bun-Only
 
 The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI registration (`app.ProvideValue[*gorm.DB](db)`). The `store/` contracts (errors, health, registry) are ORM-agnostic and can be used with any backend.
