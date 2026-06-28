@@ -258,6 +258,106 @@ err := db.Select().
 
 ---
 
+## Typed Terminals: One, All, Page
+
+`Scan` is the general terminal: you supply a destination, it fills it. For the common case where you query a type and want that same type back, `store/sqldb` adds three **typed terminals** that own their result through a type parameter — `One[T]`, `All[T]`, and `Page[T]` (Go 1.27 concrete-type generic methods). `T` drives both the table and the scan destination, so the query is built model-less and the terminal returns the result directly, with the same transaction pickup and error mapping the other terminals guarantee. The result shape follows the name: `One → T`, `All → []T`, `Page → *pagination.Page[T]`.
+
+### `One[T]` — a single row
+
+The Scan-based `FindByID` above becomes a typed one-liner that returns the value directly — no `var user User`, no `&user`:
+
+```go
+func (r *UserRepo) FindByID(ctx context.Context, id int64) (User, error) {
+    return r.db.Select().Where("id = ?", id).One[User](ctx)
+}
+```
+
+`One` applies `LIMIT 1`, so multiple matches are not an error — it returns the first row; add an `OrderExpr` for a deterministic choice. A missing row maps to `store.ErrNotFound`, so callers branch exactly as they do with `Scan`:
+
+```go
+user, err := r.db.Select().Where("email = ?", email).One[User](ctx)
+if errors.Is(err, store.ErrNotFound) {
+    return credo.NewHTTPError(http.StatusNotFound, credo.MsgKeyNotFound)
+}
+```
+
+### `All[T]` — every matching row
+
+```go
+func (r *UserRepo) Active(ctx context.Context) ([]User, error) {
+    return r.db.Select().Where("active = ?", true).OrderExpr("id").All[User](ctx)
+}
+```
+
+Unlike `One`, an empty result is **not** an error: `All` returns a non-nil empty slice and a nil error, so callers can range over it without a nil check.
+
+### `Page[T]` — a paginated result
+
+`Page` runs a COUNT plus a LIMIT/OFFSET SELECT and assembles a ready `*pagination.Page[T]` from a `*pagination.PageRequest`:
+
+```go
+func (r *UserRepo) List(ctx context.Context, req *pagination.PageRequest) (*pagination.Page[User], error) {
+    return r.db.Select().
+        Where("active = ?", true).
+        OrderExpr("created_at DESC").
+        Page[User](ctx, req)
+}
+```
+
+`req` is read, never modified, and is assumed already normalized. `BindQuery` does that automatically — `pagination.PageRequest` implements `Validate`, so binding it from the request query normalizes `page`/`per_page` in place before the repository sees it:
+
+```go
+func (h *UserHandler) List(ctx *credo.Context) error {
+    var req pagination.PageRequest
+    if err := ctx.Request().BindQuery(&req); err != nil {
+        return err
+    }
+    page, err := h.users.List(ctx.Context(), &req)
+    if err != nil {
+        return err
+    }
+    return ctx.Response().JSON(http.StatusOK, page)
+}
+```
+
+Outside a handler, call `req.Normalize()` (or `NormalizeWithMax` for a higher per-page cap) yourself first. A nil `req` is the one rejected input and returns an error. When COUNT reports zero rows the SELECT is skipped and the page comes back with a non-nil empty `Records` slice and the requested page/per-page preserved. COUNT and SELECT are separate statements, so under concurrent writes the total and the window can drift — wrap the call in `RunInTx` when a consistent snapshot matters.
+
+### Mapping models to DTOs with `Page.Map`
+
+A repository should page over its **table model**; the response usually needs a different **DTO** shape. Page once over the model, then reshape with `Page.Map`, which applies your function to every record and carries the pagination metadata (`Total`, `Page`, `PerPage`, `TotalPages`) over unchanged — so it is never recomputed or hand-copied:
+
+```go
+type UserResponse struct {
+    ID   int64  `json:"id"`
+    Name string `json:"name"`
+}
+
+func (s *UserService) List(ctx context.Context, req *pagination.PageRequest) (*pagination.Page[UserResponse], error) {
+    page, err := s.repo.List(ctx, req) // *pagination.Page[User]
+    if err != nil {
+        return nil, err
+    }
+    return page.Map(func(u User) UserResponse {
+        return UserResponse{ID: u.ID, Name: u.Name}
+    }), nil
+}
+```
+
+`Page[Model] → Map → Page[DTO]` is the idiomatic flow: the repository stays in model terms, the service owns the DTO boundary, and the metadata is computed once by `Page` and preserved by `Map`. The mapping function must be pure and must not be nil — `Map` panics on a nil function, even for an empty page, because a nil mapping is always a programming error. When the conversion itself can fail (it queries, validates, or otherwise returns an error), don't force it through `Map`; build the page in the service from the lower-level terminals so the error can surface:
+
+```go
+total, err := r.db.Select().Where(cond).Count(ctx)
+// ...All[Model] for the page window, map to []DTO handling each error...
+page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
+```
+
+### Scan or a typed terminal?
+
+- Reach for `One[T]` / `All[T]` / `Page[T]` whenever the result is the queried type — they drop the destination-variable ceremony and read top to bottom.
+- Stay on `Scan(ctx, &dest)` for model-less projections (aggregates, ad-hoc column lists) and any case where `T` is not the table model and you are scanning into a value you already hold.
+
+---
+
 ## What `store.Register` Does
 
 `store.Register[R]` is the preferred registration API for data stores.
@@ -593,4 +693,5 @@ For multiple databases:
 - [Dependency Injection Guide](dependency-injection.md)
 - [Configuration Guide](configuration.md)
 - [Store Spec](../specs/store.md)
+- [Pagination Spec](../specs/pagination.md)
 - [ADR-015](../adr/015-data-access.md)
