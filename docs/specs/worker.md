@@ -370,7 +370,7 @@ const (
 
 ## Time and Testing (synctest)
 
-The pool and runners call the `time` package directly (`time.Now`, `time.NewTimer`); there is no clock-injection seam. Determinism comes from `testing/synctest` (Go 1.26+): timing tests run inside a bubble whose virtual clock advances only when every goroutine is durably blocked.
+The pool and runners call the `time` package directly (`time.Now`, `time.NewTimer`); there is no clock-injection seam. Determinism comes from `testing/synctest` (Go 1.27+): timing tests run inside a bubble whose virtual clock advances only when every goroutine is durably blocked.
 
 ```go
 func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {

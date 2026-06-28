@@ -20,7 +20,7 @@ Write the health check engine from scratch. The engine is unexported in the root
 ### Engine (root package, unexported)
 
 - `healthEngine` manages named liveness and readiness checks.
-- Checks run concurrently via `sync.WaitGroup.Go` (Go 1.26+).
+- Checks run concurrently via `sync.WaitGroup.Go` (Go 1.27+).
 - Each check gets `context.WithTimeout(ctx, timeout)`.
 - Pre-allocated result slice — each goroutine writes at its own index.
 - No checks registered = "up" for liveness (server responding proves alive).

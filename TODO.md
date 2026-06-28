@@ -11,7 +11,7 @@
 ### 1.1 Project Skeleton
 
 - [x] Directory structure (28 packages)
-- [x] go.mod (`github.com/credo-go/credo`, Go 1.26)
+- [x] go.mod (`github.com/credo-go/credo`, Go 1.27)
 - [x] CLAUDE.md, README.md, LICENSE, CONTRIBUTING.md, SECURITY.md
 - [x] .gitignore, .golangci.yml, Makefile
 - [x] .github/ templates (PR, issues, CI workflow)
@@ -605,7 +605,7 @@
 
 ### CI/CD
 
-- [ ] GitHub Actions: test matrix (Go 1.26, latest)
+- [ ] GitHub Actions: test matrix (Go 1.27, latest)
 - [ ] Codecov or Coveralls integration
 - [ ] Automated golangci-lint on PRs
 - [ ] Release workflow with goreleaser

@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Credo! This guide will help you g
 ## Development Setup
 
 1. **Fork and clone** the repository.
-2. Ensure you have **Go 1.26+** installed.
+2. Ensure you have **Go 1.27+** installed.
 3. Run `make test` to verify your setup.
 4. Run `make lint` to check code style.
 

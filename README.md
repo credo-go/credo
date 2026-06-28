@@ -2,7 +2,7 @@
 
 **An all-in-one Go web framework for modern, enterprise-grade applications.**
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev) [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Go Report Card](https://goreportcard.com/badge/github.com/credo-go/credo)](https://goreportcard.com/report/github.com/credo-go/credo) [![GoDoc](https://pkg.go.dev/badge/github.com/credo-go/credo)](https://pkg.go.dev/github.com/credo-go/credo)
+[![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)](https://go.dev) [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Go Report Card](https://goreportcard.com/badge/github.com/credo-go/credo)](https://goreportcard.com/report/github.com/credo-go/credo) [![GoDoc](https://pkg.go.dev/badge/github.com/credo-go/credo)](https://pkg.go.dev/github.com/credo-go/credo)
 
 > **Status: Beta** -- Core APIs are stable enough for real application development. Breaking changes may still happen before v1, but should be documented with migration notes. Feedback from active pilot projects continues to shape the framework.
 
@@ -50,7 +50,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 go get github.com/credo-go/credo@latest
 ```
 
-> **Requires Go 1.26+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
+> **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Provide[T]`, `q.Page[T]`, `ctx.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
 
 ## Quick Start (Target API)
 

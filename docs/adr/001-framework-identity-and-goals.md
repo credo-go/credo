@@ -40,9 +40,9 @@ Credo does not optimize for users manually assembling every framework layer. The
 
 At application boundaries, Credo stays explicit. Business dependencies remain visible in constructor signatures, config crosses module boundaries as typed structs via DI, and framework-managed infrastructure is carried through the documented `credo.Infra` type. Those boundaries are typed, reviewable, and override-friendly.
 
-### 5. Go 1.26+ Baseline
+### 5. Go 1.27+ Baseline
 
-Credo targets Go 1.26+ and actively uses modern stdlib APIs: `errors.AsType[T]`, `crypto/rand.Text()`, `b.Loop()`, `t.Context()`, `sync.WaitGroup.Go()`.
+Credo targets Go 1.27+ and actively uses modern stdlib APIs: `errors.AsType[T]`, `crypto/rand.Text()`, `b.Loop()`, `t.Context()`, `sync.WaitGroup.Go()`. The 1.27 floor itself is driven by generic methods — `app.Provide[T]`/`Resolve[T]`, `q.One[T]`/`All[T]`/`Page[T]`, and `ctx.GetUser[T]` all require the 1.27 language version.
 
 ## Consequences
 

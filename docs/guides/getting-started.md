@@ -12,7 +12,7 @@ For deeper coverage of individual topics, see the linked guides and specs.
 go get github.com/credo-go/credo@latest
 ```
 
-Requires Go 1.26 or later.
+Requires Go 1.27 or later.
 
 ---
 

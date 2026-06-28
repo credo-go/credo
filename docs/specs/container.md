@@ -14,7 +14,7 @@ Implementation-level details for Credo's dependency injection system are defined
 
 Credo's DI system consists of two parts:
 
-1. **`internal/di/`** --- A generics-based container adapted from samber/do. Uses Go 1.26+ generics for type-safe registration and resolution. No code generation. `Seal()` freezes and validates the graph at startup.
+1. **`internal/di/`** --- A generics-based container adapted from samber/do. Uses Go generics for type-safe registration and resolution. No code generation. `Seal()` freezes and validates the graph at startup.
 
 2. **`credo.Infra`** --- A framework-managed infrastructure carrier defined in the root package. Carries the per-service Logger (metrics/tracing carriers return with the Phase 3.5 observability release). Produced automatically by the container when seen as a constructor parameter, but still visible in the service constructor signature.
 
