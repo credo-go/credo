@@ -11,8 +11,8 @@ import (
 
 // Resolve retrieves an instance of type T from the container.
 //
-//	svc, err := di.Resolve[MyService](c)
-func Resolve[T any](c *Container) (T, error) {
+//	svc, err := c.Resolve[MyService]()
+func (c *Container) Resolve[T any]() (T, error) {
 	var zero T
 	targetType := reflect.TypeFor[T]()
 
@@ -29,8 +29,8 @@ func Resolve[T any](c *Container) (T, error) {
 }
 
 // MustResolve is like Resolve but panics on error.
-func MustResolve[T any](c *Container) T {
-	v, err := Resolve[T](c)
+func (c *Container) MustResolve[T any]() T {
+	v, err := c.Resolve[T]()
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +40,7 @@ func MustResolve[T any](c *Container) T {
 // ResolveAll retrieves all singleton instances bound to interface type T via
 // BindMany, preserving binding order. When no bindings exist, it returns an
 // empty slice and nil error.
-func ResolveAll[T any](c *Container) ([]T, error) {
+func (c *Container) ResolveAll[T any]() ([]T, error) {
 	targetType := reflect.TypeFor[T]()
 	if targetType.Kind() != reflect.Interface {
 		return nil, fmt.Errorf("di: ResolveAll[%s]: type parameter must be an interface", targetType)
@@ -59,8 +59,8 @@ func ResolveAll[T any](c *Container) ([]T, error) {
 }
 
 // MustResolveAll is like ResolveAll but panics on error.
-func MustResolveAll[T any](c *Container) []T {
-	v, err := ResolveAll[T](c)
+func (c *Container) MustResolveAll[T any]() []T {
+	v, err := c.ResolveAll[T]()
 	if err != nil {
 		panic(err)
 	}

@@ -16,7 +16,7 @@ import (
 // real or default binding must be swapped for a stub or fake. The replacement
 // is a value (no constructor), so it has no dependencies and is always valid
 // during Seal. Replace is rejected once the container is sealed.
-func Replace[T any](c *Container, value T) error {
+func (c *Container) Replace[T any](value T) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -49,8 +49,8 @@ func Replace[T any](c *Container, value T) error {
 }
 
 // MustReplace is like Replace but panics on error.
-func MustReplace[T any](c *Container, value T) {
-	if err := Replace[T](c, value); err != nil {
+func (c *Container) MustReplace[T any](value T) {
+	if err := c.Replace[T](value); err != nil {
 		panic(err)
 	}
 }

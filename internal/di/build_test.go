@@ -10,14 +10,14 @@ import (
 
 func TestSeal_FreezesContainer(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
 	// Provide after Seal should fail.
-	err := di.Provide[*ServiceWithDep](c, NewServiceWithDep)
+	err := c.Provide[*ServiceWithDep](NewServiceWithDep)
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
@@ -32,7 +32,7 @@ func TestSeal_ProvideValueAfterBuild_Error(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err := di.ProvideValue[*SimpleService](c, &SimpleService{})
+	err := c.ProvideValue[*SimpleService](&SimpleService{})
 	if err == nil {
 		t.Fatal("expected error for ProvideValue after Seal")
 	}
@@ -43,13 +43,13 @@ func TestSeal_ProvideValueAfterBuild_Error(t *testing.T) {
 
 func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err := di.Alias[UserRepo, *pgUserRepo](c)
+	err := c.Alias[UserRepo, *pgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error for Alias after Seal")
 	}
@@ -60,13 +60,13 @@ func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 
 func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err := di.BindMany[Greeter, *englishGreeter](c)
+	err := c.BindMany[Greeter, *englishGreeter]()
 	if err == nil {
 		t.Fatal("expected error for BindMany after Seal")
 	}
@@ -78,7 +78,7 @@ func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 func TestSeal_ValidationError(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, which is not registered.
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
 
 	err := c.Seal()
 	if err == nil {
@@ -91,7 +91,7 @@ func TestSeal_ValidationError(t *testing.T) {
 
 func TestSeal_Idempotent(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	err1 := c.Seal()
 	err2 := c.Seal()
@@ -102,13 +102,13 @@ func TestSeal_Idempotent(t *testing.T) {
 
 func TestSeal_ResolveAfterBuild(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	svc, err := di.Resolve[*SimpleService](c)
+	svc, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve after Seal: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSeal_ResolveAfterBuild(t *testing.T) {
 	}
 
 	// Provide after Seal should still fail.
-	err = di.Provide[*ServiceWithDep](c, NewServiceWithDep)
+	err = c.Provide[*ServiceWithDep](NewServiceWithDep)
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
@@ -133,7 +133,7 @@ func TestSeal_Empty(t *testing.T) {
 func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, which is not registered.
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
 
 	sealErr := c.Seal()
 	if sealErr == nil {
@@ -141,7 +141,7 @@ func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 	}
 
 	// Resolve after failed Seal should return the build error.
-	_, err := di.Resolve[*ServiceWithDep](c)
+	_, err := c.Resolve[*ServiceWithDep]()
 	if err == nil {
 		t.Fatal("expected Resolve to fail after failed Seal")
 	}
@@ -152,10 +152,10 @@ func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 
 func TestSeal_ResolveBeforeBuild(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	// Resolve before Seal should work (bootstrap phase).
-	svc, err := di.Resolve[*SimpleService](c)
+	svc, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve before Seal should work: %v", err)
 	}

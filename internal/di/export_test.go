@@ -26,7 +26,7 @@ func (c *Container) SingletonCount() int {
 
 // HasRegistration checks whether a type is registered.
 // Exported for testing only.
-func HasRegistration[T any](c *Container) bool {
+func (c *Container) HasRegistration[T any]() bool {
 	t := reflect.TypeFor[T]()
 	c.mu.RLock()
 	defer c.mu.RUnlock()

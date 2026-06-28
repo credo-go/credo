@@ -28,7 +28,7 @@ func (s *shutdownTracker) Shutdown(ctx context.Context) error {
 func TestSeal_MissingDependency(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, not registered.
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
 
 	err := c.Seal()
 	if err == nil {
@@ -41,8 +41,8 @@ func TestSeal_MissingDependency(t *testing.T) {
 
 func TestSeal_CircularDependency(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*CircularA](c, NewCircularA)
-	di.MustProvide[*CircularB](c, NewCircularB)
+	c.MustProvide[*CircularA](NewCircularA)
+	c.MustProvide[*CircularB](NewCircularB)
 
 	err := c.Seal()
 	if err == nil {
@@ -55,7 +55,7 @@ func TestSeal_CircularDependency(t *testing.T) {
 
 func TestSeal_ContextParam_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, func(ctx context.Context) *SimpleService {
+	c.MustProvide[*SimpleService](func(ctx context.Context) *SimpleService {
 		return &SimpleService{Value: "ctx"}
 	})
 
@@ -70,8 +70,8 @@ func TestSeal_ContextParam_Error(t *testing.T) {
 
 func TestSeal_ValidGraph(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
+	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed on valid graph: %v", err)
@@ -87,7 +87,7 @@ func TestSeal_EmptyContainer(t *testing.T) {
 
 func TestSeal_ProvideValue(t *testing.T) {
 	c := di.New()
-	di.MustProvideValue[*SimpleService](c, &SimpleService{Value: "v"})
+	c.MustProvideValue[*SimpleService](&SimpleService{Value: "v"})
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed with ProvideValue: %v", err)
@@ -118,7 +118,7 @@ func NewCollectionPluginImpl(consumer *collectionPluginConsumer) *collectionPlug
 
 func TestSeal_InterfaceSliceDependency_AllowsEmptyCollection(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*collectionPluginConsumer](c, NewCollectionPluginConsumer)
+	c.MustProvide[*collectionPluginConsumer](NewCollectionPluginConsumer)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed with empty BindMany collection: %v", err)
@@ -127,9 +127,9 @@ func TestSeal_InterfaceSliceDependency_AllowsEmptyCollection(t *testing.T) {
 
 func TestSeal_InterfaceSliceDependency_CycleDetected(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*collectionPluginConsumer](c, NewCollectionPluginConsumer)
-	di.MustProvide[*collectionPluginImpl](c, NewCollectionPluginImpl)
-	di.MustBindMany[collectionPlugin, *collectionPluginImpl](c)
+	c.MustProvide[*collectionPluginConsumer](NewCollectionPluginConsumer)
+	c.MustProvide[*collectionPluginImpl](NewCollectionPluginImpl)
+	c.MustBindMany[collectionPlugin, *collectionPluginImpl]()
 
 	err := c.Seal()
 	if err == nil {
@@ -146,15 +146,15 @@ func TestShutdown_ReverseOrder(t *testing.T) {
 	c := di.New()
 	var order []string
 
-	di.MustProvideValue[*shutdownTracker](c, &shutdownTracker{order: &order, name: "first"})
+	c.MustProvideValue[*shutdownTracker](&shutdownTracker{order: &order, name: "first"})
 
 	type secondShutdown struct{ *shutdownTracker }
-	di.MustProvideValue[*secondShutdown](c, &secondShutdown{
+	c.MustProvideValue[*secondShutdown](&secondShutdown{
 		shutdownTracker: &shutdownTracker{order: &order, name: "second"},
 	})
 
 	type thirdShutdown struct{ *shutdownTracker }
-	di.MustProvideValue[*thirdShutdown](c, &thirdShutdown{
+	c.MustProvideValue[*thirdShutdown](&thirdShutdown{
 		shutdownTracker: &shutdownTracker{order: &order, name: "third"},
 	})
 
@@ -175,14 +175,14 @@ func TestShutdown_CollectsErrors(t *testing.T) {
 	c := di.New()
 	var order []string
 
-	di.MustProvideValue[*shutdownTracker](c, &shutdownTracker{
+	c.MustProvideValue[*shutdownTracker](&shutdownTracker{
 		order:    &order,
 		name:     "first",
 		failWith: errors.New("shutdown error 1"),
 	})
 
 	type secondShutdown struct{ *shutdownTracker }
-	di.MustProvideValue[*secondShutdown](c, &secondShutdown{
+	c.MustProvideValue[*secondShutdown](&secondShutdown{
 		shutdownTracker: &shutdownTracker{
 			order:    &order,
 			name:     "second",
@@ -201,7 +201,7 @@ func TestShutdown_CollectsErrors(t *testing.T) {
 
 func TestShutdown_SkipsNonShutdowner(t *testing.T) {
 	c := di.New()
-	di.MustProvideValue[*SimpleService](c, &SimpleService{Value: "no shutdown"})
+	c.MustProvideValue[*SimpleService](&SimpleService{Value: "no shutdown"})
 
 	err := c.Shutdown(t.Context())
 	if err != nil {
@@ -212,7 +212,7 @@ func TestShutdown_SkipsNonShutdowner(t *testing.T) {
 func TestShutdown_ContextAlreadyDone_SkipsAll(t *testing.T) {
 	c := di.New()
 	var order []string
-	di.MustProvideValue[*shutdownTracker](c, &shutdownTracker{order: &order, name: "first"})
+	c.MustProvideValue[*shutdownTracker](&shutdownTracker{order: &order, name: "first"})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -245,12 +245,12 @@ func TestShutdown_ContextDoneMidway_SkipsRemaining(t *testing.T) {
 	var order []string
 
 	// Registered first → would shut down last.
-	di.MustProvideValue[*shutdownTracker](c, &shutdownTracker{order: &order, name: "first"})
+	c.MustProvideValue[*shutdownTracker](&shutdownTracker{order: &order, name: "first"})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	// Registered second → shuts down first and cancels the context.
-	di.MustProvideValue[*cancellingShutdowner](c, &cancellingShutdowner{order: &order, cancel: cancel})
+	c.MustProvideValue[*cancellingShutdowner](&cancellingShutdowner{order: &order, cancel: cancel})
 
 	err := c.Shutdown(ctx)
 	if err == nil {
@@ -267,7 +267,7 @@ func TestShutdown_ContextDoneMidway_SkipsRemaining(t *testing.T) {
 func TestShutdown_LazyNotResolved(t *testing.T) {
 	var calls atomic.Int32
 	c := di.New()
-	di.MustProvide[*shutdownTracker](c, func() *shutdownTracker {
+	c.MustProvide[*shutdownTracker](func() *shutdownTracker {
 		calls.Add(1)
 		return &shutdownTracker{order: &[]string{}, name: "lazy"}
 	})

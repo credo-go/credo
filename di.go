@@ -1,7 +1,5 @@
 package credo
 
-import "github.com/credo-go/credo/internal/di"
-
 // Provide registers a constructor for type T in the application's DI
 // container. The constructor can accept any number of parameters that are
 // themselves registered, and must return T or (T, error).
@@ -15,12 +13,12 @@ import "github.com/credo-go/credo/internal/di"
 // [App.Finalize]. For a factory checked entirely by the compiler, see
 // [App.ProvideFactory].
 func (app *App) Provide[T any](constructor any) error {
-	return di.Provide[T](app.container, constructor)
+	return app.container.Provide[T](constructor)
 }
 
 // MustProvide is like [App.Provide] but panics on error.
 func (app *App) MustProvide[T any](constructor any) {
-	di.MustProvide[T](app.container, constructor)
+	app.container.MustProvide[T](constructor)
 }
 
 // ProvideFactory registers a compile-time-checked factory for type T.
@@ -49,9 +47,9 @@ func (app *App) MustProvide[T any](constructor any) {
 func (app *App) ProvideFactory[T any](fn func(*App) (T, error)) error {
 	if fn == nil {
 		// Normalize to the internal error message without calling fn.
-		return di.ProvideFactory[T](app.container, nil)
+		return app.container.ProvideFactory[T](nil)
 	}
-	return di.ProvideFactory[T](app.container, func() (T, error) { return fn(app) })
+	return app.container.ProvideFactory[T](func() (T, error) { return fn(app) })
 }
 
 // MustProvideFactory is like [App.ProvideFactory] but panics on error.
@@ -65,12 +63,12 @@ func (app *App) MustProvideFactory[T any](fn func(*App) (T, error)) {
 //
 //	app.ProvideValue[*Logger](logger)
 func (app *App) ProvideValue[T any](value T) error {
-	return di.ProvideValue[T](app.container, value)
+	return app.container.ProvideValue[T](value)
 }
 
 // MustProvideValue is like [App.ProvideValue] but panics on error.
 func (app *App) MustProvideValue[T any](value T) {
-	di.MustProvideValue[T](app.container, value)
+	app.container.MustProvideValue[T](value)
 }
 
 // Replace registers a pre-built value for type T, overwriting any existing
@@ -88,12 +86,12 @@ func (app *App) MustProvideValue[T any](value T) {
 //
 //	app.Replace[UserRepo](mockRepo)
 func (app *App) Replace[T any](value T) error {
-	return di.Replace[T](app.container, value)
+	return app.container.Replace[T](value)
 }
 
 // MustReplace is like [App.Replace] but panics on error.
 func (app *App) MustReplace[T any](value T) {
-	di.MustReplace[T](app.container, value)
+	app.container.MustReplace[T](value)
 }
 
 // Resolve retrieves an instance of type T from the application's DI
@@ -103,25 +101,25 @@ func (app *App) MustReplace[T any](value T) {
 //
 //	svc, err := app.Resolve[*UserService]()
 func (app *App) Resolve[T any]() (T, error) {
-	return di.Resolve[T](app.container)
+	return app.container.Resolve[T]()
 }
 
 // MustResolve is like [App.Resolve] but panics on error. It is primarily
 // intended for bootstrap/composition-root code.
 func (app *App) MustResolve[T any]() T {
-	return di.MustResolve[T](app.container)
+	return app.container.MustResolve[T]()
 }
 
 // ResolveAll retrieves all singletons bound to interface type T via
 // [App.BindMany], preserving bind order. When no bindings exist, it returns an
 // empty slice and nil error.
 func (app *App) ResolveAll[T any]() ([]T, error) {
-	return di.ResolveAll[T](app.container)
+	return app.container.ResolveAll[T]()
 }
 
 // MustResolveAll is like [App.ResolveAll] but panics on error.
 func (app *App) MustResolveAll[T any]() []T {
-	return di.MustResolveAll[T](app.container)
+	return app.container.MustResolveAll[T]()
 }
 
 // Alias creates a type alias so that resolving interface I via [App.Resolve]
@@ -130,24 +128,24 @@ func (app *App) MustResolveAll[T any]() []T {
 //
 //	app.Alias[UserRepo, *PgUserRepo]()
 func (app *App) Alias[I, T any]() error {
-	return di.Alias[I, T](app.container)
+	return app.container.Alias[I, T]()
 }
 
 // MustAlias is like [App.Alias] but panics on error.
 func (app *App) MustAlias[I, T any]() {
-	di.MustAlias[I, T](app.container)
+	app.container.MustAlias[I, T]()
 }
 
 // BindMany adds concrete type T to the ordered collection for interface I.
 // I must be an interface, T must be a registered concrete type, and T must
 // implement I.
 func (app *App) BindMany[I, T any]() error {
-	return di.BindMany[I, T](app.container)
+	return app.container.BindMany[I, T]()
 }
 
 // MustBindMany is like [App.BindMany] but panics on error.
 func (app *App) MustBindMany[I, T any]() {
-	di.MustBindMany[I, T](app.container)
+	app.container.MustBindMany[I, T]()
 }
 
 // Finalize freezes the DI container and validates the dependency graph.

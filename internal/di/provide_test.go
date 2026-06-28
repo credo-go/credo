@@ -57,31 +57,31 @@ func TestProvide_ValidConstructors(t *testing.T) {
 		{
 			name: "zero params",
 			register: func(c *di.Container) error {
-				return di.Provide[*SimpleService](c, NewSimpleService)
+				return c.Provide[*SimpleService](NewSimpleService)
 			},
 			wantRegCount: 1,
 		},
 		{
 			name: "one param",
 			register: func(c *di.Container) error {
-				di.MustProvide[*SimpleService](c, NewSimpleService)
-				return di.Provide[*ServiceWithDep](c, NewServiceWithDep)
+				c.MustProvide[*SimpleService](NewSimpleService)
+				return c.Provide[*ServiceWithDep](NewServiceWithDep)
 			},
 			wantRegCount: 2,
 		},
 		{
 			name: "returns error",
 			register: func(c *di.Container) error {
-				return di.Provide[*ServiceWithError](c, NewServiceWithError)
+				return c.Provide[*ServiceWithError](NewServiceWithError)
 			},
 			wantRegCount: 1,
 		},
 		{
 			name: "two deps",
 			register: func(c *di.Container) error {
-				di.MustProvide[*SimpleService](c, NewSimpleService)
-				di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
-				return di.Provide[*ServiceWithTwoDeps](c, NewServiceWithTwoDeps)
+				c.MustProvide[*SimpleService](NewSimpleService)
+				c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+				return c.Provide[*ServiceWithTwoDeps](NewServiceWithTwoDeps)
 			},
 			wantRegCount: 3,
 		},
@@ -130,7 +130,7 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := di.New()
-			err := di.Provide[*SimpleService](c, tt.constructor)
+			err := c.Provide[*SimpleService](tt.constructor)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -140,9 +140,9 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 
 func TestProvide_Duplicate(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
-	err := di.Provide[*SimpleService](c, NewSimpleService)
+	err := c.Provide[*SimpleService](NewSimpleService)
 	if err == nil {
 		t.Fatal("expected error for duplicate registration")
 	}
@@ -150,20 +150,20 @@ func TestProvide_Duplicate(t *testing.T) {
 
 func TestMustProvide_Panics(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for duplicate MustProvide")
 		}
 	}()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 }
 
 func TestProvideValue(t *testing.T) {
 	c := di.New()
 	svc := &SimpleService{Value: "provided"}
-	if err := di.ProvideValue[*SimpleService](c, svc); err != nil {
+	if err := c.ProvideValue[*SimpleService](svc); err != nil {
 		t.Fatalf("ProvideValue failed: %v", err)
 	}
 
@@ -177,9 +177,9 @@ func TestProvideValue(t *testing.T) {
 
 func TestProvideValue_Duplicate(t *testing.T) {
 	c := di.New()
-	di.MustProvideValue[*SimpleService](c, &SimpleService{})
+	c.MustProvideValue[*SimpleService](&SimpleService{})
 
-	err := di.ProvideValue[*SimpleService](c, &SimpleService{})
+	err := c.ProvideValue[*SimpleService](&SimpleService{})
 	if err == nil {
 		t.Fatal("expected error for duplicate ProvideValue")
 	}
@@ -187,7 +187,7 @@ func TestProvideValue_Duplicate(t *testing.T) {
 
 func TestProvide_NilConstructor(t *testing.T) {
 	c := di.New()
-	if err := di.Provide[*SimpleService](c, nil); err == nil {
+	if err := c.Provide[*SimpleService](nil); err == nil {
 		t.Fatal("expected error for nil constructor, got nil")
 	}
 }
@@ -200,12 +200,12 @@ type funcService struct {
 
 func TestProvideFactory_ResolveAndCache(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	calls := 0
-	err := di.ProvideFactory[*funcService](c, func() (*funcService, error) {
+	err := c.ProvideFactory[*funcService](func() (*funcService, error) {
 		calls++
-		dep, err := di.Resolve[*SimpleService](c)
+		dep, err := c.Resolve[*SimpleService]()
 		if err != nil {
 			return nil, err
 		}
@@ -218,8 +218,8 @@ func TestProvideFactory_ResolveAndCache(t *testing.T) {
 		t.Fatalf("factory ran at registration time (calls = %d), want lazy", calls)
 	}
 
-	first := di.MustResolve[*funcService](c)
-	second := di.MustResolve[*funcService](c)
+	first := c.MustResolve[*funcService]()
+	second := c.MustResolve[*funcService]()
 	if calls != 1 {
 		t.Errorf("constructor calls = %d, want 1 (singleton)", calls)
 	}
@@ -233,11 +233,11 @@ func TestProvideFactory_ResolveAndCache(t *testing.T) {
 
 func TestProvideFactory_ConstructionError(t *testing.T) {
 	c := di.New()
-	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
+	c.MustProvideFactory[*SimpleService](func() (*SimpleService, error) {
 		return nil, errors.New("boom")
 	})
 
-	_, err := di.Resolve[*SimpleService](c)
+	_, err := c.Resolve[*SimpleService]()
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("Resolve error = %v, want construction error containing %q", err, "boom")
 	}
@@ -245,9 +245,9 @@ func TestProvideFactory_ConstructionError(t *testing.T) {
 
 func TestProvideFactory_Duplicate(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
-	err := di.ProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
+	err := c.ProvideFactory[*SimpleService](func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 	if err == nil {
@@ -257,7 +257,7 @@ func TestProvideFactory_Duplicate(t *testing.T) {
 
 func TestProvideFactory_Nil(t *testing.T) {
 	c := di.New()
-	if err := di.ProvideFactory[*SimpleService](c, nil); err == nil {
+	if err := c.ProvideFactory[*SimpleService](nil); err == nil {
 		t.Fatal("expected error for nil factory")
 	}
 }
@@ -268,7 +268,7 @@ func TestProvideFactory_Frozen(t *testing.T) {
 		t.Fatalf("Seal failed: %v", err)
 	}
 
-	err := di.ProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
+	err := c.ProvideFactory[*SimpleService](func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 	if err == nil {
@@ -278,7 +278,7 @@ func TestProvideFactory_Frozen(t *testing.T) {
 
 func TestMustProvideFactory_Panics(t *testing.T) {
 	c := di.New()
-	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
+	c.MustProvideFactory[*SimpleService](func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 
@@ -287,7 +287,7 @@ func TestMustProvideFactory_Panics(t *testing.T) {
 			t.Fatal("expected panic for duplicate MustProvideFactory")
 		}
 	}()
-	di.MustProvideFactory[*SimpleService](c, func() (*SimpleService, error) {
+	c.MustProvideFactory[*SimpleService](func() (*SimpleService, error) {
 		return &SimpleService{}, nil
 	})
 }
@@ -304,10 +304,10 @@ func (s *funcShutdowner) Shutdown(ctx context.Context) error {
 func TestProvideFactory_ShutdownParticipates(t *testing.T) {
 	c := di.New()
 	closed := false
-	di.MustProvideFactory[*funcShutdowner](c, func() (*funcShutdowner, error) {
+	c.MustProvideFactory[*funcShutdowner](func() (*funcShutdowner, error) {
 		return &funcShutdowner{closed: &closed}, nil
 	})
-	di.MustResolve[*funcShutdowner](c)
+	c.MustResolve[*funcShutdowner]()
 
 	if err := c.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown failed: %v", err)

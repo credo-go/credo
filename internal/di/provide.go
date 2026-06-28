@@ -23,8 +23,8 @@ type registration struct {
 // any number of parameters that are themselves registered in the container,
 // and must return T or (T, error).
 //
-//	di.Provide[MyService](c, NewMyService)
-func Provide[T any](c *Container, constructor any) error {
+//	c.Provide[MyService](NewMyService)
+func (c *Container) Provide[T any](constructor any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -53,8 +53,8 @@ func Provide[T any](c *Container, constructor any) error {
 }
 
 // MustProvide is like Provide but panics on error.
-func MustProvide[T any](c *Container, constructor any) {
-	if err := Provide[T](c, constructor); err != nil {
+func (c *Container) MustProvide[T any](constructor any) {
+	if err := c.Provide[T](constructor); err != nil {
 		panic(err)
 	}
 }
@@ -66,7 +66,7 @@ func MustProvide[T any](c *Container, constructor any) {
 //
 // fn is opaque to the container: dependencies it resolves internally are not
 // visible to Seal's graph validation or to resolve-time cycle detection.
-func ProvideFactory[T any](c *Container, fn func() (T, error)) error {
+func (c *Container) ProvideFactory[T any](fn func() (T, error)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -97,15 +97,15 @@ func ProvideFactory[T any](c *Container, fn func() (T, error)) error {
 }
 
 // MustProvideFactory is like ProvideFactory but panics on error.
-func MustProvideFactory[T any](c *Container, fn func() (T, error)) {
-	if err := ProvideFactory[T](c, fn); err != nil {
+func (c *Container) MustProvideFactory[T any](fn func() (T, error)) {
+	if err := c.ProvideFactory[T](fn); err != nil {
 		panic(err)
 	}
 }
 
 // ProvideValue registers a pre-built value for type T as a Singleton.
 // The value is cached immediately.
-func ProvideValue[T any](c *Container, value T) error {
+func (c *Container) ProvideValue[T any](value T) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -137,8 +137,8 @@ func ProvideValue[T any](c *Container, value T) error {
 }
 
 // MustProvideValue is like ProvideValue but panics on error.
-func MustProvideValue[T any](c *Container, value T) {
-	if err := ProvideValue[T](c, value); err != nil {
+func (c *Container) MustProvideValue[T any](value T) {
+	if err := c.ProvideValue[T](value); err != nil {
 		panic(err)
 	}
 }

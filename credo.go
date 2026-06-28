@@ -232,7 +232,7 @@ func New(opts ...Option) (*App, error) {
 	})
 
 	// RawConfig is always available (auto-loaded or explicit).
-	di.MustProvideValue[RawConfig](c, o.rawConfig)
+	c.MustProvideValue[RawConfig](o.rawConfig)
 
 	app := &App{
 		container:             c,

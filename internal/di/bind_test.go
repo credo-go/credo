@@ -25,10 +25,10 @@ func NewPgUserRepo() *pgUserRepo { return &pgUserRepo{dsn: "postgres://localhost
 
 func TestAlias_ResolveByInterface(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
-	di.MustAlias[UserRepo, *pgUserRepo](c)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustAlias[UserRepo, *pgUserRepo]()
 
-	repo, err := di.Resolve[UserRepo](c)
+	repo, err := c.Resolve[UserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[UserRepo]: %v", err)
 	}
@@ -39,14 +39,14 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 
 func TestAlias_SameInstance(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
-	di.MustAlias[UserRepo, *pgUserRepo](c)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustAlias[UserRepo, *pgUserRepo]()
 
-	concrete, err := di.Resolve[*pgUserRepo](c)
+	concrete, err := c.Resolve[*pgUserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[*pgUserRepo]: %v", err)
 	}
-	iface, err := di.Resolve[UserRepo](c)
+	iface, err := c.Resolve[UserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[UserRepo]: %v", err)
 	}
@@ -57,10 +57,10 @@ func TestAlias_SameInstance(t *testing.T) {
 
 func TestAlias_NotInterface_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
 
 	// *pgUserRepo is not an interface — should fail.
-	err := di.Alias[*pgUserRepo, *pgUserRepo](c)
+	err := c.Alias[*pgUserRepo, *pgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error when I is not an interface")
 	}
@@ -72,7 +72,7 @@ func TestAlias_NotInterface_Error(t *testing.T) {
 func TestAlias_ConcreteNotRegistered_Error(t *testing.T) {
 	c := di.New()
 
-	err := di.Alias[UserRepo, *pgUserRepo](c)
+	err := c.Alias[UserRepo, *pgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error when T is not registered")
 	}
@@ -83,10 +83,10 @@ func TestAlias_ConcreteNotRegistered_Error(t *testing.T) {
 
 func TestAlias_DoesNotImplement_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
 	// *SimpleService does not implement UserRepo.
-	err := di.Alias[UserRepo, *SimpleService](c)
+	err := c.Alias[UserRepo, *SimpleService]()
 	if err == nil {
 		t.Fatal("expected error when T does not implement I")
 	}
@@ -97,10 +97,10 @@ func TestAlias_DoesNotImplement_Error(t *testing.T) {
 
 func TestAlias_DuplicateAlias_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
-	di.MustAlias[UserRepo, *pgUserRepo](c)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustAlias[UserRepo, *pgUserRepo]()
 
-	err := di.Alias[UserRepo, *pgUserRepo](c)
+	err := c.Alias[UserRepo, *pgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error for duplicate binding")
 	}
@@ -111,11 +111,11 @@ func TestAlias_DuplicateAlias_Error(t *testing.T) {
 
 func TestAlias_InterfaceAlreadyRegistered_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
 	// Register interface directly.
-	di.MustProvide[UserRepo](c, func() UserRepo { return &pgUserRepo{} })
+	c.MustProvide[UserRepo](func() UserRepo { return &pgUserRepo{} })
 
-	err := di.Alias[UserRepo, *pgUserRepo](c)
+	err := c.Alias[UserRepo, *pgUserRepo]()
 	if err == nil {
 		t.Fatal("expected error when interface already has direct registration")
 	}
@@ -133,13 +133,13 @@ func TestMustAlias_Panics(t *testing.T) {
 		}
 	}()
 	// T not registered → should panic.
-	di.MustAlias[UserRepo, *pgUserRepo](c)
+	c.MustAlias[UserRepo, *pgUserRepo]()
 }
 
 func TestAlias_Seal_Passes(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*pgUserRepo](c, NewPgUserRepo)
-	di.MustAlias[UserRepo, *pgUserRepo](c)
+	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustAlias[UserRepo, *pgUserRepo]()
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal should pass with valid alias: %v", err)
@@ -148,12 +148,12 @@ func TestAlias_Seal_Passes(t *testing.T) {
 
 func TestBindMany_ResolveAllByInterface(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustProvide[*frenchGreeter](c, NewFrenchGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
-	di.MustBindMany[Greeter, *frenchGreeter](c)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
+	c.MustBindMany[Greeter, *frenchGreeter]()
 
-	greeters, err := di.ResolveAll[Greeter](c)
+	greeters, err := c.ResolveAll[Greeter]()
 	if err != nil {
 		t.Fatalf("ResolveAll[Greeter]: %v", err)
 	}
@@ -164,9 +164,9 @@ func TestBindMany_ResolveAllByInterface(t *testing.T) {
 
 func TestBindMany_NotInterface_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
 
-	err := di.BindMany[*englishGreeter, *englishGreeter](c)
+	err := c.BindMany[*englishGreeter, *englishGreeter]()
 	if err == nil {
 		t.Fatal("expected error when I is not an interface")
 	}
@@ -178,7 +178,7 @@ func TestBindMany_NotInterface_Error(t *testing.T) {
 func TestBindMany_ConcreteNotRegistered_Error(t *testing.T) {
 	c := di.New()
 
-	err := di.BindMany[Greeter, *englishGreeter](c)
+	err := c.BindMany[Greeter, *englishGreeter]()
 	if err == nil {
 		t.Fatal("expected error when T is not registered")
 	}
@@ -189,9 +189,9 @@ func TestBindMany_ConcreteNotRegistered_Error(t *testing.T) {
 
 func TestBindMany_ConcreteTypeMustNotBeInterface(t *testing.T) {
 	c := di.New()
-	di.MustProvide[Greeter](c, NewGreeter)
+	c.MustProvide[Greeter](NewGreeter)
 
-	err := di.BindMany[Greeter, Greeter](c)
+	err := c.BindMany[Greeter, Greeter]()
 	if err == nil {
 		t.Fatal("expected error when T is an interface")
 	}
@@ -202,9 +202,9 @@ func TestBindMany_ConcreteTypeMustNotBeInterface(t *testing.T) {
 
 func TestBindMany_DoesNotImplement_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
-	err := di.BindMany[Greeter, *SimpleService](c)
+	err := c.BindMany[Greeter, *SimpleService]()
 	if err == nil {
 		t.Fatal("expected error when T does not implement I")
 	}
@@ -215,10 +215,10 @@ func TestBindMany_DoesNotImplement_Error(t *testing.T) {
 
 func TestBindMany_Duplicate_Error(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
 
-	err := di.BindMany[Greeter, *englishGreeter](c)
+	err := c.BindMany[Greeter, *englishGreeter]()
 	if err == nil {
 		t.Fatal("expected error for duplicate multi-binding")
 	}
@@ -236,13 +236,13 @@ func TestMustBindMany_Panics(t *testing.T) {
 		}
 	}()
 
-	di.MustBindMany[Greeter, *englishGreeter](c)
+	c.MustBindMany[Greeter, *englishGreeter]()
 }
 
 func TestBindMany_Seal_Passes(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal should pass with valid BindMany: %v", err)

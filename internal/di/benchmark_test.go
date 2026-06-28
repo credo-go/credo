@@ -10,12 +10,12 @@ import (
 // reflect.TypeFor → findRegistration (RLock + map hit) → sync.Once no-op.
 func BenchmarkResolve_Singleton_Cached(b *testing.B) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
-	di.MustResolve[*SimpleService](c) // prime the singleton
+	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustResolve[*SimpleService]() // prime the singleton
 
 	b.ReportAllocs()
 	for b.Loop() {
-		di.MustResolve[*SimpleService](c)
+		c.MustResolve[*SimpleService]()
 	}
 }
 
@@ -24,11 +24,11 @@ func BenchmarkResolve_Singleton_Cached(b *testing.B) {
 func BenchmarkResolve_ProvideValue(b *testing.B) {
 	c := di.New()
 	svc := &SimpleService{Value: "bench"}
-	di.MustProvideValue[*SimpleService](c, svc)
+	c.MustProvideValue[*SimpleService](svc)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		di.MustResolve[*SimpleService](c)
+		c.MustResolve[*SimpleService]()
 	}
 }
 
@@ -36,13 +36,13 @@ func BenchmarkResolve_ProvideValue(b *testing.B) {
 // under concurrent singleton resolution.
 func BenchmarkResolve_Parallel(b *testing.B) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
-	di.MustResolve[*SimpleService](c) // prime
+	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustResolve[*SimpleService]() // prime
 
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			di.MustResolve[*SimpleService](c)
+			c.MustResolve[*SimpleService]()
 		}
 	})
 }
@@ -50,14 +50,14 @@ func BenchmarkResolve_Parallel(b *testing.B) {
 // BenchmarkResolveAll_Cached measures ordered interface collection resolution.
 func BenchmarkResolveAll_Cached(b *testing.B) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustProvide[*frenchGreeter](c, NewFrenchGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
-	di.MustBindMany[Greeter, *frenchGreeter](c)
-	di.MustResolveAll[Greeter](c) // prime member singletons
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
+	c.MustBindMany[Greeter, *frenchGreeter]()
+	c.MustResolveAll[Greeter]() // prime member singletons
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = di.ResolveAll[Greeter](c)
+		_, _ = c.ResolveAll[Greeter]()
 	}
 }

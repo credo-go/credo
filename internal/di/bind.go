@@ -12,7 +12,7 @@ import (
 //   - T must implement I
 //   - I must not already have a registration or alias
 //   - Container must not be frozen (container is sealed)
-func Alias[I, T any](c *Container) error {
+func (c *Container) Alias[I, T any]() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -57,8 +57,8 @@ func Alias[I, T any](c *Container) error {
 }
 
 // MustAlias is like Alias but panics on error.
-func MustAlias[I, T any](c *Container) {
-	if err := Alias[I, T](c); err != nil {
+func (c *Container) MustAlias[I, T any]() {
+	if err := c.Alias[I, T](); err != nil {
 		panic(err)
 	}
 }
@@ -71,7 +71,7 @@ func MustAlias[I, T any](c *Container) {
 //   - T must implement I
 //   - The same (I, T) pair must not already exist
 //   - Container must not be frozen (container is sealed)
-func BindMany[I, T any](c *Container) error {
+func (c *Container) BindMany[I, T any]() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -118,8 +118,8 @@ func BindMany[I, T any](c *Container) error {
 }
 
 // MustBindMany is like BindMany but panics on error.
-func MustBindMany[I, T any](c *Container) {
-	if err := BindMany[I, T](c); err != nil {
+func (c *Container) MustBindMany[I, T any]() {
+	if err := c.BindMany[I, T](); err != nil {
 		panic(err)
 	}
 }

@@ -12,13 +12,13 @@ import (
 
 func TestResolve_Singleton(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
-	s1, err := di.Resolve[*SimpleService](c)
+	s1, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
-	s2, err := di.Resolve[*SimpleService](c)
+	s2, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -33,11 +33,11 @@ func TestResolve_Singleton(t *testing.T) {
 
 func TestResolve_DependencyChain(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
-	di.MustProvide[*ServiceWithTwoDeps](c, NewServiceWithTwoDeps)
+	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+	c.MustProvide[*ServiceWithTwoDeps](NewServiceWithTwoDeps)
 
-	svc, err := di.Resolve[*ServiceWithTwoDeps](c)
+	svc, err := c.Resolve[*ServiceWithTwoDeps]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestResolve_DependencyChain(t *testing.T) {
 func TestResolve_NotRegistered(t *testing.T) {
 	c := di.New()
 
-	_, err := di.Resolve[*SimpleService](c)
+	_, err := c.Resolve[*SimpleService]()
 	if err == nil {
 		t.Fatal("expected error for unregistered service")
 	}
@@ -78,10 +78,10 @@ func NewCircularB(a *CircularA) *CircularB { return &CircularB{A: a} }
 
 func TestResolve_CircularDependency(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*CircularA](c, NewCircularA)
-	di.MustProvide[*CircularB](c, NewCircularB)
+	c.MustProvide[*CircularA](NewCircularA)
+	c.MustProvide[*CircularB](NewCircularB)
 
-	_, err := di.Resolve[*CircularA](c)
+	_, err := c.Resolve[*CircularA]()
 	if err == nil {
 		t.Fatal("expected circular dependency error")
 	}
@@ -92,9 +92,9 @@ func TestResolve_CircularDependency(t *testing.T) {
 
 func TestResolve_ConstructorError(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*ServiceWithError](c, NewServiceFailing)
+	c.MustProvide[*ServiceWithError](NewServiceFailing)
 
-	_, err := di.Resolve[*ServiceWithError](c)
+	_, err := c.Resolve[*ServiceWithError]()
 	if err == nil {
 		t.Fatal("expected constructor error")
 	}
@@ -106,9 +106,9 @@ func TestResolve_ConstructorError(t *testing.T) {
 func TestResolve_MissingDependency(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, but it's not registered.
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
 
-	_, err := di.Resolve[*ServiceWithDep](c)
+	_, err := c.Resolve[*ServiceWithDep]()
 	if err == nil {
 		t.Fatal("expected missing dependency error")
 	}
@@ -119,9 +119,9 @@ func TestResolve_MissingDependency(t *testing.T) {
 
 func TestResolve_ZeroParamConstructor(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
+	c.MustProvide[*SimpleService](NewSimpleService)
 
-	svc, err := di.Resolve[*SimpleService](c)
+	svc, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestResolve_ConcurrentSingleton(t *testing.T) {
 	var callCount atomic.Int32
 
 	c := di.New()
-	di.MustProvide[*SimpleService](c, func() *SimpleService {
+	c.MustProvide[*SimpleService](func() *SimpleService {
 		callCount.Add(1)
 		return &SimpleService{Value: "concurrent"}
 	})
@@ -146,7 +146,7 @@ func TestResolve_ConcurrentSingleton(t *testing.T) {
 
 	for i := 0; i < goroutines; i++ {
 		wg.Go(func() {
-			results[i], errs[i] = di.Resolve[*SimpleService](c)
+			results[i], errs[i] = c.Resolve[*SimpleService]()
 		})
 	}
 	wg.Wait()
@@ -179,15 +179,15 @@ func TestMustResolve_Panics(t *testing.T) {
 			t.Fatal("expected panic for missing service")
 		}
 	}()
-	di.MustResolve[*SimpleService](c)
+	c.MustResolve[*SimpleService]()
 }
 
 func TestResolve_ProvideValue(t *testing.T) {
 	c := di.New()
 	original := &SimpleService{Value: "pre-built"}
-	di.MustProvideValue[*SimpleService](c, original)
+	c.MustProvideValue[*SimpleService](original)
 
-	svc, err := di.Resolve[*SimpleService](c)
+	svc, err := c.Resolve[*SimpleService]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -219,9 +219,9 @@ func NewFrenchGreeter() *frenchGreeter { return &frenchGreeter{} }
 
 func TestResolve_Interface(t *testing.T) {
 	c := di.New()
-	di.MustProvide[Greeter](c, NewGreeter)
+	c.MustProvide[Greeter](NewGreeter)
 
-	g, err := di.Resolve[Greeter](c)
+	g, err := c.Resolve[Greeter]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -241,7 +241,7 @@ func NewGreeterAggregator(greeters []Greeter) *GreeterAggregator {
 func TestResolveAll_EmptySlice(t *testing.T) {
 	c := di.New()
 
-	greeters, err := di.ResolveAll[Greeter](c)
+	greeters, err := c.ResolveAll[Greeter]()
 	if err != nil {
 		t.Fatalf("ResolveAll[Greeter]: %v", err)
 	}
@@ -255,12 +255,12 @@ func TestResolveAll_EmptySlice(t *testing.T) {
 
 func TestResolveAll_OrderAndSingletonIdentity(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustProvide[*frenchGreeter](c, NewFrenchGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
-	di.MustBindMany[Greeter, *frenchGreeter](c)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
+	c.MustBindMany[Greeter, *frenchGreeter]()
 
-	greeters, err := di.ResolveAll[Greeter](c)
+	greeters, err := c.ResolveAll[Greeter]()
 	if err != nil {
 		t.Fatalf("ResolveAll[Greeter]: %v", err)
 	}
@@ -274,8 +274,8 @@ func TestResolveAll_OrderAndSingletonIdentity(t *testing.T) {
 		t.Errorf("greeters[1].Greet() = %q, want %q", got, "bonjour")
 	}
 
-	english := di.MustResolve[*englishGreeter](c)
-	french := di.MustResolve[*frenchGreeter](c)
+	english := c.MustResolve[*englishGreeter]()
+	french := c.MustResolve[*frenchGreeter]()
 	if greeters[0] != english {
 		t.Error("ResolveAll should reuse the english greeter singleton")
 	}
@@ -287,7 +287,7 @@ func TestResolveAll_OrderAndSingletonIdentity(t *testing.T) {
 func TestResolveAll_NonInterface_Error(t *testing.T) {
 	c := di.New()
 
-	_, err := di.ResolveAll[*SimpleService](c)
+	_, err := c.ResolveAll[*SimpleService]()
 	if err == nil {
 		t.Fatal("expected error when ResolveAll target is not an interface")
 	}
@@ -298,10 +298,10 @@ func TestResolveAll_NonInterface_Error(t *testing.T) {
 
 func TestResolveAll_ConstructorError(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*badGreeter](c, NewBadGreeter)
-	di.MustBindMany[Greeter, *badGreeter](c)
+	c.MustProvide[*badGreeter](NewBadGreeter)
+	c.MustBindMany[Greeter, *badGreeter]()
 
-	_, err := di.ResolveAll[Greeter](c)
+	_, err := c.ResolveAll[Greeter]()
 	if err == nil {
 		t.Fatal("expected constructor error")
 	}
@@ -312,13 +312,13 @@ func TestResolveAll_ConstructorError(t *testing.T) {
 
 func TestResolve_InterfaceSliceInjection(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustProvide[*frenchGreeter](c, NewFrenchGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
-	di.MustBindMany[Greeter, *frenchGreeter](c)
-	di.MustProvide[*GreeterAggregator](c, NewGreeterAggregator)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
+	c.MustBindMany[Greeter, *frenchGreeter]()
+	c.MustProvide[*GreeterAggregator](NewGreeterAggregator)
 
-	agg, err := di.Resolve[*GreeterAggregator](c)
+	agg, err := c.Resolve[*GreeterAggregator]()
 	if err != nil {
 		t.Fatalf("Resolve[*GreeterAggregator]: %v", err)
 	}
@@ -332,9 +332,9 @@ func TestResolve_InterfaceSliceInjection(t *testing.T) {
 
 func TestResolve_InterfaceSliceInjection_EmptyCollection(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*GreeterAggregator](c, NewGreeterAggregator)
+	c.MustProvide[*GreeterAggregator](NewGreeterAggregator)
 
-	agg, err := di.Resolve[*GreeterAggregator](c)
+	agg, err := c.Resolve[*GreeterAggregator]()
 	if err != nil {
 		t.Fatalf("Resolve[*GreeterAggregator]: %v", err)
 	}
@@ -348,14 +348,14 @@ func TestResolve_InterfaceSliceInjection_EmptyCollection(t *testing.T) {
 
 func TestResolve_InterfaceSliceInjection_DirectRegistrationWins(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*englishGreeter](c, NewEnglishGreeter)
-	di.MustBindMany[Greeter, *englishGreeter](c)
+	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
 
 	direct := []Greeter{&frenchGreeter{}}
-	di.MustProvideValue[[]Greeter](c, direct)
-	di.MustProvide[*GreeterAggregator](c, NewGreeterAggregator)
+	c.MustProvideValue[[]Greeter](direct)
+	c.MustProvide[*GreeterAggregator](NewGreeterAggregator)
 
-	agg, err := di.Resolve[*GreeterAggregator](c)
+	agg, err := c.Resolve[*GreeterAggregator]()
 	if err != nil {
 		t.Fatalf("Resolve[*GreeterAggregator]: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestResolve_InterfaceSliceInjection_DirectRegistrationWins(t *testing.T) {
 		t.Fatal("direct []Greeter registration should take precedence over BindMany")
 	}
 
-	greeters, err := di.ResolveAll[Greeter](c)
+	greeters, err := c.ResolveAll[Greeter]()
 	if err != nil {
 		t.Fatalf("ResolveAll[Greeter]: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestMustResolveAll_Panics(t *testing.T) {
 		}
 	}()
 
-	_ = di.MustResolveAll[*SimpleService](c)
+	_ = c.MustResolveAll[*SimpleService]()
 }
 
 type badGreeter struct{}
@@ -416,12 +416,12 @@ func NewServiceWithThreeDeps(a *SimpleService, b *ServiceWithDep, c *ServiceWith
 
 func TestResolve_ThreeParams(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*SimpleService](c, NewSimpleService)
-	di.MustProvide[*ServiceWithDep](c, NewServiceWithDep)
-	di.MustProvide[*ServiceWithConfig](c, NewServiceWithConfig)
-	di.MustProvide[*ServiceWithThreeDeps](c, NewServiceWithThreeDeps)
+	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+	c.MustProvide[*ServiceWithConfig](NewServiceWithConfig)
+	c.MustProvide[*ServiceWithThreeDeps](NewServiceWithThreeDeps)
 
-	svc, err := di.Resolve[*ServiceWithThreeDeps](c)
+	svc, err := c.Resolve[*ServiceWithThreeDeps]()
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -432,11 +432,11 @@ func TestResolve_ThreeParams(t *testing.T) {
 
 func TestResolve_ConstructorErrorFormatting(t *testing.T) {
 	c := di.New()
-	di.MustProvide[*ServiceWithError](c, func() (*ServiceWithError, error) {
+	c.MustProvide[*ServiceWithError](func() (*ServiceWithError, error) {
 		return nil, fmt.Errorf("db: connection refused")
 	})
 
-	_, err := di.Resolve[*ServiceWithError](c)
+	_, err := c.Resolve[*ServiceWithError]()
 	if err == nil {
 		t.Fatal("expected error")
 	}

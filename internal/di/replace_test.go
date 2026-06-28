@@ -15,28 +15,28 @@ type replaceDep struct {
 
 func TestReplace_NewBinding(t *testing.T) {
 	c := New()
-	if err := Replace[*replaceSvc](c, &replaceSvc{id: "a"}); err != nil {
+	if err := c.Replace[*replaceSvc](&replaceSvc{id: "a"}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
 	if c.RegistrationCount() != 1 {
 		t.Errorf("RegistrationCount = %d, want 1", c.RegistrationCount())
 	}
-	if got := MustResolve[*replaceSvc](c); got.id != "a" {
+	if got := c.MustResolve[*replaceSvc](); got.id != "a" {
 		t.Errorf("id = %q, want a", got.id)
 	}
 }
 
 func TestReplace_OverwritesProvideValue(t *testing.T) {
 	c := New()
-	MustProvideValue[*replaceSvc](c, &replaceSvc{id: "real"})
-	if err := Replace[*replaceSvc](c, &replaceSvc{id: "mock"}); err != nil {
+	c.MustProvideValue[*replaceSvc](&replaceSvc{id: "real"})
+	if err := c.Replace[*replaceSvc](&replaceSvc{id: "mock"}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
 	// Overwriting an existing registration must not create a duplicate.
 	if c.RegistrationCount() != 1 {
 		t.Errorf("RegistrationCount = %d, want 1 (no duplicate)", c.RegistrationCount())
 	}
-	if got := MustResolve[*replaceSvc](c); got.id != "mock" {
+	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("id = %q, want mock", got.id)
 	}
 }
@@ -44,13 +44,13 @@ func TestReplace_OverwritesProvideValue(t *testing.T) {
 func TestReplace_OverwritesConstructor(t *testing.T) {
 	c := New()
 	called := false
-	MustProvide[*replaceSvc](c, func() *replaceSvc {
+	c.MustProvide[*replaceSvc](func() *replaceSvc {
 		called = true
 		return &replaceSvc{id: "real"}
 	})
-	MustReplace[*replaceSvc](c, &replaceSvc{id: "mock"})
+	c.MustReplace[*replaceSvc](&replaceSvc{id: "mock"})
 
-	if got := MustResolve[*replaceSvc](c); got.id != "mock" {
+	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("id = %q, want mock", got.id)
 	}
 	if called {
@@ -60,13 +60,13 @@ func TestReplace_OverwritesConstructor(t *testing.T) {
 
 func TestReplace_SupersedesResolvedSingleton(t *testing.T) {
 	c := New()
-	MustProvideValue[*replaceSvc](c, &replaceSvc{id: "real"})
+	c.MustProvideValue[*replaceSvc](&replaceSvc{id: "real"})
 	// Resolve once so the singleton is cached.
-	if got := MustResolve[*replaceSvc](c); got.id != "real" {
+	if got := c.MustResolve[*replaceSvc](); got.id != "real" {
 		t.Fatalf("pre-replace id = %q, want real", got.id)
 	}
-	MustReplace[*replaceSvc](c, &replaceSvc{id: "mock"})
-	if got := MustResolve[*replaceSvc](c); got.id != "mock" {
+	c.MustReplace[*replaceSvc](&replaceSvc{id: "mock"})
+	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("post-replace id = %q, want mock (cached singleton not superseded)", got.id)
 	}
 }
@@ -76,7 +76,7 @@ func TestReplace_Frozen(t *testing.T) {
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	err := Replace[*replaceSvc](c, &replaceSvc{id: "x"})
+	err := c.Replace[*replaceSvc](&replaceSvc{id: "x"})
 	if err == nil {
 		t.Fatal("expected error replacing on a sealed container")
 	}
@@ -87,17 +87,17 @@ func TestReplace_Frozen(t *testing.T) {
 
 func TestReplace_DependentResolvesAfterSeal(t *testing.T) {
 	c := New()
-	MustProvideValue[*replaceDep](c, &replaceDep{id: "real"})
-	MustProvide[*replaceSvc](c, func(d *replaceDep) *replaceSvc {
+	c.MustProvideValue[*replaceDep](&replaceDep{id: "real"})
+	c.MustProvide[*replaceSvc](func(d *replaceDep) *replaceSvc {
 		return &replaceSvc{id: d.id}
 	})
 	// Swap the dependency for a mock before sealing.
-	MustReplace[*replaceDep](c, &replaceDep{id: "mock"})
+	c.MustReplace[*replaceDep](&replaceDep{id: "mock"})
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal after Replace: %v", err)
 	}
-	if got := MustResolve[*replaceSvc](c); got.id != "mock" {
+	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("dependent resolved with id = %q, want mock", got.id)
 	}
 }
@@ -112,5 +112,5 @@ func TestMustReplace_PanicsWhenFrozen(t *testing.T) {
 			t.Fatal("expected MustReplace to panic on a sealed container")
 		}
 	}()
-	MustReplace[*replaceSvc](c, &replaceSvc{id: "x"})
+	c.MustReplace[*replaceSvc](&replaceSvc{id: "x"})
 }
