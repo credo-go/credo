@@ -4,7 +4,7 @@
 // The package defines request binding structs, a generic result type, and
 // sort validation — all with zero external dependencies. Actual query
 // execution (COUNT + LIMIT/OFFSET) lives in ORM-specific adapters such as
-// [github.com/credo-go/credo/store/sqldb.Paginate].
+// the [github.com/credo-go/credo/store/sqldb.SelectQuery.Page] terminal.
 //
 // # Request Binding
 //

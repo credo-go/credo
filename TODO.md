@@ -314,7 +314,7 @@
 - [x] Query builder proxies: `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`
 - [x] 5 guardrails: TX inject, Apply varargs+nil, Unwrap builder-only, QueryHook trace, raw terminals
 - [x] `Client() *bun.DB` escape hatch
-- [x] `Paginate[T]` helper for pagination package
+- [x] `Page[T]` typed pagination terminal on `SelectQuery` (replaced the `Paginate`/`PaginateRequest` free functions)
 - [x] Tests (db, config, error mapping, tx, query proxies, integration)
 
 **Phase 3.3c** (deferred):

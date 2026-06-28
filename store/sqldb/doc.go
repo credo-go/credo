@@ -74,6 +74,35 @@
 // level and read-only mode. From a handler, pass the request context:
 // db.InTx(ctx.Context(), fn).
 //
+// # Pagination
+//
+// SelectQuery.Page is the typed pagination terminal: it runs COUNT + a
+// LIMIT/OFFSET SELECT and returns a ready *pagination.Page[T]. Like One and
+// All it is a Form-A terminal, so T drives the table and destination and the
+// query is built model-less:
+//
+//	req := &pagination.PageRequest{Page: 2, PerPage: 20} // normalized by BindQuery
+//	page, err := db.Select().
+//	    Where("active = ?", true).
+//	    OrderExpr("created_at DESC").
+//	    Page[User](ctx, req)
+//
+// req is assumed already normalized (BindQuery does this via Validate); Page
+// does not re-normalize. COUNT runs first and, when it reports zero rows, the
+// SELECT is skipped and the page keeps the requested page/per-page with a
+// non-nil empty slice. Both statements clone the query and join the ambient
+// transaction, so the receiver is never mutated.
+//
+// Page responds with the queried type directly. For a model→DTO response,
+// build the page from the typed terminals so it is constructed once with the
+// final DTO type:
+//
+//	total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
+//	// ... if err != nil || total == 0, return an empty page ...
+//	rows, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)
+//	dtos := make([]DTO, len(rows)) // map each Model → DTO
+//	page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
+//
 // # Migrations
 //
 // The DB wraps Bun's migration engine (bun/migrate — part of the already

@@ -289,7 +289,7 @@ Each proxy type:
 
 **SelectQuery proxy methods** (~20): `Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`, `Join`, `JoinOn`, `JoinOnOr`, `Where`, `WhereOr`, `WherePK`, `OrderExpr`, `Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`, `Clone`, `Conn`.
 
-**Terminal methods** (Scan, Exec, Count, Exists, plus the generic `One[T]`/`All[T]` below) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
+**Terminal methods** (Scan, Exec, Count, Exists, plus the generic `One[T]`/`All[T]`/`Page[T]` below) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
 
 | Driver error               | Mapped sentinel      |
 | -------------------------- | -------------------- |
@@ -309,6 +309,14 @@ users, err := db.Select().Where("active = ?", true).All[User](ctx) // ([]User, e
 ```
 
 `One` applies `LIMIT 1` and returns the first matching row, so multiple matches are not an error — add `OrderExpr` for a deterministic choice; no row returns `store.ErrNotFound` with the zero `T`. `All` returns every matching row, or a non-nil empty slice with a nil error when none match (an empty result is not `ErrNotFound`). Both clone the query and inject the ambient transaction exactly like `Scan`, so the receiver is never mutated and a terminal's `Model`/`LIMIT 1` never leaks back into a reused query. Pass no model to `Select` — one passed there is overridden. For a model→DTO projection where `T` is not the table model, set the source first (`Model`/`TableExpr`) or stay on `Scan(ctx, &dest)`.
+
+**Pagination terminal: `Page[T]`.** The third typed terminal runs COUNT + a LIMIT/OFFSET SELECT and assembles a ready `*pagination.Page[T]`, completing the result-shape naming (`One → T`, `All → []T`, `Page → *Page[T]`):
+
+```go
+page, err := db.Select().Where("active = ?", true).OrderExpr("id").Page[User](ctx, req)
+```
+
+`req *pagination.PageRequest` is read, never modified, and assumed already normalized (`BindQuery` does this via `Validate`) — `Page` does not re-normalize, so `req.Page`/`req.PerPage` are used as given and echoed into the result. A nil `req` is the one rejected input (error). COUNT runs first; on zero rows the SELECT is skipped and the page keeps the requested page/per-page with a non-nil empty slice. COUNT and SELECT are separate statements that both clone the query and join the ambient transaction, so the receiver is never mutated and the two can drift under concurrent writes — wrap in `RunInTx` for a consistent snapshot. `Page` answers with the queried type directly; for a model→DTO response build the page from the terminals so it is constructed once with the DTO type: `q.Clone().Model((*Model)(nil)).Count(ctx)` + `q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)` + `pagination.NewPage(dtos, total, req.Page, req.PerPage)`.
 
 **Escape hatches** on each query type:
 
@@ -452,11 +460,10 @@ store/sqldb/
 ├── config.go           ← Config struct, DSN builders
 ├── driver.go           ← driver family detection (postgres/mysql/sqlite)
 ├── query_common.go     ← shared query state (TX binding, error mapping)
-├── query_select.go     ← SelectQuery proxy
+├── query_select.go     ← SelectQuery proxy (incl. One/All/Page typed terminals)
 ├── query_insert.go     ← InsertQuery proxy
 ├── query_update.go     ← UpdateQuery proxy
 ├── query_delete.go     ← DeleteQuery proxy
-├── paginate.go         ← Paginate, PaginateRequest (COUNT + page SELECT)
 ├── tx.go               ← RunInTx, RunInTxWith + method forms InTx, InTxWith
 ├── migrate.go          ← RegisterMigrations, Migrate (bun/migrate wrapper)
 ├── errors.go           ← mapError (Bun/driver → store.Err*)
@@ -654,5 +661,4 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - `Migrate` satisfies the `App.OnStart` hook signature (compile-time check)
 - Error mapping covers all documented driver errors
 - `Config.DSN` override takes precedence
-- `Paginate` validates query, destination, page, and per-page inputs
-- `PaginateRequest` builds a `pagination.Page` from a normalized `PageRequest`; rejects nil requests; empty result keeps a non-nil slice
+- `Page[T]` builds a `pagination.Page[T]` from an already-normalized `PageRequest` (it does not re-normalize), rejects a nil request, skips the SELECT on zero rows while keeping the requested page/per-page with a non-nil empty slice, and runs COUNT + SELECT on the ambient transaction

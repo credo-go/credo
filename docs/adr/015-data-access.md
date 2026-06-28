@@ -121,13 +121,14 @@ func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuild
 
 **Scope**: select/update/delete only. `InsertQuery` is excluded — it has no WHERE clause, matching Bun's own `QueryBuilder` interface assertions. No API breakage; additive only, all three return the proxy type (fluent), and a nil fn is a no-op.
 
-## Typed Terminals (One[T] / All[T])
+## Typed Terminals (One[T] / All[T] / Page[T])
 
-**`One[T]` and `All[T]` added** to `SelectQuery` as generic terminal methods (Go 1.27 concrete-type generic methods):
+**`One[T]`, `All[T]`, and `Page[T]` added** to `SelectQuery` as generic terminal methods (Go 1.27 concrete-type generic methods):
 
 ```go
 func (q *SelectQuery) One[T any](ctx context.Context) (T, error)
 func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error)
+func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error)
 ```
 
 **Rationale**: the existing terminals (`Scan(ctx, &dest)`) require the caller to declare a destination and pass it back in — `var u User; err := db.Select(&u).Where(...).Scan(ctx)`. With generic methods finally usable on a concrete type, the destination becomes the type parameter: `u, err := db.Select().Where(...).One[User](ctx)`. `T` drives both the FROM table (model inferred from `T`) and the scan destination, so `Select` is called model-less and the terminal owns the destination — a model passed to `Select` is overridden.
@@ -135,6 +136,12 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error)
 **Semantics (locked by tests, not left to Bun)**: `One` applies an explicit `LIMIT 1` and returns the first matching row, so multiple matches are not an error (callers add `OrderExpr` for a deterministic choice); a missing row maps `sql.ErrNoRows` to `store.ErrNotFound` and returns the zero `T`. `All` returns a non-nil empty slice with a nil error when nothing matches — an empty list is not `ErrNotFound`. Both go through the same `prepareTerminal` clone + ambient-TX injection + error mapping as `Scan`, so the receiver is never mutated and a terminal's `Model`/`LIMIT 1` never leaks into a reused query.
 
 **Name — `One`, not `First`**: the terminal is named for its return shape (`One → T`, `All → []T`), consistent with the result-shape naming used elsewhere in the data layer; it is a single-row read, not an exactly-one assertion. For "exactly one or error", a caller composes `Count`/`Exists`. No API breakage; additive only, and `Scan` stays for projection/DTO cases where `T` is not the table model.
+
+**`Page[T]` completes the set** with the same Form-A model (`T` drives the table and destination, the query is built model-less, and the terminal owns the result). It runs COUNT + a LIMIT/OFFSET SELECT and assembles a `*pagination.Page[T]`, finishing the result-shape naming (`One → T`, `All → []T`, `Page → *Page[T]`) — the noun `Page` is chosen over the verb `Paginate` precisely because the terminal is named for its return shape. Internally it composes the other terminals: `Count` for the total (with `T`'s model injected so the model-less query still knows its table) and `All[T]` for the page slice, each on a clone so `Offset`/`Limit` never leak into the receiver. `sqldb` already imports `pagination`, so there is no new dependency or cycle.
+
+**Semantics (locked by tests, old `PaginateRequest` output as the reference)**: `req` is assumed already normalized (`BindQuery` does this via `PageRequest.Validate`) and `Page` does **not** re-normalize — `req.Page`/`req.PerPage` are used as given and echoed into the result (a request with `PerPage` above the package max is honoured, not clamped). A nil `req` is the single rejected input and returns an error; the int-range validation the old low-level `Paginate` did (`page >= 1`, `perPage >= 1`) does not carry over, because that was the primitive's job and `Page` takes a typed, normalization-bearing request instead. When COUNT reports zero rows the SELECT is skipped and the result is `NewPage([]T{}, 0, req.Page, req.PerPage)` — the requested page/per-page are preserved rather than reset to `NewEmpty`'s defaults. COUNT and SELECT are separate statements that both join the ambient transaction, so a consistent snapshot requires `RunInTx`.
+
+**`sqldb.Paginate` and `sqldb.PaginateRequest` removed** (BREAKING). With `All[T]` + `Count` available as terminals, the low-level `Paginate[T](ctx, q, page, perPage, &dest)` (caller-supplied destination) and its `PaginateRequest[T]` wrapper are redundant — `Page[T]` is the 1:1 replacement for the latter, and the model→DTO path that justified the former is now `q.Clone().Model((*Model)(nil)).Count(ctx)` + `q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)` + `pagination.NewPage(dtos, total, req.Page, req.PerPage)`. They are deleted, not deprecated: pre-v1 with two controllable consumers, and keeping a second, differently-shaped pagination API alongside `Page[T]` would reintroduce exactly the surface inconsistency this campaign removes. The ORM-agnostic `pagination` types (`PageRequest`, `Page[T]`, `NewPage`, `NewEmpty`, `Meta`, `SortRequest`) are unchanged — only the `sqldb` free functions are gone.
 
 ## Migrations and TX Ergonomics
 

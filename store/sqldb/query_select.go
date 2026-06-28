@@ -2,8 +2,11 @@ package sqldb
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/uptrace/bun"
+
+	"github.com/credo-go/credo/pagination"
 )
 
 // SelectQuery proxies bun.SelectQuery with TX injection and error mapping.
@@ -254,4 +257,67 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 	out := []T{}
 	err := q.prepareTerminal(ctx).Model(&out).Scan(ctx)
 	return out, mapError(err)
+}
+
+// Page runs COUNT + SELECT with LIMIT/OFFSET and assembles the result as a
+// *pagination.Page[T]. Like [SelectQuery.One] and [SelectQuery.All] it is a
+// typed terminal: T drives both the table and the scan destination, so the
+// query is built model-less and Page owns the result:
+//
+//	page, err := db.Select().
+//		Where("tenant_id = ?", tenantID).
+//		OrderExpr("created_at DESC").
+//		Page[User](ctx, req)            // (*pagination.Page[User], error)
+//
+// req is read, never modified, and is assumed to be already normalized —
+// BindQuery does this automatically via [pagination.PageRequest.Validate];
+// otherwise call [pagination.PageRequest.Normalize] (or NormalizeWithMax)
+// first. Page does not normalize: req.Page and req.PerPage are used as given
+// and echoed into the returned Page. A nil req is the one rejected input and
+// returns an error.
+//
+// COUNT runs first; when it reports zero rows the SELECT is skipped and the
+// returned Page carries a non-nil empty Records slice with the requested page
+// and per-page preserved. COUNT and SELECT are separate statements, so under
+// concurrent writes the total and the page can drift — call Page inside
+// [RunInTx] when a consistent snapshot matters. Both statements clone the
+// query and join the ambient transaction from ctx exactly like
+// [SelectQuery.Scan], so the receiver is never mutated.
+//
+// Page is the all-in-one terminal for flows that respond with the queried
+// type directly. When records need a model→DTO mapping, T cannot be both the
+// table model and the response type — build the Page from the typed terminals
+// instead, so it is constructed once with the final DTO type:
+//
+//	total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
+//	if err != nil || total == 0 {
+//		return pagination.NewPage([]DTO{}, int64(total), req.Page, req.PerPage), err
+//	}
+//	rows, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)
+//	// ... map rows []Model → dtos []DTO ...
+//	page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
+func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error) {
+	if req == nil {
+		return nil, fmt.Errorf("sqldb: page request must not be nil")
+	}
+
+	// COUNT with T's table. T drives the table, so the query is built
+	// model-less and the COUNT clone owns the model (like All owns it for the
+	// SELECT below); the receiver is never mutated.
+	total, err := q.Clone().Model((*T)(nil)).Count(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// No rows — skip the SELECT, preserving the requested page/per-page.
+	if total == 0 {
+		return pagination.NewPage([]T{}, 0, req.Page, req.PerPage), nil
+	}
+
+	// SELECT on a clone so Offset/Limit never leak back into the receiver.
+	records, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[T](ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pagination.NewPage(records, int64(total), req.Page, req.PerPage), nil
 }

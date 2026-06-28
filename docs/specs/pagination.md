@@ -12,13 +12,13 @@ Implementation-level details for Credo's pagination abstraction are defined in t
 
 ## Overview
 
-The `pagination/` package provides generic, ORM-agnostic types and utilities for paginated API responses. Actual query execution (COUNT + LIMIT/OFFSET) lives in the ORM-specific adapter (`sqldb.Paginate` in `store/sqldb/`), keeping the core free of external dependencies.
+The `pagination/` package provides generic, ORM-agnostic types and utilities for paginated API responses. Actual query execution (COUNT + LIMIT/OFFSET) lives in the ORM-specific adapter (the `SelectQuery.Page[T]` terminal in `store/sqldb/`), keeping the core free of external dependencies.
 
 Key design properties:
 
 - **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest` have zero ORM dependencies. Only types, normalization, and sort validation.
-- **Adapter-level execution** — `sqldb.Paginate` / `sqldb.PaginateRequest` in `store/sqldb/` handle the actual COUNT + LIMIT/OFFSET queries via Bun.
-- **No intermediate wrapper** — Adapter `Paginate` fills a `dest` slice and returns `total int64`. `Page[T]` is constructed only once in the service layer with the final DTO type. No model→DTO conversion step at the pagination level. (`sqldb.PaginateRequest` is the deliberate exception for flows that respond with the queried type directly — it returns a ready `*Page[T]` built from a `PageRequest`.)
+- **Adapter-level execution** — the `SelectQuery.Page[T]` terminal in `store/sqldb/` runs the COUNT + LIMIT/OFFSET queries via Bun and returns a ready `*Page[T]`.
+- **Single construction** — `Page[T]` is built once with the final response type. When the response carries the queried type directly, `Page[T]` builds it; for a model→DTO response the service builds it once with the DTO type from the `Count` + `All[Model]` terminals + `NewPage`, so there is no intermediate `Page[Model]` to discard.
 - **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `BindQuery` via `query:"..."` tags.
 - **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based sort field validation. Only pre-approved DB columns can appear in ORDER BY.
 
@@ -55,8 +55,8 @@ Key design properties:
 
 ┌───────────────────────────────────────────────────────┐
 │  Adapter  (ORM-specific query execution)              │
-│  sqldb.Paginate[T](ctx, q, page, perPage, &dest)     │
-│  sqldb.PaginateRequest[T](ctx, q, req) → *Page[T]    │
+│  (*SelectQuery).Page[T](ctx, req) → *Page[T]          │
+│  (queried-type flows; model→DTO uses Count + All[T])  │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -71,7 +71,7 @@ GET /products               ListByFilter()          ListByFilter()          List
                             │                       │                       │
 BindQuery(&filter)          │                       │                       │
   ↓                         │                       │                       │
-PageRequest{2, 20}    ───►  sqldb.Paginate()        │                       │
+PageRequest{2, 20}    ───►  Count + All[Model]()    │                       │
 SortRequest{"name","asc"}   → []Model + total  ───► model→DTO loop         │
                             │                       NewPage(dtos,total,2,20)│
                             │                       → *Page[DTO]       ───► ToDataMeta()
@@ -173,60 +173,72 @@ MaxPerPage     = 50
 
 ---
 
-## Adapter: `sqldb.Paginate` / `sqldb.PaginateRequest`
+## Adapter: `SelectQuery.Page[T]`
 
-Lives in `store/sqldb/` — the Bun wrapper package.
+Lives in `store/sqldb/` — the Bun wrapper package. `Page[T]` is a typed terminal alongside `One[T]` / `All[T]` (see the [store spec](store.md)), so `T` drives both the table and the result and the query is built model-less.
 
 ```go
-// Paginate executes COUNT + SELECT with LIMIT/OFFSET on the given query.
-// The query should already have model, filters, and ordering applied.
-// Paginate clones the query internally — the original is not mutated.
-func Paginate[T any](ctx context.Context, q *SelectQuery, page, perPage int, dest *[]T) (int64, error)
-
-// PaginateRequest is the all-in-one variant: it runs Paginate with the
-// values from req and assembles a ready *pagination.Page[T]. req is
-// assumed normalized (BindQuery does this via Validate) and is never
-// modified. Use it when the response carries the queried type directly;
-// for model→DTO flows prefer Paginate + NewPage so the Page is built
-// once with the DTO type.
-func PaginateRequest[T any](ctx context.Context, q *SelectQuery, req *pagination.PageRequest) (*pagination.Page[T], error)
+// Page runs COUNT + a LIMIT/OFFSET SELECT and assembles a *pagination.Page[T].
+// req is assumed already normalized (BindQuery does this via Validate); Page
+// does not re-normalize and rejects only a nil req. On zero rows the SELECT is
+// skipped and the page keeps the requested page/per-page. Both statements clone
+// the query and join the ambient transaction, so the receiver is not mutated.
+func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error)
 ```
 
 ### Implementation
 
 ```go
-// Paginate uses Clone, Count, Offset, Limit, and Scan — all part of
-// the query builder proxy's curated method set (see store spec).
-func Paginate[T any](ctx context.Context, q *SelectQuery, page, perPage int, dest *[]T) (int64, error) {
-    // COUNT query (on cloned query — no mutation)
-    total, err := q.Clone().Count(ctx)
-    if err != nil {
-        return 0, err
+func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error) {
+    if req == nil {
+        return nil, fmt.Errorf("sqldb: page request must not be nil")
     }
 
-    // No results — skip the SELECT query
+    // COUNT with T's table — model-less query, the COUNT clone owns the model.
+    total, err := q.Clone().Model((*T)(nil)).Count(ctx)
+    if err != nil {
+        return nil, err
+    }
+
+    // No rows — skip the SELECT, preserving the requested page/per-page.
     if total == 0 {
-        *dest = []T{}
-        return 0, nil
+        return pagination.NewPage([]T{}, 0, req.Page, req.PerPage), nil
     }
 
-    // SELECT with LIMIT/OFFSET (on cloned query).
-    // Note: callers can also use PageRequest.Offset() for this calculation.
-    offset := (page - 1) * perPage
-    err = q.Clone().Offset(offset).Limit(perPage).Scan(ctx, dest)
+    // SELECT on a clone so Offset/Limit never leak back into the receiver.
+    records, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[T](ctx)
     if err != nil {
-        return 0, err
+        return nil, err
     }
-
-    return int64(total), nil
+    return pagination.NewPage(records, int64(total), req.Page, req.PerPage), nil
 }
+```
+
+### Model→DTO responses
+
+`Page[T]` answers with the queried type directly. When records must be mapped to a response DTO, `T` cannot be both the table model and the DTO — build the page from the `Count` + `All[Model]` terminals so it is constructed once with the final type (`Count` takes `Model((*Model)(nil))` because the query is model-less, exactly as `Page` does internally):
+
+```go
+total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
+if err != nil || total == 0 {
+    return pagination.NewPage([]DTO{}, int64(total), req.Page, req.PerPage), err
+}
+rows, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)
+if err != nil {
+    return nil, err
+}
+dtos := make([]DTO, len(rows))
+for i, m := range rows {
+    dtos[i] = toDTO(m)
+}
+page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
 ```
 
 ---
 
 ## Usage Example
 
-This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb.Paginate` adapter into the canonical Controller → Service → Repository layout. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
+This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb` typed terminals into the canonical Controller → Service → Repository layout. Because the response is a DTO (`ProductResponse`, not the `Product` table model), it uses the model→DTO recipe (`Count` + `All[Model]` + `NewPage`) rather than the all-in-one `Page[T]` terminal; reach for `Page[T]` directly when the response carries the queried type. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
 
 ### Filter struct
 
@@ -264,8 +276,7 @@ type productRepo struct {
 }
 
 func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) ([]*Product, int64, error) {
-    var products []*Product
-    query := r.db.NewSelect().Model(&products)
+    query := r.db.Select() // model-less: the terminals own the model via T
 
     if filter.SearchTerm != "" {
         query = query.Where("name ILIKE ?", "%"+filter.SearchTerm+"%")
@@ -274,9 +285,17 @@ func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) (
     column, order := filter.SortRequest.ValidateSort(productSortConfig)
     query = query.OrderExpr(column + " " + order)
 
-    total, err := sqldb.Paginate(ctx, query, filter.Page, filter.PerPage, &products)
+    total, err := query.Clone().Model((*Product)(nil)).Count(ctx)
     if err != nil {
-        return nil, 0, fmt.Errorf("product pagination: %w", err)
+        return nil, 0, fmt.Errorf("count products: %w", err)
+    }
+    if total == 0 {
+        return nil, 0, nil
+    }
+
+    products, err := query.Offset(filter.Offset()).Limit(filter.PerPage).All[*Product](ctx)
+    if err != nil {
+        return nil, 0, fmt.Errorf("list products: %w", err)
     }
     return products, total, nil
 }
@@ -363,7 +382,7 @@ Planned but not yet designed. Will use a separate type (`CursorPage[T]`) since t
 | Decision | Rationale |
 | --- | --- |
 | Core has zero ORM deps | Consistent with store adapter pattern |
-| Adapter returns `(total, error)` not `Page[T]` | `Page[T]` would be an intermediate wrapper — always discarded after model→DTO conversion. Single construction with final type is cleaner |
+| `Page[T]` terminal returns `*Page[T]`; model→DTO builds from `Count` + `All[Model]` | The all-in-one terminal is ergonomic when the response is the queried type. When a DTO mapping is needed, building from the lower-level terminals keeps `Page[T]` constructed once with the final type — no intermediate `Page[Model]` to allocate and discard |
 | `PageRequest` uses non-pointer `int` | `Normalize()` handles zero→default conversion. Pointer fields (`*int`) are supported by `BindQuery` but unnecessary here since zero is always normalized |
 | `ValidateSort` as method on `SortRequest` | SQL injection prevention is ORM-agnostic logic; method is more idiomatic than free function |
 | No `Convert[T,U]` function | Unnecessary — `Page[T]` is constructed once with final DTO type. Model→DTO conversion is the service's responsibility, not pagination's |

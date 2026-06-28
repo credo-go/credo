@@ -920,7 +920,7 @@ func TestSelectQuery_TypedTerminals_Reuse(t *testing.T) {
 	}
 }
 
-func TestPaginate(t *testing.T) {
+func TestSelectQuery_Page(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := context.Background()
@@ -931,133 +931,13 @@ func TestPaginate(t *testing.T) {
 		}
 	}
 
-	var users []User
-	total, err := sqldb.Paginate(ctx, db.Select((*User)(nil)).OrderExpr("name ASC"), 2, 1, &users)
-	if err != nil {
-		t.Fatalf("Paginate() = %v", err)
-	}
-	if total != 3 {
-		t.Fatalf("Paginate total = %d, want 3", total)
-	}
-	if len(users) != 1 || users[0].Name != "beth" {
-		t.Fatalf("Paginate users = %+v, want [beth]", users)
-	}
-}
-
-func TestPaginate_InsideTx(t *testing.T) {
-	db := openTestDB(t)
-	createUsersTable(t, db)
-	ctx := context.Background()
-
-	for _, name := range []string{"anna", "beth", "cara"} {
-		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
-			t.Fatalf("insert %q: %v", name, err)
-		}
-	}
-
-	// Paginate must run COUNT + SELECT on the ambient transaction: an
-	// uncommitted insert inside the TX must be visible to Paginate there,
-	// and invisible after rollback.
-	sentinelErr := errors.New("force rollback")
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
-		if _, err := db.Insert(&User{Name: "dora", Email: "dora@b"}).Exec(txCtx); err != nil {
-			return err
-		}
-
-		var users []User
-		total, err := sqldb.Paginate(txCtx, db.Select((*User)(nil)).OrderExpr("name ASC"), 1, 10, &users)
-		if err != nil {
-			return err
-		}
-		if total != 4 {
-			t.Errorf("Paginate total inside TX = %d, want 4 (uncommitted insert visible)", total)
-		}
-		return sentinelErr
-	})
-	if !errors.Is(err, sentinelErr) {
-		t.Fatalf("RunInTx() = %v, want sentinel rollback error", err)
-	}
-
-	var users []User
-	total, err := sqldb.Paginate(ctx, db.Select((*User)(nil)).OrderExpr("name ASC"), 1, 10, &users)
-	if err != nil {
-		t.Fatalf("Paginate() after rollback = %v", err)
-	}
-	if total != 3 {
-		t.Errorf("Paginate total after rollback = %d, want 3", total)
-	}
-}
-
-func TestPaginate_InvalidInput(t *testing.T) {
-	ctx := context.Background()
-	var users []User
-
-	tests := []struct {
-		name string
-		call func() error
-	}{
-		{
-			name: "nil query",
-			call: func() error {
-				_, err := sqldb.Paginate(ctx, nil, 1, 10, &users)
-				return err
-			},
-		},
-		{
-			name: "nil dest",
-			call: func() error {
-				db := openTestDB(t)
-				createUsersTable(t, db)
-				_, err := sqldb.Paginate[User](ctx, db.Select((*User)(nil)), 1, 10, nil)
-				return err
-			},
-		},
-		{
-			name: "page below one",
-			call: func() error {
-				db := openTestDB(t)
-				createUsersTable(t, db)
-				_, err := sqldb.Paginate(ctx, db.Select((*User)(nil)), 0, 10, &users)
-				return err
-			},
-		},
-		{
-			name: "perPage below one",
-			call: func() error {
-				db := openTestDB(t)
-				createUsersTable(t, db)
-				_, err := sqldb.Paginate(ctx, db.Select((*User)(nil)), 1, 0, &users)
-				return err
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.call(); err == nil {
-				t.Fatal("Paginate() should return validation error")
-			}
-		})
-	}
-}
-
-func TestPaginateRequest(t *testing.T) {
-	db := openTestDB(t)
-	createUsersTable(t, db)
-	ctx := context.Background()
-
-	for _, name := range []string{"anna", "beth", "cara"} {
-		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
-			t.Fatalf("insert %q: %v", name, err)
-		}
-	}
-
+	// Page 2 of size 1, ordered by name ([anna, beth, cara]) → "beth". Built
+	// model-less: T drives the table for both COUNT and SELECT.
 	req := &pagination.PageRequest{Page: 2, PerPage: 1}
-	page, err := sqldb.PaginateRequest[User](ctx, db.Select((*User)(nil)).OrderExpr("name ASC"), req)
+	page, err := db.Select().OrderExpr("name ASC").Page[User](ctx, req)
 	if err != nil {
-		t.Fatalf("PaginateRequest() = %v", err)
+		t.Fatalf("Page() = %v", err)
 	}
-
 	if page.Total != 3 || page.Page != 2 || page.PerPage != 1 || page.TotalPages != 3 {
 		t.Fatalf("page meta = %+v, want Total 3, Page 2, PerPage 1, TotalPages 3", page)
 	}
@@ -1069,38 +949,141 @@ func TestPaginateRequest(t *testing.T) {
 	}
 }
 
-func TestPaginateRequest_EmptyResult(t *testing.T) {
+func TestSelectQuery_Page_EmptyResult(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := context.Background()
 
-	req := &pagination.PageRequest{Page: 1, PerPage: 10}
-	page, err := sqldb.PaginateRequest[User](ctx, db.Select((*User)(nil)), req)
+	// No rows: the SELECT is skipped, yet the returned Page echoes the
+	// requested page/per-page (NewPage with req values, not NewEmpty's
+	// defaults of page 1 / per-page 50) and carries a non-nil empty slice.
+	req := &pagination.PageRequest{Page: 3, PerPage: 10}
+	page, err := db.Select().Page[User](ctx, req)
 	if err != nil {
-		t.Fatalf("PaginateRequest() = %v", err)
+		t.Fatalf("Page() = %v", err)
 	}
 	if page.Total != 0 || page.TotalPages != 0 {
 		t.Fatalf("page = %+v, want zero Total/TotalPages", page)
+	}
+	if page.Page != 3 || page.PerPage != 10 {
+		t.Fatalf("page = %+v, want Page 3 / PerPage 10 preserved from req", page)
 	}
 	if page.Records == nil || len(page.Records) != 0 {
 		t.Fatalf("page.Records = %#v, want non-nil empty slice", page.Records)
 	}
 }
 
-func TestPaginateRequest_InvalidInput(t *testing.T) {
+func TestSelectQuery_Page_DoesNotNormalize(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := context.Background()
 
-	if _, err := sqldb.PaginateRequest[User](ctx, db.Select((*User)(nil)), nil); err == nil {
-		t.Error("PaginateRequest(nil req) should return error")
+	for _, name := range []string{"anna", "beth", "cara"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
 	}
 
-	// Un-normalized zero request: the contract requires Normalize first
-	// (BindQuery does it via Validate); zero values surface as an error
-	// instead of being silently re-normalized.
-	if _, err := sqldb.PaginateRequest[User](ctx, db.Select((*User)(nil)), &pagination.PageRequest{}); err == nil {
-		t.Error("PaginateRequest(zero req) should return error (Normalize not called)")
+	// PerPage 100 is above pagination.MaxPerPage (50). Page assumes the
+	// request is already normalized and must NOT clamp it: it uses the raw
+	// value, echoes it back, and returns all three rows.
+	req := &pagination.PageRequest{Page: 1, PerPage: 100}
+	page, err := db.Select().OrderExpr("name ASC").Page[User](ctx, req)
+	if err != nil {
+		t.Fatalf("Page() = %v", err)
+	}
+	if page.PerPage != 100 {
+		t.Errorf("page.PerPage = %d, want 100 (Page must not normalize/clamp)", page.PerPage)
+	}
+	if page.Total != 3 || page.TotalPages != 1 || len(page.Records) != 3 {
+		t.Fatalf("page = %+v, want Total 3, TotalPages 1, 3 records", page)
+	}
+}
+
+func TestSelectQuery_Page_NilRequest(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	if _, err := db.Select().Page[User](ctx, nil); err == nil {
+		t.Error("Page(nil req) should return an error")
+	}
+}
+
+func TestSelectQuery_Page_InsideTx(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	for _, name := range []string{"anna", "beth", "cara"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
+	}
+
+	// Both COUNT and SELECT must run on the ambient transaction: an
+	// uncommitted insert inside the TX is visible to Page there, and
+	// invisible after rollback.
+	sentinelErr := errors.New("force rollback")
+	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+		if _, err := db.Insert(&User{Name: "dora", Email: "dora@b"}).Exec(txCtx); err != nil {
+			return err
+		}
+
+		req := &pagination.PageRequest{Page: 1, PerPage: 10}
+		page, err := db.Select().OrderExpr("name ASC").Page[User](txCtx, req)
+		if err != nil {
+			return err
+		}
+		if page.Total != 4 || len(page.Records) != 4 {
+			t.Errorf("page inside TX = Total %d / %d records, want 4 (uncommitted insert visible)", page.Total, len(page.Records))
+		}
+		return sentinelErr
+	})
+	if !errors.Is(err, sentinelErr) {
+		t.Fatalf("RunInTx() = %v, want sentinel rollback error", err)
+	}
+
+	req := &pagination.PageRequest{Page: 1, PerPage: 10}
+	page, err := db.Select().OrderExpr("name ASC").Page[User](ctx, req)
+	if err != nil {
+		t.Fatalf("Page() after rollback = %v", err)
+	}
+	if page.Total != 3 {
+		t.Errorf("page.Total after rollback = %d, want 3", page.Total)
+	}
+}
+
+func TestSelectQuery_Page_Reuse(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	for _, name := range []string{"reuseA", "reuseB", "reuseC"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
+	}
+
+	base := db.Select().OrderExpr("name ASC")
+
+	// Page clones internally and applies Offset/Limit to the clone, not base.
+	page, err := base.Page[User](ctx, &pagination.PageRequest{Page: 1, PerPage: 1})
+	if err != nil {
+		t.Fatalf("Page() = %v", err)
+	}
+	if page.Total != 3 || len(page.Records) != 1 {
+		t.Fatalf("page = %+v, want Total 3 / 1 record", page)
+	}
+
+	// If Page had mutated base, this All would inherit LIMIT 1 / OFFSET 0 and
+	// return a single row.
+	all, err := base.All[User](ctx)
+	if err != nil {
+		t.Fatalf("All() after Page() = %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("All() len = %d, want 3 — Page must not leak LIMIT/OFFSET into the base query", len(all))
 	}
 }
 
