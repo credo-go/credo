@@ -215,9 +215,17 @@ func GetTxInScope[T any](ctx context.Context, scope *TxScope) (T, bool)
 // ConnInScope returns the scoped transaction from context if present,
 // otherwise returns the fallback connection.
 func ConnInScope[T any](ctx context.Context, scope *TxScope, fallback T) T
+
+// TxScope method form (ergonomic sugar over the *InScope free functions):
+// s.WithTx[T](ctx, tx) reads better than WithTxInScope[T](ctx, s, tx) and keeps
+// the scope on the value the caller already holds. Same keying — interchangeable
+// with the free functions.
+func (s *TxScope) WithTx[T any](ctx context.Context, tx T) context.Context
+func (s *TxScope) GetTx[T any](ctx context.Context) (T, bool)
+func (s *TxScope) Conn[T any](ctx context.Context, fallback T) T
 ```
 
-`WithTx` / `GetTx` / `Conn` remain useful for simple type-keyed flows. Adapters such as `store/sqldb` should prefer scoped helpers so that two connections using the same Go type do not collide in `context.Context`.
+`WithTx` / `GetTx` / `Conn` remain useful for simple type-keyed flows. For same-type multi-connection cases, create a `TxScope` and prefer its methods (`scope.Conn[T](ctx, fallback)`) so that two connections using the same Go type do not collide in `context.Context`; the `WithTxInScope` / `GetTxInScope` / `ConnInScope` free functions are the equivalent lower-level form (the unscoped `WithTx` / `GetTx` / `Conn` stay free functions because their receiver would be `context.Context`).
 
 ---
 
@@ -446,7 +454,7 @@ store/
 ├── health.go           ← Health, HealthStatus
 ├── registry.go         ← Registry (Add, HealthAll — no shutdown; DI owns closing)
 ├── register.go         ← Register[R], RegisterOption, WithName, WithPingTimeout
-├── tx.go               ← WithTx[T], GetTx[T], Conn[T], NewTxScope, WithTxInScope, GetTxInScope, ConnInScope
+├── tx.go               ← WithTx[T], GetTx[T], Conn[T], NewTxScope, WithTxInScope/GetTxInScope/ConnInScope + (*TxScope) WithTx/GetTx/Conn methods
 ├── errors_test.go
 ├── registry_test.go
 ├── register_test.go
@@ -621,6 +629,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - Wrapped errors (`fmt.Errorf("%w", store.ErrNotFound)`) preserve HTTPStatus
 - `WithTx` / `GetTx` round-trip
 - `WithTxInScope` / `GetTxInScope` isolate same-type transactions by scope
+- `(*TxScope).WithTx` / `GetTx` / `Conn` methods round-trip identically to the matching `*InScope` free functions (same key) and isolate distinct scopes
 - `Conn` returns TX from context when present, fallback otherwise
 - `ConnInScope` returns scoped TX from context when present, fallback otherwise
 - `Registry.Add` appends entries, rejects duplicate names

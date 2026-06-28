@@ -87,3 +87,32 @@ func requireTxScope(scope *TxScope) *TxScope {
 	}
 	return scope
 }
+
+// --- TxScope methods (ergonomic scoped form) ---
+//
+// These are the method form of the WithTxInScope / GetTxInScope / ConnInScope
+// free functions: s.WithTx[T](ctx, tx) reads better than the free-function
+// call WithTxInScope[T](ctx, s, tx) and keeps the scope on the value the caller
+// already holds. They are additive sugar — same keying, so a value stored
+// through a method is readable through the matching free function and vice
+// versa — and a nil scope panics identically.
+
+// WithTx stores a transaction handle in the context for this scope.
+// It is the method form of [WithTxInScope].
+func (s *TxScope) WithTx[T any](ctx context.Context, tx T) context.Context {
+	return WithTxInScope[T](ctx, s, tx)
+}
+
+// GetTx retrieves this scope's transaction handle from the context, returning
+// the zero value and false when none is stored.
+// It is the method form of [GetTxInScope].
+func (s *TxScope) GetTx[T any](ctx context.Context) (T, bool) {
+	return GetTxInScope[T](ctx, s)
+}
+
+// Conn returns this scope's transaction from the context if present, otherwise
+// the fallback connection — the call repositories make for opt-in scoped TX
+// participation. It is the method form of [ConnInScope].
+func (s *TxScope) Conn[T any](ctx context.Context, fallback T) T {
+	return ConnInScope[T](ctx, s, fallback)
+}

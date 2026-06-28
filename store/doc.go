@@ -31,7 +31,9 @@
 //
 // Use [WithTx], [GetTx], and [Conn] for simple type-keyed transaction
 // participation. When the same client type can appear more than once,
-// create a [TxScope] and use [WithTxInScope] / [ConnInScope].
+// create a [TxScope] and use its methods — scope.WithTx / scope.GetTx /
+// scope.Conn — or the equivalent [WithTxInScope] / [GetTxInScope] /
+// [ConnInScope] free functions.
 //
 //	func (r *UserRepo) GetByID(ctx context.Context, id int) (*User, error) {
 //	    conn := store.Conn[bun.IDB](ctx, r.db.Client())
