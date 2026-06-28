@@ -1,6 +1,6 @@
 # Pagination Spec
 
-**Status**: Planned **Package**: `pagination/` (core), adapter helper in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
+**Status**: Implemented **Package**: `pagination/` (core), typed terminal in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
 
 ---
 
@@ -18,7 +18,7 @@ Key design properties:
 
 - **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest` have zero ORM dependencies. Only types, normalization, and sort validation.
 - **Adapter-level execution** — the `SelectQuery.Page[T]` terminal in `store/sqldb/` runs the COUNT + LIMIT/OFFSET queries via Bun and returns a ready `*Page[T]`.
-- **Single construction** — `Page[T]` is built once with the final response type. When the response carries the queried type directly, `Page[T]` builds it; for a model→DTO response the service builds it once with the DTO type from the `Count` + `All[Model]` terminals + `NewPage`, so there is no intermediate `Page[Model]` to discard.
+- **Metadata computed once, carried across mapping** — a `Page[T]`'s pagination metadata (`Total`, `Page`, `PerPage`, `TotalPages`) is computed once, by `Page[T]` or `NewPage`, and never recomputed or hand-copied. When the response carries the queried type, `Page[T]` returns it directly; for a model→DTO response, build `Page[Model]` and `Map` it to `Page[DTO]` — `Page.Map` carries the metadata over.
 - **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `BindQuery` via `query:"..."` tags.
 - **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based sort field validation. Only pre-approved DB columns can appear in ORDER BY.
 
@@ -27,7 +27,7 @@ Key design properties:
 ## Goals
 
 1. **ORM-agnostic types**: `Page[T]`, `Meta`, `PageRequest` import only stdlib. No GORM, Bun, or other ORM types leak into the core.
-2. **Single construction**: `Page[T]` is built once with the final response type (DTO), never with intermediate model types. Adapters return raw slices + total count, not wrapped pages.
+2. **Metadata computed once, preserved across mapping**: a `Page`'s metadata (`Total`, `Page`, `PerPage`, `TotalPages`) is computed once — by `SelectQuery.Page[T]` or `NewPage` — and never recomputed or hand-copied. When the queried type is the response type, `Page[T]` returns it directly; for a model→DTO response, build `Page[Model]` then `Map` it to `Page[DTO]`, which carries the metadata over mechanically. (This replaces the earlier "single construction, never an intermediate `Page[Model]`" rule: the invariant being protected was always *metadata is computed once, never hand-juggled* — `Map` enforces it by construction, so building an intermediate `Page[Model]` is now safe and idiomatic.)
 3. **BindQuery integration**: `PageRequest` and `SortRequest` use `query:"..."` tags for automatic request binding via `ctx.Request().BindQuery(&filter)`.
 4. **Safe defaults**: `Normalize()` converts zero/negative values to defaults and caps `PerPage` at `MaxPerPage` (50). `NormalizeWithMax(n)` applies a custom cap per endpoint (shadow `Validate` on the embedding struct to use it with BindQuery). Invalid input never causes panics or unbounded queries.
 5. **Sort safety**: `SortRequest.ValidateSort` rejects unknown sort fields, preventing SQL injection via ORDER BY. Falls back to configured defaults silently.
@@ -43,7 +43,8 @@ Key design properties:
 │  Application Code                                      │
 │                                                        │
 │  Controller: ctx.Request().BindQuery(&filter)          │
-│  Service:    pagination.NewPage(dtos, total, p, pp)    │
+│  Repository: query.Page[Model](ctx, &filter.PageReq)   │
+│  Service:    modelPage.Map(toResponseDTO)              │
 │  Controller: page.ToDataMeta() → JSON response         │
 └────────────────────┬──────────────────────────────────┘
                      │ uses types
@@ -56,7 +57,7 @@ Key design properties:
 ┌───────────────────────────────────────────────────────┐
 │  Adapter  (ORM-specific query execution)              │
 │  (*SelectQuery).Page[T](ctx, req) → *Page[T]          │
-│  (queried-type flows; model→DTO uses Count + All[T])  │
+│  (queried-type flows; model→DTO: Page[Model].Map)     │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -71,9 +72,8 @@ GET /products               ListByFilter()          ListByFilter()          List
                             │                       │                       │
 BindQuery(&filter)          │                       │                       │
   ↓                         │                       │                       │
-PageRequest{2, 20}    ───►  Count + All[Model]()    │                       │
-SortRequest{"name","asc"}   → []Model + total  ───► model→DTO loop         │
-                            │                       NewPage(dtos,total,2,20)│
+PageRequest{2, 20}    ───►  query.Page[Product]()   │                       │
+SortRequest{"name","asc"}   → *Page[Product]   ───► page.Map(toDTO)         │
                             │                       → *Page[DTO]       ───► ToDataMeta()
                             │                       │                       → JSON response
 ```
@@ -98,8 +98,8 @@ type SortRequest struct {
     SortOrder string `query:"sort_order"`
 }
 
-// Page is a generic paginated result.
-// Constructed once with the final response type (DTO), not with model types.
+// Page is a generic paginated result. Its metadata is computed once and
+// carried over by Map, so model→DTO is Page[Model] → Map → Page[DTO].
 type Page[T any] struct {
     Records    []T
     Total      int64
@@ -160,6 +160,11 @@ func (p *Page[T]) HasPrev() bool
 // ToDataMeta splits Page into records slice + Meta for JSON response.
 // Meta includes HasNext and HasPrev fields.
 func (p *Page[T]) ToDataMeta() ([]T, *Meta)
+
+// Map returns a new Page[U] with each record transformed by fn, carrying
+// the pagination metadata over unchanged. fn must be pure; a nil fn panics.
+// This is the canonical model→DTO step: Page[Model] → Map → Page[DTO].
+func (p *Page[T]) Map[U any](fn func(T) U) *Page[U]
 ```
 
 ### Constants
@@ -194,10 +199,10 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
         return nil, fmt.Errorf("sqldb: page request must not be nil")
     }
 
-    // COUNT with T's table — model-less query, the COUNT clone owns the model.
-    total, err := q.Clone().Model((*T)(nil)).Count(ctx)
+    // COUNT with T's table — model-less query, prepared clone owns the model.
+    total, err := q.prepareTerminal(ctx).Model((*T)(nil)).Count(ctx)
     if err != nil {
-        return nil, err
+        return nil, mapError(err)
     }
 
     // No rows — skip the SELECT, preserving the requested page/per-page.
@@ -216,7 +221,17 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 
 ### Model→DTO responses
 
-`Page[T]` answers with the queried type directly. When records must be mapped to a response DTO, `T` cannot be both the table model and the DTO — build the page from the `Count` + `All[Model]` terminals so it is constructed once with the final type (`Count` takes `Model((*Model)(nil))` because the query is model-less, exactly as `Page` does internally):
+`Page[T]` answers with the queried type directly. When records must be mapped to a response DTO, run the query as `Page[Model]` and map it with `Page.Map` — the metadata is carried over, so the intermediate `Page[Model]` needs no hand-juggling:
+
+```go
+modelPage, err := q.Page[Model](ctx, req)
+if err != nil {
+    return nil, err
+}
+dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) }) // *Page[DTO]
+```
+
+`Map` takes a pure `func(Model) DTO`. When the conversion itself can fail, drop to the lower-level terminals and build the page in the service, mapping with error handling before `NewPage` (`Count` takes `Model((*Model)(nil))` because the query is model-less, exactly as `Page` does internally):
 
 ```go
 total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
@@ -229,7 +244,10 @@ if err != nil {
 }
 dtos := make([]DTO, len(rows))
 for i, m := range rows {
-    dtos[i] = toDTO(m)
+    dtos[i], err = toDTO(m) // fallible conversion
+    if err != nil {
+        return nil, err
+    }
 }
 page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
 ```
@@ -238,7 +256,7 @@ page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
 
 ## Usage Example
 
-This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb` typed terminals into the canonical Controller → Service → Repository layout. Because the response is a DTO (`ProductResponse`, not the `Product` table model), it uses the model→DTO recipe (`Count` + `All[Model]` + `NewPage`) rather than the all-in-one `Page[T]` terminal; reach for `Page[T]` directly when the response carries the queried type. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
+This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb` typed terminals into the canonical Controller → Service → Repository layout. Because the response is a DTO (`ProductResponse`, not the `Product` table model), the repository returns `Page[*Product]` from the `Page[T]` terminal and the service maps it to `Page[*ProductResponse]` with `Page.Map`; when the response carries the queried type, return `Page[T]` directly without the map. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
 
 ### Filter struct
 
@@ -275,8 +293,8 @@ type productRepo struct {
     db *sqldb.DB
 }
 
-func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) ([]*Product, int64, error) {
-    query := r.db.Select() // model-less: the terminals own the model via T
+func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) (*pagination.Page[*Product], error) {
+    query := r.db.Select() // model-less: the terminal owns the model via T
 
     if filter.SearchTerm != "" {
         query = query.Where("name ILIKE ?", "%"+filter.SearchTerm+"%")
@@ -285,19 +303,11 @@ func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) (
     column, order := filter.SortRequest.ValidateSort(productSortConfig)
     query = query.OrderExpr(column + " " + order)
 
-    total, err := query.Clone().Model((*Product)(nil)).Count(ctx)
+    page, err := query.Page[*Product](ctx, &filter.PageRequest)
     if err != nil {
-        return nil, 0, fmt.Errorf("count products: %w", err)
+        return nil, fmt.Errorf("list products: %w", err)
     }
-    if total == 0 {
-        return nil, 0, nil
-    }
-
-    products, err := query.Offset(filter.Offset()).Limit(filter.PerPage).All[*Product](ctx)
-    if err != nil {
-        return nil, 0, fmt.Errorf("list products: %w", err)
-    }
-    return products, total, nil
+    return page, nil
 }
 ```
 
@@ -309,16 +319,11 @@ type productService struct {
 }
 
 func (s *productService) ListByFilter(ctx context.Context, filter *ProductFilter) (*pagination.Page[*ProductResponse], error) {
-    products, total, err := s.repo.ListByFilter(ctx, filter)
+    page, err := s.repo.ListByFilter(ctx, filter)
     if err != nil {
         return nil, err
     }
-
-    dtos := make([]*ProductResponse, len(products))
-    for i, p := range products {
-        dtos[i] = toProductResponse(p)
-    }
-    return pagination.NewPage(dtos, total, filter.Page, filter.PerPage), nil
+    return page.Map(toProductResponse), nil
 }
 ```
 
@@ -382,8 +387,8 @@ Planned but not yet designed. Will use a separate type (`CursorPage[T]`) since t
 | Decision | Rationale |
 | --- | --- |
 | Core has zero ORM deps | Consistent with store adapter pattern |
-| `Page[T]` terminal returns `*Page[T]`; model→DTO builds from `Count` + `All[Model]` | The all-in-one terminal is ergonomic when the response is the queried type. When a DTO mapping is needed, building from the lower-level terminals keeps `Page[T]` constructed once with the final type — no intermediate `Page[Model]` to allocate and discard |
+| `Page[T]` terminal returns `*Page[T]`; model→DTO maps via `Page.Map` | The all-in-one terminal is ergonomic when the response is the queried type. For a DTO mapping, run `Page[Model]` and `Map` to `Page[DTO]`; `Map` carries the metadata over, so the intermediate `Page[Model]` costs only a slice transform, not hand-copied metadata |
 | `PageRequest` uses non-pointer `int` | `Normalize()` handles zero→default conversion. Pointer fields (`*int`) are supported by `BindQuery` but unnecessary here since zero is always normalized |
 | `ValidateSort` as method on `SortRequest` | SQL injection prevention is ORM-agnostic logic; method is more idiomatic than free function |
-| No `Convert[T,U]` function | Unnecessary — `Page[T]` is constructed once with final DTO type. Model→DTO conversion is the service's responsibility, not pagination's |
+| `Page.Map[U]` for model→DTO (Go 1.27 generic method) | Reverses the earlier "no convert function" stance: the metadata-integrity invariant that justified it (compute once, never hand-copy) is now *enforced* by `Map` rather than by forbidding intermediate pages. A generic method (not a free function) keeps the call fluent on the page the caller already holds, and stays in the ORM-agnostic core |
 | `SortConfig` whitelist approach | Only pre-approved fields can reach ORDER BY. Safer than blacklist or regex |

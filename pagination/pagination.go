@@ -23,9 +23,11 @@ type SortRequest struct {
 	SortOrder string `query:"sort_order"`
 }
 
-// Page is a generic paginated result.
-// It is constructed once with the final response type (DTO), not with
-// intermediate model types.
+// Page is a generic paginated result. Its pagination metadata (Total, Page,
+// PerPage, TotalPages) is computed once — by [NewPage] or by a query terminal
+// such as sqldb's SelectQuery.Page — and carried unchanged through any later
+// reshaping: [Page.Map] turns a Page of database models into a Page of response
+// DTOs while preserving that metadata, so it is never recomputed or hand-copied.
 type Page[T any] struct {
 	Records    []T
 	Total      int64
@@ -185,6 +187,39 @@ func (p *Page[T]) ToDataMeta() ([]T, *Meta) {
 		TotalPages: p.TotalPages,
 		HasNext:    p.HasNext(),
 		HasPrev:    p.HasPrev(),
+	}
+}
+
+// Map returns a new Page[U] whose records are produced by applying fn to each
+// record of p, carrying the pagination metadata (Total, Page, PerPage,
+// TotalPages) over unchanged. It is the canonical way to turn a page of
+// database models into a page of response DTOs:
+//
+//	modelPage, err := db.Select().Where(...).Page[Model](ctx, req)
+//	if err != nil {
+//		return err
+//	}
+//	dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) })
+//
+// fn is applied once per record, in order, and must be pure: for a conversion
+// that can fail, map in the service layer and build the page with [NewPage].
+// fn must not be nil — a nil mapping is always a programming error, so Map
+// panics on a nil fn even when the page is empty, rather than silently
+// returning an empty Page[U].
+func (p *Page[T]) Map[U any](fn func(T) U) *Page[U] {
+	if fn == nil {
+		panic("pagination: Page.Map called with nil fn")
+	}
+	records := make([]U, len(p.Records))
+	for i, r := range p.Records {
+		records[i] = fn(r)
+	}
+	return &Page[U]{
+		Records:    records,
+		Total:      p.Total,
+		Page:       p.Page,
+		PerPage:    p.PerPage,
+		TotalPages: p.TotalPages,
 	}
 }
 

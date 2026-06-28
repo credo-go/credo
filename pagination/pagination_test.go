@@ -1,6 +1,7 @@
 package pagination_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/credo-go/credo/pagination"
@@ -386,5 +387,57 @@ func TestToDataMeta(t *testing.T) {
 		if !meta.HasPrev {
 			t.Error("meta.HasPrev = false, want true")
 		}
+	})
+}
+
+func TestMap(t *testing.T) {
+	t.Run("maps records and preserves metadata", func(t *testing.T) {
+		src := pagination.NewPage([]int{1, 2, 3}, 30, 2, 10) // TotalPages = 3
+		got := src.Map(func(n int) string { return fmt.Sprintf("#%d", n) })
+
+		want := []string{"#1", "#2", "#3"}
+		if len(got.Records) != len(want) {
+			t.Fatalf("Records len = %d, want %d", len(got.Records), len(want))
+		}
+		for i := range want {
+			if got.Records[i] != want[i] {
+				t.Errorf("Records[%d] = %q, want %q", i, got.Records[i], want[i])
+			}
+		}
+		if got.Total != 30 || got.Page != 2 || got.PerPage != 10 || got.TotalPages != 3 {
+			t.Errorf("metadata = {Total:%d Page:%d PerPage:%d TotalPages:%d}, want {30 2 10 3}",
+				got.Total, got.Page, got.PerPage, got.TotalPages)
+		}
+	})
+
+	t.Run("empty page maps to non-nil empty slice", func(t *testing.T) {
+		src := pagination.NewPage([]int{}, 0, 1, 10)
+		got := src.Map(func(n int) string { return "" })
+
+		if got.Records == nil {
+			t.Fatal("Records is nil, want empty non-nil slice")
+		}
+		if len(got.Records) != 0 {
+			t.Errorf("Records len = %d, want 0", len(got.Records))
+		}
+	})
+
+	t.Run("source page is not mutated", func(t *testing.T) {
+		src := pagination.NewPage([]int{1, 2}, 2, 1, 10)
+		_ = src.Map(func(n int) int { return n * 10 })
+
+		if len(src.Records) != 2 || src.Records[0] != 1 || src.Records[1] != 2 {
+			t.Errorf("source Records = %v, want [1 2] (Map must not mutate the source)", src.Records)
+		}
+	})
+
+	t.Run("nil fn panics even for an empty page", func(t *testing.T) {
+		src := pagination.NewPage([]int{}, 0, 1, 10)
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Map(nil) did not panic, want panic")
+			}
+		}()
+		src.Map[string](nil)
 	})
 }

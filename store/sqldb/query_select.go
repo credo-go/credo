@@ -285,28 +285,29 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // [SelectQuery.Scan], so the receiver is never mutated.
 //
 // Page is the all-in-one terminal for flows that respond with the queried
-// type directly. When records need a model→DTO mapping, T cannot be both the
-// table model and the response type — build the Page from the typed terminals
-// instead, so it is constructed once with the final DTO type:
+// type directly. When records need a model→DTO mapping, run Page[Model] and
+// map it with pagination's Page.Map, which carries the metadata over:
 //
-//	total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
-//	if err != nil || total == 0 {
-//		return pagination.NewPage([]DTO{}, int64(total), req.Page, req.PerPage), err
+//	modelPage, err := q.Page[Model](ctx, req)
+//	if err != nil {
+//		return nil, err
 //	}
-//	rows, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)
-//	// ... map rows []Model → dtos []DTO ...
-//	page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
+//	dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) })
+//
+// For a conversion that can fail, build the Page in the service from the
+// lower-level terminals (Count + All[Model] + pagination.NewPage) so the
+// mapping can surface an error.
 func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error) {
 	if req == nil {
 		return nil, fmt.Errorf("sqldb: page request must not be nil")
 	}
 
 	// COUNT with T's table. T drives the table, so the query is built
-	// model-less and the COUNT clone owns the model (like All owns it for the
-	// SELECT below); the receiver is never mutated.
-	total, err := q.Clone().Model((*T)(nil)).Count(ctx)
+	// model-less and the COUNT injects the model on prepareTerminal's clone —
+	// the same single-clone path One/All use, so the receiver is never mutated.
+	total, err := q.prepareTerminal(ctx).Model((*T)(nil)).Count(ctx)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 
 	// No rows — skip the SELECT, preserving the requested page/per-page.

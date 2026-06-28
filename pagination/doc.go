@@ -17,12 +17,18 @@
 //	    Search string `query:"search"`
 //	}
 //
-// # Page Construction
+// # Page Construction and Mapping
 //
-// [Page] is constructed once with the final response type (DTO), not with
-// intermediate model types:
+// A [Page] carries pagination metadata (Total, Page, PerPage, TotalPages) that
+// is computed once — by [NewPage] or by a query terminal such as sqldb's
+// SelectQuery.Page — and never recomputed or hand-copied afterward:
 //
 //	page := pagination.NewPage(dtos, total, filter.Page, filter.PerPage)
+//
+// To turn a page of database models into a page of response DTOs, use
+// [Page.Map]; it transforms the records and carries the metadata over:
+//
+//	dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) })
 //
 // # JSON Response
 //
