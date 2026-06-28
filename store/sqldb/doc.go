@@ -94,13 +94,22 @@
 // transaction, so the receiver is never mutated.
 //
 // Page responds with the queried type directly. For a model→DTO response,
-// build the page from the typed terminals so it is constructed once with the
-// final DTO type:
+// run Page[Model] and reshape it with pagination's Page.Map, which carries the
+// metadata over unchanged:
+//
+//	modelPage, err := db.Select().Where("active = ?", true).Page[Model](ctx, req)
+//	if err != nil {
+//	    return nil, err
+//	}
+//	dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) })
+//
+// When the conversion itself can fail, drop to the lower-level terminals and
+// build the page in the service so the error can surface:
 //
 //	total, err := q.Clone().Model((*Model)(nil)).Count(ctx)
 //	// ... if err != nil || total == 0, return an empty page ...
 //	rows, err := q.Clone().Offset(req.Offset()).Limit(req.PerPage).All[Model](ctx)
-//	dtos := make([]DTO, len(rows)) // map each Model → DTO
+//	dtos := make([]DTO, len(rows)) // map each Model → DTO, handling errors
 //	page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
 //
 // # Migrations

@@ -346,8 +346,8 @@ func (s *UserService) List(ctx context.Context, req *pagination.PageRequest) (*p
 `Page[Model] → Map → Page[DTO]` is the idiomatic flow: the repository stays in model terms, the service owns the DTO boundary, and the metadata is computed once by `Page` and preserved by `Map`. The mapping function must be pure and must not be nil — `Map` panics on a nil function, even for an empty page, because a nil mapping is always a programming error. When the conversion itself can fail (it queries, validates, or otherwise returns an error), don't force it through `Map`; build the page in the service from the lower-level terminals so the error can surface:
 
 ```go
-total, err := r.db.Select().Where(cond).Count(ctx)
-// ...All[Model] for the page window, map to []DTO handling each error...
+total, err := r.db.Select((*User)(nil)).Where(cond).Count(ctx) // model bound, so COUNT knows the table
+// ...All[User] for the page window, map to []UserResponse handling each error...
 page := pagination.NewPage(dtos, int64(total), req.Page, req.PerPage)
 ```
 
