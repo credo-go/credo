@@ -812,6 +812,27 @@ func TestSelectQuery_One(t *testing.T) {
 			t.Errorf("One().Name = %q, want %q (first by name DESC)", user.Name, "bob")
 		}
 	})
+
+	t.Run("pointer element type works like the value form", func(t *testing.T) {
+		// *User as the element: the slice-backed scan resolves the table and
+		// returns a non-nil *User. Regression for the pointer-element One bug.
+		user, err := db.Select().Where("name = ?", "alice").One[*User](ctx)
+		if err != nil {
+			t.Fatalf("One[*User]() = %v", err)
+		}
+		if user == nil || user.Name != "alice" {
+			t.Fatalf("One[*User]() = %+v, want non-nil *User{Name: alice}", user)
+		}
+
+		// A missing row still maps to ErrNotFound with the zero T (nil pointer).
+		missing, err := db.Select().Where("name = ?", "nobody").One[*User](ctx)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("One[*User]() error = %v, want store.ErrNotFound", err)
+		}
+		if missing != nil {
+			t.Errorf("One[*User]() value on error = %+v, want nil", missing)
+		}
+	})
 }
 
 func TestSelectQuery_All(t *testing.T) {
@@ -946,6 +967,37 @@ func TestSelectQuery_Page(t *testing.T) {
 	}
 	if !page.HasPrev() || !page.HasNext() {
 		t.Errorf("HasPrev/HasNext = %v/%v, want true/true", page.HasPrev(), page.HasNext())
+	}
+}
+
+func TestSelectQuery_Page_PointerElement(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := context.Background()
+
+	for _, name := range []string{"anna", "beth", "cara"} {
+		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
+			t.Fatalf("insert %q: %v", name, err)
+		}
+	}
+
+	// A pointer element type (*User) must paginate like the value form. The
+	// COUNT builds its model from a *[]T slice, so bun resolves the table for
+	// []*User instead of rejecting a (**User)(nil) scalar. Regression for the
+	// pointer-element COUNT bug; the SELECT side (All[*User]) was already sound.
+	req := &pagination.PageRequest{Page: 2, PerPage: 1}
+	page, err := db.Select().OrderExpr("name ASC").Page[*User](ctx, req)
+	if err != nil {
+		t.Fatalf("Page[*User]() = %v", err)
+	}
+	if page.Total != 3 || page.Page != 2 || page.PerPage != 1 || page.TotalPages != 3 {
+		t.Fatalf("page meta = %+v, want Total 3, Page 2, PerPage 1, TotalPages 3", page)
+	}
+	if len(page.Records) != 1 {
+		t.Fatalf("page.Records len = %d, want 1", len(page.Records))
+	}
+	if page.Records[0] == nil || page.Records[0].Name != "beth" {
+		t.Fatalf("page.Records[0] = %+v, want non-nil *User{Name: beth}", page.Records[0])
 	}
 }
 

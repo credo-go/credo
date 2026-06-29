@@ -2,6 +2,7 @@ package sqldb
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/uptrace/bun"
@@ -227,20 +228,31 @@ func (q *SelectQuery) Exists(ctx context.Context) (bool, error) {
 
 // One executes the query and returns its first matching row as a value of T.
 // T drives both the table and the scan destination, so the query is built
-// model-less and One owns the destination:
+// model-less and One owns the destination. T may be a struct or a pointer to
+// one (User or *User); both forms work:
 //
 //	user, err := db.Select().Where("id = ?", id).One[User](ctx)
 //
 // One applies LIMIT 1, so multiple matches are not an error — it returns the
-// first row; add an OrderExpr for a deterministic choice. A missing row maps
-// [sql.ErrNoRows] to [store.ErrNotFound], so callers branch with
+// first row; add an OrderExpr for a deterministic choice. A missing row returns
+// [store.ErrNotFound] (wrapping [sql.ErrNoRows]), so callers branch with
 // errors.Is(err, store.ErrNotFound); other driver errors map to the store.Err*
 // sentinels. The receiver is not mutated: the query is cloned and the ambient
 // transaction from ctx injected, exactly as for [SelectQuery.Scan].
 func (q *SelectQuery) One[T any](ctx context.Context) (T, error) {
-	var out T
-	err := q.prepareTerminal(ctx).Model(&out).Limit(1).Scan(ctx)
-	return out, mapError(err)
+	// Scan into a *[]T slice (with LIMIT 1), not a *T: bun strips the pointer in
+	// a slice element's type, so a pointer T such as *Row works — a *T scan
+	// destination would build a **Row that bun rejects. Mirrors the slice model
+	// All and Page use; an empty slice means no row matched.
+	var out []T
+	var zero T
+	if err := q.prepareTerminal(ctx).Model(&out).Limit(1).Scan(ctx); err != nil {
+		return zero, mapError(err)
+	}
+	if len(out) == 0 {
+		return zero, mapError(sql.ErrNoRows) // no row → store.ErrNotFound
+	}
+	return out[0], nil
 }
 
 // All executes the query and returns every matching row as a []T. T drives
@@ -305,7 +317,12 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 	// COUNT with T's table. T drives the table, so the query is built
 	// model-less and the COUNT injects the model on prepareTerminal's clone —
 	// the same single-clone path One/All use, so the receiver is never mutated.
-	total, err := q.prepareTerminal(ctx).Model((*T)(nil)).Count(ctx)
+	// The model is a *[]T slice, not a (*T)(nil) scalar: bun strips the pointer
+	// in a slice element's type, so the table resolves for both a value T and a
+	// pointer T such as *Row. A (*T)(nil) scalar would build (**Row)(nil), which
+	// bun rejects — and this mirrors the slice model All uses for the SELECT.
+	var model []T
+	total, err := q.prepareTerminal(ctx).Model(&model).Count(ctx)
 	if err != nil {
 		return nil, mapError(err)
 	}
