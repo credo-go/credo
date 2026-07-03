@@ -239,6 +239,12 @@ func (c *Config) Exists(key string) bool {
 // If dst implements Validate() error, validation is called automatically
 // after a successful decode.
 //
+// A present but null value (YAML/JSON null) is a no-op: dst is left unchanged
+// and no error is returned. A null overlays nothing — mirroring how a partial
+// section overlays only the keys it contains — so it neither zeroes dst nor is
+// misreported as missing (Exists still reports it as present). To reset a
+// value, omit the key or set it explicitly rather than nulling it.
+//
 // Returns an error if the key does not exist or decoding fails.
 func (c *Config) Unmarshal(key string, dst any) error {
 	if c == nil || c.data == nil {
@@ -248,9 +254,11 @@ func (c *Config) Unmarshal(key string, dst any) error {
 	if !ok {
 		return fmt.Errorf("config: key %q not found", key)
 	}
-	// A present but null value (JSON null) decodes to the zero value: mapstructure
-	// treats a nil input as "nothing to set", so this is not an error — the key
-	// exists, matching Exists, and is not misreported as missing.
+	// A present but null value leaves dst unchanged: mapstructure treats a nil
+	// input as "nothing to set" (ZeroFields is off). The key still Exists, so it
+	// is not misreported as missing, and a null overlays nothing rather than
+	// zeroing dst.
+
 	// Guard against empty configuration for full-tree unmarshal. Without this,
 	// mapstructure would silently decode an empty map into zero-value fields.
 	if key == "" {

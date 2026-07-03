@@ -268,10 +268,14 @@ func TestUnmarshalPresentNull(t *testing.T) {
 		t.Fatal("Exists(feature.enabled) = false, want true (present null)")
 	}
 
-	// Present null decodes to the zero value rather than erroring as "not found".
+	// A present null is a no-op: Unmarshal reports no error and leaves dst
+	// unchanged (a null overlays nothing rather than zeroing the target).
 	enabled := true
 	if err := c.Unmarshal("feature.enabled", &enabled); err != nil {
 		t.Fatalf("Unmarshal(feature.enabled) = %v, want nil (present null)", err)
+	}
+	if !enabled {
+		t.Error("Unmarshal(feature.enabled) zeroed dst; want it unchanged (no-op)")
 	}
 
 	// A genuinely missing key still errors.
