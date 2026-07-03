@@ -48,7 +48,7 @@ Adapted in:
     Files (derived from chi middleware/):
       requestid.go     — X-Request-Id injection + context storage
       recover.go       — Panic recovery with slog structured logging
-      logger.go        — Structured request logging via slog (co-derived with Echo)
+      accesslog.go     — Structured request logging via slog (co-derived with Echo)
       compress.go      — gzip/deflate response compression
 
 ----------------------------------------------------------------------
@@ -109,6 +109,7 @@ Adapted in:
     Files (derived from samber/do core APIs):
       container.go     — service registry, constructor graph, singleton cache
       provide.go       — typed service registration API
+      replace.go       — value-based service override (Replace / MustReplace)
       resolve.go       — typed resolution API + dependency graph traversal
       lifecycle.go     — singleton lifecycle semantics
       bind.go          — interface-to-concrete type alias (Alias[I,T])

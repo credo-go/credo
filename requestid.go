@@ -7,8 +7,9 @@ import internalrequestid "github.com/credo-go/credo/internal/requestid"
 const requestIDKey = internalrequestid.Key
 
 // builtinRequestID assigns a unique ID to each request and enriches the
-// request-scoped logger with a "request_id" attribute. It is applied in
-// compile() between builtinRecover and builtinAccessLog. Disabled via
+// request-scoped logger with a "request_id" attribute. It is the outermost
+// built-in layer, wrapping builtinAccessLog and builtinRecover, so the ID and
+// enriched logger are in place before any other middleware runs. Disabled via
 // [WithoutRequestID].
 //
 // If the incoming request carries a valid X-Request-Id header, that value is

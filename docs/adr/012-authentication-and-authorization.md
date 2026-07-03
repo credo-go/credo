@@ -97,8 +97,9 @@ app.GET("/admin/users", listUsers).SetMeta("permission", "admin.users.read")
 // Authorization middleware reads meta
 func RBAC(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
-        perm, _ := ctx.Route().LookupMeta("permission").(string)
-        if perm == "" {
+        meta, ok := ctx.Route().LookupMeta("permission")
+        perm, _ := meta.(string)
+        if !ok || perm == "" {
             return next(ctx) // no permission required
         }
         user, err := ctx.RequireUser[User]()

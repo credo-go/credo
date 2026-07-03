@@ -51,7 +51,6 @@ type Rule[T any] interface {
 // validation/rule.go
 type FieldRules interface {
     validate(structPtr any) error
-    fieldName() string
 }
 ```
 
@@ -206,12 +205,12 @@ func (o *Order) Validate() error {
     return validation.ValidateStruct(o,
         validation.Field(&o.CardNumber,
             validation.When(o.PaymentMethod == "card",
-                validation.Required[string](), validation.CreditCard(),
+                validation.Required[string](), validation.Length(13, 19),
             ),
         ),
         validation.Field(&o.IBAN,
             validation.When(o.PaymentMethod == "bank",
-                validation.Required[string](), validation.IBAN(),
+                validation.Required[string](), validation.Length(15, 34),
             ),
         ),
     )

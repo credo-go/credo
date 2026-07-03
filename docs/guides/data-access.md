@@ -532,7 +532,7 @@ import "github.com/uptrace/bun/migrate"
 var sqlMigrations embed.FS
 
 func main() {
-    app := credo.New(...)
+    app, _ := credo.New(...)
     db := mustOpenDB()
 
     migrations := migrate.NewMigrations()

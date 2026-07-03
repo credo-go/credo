@@ -185,7 +185,7 @@ func ParseSchedule(expr string) (*Schedule, error)
 
 ## Options
 
-Options are **mode-specific**. Using a continuous-only option with a scheduled worker (or vice versa) makes `Register` panic. This makes misconfiguration a compile-time-adjacent problem, not a silent default.
+Options are **mode-specific**. Using a continuous-only option with a scheduled worker (or vice versa) makes `Register` return an error (and `MustRegister` panic). This makes misconfiguration a loud failure, not a silent default.
 
 ```go
 import "time"
@@ -198,21 +198,21 @@ type Option func(*options)
 // WithMaxRestarts sets the maximum restart count for continuous workers.
 // 0 = unlimited restarts (default). After exceeding the limit, the
 // worker transitions to StatusFailed.
-// Register panics if combined with WithSchedule — use
+// Register returns an error if combined with WithSchedule — use
 // WithMaxConsecutiveFailures instead.
 func WithMaxRestarts(n int) Option
 
 // WithRestartDelay sets the delay between restarts after an error or panic.
 // Default: 3s.
-// Register panics if combined with WithSchedule (timing governed by the
-// cron schedule).
+// Register returns an error if combined with WithSchedule (timing governed
+// by the cron schedule).
 func WithRestartDelay(d time.Duration) Option
 
 // --- Scheduled worker options (failurePolicy) ---
 
 // WithSchedule sets a cron expression, making this a scheduled worker.
-// The expression is parsed immediately; Register panics if it is
-// invalid. See [ParseSchedule] for supported formats.
+// The expression is parsed immediately; Register returns an error if it
+// is invalid. See [ParseSchedule] for supported formats.
 //
 // Without this option, the worker runs continuously.
 func WithSchedule(expr string) Option
@@ -287,9 +287,11 @@ func (d *Definition) Kind() string
 // runner is the mutable runtime state of a worker. Created by
 // Pool.Start() from a Definition. Not exported.
 //
-// Fields are protected by mu except for `running` (atomic for lock-free
-// overlap check on the hot path). The mutex is held briefly by the
-// execution loops and by Pool.Workers() snapshot reads.
+// All fields are protected by mu. The mutex is held briefly by the execution
+// loops and by Pool.Workers() snapshot reads. Overlap protection needs no
+// dedicated guard: a scheduled worker runs on a single goroutine that executes
+// each activation synchronously, so activations passing during a run are simply
+// skipped.
 type runner struct {
 	def     *Definition // immutable reference
 
@@ -298,8 +300,6 @@ type runner struct {
 	attempts  int64      // restart count (continuous) or consecutive failures (scheduled)
 	lastRun   time.Time  // last execution start (zero if never)
 	lastError string     // last error message (empty if healthy)
-
-	running atomic.Bool  // true while Run() is in-flight (overlap guard)
 }
 
 // Setter methods acquire mu. Pseudocode uses these for clarity:
@@ -1136,7 +1136,7 @@ func (s *Spy) CallCount() int64         { return s.Calls.Load() }
 
 6. **Shutdown/cancel ≠ failure**: `isGracefulStop(err, parentCtx)` checks both `errors.Is(err, context.Canceled || DeadlineExceeded)` AND parent ctx is done. Prevents false positives from worker-internal sub-contexts. Graceful stops transition to `StatusStopped`, not `StatusFailed`.
 
-7. **Runner uses mutex, not atomic.Value**: `atomic.Value` panics on mixed-type Store (nil vs concrete error). Mutex-guarded fields with string error are simple and correct. `running` stays atomic (lock-free overlap check).
+7. **Runner uses mutex, not atomic.Value**: `atomic.Value` panics on mixed-type Store (nil vs concrete error). Mutex-guarded fields with string error are simple and correct. Overlap protection needs no atomic guard: scheduled activations run synchronously on a single goroutine, so a run still in flight simply skips the passing activations.
 
 8. **No per-runner cancel**: Pool context governs all runners. Failed workers return from their goroutine. Per-worker cancel deferred to v2.
 

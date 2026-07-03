@@ -1,3 +1,10 @@
+// Copyright (c) 2014 Nick Snyder https://github.com/nicksnyder/go-i18n
+// License: MIT (https://github.com/nicksnyder/go-i18n/blob/main/LICENSE)
+//
+// Adapted for the Credo framework (github.com/credo-go/credo).
+// Simplified: unexported type, no custom delimiters or pluggable parser;
+// execute falls back to the Other plural form.
+
 package i18n
 
 import (

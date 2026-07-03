@@ -145,16 +145,19 @@ api.GET("/users", listUsers)                          // authenticated
 api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 ```
 
-### Common Meta Keys
+### Framework Meta Keys
+
+These keys are read by built-in and framework middleware. Application middleware may also define its own convention keys — the `"auth"` key in the example above is one such user-defined key, not a framework key.
 
 | Key | Type | Used by |
 | --- | --- | --- |
-| `"auth"` | `bool` | Auth middleware |
-| `"cors"` | `*CORSConfig` | CORS middleware |
-| `"ratelimit"` | `int` | Rate limiter |
-| `"cache"` | `int` (seconds) | Cache middleware |
-| `"timeout"` | `time.Duration` | Timeout middleware |
 | `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access logger (built-in + `middleware.AccessLog`) |
+| `middleware.MetaAccept` (`"accept"`) | `string` \| `[]string` | `ContractGuard` — 415 on Content-Type mismatch |
+| `middleware.MetaMaxBody` (`"max_body"`) | `int` \| `int32` \| `int64` (bytes) | `ContractGuard` — 413 over the per-route cap |
+| `middleware.MetaRequireHeaders` (`"require_headers"`) | `string` \| `[]string` | `ContractGuard` — 400 if a header is missing |
+| `middleware.MetaRequireQuery` (`"require_query"`) | `string` \| `[]string` | `ContractGuard` — 400 if a query param is missing |
+| `middleware.MetaAPIVersion` (`"api_version"`) | `string` \| `[]string` | `ContractGuard` — 400 on version mismatch |
+| `middleware.MetaScope` (`"scope"`) | `string` \| `[]string` | `ContractGuard` — 403 (requires `ScopeChecker`) |
 
 ---
 
@@ -199,6 +202,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
 | `RateLimit` | go-limiter | Token bucket rate limiting. Default key uses `Request.RealIP()` |
 | `Timeout` | Echo | Request timeout |
+| `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
 ### Rewrite
 
@@ -322,7 +326,7 @@ app.OnShutdown(rl.Shutdown)
 ```
 middleware/
 ├── rewrite.go      Pre-dispatch path rewriting
-├── logger.go       Structured request logger (slog)
+├── accesslog.go    Structured request logger (slog)
 ├── recover.go      Optional per-group/route panic recovery (built-in recovery is automatic)
 ├── requestid.go    X-Request-Id injection
 ├── cors.go         CORS with config struct
@@ -332,8 +336,9 @@ middleware/
 ├── ratelimit.go    RateLimit + NewRateLimiter API
 ├── ratelimit_store.go Internal in-memory limiter store
 ├── timeout.go      Request timeout
+├── contractguard.go Declarative per-route request contracts
 ├── skipper.go      Shared skipper type
-├── header_tokens.go Header token helpers
+├── configresolve.go Shared config default/override/normalize helper
 ├── doc.go
 └── *_test.go       Tests alongside source
 ```

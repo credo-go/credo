@@ -2,7 +2,7 @@
 // the best patterns from Chi (router), Echo (context), Goyave (architecture
 // & components), and GoFr (enterprise toolkit).
 //
-// It targets Go 1.26+ and leverages generics for type-safe dependency
+// It targets Go 1.27+ and leverages generics for type-safe dependency
 // injection without reflection.
 //
 // # Quick Start

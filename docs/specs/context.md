@@ -168,9 +168,9 @@ scheme := ctx.Request().Scheme() // "http" or "https"
 ip := ctx.Request().RealIP()     // IP-only string when parseable
 ```
 
-Forwarded headers are default-deny. Unless the immediate peer `RemoteAddr` is inside `server.trusted_proxies` or configured via `WithTrustedProxies`, Credo ignores `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Ssl`, `Front-End-Https`, and `X-Real-IP`.
+Forwarded headers are default-deny. Unless the immediate peer `RemoteAddr` is inside `server.trusted_proxies` or configured via `WithTrustedProxies`, Credo ignores the RFC 7239 `Forwarded` header, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Ssl`, `Front-End-Https`, and `X-Real-IP`.
 
-`RealIP()` walks `X-Forwarded-For` from right to left, skipping trusted proxy hops and returning the first untrusted address. If no usable XFF value exists, it falls back to `X-Real-IP`, then the direct peer address. The XFF walk is limited to 32 hops as a DoS guard.
+`RealIP()` prefers the RFC 7239 `Forwarded` header (`for=` parameters), then walks `X-Forwarded-For` from right to left, skipping trusted proxy hops and returning the first untrusted address. If no usable value exists, it falls back to `X-Real-IP`, then the direct peer address. Each chain walk is limited to 32 hops as a DoS guard.
 
 Both values are cached for the lifetime of the request and cleared when the pooled context is reset.
 

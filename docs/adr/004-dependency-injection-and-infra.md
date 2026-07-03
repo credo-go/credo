@@ -115,7 +115,7 @@ func NewUserService(infra credo.Infra, repo UserRepo) *UserService {
 
 The container automatically determines which injection model is being used by inspecting the constructor signature:
 
-1. If the first parameter type is `credo.Infra` -> **Model 1**: Produce Infra specially, resolve remaining parameters normally
+1. If any parameter is of type `credo.Infra` -> **Model 1**: the container produces that parameter (a scoped Infra) and resolves the rest normally. Placing it first is the recommended convention (above), but detection is position-independent.
 2. Otherwise -> **Pure constructor injection**: All parameters resolved normally (no Infra magic)
 
 The developer chooses on a per-service basis.
@@ -128,7 +128,7 @@ The developer chooses on a per-service basis.
 | **Always available** | Like `context.Context` — no need to register, container knows how to produce it |
 | **Default fallback** | If no Logger is registered, the framework default logger is used — no panic |
 | **Scoped Logger** | Each service gets a logger scoped with its own name |
-| **First parameter convention** | Like Go's `context.Context` convention, Infra is always the first parameter |
+| **First parameter convention** | Like Go's `context.Context` convention, Infra is placed first by convention; the container still detects it at any parameter position |
 | **Reflection constrained to cold path** | Constructor inspection at registration + `reflect.Call` once per singleton first construction; subsequent resolves are cache lookups |
 | **Config not included** | Config is a separate concern — distributed via DI as typed struct (ADR-005) |
 | **Immutable** | Cannot be changed after production — snapshot semantics |
