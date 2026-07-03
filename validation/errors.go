@@ -112,13 +112,16 @@ func prefixErrors(prefix string, err error) Errors {
 }
 
 // collectErrors normalizes err and appends the resulting ValidationError(s)
-// to dst, prefixing each error's Field with fieldPath.
+// to dst, prefixing each error's Field with fieldPath. It never mutates err:
+// when err is an Errors slice, each element is copied before its Field is
+// rewritten, so a rule that retains or shares the returned slice is unaffected
+// (matching prefixErrors).
 func collectErrors(dst *Errors, err error, fieldPath string) {
 	if errs, ok := errors.AsType[Errors](err); ok {
-		for i := range errs {
-			errs[i].Field = joinFieldPath(fieldPath, errs[i].Field)
+		for _, ve := range errs {
+			ve.Field = joinFieldPath(fieldPath, ve.Field)
+			*dst = append(*dst, ve)
 		}
-		*dst = append(*dst, errs...)
 		return
 	}
 	ve := toValidationError(err)

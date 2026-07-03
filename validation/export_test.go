@@ -56,6 +56,11 @@ func ExportPrefixErrors(prefix string, err error) Errors {
 	return prefixErrors(prefix, err)
 }
 
+// ExportCollectErrors exposes collectErrors for testing.
+func ExportCollectErrors(dst *Errors, err error, fieldPath string) {
+	collectErrors(dst, err, fieldPath)
+}
+
 // ResetFieldNameCache clears the field name cache for test isolation.
 func ResetFieldNameCache() {
 	fieldNameCache = sync.Map{}

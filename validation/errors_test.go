@@ -203,3 +203,32 @@ func TestErrors_As(t *testing.T) {
 		t.Errorf("len = %d, want 1", len(ve))
 	}
 }
+
+func TestCollectErrors_DoesNotMutateSource(t *testing.T) {
+	// collectErrors must copy each element before prefixing its Field, so a rule
+	// that returns a retained or shared Errors slice is never corrupted.
+	src := validation.Errors{
+		{Field: "name", Code: "required", Message: "is required"},
+		{Field: "age", Code: "min", Message: "too small"},
+	}
+
+	var dst validation.Errors
+	validation.ExportCollectErrors(&dst, src, "user")
+
+	// Source slice is untouched.
+	if src[0].Field != "name" || src[1].Field != "age" {
+		t.Errorf("source mutated: got Fields %q, %q; want %q, %q",
+			src[0].Field, src[1].Field, "name", "age")
+	}
+
+	// Collected copies carry the prefixed path.
+	want := []string{"user.name", "user.age"}
+	if len(dst) != len(want) {
+		t.Fatalf("dst len = %d, want %d", len(dst), len(want))
+	}
+	for i, w := range want {
+		if dst[i].Field != w {
+			t.Errorf("dst[%d].Field = %q, want %q", i, dst[i].Field, w)
+		}
+	}
+}
