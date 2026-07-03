@@ -111,14 +111,11 @@ func (db *DB) Ping(ctx context.Context) error {
 	return db.db.PingContext(ctx)
 }
 
-// Shutdown gracefully closes the database connection.
-func (db *DB) Shutdown(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// Shutdown closes the database connection pool. The pool is always closed —
+// even when ctx is already canceled or past its deadline — because leaving it
+// open leaks connections; sql.DB.Close is a fast local operation that takes no
+// context. ctx is accepted only to satisfy the store Shutdowner interface.
+func (db *DB) Shutdown(_ context.Context) error {
 	return db.db.Close()
 }
 

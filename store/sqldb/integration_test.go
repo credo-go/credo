@@ -1391,6 +1391,28 @@ func TestDB_Health_AfterShutdown(t *testing.T) {
 	}
 }
 
+func TestDB_Shutdown_ClosesPoolWhenContextCanceled(t *testing.T) {
+	db, err := sqldb.Open(&sqldb.Config{Driver: "sqlite", DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+
+	// A shutdown driven by an already-canceled context must still close the
+	// pool; otherwise connections leak. Regression: Shutdown returned ctx.Err()
+	// before calling Close, skipping the close entirely.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := db.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown(canceled ctx) = %v, want nil (pool must close)", err)
+	}
+
+	// The pool is closed: a ping now fails.
+	if err := db.Ping(context.Background()); err == nil {
+		t.Fatal("Ping after Shutdown = nil, want error (pool should be closed)")
+	}
+}
+
 // --- Verify mapError through query proxies ---
 
 func TestInsertQuery_ErrorMapping_DuplicateKey(t *testing.T) {
