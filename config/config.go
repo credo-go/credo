@@ -139,21 +139,24 @@ func (c *Config) merge(m map[string]any) {
 	mergeMaps(m, c.data)
 }
 
-// get returns the value at the given dotted key path, or nil if not found.
-// Map values are deep-copied to prevent mutation of the config tree's internal
-// state. An empty key returns the entire nested tree.
-func (c *Config) get(key string) any {
+// get returns the value at the given dotted key path and whether it is present.
+// A key explicitly set to null returns (nil, true), distinct from a missing
+// key's (nil, false) — matching lookup and Exists, so callers never mistake an
+// explicit null for an absent key. Map values are deep-copied to prevent
+// mutation of the config tree's internal state. An empty key returns the entire
+// nested tree.
+func (c *Config) get(key string) (any, bool) {
 	if key == "" {
-		return copyMap(c.data)
+		return copyMap(c.data), true
 	}
 	val, ok := lookup(c.data, key)
-	if !ok || val == nil {
-		return nil
+	if !ok {
+		return nil, false
 	}
 	if m, ok := val.(map[string]any); ok {
-		return copyMap(m)
+		return copyMap(m), true
 	}
-	return val
+	return val, true
 }
 
 // newDecoder creates a mapstructure decoder with Credo's standard settings.
@@ -241,10 +244,13 @@ func (c *Config) Unmarshal(key string, dst any) error {
 	if c == nil || c.data == nil {
 		return fmt.Errorf("config: instance not initialized")
 	}
-	val := c.get(key)
-	if val == nil {
+	val, ok := c.get(key)
+	if !ok {
 		return fmt.Errorf("config: key %q not found", key)
 	}
+	// A present but null value (JSON null) decodes to the zero value: mapstructure
+	// treats a nil input as "nothing to set", so this is not an error — the key
+	// exists, matching Exists, and is not misreported as missing.
 	// Guard against empty configuration for full-tree unmarshal. Without this,
 	// mapstructure would silently decode an empty map into zero-value fields.
 	if key == "" {

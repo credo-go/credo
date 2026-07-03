@@ -226,16 +226,18 @@ func TestGetReturnsCopies(t *testing.T) {
 	c.merge(map[string]any{"db": map[string]any{"host": "localhost"}})
 
 	// Mutating a sub-tree result must not affect the config tree.
-	got := c.get("db").(map[string]any)
+	sub, _ := c.get("db")
+	got := sub.(map[string]any)
 	got["host"] = "modified"
-	if c.get("db.host") != "localhost" {
+	if host, _ := c.get("db.host"); host != "localhost" {
 		t.Error("mutating get result affected the config tree")
 	}
 
 	// Mutating the full-tree result must not affect the config tree either.
-	root := c.get("").(map[string]any)
+	full, _ := c.get("")
+	root := full.(map[string]any)
 	root["db"].(map[string]any)["host"] = "also-modified"
-	if c.get("db.host") != "localhost" {
+	if host, _ := c.get("db.host"); host != "localhost" {
 		t.Error("mutating full-tree result affected the config tree")
 	}
 }
@@ -244,10 +246,36 @@ func TestGetMissing(t *testing.T) {
 	c := newConfig()
 	c.merge(map[string]any{"a": 1})
 
-	if got := c.get("nonexistent"); got != nil {
-		t.Errorf("nonexistent: got %v, want nil", got)
+	if _, ok := c.get("nonexistent"); ok {
+		t.Error("nonexistent: got ok=true, want false")
 	}
-	if got := c.get("a.b.c"); got != nil {
-		t.Errorf("a.b.c: got %v, want nil", got)
+	if _, ok := c.get("a.b.c"); ok {
+		t.Error("a.b.c: got ok=true, want false")
+	}
+}
+
+// TestUnmarshalPresentNull verifies that a key explicitly set to JSON null is
+// treated as present, not missing. Regression: get() collapsed present-null into
+// the missing case, so Unmarshal reported "not found" for a key that Exists
+// reported as existing.
+func TestUnmarshalPresentNull(t *testing.T) {
+	c, err := LoadBytes([]byte(`{"feature":{"enabled":null}}`), FormatJSON)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	if !c.Exists("feature.enabled") {
+		t.Fatal("Exists(feature.enabled) = false, want true (present null)")
+	}
+
+	// Present null decodes to the zero value rather than erroring as "not found".
+	enabled := true
+	if err := c.Unmarshal("feature.enabled", &enabled); err != nil {
+		t.Fatalf("Unmarshal(feature.enabled) = %v, want nil (present null)", err)
+	}
+
+	// A genuinely missing key still errors.
+	if err := c.Unmarshal("feature.missing", new(bool)); err == nil {
+		t.Error("Unmarshal(feature.missing) = nil, want not-found error")
 	}
 }
