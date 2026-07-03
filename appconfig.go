@@ -98,6 +98,21 @@ type appOptions struct {
 	tlsKeyFile        string
 	tlsFilesSet       bool
 	httpRedirectAddr  string
+
+	// Server settings from With* options live in these shadow fields, not in
+	// serverCfg, so a "server" config section decoded in New does not silently
+	// overwrite an explicit programmatic setting. Each is copied into serverCfg
+	// after Unmarshal (guarded by its …Set flag), giving the option precedence
+	// over config — the same pattern as trustedProxies and the TLS file paths.
+	addrHost                 string
+	addrPort                 int
+	addrSet                  bool
+	shutdownTimeout          time.Duration
+	shutdownTimeoutSet       bool
+	maxBodyBytes             int64
+	maxBodyBytesSet          bool
+	redirectTrailingSlash    bool
+	redirectTrailingSlashSet bool
 }
 
 // WithRawConfig sets the RawConfig for the application. When provided,
@@ -156,7 +171,10 @@ func WithLogger(l *slog.Logger) Option {
 // requests receive 301; other methods receive 308 (preserving the method).
 // Defaults to true when not set.
 func WithRedirectTrailingSlash(enabled bool) Option {
-	return func(o *appOptions) { o.serverCfg.RedirectTrailingSlash = &enabled }
+	return func(o *appOptions) {
+		o.redirectTrailingSlash = enabled
+		o.redirectTrailingSlashSet = true
+	}
 }
 
 // WithTrustedProxies configures the CIDR ranges from which forwarded headers
@@ -235,8 +253,9 @@ func WithDebug() Option {
 // WithAddr sets the listen address directly (for testing or programmatic use).
 func WithAddr(host string, port int) Option {
 	return func(o *appOptions) {
-		o.serverCfg.Host = host
-		o.serverCfg.Port = port
+		o.addrHost = host
+		o.addrPort = port
+		o.addrSet = true
 	}
 }
 
@@ -302,7 +321,10 @@ func WithHTTPRedirect(addr string) Option {
 // Requests whose body exceeds the limit receive 413 Request Entity Too Large.
 // A negative value disables the limit; zero (the default) applies a 4 MiB cap.
 func WithMaxBodyBytes(n int64) Option {
-	return func(o *appOptions) { o.serverCfg.MaxBodyBytes = n }
+	return func(o *appOptions) {
+		o.maxBodyBytes = n
+		o.maxBodyBytesSet = true
+	}
 }
 
 // WithShutdownTimeout sets the graceful-shutdown drain budget used by the
@@ -313,7 +335,10 @@ func WithMaxBodyBytes(n int64) Option {
 // and honours the caller's context deadline instead. Can also be set via the
 // server.shutdown_timeout config key.
 func WithShutdownTimeout(d time.Duration) Option {
-	return func(o *appOptions) { o.serverCfg.ShutdownTimeout = d }
+	return func(o *appOptions) {
+		o.shutdownTimeout = d
+		o.shutdownTimeoutSet = true
+	}
 }
 
 // buildServer creates an *http.Server from serverConfig.

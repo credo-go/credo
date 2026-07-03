@@ -198,6 +198,25 @@ func New(opts ...Option) (*App, error) {
 			return nil, fmt.Errorf("credo: invalid server config: %w", err)
 		}
 	}
+
+	// Re-apply programmatic server options after Unmarshal so an explicit With*
+	// setting always wins over the "server" config section (which would
+	// otherwise overwrite it — including resetting a field to zero, which
+	// applyServerDefaults then replaces with a framework default, silently
+	// undoing an intentional value such as WithMaxBodyBytes(-1)).
+	if o.addrSet {
+		o.serverCfg.Host = o.addrHost
+		o.serverCfg.Port = o.addrPort
+	}
+	if o.shutdownTimeoutSet {
+		o.serverCfg.ShutdownTimeout = o.shutdownTimeout
+	}
+	if o.maxBodyBytesSet {
+		o.serverCfg.MaxBodyBytes = o.maxBodyBytes
+	}
+	if o.redirectTrailingSlashSet {
+		o.serverCfg.RedirectTrailingSlash = &o.redirectTrailingSlash
+	}
 	if o.trustedProxiesSet {
 		o.serverCfg.TrustedProxies = append([]string(nil), o.trustedProxies...)
 	}
