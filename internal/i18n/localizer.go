@@ -130,11 +130,23 @@ func (l *Localizer) computeMatchedTags() []language.Tag {
 	result := make([]language.Tag, 0, len(l.tags)+1)
 	seen := make(map[language.Tag]bool, len(l.tags)+1)
 
-	for _, tag := range l.tags {
-		matched, _, _ := l.bundle.matcher.Match(tag)
-		if !seen[matched] {
-			result = append(result, matched)
-			seen[matched] = true
+	// A bundle with no messages has a nil matcher (rebuildMatcher never ran);
+	// skip straight to the default fallback rather than dereferencing it.
+	if l.bundle.matcher != nil {
+		for _, tag := range l.tags {
+			_, idx, _ := l.bundle.matcher.Match(tag)
+			if idx < 0 || idx >= len(l.bundle.tags) {
+				continue
+			}
+			// Select the registered tag by index, not the tag the matcher
+			// returns: x/text folds the caller's extensions (-u-, -rg, …) into
+			// that tag, which would then miss the registered key in b.messages.
+			// Mirrors bundle.matchTag.
+			matched := l.bundle.tags[idx]
+			if !seen[matched] {
+				result = append(result, matched)
+				seen[matched] = true
+			}
 		}
 	}
 

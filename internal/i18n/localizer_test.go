@@ -173,3 +173,39 @@ func TestLocalizer_MultiplePreferences(t *testing.T) {
 		t.Errorf("got %q, want Turkish or English", s)
 	}
 }
+
+// TestLocalizer_ExtensionTagMatchesBase locks in that a requested tag carrying a
+// Unicode (-u-) extension resolves to the registered base tag. x/text folds the
+// caller's extensions into the tag its Match returns, so keying messages by that
+// tag missed the registered entry and fell back to the default language.
+func TestLocalizer_ExtensionTagMatchesBase(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.AddMessages(language.English, &Message{ID: "greeting", Other: "Hello"}); err != nil {
+		t.Fatalf("AddMessages(en): %v", err)
+	}
+	if err := b.AddMessages(language.Turkish, &Message{ID: "greeting", Other: "Merhaba"}); err != nil {
+		t.Fatalf("AddMessages(tr): %v", err)
+	}
+
+	l := NewLocalizer(b, "tr-u-nu-latn")
+	s, err := l.Localize("greeting", nil)
+	if err != nil {
+		t.Fatalf("Localize: %v", err)
+	}
+	if s != "Merhaba" {
+		t.Errorf("got %q, want %q (extension tag must match base tr, not fall back to en)", s, "Merhaba")
+	}
+}
+
+// TestLocalizer_EmptyBundleNoPanic verifies that matching against a bundle with
+// no messages — and therefore a nil matcher — does not panic and reports the
+// message as not found.
+func TestLocalizer_EmptyBundleNoPanic(t *testing.T) {
+	b := NewBundle(language.English)
+	l := NewLocalizer(b, "tr")
+
+	_, err := l.Localize("greeting", nil)
+	if _, ok := errors.AsType[*MessageNotFoundError](err); !ok {
+		t.Fatalf("Localize on empty bundle: got %T (%v), want *MessageNotFoundError", err, err)
+	}
+}
