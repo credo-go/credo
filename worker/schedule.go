@@ -275,6 +275,11 @@ func getRange(expr string, r bounds) (uint64, error) {
 	// range machinery with an effective maximum of 7 and fold bit 7 back onto
 	// bit 0 after the bits are computed, so ranges like 5-7 and 0-7 expand
 	// correctly instead of collapsing a 7 endpoint down to 0.
+	// When sunday7 is set, day-of-week ranges may reach 7, the Sunday alias
+	// (Sunday is both 0 and 7). effMax raises the ceiling to 7 so the open-ended
+	// forms — "*", an explicit range ending in 7, and a single-digit step like
+	// "1/2" (which expands to min..7) — all reach Sunday; getBits' result then
+	// folds bit 7 back to bit 0 below.
 	effMax := r.max
 	if r.sunday7 {
 		effMax = 7
