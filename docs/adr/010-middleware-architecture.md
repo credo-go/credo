@@ -148,6 +148,10 @@ app.Run()
 app.GlobalMiddleware(m) // panic: called after app was compiled
 ```
 
+### Configuration-Driven Activation (Rejected)
+
+Activating or parameterizing middleware from configuration files — framework-read `middleware.*` keys (`middleware.cors.enabled`, `middleware.timeout.duration`) behind a `UseConfiguredMiddleware()` bootstrapper — was considered and rejected. Discoverability: `credo.With*` options and the `middleware` package surface in IDE autocomplete, while stringly-typed config keys do not, and a typo silently disables the middleware it names. Doctrine: Credo's configuration architecture (ADR-005) is built on typed snapshots — string keys never appear in business code — and the framework reading `middleware.*` keys itself would violate the rule it sets. Explicitness (philosophy #3): the middleware stack is part of the application's composition and belongs visibly in code. Environment-dependent parameters remain fully supported the doctrinal way — the application unmarshals its own typed config and passes it to the middleware constructor (`middleware.CORS(middleware.CORSConfig{AllowOrigins: cfg.CORS.Origins})`). This rejection concerns file-driven activation only; the built-in tier stays default-on with explicit opt-outs as described above.
+
 ## Consequences
 
 **Positive:**

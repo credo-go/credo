@@ -487,7 +487,7 @@
 
 **Source**: Original (inspired by Yokai's core/app server split)
 
-> Optional second HTTP server on an ops port — K8s-friendly separation of operational endpoints from public traffic. Internally stdlib `http.ServeMux` (few routes; no second router needed). **After Phase 3.5** (`/metrics` needs it; interim: `HealthConfig.Group` + IP restrict). **JSON only — no HTML dashboard**.
+> Optional second HTTP server on an ops port — K8s-friendly separation of operational endpoints from public traffic. Internally stdlib `http.ServeMux` (few routes; no second router needed). **After Phase 3.5** (`/metrics` needs it; interim: `HealthConfig.Group` + IP restrict). **JSON only — no HTML dashboard** (an HTML UI was cut: bitrot and a security surface without differentiation — enterprises already run Grafana/Backstage).
 
 - [ ] `credo.WithAdminServer(addr)` option — starts/stops with app lifecycle
 - [ ] Health endpoint relocation when admin is active (`/health`, `/ready` move; behavior unchanged when absent)
