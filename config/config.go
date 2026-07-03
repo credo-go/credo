@@ -242,8 +242,9 @@ func (c *Config) Exists(key string) bool {
 // A present but null value (YAML/JSON null) is a no-op: dst is left unchanged
 // and no error is returned. A null overlays nothing — mirroring how a partial
 // section overlays only the keys it contains — so it neither zeroes dst nor is
-// misreported as missing (Exists still reports it as present). To reset a
-// value, omit the key or set it explicitly rather than nulling it.
+// misreported as missing (Exists still reports it as present). A null never
+// resets dst: to clear a value, set it explicitly in the config or decode
+// into a fresh zero-value target.
 //
 // Returns an error if the key does not exist or decoding fails.
 func (c *Config) Unmarshal(key string, dst any) error {
