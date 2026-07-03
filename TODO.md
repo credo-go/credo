@@ -600,7 +600,7 @@
   - [x] [`016-health-checks.md`](docs/adr/016-health-checks.md) — Health checks
   - [x] [`017-static-file-serving.md`](docs/adr/017-static-file-serving.md) — Static file serving
   - [x] [`018-host-routing-and-rewrite.md`](docs/adr/018-host-routing-and-rewrite.md) — Host routing and rewrite
-- [ ] `docs/guides/quick-start.md`
+- [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
 - [ ] Write guide: Infra injection model (Model 1)
 
 ### CI/CD
