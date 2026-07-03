@@ -329,7 +329,7 @@
 **Phase 3.3e — Migrations & TX ergonomics**:
 
 - [x] `db.InTx(ctx, fn)` — method-form TX sugar over `RunInTx` (handler-side ergonomics; called with `ctx.Context()`) — plus `db.InTxWith` for `sql.TxOptions` symmetry
-- [x] Migration wrapper over `bun/migrate` (replaces the goose plan — see Phase 5.2):
+- [x] Migration wrapper over `bun/migrate` (replaces the goose plan; the optional `credo migrate:*` CLI sugar lives in Phase 5.1):
   - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success by default so failed migrations are retried on next start)
   - [x] `OnStart` lifecycle integration (opt-in auto-run on app start) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
   - [x] `embed.FS` migration bundling support (Bun's `Discover` works on any `fs.FS`; covered by tests)
@@ -378,7 +378,22 @@
 - [ ] Cursor-based pagination (future — separate `CursorPage[T]` type)
 - [x] Auto-read `?page=`, `?limit=`, `?cursor=` from request
 - [x] `Meta` struct (total, current_page, per_page, last_page)
+- [x] `Map[U]` method on `Page[T]` — item projection (model → DTO) preserving pagination meta
 - [x] Tests
+
+### 3.7 Test Utilities (`testutil/`)
+
+**Source**: Original (inspired by Yokai's test toolkit)
+
+> Shipped 2026-06-09; recorded here retroactively (the design discussion lived in the local open-questions worklist). `NewApp` returns a **real** `*credo.App`, hermetic by default: no config files are read, the logger is silent, shutdown registers via `tb.Cleanup`, and the container is left unfinalized so tests can keep providing and resolving.
+
+- [x] `testutil.NewApp(tb, opts...) *credo.App` — hermetic test app factory (empty `RawConfig`, `slog.DiscardHandler` logger, best-effort cleanup shutdown)
+- [x] `WithWiring(fns...)` — dependency setup; runs before overrides
+- [x] `WithOverride[T](v)` — DI override built on `app.Replace[T]` / `app.MustReplace[T]` (the public replace primitives were added as its enabling API)
+- [x] `WithConfig(key, val)` — dotted-key config injection through the real loader (nested map → JSON → `config.LoadBytes`)
+- [x] `LogBuffer` — injectable slog capture: `Handler()`, `Entries()`, `Reset()`, `AssertHas(tb, LogEntry)` (string levels, subset attribute matching, JSON-normalized numbers)
+- [x] Tests + testable examples (`app_test.go`, `internal_test.go`, `example_test.go`; 95.5% coverage)
+- [ ] `NewTraceExporter` — trace span capture and assertion (depends on Phase 3.5)
 
 ---
 
@@ -575,12 +590,12 @@
 - [ ] `app.Container()` ergonomic sugar — [Container Spec](docs/specs/container.md), deferred
 - [ ] `Has[T]()` probe API — registration check without singleton construction, cleaner alternative to Resolve-if-missing-Provide pattern
 - [ ] `cache/` contracts (in-memory + Redis) — consider together with Redis store contracts (Phase 3.3c); demand-driven, no commitment yet
-- [ ] Fluent validation builder — v1 scope: requires Go 1.27 generic methods ([golang/go#77273](https://github.com/golang/go/issues/77273), release ~Aug 2026); v1 raises the minimum Go version to 1.27+; the programmatic `Rule[T]` API remains the substrate
+- [ ] Fluent validation builder — the language prerequisite is met (generic methods, [golang/go#77273](https://github.com/golang/go/issues/77273), landed with the repo's Go 1.27 floor, 2026-06); still deferred by choice; the programmatic `Rule[T]` API remains the substrate
 
 ### Documentation
 
 - [ ] `doc.go` for every package (include maturity label)
-- [ ] `example_test.go` for core packages (root, middleware, config)
+- [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
 - [x] ADRs tracked (18 total):
   - [x] [`001-framework-identity-and-goals.md`](docs/adr/001-framework-identity-and-goals.md) — Framework identity and goals
   - [x] [`002-code-acquisition-strategy.md`](docs/adr/002-code-acquisition-strategy.md) — Code acquisition strategy
@@ -601,17 +616,19 @@
   - [x] [`017-static-file-serving.md`](docs/adr/017-static-file-serving.md) — Static file serving
   - [x] [`018-host-routing-and-rewrite.md`](docs/adr/018-host-routing-and-rewrite.md) — Host routing and rewrite
 - [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
-- [ ] Write guide: Infra injection model (Model 1)
+- [x] Write guide: Infra injection model (Model 1) — covered by [`docs/guides/dependency-injection.md`](docs/guides/dependency-injection.md)
 
 ### CI/CD
 
-- [ ] GitHub Actions: test matrix (Go 1.27, latest)
+- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; green on go1.27rc1 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
+- [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
+- [x] CodeQL security analysis (`codeql.yml`)
+- [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot
 - [ ] Codecov or Coveralls integration
-- [ ] Automated golangci-lint on PRs
-- [ ] Release workflow with goreleaser
+- [ ] Release workflow with goreleaser — becomes relevant with `cmd/credo` (Phase 5.1); the library itself releases via git tags
 
 ### Quality Gates
 
-- [ ] 80%+ coverage for Phase 1-2 packages
-- [ ] Zero lint warnings on `make lint`
-- [ ] Benchmark suite for hot paths (router match, context pool, DI resolve)
+- [x] 80%+ coverage for Phase 1-2 packages — every root-module package measures 83–100% (root 94.0%, config 94.3%, validation 96.5%, middleware 94.0%, internal/di 94.3%, internal/radix 92.1%; snapshot 2026-07-03)
+- [ ] Zero lint warnings on `make lint` — blocked on golangci-lint gaining full Go 1.27 support; CI runs a safe linter subset as blocking in the meantime
+- [x] Benchmark suite for hot paths (router match, context pool, DI resolve) — 34 benchmarks across 8 files: root `benchmark_test.go` (ServeHTTP static/param/JSON/middleware/parallel, exercising the router and the context pool), `internal/di` (Resolve variants), `internal/radix`, `middleware`, `validation`, i18n
