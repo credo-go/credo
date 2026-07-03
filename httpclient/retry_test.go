@@ -115,6 +115,37 @@ func TestBackoffDelay_ShiftOverflowGuard(t *testing.T) {
 	}
 }
 
+func TestBackoffCeiling(t *testing.T) {
+	t.Run("normal growth capped at MaxDelay", func(t *testing.T) {
+		cfg := RetryConfig{MinDelay: 100 * time.Millisecond, MaxDelay: 2 * time.Second}
+		want := []time.Duration{
+			100 * time.Millisecond, // attempt 1
+			200 * time.Millisecond,
+			400 * time.Millisecond,
+			800 * time.Millisecond,
+			1600 * time.Millisecond,
+			2 * time.Second, // capped
+			2 * time.Second,
+		}
+		for i, w := range want {
+			if got := backoffCeiling(cfg, i+1); got != w {
+				t.Errorf("attempt %d ceiling = %v, want %v", i+1, got, w)
+			}
+		}
+	})
+
+	t.Run("first attempt capped when MinDelay exceeds MaxDelay", func(t *testing.T) {
+		// Regression: attempt 1 skipped the MaxDelay cap because the doubling
+		// loop never ran, so MinDelay > MaxDelay leaked an oversized ceiling.
+		cfg := RetryConfig{MinDelay: time.Second, MaxDelay: 10 * time.Millisecond}
+		for _, attempt := range []int{1, 2, 5} {
+			if got := backoffCeiling(cfg, attempt); got != 10*time.Millisecond {
+				t.Errorf("attempt %d ceiling = %v, want MaxDelay 10ms", attempt, got)
+			}
+		}
+	})
+}
+
 func TestRetry_5xxThenSuccess(t *testing.T) {
 	srv, hits := scriptServer(t, http.StatusServiceUnavailable, http.StatusOK)
 	client := &http.Client{Transport: NewRetryTransport(nil, fastRetry(3))}

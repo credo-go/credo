@@ -173,10 +173,9 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 }
 
-// backoffDelay returns the full-jitter backoff after the given failed
-// attempt (1-based): a uniformly random duration in
-// [0, min(MaxDelay, MinDelay·2^(attempt-1))).
-func backoffDelay(cfg RetryConfig, attempt int) time.Duration {
+// backoffCeiling returns the exclusive upper bound of the full-jitter window
+// for the given failed attempt (1-based): min(MaxDelay, MinDelay·2^(attempt-1)).
+func backoffCeiling(cfg RetryConfig, attempt int) time.Duration {
 	ceiling := cfg.MinDelay
 	for i := 1; i < attempt; i++ {
 		ceiling *= 2
@@ -187,7 +186,19 @@ func backoffDelay(cfg RetryConfig, attempt int) time.Duration {
 			break
 		}
 	}
-	return rand.N(ceiling) //nolint:gosec // Retry jitter is not security-sensitive randomness.
+	// Cap the first attempt too: the doubling loop never runs for attempt 1, so
+	// without this a MinDelay above MaxDelay would leak an uncapped ceiling,
+	// contradicting the documented min(MaxDelay, …).
+	if ceiling > cfg.MaxDelay {
+		ceiling = cfg.MaxDelay
+	}
+	return ceiling
+}
+
+// backoffDelay returns the full-jitter backoff after the given failed attempt
+// (1-based): a uniformly random duration in [0, backoffCeiling(cfg, attempt)).
+func backoffDelay(cfg RetryConfig, attempt int) time.Duration {
+	return rand.N(backoffCeiling(cfg, attempt)) //nolint:gosec // Retry jitter is not security-sensitive randomness.
 }
 
 // sleepBackoff waits for the given delay, aborting immediately with the
