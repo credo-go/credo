@@ -271,10 +271,19 @@ func getRange(expr string, r bounds) (uint64, error) {
 		err              error
 	)
 
+	// For the day-of-week field, 7 is an accepted alias for Sunday (0). Run the
+	// range machinery with an effective maximum of 7 and fold bit 7 back onto
+	// bit 0 after the bits are computed, so ranges like 5-7 and 0-7 expand
+	// correctly instead of collapsing a 7 endpoint down to 0.
+	effMax := r.max
+	if r.sunday7 {
+		effMax = 7
+	}
+
 	var extra uint64
 	if lowAndHigh[0] == "*" || lowAndHigh[0] == "?" {
 		start = r.min
-		end = r.max
+		end = effMax
 		extra = starBit
 	} else {
 		start, err = parseIntOrName(lowAndHigh[0], r)
@@ -303,7 +312,7 @@ func getRange(expr string, r bounds) (uint64, error) {
 			return 0, err
 		}
 		if singleDigit {
-			end = r.max
+			end = effMax
 		}
 		if step > 1 {
 			extra = 0
@@ -315,8 +324,8 @@ func getRange(expr string, r bounds) (uint64, error) {
 	if start < r.min {
 		return 0, fmt.Errorf("beginning of range (%d) below minimum (%d): %s", start, r.min, expr)
 	}
-	if end > r.max {
-		return 0, fmt.Errorf("end of range (%d) above maximum (%d): %s", end, r.max, expr)
+	if end > effMax {
+		return 0, fmt.Errorf("end of range (%d) above maximum (%d): %s", end, effMax, expr)
 	}
 	if start > end {
 		return 0, fmt.Errorf("beginning of range (%d) beyond end of range (%d): %s", start, end, expr)
@@ -325,7 +334,12 @@ func getRange(expr string, r bounds) (uint64, error) {
 		return 0, fmt.Errorf("step of range should be a positive number: %s", expr)
 	}
 
-	return getBits(start, end, step) | extra, nil
+	bits := getBits(start, end, step) | extra
+	// Fold the Sunday-7 alias: a set bit 7 means Sunday, which is bit 0.
+	if r.sunday7 && bits&(1<<7) != 0 {
+		bits = bits&^(1<<7) | 1<<0
+	}
+	return bits, nil
 }
 
 func parseIntOrName(expr string, r bounds) (uint, error) {
@@ -334,14 +348,7 @@ func parseIntOrName(expr string, r bounds) (uint, error) {
 			return namedInt, nil
 		}
 	}
-	num, err := mustParseUint(expr)
-	if err != nil {
-		return 0, err
-	}
-	if r.sunday7 && num == 7 {
-		return 0, nil
-	}
-	return num, nil
+	return mustParseUint(expr)
 }
 
 func mustParseUint(expr string) (uint, error) {

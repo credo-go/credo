@@ -65,6 +65,18 @@ func TestParseSchedule_Pinned(t *testing.T) {
 			want: time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC), // Sunday
 		},
 		{
+			name: "dow range 0-7 fires every day",
+			expr: "0 0 * * 0-7",
+			now:  time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC), // Monday
+			want: time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC), // Tuesday (not collapsed to Sunday-only)
+		},
+		{
+			name: "dow range 5-7 includes Sunday",
+			expr: "0 0 * * 5-7",
+			now:  time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC), // Saturday
+			want: time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),  // Sunday (7 folded to Sunday)
+		},
+		{
 			name: "dom and dow both restricted fire on either (crontab OR)",
 			expr: "0 0 13 * fri",
 			now:  time.Date(2026, 3, 14, 0, 30, 0, 0, time.UTC), // Saturday
