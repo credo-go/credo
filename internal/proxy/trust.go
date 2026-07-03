@@ -123,7 +123,11 @@ func RealIP(r *http.Request, trustedProxies []netip.Prefix) string {
 		return ip.String()
 	}
 
-	if ip, ok := chainRealIP(splitForwardedFor(r.Header.Get("X-Forwarded-For")), trustedProxies); ok {
+	// X-Forwarded-For may arrive as several header lines; join them so the full
+	// proxy chain is walked. Reading only the first line (Header.Get) would let a
+	// client forge the chain by sending its own leading X-Forwarded-For line
+	// ahead of the one the trusted proxy appends.
+	if ip, ok := chainRealIP(splitForwardedFor(strings.Join(r.Header.Values("X-Forwarded-For"), ",")), trustedProxies); ok {
 		return ip.String()
 	}
 

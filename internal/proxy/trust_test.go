@@ -166,3 +166,28 @@ func longForwardedForChain() string {
 	}
 	return strings.Join(hops, ", ")
 }
+
+// TestRealIP_MultiLineForwardedFor guards against an X-Forwarded-For spoof that
+// succeeded while RealIP read only the first header line (Header.Get). A client
+// sends its own X-Forwarded-For line; the trusted proxy then appends the real
+// client address as a SECOND line. Reading only the first line returns the
+// forged value; reading every line (Header.Values) walks the full chain and
+// returns the proxy-appended address.
+func TestRealIP_MultiLineForwardedFor(t *testing.T) {
+	trusted, err := ParsePrefixes([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := http.NewRequest(http.MethodGet, "/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.RemoteAddr = "10.0.0.1:1234"                 // immediate peer is a trusted proxy
+	r.Header.Add("X-Forwarded-For", "1.1.1.1")     // forged by the client
+	r.Header.Add("X-Forwarded-For", "203.0.113.7") // appended by the trusted proxy
+
+	if got := RealIP(r, trusted); got != "203.0.113.7" {
+		t.Fatalf("RealIP() = %q, want 203.0.113.7 (forged first line must not win)", got)
+	}
+}
