@@ -142,22 +142,28 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # install-mode goinstall builds golangci-lint from source with the Go
-      # toolchain set up above, so it links a go/types that understands Go 1.27
-      # generic methods (a prebuilt binary may lag the toolchain). The config
-      # disables the linters whose SSA/IR engines panic on the 1.27 RC; the
-      # lint-full-canary job below runs those non-blocking. See .golangci.yml.
+      # The latest release (v2.12.2) embeds x/tools v0.44.0, which races or
+      # corrupts Go 1.27 generic-method export imports. Pin the reviewed
+      # upstream x/tools v0.47.0 bump until golangci-lint releases supported
+      # Go 1.27 tooling, and keep required lint serial as an extra guard.
+      # The action cache key omits the lint version, so bypass it while pinned
+      # to avoid restoring analysis data written by v2.12.2/x-tools v0.44.0.
+      # The full-canary job remains non-blocking for incompatible SSA linters.
       - name: Run golangci-lint (root)
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: "87b977018c69c97519b000085daa8ce693e8ed22"
           install-mode: goinstall
+          args: --concurrency=1
+          skip-cache: true
 
       - name: Run golangci-lint (store/sqldb)
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: "87b977018c69c97519b000085daa8ce693e8ed22"
           install-mode: goinstall
+          args: --concurrency=1
+          skip-cache: true
           working-directory: store/sqldb
 
   lint-full-canary:
