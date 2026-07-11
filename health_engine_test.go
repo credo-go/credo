@@ -4,10 +4,31 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
+
+func staticStoreFunc(results ...internalhealth.StoreResult) internalhealth.StoreFunc {
+	checks := make([]internalhealth.StoreCheck, 0, len(results))
+	for _, storeResult := range results {
+		result := storeResult
+		checks = append(checks, internalhealth.StoreCheck{
+			Name: result.Name,
+			Probe: internalhealth.NewProbe(func(context.Context) internalhealth.Result {
+				return internalhealth.Result{
+					Status:  result.Status,
+					Latency: result.Latency,
+					Cause:   result.Cause,
+				}
+			}),
+		})
+	}
+	return func() []internalhealth.StoreCheck {
+		return append([]internalhealth.StoreCheck(nil), checks...)
+	}
+}
 
 func TestHealthEngine_NoChecks_LivenessUp(t *testing.T) {
 	e := newHealthEngine(5 * time.Second)
@@ -103,66 +124,55 @@ func TestHealthEngine_ReadinessFail(t *testing.T) {
 }
 
 func TestHealthEngine_ConcurrentExecution(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
+	synctest.Test(t, func(t *testing.T) {
+		e := newHealthEngine(10 * time.Second)
+		for index, delay := range []time.Duration{2 * time.Second, 5 * time.Second, 3 * time.Second} {
+			name := string(rune('a' + index))
+			e.addLiveness(name, func(context.Context) error {
+				time.Sleep(delay)
+				return nil
+			})
+		}
 
-	// Each check sleeps 50ms. If run sequentially, 3 checks take >=150ms.
-	// If concurrent, they take ~50ms.
-	sleepDur := 50 * time.Millisecond
-	for i := range 3 {
-		name := string(rune('a' + i))
-		e.addLiveness(name, func(context.Context) error {
-			time.Sleep(sleepDur)
-			return nil
-		})
-	}
-
-	start := time.Now()
-	status, _ := e.checkLiveness(t.Context())
-	elapsed := time.Since(start)
-
-	if status != "up" {
-		t.Errorf("status = %q, want %q", status, "up")
-	}
-	// Should complete in well under 150ms if concurrent.
-	if elapsed >= 140*time.Millisecond {
-		t.Errorf("elapsed = %v, want < 140ms (checks should run concurrently)", elapsed)
-	}
+		start := time.Now()
+		status, _ := e.checkLiveness(t.Context())
+		if elapsed := time.Since(start); elapsed != 5*time.Second {
+			t.Errorf("elapsed = %v, want 5s (maximum check duration)", elapsed)
+		}
+		if status != "up" {
+			t.Errorf("status = %q, want %q", status, "up")
+		}
+	})
 }
 
 func TestHealthEngine_Timeout(t *testing.T) {
-	e := newHealthEngine(50 * time.Millisecond)
-	e.addLiveness("slow", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
+	synctest.Test(t, func(t *testing.T) {
+		e := newHealthEngine(time.Second)
+		e.addLiveness("slow", func(ctx context.Context) error {
+			<-ctx.Done()
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
-			return nil
+		})
+
+		start := time.Now()
+		status, checks := e.checkLiveness(t.Context())
+		if elapsed := time.Since(start); elapsed != time.Second {
+			t.Errorf("elapsed = %v, want 1s", elapsed)
+		}
+		if status != "down" {
+			t.Errorf("status = %q, want %q", status, "down")
+		}
+		if len(checks) != 1 || checks[0].Status != "down" || checks[0].Error == "" {
+			t.Fatalf("checks = %#v, want one timed-out down result", checks)
 		}
 	})
-
-	status, checks := e.checkLiveness(t.Context())
-	if status != "down" {
-		t.Errorf("status = %q, want %q", status, "down")
-	}
-	if len(checks) != 1 {
-		t.Fatalf("checks = %d, want 1", len(checks))
-	}
-	if checks[0].Status != "down" {
-		t.Errorf("check status = %q, want %q", checks[0].Status, "down")
-	}
-	if checks[0].Error == "" {
-		t.Error("expected non-empty error for timed-out check")
-	}
 }
 
 func TestHealthEngine_StoreFunc(t *testing.T) {
 	e := newHealthEngine(5 * time.Second)
-	storeFn := internalhealth.StoreFunc(func(context.Context) []internalhealth.StoreResult {
-		return []internalhealth.StoreResult{
-			{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
-			{Name: "redis", Status: "up", Latency: 1 * time.Millisecond},
-		}
-	})
+	storeFn := staticStoreFunc(
+		internalhealth.StoreResult{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
+		internalhealth.StoreResult{Name: "redis", Status: "up", Latency: time.Millisecond},
+	)
 
 	status, _, stores := e.checkReadiness(t.Context(), storeFn)
 	if status != "up" {
@@ -175,11 +185,7 @@ func TestHealthEngine_StoreFunc(t *testing.T) {
 
 func TestHealthEngine_StoreFunc_Down(t *testing.T) {
 	e := newHealthEngine(5 * time.Second)
-	storeFn := internalhealth.StoreFunc(func(context.Context) []internalhealth.StoreResult {
-		return []internalhealth.StoreResult{
-			{Name: "postgres", Status: "down", Latency: 0},
-		}
-	})
+	storeFn := staticStoreFunc(internalhealth.StoreResult{Name: "postgres", Status: "down"})
 
 	status, _, _ := e.checkReadiness(t.Context(), storeFn)
 	if status != "down" {

@@ -17,6 +17,7 @@ type registration struct {
 	isValue      bool                // true for ProvideValue (no constructor)
 	value        any                 // pre-built value for ProvideValue
 	funcCtor     func() (any, error) // typed factory adapter (ProvideFactory)
+	protected    bool                // true when Replace must not overwrite this binding
 }
 
 // Provide registers a constructor for type T. The constructor can accept
@@ -103,26 +104,45 @@ func (c *Container) MustProvideFactory[T any](fn func() (T, error)) {
 	}
 }
 
+// CanProvideValue reports whether [Container.ProvideValue] could currently
+// register type T. It performs only the frozen-container and direct duplicate-T
+// checks, without registering or reserving the type.
+//
+// The result is a point-in-time preflight. A later ProvideValue call can still
+// fail if another registration or container sealing occurs in between.
+func (c *Container) CanProvideValue[T any]() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.canProvideValueLocked(reflect.TypeFor[T]())
+}
+
 // ProvideValue registers a pre-built value for type T as a Singleton.
 // The value is cached immediately.
 func (c *Container) ProvideValue[T any](value T) error {
+	return c.provideValue(value, false)
+}
+
+// ProvideProtectedValue registers a pre-built singleton whose binding cannot
+// later be overwritten through [Container.Replace].
+func (c *Container) ProvideProtectedValue[T any](value T) error {
+	return c.provideValue(value, true)
+}
+
+func (c *Container) provideValue[T any](value T, protected bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.frozen {
-		return fmt.Errorf("di: ProvideValue[%s]: container is frozen (container is sealed)", reflect.TypeFor[T]())
-	}
-
 	targetType := reflect.TypeFor[T]()
-
-	if _, exists := c.registrations[targetType]; exists {
-		return fmt.Errorf("di: ProvideValue[%s]: already registered", targetType)
+	if err := c.canProvideValueLocked(targetType); err != nil {
+		return err
 	}
 
 	reg := &registration{
 		resultType: targetType,
 		isValue:    true,
 		value:      value,
+		protected:  protected,
 	}
 
 	c.registrations[targetType] = reg
@@ -133,6 +153,68 @@ func (c *Container) ProvideValue[T any](value T) error {
 	entry.done.Store(true)
 	c.singletons[targetType] = entry
 
+	return nil
+}
+
+// ProtectBinding prevents Replace from overwriting the existing direct
+// registration for T. Calling it repeatedly is safe. When one expected value
+// is supplied, protection succeeds only if the currently resolved singleton is
+// the same comparable value. A mismatch adds no protection; protection already
+// present on the binding remains in effect.
+func (c *Container) ProtectBinding[T any](expected ...T) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	targetType := reflect.TypeFor[T]()
+	if c.frozen {
+		return fmt.Errorf("di: ProtectBinding[%s]: container is frozen (container is sealed)", targetType)
+	}
+	reg, exists := c.registrations[targetType]
+	if !exists {
+		return fmt.Errorf("di: ProtectBinding[%s]: type is not registered", targetType)
+	}
+	if len(expected) > 1 {
+		return fmt.Errorf("di: ProtectBinding[%s]: accepts at most one expected value", targetType)
+	}
+	if len(expected) == 1 {
+		entry, exists := c.singletons[targetType]
+		if !exists || !entry.done.Load() || entry.err != nil {
+			return fmt.Errorf("di: ProtectBinding[%s]: expected value is not resolved", targetType)
+		}
+		matches, comparable := sameComparableValue(entry.value, any(expected[0]))
+		if !comparable {
+			return fmt.Errorf("di: ProtectBinding[%s]: expected value is not comparable", targetType)
+		}
+		if !matches {
+			return fmt.Errorf("di: ProtectBinding[%s]: resolved value changed", targetType)
+		}
+	}
+	reg.protected = true
+	return nil
+}
+
+func sameComparableValue(left, right any) (matches bool, comparable bool) {
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if !leftValue.IsValid() || !rightValue.IsValid() {
+		return !leftValue.IsValid() && !rightValue.IsValid(), true
+	}
+	if !leftValue.Comparable() || !rightValue.Comparable() {
+		return false, false
+	}
+	if leftValue.Type() != rightValue.Type() {
+		return false, true
+	}
+	return leftValue.Equal(rightValue), true
+}
+
+func (c *Container) canProvideValueLocked(targetType reflect.Type) error {
+	if c.frozen {
+		return fmt.Errorf("di: ProvideValue[%s]: container is frozen (container is sealed)", targetType)
+	}
+	if _, exists := c.registrations[targetType]; exists {
+		return fmt.Errorf("di: ProvideValue[%s]: already registered", targetType)
+	}
 	return nil
 }
 
