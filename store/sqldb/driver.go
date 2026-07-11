@@ -3,6 +3,7 @@ package sqldb
 import (
 	"strings"
 
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/mysqldialect"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
@@ -42,5 +43,21 @@ func (f driverFamily) dialect() schema.Dialect {
 		return sqlitedialect.New()
 	default:
 		return nil
+	}
+}
+
+func resolveDialectFamily(d schema.Dialect) driverFamily {
+	if d == nil {
+		return driverFamilyUnknown
+	}
+	switch d.Name() {
+	case dialect.PG:
+		return driverFamilyPostgres
+	case dialect.MySQL:
+		return driverFamilyMySQL
+	case dialect.SQLite:
+		return driverFamilySQLite
+	default:
+		return driverFamilyUnknown
 	}
 }

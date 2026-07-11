@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uptrace/bun/dialect/mysqldialect"
+	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
+	"github.com/uptrace/bun/schema"
 )
 
 func TestOpen_NilConfig(t *testing.T) {
@@ -73,6 +76,44 @@ func TestOpen_InvalidPoolSettings(t *testing.T) {
 	}
 }
 
+func TestOpen_TxCleanupTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		option  Option
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default", want: defaultTxCleanupTimeout},
+		{name: "custom", option: WithTxCleanupTimeout(17 * time.Second), want: 17 * time.Second},
+		{name: "zero", option: WithTxCleanupTimeout(0), wantErr: true},
+		{name: "negative", option: WithTxCleanupTimeout(-time.Second), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := []Option{}
+			if tt.option != nil {
+				opts = append(opts, tt.option)
+			}
+			db, err := Open(&Config{Driver: "sqlite", DSN: ":memory:"}, opts...)
+			if tt.wantErr {
+				if err == nil {
+					_ = db.Shutdown(t.Context())
+					t.Fatal("Open should reject invalid tx cleanup timeout")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Open = %v", err)
+			}
+			t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+			if db.txCleanupTimeout != tt.want {
+				t.Fatalf("txCleanupTimeout = %s, want %s", db.txCleanupTimeout, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpen_WithDialect(t *testing.T) {
 	// sqlite3 with :memory: DSN should work without a real driver
 	// if we provide the dialect. But sql.Open will still need a registered driver.
@@ -105,5 +146,25 @@ func TestDriverDialectDetection(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("resolveDriverFamily(%q).dialect() detected=%v, want %v", tt.driver, got, tt.want)
 		}
+	}
+}
+
+func TestResolveDialectFamily(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect schema.Dialect
+		want    driverFamily
+	}{
+		{"postgres", pgdialect.New(), driverFamilyPostgres},
+		{"mysql", mysqldialect.New(), driverFamilyMySQL},
+		{"sqlite", sqlitedialect.New(), driverFamilySQLite},
+	}
+	for _, tt := range tests {
+		if got := resolveDialectFamily(tt.dialect); got != tt.want {
+			t.Errorf("resolveDialectFamily(%s) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	if got := resolveDialectFamily(nil); got != driverFamilyUnknown {
+		t.Errorf("resolveDialectFamily(nil) = %v, want unknown", got)
 	}
 }

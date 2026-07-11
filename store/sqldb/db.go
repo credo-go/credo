@@ -15,12 +15,24 @@ import (
 // DB wraps *bun.DB with lifecycle management, query builder proxies,
 // error mapping, and transaction support.
 type DB struct {
-	db      *bun.DB
-	txScope *store.TxScope
+	db               *bun.DB
+	family           driverFamily
+	txScope          *store.TxScope[bun.IDB]
+	txCleanupTimeout time.Duration
 
 	// migrations is the set registered via RegisterMigrations; nil until then.
 	migrations   *migrate.Migrations
 	migratorOpts []migrate.MigratorOption
+}
+
+var _ store.LifecycleIdentityProvider = (*DB)(nil)
+
+// ResourceIdentity returns the physical DB wrapper used for lifecycle
+// ownership. Semantic wrapper types that embed *DB inherit this method, so
+// store.Register recognizes multiple wrappers around the same DB as one
+// resource.
+func (db *DB) ResourceIdentity() any {
+	return db
 }
 
 // Open creates a DB from Config.
@@ -36,7 +48,7 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 		return nil, fmt.Errorf("sqldb: config must not be nil")
 	}
 
-	o := options{}
+	o := options{txCleanupTimeout: defaultTxCleanupTimeout}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -45,6 +57,9 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 
 	family, err := validateConfig(cfg, o)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateBunSelectCloneLayout(); err != nil {
 		return nil, err
 	}
 
@@ -84,10 +99,18 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("sqldb: cannot detect dialect for driver %q; use WithDialect option", cfg.Driver)
 	}
+	if family == driverFamilyUnknown {
+		family = resolveDialectFamily(dialect)
+	}
 
 	bunDB := bun.NewDB(sqlDB, dialect)
 
-	return &DB{db: bunDB, txScope: store.NewTxScope()}, nil
+	return &DB{
+		db:               bunDB,
+		family:           family,
+		txScope:          store.NewTxScope[bun.IDB](),
+		txCleanupTimeout: o.txCleanupTimeout,
+	}, nil
 }
 
 // Client returns the underlying *bun.DB for raw SQL, model registration,
@@ -96,12 +119,13 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 //
 // Warning: queries executed via the returned *bun.DB bypass the proxy
 // interceptors. There is no automatic TX injection from context (see
-// [DB.InTx] / [store.Conn]) and no error mapping to store.Err* sentinels.
+// [DB.InTx] / [DB.Conn]) and no error mapping to store.Err* sentinels.
 // Use the proxy layer ([DB.Select], [DB.Insert], [DB.Update], [DB.Delete])
-// for normal repository code; reserve Client() for model registration,
-// raw SQL the proxy layer cannot express, and migration operations beyond
-// [DB.Migrate] (rollback, status, file generation — via
-// migrate.NewMigrator(db.Client(), migrations)).
+// for normal repository code. For an advanced Bun operation that must join
+// an ambient transaction, build it through db.Conn(ctx). Reserve Client() for
+// model registration and operations intentionally tied to the base DB, such
+// as migration operations beyond [DB.Migrate] (rollback, status, file
+// generation — via migrate.NewMigrator(db.Client(), migrations)).
 func (db *DB) Client() *bun.DB {
 	return db.db
 }
@@ -137,7 +161,7 @@ func (db *DB) Health(ctx context.Context) store.Health {
 
 	if err != nil {
 		h.Status = store.StatusDown
-		h.Details["error"] = err.Error()
+		h.Cause = err
 		return h
 	}
 
@@ -153,40 +177,56 @@ func (db *DB) Health(ctx context.Context) store.Health {
 	return h
 }
 
-// Select creates a new SelectQuery proxy.
+// Select creates a new SelectQuery proxy. It accepts zero or one model; more
+// than one records a builder error that the terminal method returns.
 func (db *DB) Select(model ...any) *SelectQuery {
 	q := db.db.NewSelect()
-	if len(model) > 0 {
+	if len(model) > 1 {
+		q = q.Err(optionalModelCountError("Select", len(model)))
+	} else if len(model) == 1 {
 		q = q.Model(model[0])
 	}
 	return &SelectQuery{raw: q, state: newQueryState(db)}
 }
 
-// Insert creates a new InsertQuery proxy.
+// Insert creates a new InsertQuery proxy. It accepts zero or one model; more
+// than one records a builder error that Exec returns.
 func (db *DB) Insert(model ...any) *InsertQuery {
 	q := db.db.NewInsert()
-	if len(model) > 0 {
+	if len(model) > 1 {
+		q = q.Err(optionalModelCountError("Insert", len(model)))
+	} else if len(model) == 1 {
 		q = q.Model(model[0])
 	}
 	return &InsertQuery{raw: q, state: newQueryState(db)}
 }
 
-// Update creates a new UpdateQuery proxy.
+// Update creates a new UpdateQuery proxy. It accepts zero or one model; more
+// than one records a builder error that Exec returns.
 func (db *DB) Update(model ...any) *UpdateQuery {
 	q := db.db.NewUpdate()
-	if len(model) > 0 {
+	if len(model) > 1 {
+		q = q.Err(optionalModelCountError("Update", len(model)))
+	} else if len(model) == 1 {
 		q = q.Model(model[0])
 	}
 	return &UpdateQuery{raw: q, state: newQueryState(db)}
 }
 
-// Delete creates a new DeleteQuery proxy.
+// Delete creates a new DeleteQuery proxy. It accepts zero or one model; more
+// than one records a builder error that Exec returns.
 func (db *DB) Delete(model ...any) *DeleteQuery {
 	q := db.db.NewDelete()
-	if len(model) > 0 {
+	if len(model) > 1 {
+		q = q.Err(optionalModelCountError("Delete", len(model)))
+	} else if len(model) == 1 {
 		q = q.Model(model[0])
 	}
 	return &DeleteQuery{raw: q, state: newQueryState(db)}
+}
+
+func optionalModelCountError(operation string, count int) error {
+	return fmt.Errorf("sqldb: %s accepts at most one model, got %d", operation, count)
 }
 
 func validateConfig(cfg *Config, o options) (driverFamily, error) {
@@ -207,6 +247,12 @@ func validateConfig(cfg *Config, o options) (driverFamily, error) {
 	if cfg.MaxLifetime < 0 {
 		return driverFamilyUnknown, fmt.Errorf("sqldb: max lifetime must be >= 0, got %s", cfg.MaxLifetime)
 	}
+	if o.txCleanupTimeout <= 0 {
+		return driverFamilyUnknown, fmt.Errorf(
+			"sqldb: tx cleanup timeout must be > 0, got %s",
+			o.txCleanupTimeout,
+		)
+	}
 
 	if o.connector != nil {
 		return family, nil
@@ -217,11 +263,17 @@ func validateConfig(cfg *Config, o options) (driverFamily, error) {
 	}
 
 	if cfg.DSN == "" && family == driverFamilyUnknown {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: cannot build DSN for driver %q; provide Config.DSN or use WithConnector", cfg.Driver)
+		return driverFamilyUnknown, fmt.Errorf(
+			"sqldb: cannot build DSN for driver %q; provide Config.DSN or use WithConnector",
+			cfg.Driver,
+		)
 	}
 
 	if o.dialect == nil && family == driverFamilyUnknown {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: cannot detect dialect for driver %q; use WithDialect option", cfg.Driver)
+		return driverFamilyUnknown, fmt.Errorf(
+			"sqldb: cannot detect dialect for driver %q; use WithDialect option",
+			cfg.Driver,
+		)
 	}
 
 	return family, nil

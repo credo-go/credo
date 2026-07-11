@@ -111,5 +111,5 @@ func (q *UpdateQuery) Unwrap() *bun.UpdateQuery {
 func (q *UpdateQuery) Exec(ctx context.Context, dest ...any) (sql.Result, error) {
 	raw := prepareQuery(ctx, q.raw, q.state, shallowCopy[bun.UpdateQuery])
 	res, err := raw.Exec(ctx, dest...)
-	return res, mapError(err)
+	return res, q.state.db.mapError(ctx, err)
 }

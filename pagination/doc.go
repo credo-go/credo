@@ -17,11 +17,20 @@
 //	    Search string `query:"search"`
 //	}
 //
+// [PageRequest.Normalize] and [PageRequest.Validate] are forgiving input-policy
+// operations: they apply defaults and clamp PerPage in place. Execution is a
+// separate, strict boundary. [PageRequest.Offset] returns (int, error), never
+// mutates or normalizes the request, and wraps [ErrInvalidPageRequest] when Page
+// or PerPage is non-positive or the multiplication would overflow int.
+// ORM adapters may impose a narrower execution range; sqldb additionally
+// enforces Bun v1.2.18's signed-int32 LIMIT/OFFSET representation before COUNT.
+//
 // # Page Construction and Mapping
 //
 // A [Page] carries pagination metadata (Total, Page, PerPage, TotalPages) that
 // is computed once — by [NewPage] or by a query terminal such as sqldb's
-// SelectQuery.Page — and never recomputed or hand-copied afterward:
+// SelectQuery.Page — and never recomputed or hand-copied afterward. NewPage
+// computes the ceiling without an addition that can overflow at MaxInt64:
 //
 //	page := pagination.NewPage(dtos, total, filter.Page, filter.PerPage)
 //

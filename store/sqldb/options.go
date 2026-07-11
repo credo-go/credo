@@ -2,16 +2,32 @@ package sqldb
 
 import (
 	"database/sql/driver"
+	"time"
 
 	"github.com/uptrace/bun/schema"
 )
+
+const defaultTxCleanupTimeout = 5 * time.Second
 
 // Option configures an [Open] call.
 type Option func(*options)
 
 type options struct {
-	dialect   schema.Dialect
-	connector driver.Connector
+	dialect          schema.Dialect
+	connector        driver.Connector
+	txCleanupTimeout time.Duration
+}
+
+// WithTxCleanupTimeout sets how long Credo waits for each nested savepoint
+// creation, release, or rollback and for the fail-safe ambient transaction
+// abort. The default is 5 seconds. A driver operation that ignores context may
+// continue in its goroutine, but the transaction is marked rollback-only and
+// the caller stops waiting. d must be greater than zero; Open returns an error
+// for invalid values.
+func WithTxCleanupTimeout(d time.Duration) Option {
+	return func(o *options) {
+		o.txCleanupTimeout = d
+	}
 }
 
 // WithDialect overrides the auto-detected dialect.
