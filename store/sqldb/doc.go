@@ -20,6 +20,24 @@
 //	    MaxLifetime: 30 * time.Minute,
 //	})
 //
+// Driver-family detection uses an exact, case-insensitive allowlist:
+// postgres/pgx, mysql, and sqlite/sqlite3/sqliteshim. A differently named
+// registered driver uses its native Config.DSN plus WithDialect; a connector
+// uses WithConnector plus WithDialect. Credo does not infer a family from a
+// substring or a connector's concrete type, and rejects known driver/dialect
+// family mismatches. When Credo builds a PostgreSQL or MySQL DSN, Port must be
+// between 1 and 65535 and IPv6 hosts are bracketed correctly. Use Config.DSN or
+// WithConnector for driver-native default-port or socket behavior.
+//
+// Positive PostgreSQL ConnectTimeout values are rounded up to whole seconds so
+// a sub-second value cannot silently disable the timeout. Config.Options cannot
+// override reserved endpoint/credential fields or a simultaneously configured
+// SSLMode/ConnectTimeout; conflicting sources fail without including option
+// values in the error. Explicit nil WithDialect/WithConnector values also fail.
+// SSLMode is driver-specific (PostgreSQL sslmode, MySQL tls), and Credo imposes
+// no universal TLS default; production configuration must choose the driver's
+// verified mode explicitly.
+//
 // # Connection Pool
 //
 // Credo does not choose a workload-independent finite pool size. MaxOpen=0

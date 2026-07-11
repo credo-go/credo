@@ -414,17 +414,17 @@ func (db *DB) Health(ctx context.Context) store.Health
 type Config struct {
     Driver         string        // "postgres", "mysql", "sqlite"
     Host           string
-    Port           int
+    Port           int           // required (1..65535) for generated network DSNs
     Name           string        // database name
     User           string
     Password       string
-    DSN            string        // override: raw DSN string (if set, Host/Port/Name ignored)
-    ConnectTimeout time.Duration // connection establishment timeout
+    DSN            string        // raw driver DSN; structured DSN fields are not merged
+    ConnectTimeout time.Duration // connection timeout; PostgreSQL rounds positive values up to seconds
     MaxOpen        int           // max open connections (0 = unlimited)
     MaxIdle        *int          // nil = no Credo idle setter; new(0) = retain none
     MaxLifetime    time.Duration // max connection lifetime (0 = disabled)
     MaxIdleTime    time.Duration // max idle age (0 = disabled)
-    SSLMode        string        // "disable", "require", "verify-full"
+    SSLMode        string        // driver-specific: PostgreSQL sslmode / MySQL tls
     Options        map[string]string // driver-specific connection params
 }
 
@@ -432,6 +432,35 @@ type Config struct {
 // release, rollback, and fail-safe ambient rollback. Default: 5s; d must be > 0.
 func WithTxCleanupTimeout(d time.Duration) Option
 ```
+
+Driver-family detection is an exact, case-insensitive allowlist:
+`postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`. Names such as
+`postgres-proxy` or `notmysql` are custom drivers, not implicit aliases; combine
+their registered driver name and native DSN with `WithDialect`. Connectors do
+not undergo concrete-type guessing. An explicitly nil `WithDialect` or
+`WithConnector` (including typed-nil values) makes `Open` fail. A known explicit
+dialect that conflicts with a known driver family also fails; Credo will not
+build one family's DSN, emit another family's SQL, and classify errors as the
+first family.
+
+When Credo constructs a PostgreSQL or MySQL DSN, `Port` must be in `1..65535`;
+zero is rejected rather than emitted as `:0`. `Config.DSN` and `WithConnector`
+remain the escape hatches for driver-native default-port, socket, or custom DSN
+behavior. Host/port serialization uses `net.JoinHostPort`, including bracketed
+IPv6. Empty host and database-name values are preserved for driver-native
+interpretation. A positive PostgreSQL `ConnectTimeout` is rounded up to whole
+seconds, so a sub-second request becomes one second instead of silently turning
+the timeout off; MySQL retains its duration syntax.
+
+`Options` is for additional driver parameters, not a second source for core
+PostgreSQL endpoint/credential keys. It may supply `sslmode`/`connect_timeout`
+or MySQL `tls`/`timeout` only when the corresponding structured field is unset;
+MySQL `parseTime` is fixed to `true`. Ambiguous duplicates fail and their values
+are not included in the error. A raw `DSN` is used as-is when full driver-native
+control is needed. TLS values are deliberately driver-specific: `SSLMode` maps
+to PostgreSQL `sslmode` and MySQL `tls`. Credo does not impose a universal TLS
+default; production deployments explicitly choose and provision a verified
+mode supported by their selected driver.
 
 Credo deliberately has no workload-independent finite pool default.
 `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is

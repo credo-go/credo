@@ -87,7 +87,7 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 	// Open the sql.DB.
 	var sqlDB *sql.DB
 
-	if o.connector != nil {
+	if o.connectorSet {
 		sqlDB = sql.OpenDB(o.connector)
 	} else {
 		dsn, err := cfg.buildDSN(family)
@@ -272,6 +272,23 @@ func optionalModelCountError(operation string, count int) error {
 
 func validateConfig(cfg *Config, o options) (driverFamily, error) {
 	family := resolveDriverFamily(cfg.Driver)
+	if o.dialectSet && isNilDynamicValue(o.dialect) {
+		return driverFamilyUnknown, fmt.Errorf("sqldb: WithDialect requires a non-nil dialect")
+	}
+	if o.connectorSet && isNilDynamicValue(o.connector) {
+		return driverFamilyUnknown, fmt.Errorf("sqldb: WithConnector requires a non-nil connector")
+	}
+	if o.dialectSet {
+		dialectFamily := resolveDialectFamily(o.dialect)
+		if family != driverFamilyUnknown &&
+			dialectFamily != driverFamilyUnknown &&
+			family != dialectFamily {
+			return driverFamilyUnknown, fmt.Errorf(
+				"sqldb: WithDialect is incompatible with driver %q",
+				cfg.Driver,
+			)
+		}
+	}
 
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return driverFamilyUnknown, fmt.Errorf("sqldb: port must be between 0 and 65535, got %d", cfg.Port)
@@ -305,7 +322,7 @@ func validateConfig(cfg *Config, o options) (driverFamily, error) {
 		)
 	}
 
-	if o.connector != nil {
+	if o.connectorSet {
 		return family, nil
 	}
 

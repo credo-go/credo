@@ -94,6 +94,15 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ### Changed
 
+- **BREAKING — generated `sqldb` DSNs now fail loud on ambiguous or invalid
+  connection configuration.** Driver-family inference uses exact aliases
+  instead of substring matches; generated PostgreSQL/MySQL DSNs require a
+  non-zero port and serialize IPv6 hosts correctly; positive fractional
+  PostgreSQL connect timeouts round up to one-second units. Conflicting
+  structured fields/driver options and explicit nil `WithDialect` or
+  `WithConnector` values now return secret-safe startup errors, as do known
+  driver/dialect family mismatches. Raw `Config.DSN` and non-nil custom
+  connectors remain the driver-native escape hatches.
 - **BREAKING — `sqldb.Config.MaxIdle` is now `*int`.** `nil` makes Credo leave
   the idle setter untouched (the effective stdlib default remains subject to
   `MaxOpen`), `new(0)` explicitly disables idle retention, and a positive value

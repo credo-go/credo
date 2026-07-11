@@ -1,8 +1,13 @@
 package sqldb
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +25,24 @@ type poolConfigCall struct {
 type recordingPool struct {
 	calls []poolConfigCall
 }
+
+type customTestDriver struct{}
+
+func (customTestDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("custom test driver connection is not used")
+}
+
+type customTestConnector struct{}
+
+func (*customTestConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("custom test connector connection is not used")
+}
+
+func (*customTestConnector) Driver() driver.Driver {
+	return customTestDriver{}
+}
+
+var registerCustomTestDriver sync.Once
 
 func (p *recordingPool) SetMaxOpenConns(n int) {
 	p.calls = append(p.calls, poolConfigCall{method: "SetMaxOpenConns", value: n})
@@ -145,13 +168,7 @@ func TestOpen_DSNWithoutDriver(t *testing.T) {
 	}
 }
 
-func TestOpen_NoDriverWithConnector(t *testing.T) {
-	// WithConnector should bypass the driver/DSN requirement.
-	// We can't easily create a real connector here, but we verify
-	// that the validation doesn't reject an empty driver when
-	// a connector is provided. This test will fail at sql.OpenDB
-	// level if the connector is invalid, not at validation.
-	// For now, just verify the error message path WITHOUT connector.
+func TestOpen_NoDriverWithoutConnector(t *testing.T) {
 	_, err := Open(&Config{})
 	if err == nil {
 		t.Fatal("Open with empty config should return error")
@@ -245,24 +262,124 @@ func TestOpen_WithDialect(t *testing.T) {
 	_ = err
 }
 
+func TestOpen_CustomDriverWithExplicitDialect(t *testing.T) {
+	const driverName = "credo-custom-driver-test"
+	registerCustomTestDriver.Do(func() {
+		sql.Register(driverName, customTestDriver{})
+	})
+
+	db, err := Open(
+		&Config{Driver: driverName, DSN: "driver-native-dsn"},
+		WithDialect(sqlitedialect.New()),
+	)
+	if err != nil {
+		t.Fatalf("Open(custom driver, explicit dialect) = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	if db.family != driverFamilySQLite {
+		t.Fatalf("custom driver family = %v, want SQLite from explicit dialect", db.family)
+	}
+}
+
+func TestOpen_CustomConnectorWithExplicitDialect(t *testing.T) {
+	db, err := Open(
+		new(Config),
+		WithConnector(new(customTestConnector)),
+		WithDialect(sqlitedialect.New()),
+	)
+	if err != nil {
+		t.Fatalf("Open(custom connector, explicit dialect) = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	if db.family != driverFamilySQLite {
+		t.Fatalf("custom connector family = %v, want SQLite from explicit dialect", db.family)
+	}
+}
+
+func TestOpen_ExplicitNilOptionsFailLoud(t *testing.T) {
+	tests := []struct {
+		name   string
+		option Option
+		want   string
+	}{
+		{name: "nil dialect", option: WithDialect(nil), want: "WithDialect"},
+		{
+			name:   "typed nil dialect",
+			option: WithDialect((*pgdialect.Dialect)(nil)),
+			want:   "WithDialect",
+		},
+		{name: "nil connector", option: WithConnector(nil), want: "WithConnector"},
+		{
+			name:   "typed nil connector",
+			option: WithConnector((*customTestConnector)(nil)),
+			want:   "WithConnector",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Open(&Config{Driver: "sqlite", DSN: ":memory:"}, tt.option)
+			if err == nil {
+				t.Fatalf("Open(%s) should reject an explicitly nil option", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "non-nil") {
+				t.Fatalf("Open(%s) error = %q, want fail-loud option name", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestOpen_RejectsKnownDriverDialectMismatch(t *testing.T) {
+	const rawDSN = "do-not-leak-raw-dsn"
+	tests := []struct {
+		name    string
+		driver  string
+		dialect schema.Dialect
+	}{
+		{name: "postgres driver with mysql dialect", driver: "postgres", dialect: mysqldialect.New()},
+		{name: "mysql driver with sqlite dialect", driver: "mysql", dialect: sqlitedialect.New()},
+		{name: "sqlite driver with postgres dialect", driver: "sqlite", dialect: pgdialect.New()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Open(&Config{Driver: tt.driver, DSN: rawDSN}, WithDialect(tt.dialect))
+			if err == nil {
+				t.Fatal("Open() should reject a known driver/dialect family mismatch")
+			}
+			if !strings.Contains(err.Error(), "WithDialect") ||
+				!strings.Contains(err.Error(), tt.driver) {
+				t.Fatalf("Open() error = %q, want driver/dialect mismatch context", err)
+			}
+			if strings.Contains(err.Error(), rawDSN) {
+				t.Fatalf("Open() mismatch error leaked Config.DSN: %q", err)
+			}
+		})
+	}
+}
+
 func TestDriverDialectDetection(t *testing.T) {
 	tests := []struct {
 		driver string
-		want   bool // true if dialect should be detected
+		want   driverFamily
 	}{
-		{"postgres", true},
-		{"pgx", true},
-		{"mysql", true},
-		{"sqlite3", true},
-		{"sqlite", true},
-		{"unknown", false},
-		{"", false},
+		{"postgres", driverFamilyPostgres},
+		{"pgx", driverFamilyPostgres},
+		{"mysql", driverFamilyMySQL},
+		{"sqlite3", driverFamilySQLite},
+		{"sqlite", driverFamilySQLite},
+		{"sqliteshim", driverFamilySQLite},
+		{"POSTGRES", driverFamilyPostgres},
+		{"notmysql", driverFamilyUnknown},
+		{"postgres-proxy", driverFamilyUnknown},
+		{"my-sqlite-wrapper", driverFamilyUnknown},
+		{"unknown", driverFamilyUnknown},
+		{"", driverFamilyUnknown},
 	}
 	for _, tt := range tests {
-		d := resolveDriverFamily(tt.driver).dialect()
-		got := d != nil
+		got := resolveDriverFamily(tt.driver)
 		if got != tt.want {
-			t.Errorf("resolveDriverFamily(%q).dialect() detected=%v, want %v", tt.driver, got, tt.want)
+			t.Errorf("resolveDriverFamily(%q) = %v, want %v", tt.driver, got, tt.want)
 		}
 	}
 }

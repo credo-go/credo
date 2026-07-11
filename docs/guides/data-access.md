@@ -160,7 +160,25 @@ against the database's connection budget and the service's replica count):
 `redacted` is a placeholder; load the real password through the application's
 environment or secret-backed configuration source.
 
-If `DSN` is set, the structured connection fields are ignored.
+If `DSN` is set, it is used as-is; structured connection fields are not merged
+into it. For generated PostgreSQL/MySQL DSNs, set `port` explicitly in the
+`1..65535` range. Credo rejects zero instead of producing `:0`, and correctly
+brackets IPv6 hosts. Driver detection recognizes only the exact aliases
+`postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`; a custom
+registered name uses its native `Config.DSN` plus `sqldb.WithDialect`, while a
+custom connector uses `sqldb.WithConnector` plus `sqldb.WithDialect`. Explicit
+nil values and known driver/dialect family mismatches fail at startup.
+
+PostgreSQL represents `connect_timeout` in whole seconds, so Credo rounds any
+positive fractional value up rather than silently truncating it to disabled.
+`Options` may add driver parameters but cannot override core PostgreSQL
+endpoint/credential keys, MySQL's required `parseTime=true`, or a simultaneously
+set `SSLMode`/`ConnectTimeout`; ambiguous values fail without being echoed in
+the error. `SSLMode` itself is driver-specific (`sslmode` for PostgreSQL, `tls`
+for MySQL). Credo sets no universal TLS default—production configuration must
+choose a verified mode and trust setup supported by the selected driver. See
+the canonical [store specification](../specs/store.md#config) for the complete
+precedence and escape-hatch contract.
 
 There is intentionally no universal finite pool default. `max_open: 0` (and an
 omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A

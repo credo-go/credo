@@ -20,13 +20,12 @@ const (
 )
 
 func resolveDriverFamily(driver string) driverFamily {
-	d := strings.ToLower(driver)
-	switch {
-	case strings.Contains(d, "postgres") || strings.Contains(d, "pgx"):
+	switch strings.ToLower(driver) {
+	case "postgres", "pgx":
 		return driverFamilyPostgres
-	case strings.Contains(d, "mysql"):
+	case "mysql":
 		return driverFamilyMySQL
-	case strings.Contains(d, "sqlite"):
+	case "sqlite", "sqlite3", "sqliteshim":
 		return driverFamilySQLite
 	default:
 		return driverFamilyUnknown
