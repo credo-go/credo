@@ -115,9 +115,9 @@ func checkPreparedModule(repoRoot, version string) error {
 }
 
 func checkCandidate(repoRoot, version string) error {
-	tmp, err := os.MkdirTemp("", "credo-release-gate-")
-	if err != nil {
-		return fmt.Errorf("create temporary directory: %w", err)
+	tmp, tempErr := os.MkdirTemp("", "credo-release-gate-")
+	if tempErr != nil {
+		return fmt.Errorf("create temporary directory: %w", tempErr)
 	}
 	defer os.RemoveAll(tmp)
 
@@ -127,9 +127,9 @@ func checkCandidate(repoRoot, version string) error {
 		return fmt.Errorf("create consumer directory: %w", err)
 	}
 
-	sourceHead, err := output(repoRoot, nil, "git", "rev-parse", "HEAD")
-	if err != nil {
-		return fmt.Errorf("resolve candidate HEAD: %w", err)
+	sourceHead, headErr := output(repoRoot, nil, "git", "rev-parse", "HEAD")
+	if headErr != nil {
+		return fmt.Errorf("resolve candidate HEAD: %w", headErr)
 	}
 	if err := command("", nil, "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", repoRoot, repo); err != nil {
 		return fmt.Errorf("clone candidate HEAD: %w", err)
