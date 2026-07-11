@@ -6,8 +6,9 @@ Thank you for your interest in contributing to Credo! This guide will help you g
 
 1. **Fork and clone** the repository.
 2. Ensure you have **Go 1.27+** installed.
-3. Run `make test` to verify your setup.
-4. Run `make lint` to check code style.
+3. Install `golangci-lint` and a race-enabled Go toolchain.
+4. Run `make check` to vet, lint, and test both the root module and the
+   `store/sqldb` submodule (the benchmark smoke step remains root-only).
 
 ## Branch Strategy
 
@@ -39,7 +40,8 @@ refactor(middleware): simplify chain composition
 
 1. Create a feature branch from `dev`.
 2. Write tests first (TDD is encouraged).
-3. Ensure `make lint` and `make test` pass locally.
+3. Ensure `make check` passes locally. If the platform cannot run `-race`, the
+   required CI race jobs remain authoritative and must pass before merge.
 4. Open a PR with a clear title and description explaining:
    - **What** changed
    - **Why** it changed
