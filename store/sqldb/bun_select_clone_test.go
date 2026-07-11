@@ -11,6 +11,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestBunSelectCloneLayoutCompatibility(t *testing.T) {
+	if err := validateBunSelectCloneLayout(); err != nil {
+		t.Fatalf("validate Bun SelectQuery clone layout: %v", err)
+	}
+}
+
 func TestCloneBunSelectQuery_Nil(t *testing.T) {
 	if got := cloneBunSelectQuery(nil); got != nil {
 		t.Fatalf("cloneBunSelectQuery(nil) = %p, want nil", got)

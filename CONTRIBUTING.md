@@ -48,6 +48,22 @@ refactor(middleware): simplify chain composition
    - **How** to test it
 5. At least one maintainer review is required before merge.
 
+## Updating Bun
+
+`store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery`
+state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its
+three dialect modules together to the same reviewed release.
+
+Every Bun update must pass the full `Test (store/sqldb)` race job, including
+`TestBunSelectCloneLayoutCompatibility` and the critical query-state,
+pagination-count, and SQL-rendering contract tests. The normal build, tidy,
+lint, and real PostgreSQL/MySQL jobs must pass as well.
+
+If a Bun update changes private layout or SQL semantics, first evaluate an
+upstream fix, removing or narrowing the compatibility layer, or narrowing the
+Credo contract. Do not automatically expand unsafe private-field access or add
+SQL parser logic merely to preserve the previous implementation.
+
 ## Releasing
 
 Credo is a multi-module repository:

@@ -50,7 +50,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run submodule tests
+      - name: Run submodule tests (including Bun compatibility contracts)
         working-directory: store/sqldb
         run: go test -race -count=1 ./...
 
