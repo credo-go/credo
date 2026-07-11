@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/schema"
 
 	"github.com/credo-go/credo/pagination"
 	"github.com/credo-go/credo/store"
@@ -189,6 +190,41 @@ func TestSelectQuery_ClonePreservesStateAndBuilderIsolation(t *testing.T) {
 	}
 	if baseCount != 2 {
 		t.Fatalf("base Count after clone mutation = %d, want 2", baseCount)
+	}
+}
+
+func TestSelectQuery_CommentPreservedAcrossCloneAndTypedTerminal(t *testing.T) {
+	db := openTestDB(t)
+	createUsersTable(t, db)
+	ctx := t.Context()
+
+	if _, err := db.Insert(&User{Name: "commented", Email: "commented@example.com"}).Exec(ctx); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	recorder := &paginationQueryRecorder{}
+	db.Client().AddQueryHook(recorder)
+
+	const comment = "credo-clone-comment"
+	got, err := db.Select().
+		Apply(func(query *bun.SelectQuery) *bun.SelectQuery {
+			return query.Comment(comment)
+		}).
+		Clone().
+		One[User](ctx)
+	if err != nil {
+		t.Fatalf("commented cloned One = %v", err)
+	}
+	if got.Name != "commented" {
+		t.Fatalf("commented cloned One Name = %q, want commented", got.Name)
+	}
+
+	queries := recorder.Queries()
+	if len(queries) != 1 {
+		t.Fatalf("commented cloned One queries = %d, want 1", len(queries))
+	}
+	if want := "/* " + comment + " */"; !strings.HasPrefix(strings.TrimSpace(queries[0]), want) {
+		t.Fatalf("commented cloned One query = %q, want prefix %q", queries[0], want)
 	}
 }
 
@@ -494,9 +530,17 @@ type selectStateRelationProfile struct {
 
 type selectStateRelationOrder struct {
 	bun.BaseModel `bun:"table:select_state_relation_orders,alias:sro"`
-	ID            int `bun:"id,pk,autoincrement"`
-	UserID        int `bun:"user_id"`
-	Total         int `bun:"total"`
+	ID            int                       `bun:"id,pk,autoincrement"`
+	UserID        int                       `bun:"user_id"`
+	Total         int                       `bun:"total"`
+	Items         []selectStateRelationItem `bun:"rel:has-many,join:id=order_id"`
+}
+
+type selectStateRelationItem struct {
+	bun.BaseModel `bun:"table:select_state_relation_items,alias:sri"`
+	ID            int    `bun:"id,pk,autoincrement"`
+	OrderID       int    `bun:"order_id"`
+	SKU           string `bun:"sku"`
 }
 
 func createSelectStateRelationTables(t *testing.T, db *sqldb.DB) {
@@ -515,6 +559,11 @@ func createSelectStateRelationTables(t *testing.T, db *sqldb.DB) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id INTEGER NOT NULL,
 			total INTEGER NOT NULL
+		)`,
+		`CREATE TABLE select_state_relation_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id INTEGER NOT NULL,
+			sku TEXT NOT NULL
 		)`,
 	} {
 		if _, err := db.Client().NewRaw(statement).Exec(t.Context()); err != nil {
@@ -580,6 +629,48 @@ func TestSelectQuery_RelationCallbacksAndReceiverReuse(t *testing.T) {
 	assertResult(t)
 }
 
+func TestSelectQuery_ClonePreservesNestedRelation(t *testing.T) {
+	db := openTestDB(t)
+	createSelectStateRelationTables(t, db)
+	ctx := t.Context()
+
+	user := &selectStateRelationUser{Name: "nested-relation-user"}
+	if _, err := db.Insert(user).Exec(ctx); err != nil {
+		t.Fatalf("seed relation user: %v", err)
+	}
+	order := &selectStateRelationOrder{UserID: user.ID, Total: 100}
+	if _, err := db.Insert(order).Exec(ctx); err != nil {
+		t.Fatalf("seed relation order: %v", err)
+	}
+	for _, sku := range []string{"sku-b", "sku-a"} {
+		if _, err := db.Insert(&selectStateRelationItem{OrderID: order.ID, SKU: sku}).Exec(ctx); err != nil {
+			t.Fatalf("seed relation item %q: %v", sku, err)
+		}
+	}
+
+	var got selectStateRelationUser
+	err := db.Select(&got).
+		Relation("Orders", func(query *bun.SelectQuery) *bun.SelectQuery {
+			return query.OrderExpr("total ASC")
+		}).
+		Relation("Orders.Items", func(query *bun.SelectQuery) *bun.SelectQuery {
+			return query.OrderExpr("sku ASC")
+		}).
+		Where("?TableAlias.id = ?", user.ID).
+		Clone().
+		Scan(ctx)
+	if err != nil {
+		t.Fatalf("cloned nested relation Scan = %v", err)
+	}
+	if len(got.Orders) != 1 {
+		t.Fatalf("cloned nested relation Orders = %+v, want one order", got.Orders)
+	}
+	items := got.Orders[0].Items
+	if len(items) != 2 || items[0].SKU != "sku-a" || items[1].SKU != "sku-b" {
+		t.Fatalf("cloned nested relation Items = %+v, want sku-a then sku-b", items)
+	}
+}
+
 func TestSelectQuery_ExplicitConnIncludesRelationQueries(t *testing.T) {
 	dir := t.TempDir()
 	defaultDB := openSelectStateFileDB(t, filepath.Join(dir, "relation-default.db"))
@@ -641,6 +732,71 @@ type selectStateHookUser struct {
 	ID            int    `bun:"id,pk,autoincrement"`
 	Name          string `bun:"name"`
 	Email         string `bun:"email"`
+}
+
+type selectStateBeforeAppendKey struct{}
+
+type selectStateBeforeAppendState struct {
+	calls int
+}
+
+type selectStateBeforeAppendUser struct {
+	bun.BaseModel `bun:"table:select_state_before_append_users,alias:sbau"`
+	ID            int    `bun:"id,pk,autoincrement"`
+	Name          string `bun:"name"`
+}
+
+func (*selectStateBeforeAppendUser) BeforeAppendModel(
+	ctx context.Context,
+	query schema.Query,
+) error {
+	state, ok := ctx.Value(selectStateBeforeAppendKey{}).(*selectStateBeforeAppendState)
+	if !ok {
+		return errors.New("missing BeforeAppendModel test state")
+	}
+	selectQuery, ok := query.(*bun.SelectQuery)
+	if !ok {
+		return errors.New("BeforeAppendModel received a non-select query")
+	}
+	state.calls++
+	selectQuery.Where("?TableAlias.name = ?", "included")
+	return nil
+}
+
+func TestSelectQuery_ClonePreservesBeforeAppendModel(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.WithValue(
+		t.Context(),
+		selectStateBeforeAppendKey{},
+		new(selectStateBeforeAppendState),
+	)
+	_, err := db.Client().NewRaw(`
+		CREATE TABLE select_state_before_append_users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL
+		);
+		INSERT INTO select_state_before_append_users (name)
+		VALUES ('included'), ('excluded')
+	`).Exec(ctx)
+	if err != nil {
+		t.Fatalf("create BeforeAppendModel fixture: %v", err)
+	}
+
+	var got selectStateBeforeAppendUser
+	source := db.Select(&got).OrderExpr("id ASC")
+	if err := source.Clone().Scan(ctx); err != nil {
+		t.Fatalf("cloned BeforeAppendModel Scan = %v", err)
+	}
+	if got.Name != "included" {
+		t.Fatalf("cloned BeforeAppendModel rows = %+v, want only included", got)
+	}
+	state := ctx.Value(selectStateBeforeAppendKey{}).(*selectStateBeforeAppendState)
+	if state.calls != 1 {
+		t.Fatalf("BeforeAppendModel calls = %d, want 1", state.calls)
+	}
+	if query := source.Unwrap().String(); strings.Contains(query, "included") {
+		t.Fatalf("BeforeAppendModel mutated reusable source query: %q", query)
+	}
 }
 
 func (*selectStateHookUser) BeforeSelect(_ context.Context, query *bun.SelectQuery) error {
