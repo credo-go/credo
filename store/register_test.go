@@ -915,10 +915,10 @@ func TestRegister_ProtectsStoreAndRegistryBindingsFromReplace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
 	}
-	if err := app.Replace[*testDB](newTestDB(&mockLifecycle{})); err == nil {
+	if replaceErr := app.Replace[*testDB](newTestDB(&mockLifecycle{})); replaceErr == nil {
 		t.Fatal("Replace should reject a registered store binding")
 	}
-	if err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
+	if replaceErr := app.Replace[*store.Registry](&store.Registry{}); replaceErr == nil {
 		t.Fatal("Replace should reject the Registry binding")
 	}
 	resolved, err := app.Resolve[*testDB]()
@@ -1202,11 +1202,11 @@ func TestRegister_TypedNilPreProvidedRegistryFailsBeforePing(t *testing.T) {
 		t.Fatalf("typed-nil Registry Ping calls = %d, want 0", pingCalls)
 	}
 	replacement := &store.Registry{}
-	if err := app.Replace[*store.Registry](replacement); err != nil {
-		t.Fatalf("Replace valid Registry after typed-nil rejection = %v", err)
+	if replaceErr := app.Replace[*store.Registry](replacement); replaceErr != nil {
+		t.Fatalf("Replace valid Registry after typed-nil rejection = %v", replaceErr)
 	}
-	if err := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry")); err != nil {
-		t.Fatalf("Register() after Registry repair = %v", err)
+	if registerErr := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry")); registerErr != nil {
+		t.Fatalf("Register() after Registry repair = %v", registerErr)
 	}
 	resolved, err := app.Resolve[*store.Registry]()
 	if err != nil || resolved != replacement {

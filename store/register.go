@@ -130,8 +130,8 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 	// Reject predictable local DI failures before creating infrastructure or
 	// performing network I/O. This is a point-in-time preflight; ProvideValue
 	// remains authoritative against external concurrent mutations.
-	if err := app.CanProvideValue[R](); err != nil {
-		return fmt.Errorf("store: register %q: %w", plan.name, err)
+	if preflightErr := app.CanProvideValue[R](); preflightErr != nil {
+		return fmt.Errorf("store: register %q: %w", plan.name, preflightErr)
 	}
 
 	reg, err := ensureRegistry(app)

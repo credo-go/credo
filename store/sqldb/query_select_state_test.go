@@ -276,7 +276,7 @@ func TestSelectQuery_BuilderErrorsPreservedWithoutQuery(t *testing.T) {
 				return q.Err(sentinel)
 			}).
 			Scan(ctx)
-		if err != sentinel {
+		if err != sentinel { //nolint:errorlint // Exact builder-error identity is the contract under test.
 			t.Fatalf("Apply Err Scan error = %v, want exact sentinel", err)
 		}
 		if count := hook.Count(); count != 0 {
@@ -294,7 +294,7 @@ func TestSelectQuery_BuilderErrorsPreservedWithoutQuery(t *testing.T) {
 			}).
 			Clone().
 			Scan(ctx)
-		if err != sentinel {
+		if err != sentinel { //nolint:errorlint // Exact builder-error identity is the contract under test.
 			t.Fatalf("cloned Apply Err Scan error = %v, want exact sentinel", err)
 		}
 		if count := hook.Count(); count != 0 {
@@ -932,7 +932,7 @@ func TestSelectQuery_TypedTerminalsRejectPreboundModelWithoutQuery(t *testing.T)
 				return q.Err(sentinel)
 			}).
 			One[selectStateRelationUser](ctx)
-		if err != sentinel {
+		if err != sentinel { //nolint:errorlint // Exact builder-error identity is the contract under test.
 			t.Fatalf("typed terminal error = %v, want exact earlier sentinel", err)
 		}
 		if got.ID != 0 || got.Name != "" || got.Profile != nil || got.Orders != nil {

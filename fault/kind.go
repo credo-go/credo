@@ -38,7 +38,9 @@ func ProviderOf(err error) (Provider, bool) {
 	if err == nil {
 		return nil, false
 	}
-	if provider, ok := err.(Provider); ok && !isNilProvider(provider) {
+	// Inspect only this node so the explicit traversal below can skip typed nils
+	// while preserving join order.
+	if provider, ok := err.(Provider); ok && !isNilProvider(provider) { //nolint:errorlint
 		return provider, true
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
@@ -57,7 +59,9 @@ func KindOf(err error) (Kind, bool) {
 	if err == nil {
 		return KindUnknown, false
 	}
-	if provider, ok := err.(Provider); ok && !isNilProvider(provider) {
+	// Inspect only this node so unknown and typed-nil providers do not hide the
+	// next valid provider in the explicit traversal below.
+	if provider, ok := err.(Provider); ok && !isNilProvider(provider) { //nolint:errorlint
 		if kind := provider.FaultKind(); kind != KindUnknown {
 			return kind, true
 		}

@@ -24,6 +24,7 @@ func validateMySQLCountSource(query string) error {
 func validateMySQLCountSourceMode(query string, backslashEscapes bool) error {
 	expressions, err := mysqlMainSelectExpressionsMode(query, backslashEscapes)
 	if err != nil {
+		//nolint:errorlint // Parser detail is diagnostic; the sentinel is the sole wrapped contract.
 		return fmt.Errorf("%w: MySQL count source projection: %v", ErrUnsupportedCountQuery, err)
 	}
 

@@ -247,7 +247,7 @@ func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
-	if renderedErr != structured {
+	if renderedErr != structured { //nolint:errorlint // The renderer must receive this exact error value.
 		t.Fatal("custom renderer did not receive the original structured error")
 	}
 	for _, secret := range []string{"secret@example.com", "users_email_key", "23505"} {

@@ -8,15 +8,15 @@ import (
 	"github.com/credo-go/credo/fault"
 )
 
-type testFault struct {
+type testFaultError struct {
 	kind fault.Kind
 }
 
-func (e *testFault) Error() string         { return "test fault" }
-func (e *testFault) FaultKind() fault.Kind { return e.kind }
+func (e *testFaultError) Error() string         { return "test fault" }
+func (e *testFaultError) FaultKind() fault.Kind { return e.kind }
 
 func TestKindOf_TraversesWrappedAndJoinedErrors(t *testing.T) {
-	target := &testFault{kind: fault.KindDeadlock}
+	target := &testFaultError{kind: fault.KindDeadlock}
 	err := errors.Join(errors.New("outer"), fmt.Errorf("wrapped: %w", target))
 
 	got, ok := fault.KindOf(err)
@@ -35,11 +35,11 @@ func TestKindOf_UnknownError(t *testing.T) {
 }
 
 func TestKindOf_SkipsTypedNilAndUnknownProviders(t *testing.T) {
-	var typedNil *testFault
+	var typedNil *testFaultError
 	err := errors.Join(
 		typedNil,
-		&testFault{kind: fault.KindUnknown},
-		&testFault{kind: fault.KindSerialization},
+		&testFaultError{kind: fault.KindUnknown},
+		&testFaultError{kind: fault.KindSerialization},
 	)
 
 	got, ok := fault.KindOf(err)
@@ -49,9 +49,9 @@ func TestKindOf_SkipsTypedNilAndUnknownProviders(t *testing.T) {
 }
 
 func TestProviderOf_ReturnsUnknownButSkipsTypedNil(t *testing.T) {
-	var typedNil *testFault
-	unknown := &testFault{kind: fault.KindUnknown}
-	err := errors.Join(typedNil, unknown, &testFault{kind: fault.KindDeadlock})
+	var typedNil *testFaultError
+	unknown := &testFaultError{kind: fault.KindUnknown}
+	err := errors.Join(typedNil, unknown, &testFaultError{kind: fault.KindDeadlock})
 
 	provider, ok := fault.ProviderOf(err)
 	if !ok || provider != unknown {

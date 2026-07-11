@@ -9,14 +9,14 @@ import (
 	"github.com/credo-go/credo/store"
 )
 
-type outerFault struct {
+type outerFaultError struct {
 	kind  fault.Kind
 	cause error
 }
 
-func (e *outerFault) Error() string         { return "outer fault" }
-func (e *outerFault) FaultKind() fault.Kind { return e.kind }
-func (e *outerFault) Unwrap() error         { return e.cause }
+func (e *outerFaultError) Error() string         { return "outer fault" }
+func (e *outerFaultError) FaultKind() fault.Kind { return e.kind }
+func (e *outerFaultError) Unwrap() error         { return e.cause }
 
 func TestSentinelErrors_ErrorsIs(t *testing.T) {
 	tests := []struct {
@@ -142,7 +142,7 @@ func TestSentinelErrors_SemanticKinds(t *testing.T) {
 }
 
 func TestSentinelErrors_LegacyAliases(t *testing.T) {
-	if store.ErrAlreadyExists != store.ErrDuplicate {
+	if store.ErrAlreadyExists != store.ErrDuplicate { //nolint:errorlint // Exact alias identity is the contract.
 		t.Fatal("ErrDuplicate must remain an alias of ErrAlreadyExists")
 	}
 
@@ -216,7 +216,7 @@ func TestError_PreservesStructuredMetadataAndCause(t *testing.T) {
 }
 
 func TestKindOf_SkipsOuterNonStoreFault(t *testing.T) {
-	err := &outerFault{kind: fault.KindUnavailable, cause: store.ErrConstraint}
+	err := &outerFaultError{kind: fault.KindUnavailable, cause: store.ErrConstraint}
 
 	if got, ok := store.KindOf(err); !ok || got != store.KindConstraint {
 		t.Fatalf("store.KindOf = (%q, %v), want inner store constraint", got, ok)
@@ -290,14 +290,14 @@ func TestWrap_CompatibilityNoOps(t *testing.T) {
 	if got := store.Wrap(store.ErrConstraint, nil); got != nil {
 		t.Fatalf("Wrap(kind, nil) = %v, want nil", got)
 	}
-	if got := store.Wrap(nil, cause); got != cause {
+	if got := store.Wrap(nil, cause); got != cause { //nolint:errorlint // Wrap must return the exact cause.
 		t.Fatalf("Wrap(nil, cause) = %v, want exact cause", got)
 	}
-	if got := store.Wrap(unsupported, cause); got != cause {
+	if got := store.Wrap(unsupported, cause); got != cause { //nolint:errorlint // Wrap must return the exact cause.
 		t.Fatalf("Wrap(unsupported, cause) = %v, want exact cause", got)
 	}
 	already := store.Wrap(store.ErrConstraint, cause)
-	if got := store.Wrap(store.ErrConstraint, already); got != already {
+	if got := store.Wrap(store.ErrConstraint, already); got != already { //nolint:errorlint // No-op preserves identity.
 		t.Fatalf("Wrap(already classified) = %v, want exact classified error", got)
 	}
 }

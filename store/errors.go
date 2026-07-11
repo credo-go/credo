@@ -220,7 +220,9 @@ type storeKindProvider interface {
 }
 
 func directStoreKind(err error) (Kind, bool) {
-	provider, ok := err.(storeKindProvider)
+	// Wrap's compatibility no-op depends on the outer error itself already being
+	// classified; a nested provider must not satisfy this check.
+	provider, ok := err.(storeKindProvider) //nolint:errorlint
 	if !ok || isNilStoreProvider(provider) || !isStoreKind(provider.storeKind()) {
 		return KindUnknown, false
 	}
@@ -231,7 +233,9 @@ func firstStoreProvider(err error) (storeKindProvider, bool) {
 	if err == nil {
 		return nil, false
 	}
-	if provider, ok := err.(storeKindProvider); ok && !isNilStoreProvider(provider) {
+	// Inspect only this node so explicit recursion can skip typed nil and invalid
+	// providers while preserving join order.
+	if provider, ok := err.(storeKindProvider); ok && !isNilStoreProvider(provider) { //nolint:errorlint
 		if isStoreKind(provider.storeKind()) {
 			return provider, true
 		}

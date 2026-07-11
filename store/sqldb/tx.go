@@ -167,7 +167,7 @@ func RunInTxWith(ctx context.Context, db *DB, opts *sql.TxOptions, fn func(ctx c
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				if err := finalizer.Rollback(); err != nil && abortAmbient != nil {
+				if rollbackErr := finalizer.Rollback(); rollbackErr != nil && abortAmbient != nil {
 					_ = abortAmbient()
 				}
 				panic(r)

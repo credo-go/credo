@@ -64,11 +64,11 @@ func (db *DB) Migrate(ctx context.Context) (err error) {
 	opts := append([]migrate.MigratorOption{migrate.WithMarkAppliedOnSuccess(true)}, db.migratorOpts...)
 	migrator := migrate.NewMigrator(db.db, db.migrations, opts...)
 
-	if err := migrator.Init(ctx); err != nil {
-		return db.mapError(ctx, fmt.Errorf("sqldb: migrate init: %w", err))
+	if initErr := migrator.Init(ctx); initErr != nil {
+		return db.mapError(ctx, fmt.Errorf("sqldb: migrate init: %w", initErr))
 	}
-	if err := migrator.Lock(ctx); err != nil {
-		return db.mapError(ctx, fmt.Errorf("sqldb: migrate lock: %w", err))
+	if lockErr := migrator.Lock(ctx); lockErr != nil {
+		return db.mapError(ctx, fmt.Errorf("sqldb: migrate lock: %w", lockErr))
 	}
 	defer func() {
 		// Release the lock even when ctx is already cancelled — a leaked
@@ -79,8 +79,8 @@ func (db *DB) Migrate(ctx context.Context) (err error) {
 		}
 	}()
 
-	if _, err := migrator.Migrate(ctx); err != nil {
-		return db.mapError(ctx, fmt.Errorf("sqldb: migrate: %w", err))
+	if _, migrateErr := migrator.Migrate(ctx); migrateErr != nil {
+		return db.mapError(ctx, fmt.Errorf("sqldb: migrate: %w", migrateErr))
 	}
 	return nil
 }

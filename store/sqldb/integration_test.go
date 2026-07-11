@@ -656,7 +656,7 @@ func TestRaw_ErrorMapping_SQLiteContention(t *testing.T) {
 		}
 		return rollbackHolder
 	})
-	if err != rollbackHolder {
+	if err != rollbackHolder { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("holder InTx = %v, want exact rollback sentinel", err)
 	}
 }
@@ -808,7 +808,7 @@ func TestRunInTx_RollbackOnError(t *testing.T) {
 		db.Insert(&User{Name: "rollback-user", Email: "rb@b"}).Exec(ctx)
 		return callbackErr
 	})
-	if err != callbackErr {
+	if err != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("RunInTx = %v (%T), want exact callback error %p", err, err, callbackErr)
 	}
 	if errors.Is(err, store.ErrDuplicate) {
@@ -966,7 +966,7 @@ func TestRunInTx_NestedNonDefaultOptionsFailBeforeSavepoint(t *testing.T) {
 		innerErr = db.InTxWith(outerCtx, &sql.TxOptions{}, func(context.Context) error {
 			return innerCallbackErr
 		})
-		if innerErr != innerCallbackErr {
+		if innerErr != innerCallbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 			t.Fatalf("zero-option nested InTxWith = %v, want exact callback error", innerErr)
 		}
 		return nil
@@ -1145,7 +1145,8 @@ func TestRunInTx_NestedCancellationRollsBackSavepoint(t *testing.T) {
 						_ = runInner()
 					}()
 				case "error":
-					if innerErr := runInner(); innerErr != callbackErr {
+					innerErr := runInner()
+					if innerErr != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 						t.Fatalf("nested InTx = %v, want exact callback error", innerErr)
 					}
 				default:
@@ -1233,12 +1234,12 @@ func TestRunInTx_SameTypeMultiDBNestedScopesRemainIndependent(t *testing.T) {
 			}
 			return rollback
 		})
-		if innerErr != rollback {
+		if innerErr != rollback { //nolint:errorlint // Exact callback identity is the contract under test.
 			t.Fatalf("analytics InTx = %v, want exact rollback sentinel", innerErr)
 		}
 		return rollback
 	})
-	if err != rollback {
+	if err != rollback { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("primary InTx = %v, want exact rollback sentinel", err)
 	}
 
@@ -1290,7 +1291,7 @@ func TestDB_Conn_TransactionAwareNativeBunEscapeHatch(t *testing.T) {
 		}
 		return rollback
 	})
-	if err != rollback {
+	if err != rollback { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("InTx = %v, want exact rollback sentinel", err)
 	}
 
@@ -1320,7 +1321,7 @@ func TestDB_Conn_MultiDBScopeIsolation(t *testing.T) {
 		}
 		return rollback
 	})
-	if err != rollback {
+	if err != rollback { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("primary InTx = %v, want exact rollback sentinel", err)
 	}
 }
@@ -1877,15 +1878,15 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 
 	// Only 'target' changed; siblings untouched (proves the WHERE scoped).
 	var target User
-	if err := db.Select(&target).Where("name = ?", "target").Scan(ctx); err != nil {
-		t.Fatalf("reload target: %v", err)
+	if scanErr := db.Select(&target).Where("name = ?", "target").Scan(ctx); scanErr != nil {
+		t.Fatalf("reload target: %v", scanErr)
 	}
 	if target.Email != "new" {
 		t.Errorf("target.Email = %q, want %q", target.Email, "new")
 	}
 	var keep1 User
-	if err := db.Select(&keep1).Where("name = ?", "keep1").Scan(ctx); err != nil {
-		t.Fatalf("reload keep1: %v", err)
+	if scanErr := db.Select(&keep1).Where("name = ?", "keep1").Scan(ctx); scanErr != nil {
+		t.Fatalf("reload keep1: %v", scanErr)
 	}
 	if keep1.Email != "keep1@old" {
 		t.Errorf("keep1.Email = %q, want unchanged %q", keep1.Email, "keep1@old")

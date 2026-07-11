@@ -38,8 +38,8 @@ func TestInsertExec_BuilderReusableAfterTxRollback(t *testing.T) {
 
 	// The rolled-back TX is finished. If Exec had stored the injected TX
 	// connection on the caller's builder, this second run would fail.
-	if _, err := q.Exec(ctx); err != nil {
-		t.Fatalf("Exec after rollback = %v (TX connection leaked into the builder?)", err)
+	if _, execErr := q.Exec(ctx); execErr != nil {
+		t.Fatalf("Exec after rollback = %v (TX connection leaked into the builder?)", execErr)
 	}
 
 	count, err := db.Select((*User)(nil)).Where("name = ?", "pin-insert").Count(ctx)

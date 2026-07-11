@@ -264,8 +264,8 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	if tableModel != nil {
 		zeroModel := tableModel.Table().ZeroIface
 		if beforeSelect, ok := zeroModel.(bun.BeforeSelectHook); ok {
-			if err := beforeSelect.BeforeSelect(ctx, source); err != nil {
-				return 0, err
+			if hookErr := beforeSelect.BeforeSelect(ctx, source); hookErr != nil {
+				return 0, hookErr
 			}
 		}
 	}
@@ -277,8 +277,8 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	}
 	var afterSelect bun.AfterSelectHook
 	if tableModel != nil {
-		if err := tableModel.BeforeAppendModel(ctx, source); err != nil {
-			return 0, err
+		if appendErr := tableModel.BeforeAppendModel(ctx, source); appendErr != nil {
+			return 0, appendErr
 		}
 	}
 	tableModel, err = bunSelectQueryTableModel(source)
@@ -288,27 +288,27 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	if tableModel != nil {
 		afterSelect, _ = tableModel.Table().ZeroIface.(bun.AfterSelectHook)
 	}
-	if err := bunSelectQueryError(source); err != nil {
-		return 0, err
+	if queryErr := bunSelectQueryError(source); queryErr != nil {
+		return 0, queryErr
 	}
-	if err := validateCountQueryShape(source); err != nil {
-		return 0, err
+	if shapeErr := validateCountQueryShape(source); shapeErr != nil {
+		return 0, shapeErr
 	}
 
 	countSource := cloneBunSelectQuery(source)
-	if err := bunSelectQueryError(countSource); err != nil {
-		return 0, err
+	if queryErr := bunSelectQueryError(countSource); queryErr != nil {
+		return 0, queryErr
 	}
-	if err := prepareBunSelectCountSource(countSource); err != nil {
-		return 0, err
+	if prepareErr := prepareBunSelectCountSource(countSource); prepareErr != nil {
+		return 0, prepareErr
 	}
 	renderedSource, err := renderBunSelectCountSource(q.state.db.db.QueryGen(), countSource)
 	if err != nil {
 		return 0, err
 	}
 	if q.state.db.family == driverFamilyMySQL {
-		if err := validateMySQLCountSource(string(renderedSource)); err != nil {
-			return 0, err
+		if validationErr := validateMySQLCountSource(string(renderedSource)); validationErr != nil {
+			return 0, validationErr
 		}
 	}
 
@@ -322,8 +322,8 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 		// Preserve QueryEvent.Model without binding the model table, relations,
 		// or soft-delete state to the synthetic outer query. All model-aware SQL
 		// lives in the complete policy-bearing source.
-		if err := setBunSelectQueryEventModel(outer, countSource.GetModel()); err != nil {
-			return 0, err
+		if modelErr := setBunSelectQueryEventModel(outer, countSource.GetModel()); modelErr != nil {
+			return 0, modelErr
 		}
 	}
 	if conn != nil {
@@ -334,8 +334,8 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 		return 0, err
 	}
 	if afterSelect != nil {
-		if err := afterSelect.AfterSelect(ctx, countSource); err != nil {
-			return 0, err
+		if hookErr := afterSelect.AfterSelect(ctx, countSource); hookErr != nil {
+			return 0, hookErr
 		}
 	}
 	return total, nil
@@ -525,11 +525,11 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 	if err != nil {
 		return nil, fmt.Errorf("sqldb: Page: %w", err)
 	}
-	if err := q.validateTypedTerminal("Page"); err != nil {
-		return nil, err
+	if terminalErr := q.validateTypedTerminal("Page"); terminalErr != nil {
+		return nil, terminalErr
 	}
-	if err := validateCountQueryShape(q.raw); err != nil {
-		return nil, err
+	if shapeErr := validateCountQueryShape(q.raw); shapeErr != nil {
+		return nil, shapeErr
 	}
 
 	// COUNT with T's table. T drives the table, so the query is built

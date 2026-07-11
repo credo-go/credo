@@ -398,8 +398,8 @@ func renderBunSelectCountSource(gen schema.QueryGen, raw *bun.SelectQuery) (bun.
 	if err != nil {
 		return "", err
 	}
-	if err := bunSelectQueryError(raw); err != nil {
-		return "", err
+	if queryErr := bunSelectQueryError(raw); queryErr != nil {
+		return "", queryErr
 	}
 	afterModel, err := bunSelectQueryModel(raw)
 	if err != nil {

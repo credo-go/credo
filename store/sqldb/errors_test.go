@@ -14,14 +14,14 @@ import (
 	"github.com/credo-go/credo/store"
 )
 
-type mockOuterFault struct {
+type mockOuterError struct {
 	kind  fault.Kind
 	cause error
 }
 
-func (e *mockOuterFault) Error() string         { return "outer semantic fault" }
-func (e *mockOuterFault) FaultKind() fault.Kind { return e.kind }
-func (e *mockOuterFault) Unwrap() error         { return e.cause }
+func (e *mockOuterError) Error() string         { return "outer semantic fault" }
+func (e *mockOuterError) FaultKind() fault.Kind { return e.kind }
+func (e *mockOuterError) Unwrap() error         { return e.cause }
 
 func TestMapError_Baseline(t *testing.T) {
 	if got := mapError(t.Context(), driverFamilyUnknown, nil); got != nil {
@@ -57,7 +57,7 @@ func TestMapError_ContextCanceledPassesThrough(t *testing.T) {
 		fmt.Errorf("query: %w", context.Canceled),
 	} {
 		got := mapError(t.Context(), driverFamilyUnknown, err)
-		if got != err {
+		if got != err { //nolint:errorlint // Exact passthrough identity is the contract under test.
 			t.Fatalf("mapError(%v) changed cancellation identity: %v", err, got)
 		}
 		if errors.Is(got, store.ErrTimeout) {
@@ -109,7 +109,8 @@ func TestMapError_PostgresSQLStateTable(t *testing.T) {
 func TestMapError_PostgresQueryCanceledUsesContext(t *testing.T) {
 	t.Run("active ambiguous", func(t *testing.T) {
 		cause := &mockSQLStateError{state: "57014", msg: "canceling statement due to user request"}
-		if got := mapError(t.Context(), driverFamilyPostgres, cause); got != cause {
+		got := mapError(t.Context(), driverFamilyPostgres, cause)
+		if got != cause { //nolint:errorlint // Exact passthrough identity is the contract under test.
 			t.Fatalf("ambiguous 57014 = %v, want exact passthrough", got)
 		}
 	})
@@ -230,7 +231,8 @@ func TestMapError_MySQLNumberBeatsBroadSQLState(t *testing.T) {
 
 func TestMapError_MySQL1290IsNotUnconditionallyReadOnly(t *testing.T) {
 	cause := errors.New("Error 1290 (HY000): The MySQL server is running with the --secure-file-priv option")
-	if got := mapError(t.Context(), driverFamilyMySQL, cause); got != cause {
+	got := mapError(t.Context(), driverFamilyMySQL, cause)
+	if got != cause { //nolint:errorlint // Exact passthrough identity is the contract under test.
 		t.Fatalf("MySQL 1290 = %v, want exact passthrough", got)
 	}
 }
@@ -333,7 +335,8 @@ func TestMapError_SQLiteCodeTable(t *testing.T) {
 func TestMapError_SQLiteInterruptUsesContext(t *testing.T) {
 	t.Run("active", func(t *testing.T) {
 		cause := &mockSQLiteError{code: 9}
-		if got := mapError(t.Context(), driverFamilySQLite, cause); got != cause {
+		got := mapError(t.Context(), driverFamilySQLite, cause)
+		if got != cause { //nolint:errorlint // Exact passthrough identity is the contract under test.
 			t.Fatalf("active SQLITE_INTERRUPT = %v, want passthrough", got)
 		}
 	})
@@ -371,7 +374,8 @@ func TestMapError_DomainMessagesPassThrough(t *testing.T) {
 		"unique constraint in aggregate",
 	} {
 		cause := errors.New(message)
-		if got := mapError(t.Context(), driverFamilyUnknown, cause); got != cause {
+		got := mapError(t.Context(), driverFamilyUnknown, cause)
+		if got != cause { //nolint:errorlint // Exact passthrough identity is the contract under test.
 			t.Errorf("mapError(%q) = %v, want exact passthrough", message, got)
 		}
 	}
@@ -379,20 +383,23 @@ func TestMapError_DomainMessagesPassThrough(t *testing.T) {
 
 func TestMapError_UnknownAndAlreadyClassifiedPreserveIdentity(t *testing.T) {
 	unknown := errors.New("some unknown error")
-	if got := mapError(t.Context(), driverFamilyUnknown, unknown); got != unknown {
+	got := mapError(t.Context(), driverFamilyUnknown, unknown)
+	if got != unknown { //nolint:errorlint // Exact passthrough identity is the contract under test.
 		t.Fatalf("unknown = %v, want exact identity", got)
 	}
 
 	classified := store.Wrap(store.ErrConstraint, errors.New("driver"))
-	if got := mapError(t.Context(), driverFamilyPostgres, classified); got != classified {
+	got = mapError(t.Context(), driverFamilyPostgres, classified)
+	if got != classified { //nolint:errorlint // Exact passthrough identity is the contract under test.
 		t.Fatalf("already classified = %v, want exact identity", got)
 	}
 
-	outer := &mockOuterFault{
+	outer := &mockOuterError{
 		kind:  fault.KindNotFound,
 		cause: &mockSQLStateError{state: "23505", msg: "unique violation"},
 	}
-	if got := mapError(t.Context(), driverFamilyPostgres, outer); got != outer {
+	got = mapError(t.Context(), driverFamilyPostgres, outer)
+	if got != outer { //nolint:errorlint // Exact passthrough identity is the contract under test.
 		t.Fatalf("outer semantic fault = %v, want exact identity", got)
 	}
 }

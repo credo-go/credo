@@ -97,7 +97,7 @@ func TestFinishTransaction_CallbackErrorIdentity(t *testing.T) {
 	callbackErr := errors.New("domain duplicate key validation")
 
 	got := finishTransaction(t.Context(), driverFamilyPostgres, tx, callbackErr, nil)
-	if got != callbackErr {
+	if got != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("finishTransaction = %v (%T), want exact callback error %p", got, got, callbackErr)
 	}
 	if errors.Is(got, store.ErrDuplicate) {
@@ -148,7 +148,8 @@ func TestFinishTransaction_ErrTxDoneRollbackKeepsCallbackIdentity(t *testing.T) 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if got := finishTransaction(ctx, driverFamilyPostgres, tx, callbackErr, nil); got != callbackErr {
+	got := finishTransaction(ctx, driverFamilyPostgres, tx, callbackErr, nil)
+	if got != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("finishTransaction = %v, want exact callback error", got)
 	}
 }
@@ -228,8 +229,8 @@ func TestAbortAmbientTransaction_RollsBackRootSQLTransaction(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
 
-	if _, err := db.Client().NewRaw("CREATE TABLE tx_abort (id INTEGER)").Exec(t.Context()); err != nil {
-		t.Fatalf("create table = %v", err)
+	if _, createErr := db.Client().NewRaw("CREATE TABLE tx_abort (id INTEGER)").Exec(t.Context()); createErr != nil {
+		t.Fatalf("create table = %v", createErr)
 	}
 	tx, err := db.Client().BeginTx(t.Context(), nil)
 	if err != nil {

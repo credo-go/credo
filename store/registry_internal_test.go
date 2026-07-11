@@ -89,8 +89,8 @@ func TestRegistryReservation_FailedPublishIsInvisibleAndReusable(t *testing.T) {
 		t.Fatalf("reserve() = %v", err)
 	}
 	wantErr := errors.New("publish failed")
-	if err := reservation.commit(func() error { return wantErr }); !errors.Is(err, wantErr) {
-		t.Fatalf("commit() = %v, want %v", err, wantErr)
+	if commitErr := reservation.commit(func() error { return wantErr }); !errors.Is(commitErr, wantErr) {
+		t.Fatalf("commit() = %v, want %v", commitErr, wantErr)
 	}
 	if got := len(registry.HealthAll(t.Context())); got != 0 {
 		t.Fatalf("failed commit HealthAll entries = %d, want 0", got)
@@ -165,11 +165,11 @@ func TestRegistryReservation_RejectsPendingLifecycleIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first reserve() = %v", err)
 	}
-	if _, err := registry.reserve(
+	if _, reserveErr := registry.reserve(
 		"replica",
 		reflect.TypeFor[*registryReservationTypeB](),
 		lifecycle,
-	); err == nil {
+	); reserveErr == nil {
 		t.Fatal("reserve should reject a pending duplicate lifecycle identity")
 	}
 	first.release()

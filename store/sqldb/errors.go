@@ -167,10 +167,11 @@ func mapSQLState(code string) (errorClassification, bool) {
 }
 
 func mapPostgresQueryCanceled(ctx context.Context, code string, err error) error {
-	switch contextError(ctx) {
-	case context.Canceled:
+	ctxErr := contextError(ctx)
+	switch {
+	case errors.Is(ctxErr, context.Canceled):
 		return joinContextCause(context.Canceled, err)
-	case context.DeadlineExceeded:
+	case errors.Is(ctxErr, context.DeadlineExceeded):
 		return wrapMappedError(
 			errorClassification{kind: store.KindTimeout, transient: true},
 			code,
@@ -387,10 +388,11 @@ func mapSQLiteCode(code int) (errorClassification, bool) {
 }
 
 func mapSQLiteInterrupt(ctx context.Context, code int, err error) error {
-	switch contextError(ctx) {
-	case context.Canceled:
+	ctxErr := contextError(ctx)
+	switch {
+	case errors.Is(ctxErr, context.Canceled):
 		return joinContextCause(context.Canceled, err)
-	case context.DeadlineExceeded:
+	case errors.Is(ctxErr, context.DeadlineExceeded):
 		return wrapMappedError(
 			errorClassification{kind: store.KindTimeout, transient: true},
 			strconv.Itoa(code),
