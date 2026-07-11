@@ -306,11 +306,6 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	if err != nil {
 		return 0, err
 	}
-	if q.state.db.family == driverFamilyMySQL {
-		if validationErr := validateMySQLCountSource(string(renderedSource)); validationErr != nil {
-			return 0, validationErr
-		}
-	}
 
 	conn, err := bunSelectQueryConn(countSource)
 	if err != nil {
@@ -331,7 +326,7 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	}
 	total, err := outer.Count(ctx)
 	if err != nil {
-		return 0, err
+		return 0, wrapMySQLCountExecutionError(q.state.db.family, err)
 	}
 	if afterSelect != nil {
 		if hookErr := afterSelect.AfterSelect(ctx, countSource); hookErr != nil {
@@ -369,9 +364,10 @@ func (q *SelectQuery) Scan(ctx context.Context, dest ...any) error {
 // source; a Page that reaches its data SELECT invokes them once for COUNT and
 // once for SELECT.
 // Count does not scan or mutate a bound model: successful AfterSelect hooks see
-// its pre-count value. On MySQL, every computed raw projection must have a
-// unique portable AS alias; duplicate, wildcard, or unprovable output names
-// return ErrUnsupportedCountQuery before database I/O.
+// its pre-count value. MySQL validates the generated derived-table output names
+// during execution. ER_DUP_FIELDNAME (1060) from that logical COUNT is wrapped
+// with ErrUnsupportedCountQuery while retaining the driver cause; use unique
+// aliases to resolve colliding output names.
 // Relation callbacks may shape predicates/projections, but cannot replace the
 // model or add root ORDER/LIMIT/OFFSET/FOR or an unsupported count shape.
 func (q *SelectQuery) Count(ctx context.Context) (int, error) {
@@ -483,6 +479,8 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // return [ErrUnsupportedCountQuery] before execution. Restructure compound
 // input behind an outer derived-table/CTE source and compose explicit
 // Count/Scan terminals when a custom source is required.
+// On MySQL, ER_DUP_FIELDNAME (1060) returned by the COUNT statement is wrapped
+// with ErrUnsupportedCountQuery after I/O while retaining the driver cause.
 // Bun model SELECT hooks run around each statement's private snapshot, so a
 // Page that reaches its data SELECT invokes the lifecycle once for COUNT and
 // once for SELECT; hook-added predicates and projections affect both Total and

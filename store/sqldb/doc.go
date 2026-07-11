@@ -220,12 +220,15 @@
 // reject Having without Group and direct UNION/INTERSECT/EXCEPT roots with
 // ErrUnsupportedCountQuery before I/O. Advanced callers restructure those
 // shapes behind an outer derived table or CTE, compose an explicit count query
-// and data query, and build NewPage. MySQL additionally requires provably unique
-// derived-table output names: raw expressions use unique portable AS aliases;
-// duplicates, wildcards, and unprovable names fail with the same sentinel before
-// I/O. The exact render must pass under normal escaping and
-// NO_BACKSLASH_ESCAPES. Because the logical projection is evaluated by the count
-// source, expensive or volatile projections should use that explicit custom
+// and data query, and build NewPage. MySQL validates derived-table output names
+// when the logical COUNT executes. If it returns ER_DUP_FIELDNAME (1060), Count
+// and Page wrap ErrUnsupportedCountQuery after I/O while preserving the driver
+// cause; unique aliases resolve collisions. Non-count MySQL 1060 errors remain
+// unchanged. The server error cannot identify which derived-table level failed,
+// so an indistinguishable 1060 from a caller-supplied nested source is wrapped
+// too. Driver causes are diagnostic and must not be rendered directly to HTTP.
+// Because the logical projection is evaluated by the count source, expensive or
+// volatile projections should use that explicit custom
 // composition. There is no custom-count strategy until two real consumers
 // require one, and Page never carries an unknown total. CursorPage is the
 // accepted working shape for forward keyset pagination; Slice is only a working

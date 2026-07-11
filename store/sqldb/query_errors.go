@@ -20,16 +20,32 @@ var ErrTypedTerminalModel = errors.New("sqldb: typed terminal requires a model-l
 // next terminal returns it without executing a query.
 var ErrInvalidLimitOffset = errors.New("sqldb: limit/offset is outside Bun v1.2.18 int32 range")
 
-// ErrUnsupportedCountQuery reports a query shape whose output cardinality Bun
-// v1.2.18 cannot count and paginate safely. Direct compound queries and HAVING
-// without GROUP BY must be restructured behind an outer derived-table or CTE
-// source, then composed with explicit Count and Scan operations. MySQL also
-// requires the derived count source to have provably unique output names;
-// duplicate names, wildcard projections, and computed raw expressions without
-// an explicit portable AS alias fail with this sentinel before database I/O.
-// Relation callbacks are rendered once and may not replace the model or add
-// root ORDER/LIMIT/OFFSET/FOR or another unsupported count shape.
+// ErrUnsupportedCountQuery reports a query shape that Count and Page cannot
+// execute safely. Direct compound queries and HAVING without GROUP BY fail with
+// this sentinel before I/O and must be restructured behind an outer derived
+// table or CTE. Relation callbacks are rendered once and may not replace the
+// model or add root ORDER/LIMIT/OFFSET/FOR or another unsupported count shape.
+//
+// MySQL validates derived-table output names at execution. When the generated
+// logical COUNT returns ER_DUP_FIELDNAME (1060), Count and Page wrap this
+// sentinel while preserving the original driver cause. That mapping is local
+// to logical COUNT; the same MySQL error from any other operation passes through
+// unchanged.
 var ErrUnsupportedCountQuery = errors.New("sqldb: unsupported Count/Page query shape")
+
+const mysqlErrDuplicateFieldName uint16 = 1060
+
+func wrapMySQLCountExecutionError(family driverFamily, err error) error {
+	if err == nil || family != driverFamilyMySQL ||
+		extractMySQLErrNum(err) != mysqlErrDuplicateFieldName {
+		return err
+	}
+	return fmt.Errorf(
+		"%w: MySQL logical count returned ER_DUP_FIELDNAME (1060): %w",
+		ErrUnsupportedCountQuery,
+		err,
+	)
+}
 
 // Bun v1.2.18 stores LIMIT and OFFSET in signed int32 fields even though its
 // public methods accept int. Keep these bounds beside the curated builder and

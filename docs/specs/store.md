@@ -541,13 +541,15 @@ introduced through `Apply` (`UNION`/`INTERSECT`/`EXCEPT`, including their
 variants) return `sqldb.ErrUnsupportedCountQuery` before database I/O. Put the
 compound source behind an outer derived table/CTE when it must be counted.
 
-MySQL requires unique derived-table output names. Credo therefore validates the
-post-hook MySQL projection before I/O: simple qualified columns and raw
-expressions with unique portable ASCII `AS` aliases pass; duplicate names,
-wildcards, implicit aliases, and unprovable expression names return
-`sqldb.ErrUnsupportedCountQuery`. The exact render is proved under both normal
-backslash escaping and `NO_BACKSLASH_ESCAPES`, so session mode cannot conceal a
-projection separator or executable comment. See MySQL's
+MySQL requires unique derived-table output names. Credo renders the post-hook
+count source once and lets the server apply its real naming and `sql_mode`
+rules. Wildcards, implicit aliases, and unaliased expressions are accepted when
+their server-derived output names are unique. If logical COUNT returns
+`ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps
+`sqldb.ErrUnsupportedCountQuery` after I/O while preserving the driver cause;
+use explicit unique aliases to resolve the collision. The wrapper is local to
+logical COUNT, so raw and other non-count 1060 errors pass through unchanged.
+Real MySQL tests pin normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's
 [derived-table contract](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
 Relation callbacks run during Bun SQL rendering. The count source is rendered
@@ -692,7 +694,7 @@ func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) er
 
 7. **Limit/Offset narrowing fails before execution** — Bun v1.2.18 stores Select LIMIT/OFFSET in signed `int32` fields although its methods accept `int`. Credo's curated `SelectQuery.Limit` and `Offset` record `ErrInvalidLimitOffset` for an out-of-range value, so a terminal cannot silently execute a narrowed window. In-range zero/negative behavior is Bun's and remains unchanged; raw `Apply`/`Unwrap` paths deliberately retain the upstream contract.
 
-8. **Count shape fails loud and logical rows stay aligned** — `Count` and `Page` count a Credo-owned outer `_credo_count_source` after removing root ORDER/LIMIT/OFFSET/FOR, so plain projections, ungrouped aggregates, distinct tuples, groups, and post-`Having` groups use one logical-row contract. Model SELECT hooks run on the private source and the outer `QueryEvent.Model` remains populated without duplicating soft-delete policy. Standalone `Having` and direct compound roots are rejected with `ErrUnsupportedCountQuery` before I/O; MySQL also rejects duplicate, wildcard, or unprovable derived-source output names and directs raw expressions to unique `AS` aliases. `Apply` remains inside this guard because the proxy terminal inspects its resulting builder; executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
+8. **Count shape fails loud and logical rows stay aligned** — `Count` and `Page` count a Credo-owned outer `_credo_count_source` after removing root ORDER/LIMIT/OFFSET/FOR, so plain projections, ungrouped aggregates, distinct tuples, groups, and post-`Having` groups use one logical-row contract. Model SELECT hooks run on the private source and the outer `QueryEvent.Model` remains populated without duplicating soft-delete policy. Standalone `Having` and direct compound roots are rejected with `ErrUnsupportedCountQuery` before I/O. MySQL is the oracle for derived output names: logical-count 1060 is wrapped with the same sentinel after I/O and its cause is retained, while non-count 1060 passes through. `Apply` remains inside this guard because the proxy terminal inspects its resulting builder; executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
 
 **Planned observability:** automatic tracing via a DB-level `bun.QueryHook` belongs to Phase 3.5 and is not installed by `Open()` today. Attaching it at the Bun DB boundary will eventually cover proxy queries, native `Client()`/`Conn()` builders, raw SQL, and migrations without duplicating instrumentation in terminal wrappers.
 
@@ -1155,7 +1157,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - `Count` and `Page` use `_credo_count_source` to align plain projection, ungrouped aggregate, distinct tuple, group, and post-`Having` cardinality; root ORDER/LIMIT/OFFSET/FOR does not constrain the total
 - Logical Count runs `BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect` on the private source; Page runs the hooks again for its data statement, keeps `QueryEvent.Model`, and applies soft-delete policy only inside the source
 - Standalone `Having` and direct UNION/UNION ALL/INTERSECT/EXCEPT roots return `ErrUnsupportedCountQuery` before database I/O; an outer derived-table source remains countable
-- MySQL duplicate/wildcard/unprovable count-source projections fail before connection use; unique aliases, hook-added duplicates, relation callback single-render behavior, and secret-free errors are pinned
+- Real MySQL normal and `NO_BACKSLASH_ESCAPES` sessions pin Count/Page 1060 wrapping with the driver cause, bind-secret-free messages, accepted wildcard/implicit-expression projections, and unsentinelled raw 1060; relation callback single-render behavior remains a local structural test
 - Model-bound `Relation(...).Scan()` loads relations without losing relation callbacks or state
 - `RunInTx` commits on nil return
 - `RunInTxWith` commits on nil return

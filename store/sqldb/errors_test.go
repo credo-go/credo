@@ -237,6 +237,53 @@ func TestMapError_MySQL1290IsNotUnconditionallyReadOnly(t *testing.T) {
 	}
 }
 
+func TestMapError_MySQL1060PassesThrough(t *testing.T) {
+	cause := errors.New("Error 1060 (42S21): Duplicate column name 'duplicate_name'")
+	got := mapError(t.Context(), driverFamilyMySQL, cause)
+	if got != cause { //nolint:errorlint // Non-count 1060 identity is the contract under test.
+		t.Fatalf("MySQL 1060 = %v, want exact passthrough", got)
+	}
+	if errors.Is(got, ErrUnsupportedCountQuery) {
+		t.Fatal("global MySQL mapping must not classify 1060 as ErrUnsupportedCountQuery")
+	}
+}
+
+func TestWrapMySQLCountExecutionError(t *testing.T) {
+	cause := errors.New("Error 1060 (42S21): Duplicate column name 'duplicate_name'")
+	got := wrapMySQLCountExecutionError(driverFamilyMySQL, cause)
+	if !errors.Is(got, ErrUnsupportedCountQuery) || !errors.Is(got, cause) {
+		t.Fatalf("wrapped MySQL count error = %v, want sentinel and driver cause", got)
+	}
+	mapped := mapError(t.Context(), driverFamilyMySQL, got)
+	if mapped != got { //nolint:errorlint // Global mapping must preserve the local wrapper exactly.
+		t.Fatalf("mapError(wrapped MySQL count error) = %v, want exact local wrapper", mapped)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		family driverFamily
+		cause  error
+	}{
+		{
+			name:   "non-MySQL family",
+			family: driverFamilyPostgres,
+			cause:  cause,
+		},
+		{
+			name:   "other MySQL number",
+			family: driverFamilyMySQL,
+			cause:  errors.New("Error 1062 (23000): Duplicate entry"),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wrapMySQLCountExecutionError(tt.family, tt.cause)
+			if got != tt.cause { //nolint:errorlint // Non-target errors must preserve exact identity.
+				t.Fatalf("wrapMySQLCountExecutionError() = %v, want exact passthrough", got)
+			}
+		})
+	}
+}
+
 func TestParseMySQLErrNum_StrictEnvelope(t *testing.T) {
 	tests := []struct {
 		msg  string

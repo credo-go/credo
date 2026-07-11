@@ -2,10 +2,12 @@ package sqldb_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
 
+	"github.com/credo-go/credo/pagination"
 	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/store/sqldb"
 )
@@ -75,6 +78,11 @@ func TestRealDB_Contracts(t *testing.T) {
 	t.Run("duplicate and not-null mapping", func(t *testing.T) {
 		testRealDBErrorMapping(t, ctx, db, cfg.Driver)
 	})
+	if cfg.Driver == "mysql" {
+		t.Run("MySQL logical count output names", func(t *testing.T) {
+			testRealDBMySQLCountSource(t, ctx, db)
+		})
+	}
 	t.Run("commit and rollback", func(t *testing.T) {
 		testRealDBTransactions(t, ctx, db)
 	})
@@ -273,6 +281,158 @@ func assertRealDBDriverCause(t *testing.T, cause error, driver string, wantCode 
 		}
 	default:
 		t.Fatalf("unsupported real database driver %q", driver)
+	}
+}
+
+func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB) {
+	t.Helper()
+	if _, deleteErr := db.Exec(ctx, "DELETE FROM "+realDBItemsTable); deleteErr != nil {
+		t.Fatalf("clear MySQL count-source fixture: %v", deleteErr)
+	}
+	if _, insertErr := db.Insert(&realDBItem{
+		ID:            20,
+		Name:          "MiXeD",
+		RequiredValue: "present",
+	}).Exec(ctx); insertErr != nil {
+		t.Fatalf("seed MySQL count-source fixture: %v", insertErr)
+	}
+
+	for _, mode := range []struct {
+		name      string
+		statement string
+		predicate string
+	}{
+		{
+			name:      "normal sql_mode",
+			statement: "SET SESSION sql_mode = ''",
+			predicate: "FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode) = 0",
+		},
+		{
+			name:      "NO_BACKSLASH_ESCAPES",
+			statement: "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'",
+			predicate: "FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode) > 0",
+		},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			withRealDBMySQLMode(t, ctx, db, mode.statement, func(conn *sql.Conn) {
+				const bindSecret = "credo-count-bind-secret"
+
+				_, countErr := db.Select((*realDBItem)(nil)).
+					Conn(conn).
+					ColumnExpr("?TableAlias.id AS duplicate_output").
+					ColumnExpr("?TableAlias.name AS duplicate_output").
+					Where("?TableAlias.required_value = ?", bindSecret).
+					Where(mode.predicate).
+					Count(ctx)
+				assertRealDBMySQL1060(t, countErr, true, bindSecret)
+
+				_, pageErr := db.Select().
+					Conn(conn).
+					ColumnExpr("?TableAlias.id AS duplicate_output").
+					ColumnExpr("?TableAlias.name AS duplicate_output").
+					Where("?TableAlias.required_value = ?", bindSecret).
+					Where(mode.predicate).
+					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
+				assertRealDBMySQL1060(t, pageErr, true, bindSecret)
+
+				// These positive pages make both COUNT and data SELECT depend on
+				// the leased connection's session mode. Losing Conn state makes the
+				// NO_BACKSLASH_ESCAPES case return the wrong window.
+				wildcardPage, wildcardErr := db.Select().
+					Conn(conn).
+					ColumnExpr("?TableAlias.*").
+					Where(mode.predicate).
+					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
+				if wildcardErr != nil {
+					t.Fatalf("wildcard Page() = %v", wildcardErr)
+				}
+				if wildcardPage.Total != 1 || len(wildcardPage.Records) != 1 ||
+					wildcardPage.Records[0].ID != 20 {
+					t.Fatalf("wildcard Page() = %+v, want one complete fixture row", wildcardPage)
+				}
+
+				implicitAliasPage, implicitAliasErr := db.Select().
+					Conn(conn).
+					ColumnExpr("LOWER(?TableAlias.name) name").
+					Where(mode.predicate).
+					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
+				if implicitAliasErr != nil {
+					t.Fatalf("implicit-alias Page() = %v", implicitAliasErr)
+				}
+				if implicitAliasPage.Total != 1 || len(implicitAliasPage.Records) != 1 ||
+					implicitAliasPage.Records[0].Name != "mixed" {
+					t.Fatalf("implicit-alias Page() = %+v, want one lower-cased name", implicitAliasPage)
+				}
+			})
+		})
+	}
+
+	const rawBindSecret = "credo-raw-bind-secret"
+	var ignored int
+	rawErr := db.QueryRow(ctx, &ignored, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT ? AS duplicate_output, ? AS duplicate_output
+		) AS raw_duplicate_source
+	`, rawBindSecret, "other")
+	assertRealDBMySQL1060(t, rawErr, false, rawBindSecret)
+}
+
+func withRealDBMySQLMode(
+	t *testing.T,
+	ctx context.Context,
+	db *sqldb.DB,
+	statement string,
+	run func(*sql.Conn),
+) {
+	t.Helper()
+	conn, connErr := db.Client().DB.Conn(ctx)
+	if connErr != nil {
+		t.Fatalf("lease explicit MySQL connection: %v", connErr)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		if _, resetErr := conn.ExecContext(cleanupCtx, "SET SESSION sql_mode = DEFAULT"); resetErr != nil {
+			t.Errorf("reset MySQL sql_mode: %v", resetErr)
+		}
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("close explicit MySQL connection: %v", closeErr)
+		}
+	}()
+
+	if _, modeErr := conn.ExecContext(ctx, statement); modeErr != nil {
+		t.Fatalf("configure MySQL session with %q: %v", statement, modeErr)
+	}
+	run(conn)
+}
+
+func assertRealDBMySQL1060(t *testing.T, got error, wantUnsupported bool, forbidden string) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("MySQL duplicate-output query succeeded, want ER_DUP_FIELDNAME")
+	}
+	isUnsupported := errors.Is(got, sqldb.ErrUnsupportedCountQuery)
+	if isUnsupported != wantUnsupported {
+		t.Fatalf(
+			"errors.Is(error, ErrUnsupportedCountQuery) = %v, want %v: %v",
+			isUnsupported,
+			wantUnsupported,
+			got,
+		)
+	}
+	mysqlErr, ok := errors.AsType[*mysql.MySQLError](got)
+	if !ok {
+		t.Fatalf("MySQL duplicate-output cause has type %T, want *mysql.MySQLError", got)
+	}
+	if mysqlErr.Number != 1060 {
+		t.Fatalf("mysql.MySQLError.Number = %d, want 1060", mysqlErr.Number)
+	}
+	if state := string(mysqlErr.SQLState[:]); state != "42S21" {
+		t.Fatalf("mysql.MySQLError.SQLState = %q, want 42S21", state)
+	}
+	if forbidden != "" && strings.Contains(got.Error(), forbidden) {
+		t.Fatalf("MySQL duplicate-output error exposed bound value %q: %v", forbidden, got)
 	}
 }
 

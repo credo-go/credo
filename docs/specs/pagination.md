@@ -292,16 +292,15 @@ compose an explicit count query and data query, then construct
 projection terminal.
 
 MySQL also requires every output name in a derived table to be unique. After
-model hooks run, Credo renders the MySQL count source once and proves its SELECT
-list before I/O. Qualified columns and raw expressions with distinct portable
-ASCII `AS` aliases are supported. Duplicate names (case-insensitive), wildcard
-projections, implicit aliases, or raw expressions whose output name cannot be
-proved return `sqldb.ErrUnsupportedCountQuery`; add explicit unique aliases.
-The exact render must pass under both normal backslash escaping and
-`NO_BACKSLASH_ESCAPES`, so session mode cannot hide a separator or executable
-comment. This MySQL-only guard does not narrow PostgreSQL or SQLite. It follows MySQL's
-[derived-table output-name rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html)
-without relying on a version-specific derived-column alias list.
+model hooks run, Credo renders the count source once and lets the server apply
+its real naming and `sql_mode` rules. Wildcards, implicit aliases, and unaliased
+expressions are valid when MySQL derives unique names. If the logical COUNT
+returns `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps
+`sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause; add
+explicit unique aliases to fix the collision. The mapping is Count/Page-local,
+so raw and other non-count 1060 errors pass through unchanged. Real tests cover
+normal mode and `NO_BACKSLASH_ESCAPES`. PostgreSQL and SQLite are not narrowed.
+This follows MySQL's [derived-table output-name rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
 Bun applies relation callbacks while rendering SQL. Credo therefore renders
 the private count source exactly once, rechecks the post-render builder, and
@@ -762,7 +761,7 @@ but Credo will not freeze a speculative public generic abstraction.
 | `Page[T]` terminal returns `*Page[T]`; model→DTO maps via `Page.Map` | The all-in-one terminal is ergonomic when the response is the queried type. For a DTO mapping, run `Page[Model]` and `Map` to `Page[DTO]`; `Map` carries the metadata over, so the intermediate `Page[Model]` costs only a slice transform, not hand-copied metadata |
 | Typed Page queries are model-less and `T` is the table model | The terminal owns model selection. A pre-bound model returns `sqldb.ErrTypedTerminalModel`; projections and relations use explicit-destination `Scan` |
 | COUNT and SELECT are separate statements | `Page` starts no implicit transaction. Database visibility comes from the caller's outer transaction and database-specific isolation; PostgreSQL Read Committed can drift, while an appropriate first-read snapshot can keep both statements stable |
-| `Total` is complete logical projection cardinality | Credo counts a universal outer source after removing root ORDER/LIMIT/OFFSET/FOR, covering ungrouped aggregates, distinct tuples, groups, and post-`Having` groups; model SELECT hooks run on the private source; unsafe standalone `Having`, direct compound roots, and MySQL-unprovable derived output names fail pre-I/O with `ErrUnsupportedCountQuery` |
+| `Total` is complete logical projection cardinality | Credo counts a universal outer source after removing root ORDER/LIMIT/OFFSET/FOR, covering ungrouped aggregates, distinct tuples, groups, and post-`Having` groups; model SELECT hooks run on the private source; unsafe standalone `Having` and direct compound roots fail pre-I/O, while MySQL logical-count 1060 is wrapped with `ErrUnsupportedCountQuery` after I/O and preserves its driver cause |
 | No custom-count strategy yet | Existing explicit count + data query + `NewPage` composition covers advanced sources; wait for two real consumers before committing another public API |
 | No unknown total in `Page` | Total-free offset/cursor responses have different metadata and remain separate future types |
 | Cursor and total-free offset names stay separate | `CursorPage[T]` is the reserved keyset result; `Slice[T]` is only the working name for a future total-free offset result with its own design gate |

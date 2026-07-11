@@ -69,12 +69,13 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
   hook-added filters/projections contribute to `Total`; a `Page` that reaches
   its data SELECT runs the lifecycle once for COUNT and once for SELECT. Count
   does not scan or mutate a bound model, and nondeterministic hooks/volatile SQL
-  can still differ across the two executions regardless of isolation. MySQL
-  projections are preflighted for its unique derived-column-name rule;
-  duplicate names, wildcards, implicit aliases, and unprovable raw-expression
-  names fail before I/O, while unique portable `AS` aliases pass. The proof
-  checks both normal MySQL escaping and `NO_BACKSLASH_ESCAPES`, so session mode
-  cannot hide a projection separator or executable comment. The outer count
+  can still differ across the two executions regardless of isolation. MySQL is
+  now the oracle for its unique derived-column-name rule: wildcard and
+  implicit/unaliased projections pass when the server derives unique names,
+  while logical-count `ER_DUP_FIELDNAME` (1060) is wrapped with
+  `ErrUnsupportedCountQuery` after I/O and retains the driver cause. Raw and
+  other non-count 1060 errors remain unchanged. Real tests cover normal mode and
+  `NO_BACKSLASH_ESCAPES`. The outer count
   query preserves `QueryEvent.Model` for observability while soft-delete policy
   remains solely on the inner source.
 - **Pagination snapshot guidance** — `Page` does not start an implicit
@@ -132,9 +133,10 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
   and direct compound roots, which previously could error or return a misleading
   count, fail before I/O with `ErrUnsupportedCountQuery`; use an explicit
   derived-table count/data composition for those or for expensive/volatile
-  projections. MySQL also fails loud before I/O when the derived-source output
-  names are duplicate or cannot be proved under either MySQL backslash-escape
-  mode; raw expressions use unique `AS` aliases.
+  projections. MySQL now decides derived-source output validity at execution:
+  logical-count 1060 is wrapped with `ErrUnsupportedCountQuery` and preserves
+  its cause, while former wildcard/implicit-expression false positives and
+  non-count 1060 are no longer narrowed by a local parser.
 - **BREAKING — `pagination.PageRequest.Offset` now returns `(int, error)`.** Migrate `offset := req.Offset()` to `offset, err := req.Offset()` and handle `pagination.ErrInvalidPageRequest` with `errors.Is`. Unlike `Normalize`/`Validate`, `Offset` is strict and non-mutating: it rejects non-positive values and native `int` multiplication overflow instead of silently producing an unsafe offset. `SelectQuery.Page` adds the narrower Bun v1.2.18 signed-int32 LIMIT/OFFSET check and rejects every invalid request before COUNT; it does not clamp valid custom page sizes.
 - **Data access (`store/sqldb`)** — curated `SelectQuery.Limit` and `Offset` now reject values outside Bun v1.2.18's signed-int32 storage range with `sqldb.ErrInvalidLimitOffset`; the builder records the error and its terminal returns before database execution instead of allowing an `int`→`int32` narrowing. Values inside the range, including zero and negative values, retain Bun semantics. Raw Bun reached through `Apply` or `Unwrap` remains an explicit escape hatch and is not covered by the curated-method guard.
 - **BREAKING — store registration ownership and publication are now explicit.**

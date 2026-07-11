@@ -464,10 +464,13 @@ run an explicit count query and data query, then call
 `Page[T]` remains a model-owned terminal; wrapping a projection does not turn it
 into a general projection API.
 
-On MySQL, give every raw projected expression a distinct portable ASCII `AS`
-alias. MySQL requires unique derived-table output names, so Credo rejects
-duplicate names, wildcards, implicit aliases, and output names it cannot prove
-before database I/O:
+MySQL requires unique derived-table output names. Credo renders the logical
+count source once and lets the server apply its actual naming and `sql_mode`
+rules, so wildcard and implicit/unaliased expressions are accepted when their
+derived names are unique. If MySQL returns `ER_DUP_FIELDNAME` (1060) while
+executing Count/Page's COUNT statement, Credo wraps
+`sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause. Give
+colliding projections explicit unique aliases:
 
 ```go
 total, err := db.Select((*User)(nil)).
@@ -475,10 +478,13 @@ total, err := db.Select((*User)(nil)).
     Count(ctx)
 ```
 
-The error matches `sqldb.ErrUnsupportedCountQuery`. Qualified model columns are
-recognized automatically. Credo checks both normal backslash escaping and
-`NO_BACKSLASH_ESCAPES`; SQL mode cannot hide a projection separator or
-executable comment from the guard. This extra guard is MySQL-only. See MySQL's
+The wrapper is local to the logical count execution point. A raw query, `Scan`,
+`Exists`, or other non-count operation returning MySQL 1060 remains the original
+driver error. Because the server does not identify which derived-table level
+failed, an indistinguishable 1060 from a caller-supplied nested source during
+Count/Page is wrapped too. Keep the retained cause for logs and diagnostics;
+never render raw driver messages directly to HTTP clients. Real conformance
+covers normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's
 [derived-table rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
 Relation callbacks are evaluated once while Credo renders the count source.
