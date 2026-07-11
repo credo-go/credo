@@ -64,9 +64,10 @@ upstream fix, removing or narrowing the compatibility layer, or narrowing the
 Credo contract. Do not automatically expand unsafe private-field access or add
 SQL parser logic merely to preserve the previous implementation.
 
-Also re-check the migration finalizer limitation tracked in `TODO.md`: remove
-the Bun v1.2.18 `.tx.up.sql` warning only after a conformance test proves that
-Commit/Rollback errors reach the caller and can gate the applied marker.
+Also re-check the migration finalizer limitation tracked in
+[Bun #1389](https://github.com/uptrace/bun/issues/1389): remove the Bun v1.2.18
+`.tx.up.sql` warning only after a conformance test proves that Commit/Rollback
+errors reach the caller and can gate the applied marker.
 
 ## Releasing
 
