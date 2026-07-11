@@ -347,10 +347,13 @@
 
 - [x] `db.InTx(ctx, fn)` — method-form TX sugar over `RunInTx` (handler-side ergonomics; called with `ctx.Context()`) — plus `db.InTxWith` for `sql.TxOptions` symmetry
 - [x] Migration wrapper over `bun/migrate` (replaces the goose plan; the optional `credo migrate:*` CLI sugar lives in Phase 5.1):
-  - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success by default so failed migrations are retried on next start)
-  - [x] `OnStart` lifecycle integration (opt-in auto-run on app start) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
+  - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success gives at-least-once re-attempt for Up errors surfaced by Bun, not automatic retry safety)
+  - [x] `OnStart` lifecycle integration (dev/single-replica opt-in) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
   - [x] `embed.FS` migration bundling support (Bun's `Discover` works on any `fs.FS`; covered by tests)
   - [x] Seeding: documented as plain migration files (no separate mechanism)
+  - [x] Cancellation-detached migration unlock with a fixed five-second caller bound; timeout is an uncertain outcome and is not automatically retried
+  - [x] Multi-replica production contract: one-shot pre-deploy job first, `OnStart` for dev/single-replica convenience, expand-contract and replay-safe/idempotent retry guidance
+  - [ ] Track/fix Bun v1.2.18 SQL migration finalizer error propagation before promising `.tx.up.sql` commit-error → unapplied-marker correctness
 - [x] Tests (`migrate_test.go` + `InTx` cases in `integration_test.go`)
 
 ### 3.4 Health Checks (root package)

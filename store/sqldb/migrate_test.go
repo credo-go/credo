@@ -53,6 +53,16 @@ func countNotes(t *testing.T, db *sqldb.DB) int {
 	return n
 }
 
+func assertNoUnexpectedMigrationCleanupError(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Migrate() = %v, want unlock within cleanup budget", err)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok && len(joined.Unwrap()) > 1 {
+		t.Fatalf("Migrate() = %v, want no joined unlock error", err)
+	}
+}
+
 // --- Migration wrapper tests ---
 
 func TestMigrate_RunsPendingMigrations(t *testing.T) {
@@ -71,7 +81,7 @@ func TestMigrate_RunsPendingMigrations(t *testing.T) {
 	}
 }
 
-func TestMigrate_RerunIsNoOp(t *testing.T) {
+func TestMigrate_RerunDoesNotExecuteUp(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
@@ -97,8 +107,8 @@ func TestMigrate_FailedMigrationRetriedOnNextRun(t *testing.T) {
 	ctx := context.Background()
 
 	// First attempt fails; the wrapper's WithMarkAppliedOnSuccess default
-	// must leave it unapplied so the next Migrate retries it (Bun's bare
-	// default would record it as applied and silently skip it).
+	// leaves the migration eligible for a later attempt. This does not imply
+	// that replay is automatically safe when the first attempt had side effects.
 	var attempts int
 	db.RegisterMigrations(newGoMigrations("1", func(ctx context.Context, bdb *bun.DB) error {
 		attempts++
@@ -120,6 +130,92 @@ func TestMigrate_FailedMigrationRetriedOnNextRun(t *testing.T) {
 	}
 	if got := countNotes(t, db); got != 0 {
 		t.Errorf("notes count = %d, want 0", got)
+	}
+}
+
+func TestMigrate_MarkOnSuccessCanReplayPartialSideEffects(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+
+	if _, err := db.Client().NewRaw(`
+		CREATE TABLE migration_effects (
+			id INTEGER PRIMARY KEY AUTOINCREMENT
+		)
+	`).Exec(ctx); err != nil {
+		t.Fatalf("create migration_effects: %v", err)
+	}
+
+	firstAttemptErr := errors.New("fail after durable side effect")
+	var attempts int
+	db.RegisterMigrations(newGoMigrations("1", func(ctx context.Context, bdb *bun.DB) error {
+		attempts++
+		if _, err := bdb.NewRaw(`INSERT INTO migration_effects (id) VALUES (NULL)`).Exec(ctx); err != nil {
+			return err
+		}
+		if attempts == 1 {
+			return firstAttemptErr
+		}
+		return nil
+	}))
+
+	firstErr := db.Migrate(ctx)
+	if !errors.Is(firstErr, firstAttemptErr) {
+		t.Fatalf("first Migrate() = %v, want first-attempt error", firstErr)
+	}
+	assertNoUnexpectedMigrationCleanupError(t, firstErr)
+
+	var effects int
+	if err := db.Client().NewRaw(`SELECT COUNT(*) FROM migration_effects`).Scan(ctx, &effects); err != nil {
+		t.Fatalf("count first-attempt effects: %v", err)
+	}
+	if effects != 1 {
+		t.Fatalf("effects after failed attempt = %d, want 1", effects)
+	}
+
+	if retryErr := db.Migrate(ctx); retryErr != nil {
+		t.Fatalf("retry Migrate() = %v", retryErr)
+	}
+	if attempts != 2 {
+		t.Fatalf("migration attempts = %d, want 2", attempts)
+	}
+	if err := db.Client().NewRaw(`SELECT COUNT(*) FROM migration_effects`).Scan(ctx, &effects); err != nil {
+		t.Fatalf("count replayed effects: %v", err)
+	}
+	if effects != 2 {
+		t.Fatalf("effects after replay = %d, want 2", effects)
+	}
+}
+
+func TestMigrate_CanceledContextStillUnlocksAndRetries(t *testing.T) {
+	db := openTestDB(t)
+	migrationCtx, cancelMigration := context.WithCancel(t.Context())
+	defer cancelMigration()
+
+	firstAttemptErr := errors.New("cancel first migration attempt")
+	var attempts int
+	db.RegisterMigrations(newGoMigrations("1", func(ctx context.Context, bdb *bun.DB) error {
+		attempts++
+		if attempts == 1 {
+			cancelMigration()
+			return firstAttemptErr
+		}
+		return createNotesTable(ctx, bdb)
+	}))
+
+	firstErr := db.Migrate(migrationCtx)
+	if !errors.Is(firstErr, firstAttemptErr) {
+		t.Fatalf("first Migrate() = %v, want first-attempt error", firstErr)
+	}
+	assertNoUnexpectedMigrationCleanupError(t, firstErr)
+	if !errors.Is(migrationCtx.Err(), context.Canceled) {
+		t.Fatalf("migration context error = %v, want context.Canceled", migrationCtx.Err())
+	}
+
+	if retryErr := db.Migrate(t.Context()); retryErr != nil {
+		t.Fatalf("retry Migrate() = %v, want released lock", retryErr)
+	}
+	if attempts != 2 {
+		t.Fatalf("migration attempts = %d, want 2", attempts)
 	}
 }
 

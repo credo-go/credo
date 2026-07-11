@@ -775,7 +775,8 @@ func (db *DB) RegisterMigrations(m *migrate.Migrations, opts ...migrate.Migrator
 
 // Migrate runs pending migrations: Init (bookkeeping tables, IF NOT
 // EXISTS) → Lock (table-based advisory lock, fail-fast) → Migrate →
-// Unlock. Signature matches App.OnStart, so auto-run on start is:
+// bounded Unlock. Signature matches App.OnStart; use that convenience
+// for dev/single-replica deployments:
 //
 //	db.RegisterMigrations(migrations)
 //	app.OnStart(db.Migrate)
@@ -785,10 +786,12 @@ func (db *DB) Migrate(ctx context.Context) error
 **Design points:**
 
 - **Thin wrapper**: the `*migrate.Migrations` set is Bun's own type — populated via `Discover(fsys)` for SQL files (works with `embed.FS`) or `MustRegister` for Go migrations. Credo does not re-wrap it.
-- **Mark-applied-on-success by default**: the wrapper passes `migrate.WithMarkAppliedOnSuccess(true)`. Bun's bare default records a migration _before_ running it, so a failed migration would be skipped as "applied" on the next start — wrong for unattended `OnStart` auto-run. With the wrapper default, a failed migration is retried on the next run. Users can pass `WithMarkAppliedOnSuccess(false)` through `RegisterMigrations` to restore Bun's behavior.
-- **Lock semantics**: if another instance holds the lock (second replica starting concurrently), `Migrate` fails immediately rather than waiting; the failed instance can be restarted. Unlock runs under `context.WithoutCancel` so a cancelled ctx cannot leak the lock row; an unlock failure is joined into the returned error.
+- **Mark-applied-on-success by default**: the wrapper passes `migrate.WithMarkAppliedOnSuccess(true)`. An Up error surfaced by Bun leaves the migration unapplied, so the next run attempts it again. This is at-least-once bookkeeping, not an atomicity guarantee: non-transactional effects can be partial, successful body execution and marker insertion are separate operations, and a migration group is not all-or-nothing. Migrations must be transactional where supported or idempotent/reconcilable. Users can pass `WithMarkAppliedOnSuccess(false)` to choose Bun's record-before-running recovery tradeoff explicitly.
+- **Lock semantics**: Lock is a fail-fast unique-row insert; there is no library wait/retry. Unlock starts only after Lock succeeds. Its context preserves parent values but ignores parent cancellation/deadline and gets a fresh fixed five-second budget. A buffered-result goroutine also bounds caller wait when a driver ignores context. Migration and unlock errors are joined and mapped. Unlock timeout is an uncertain outcome: the old operation may still delete later, so no automatic second Unlock, blind lock-row deletion, or immediate retry is safe.
+- **Production topology**: multi-replica production runs one deadline-bounded pre-deploy job that calls the same `DB.Migrate` path before rollout. `app.OnStart(db.Migrate)` is for local/dev/test, single replicas, or a consciously accepted small-deployment tradeoff. Running it on every replica can make lock losers fail startup and crash-loop while the winner is still migrating. Expand → compatible deploy/backfill → later contract is the default destructive-change strategy.
+- **Transaction boundary**: ordinary `.up.sql` files are not transactional; `.tx.up.sql` asks Bun for a transaction but database DDL support still applies. Pinned Bun v1.2.18 also does not reliably propagate deferred SQL migration Commit/Rollback errors, so Credo does not guarantee that such a finalizer failure blocks the marker. Use a Go migration with an explicit transaction and returned error when commit must gate bookkeeping, and keep replay/repair safe even then.
 - **Seeding** is a plain migration file (e.g. `2_seed_plans.up.sql`) — no separate mechanism.
-- **No CLI here**: `credo migrate:*` (Phase 5.1) is optional sugar over this wrapper. Rollback / status / file generation stay on Bun's migrator via the escape hatch: `migrate.NewMigrator(db.Client(), ms)`.
+- **No CLI here**: `credo migrate:*` (Phase 5.1) is optional sugar over this wrapper. Rollback/status/file generation stay on Bun's migrator, but a directly constructed migrator does not inherit `RegisterMigrations` options. Read-only status and file generation repeat only relevant options; DB-mutating apply/rollback paths also own Init, Lock, and bounded cancellation-detached Unlock.
 - **OnStart integration is signature compatibility**, not coupling: `sqldb` still imports only `credo/store`, never the root framework package.
 
 ### Error Mapping
@@ -887,7 +890,8 @@ store/sqldb/
 ├── db_test.go
 ├── errors_test.go
 ├── integration_test.go  ← TX, query proxy, nested savepoint, raw SQL, pagination tests
-├── migrate_test.go      ← migration wrapper tests (incl. embed.FS discovery)
+├── migrate_test.go      ← migration wrapper tests (incl. cancellation + embed.FS)
+├── migrate_internal_test.go ← deterministic bounded-unlock tests
 └── testdata/migrations/ ← SQL migration fixtures for embed.FS tests
 ```
 
@@ -1173,8 +1177,10 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - `RunInTx` stores TX in context with per-DB scoping
 - `DB.Conn(ctx)` and `DB.RequireTx(ctx)` expose the correct native Bun connection, including same-type multi-DB isolation
 - `InTx` / `InTxWith` method forms commit on nil, roll back on error
-- `Migrate` applies pending migrations; re-run is a no-op
-- `Migrate` retries a failed migration on the next run (mark-on-success) and releases the advisory lock after failure
+- `Migrate` applies pending migrations; a re-run with none pending executes no Up body, while Init, Lock, and bounded Unlock still run
+- An Up error surfaced by Bun remains unapplied and is attempted on the next `Migrate`; tests do not treat that at-least-once behavior as proof of atomic or automatically safe retry
+- A non-transactional migration that persists a side effect and then errors is replayed on the next attempt; the regression test observes both effects, pinning the idempotency/repair requirement
+- `Migrate` attempts bounded unlock with a fresh context after parent cancellation; a context-ignoring unlock cannot hold caller wait beyond the internal budget
 - `Migrate` discovers SQL migrations from `embed.FS` (incl. a seed file)
 - `Migrate` without registration returns an error
 - `RegisterMigrations` panics on nil set or double registration

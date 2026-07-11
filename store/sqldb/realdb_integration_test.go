@@ -478,6 +478,8 @@ func testRealDBMigrations(t *testing.T, ctx context.Context, db *sqldb.DB) {
 	t.Helper()
 	firstAttemptErr := errors.New("fail first real database migration attempt")
 	attempts := 0
+	migrationCtx, cancelMigration := context.WithCancel(ctx)
+	defer cancelMigration()
 	migrations := newGoMigrations("001_realdb_contract", func(ctx context.Context, bunDB *bun.DB) error {
 		attempts++
 		locks, lockCountErr := countRealDBRows(ctx, bunDB, realDBMigrationLocksTable)
@@ -488,6 +490,7 @@ func testRealDBMigrations(t *testing.T, ctx context.Context, db *sqldb.DB) {
 			return fmt.Errorf("migration lock rows = %d, want 1", locks)
 		}
 		if attempts == 1 {
+			cancelMigration()
 			return firstAttemptErr
 		}
 		_, createErr := bunDB.NewRaw(`
@@ -504,9 +507,13 @@ func testRealDBMigrations(t *testing.T, ctx context.Context, db *sqldb.DB) {
 		migrate.WithLocksTableName(realDBMigrationLocksTable),
 	)
 
-	firstErr := db.Migrate(ctx)
+	firstErr := db.Migrate(migrationCtx)
 	if !errors.Is(firstErr, firstAttemptErr) {
 		t.Fatalf("first Migrate() = %v, want first-attempt error", firstErr)
+	}
+	assertNoUnexpectedMigrationCleanupError(t, firstErr)
+	if !errors.Is(migrationCtx.Err(), context.Canceled) {
+		t.Fatalf("migration context error = %v, want context.Canceled", migrationCtx.Err())
 	}
 	if attempts != 1 {
 		t.Fatalf("migration attempts after failure = %d, want 1", attempts)

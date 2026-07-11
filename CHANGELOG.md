@@ -95,6 +95,7 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ### Changed
 
+- **Data access migration cleanup** — `DB.Migrate` now attempts Unlock with a fresh cancellation-detached five-second budget and bounds caller wait even when a driver ignores context. Migration and unlock errors remain joined. An unlock timeout is explicitly an uncertain outcome and is not automatically retried. Production guidance now prefers one deadline-bounded pre-deploy job for multi-replica releases; `app.OnStart(db.Migrate)` remains the dev/single-replica convenience, and mark-on-success is documented as at-least-once bookkeeping that still requires transactional or replay-safe migrations.
 - **BREAKING — generated `sqldb` DSNs now fail loud on ambiguous or invalid
   connection configuration.** Driver-family inference uses exact aliases
   instead of substring matches; generated PostgreSQL/MySQL DSNs require a

@@ -965,7 +965,7 @@ The returned `bun.IDB` is borrowed; do not retain it beyond the callback. Native
 
 ## Migrations
 
-`store/sqldb` wraps Bun's migration engine (`bun/migrate` — part of the already-pinned Bun module, not a new dependency). Register the set at wiring time, then opt in to auto-run on application start:
+`store/sqldb` wraps Bun's migration engine (`bun/migrate` — part of the already-pinned Bun module, not a new dependency). Register the set at wiring time. For development, tests, or a deliberate single-replica deployment, it can run as an application-start hook:
 
 ```go
 import "github.com/uptrace/bun/migrate"
@@ -983,7 +983,7 @@ func main() {
     }
     db.RegisterMigrations(migrations)
 
-    app.OnStart(db.Migrate) // applies pending migrations before serving
+    app.OnStart(db.Migrate) // dev/single-replica convenience
 
     app.Run()
 }
@@ -991,14 +991,53 @@ func main() {
 
 SQL migration files follow Bun's naming scheme — `1_create_users.up.sql`, `2_add_index.up.sql` (optionally with matching `.down.sql`). Go migrations use `migrations.MustRegister(up, down)` from files named the same way.
 
+### Production deployment model
+
+For multi-replica production, run the same `db.Migrate` method in exactly one pre-deploy job and require it to succeed before rolling out application replicas. Give the job an explicit deadline that covers the expected migration duration:
+
+```go
+// jobCtx should be derived from the process signal / job runner context.
+migrationCtx, cancel := context.WithTimeout(jobCtx, 15*time.Minute)
+defer cancel()
+
+if err := db.Migrate(migrationCtx); err != nil {
+    return fmt.Errorf("apply database migrations: %w", err)
+}
+```
+
+The job and `OnStart` forms share the same registration and migration behavior; only the deployment owner differs. Do not also register `app.OnStart(db.Migrate)` in every production replica. `OnStart` receives Credo's independently-created lifecycle context, has no migration-specific deadline, and is not interrupted merely because the caller's `RunContext` context is cancelled during startup.
+
 What the wrapper does on each `Migrate` call:
 
 1. creates Bun's bookkeeping tables if missing (`IF NOT EXISTS`)
-2. takes a table-based advisory lock — if another replica is migrating, `Migrate` fails immediately instead of waiting (restart the instance)
+2. takes a table-based advisory lock — if another runner owns it, `Migrate` fails immediately instead of waiting or retrying
 3. applies unapplied migrations in order
-4. releases the lock (even when the context was cancelled)
+4. attempts to release the lock under a fresh five-second cleanup budget, even when the migration context was cancelled
 
-A migration is recorded as applied only **after** it succeeds, so a failed migration aborts startup and is retried on the next start. (This is the wrapper's default — Bun's bare default records first; pass `migrate.WithMarkAppliedOnSuccess(false)` to `RegisterMigrations` to restore it.)
+The unlock wait is caller-bounded even if a driver ignores context. If it times out, `Migrate` returns a timeout (joined with any migration error), but the outcome is uncertain: the lock row may remain, or the delayed driver operation may delete it later. Bun's lock row has no owner token or lease. Let the old process/job terminate and inspect active database sessions before recovery; never blindly delete the row and immediately start another migrator while the old Unlock may still execute. Credo deliberately does not add automatic Unlock retries or lock wait/retry—overlapping release jobs are a coordination error, and waiting can let different releases run migrations in the wrong order.
+
+### Retry and transaction boundaries
+
+By default a migration is marked applied only after its Up function returns nil. This means an error surfaced by Bun leaves it eligible for another attempt; it does **not** make the attempt atomic or automatically safe to retry:
+
+- ordinary `.up.sql` files and Go migrations are non-transactional unless they explicitly open a transaction
+- earlier statements or earlier migrations in the group may already be committed
+- the migration body can succeed and its separate applied-marker write can fail or be interrupted
+- database DDL transaction rules still apply; some statements or engines implicitly commit or cannot run inside a transaction
+
+Treat mark-on-success as at-least-once execution. Prefer database-supported transactions where appropriate, and make every retryable step idempotent, resumable, or accompanied by an explicit inspection/repair procedure. After a partial failure, inspect schema and data before rerunning instead of assuming “unapplied” means “nothing changed.” Passing `migrate.WithMarkAppliedOnSuccess(false)` selects Bun's record-before-running recovery tradeoff; it can make a failed body appear applied and requires explicit rollback/repair instead.
+
+Bun recognizes `.tx.up.sql`, but pinned Bun v1.2.18 does not reliably propagate the deferred SQL transaction Commit/Rollback error to the caller. Credo therefore does not promise that a `.tx.up.sql` commit failure prevents the applied marker. When the commit result must gate bookkeeping, use a Go migration that opens an explicit transaction and returns its error; still account for driver-specific ambiguous commit outcomes and DDL behavior.
+
+### Expand-contract rollout
+
+For a rolling deployment:
+
+1. **Expand** with additive changes compatible with both the old and new binaries, using the one-shot migration job.
+2. **Deploy** the compatible application version to all replicas.
+3. **Backfill** large data changes as a separate bounded, resumable, idempotent job.
+4. Verify no old replica or job remains.
+5. **Contract** in a later release: remove/rename columns, add strict constraints, or perform other destructive changes only after every consumer is compatible.
 
 **Seeding** is just another migration file — there is no separate seed mechanism:
 
@@ -1007,10 +1046,16 @@ A migration is recorded as applied only **after** it succeeds, so a failed migra
 INSERT INTO plans (name, price) VALUES ('free', 0), ('pro', 1900);
 ```
 
-For rollback, status inspection, or generating migration files, drop down to Bun's migrator via the escape hatch:
+For rollback, status inspection, or generating migration files, drop down to Bun's migrator via the escape hatch. A directly constructed migrator does not inherit the options passed to `RegisterMigrations` (including custom table names, hooks, or Credo's mark-on-success default). Read-only status and file generation repeat only the options they need. DB-mutating apply/rollback paths must additionally own Init, Lock, and a bounded cancellation-detached Unlock:
 
 ```go
-migrator := migrate.NewMigrator(db.Client(), migrations)
+migrator := migrate.NewMigrator(
+    db.Client(),
+    migrations,
+    migrate.WithMarkAppliedOnSuccess(true),
+    // Repeat the same WithTableName / WithLocksTableName / hook options.
+)
+// After caller-owned Init + Lock, and with a deferred bounded Unlock:
 group, err := migrator.Rollback(ctx)
 ```
 

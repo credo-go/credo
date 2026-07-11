@@ -283,9 +283,11 @@
 //
 // The DB wraps Bun's migration engine (bun/migrate — part of the already
 // pinned Bun module) behind two methods: RegisterMigrations stores a
-// *migrate.Migrations set at wiring time, and Migrate runs the pending
-// ones. Migrate's signature matches credo's App.OnStart hook, so running
-// migrations on application start is an explicit, opt-in one-liner:
+// *migrate.Migrations set at wiring time, and Migrate runs the pending ones.
+// Multi-replica production should run the same Migrate method in one
+// deadline-bounded pre-deploy job. Migrate also matches credo's App.OnStart
+// hook; this is an opt-in convenience for development and deliberate
+// single-replica deployments:
 //
 //	//go:embed migrations/*.sql
 //	var sqlMigrations embed.FS
@@ -295,14 +297,17 @@
 //	    return err
 //	}
 //	db.RegisterMigrations(migrations)
-//	app.OnStart(db.Migrate) // applies pending migrations before serving
+//	app.OnStart(db.Migrate) // dev/single-replica convenience
 //
-// Seeding is a plain migration file (for example 2_seed_plans.up.sql) —
-// there is no separate seed mechanism. A failed migration is retried on
-// the next run (see RegisterMigrations), and Bun's table-based advisory
-// lock prevents two replicas from migrating concurrently. For rollback,
-// status inspection, or migration file generation, use Bun's migrator
-// directly: migrate.NewMigrator(db.Client(), migrations).
+// Seeding is a plain migration file (for example 2_seed_plans.up.sql) — there
+// is no separate seed mechanism. Mark-on-success gives at-least-once retry,
+// not atomic rollback: migrations must be transactional where supported or
+// idempotent/reconcilable. Bun's table lock is fail-fast. Unlock is detached
+// from parent cancellation and caller-bounded to five seconds; timeout leaves
+// its outcome uncertain and is not automatically retried. Direct Bun
+// migrators used for rollback/status/generation do not inherit Credo's
+// options. Status/generation repeat only relevant options; DB-mutating
+// apply/rollback callers additionally own Init, Lock, and bounded Unlock.
 //
 // # Error Mapping
 //

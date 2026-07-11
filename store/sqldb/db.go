@@ -151,8 +151,10 @@ func applyPoolConfig(pool poolConfigurer, cfg *Config) {
 // for normal repository code. For an advanced Bun operation that must join
 // an ambient transaction, build it through db.Conn(ctx). Reserve Client() for
 // model registration and operations intentionally tied to the base DB, such
-// as migration operations beyond [DB.Migrate] (rollback, status, file
-// generation — via migrate.NewMigrator(db.Client(), migrations)).
+// as migration operations beyond [DB.Migrate]. A directly constructed Bun
+// migrator does not inherit RegisterMigrations options. Status/generation
+// callers repeat the options they need; DB-mutating apply/rollback callers
+// must also own Init, Lock, and bounded cancellation-detached Unlock.
 func (db *DB) Client() *bun.DB {
 	return db.db
 }

@@ -43,8 +43,10 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 // including DI shutdown and OnShutdown hooks), and Run returns the error. The
 // App ends terminally stopped — a session that began tears down rather than
 // rolling back, so it cannot be run again (create a new App).
-// Typical uses are cache warm-up and database migrations — the store/sqldb
-// migration wrapper plugs in directly: app.OnStart(db.Migrate).
+// Typical uses include cache warm-up. The store/sqldb migration wrapper plugs
+// in directly as app.OnStart(db.Migrate) for development and deliberate
+// single-replica deployments; multi-replica production should use one
+// deadline-bounded pre-deploy migration job instead.
 // Must be called before Run; panics if called after compile.
 func (app *App) OnStart(fn func(ctx context.Context) error) {
 	app.checkFrozen("OnStart")
