@@ -177,9 +177,49 @@ func (app *App) MustProvideFactory[T any](fn func(*App) (T, error))
 // ProvideValue registers a pre-built value as a Singleton.
 func (app *App) ProvideValue[T any](value T) error
 
+// ProvideProtectedValue registers a pre-built Singleton whose direct binding
+// cannot later be overwritten by Replace.
+func (app *App) ProvideProtectedValue[T any](value T) error
+
+// ProtectBinding prevents Replace from overwriting an existing direct binding.
+// With one expected value it atomically compares the already-resolved,
+// comparable singleton and protects only when that value still matches.
+func (app *App) ProtectBinding[T any](expected ...T) error
+
+// CanProvideValue performs a non-mutating point-in-time check for a frozen
+// container or an existing direct T registration. It does not reserve T.
+func (app *App) CanProvideValue[T any]() error
+
 // MustProvideValue is like ProvideValue but panics on error.
 func (app *App) MustProvideValue[T any](value T)
+
+// Replace overwrites an ordinary direct binding with a pre-built value.
+// It returns an error when the existing binding is protected.
+func (app *App) Replace[T any](value T) error
+
+// MustReplace is like Replace but panics on error.
+func (app *App) MustReplace[T any](value T)
 ```
+
+`CanProvideValue` is a preflight, not a success guarantee: another goroutine
+can register T or finalize the container before the real publication. The final
+`ProvideValue` or `ProvideProtectedValue` call remains authoritative.
+
+Protected bindings are a low-level integration facility for a DI value coupled
+to external lifecycle, health, or registration state. `Replace` rejecting such
+a binding prevents DI from resolving a different value than the integration
+continues to monitor or shut down. Protection does not itself create lifecycle
+ownership, aliases, health checks, or collection membership. Ordinary
+application/test bindings should remain override-friendly with `ProvideValue`.
+
+`ProtectBinding[T]()` protects an existing direct binding without resolving T;
+this no-argument form is idempotent. `ProtectBinding[T](expected)` is the
+CAS-style compare-and-protect form used after a caller has resolved and
+validated a singleton. Comparison and protection are atomic with respect to
+`Replace`: the expected value must already be resolved, comparable, and equal
+to the current singleton. An unresolved, non-comparable, or changed value
+returns an error without adding protection. More than one expected value is
+rejected, and both forms must run before Finalize.
 
 The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
 
@@ -274,16 +314,28 @@ Contract rules enforced by `BindMany`:
 
 The container has three phases:
 
-1. **Bootstrap** --- `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Resolve`, and `ResolveAll` are all allowed. This supports patterns like `ensureRegistry` where code probes with `Resolve` and falls back to `ProvideValue` if not yet registered.
-2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `Replace`, `Alias`, and `BindMany` return errors. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error.
+1. **Bootstrap** --- `Provide`, `ProvideFactory`, `ProvideValue`,
+   `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, `BindMany`,
+   `Resolve`, and `ResolveAll` are allowed. `CanProvideValue` may check
+   predictable value-publication conflicts without mutating or reserving a
+   binding.
+2. **Finalize** --- `app.Finalize()` freezes the container (internally calling
+   `Seal()`) and validates the dependency graph. After Finalize, `Provide`,
+   `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`,
+   `Replace`, `Alias`, and `BindMany` return errors. If validation fails,
+   subsequent `Resolve` and `ResolveAll` calls return the finalize error.
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()` and `app.RunContext()` call Finalize implicitly.
 
-**Concurrency**: During bootstrap, `Provide`/`ProvideFactory`/`ProvideValue`/ `Alias`/`BindMany` and `Resolve`/`ResolveAll` must not be called concurrently. The container uses internal locking for singleton resolution, but registration and bootstrap resolution are not designed for concurrent use. In practice, all registration and bootstrap resolution happens sequentially in `main()` or setup functions before `Run()`.
+**Concurrency**: During bootstrap, mutation and bootstrap resolution are
+normally performed sequentially in `main()` or setup functions before `Run()`.
+`CanProvideValue` is deliberately point-in-time; its result does not reserve T
+against a concurrent publication or Finalize.
 
 ```go
 // Finalize freezes the container and validates the dependency graph.
-// After Finalize, no more Provide, ProvideFactory, ProvideValue, Replace, Alias,
-// or BindMany calls are allowed.
+// After Finalize, no more Provide, ProvideFactory, ProvideValue,
+// ProvideProtectedValue, ProtectBinding, Replace, Alias, or BindMany calls
+// are allowed.
 // Finalize is idempotent --- subsequent calls return the same result via sync.Once.
 //
 // Finalize is side-effect-free: it does not instantiate singletons or perform I/O.
@@ -376,17 +428,23 @@ type Shutdowner interface {
 ```go
 // internal/di/lifecycle.go
 
-// Shutdown calls Shutdown(ctx) on all cached singletons that implement
-// Shutdowner, in reverse registration order.
+// Shutdown traverses cached singletons in reverse registration order. If the
+// live ctx reaches a Shutdowner entry, it receives at most one attempt.
 func (c *Container) Shutdown(ctx context.Context) error
 ```
 
 ### Concurrency and Lifecycle
 
-- **`Provide` / `MustProvide` / `ProvideFactory` / `ProvideValue` / `Alias` / `BindMany`**: Not concurrent-safe. Intended to be called sequentially at startup (Composition Root), before `app.Finalize()` or `app.Run()`.
+- **Registration mutation** (`Provide`, `ProvideFactory`, value publication,
+  protection, `Replace`, `Alias`, `BindMany`): intended for sequential startup
+  composition before `app.Finalize()` or `app.Run()`.
+- **`CanProvideValue`**: non-mutating point-in-time preflight; does not reserve T
+  against another registration or Finalize.
 - **`Finalize`**: Idempotent via `sync.Once`. Safe to call from multiple goroutines but typically called once at startup.
 - **`Resolve` / `MustResolve` / `ResolveAll` / `MustResolveAll`**: Safe for concurrent use after Finalize. Per-singleton `sync.Once` ensures each constructor runs exactly once, even under concurrent access. Different singletons resolve concurrently without blocking each other.
-- **`Shutdown(ctx)`**: Should be called once during graceful shutdown with a deadline context.
+- **`Shutdown(ctx)`**: Traverses reverse registration order until the deadline
+  expires. If the live deadline reaches a registration, it gets at most one
+  attempt per teardown; an entry after deadline exhaustion may get zero.
 
 ---
 
@@ -413,6 +471,11 @@ func (c *Container) Shutdown(ctx context.Context) error
 10. **Interface aliasing via Alias** --- `Alias[I, T]()` creates a type alias from interface to concrete type. This is simpler than samber/do's `As[T]()` and keeps the registration and aliasing steps explicit and separate.
 
 11. **Ordered collections via BindMany** --- `BindMany[I, T]()` and `ResolveAll[I]` support plugin-style composition while keeping single resolution explicit. Credo intentionally does not introduce named/keyed bindings for this use case.
+
+12. **Protected bindings are opt-in integration state** --- ordinary bindings
+    stay replaceable for composition overrides and tests. Integrations that
+    publish matching lifecycle/health state may protect the direct binding so
+    `Replace` cannot make DI diverge from that external state.
 
 ---
 
@@ -469,7 +532,7 @@ The container inspects the constructor's parameter types via reflection at regis
 internal/di/
 +-- doc.go            <- package documentation (samber/do attribution)
 +-- container.go      <- Container struct, New(), findRegistration (alias-aware)
-+-- provide.go        <- Provide[T], ProvideFactory[T], ProvideValue[T], registration logic
++-- provide.go        <- constructors, normal/protected values, protection + preflight
 +-- resolve.go        <- Resolve[T], ResolveAll[I], dependency graph walk
 +-- bind.go           <- Alias[I,T], BindMany[I,T], binding management
 +-- build.go          <- Seal(), freeze + validate via sync.Once
@@ -482,7 +545,7 @@ internal/di/
 Root package:
 +-- infra.go          <- Infra struct, newInfra (default-logger fallback), defaultLogger
 +-- interfaces.go     <- Shutdowner, RawConfig alias
-+-- di.go             <- Provide[T], ProvideFactory[T], ProvideValue[T], Resolve[T], ResolveAll[I], Alias[I,T], BindMany[I,T]
++-- di.go             <- root registration/preflight/protection/resolve/alias APIs
 +-- infra_test.go
 ```
 
@@ -634,7 +697,18 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 - `MustProvide[T]` panics on invalid constructor
 - Duplicate `Provide[T]` for same type returns error
 - `ProvideValue[T]` registers value as Singleton
+- `CanProvideValue[T]` reports frozen/direct-duplicate conflicts without
+  mutating or reserving T; final publication remains authoritative
+- `ProvideProtectedValue[T]` registers a Singleton that `Replace[T]` cannot overwrite
+- `ProtectBinding[T]()` is idempotent for an existing direct registration,
+  rejects missing/frozen bindings, does not resolve T, and makes Replace fail
+- `ProtectBinding[T](expected)` atomically compare-and-protects only an
+  already-resolved, comparable, matching singleton; unresolved,
+  non-comparable, changed, or multiple expected values fail without adding
+  protection
+- Ordinary `ProvideValue[T]` bindings remain replaceable
 - `Provide[T]` after `Finalize()` returns error (container frozen)
+- `ProvideProtectedValue[T]` and `ProtectBinding[T]` after Finalize return errors
 - `ProvideFactory[T]` runs fn lazily, exactly once; instance is cached
 - `ProvideFactory[T]` fn can resolve dependencies from the container
 - `ProvideFactory[T]` propagates fn's error to the `Resolve` caller
@@ -706,7 +780,10 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 
 ### Lifecycle
 
-- `Shutdown(ctx)` calls `Shutdown(ctx)` on services in reverse registration order
+- `Shutdown(ctx)` traverses services in reverse registration order while ctx is live
+- If the live deadline reaches a Shutdowner entry, it gets at most one attempt
+  per teardown
+- An already-expired deadline skips the remaining registrations and reports them
 - `Shutdown(ctx)` skips services not implementing `Shutdowner`
 
 ### Concurrency

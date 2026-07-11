@@ -228,10 +228,11 @@ func (c *Context) Get(key string) any {
 
 // Context returns the underlying request's [context.Context]. Use it
 // for APIs that take a context.Context — database queries, downstream
-// requests, or transaction propagation via
-// [github.com/credo-go/credo/store.GetTx]:
+// requests, or transaction propagation through a data-store API:
 //
-//	tx, ok := store.GetTx[*sql.Tx](ctx.Context())
+//	err := db.InTx(ctx.Context(), func(txCtx context.Context) error {
+//		return service.Update(txCtx)
+//	})
 //
 // The returned context is canceled when the request completes. For background
 // work that must outlive the request, detach it with [context.WithoutCancel]:

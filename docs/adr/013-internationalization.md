@@ -20,7 +20,7 @@ ctx.T("v.required")                              // translate
 
 Errors carry their own translation key rather than being matched by type. `HTTPError` holds a `MessageKey` field (e.g. `"http.not_found"`); the error pipeline (ADR-009) resolves it against the bundle. The same key doubles as the literal fallback, so a message survives even with no bundle configured.
 
-> **Scope**: only errors that already carry HTTP response semantics get a translated title — `*HTTPError` (via `MessageKey`) and errors exposing `HTTPStatus() int` (mapped to a key through `statusToKey`). A plain error is classified as 500 and its message is never leaked to the client.
+> **Scope**: only errors that the root policy can classify get a translated title — `*HTTPError` (via `MessageKey`), semantic `fault.Provider` values (via the default kind policy), and legacy errors exposing `HTTPStatus() int` (via `statusToKey`). A plain error is classified as 500 and its message is never leaked to the client.
 
 ### Language Detection
 
@@ -53,7 +53,7 @@ Plural form selection is delegated to `golang.org/x/text/feature/plural` (CLDR d
 The error pipeline (ADR-009) resolves messages at render time; i18n plugs in at two points:
 
 1. **Validation errors** (`validation.Errors`) — `translateValidationErrors` translates each field error under the `"v." + code` key (e.g. `"v.required"`), injecting the translated field name when `fields.json` is present.
-2. **HTTP error titles** — `*HTTPError` (via its `MessageKey`) and errors exposing `HTTPStatus() int` (mapped to a key such as `"http.not_found"` via `statusToKey`) are resolved by `resolveMessage`, a 3-level fallback: bundle → built-in English default → the key itself.
+2. **HTTP error titles** — `*HTTPError` (via its `MessageKey`), semantic fault kinds (via root policy), and legacy errors exposing `HTTPStatus() int` (mapped to a key such as `"http.not_found"` via `statusToKey`) are resolved by `resolveMessage`, a 3-level fallback: bundle → built-in English default → the key itself.
 
 With no bundle configured both paths fall through to the built-in/literal text, so translation is purely additive.
 

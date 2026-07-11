@@ -58,7 +58,7 @@ Context has no concrete `User` field or `User()` method — only the generic `Se
 type userKey[T any] struct{}
 ```
 
-The backing store is an implementation detail: the only public access path is the Context methods. There is deliberately no `context.Context`-based accessor (no `credo.UserFrom`, no `auth.GetUser(ctx)`) — the principal is an HTTP-boundary feature reached through `*credo.Context`, not a value propagated down the `context.Context` chain (contrast `store.GetTx`, which is).
+The backing store is an implementation detail: the only public access path is the Context methods. There is deliberately no `context.Context`-based accessor (no `credo.UserFrom`, no `auth.GetUser(ctx)`) — the principal is an HTTP-boundary feature reached through `*credo.Context`, not a value propagated down the `context.Context` chain (contrast store's typed transaction scopes, which are).
 
 ### Authenticator Interface
 
