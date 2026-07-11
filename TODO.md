@@ -191,7 +191,8 @@
 - [x] Default `ErrorRenderer` on `App` (internal `handleError` method)
 - [x] HTTP error types: `NewHTTPError(code, message)`
 - [x] Validation error → Problem Details conversion
-- [x] Tests
+- [x] Offset `Page` tests (input, logical COUNT, snapshot, metadata, mapping)
+- [ ] Cursor conformance tests (tamper/scope/rotation, stable mixed order, insert/delete versus offset drift, and real PostgreSQL/MySQL/SQLite round trips for large int/time/string plus consumer UUID/decimal keys)
 
 ### 2.5 Binding & Lifecycle Completion
 
@@ -395,14 +396,15 @@
 
 - [x] `Page[T]` generic response type
 - [x] Offset/limit pagination; strict non-mutating `Offset() (int, error)` rejects non-positive/native-overflow values while Normalize/Validate retain forgiving defaults and clamp policy
-- [ ] Cursor-based pagination (future — separate `CursorPage[T]` type)
-- [x] Auto-read `?page=` and `?per_page=` from request (`cursor` remains deferred)
+- [x] Cursor/keyset design gate: forward-only `CursorPage[T]` is distinct from the working name `Slice[T]` for future total-free offset pagination; terminal-owned stable order, non-null immutable keys, explicit unique tie-breaker, `per_page+1`, no COUNT, and signed scope-bound token policy are fixed
+- [ ] Cursor-based pagination implementation — gate requires a concrete consumer, a fail-loud Bun post-hook ordering/window boundary, invalid-argument transport mapping, canonical wire-format golden vectors, and real PostgreSQL/MySQL/SQLite conformance; backward/nullable/expression-key/encrypted cursor variants remain deferred
+- [x] Auto-read `?page=` and `?per_page=` from request (reserved cursor input `?after=` remains deferred)
 - [x] `Meta` struct (`total_count`, `page`, `per_page`, `total_pages`, `has_next`, `has_prev`)
 - [x] `NewPage` computes ceiling division without overflowing `TotalPages` at `math.MaxInt64`
 - [x] `Map[U]` method on `Page[T]` — item projection (model → DTO) preserving pagination meta
 - [x] COUNT+SELECT isolation matrix and deterministic SQLite WAL drift/snapshot conformance; `Page` never starts an implicit transaction
 - [ ] First-class custom count source/strategy (defer until two real consumers repeat explicit `Count` + data query + `NewPage` composition)
-- [ ] Total-free offset slice response (design with cursor pagination; do not encode an unknown total in `Page`/`Meta`)
+- [ ] Total-free offset response — `Slice[T]` is the working name and gets its own design gate; do not encode an unknown total in `Page`/`Meta`
 - [x] Tests
 
 ### 3.7 Test Utilities (`testutil/`)

@@ -54,8 +54,9 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
   the count source; expensive, volatile, or set-returning projections should
   use that explicit custom composition. A first-class custom-count strategy is
   deferred until two real consumers need the same abstraction. `Page` retains
-  exact-total metadata; total-free offset windows remain a separate future
-  `Slice`/cursor response rather than overloading `Page` with unknown totals.
+  exact-total metadata; total-free offset windows reserve `Slice[T]`, while
+  keyset pagination reserves the distinct `CursorPage[T]`, rather than
+  overloading `Page` with unknown totals.
   Logical COUNT also runs the model SELECT hook lifecycle on its private source
   (`BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect`), so
   hook-added filters/projections contribute to `Total`; a `Page` that reaches
@@ -86,6 +87,16 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ### Changed
 
+- **Cursor/keyset pagination design gate** — the reserved first result is a
+  forward-only `CursorPage[T]`; future total-free offset pagination keeps the
+  separate working name `Slice[T]` pending its own design gate. Cursor execution owns a stable non-null keyset with
+  an explicit unique tie-breaker, uses `per_page + 1`, performs no COUNT, and
+  requires an explicit scope-bound HMAC keyring for public HTTP tokens. No
+  cursor symbols ship yet: implementation remains gated on a concrete
+  consumer, a fail-loud Bun hook boundary for terminal-owned order/window
+  state, invalid-argument transport mapping, canonical wire vectors, and real
+  PostgreSQL/MySQL/SQLite conformance. See
+  [ADR-015](docs/adr/015-data-access.md).
 - **BREAKING — `SelectQuery.Count` now counts complete logical projection rows.**
   It wraps the projection as `_credo_count_source` after removing root
   ORDER/LIMIT/OFFSET/FOR, so ungrouped aggregate, distinct, and grouped queries

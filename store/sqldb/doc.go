@@ -180,9 +180,10 @@
 // NO_BACKSLASH_ESCAPES. Because the logical projection is evaluated by the count
 // source, expensive or volatile projections should use that explicit custom
 // composition. There is no custom-count strategy until two real consumers
-// require one, and Page never carries an unknown total; a total-free Slice/cursor
-// response is a separate future design. Use a stable ORDER BY with a unique
-// tie-breaker for deterministic offset pages.
+// require one, and Page never carries an unknown total. CursorPage is the
+// accepted working shape for forward keyset pagination; Slice is only a working
+// name for a future total-free offset result. Neither API is exported yet. Use
+// a stable ORDER BY with a unique tie-breaker for deterministic offset pages.
 // Relation callbacks are applied exactly once while rendering this private
 // source. Predicates/projections are allowed; replacing the model or adding
 // root ORDER/LIMIT/OFFSET/FOR or another unsupported shape fails before I/O.

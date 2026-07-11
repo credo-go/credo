@@ -511,9 +511,27 @@ Fail-loud driver-capability validation is deferred. See
 
 `Page` always has exact `Total`/`TotalPages` metadata, and `HasNext` derives
 from it. An unknown total is not encoded as zero, `-1`, a pointer, or an omitted
-field. Total-free offset pagination can fetch `PerPage+1` records, but it needs a
-separate future `Slice` response; that shape is designed with cursor pagination
-instead of changing the meaning or JSON contract of `Page`.
+field. Total-free offset pagination uses `Slice[T]` as a working name pending
+its own design gate;
+keyset pagination keeps the separate `CursorPage[T]` name. Neither changes the
+meaning or JSON contract of `Page`.
+
+The cursor design is accepted but intentionally not exported yet. Its first
+delivery is forward-only (`after` + `per_page`), fetches one extra row, returns
+`per_page`/`has_next`/nullable `next_cursor`, and never runs COUNT. It requires
+terminal-owned stable ordering with immutable non-null keys and an explicit
+unique tie-breaker. Public HTTP cursors require an explicit signing keyring;
+signing prevents tampering but does not hide key values.
+
+A cursor never replaces authorization. Each request must re-apply its normal
+authentication, tenant, permission, and filter predicates; signed scope binding
+only prevents a token from being replayed under a different query.
+
+Implementation waits for a concrete consumer, a fail-loud boundary for Bun
+hooks that mutate cursor-owned ordering/window state, and real
+PostgreSQL/MySQL/SQLite conformance. Until then, repositories that need keyset
+pagination own the query and token codec explicitly. See the
+[cursor design gate](../specs/pagination.md#cursorkeyset-design-gate).
 
 ### Mapping models to DTOs with `Page.Map`
 

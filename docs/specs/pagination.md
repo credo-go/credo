@@ -1,6 +1,6 @@
 # Pagination Spec
 
-**Status**: Implemented **Package**: `pagination/` (core), typed terminal in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
+**Status**: Offset pagination implemented; cursor design accepted with implementation gate deferred **Package**: `pagination/` (core), typed terminal in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
 
 ---
 
@@ -22,6 +22,7 @@ Key design properties:
 - **Metadata computed once, carried across mapping** — a `Page[T]`'s pagination metadata (`Total`, `Page`, `PerPage`, `TotalPages`) is computed once, by `Page[T]` or `NewPage`, and never recomputed or hand-copied. When the response carries the queried type, `Page[T]` returns it directly; for a model→DTO response, build `Page[Model]` and `Map` it to `Page[DTO]` — `Page.Map` carries the metadata over.
 - **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `BindQuery` via `query:"..."` tags.
 - **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based sort field validation. Only pre-approved DB columns can appear in ORDER BY.
+- **Cursor API not exported yet** — the forward-only contract is designed below, but its consumer, Bun-hook, and real-database gates remain open.
 
 ---
 
@@ -385,9 +386,10 @@ references: [PostgreSQL transaction isolation](https://www.postgresql.org/docs/c
 `Page` always carries an exact `Total` and `TotalPages`; `HasNext` derives from
 that metadata. Unknown totals are not represented as zero, `-1`, a pointer, or
 an omitted JSON field. A total-free offset query can fetch `PerPage+1` records
-to determine `HasNext`, but its response belongs to a separate future
-`Slice[T]` shape designed with cursor pagination. There is no `WithCount(false)`
-mode that changes the meaning of an existing `Page`.
+to determine `HasNext`, but its response uses the separate working name
+`Slice[T]` until its own design gate. Keyset pagination uses the distinct reserved
+`CursorPage[T]` shape described below. There is no `WithCount(false)` mode that
+changes the meaning of an existing `Page`.
 
 ### Model→DTO responses
 
@@ -544,13 +546,211 @@ app.GET("/products", handler.List)
 
 ---
 
-## Future: Total-Free Slice and Cursor-Based Pagination
+## Cursor/Keyset Design Gate
 
-Planned but not yet designed. Total-free offset pagination will use a separate
-`Slice[T]`-style response, and cursor pagination a separate `CursorPage[T]`,
-because neither has `Page`'s exact `total_count`/`total_pages` contract. Cursor
-responses instead carry a `next_cursor`; both designs are decided together when
-a real consumer requires them.
+The design direction is accepted, but no cursor types or terminals are exported
+yet. `CursorPage[T]` is reserved for keyset pagination; `Slice[T]` is only the
+working name for a future total-free **offset** window and gets its own design
+gate before export. They do not weaken `Page[T]`'s exact total contract and are
+not aliases of one another.
+
+### Reserved forward-only shape
+
+The first cursor delivery is deliberately one-way:
+
+```text
+request:  after=<opaque cursor>&per_page=50
+
+response:
+{
+  "data": [],
+  "meta": {
+    "per_page": 50,
+    "has_next": false,
+    "next_cursor": null
+  }
+}
+```
+
+The planned core names are `CursorRequest`, `CursorPage[T]`, and `CursorMeta`;
+the sqldb terminal is `SelectQuery.CursorPage[T]`. Records are always a non-nil
+slice. The final window uses JSON `null` for `next_cursor`. There is no
+`before`, previous cursor, arbitrary direction parameter, page number,
+`total_count`, `total_pages`, or `WithTotal` switch in the first delivery.
+Repositories that need a total run a separate explicit `Count` and put it in an
+application-owned envelope. Cursor execution itself never runs COUNT.
+
+`CursorRequest.Validate` will mirror `PageRequest`'s input-policy role by
+defaulting/clamping `per_page`; the terminal will snapshot the request and
+strictly reject nil, non-positive, overflowed, or adapter-unrepresentable
+execution values without mutating it. Because Bun v1.2.18 stores LIMIT as a
+signed int32 and the terminal adds one, strict execution requires
+`per_page <= math.MaxInt32 - 1` and checks native-int addition before building
+SQL.
+
+### Terminal-owned keyset
+
+The terminal owns ordering through an immutable adapter-level keyset spec. The
+first delivery accepts only a model-less default full-model SELECT plus curated
+`Where` or `ApplyQueryBuilder` predicates whose top-level separator is AND.
+`WherePK` is excluded because Bun resolves it when the model-less builder is
+composed, before the typed terminal supplies `T`, and records an unrecoverable
+builder error. A top-level `WhereOr` is also rejected: appending the cursor
+ladder could otherwise produce `A OR (B AND cursor)` instead of
+`(A OR B) AND cursor`. An OR filter must first be enclosed in one Bun
+`WhereGroup` through `ApplyQueryBuilder`; the resulting group itself joins the
+root with AND. The terminal validates this final WHERE tree before I/O. It also
+rejects custom `Column`/`ColumnExpr`/`ExcludeColumn`/`TableExpr`/`Apply`, joins, root
+ORDER/LIMIT/OFFSET/lock, and distinct, aggregate, grouped, compound, or
+otherwise non-row-shaped sources. Full-model projection ensures every cursor
+key was actually scanned into `T`. A join can multiply one model row, so a
+root-table unique id is not necessarily unique in the SQL result. Supporting
+joins or projections requires a later logical-row uniqueness/projection proof.
+This fail-loud boundary prevents the token's order and the executed SQL order
+from diverging.
+
+The first delivery also rejects model types that implement Bun SELECT,
+append-model, or row/result scan hooks. A pre-query hook can replace the model
+or alter query shape/order/window; `AfterScanRow` or `AfterSelect` can mutate a
+cursor key after SQL ordering but before token generation. Bun v1.2.18 exposes
+no public seam that lets Credo apply and verify terminal-owned state after all
+of those hooks, so accepting hook-capable models would make fail-loud behavior
+unprovable.
+
+The terminal otherwise inherits the existing typed-terminal invariants: the
+query starts model-less, execution uses a private snapshot, the reusable
+receiver is not mutated, explicit connections win over ambient transaction
+injection, ambient transactions still propagate, and database failures retain
+the current store-error mapping.
+
+Every keyset component must be:
+
+- a quoted database column identifier, not request-provided SQL;
+- selected into the model and encoded with its original type;
+- immutable and `NOT NULL` for the lifetime of a cursor walk; and
+- backed by a matching composite index where performance matters.
+
+The final component is a separately declared unique tie-breaker. This makes the
+order total even when an earlier value repeats. ASC and DESC components may be
+mixed, but each direction is fixed by the keyset spec rather than the request.
+
+For keys `(a ASC, b DESC, id ASC)`, an `after` boundary expands to the portable
+lexicographic ladder:
+
+```sql
+a > :a
+OR (a = :a AND b < :b)
+OR (a = :a AND b = :b AND id > :id)
+```
+
+The complete ladder is appended to the already-validated filter root as one
+parenthesized AND condition. Column identifiers are quoted, and decoded values go through Bun's
+typed SQL formatter; token bytes are never concatenated into SQL. Bun v1.2.18
+renders the final SQL rather than passing driver bind parameters, so the
+contract is formatter safety, not a claim about driver placeholders.
+
+The terminal fetches `per_page + 1`, trims the extra row, derives `has_next`,
+and encodes the last included record as `next_cursor`. It never uses OFFSET.
+The expanded predicate is preferred over a row constructor because it handles
+mixed directions uniformly and follows MySQL's documented optimization advice
+for fuller composite-index use. See
+[MySQL row-constructor optimization](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html).
+NULL keys are excluded: comparison truth and default NULL placement differ
+across supported databases. See
+[PostgreSQL ordering](https://www.postgresql.org/docs/current/queries-order.html),
+[MySQL NULL ordering](https://dev.mysql.com/doc/refman/8.0/en/null-values.html),
+and [SQLite type ordering](https://www.sqlite.org/datatype3.html).
+
+### Cursor integrity and privacy
+
+There is no implicit unsigned or process-local-secret default. The planned
+public-HTTP codec requires an explicit HMAC-SHA256 keyring. Each key is at least
+32 cryptographically random bytes generated by a CSPRNG; the constructor can
+enforce length, while entropy remains a deployment/configuration contract.
+Exactly one key signs, older keys are verify-only, key-id lookup is direct, and
+MAC comparison is constant-time. The first delivery caps the ring
+at eight keys, the key tuple at eight components, the decoded payload at 1 KiB,
+and the complete token at 2 KiB before parsing. Rotation retention is fixed
+only together with the consumer's expiry policy; without an expiry horizon, a
+verification key cannot be retired safely. Its signed input binds the
+following; the construction follows
+[RFC 2104](https://www.rfc-editor.org/rfc/rfc2104.html):
+
+- token-format version;
+- endpoint/query identity and canonical keyset order;
+- normalized filter scope; and
+- tenant/authorization scope.
+
+The wire format is versioned, key-id-addressed, base64url-safe, and
+integrity-protected, but its exact byte framing is deliberately not frozen yet.
+Before implementation, the consumer must drive canonical tuple encoding,
+key-id grammar, padding rules, external-scope canonicalization, MAC framing,
+and cross-implementation golden vectors. The MAC uses a fixed Credo cursor
+domain separator and covers the version, key id, payload, and external scope
+binding. Key material is copied into the codec, never serialized, logged, or
+included in an error. Tuple members retain explicit types and fixed arity;
+decoding does not coerce JSON numbers into a generic floating-point value.
+Expiry and rotation-retention durations are intentionally not fixed without a
+consumer's request-lifetime requirements.
+
+A token from one scope therefore fails closed in another. Decode has a strict
+size limit, exact version/arity/type validation, no unknown fields or trailing
+data, and errors never echo token contents or key values.
+
+Malformed, tampered, unknown-key, scope-mismatched, and—when an expiry policy is
+configured—expired client tokens share one public invalid-cursor error and map
+to HTTP 400 without revealing the reason. Configuration or cursor-encoding
+failures are internal errors; database failures keep the existing `store.Error`
+mapping. Shipping this distinction also requires the framework's
+transport-neutral taxonomy to gain a general invalid-argument kind rather than
+teaching the HTTP layer about pagination.
+
+A cursor is not an authorization capability. Every request re-runs normal
+authentication, authorization, tenant predicates, and normalized filters;
+signed scope binding is defense in depth against cross-query replay, not a
+replacement for those checks. “Opaque” means clients must not interpret or
+construct the token. Its signed payload is still visible and therefore not
+confidential.
+
+Signing provides integrity, not confidentiality. The payload remains visible,
+so the first delivery permits only non-sensitive keys. Encryption (AEAD),
+server-side cursors, expiry policy, and a deliberately named trusted-only
+unsigned codec remain separate decisions driven by a real consumer.
+
+### Mutation contract
+
+Cursor pages are usually separate requests and do not share a transaction
+snapshot. With immutable ordering keys:
+
+- inserting or deleting a row strictly before the boundary does not shift the
+  next window;
+- inserting a row after the boundary may make it appear later;
+- deleting an unseen row removes it from later windows; and
+- changing an ordering key may duplicate or skip that row and is unsupported.
+
+The conformance suite must demonstrate these cases and the corresponding
+offset duplicate/skip behavior, while proving no duplicate keyset row appears.
+
+### Gate-opening conditions
+
+Implementation remains deferred until all of these are true:
+
+1. a concrete consumer contributes its real model, filters, order, tenant
+   binding, and key-rotation requirements;
+2. sqldb either pre-I/O rejects hook-capable models or can prove model, query
+   shape, order/window, scanned key values, and token values remain aligned
+   across every Bun model/scan hook;
+3. real PostgreSQL, MySQL, and SQLite jobs pass generated-SQL, NULL/collation,
+   index-plan, insert/delete, and typed-value round-trip tests—including signed
+   integers above 2^53, timestamp precision/timezone, deterministic string
+   collation, and consumer-specific UUID/decimal types; floats/NaN have no
+   default support;
+4. the transport-neutral fault taxonomy maps invalid cursor input through the
+   root renderer, built-in observer, and access-log middleware as HTTP 400; and
+5. canonical wire framing and cross-implementation golden vectors are fixed.
+
+Until then, a repository may own its keyset SQL and cursor codec explicitly,
+but Credo will not freeze a speculative public generic abstraction.
 
 ---
 
@@ -565,6 +765,8 @@ a real consumer requires them.
 | `Total` is complete logical projection cardinality | Credo counts a universal outer source after removing root ORDER/LIMIT/OFFSET/FOR, covering ungrouped aggregates, distinct tuples, groups, and post-`Having` groups; model SELECT hooks run on the private source; unsafe standalone `Having`, direct compound roots, and MySQL-unprovable derived output names fail pre-I/O with `ErrUnsupportedCountQuery` |
 | No custom-count strategy yet | Existing explicit count + data query + `NewPage` composition covers advanced sources; wait for two real consumers before committing another public API |
 | No unknown total in `Page` | Total-free offset/cursor responses have different metadata and remain separate future types |
+| Cursor and total-free offset names stay separate | `CursorPage[T]` is the reserved keyset result; `Slice[T]` is only the working name for a future total-free offset result with its own design gate |
+| Cursor implementation gate remains closed | A real consumer, a fail-loud Bun hook boundary, invalid-argument transport mapping, canonical wire vectors, and PostgreSQL/MySQL/SQLite conformance are required before public symbols ship |
 | Normalize policy is separate from execution validation | `Normalize`/`Validate` mutate the input to apply defaults and caps. `Offset` and `SelectQuery.Page` never normalize or clamp: they reject unsafe values with `ErrInvalidPageRequest`, preserving a valid custom `PerPage` above 50 |
 | `Offset()` returns `(int, error)` | A plain `int` result could silently wrap. The pre-v1 signature break makes arithmetic failure explicit and keeps invalid LIMIT/OFFSET state from reaching adapters |
 | Bun Page windows are bounded to signed int32 | Bun v1.2.18 narrows its public `int` LIMIT/OFFSET inputs internally. `sqldb` validates that adapter-specific range before COUNT and rechecks it on Bun upgrades |

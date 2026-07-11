@@ -534,7 +534,42 @@ PostgreSQL defaults to statement-snapshot Read Committed. InnoDB defaults to Rep
 
 `Page` answers with the queried type directly; for a model→DTO response run `Page[Model]` and map it with `Page.Map`, which carries the metadata over (`q.Page[Model](ctx, req)` then `modelPage.Map(func(m Model) DTO { return toDTO(m) })`). When the conversion itself can fail, map the records from `Page[Model]` with ordinary error handling and construct `pagination.NewPage(dtos, modelPage.Total, modelPage.Page, modelPage.PerPage)`. `NewPage` calculates `TotalPages` as quotient plus remainder, avoiding ceiling-division overflow near `math.MaxInt64`.
 
-The universal count source evaluates the projection, which is necessary for exact aggregate and set-returning cardinality. A costly or volatile expression can consequently run once for COUNT and again for the page SELECT. There is deliberately no custom-count strategy on `Page`: advanced repositories share predicates with `ApplyQueryBuilder`, run a deliberately equivalent cheaper `Count` (or count an outer derived-table/CTE source), execute their data query, and call `pagination.NewPage`; a first-class abstraction waits for two real consumers. Likewise, `Page` never represents an unknown total. Total-free offset pagination will use a separate future `Slice` shape designed with cursor pagination rather than changing `Page`/`Meta` JSON or navigation semantics.
+The universal count source evaluates the projection, which is necessary for exact aggregate and set-returning cardinality. A costly or volatile expression can consequently run once for COUNT and again for the page SELECT. There is deliberately no custom-count strategy on `Page`: advanced repositories share predicates with `ApplyQueryBuilder`, run a deliberately equivalent cheaper `Count` (or count an outer derived-table/CTE source), execute their data query, and call `pagination.NewPage`; a first-class abstraction waits for two real consumers. Likewise, `Page` never represents an unknown total. Total-free offset pagination uses the separate working name `Slice[T]` and gets its own design gate rather than changing `Page`/`Meta` JSON or navigation semantics.
+
+**Cursor/keyset implementation is gated.** The accepted first shape is a
+forward-only `CursorPage[T]`; `Slice[T]` remains only the working name for
+total-free offset pagination. A cursor response has `per_page`, `has_next`, and nullable
+`next_cursor`, never Page totals or a previous cursor, and its terminal performs
+no COUNT. Ordering belongs to an immutable adapter spec with non-null immutable
+keys and an explicit unique final tie-breaker. The terminal will reject an
+existing root ORDER/LIMIT/OFFSET/lock and non-row-shaped queries rather than
+silently composing incompatible state, then use a portable lexicographic
+OR-of-AND predicate plus `per_page + 1`. Joins are also excluded initially:
+they can multiply a root row and invalidate a root-id uniqueness assertion.
+Only a model-less default full-model SELECT plus curated predicates is accepted;
+custom projections/tables, raw `Apply`, and hook-capable models fail before I/O.
+Top-level `WhereOr` also fails; OR filters must be enclosed in one `WhereGroup`
+that joins the root with AND before the cursor predicate is appended.
+
+The public HTTP token policy requires an explicit rotatable HMAC-SHA256 keyring;
+there is no generated secret or implicit unsigned fallback. Signing binds the
+endpoint/query, canonical order, normalized filters, and tenant/authorization
+scope, but does not hide cursor values. Sensitive keys, encryption, backward
+navigation, optional totals, and nullable ordering remain outside the first
+delivery.
+
+The cursor is not authorization. Every request re-applies the normal auth,
+tenant, and filter predicates; signed scope binding only prevents replay under
+a different query.
+
+No symbols ship yet. The gate opens only with a concrete consumer, a fail-loud
+answer for Bun model hooks that can mutate terminal-owned order/window state,
+invalid-argument transport mapping, canonical wire-format vectors, and real
+PostgreSQL/MySQL/SQLite SQL, mutation, and typed-value conformance. The terminal
+must retain existing model-less, execution-snapshot, receiver-reuse, explicit
+connection/ambient-transaction, and store-error-mapping invariants. The canonical reserved contract
+and mutation semantics live in the [pagination spec](pagination.md#cursorkeyset-design-gate);
+the decision rationale is in [ADR-015](../adr/015-data-access.md).
 
 **Escape hatches** on each query type:
 
