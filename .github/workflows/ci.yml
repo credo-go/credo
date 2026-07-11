@@ -58,6 +58,68 @@ jobs:
         working-directory: store/sqldb
         run: go vet ./...
 
+  test-sqldb-real:
+    name: Test (store/sqldb real, ${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: PostgreSQL
+            image: postgres:17-alpine
+            driver: pgx
+            port: 5432
+            ssl_mode: disable
+            health_cmd: pg_isready -h 127.0.0.1 -U credo -d credo_test
+          - database: MySQL
+            image: mysql:8.4
+            driver: mysql
+            port: 3306
+            ssl_mode: "false"
+            health_cmd: mysqladmin ping -h 127.0.0.1 -ucredo -pcredo --silent
+
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: credo
+          POSTGRES_PASSWORD: credo
+          POSTGRES_DB: credo_test
+          MYSQL_ROOT_PASSWORD: credo-root
+          MYSQL_DATABASE: credo_test
+          MYSQL_USER: credo
+          MYSQL_PASSWORD: credo
+        ports:
+          - "${{ matrix.port }}:${{ matrix.port }}"
+        options: >-
+          --health-cmd "${{ matrix.health_cmd }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run real database contract tests
+        working-directory: store/sqldb
+        run: go test -count=1 -timeout=2m -run '^TestRealDB_Contracts$' -v .
+        env:
+          CREDO_REAL_DB_TEST: "1"
+          CREDO_REAL_DB_DRIVER: ${{ matrix.driver }}
+          CREDO_REAL_DB_HOST: 127.0.0.1
+          CREDO_REAL_DB_PORT: ${{ matrix.port }}
+          CREDO_REAL_DB_NAME: credo_test
+          CREDO_REAL_DB_USER: credo
+          CREDO_REAL_DB_PASSWORD: credo
+          CREDO_REAL_DB_SSL_MODE: ${{ matrix.ssl_mode }}
+
   build:
     name: Build
     runs-on: ubuntu-latest
