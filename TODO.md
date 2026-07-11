@@ -310,7 +310,10 @@
 **Phase 3.3b — Bun Wrapper** (`store/sqldb/`, submodule: `github.com/credo-go/credo/store/sqldb`):
 
 - [x] `DB` type wrapping `*bun.DB` with lifecycle methods
-- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN, ConnectTimeout, MaxOpen, MaxIdle, MaxLifetime, SSLMode, Options)
+- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN,
+  ConnectTimeout, MaxOpen, pointer-valued MaxIdle, MaxLifetime, MaxIdleTime,
+  SSLMode, Options) + fail-loud pool validation, `DB.Stats`, cumulative health
+  diagnostics, and successful-registration unlimited-pool warning
 - [x] `Open(cfg, opts...)` — factory with functional options
 - [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
 - [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure

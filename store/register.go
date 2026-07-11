@@ -33,6 +33,16 @@ type registerPlan struct {
 	pingTimeout       time.Duration
 	lifecycle         Lifecycle
 	lifecycleIdentity lifecycleIdentity
+	warningCodes      []string
+}
+
+const maxRegistrationWarningCodeLength = 64
+
+// registrationWarningProvider is an optional, deliberately private seam used
+// by store implementations to surface low-cardinality, secret-free startup
+// diagnostics through Register's application logger.
+type registrationWarningProvider interface {
+	StoreRegistrationWarningCodes() []string
 }
 
 // WithName sets the stable identifier used in health reporting. It rejects an
@@ -89,6 +99,7 @@ func WithCallerOwnedLifecycle() RegisterOption {
 //  3. Privately reserve the unique store name, DI type, and lifecycle identity
 //  4. Ping the connection with a finite timeout
 //  5. Publish the DI value and Registry health entry together
+//  6. Emit validated, secret-free registration warning codes after publication
 //
 // Shutdown ownership is unambiguous. A direct Lifecycle value is
 // framework-owned after successful registration. The DI container visits it in
@@ -153,6 +164,14 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 		return app.ProvideProtectedValue[R](value)
 	}); err != nil {
 		return fmt.Errorf("store: register %q: %w", plan.name, err)
+	}
+	for _, code := range plan.warningCodes {
+		app.Logger().Warn(
+			"credo: store configuration warning",
+			"component", "store",
+			"store", plan.name,
+			"code", code,
+		)
 	}
 	return nil
 }
@@ -225,6 +244,11 @@ func buildRegisterPlan[R any](value R, opts ...RegisterOption) (registerPlan, er
 		return registerPlan{}, fmt.Errorf("store: %q does not implement Lifecycle", name)
 	}
 
+	warningCodes, err := snapshotRegistrationWarningCodes(lc)
+	if err != nil {
+		return registerPlan{}, err
+	}
+
 	identity, err := identifyLifecycle(lc)
 	if err != nil {
 		return registerPlan{}, fmt.Errorf("store: lifecycle identity for %q: %w", name, err)
@@ -235,7 +259,46 @@ func buildRegisterPlan[R any](value R, opts ...RegisterOption) (registerPlan, er
 		pingTimeout:       o.pingTimeout,
 		lifecycle:         lc,
 		lifecycleIdentity: identity,
+		warningCodes:      warningCodes,
 	}, nil
+}
+
+func snapshotRegistrationWarningCodes(value any) ([]string, error) {
+	provider, ok := value.(registrationWarningProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	codes := provider.StoreRegistrationWarningCodes()
+	result := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for i, code := range codes {
+		if !validRegistrationWarningCode(code) {
+			// Never include the provider value in this error: an invalid code may
+			// accidentally contain a DSN, credential, or another secret.
+			return nil, fmt.Errorf("store: registration warning code at index %d is invalid", i)
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result, nil
+}
+
+func validRegistrationWarningCode(code string) bool {
+	if code == "" || len(code) > maxRegistrationWarningCodeLength {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func registerName[R any]() string {

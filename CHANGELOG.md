@@ -23,6 +23,13 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
   composition helpers) a non-mutating frozen/direct-duplicate preflight; it is
   point-in-time only and does not reserve T or guarantee that a later
   normal/protected publication succeeds.
+- **Data access pool diagnostics** — `sqldb.Config.MaxIdleTime` now wires
+  `database/sql.SetConnMaxIdleTime`; `(*sqldb.DB).Stats()` exposes the complete
+  `sql.DBStats` snapshot, and SQL health details include cumulative wait and
+  idle/lifetime closure counters. A successfully registered unlimited pool
+  emits one structured `sqldb.pool.max_open_unlimited` warning through the app
+  logger. Standalone users can inspect the same secret-free signal through
+  `(*sqldb.DB).StoreRegistrationWarningCodes()`.
 - **Protected DI values** — `App.ProvideProtectedValue[T]` publishes a
   pre-built singleton that `App.Replace[T]` cannot overwrite;
   `App.ProtectBinding[T](expected ...T)` adds the same protection to an existing
@@ -87,6 +94,17 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 
 ### Changed
 
+- **BREAKING — `sqldb.Config.MaxIdle` is now `*int`.** `nil` makes Credo leave
+  the idle setter untouched (the effective stdlib default remains subject to
+  `MaxOpen`), `new(0)` explicitly disables idle retention, and a positive value
+  is applied exactly. Migrate
+  `MaxIdle: 10` to `MaxIdle: new(10)`. With finite `MaxOpen`, an explicit
+  `MaxIdle > MaxOpen` now fails `Open` instead of being silently clamped.
+  `MaxOpen=0` remains unlimited; Credo does not impose a workload-independent
+  finite default. `MaxIdleTime=0` and `MaxLifetime=0` disable their respective
+  expiry policies. The added `MaxIdleTime` field also changes positional
+  `sqldb.Config` literals: migrate them to keyed fields, which is the supported
+  form for this evolving beta config struct.
 - **Cursor/keyset pagination design gate** — the reserved first result is a
   forward-only `CursorPage[T]`; future total-free offset pagination keeps the
   separate working name `Slice[T]` pending its own design gate. Cursor execution owns a stable non-null keyset with

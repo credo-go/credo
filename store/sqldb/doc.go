@@ -14,7 +14,36 @@
 //	    Name:   "myapp",
 //	    User:   "postgres",
 //	    Password: "secret",
+//	    MaxOpen: 25,
+//	    MaxIdle: new(10),
+//	    MaxIdleTime: 5 * time.Minute,
+//	    MaxLifetime: 30 * time.Minute,
 //	})
+//
+// # Connection Pool
+//
+// Credo does not choose a workload-independent finite pool size. MaxOpen=0
+// preserves database/sql's unlimited-open behavior. If the pool is still
+// unlimited when a successful canonical store.Register inspects it, the app
+// logger emits one structured warning with code sqldb.pool.max_open_unlimited.
+// Standalone users can inspect DB.StoreRegistrationWarningCodes during
+// bootstrap and route the same secret-free codes through their own logger.
+//
+// MaxIdle uses a pointer to distinguish absence from an explicit zero: nil
+// makes Credo leave the idle limit unset (the effective database/sql default
+// remains subject to MaxOpen), new(0) retains no idle connections, and a
+// positive value is applied exactly. With MaxOpen > 0, MaxIdle must not exceed
+// MaxOpen; Open rejects the configuration instead of relying on database/sql's
+// silent clamp. MaxIdleTime=0 disables idle-age expiry and MaxLifetime=0
+// disables lifetime expiry. Positive values are applied unchanged.
+//
+// DB.Stats returns the complete sql.DBStats snapshot. Health details include
+// current open/in-use/idle counts and cumulative wait/closure counters, but
+// readiness does not serialize adapter details. Credo does not derive
+// StatusDegraded from pool saturation: that policy remains gated on production
+// metrics, an explicit SLO, windowed deltas, hysteresis, and opt-in thresholds.
+// Because all stores are currently critical, DEGRADED removes readiness and a
+// noisy universal threshold could cascade across replicas.
 //
 // # Lifecycle Identity
 //

@@ -89,6 +89,41 @@ The `sqldb.DB` wrapper applies three strategies to Bun's API:
 2. **Enrich** — query builder proxies (`Select`, `Insert`, `Update`, `Delete`) that inject TX from context and map errors to semantic `store.Error` values. DB-level query-hook tracing is planned for Phase 3.5 and is not installed today.
 3. **Passthrough** — `Conn(ctx) bun.IDB` for transaction-aware native Bun work and `Client() *bun.DB` for migrations, model registration, or operations intentionally tied to the base pool.
 
+### Connection-Pool Policy
+
+Credo does not invent a workload-independent connection-pool size. `MaxOpen=0`
+retains `database/sql`'s unlimited-open behavior; silently choosing a finite
+default could either under-provision a busy service or overrun a smaller
+database. Instead, a pool that is still unlimited when canonical
+`store.Register` inspects it emits one structured warning with code
+`sqldb.pool.max_open_unlimited`. Standalone users that do not call
+`store.Register` can inspect `DB.StoreRegistrationWarningCodes()` and route the
+same secret-free code through their own bootstrap logging.
+
+Pool settings preserve the distinction between absence and an explicit value:
+
+- `MaxIdle == nil` means Credo does not call `SetMaxIdleConns`; the effective
+  `database/sql` default remains subject to `MaxOpen`. `MaxIdle: new(0)`
+  disables idle retention, and a positive value is applied exactly.
+- When `MaxOpen > 0`, an explicit `MaxIdle` greater than `MaxOpen` is rejected
+  at `Open`; Credo does not rely on `database/sql`'s silent clamp.
+- `MaxIdleTime == 0` disables idle-age expiry; a positive value is passed to
+  `SetConnMaxIdleTime`.
+- `MaxLifetime == 0` disables lifetime expiry; a positive value is passed to
+  `SetConnMaxLifetime`.
+
+`DB.Stats()` exposes the complete `sql.DBStats` snapshot. SQL health metadata
+includes current open/in-use/idle counts plus cumulative wait duration/count
+and idle-time, idle-count, and lifetime closure counters. Readiness does not
+serialize adapter `Details`, so these values are operational diagnostics for
+code and future metrics rather than an accidental public probe schema.
+
+Pool saturation does not currently produce `StatusDegraded`. A useful signal
+requires production metrics, an explicit SLO, windowed counter deltas,
+hysteresis, and opt-in thresholds. A universal instantaneous threshold would
+be noisy; because every store is currently critical and `DEGRADED` removes
+readiness, such noise could also trigger a replica-wide traffic cascade.
+
 ### Registration
 
 `store.Register[R](app, value, opts...)` is the unified registration function.

@@ -684,7 +684,7 @@ func openSnapshotSQLitePair(t *testing.T) (*sqldb.DB, *sqldb.DB, func()) {
 			Driver:  "sqlite",
 			DSN:     dsn,
 			MaxOpen: 1,
-			MaxIdle: 1,
+			MaxIdle: new(1),
 		})
 		if err != nil {
 			t.Fatalf("Open(%q) = %v", dsn, err)

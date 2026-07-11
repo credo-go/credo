@@ -162,6 +162,9 @@ type Health struct {
 The root readiness policy logs it and includes its text only when
 `HealthConfig.ExposeErrors` is explicitly enabled. Free-form
 `Details["error"]` values are adapter metadata, not a trusted error contract.
+Readiness responses do not serialize adapter `Details`; pool statistics remain
+available to application code and future metrics without becoming a public
+probe-response schema.
 
 ### Registry
 
@@ -229,6 +232,12 @@ Steps:
    later `Replace[R]` from detaching DI from lifecycle/health state. Only a
    successful DI publication commits the Registry entry; every failure
    releases the pending reservation.
+6. **Emit registration diagnostics** — after a successful commit, a value that
+   reports registration warning codes is logged once per code through the
+   app's structured logger. `sqldb.DB` reports
+   `sqldb.pool.max_open_unlimited` when the effective pool maximum is still
+   unlimited at inspection time; failed registrations do not emit a
+   misleading success-time warning.
 
 Shutdown ownership is explicit:
 
@@ -368,7 +377,11 @@ The older unscoped `WithTx[T]` / `GetTx[T]` / `Conn[T]` functions remain source-
 ```go
 package sqldb
 
-import "github.com/uptrace/bun"
+import (
+    "database/sql"
+
+    "github.com/uptrace/bun"
+)
 
 // DB wraps *bun.DB with lifecycle management, query builder proxies,
 // error mapping, and transaction support.
@@ -380,6 +393,13 @@ func Open(cfg *Config, opts ...Option) (*DB, error)
 // Client returns the underlying *bun.DB for raw SQL, migrations,
 // model registration, and features not covered by proxies.
 func (db *DB) Client() *bun.DB
+
+// Stats returns the current database/sql pool statistics snapshot.
+func (db *DB) Stats() sql.DBStats
+
+// StoreRegistrationWarningCodes returns secret-free warning codes that the
+// canonical store.Register path logs after successful registration.
+func (db *DB) StoreRegistrationWarningCodes() []string
 
 // Lifecycle methods — satisfies store.Lifecycle.
 func (db *DB) Ping(ctx context.Context) error
@@ -401,8 +421,9 @@ type Config struct {
     DSN            string        // override: raw DSN string (if set, Host/Port/Name ignored)
     ConnectTimeout time.Duration // connection establishment timeout
     MaxOpen        int           // max open connections (0 = unlimited)
-    MaxIdle        int           // max idle connections
-    MaxLifetime    time.Duration // max connection lifetime
+    MaxIdle        *int          // nil = no Credo idle setter; new(0) = retain none
+    MaxLifetime    time.Duration // max connection lifetime (0 = disabled)
+    MaxIdleTime    time.Duration // max idle age (0 = disabled)
     SSLMode        string        // "disable", "require", "verify-full"
     Options        map[string]string // driver-specific connection params
 }
@@ -411,6 +432,35 @@ type Config struct {
 // release, rollback, and fail-safe ambient rollback. Default: 5s; d must be > 0.
 func WithTxCleanupTimeout(d time.Duration) Option
 ```
+
+Credo deliberately has no workload-independent finite pool default.
+`MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is
+still unlimited when a successful canonical `store.Register` inspects it emits
+one structured warning with code `sqldb.pool.max_open_unlimited`; standalone
+users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes
+themselves.
+
+`MaxIdle` is a pointer because omission and zero have different stdlib
+semantics: `nil` does not call `SetMaxIdleConns` (the effective stdlib default
+remains subject to `MaxOpen`), `new(0)` explicitly disables idle retention,
+and a positive value is applied exactly. If `MaxOpen > 0`, an explicit
+`MaxIdle > MaxOpen` fails `Open` instead of relying on `database/sql`'s silent
+clamp. Negative pool counts or durations fail validation. A zero `MaxIdleTime`
+or `MaxLifetime` disables that expiry policy; positive values are passed to
+`SetConnMaxIdleTime` and `SetConnMaxLifetime`.
+
+`DB.Stats()` returns the complete `sql.DBStats` snapshot. `DB.Health` includes
+the current open/in-use/idle counts and the cumulative `WaitCount`,
+`WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and
+`MaxLifetimeClosed` counters in adapter details. These counters are cumulative,
+so production saturation policy must use time-window deltas rather than raw
+totals.
+
+Pool saturation does not automatically produce `StatusDegraded`. Such a
+policy is deferred until production metrics and an explicit SLO justify
+opt-in thresholds, windowed deltas, and hysteresis. Today all stores are
+critical and `DEGRADED` removes readiness; a universal threshold could
+therefore cause a cascading traffic shift.
 
 ### Query Builders
 
@@ -1049,9 +1099,17 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 
 - `Open` creates a working connection
 - `Open` returns error on invalid Config
+- Pool config applies finite `MaxOpen`, nil/zero/positive `MaxIdle`,
+  `MaxLifetime`, and `MaxIdleTime` exactly; negative values and explicit
+  `MaxIdle > MaxOpen` fail before connection use
 - `Client()` returns `*bun.DB`
+- `Stats()` returns the underlying complete `sql.DBStats` snapshot
 - `Ping` verifies connection
-- `Health` returns UP with latency and pool stats
+- `Health` returns UP with latency, current pool counts, and cumulative
+  wait/idle/lifetime closure counters
+- An effective unlimited maximum reports `sqldb.pool.max_open_unlimited`;
+  canonical successful registration logs it once, while failed registration
+  does not
 - `Health` returns DOWN with a typed `Cause` when the connection is dead; it
   does not copy the cause string into `Details["error"]`
 - `Shutdown` closes connection

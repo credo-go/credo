@@ -125,34 +125,69 @@ type Config struct {
     DSN            string
     ConnectTimeout time.Duration
     MaxOpen        int
-    MaxIdle        int
+    MaxIdle        *int
     MaxLifetime    time.Duration
+    MaxIdleTime    time.Duration
     SSLMode        string
     Options        map[string]string
 }
 ```
 
-Example config file:
+Example production config file (capacity values are illustrative; size them
+against the database's connection budget and the service's replica count):
 
 ```json
 {
   "databases": {
     "default": {
       "driver": "pgx",
-      "host": "localhost",
+      "host": "postgres.internal",
       "port": 5432,
       "name": "app",
-      "user": "postgres",
-      "password": "secret",
-      "ssl_mode": "disable",
+      "user": "app",
+      "password": "redacted",
+      "ssl_mode": "verify-full",
+      "connect_timeout": "5s",
       "max_open": 25,
-      "max_idle": 10
+      "max_idle": 10,
+      "max_idle_time": "5m",
+      "max_lifetime": "30m"
     }
   }
 }
 ```
 
+`redacted` is a placeholder; load the real password through the application's
+environment or secret-backed configuration source.
+
 If `DSN` is set, the structured connection fields are ignored.
+
+There is intentionally no universal finite pool default. `max_open: 0` (and an
+omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A
+successful `store.Register` logs one structured warning with code
+`sqldb.pool.max_open_unlimited` when the effective pool maximum is still
+unlimited; it never silently changes the value. Services that open a DB
+without `store.Register` can inspect
+`db.StoreRegistrationWarningCodes()` during bootstrap and send the returned
+secret-free codes to their own logger.
+
+`max_idle` distinguishes omission from an explicit zero. Omit it to leave the
+idle setter to `database/sql` (its effective default remains subject to
+`max_open`), set it to `0` to retain no idle connections, or set a positive
+limit. With a finite `max_open`, `max_idle` must not be greater than `max_open`;
+`sqldb.Open` rejects that combination rather than accepting the stdlib's
+silent clamp. `max_idle_time: 0` disables idle-age expiry, while
+`max_lifetime: 0` disables connection-lifetime expiry. Explicit positive values
+are applied unchanged; Credo does not overwrite them with defaults.
+
+For operational telemetry, `db.Stats()` returns the complete `sql.DBStats`
+snapshot. Track at least `InUse`, `Idle`, `WaitCount`, `WaitDuration`,
+`MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed`. Wait and closure
+counters are cumulative: alert on windowed rates/deltas tied to an SLO, not on
+raw totals. Credo does not mark a pool `DEGRADED` from a universal saturation
+threshold. Such a policy needs explicit opt-in thresholds and hysteresis;
+today `DEGRADED` removes readiness for every store and a noisy threshold could
+cause cascading traffic shifts.
 
 Nested savepoint operations are bounded separately from query/callback execution. The default is five seconds of caller wait for each savepoint creation/release/rollback and fail-safe ambient abort; override it at construction when driver/network characteristics require a different budget:
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -92,8 +93,177 @@ func TestDB_Health_Up(t *testing.T) {
 	if h.Latency < 0 {
 		t.Errorf("Health().Latency = %v, want >= 0", h.Latency)
 	}
-	if _, ok := h.Details["open_connections"]; !ok {
-		t.Error("Health().Details missing open_connections")
+	assertPoolHealthDetails(t, h, db.Stats())
+}
+
+func TestDB_Stats(t *testing.T) {
+	db, err := sqldb.Open(&sqldb.Config{
+		Driver:  "sqlite",
+		DSN:     ":memory:",
+		MaxOpen: 3,
+		MaxIdle: new(0),
+	})
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+
+	stats := db.Stats()
+	if stats.MaxOpenConnections != 3 {
+		t.Fatalf("Stats().MaxOpenConnections = %d, want 3", stats.MaxOpenConnections)
+	}
+	if stats.OpenConnections != 0 || stats.InUse != 0 || stats.Idle != 0 {
+		t.Fatalf("Stats() before first use = %+v, want empty pool", stats)
+	}
+}
+
+func TestDB_MaxIdlePresenceControlsRuntimePool(t *testing.T) {
+	tests := []struct {
+		name              string
+		maxIdle           *int
+		wantIdle          int
+		wantMaxIdleClosed bool
+	}{
+		{name: "omitted keeps database sql default", wantIdle: 1},
+		{
+			name:              "explicit zero disables idle connections",
+			maxIdle:           new(0),
+			wantMaxIdleClosed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := sqldb.Open(&sqldb.Config{
+				Driver:  "sqlite",
+				DSN:     ":memory:",
+				MaxIdle: tt.maxIdle,
+			})
+			if err != nil {
+				t.Fatalf("Open() = %v", err)
+			}
+			t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+
+			if err := db.Ping(t.Context()); err != nil {
+				t.Fatalf("Ping() = %v", err)
+			}
+			stats := db.Stats()
+			if stats.Idle != tt.wantIdle {
+				t.Fatalf("Stats().Idle = %d, want %d", stats.Idle, tt.wantIdle)
+			}
+			if tt.wantMaxIdleClosed && stats.MaxIdleClosed < 1 {
+				t.Fatalf("Stats().MaxIdleClosed = %d, want >= 1", stats.MaxIdleClosed)
+			}
+		})
+	}
+}
+
+func TestDB_Stats_WaitCounters(t *testing.T) {
+	db, err := sqldb.Open(&sqldb.Config{
+		Driver:  "sqlite",
+		DSN:     ":memory:",
+		MaxOpen: 1,
+		MaxIdle: new(1),
+	})
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+
+	held, err := db.Client().DB.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("acquire held connection: %v", err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+
+	before := db.Stats()
+	waitCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	waitResult := make(chan error, 1)
+	go func() {
+		second, secondErr := db.Client().DB.Conn(waitCtx)
+		if second != nil {
+			_ = second.Close()
+		}
+		waitResult <- secondErr
+	}()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for db.Stats().WaitCount <= before.WaitCount {
+		select {
+		case err := <-waitResult:
+			_ = held.Close()
+			t.Fatalf("second Conn() returned before a pool wait was observed: %v", err)
+		case <-ticker.C:
+		case <-deadline.C:
+			cancel()
+			_ = held.Close()
+			err := <-waitResult
+			t.Fatalf("pool wait was not observed before deadline; second Conn() = %v", err)
+		}
+	}
+	// WaitCount increments when the request joins the queue. Keep it queued for
+	// one clock tick so WaitDuration also has a measurable positive delta.
+	durationTick := time.NewTimer(time.Millisecond)
+	defer durationTick.Stop()
+	select {
+	case err := <-waitResult:
+		_ = held.Close()
+		t.Fatalf("second Conn() returned while the only connection was held: %v", err)
+	case <-durationTick.C:
+	case <-deadline.C:
+		cancel()
+		_ = held.Close()
+		err := <-waitResult
+		t.Fatalf("pool wait duration was not observable before deadline; second Conn() = %v", err)
+	}
+	cancel()
+	if err := <-waitResult; !errors.Is(err, context.Canceled) {
+		_ = held.Close()
+		t.Fatalf("second Conn() error = %v, want context canceled", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatalf("close held connection: %v", err)
+	}
+
+	stats := db.Stats()
+	if stats.WaitCount <= before.WaitCount {
+		t.Fatalf("Stats().WaitCount = %d, want > %d", stats.WaitCount, before.WaitCount)
+	}
+	if stats.WaitDuration <= before.WaitDuration {
+		t.Fatalf("Stats().WaitDuration = %s, want > %s", stats.WaitDuration, before.WaitDuration)
+	}
+
+	h := db.Health(t.Context())
+	if h.Status != store.StatusUp {
+		t.Fatalf("Health().Status = %q after historical pool waits, want %q", h.Status, store.StatusUp)
+	}
+	if got := h.Details["wait_count"]; got != stats.WaitCount {
+		t.Fatalf("Health().Details[wait_count] = %v, want %d", got, stats.WaitCount)
+	}
+	if got := h.Details["wait_duration"]; got != stats.WaitDuration {
+		t.Fatalf("Health().Details[wait_duration] = %v, want %s", got, stats.WaitDuration)
+	}
+}
+
+func assertPoolHealthDetails(t *testing.T, h store.Health, stats sql.DBStats) {
+	t.Helper()
+	want := map[string]any{
+		"max_open":             stats.MaxOpenConnections,
+		"open_connections":     stats.OpenConnections,
+		"in_use":               stats.InUse,
+		"idle":                 stats.Idle,
+		"wait_count":           stats.WaitCount,
+		"wait_duration":        stats.WaitDuration,
+		"max_idle_closed":      stats.MaxIdleClosed,
+		"max_idle_time_closed": stats.MaxIdleTimeClosed,
+		"max_lifetime_closed":  stats.MaxLifetimeClosed,
+	}
+	if !reflect.DeepEqual(h.Details, want) {
+		t.Fatalf("Health().Details = %#v, want %#v", h.Details, want)
 	}
 }
 
@@ -1889,6 +2059,7 @@ func TestDB_Health_AfterShutdown(t *testing.T) {
 	if _, leaked := h.Details["error"]; leaked {
 		t.Fatal("Health after shutdown must not copy the cause into Details[\"error\"]")
 	}
+	assertPoolHealthDetails(t, h, db.Stats())
 }
 
 func TestDB_Shutdown_ClosesPoolWhenContextCanceled(t *testing.T) {

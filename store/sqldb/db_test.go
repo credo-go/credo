@@ -1,6 +1,7 @@
 package sqldb
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,118 @@ import (
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/schema"
 )
+
+type poolConfigCall struct {
+	method string
+	value  any
+}
+
+type recordingPool struct {
+	calls []poolConfigCall
+}
+
+func (p *recordingPool) SetMaxOpenConns(n int) {
+	p.calls = append(p.calls, poolConfigCall{method: "SetMaxOpenConns", value: n})
+}
+
+func (p *recordingPool) SetMaxIdleConns(n int) {
+	p.calls = append(p.calls, poolConfigCall{method: "SetMaxIdleConns", value: n})
+}
+
+func (p *recordingPool) SetConnMaxLifetime(d time.Duration) {
+	p.calls = append(p.calls, poolConfigCall{method: "SetConnMaxLifetime", value: d})
+}
+
+func (p *recordingPool) SetConnMaxIdleTime(d time.Duration) {
+	p.calls = append(p.calls, poolConfigCall{method: "SetConnMaxIdleTime", value: d})
+}
+
+func TestApplyPoolConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want []poolConfigCall
+	}{
+		{
+			name: "unset preserves database sql defaults",
+			cfg:  Config{},
+		},
+		{
+			name: "explicit zero max idle is applied",
+			cfg:  Config{MaxIdle: new(0)},
+			want: []poolConfigCall{{method: "SetMaxIdleConns", value: 0}},
+		},
+		{
+			name: "all positive settings are applied in dependency order",
+			cfg: Config{
+				MaxOpen:     11,
+				MaxIdle:     new(7),
+				MaxLifetime: 30 * time.Minute,
+				MaxIdleTime: 5 * time.Minute,
+			},
+			want: []poolConfigCall{
+				{method: "SetMaxOpenConns", value: 11},
+				{method: "SetMaxIdleConns", value: 7},
+				{method: "SetConnMaxLifetime", value: 30 * time.Minute},
+				{method: "SetConnMaxIdleTime", value: 5 * time.Minute},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := new(recordingPool)
+			applyPoolConfig(pool, &tt.cfg)
+			if !reflect.DeepEqual(pool.calls, tt.want) {
+				t.Fatalf("calls = %#v, want %#v", pool.calls, tt.want)
+			}
+		})
+	}
+}
+
+func TestDB_StoreRegistrationWarningCodesReflectEffectivePool(t *testing.T) {
+	t.Run("unlimited max open", func(t *testing.T) {
+		db, err := Open(&Config{Driver: "sqlite", DSN: ":memory:"})
+		if err != nil {
+			t.Fatalf("Open() = %v", err)
+		}
+		t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+
+		got := db.StoreRegistrationWarningCodes()
+		want := []string{maxOpenUnlimitedWarningCode}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("StoreRegistrationWarningCodes() = %v, want %v", got, want)
+		}
+
+		got[0] = "mutated"
+		if next := db.StoreRegistrationWarningCodes(); !reflect.DeepEqual(next, want) {
+			t.Fatalf("warning codes retained caller mutation: %v", next)
+		}
+
+		db.Client().DB.SetMaxOpenConns(5)
+		if got := db.StoreRegistrationWarningCodes(); got != nil {
+			t.Fatalf("StoreRegistrationWarningCodes() after finite override = %v, want nil", got)
+		}
+	})
+
+	t.Run("bounded max open", func(t *testing.T) {
+		db, err := Open(&Config{Driver: "sqlite", DSN: ":memory:", MaxOpen: 5})
+		if err != nil {
+			t.Fatalf("Open() = %v", err)
+		}
+		t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+
+		if got := db.StoreRegistrationWarningCodes(); got != nil {
+			t.Fatalf("StoreRegistrationWarningCodes() = %v, want nil", got)
+		}
+
+		db.Client().DB.SetMaxOpenConns(0)
+		want := []string{maxOpenUnlimitedWarningCode}
+		if got := db.StoreRegistrationWarningCodes(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("StoreRegistrationWarningCodes() after unlimited override = %v, want %v", got, want)
+		}
+	})
+}
 
 func TestOpen_NilConfig(t *testing.T) {
 	_, err := Open(nil)
@@ -61,8 +174,13 @@ func TestOpen_InvalidPoolSettings(t *testing.T) {
 		cfg  Config
 	}{
 		{name: "negative max open", cfg: Config{Driver: "sqlite", DSN: ":memory:", MaxOpen: -1}},
-		{name: "negative max idle", cfg: Config{Driver: "sqlite", DSN: ":memory:", MaxIdle: -1}},
+		{name: "negative max idle", cfg: Config{Driver: "sqlite", DSN: ":memory:", MaxIdle: new(-1)}},
 		{name: "negative max lifetime", cfg: Config{Driver: "sqlite", DSN: ":memory:", MaxLifetime: -1 * time.Second}},
+		{name: "negative max idle time", cfg: Config{Driver: "sqlite", DSN: ":memory:", MaxIdleTime: -1 * time.Second}},
+		{
+			name: "max idle exceeds max open",
+			cfg:  Config{Driver: "sqlite", DSN: ":memory:", MaxOpen: 2, MaxIdle: new(3)},
+		},
 		{name: "negative connect timeout", cfg: Config{Driver: "sqlite", DSN: ":memory:", ConnectTimeout: -1 * time.Second}},
 	}
 

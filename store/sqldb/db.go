@@ -27,12 +27,33 @@ type DB struct {
 
 var _ store.LifecycleIdentityProvider = (*DB)(nil)
 
+const maxOpenUnlimitedWarningCode = "sqldb.pool.max_open_unlimited"
+
+type poolConfigurer interface {
+	SetMaxOpenConns(int)
+	SetMaxIdleConns(int)
+	SetConnMaxLifetime(time.Duration)
+	SetConnMaxIdleTime(time.Duration)
+}
+
 // ResourceIdentity returns the physical DB wrapper used for lifecycle
 // ownership. Semantic wrapper types that embed *DB inherit this method, so
 // store.Register recognizes multiple wrappers around the same DB as one
 // resource.
 func (db *DB) ResourceIdentity() any {
 	return db
+}
+
+// StoreRegistrationWarningCodes returns secret-safe warning codes that the
+// store integration may emit when registering this database. It returns
+// sqldb.pool.max_open_unlimited when the pool's effective maximum is unlimited
+// at inspection time. The returned slice is independent of the DB and may be
+// modified by the caller.
+func (db *DB) StoreRegistrationWarningCodes() []string {
+	if db.Stats().MaxOpenConnections != 0 {
+		return nil
+	}
+	return []string{maxOpenUnlimitedWarningCode}
 }
 
 // Open creates a DB from Config.
@@ -79,16 +100,7 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 		}
 	}
 
-	// Apply pool settings.
-	if cfg.MaxOpen > 0 {
-		sqlDB.SetMaxOpenConns(cfg.MaxOpen)
-	}
-	if cfg.MaxIdle > 0 {
-		sqlDB.SetMaxIdleConns(cfg.MaxIdle)
-	}
-	if cfg.MaxLifetime > 0 {
-		sqlDB.SetConnMaxLifetime(cfg.MaxLifetime)
-	}
+	applyPoolConfig(sqlDB, cfg)
 
 	// Detect dialect.
 	dialect := o.dialect
@@ -113,6 +125,21 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 	}, nil
 }
 
+func applyPoolConfig(pool poolConfigurer, cfg *Config) {
+	if cfg.MaxOpen > 0 {
+		pool.SetMaxOpenConns(cfg.MaxOpen)
+	}
+	if cfg.MaxIdle != nil {
+		pool.SetMaxIdleConns(*cfg.MaxIdle)
+	}
+	if cfg.MaxLifetime > 0 {
+		pool.SetConnMaxLifetime(cfg.MaxLifetime)
+	}
+	if cfg.MaxIdleTime > 0 {
+		pool.SetConnMaxIdleTime(cfg.MaxIdleTime)
+	}
+}
+
 // Client returns the underlying *bun.DB for raw SQL, model registration,
 // advanced migration operations, and any Bun feature not covered by the
 // proxy layer.
@@ -128,6 +155,16 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 // generation — via migrate.NewMigrator(db.Client(), migrations)).
 func (db *DB) Client() *bun.DB {
 	return db.db
+}
+
+// Stats returns a point-in-time snapshot of the underlying database/sql
+// connection pool. OpenConnections, InUse, and Idle are instantaneous gauges;
+// WaitCount, WaitDuration, and the closed-connection fields are cumulative for
+// the lifetime of the pool. MaxOpenConnections equal to zero means the pool is
+// unlimited. Cumulative values reset when a new DB and pool are opened. Stats
+// does not ping the database.
+func (db *DB) Stats() sql.DBStats {
+	return db.db.DB.Stats()
 }
 
 // Ping verifies the database connection is alive.
@@ -154,9 +191,20 @@ func (db *DB) Health(ctx context.Context) store.Health {
 	err := db.db.PingContext(ctx)
 	latency := time.Since(start)
 
+	stats := db.Stats()
 	h := store.Health{
 		Latency: latency,
-		Details: make(map[string]any),
+		Details: map[string]any{
+			"max_open":             stats.MaxOpenConnections,
+			"open_connections":     stats.OpenConnections,
+			"in_use":               stats.InUse,
+			"idle":                 stats.Idle,
+			"wait_count":           stats.WaitCount,
+			"wait_duration":        stats.WaitDuration,
+			"max_idle_closed":      stats.MaxIdleClosed,
+			"max_idle_time_closed": stats.MaxIdleTimeClosed,
+			"max_lifetime_closed":  stats.MaxLifetimeClosed,
+		},
 	}
 
 	if err != nil {
@@ -166,13 +214,6 @@ func (db *DB) Health(ctx context.Context) store.Health {
 	}
 
 	h.Status = store.StatusUp
-
-	// Pool statistics.
-	stats := db.db.DB.Stats()
-	h.Details["open_connections"] = stats.OpenConnections
-	h.Details["in_use"] = stats.InUse
-	h.Details["idle"] = stats.Idle
-	h.Details["max_open"] = stats.MaxOpenConnections
 
 	return h
 }
@@ -241,11 +282,21 @@ func validateConfig(cfg *Config, o options) (driverFamily, error) {
 	if cfg.MaxOpen < 0 {
 		return driverFamilyUnknown, fmt.Errorf("sqldb: max open must be >= 0, got %d", cfg.MaxOpen)
 	}
-	if cfg.MaxIdle < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: max idle must be >= 0, got %d", cfg.MaxIdle)
+	if cfg.MaxIdle != nil && *cfg.MaxIdle < 0 {
+		return driverFamilyUnknown, fmt.Errorf("sqldb: max idle must be >= 0, got %d", *cfg.MaxIdle)
 	}
 	if cfg.MaxLifetime < 0 {
 		return driverFamilyUnknown, fmt.Errorf("sqldb: max lifetime must be >= 0, got %s", cfg.MaxLifetime)
+	}
+	if cfg.MaxIdleTime < 0 {
+		return driverFamilyUnknown, fmt.Errorf("sqldb: max idle time must be >= 0, got %s", cfg.MaxIdleTime)
+	}
+	if cfg.MaxOpen > 0 && cfg.MaxIdle != nil && *cfg.MaxIdle > cfg.MaxOpen {
+		return driverFamilyUnknown, fmt.Errorf(
+			"sqldb: max idle (%d) must be <= max open (%d)",
+			*cfg.MaxIdle,
+			cfg.MaxOpen,
+		)
 	}
 	if o.txCleanupTimeout <= 0 {
 		return driverFamilyUnknown, fmt.Errorf(

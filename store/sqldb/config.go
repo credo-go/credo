@@ -36,14 +36,22 @@ type Config struct {
 	// to be established. Zero means no timeout.
 	ConnectTimeout time.Duration
 
-	// MaxOpen is the maximum number of open connections (0 = unlimited).
+	// MaxOpen is the maximum number of open connections. Zero keeps the
+	// database/sql default, which is unlimited.
 	MaxOpen int
 
-	// MaxIdle is the maximum number of idle connections.
-	MaxIdle int
+	// MaxIdle is the maximum number of idle connections. Nil makes Credo leave
+	// the idle limit unset; the effective database/sql default remains subject
+	// to MaxOpen. A non-nil zero disables idle connections.
+	MaxIdle *int
 
-	// MaxLifetime is the maximum lifetime of a connection.
+	// MaxLifetime is the maximum lifetime of a connection. Zero disables the
+	// lifetime limit.
 	MaxLifetime time.Duration
+
+	// MaxIdleTime is the maximum amount of time a connection may remain idle.
+	// Zero disables the idle-time limit.
+	MaxIdleTime time.Duration
 
 	// SSLMode sets the SSL/TLS mode (e.g., "disable", "require", "verify-full").
 	SSLMode string

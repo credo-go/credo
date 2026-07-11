@@ -1,9 +1,12 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -96,6 +99,151 @@ func TestRegister_Success(t *testing.T) {
 	health := reg.HealthAll(context.Background())
 	if len(health) != 1 {
 		t.Fatalf("HealthAll() = %d entries, want 1", len(health))
+	}
+}
+
+type warningDB struct {
+	*mockLifecycle
+	codes []string
+}
+
+func (db *warningDB) StoreRegistrationWarningCodes() []string {
+	return db.codes
+}
+
+func TestRegister_EmitsConfigurationWarningsAfterSuccess(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	app := newTestApp(t, credo.WithLogger(logger))
+	db := &warningDB{
+		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
+		codes:         []string{"sqldb.pool.max_open_unlimited"},
+	}
+
+	if err := store.Register[*warningDB](app, db, store.WithName("primary")); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &record); err != nil {
+		t.Fatalf("decode warning log: %v\nlog: %s", err, logs.String())
+	}
+	for key, want := range map[string]string{
+		"level":     "WARN",
+		"msg":       "credo: store configuration warning",
+		"component": "store",
+		"store":     "primary",
+		"code":      "sqldb.pool.max_open_unlimited",
+	} {
+		if got := record[key]; got != want {
+			t.Errorf("warning %s = %#v, want %q", key, got, want)
+		}
+	}
+}
+
+type warningValue struct {
+	name string
+}
+
+func TestRegister_UsesSelectedSeparateLifecycleForConfigurationWarnings(t *testing.T) {
+	var logs bytes.Buffer
+	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	lifecycle := &warningDB{
+		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
+		codes:         []string{"sqldb.pool.max_open_unlimited"},
+	}
+
+	if err := store.Register[warningValue](
+		app,
+		warningValue{name: "primary"},
+		store.WithName("separate-lifecycle"),
+		store.WithLifecycle(lifecycle),
+		store.WithCallerOwnedLifecycle(),
+	); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &record); err != nil {
+		t.Fatalf("decode warning log: %v\nlog: %s", err, logs.String())
+	}
+	if got := record["store"]; got != "separate-lifecycle" {
+		t.Errorf("warning store = %#v, want %q", got, "separate-lifecycle")
+	}
+	if got := record["code"]; got != "sqldb.pool.max_open_unlimited" {
+		t.Errorf("warning code = %#v, want %q", got, "sqldb.pool.max_open_unlimited")
+	}
+}
+
+func TestRegister_DoesNotEmitConfigurationWarningsOnFailure(t *testing.T) {
+	var logs bytes.Buffer
+	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	db := &warningDB{
+		mockLifecycle: &mockLifecycle{pingErr: errors.New("unavailable")},
+		codes:         []string{"sqldb.pool.max_open_unlimited"},
+	}
+
+	if err := store.Register[*warningDB](app, db); err == nil {
+		t.Fatal("Register() should fail when Ping fails")
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("warning log on failed registration = %s, want none", logs.String())
+	}
+}
+
+func TestRegister_RejectsInvalidConfigurationWarningBeforePingWithoutLeak(t *testing.T) {
+	const secret = "super-secret-password"
+	var logs bytes.Buffer
+	lifecycle := &mockLifecycle{}
+	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	db := &warningDB{
+		mockLifecycle: lifecycle,
+		codes:         []string{"password=" + secret},
+	}
+
+	err := store.Register[*warningDB](app, db)
+	if err == nil {
+		t.Fatal("Register() should reject an invalid warning code")
+	}
+	lifecycle.mu.Lock()
+	pingCalls := lifecycle.pingCalls
+	lifecycle.mu.Unlock()
+	if pingCalls != 0 {
+		t.Fatalf("Ping calls = %d, want 0", pingCalls)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(logs.String(), secret) {
+		t.Fatalf("invalid warning code leaked secret: error=%q log=%q", err, logs.String())
+	}
+}
+
+func TestRegister_DeduplicatesConfigurationWarningsInOrder(t *testing.T) {
+	var logs bytes.Buffer
+	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	db := &warningDB{
+		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
+		codes: []string{
+			"sqldb.pool.max_open_unlimited",
+			"sqldb.pool.max_open_unlimited",
+			"sqldb.pool.idle_disabled",
+		},
+	}
+
+	if err := store.Register[*warningDB](app, db); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("warning records = %d, want 2\nlogs: %s", len(lines), logs.String())
+	}
+	wantCodes := []string{"sqldb.pool.max_open_unlimited", "sqldb.pool.idle_disabled"}
+	for i, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode warning log %d: %v", i, err)
+		}
+		if got := record["code"]; got != wantCodes[i] {
+			t.Errorf("warning %d code = %#v, want %q", i, got, wantCodes[i])
+		}
 	}
 }
 
