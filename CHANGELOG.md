@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 The `store/sqldb` submodule is versioned in lockstep with the root module (path-prefixed `store/sqldb/vX.Y.Z` tags — see [CONTRIBUTING.md#releasing](CONTRIBUTING.md#releasing)); its changes are recorded here.
 
+| Release module | Compatible root module |
+| --- | --- |
+| `github.com/credo-go/credo/store/sqldb vX.Y.Z` | `github.com/credo-go/credo vX.Y.Z` |
+
 ## [Unreleased]
 
 ### Added

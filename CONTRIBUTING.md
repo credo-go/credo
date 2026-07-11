@@ -76,15 +76,23 @@ Credo is a multi-module repository:
 - `github.com/credo-go/credo` is the root framework module.
 - `github.com/credo-go/credo/store/sqldb` is a submodule for the Bun SQL wrapper and its heavier database dependencies.
 
-Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace github.com/credo-go/credo => ../..` so the submodule can test against the in-tree root module. Do not commit `go.work`; it is for local development only and is ignored by Git.
+Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace github.com/credo-go/credo => ../..` so the submodule can test against the in-tree root module. Do not commit `go.work`; it is for local development only and is ignored by Git. CI's `Release gate (replace-free consumer)` job creates temporary lockstep tags and builds an external consumer, so the publishable module graph is tested without changing this bootstrap state.
+
+The modules use the following compatibility rule:
+
+| `store/sqldb` version | Compatible root `credo` version |
+| --- | --- |
+| `vX.Y.Z` | exactly `vX.Y.Z` |
 
 Release both modules in this order:
 
 1. Ensure `main` is green and the working tree is clean.
 2. Finalize `CHANGELOG.md` by replacing the version's `Unreleased` marker with the release date.
-3. Tag and push the root module, for example `git tag v0.1.0`.
-4. In `store/sqldb/go.mod`, require the published root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit.
-5. Tag and push the submodule with its path prefix, for example `git tag store/sqldb/v0.1.0`.
+3. In `store/sqldb/go.mod`, require that exact root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit the release preparation.
+4. Run `go run ./scripts/releasegate prepared v0.1.0` and `go run ./scripts/releasegate candidate v0.1.0`. The first command fails on dependency-version or `replace` drift; the second builds a temporary external consumer.
+5. From the `main` branch, dispatch the `Release` GitHub Actions workflow with `version=v0.1.0`. It repeats the gates and atomically publishes `v0.1.0` plus `store/sqldb/v0.1.0`, so the nested tag is never visible without its required root tag.
+
+The release notes/CHANGELOG entry must retain the compatibility table above (with `X.Y.Z` replaced by the released version) whenever the lockstep policy changes. The release workflow deliberately fails before tagging if the prepared `go.mod` version differs from its input or still contains the local replacement.
 
 After the first release, local cross-module development can use an ignored workspace:
 
