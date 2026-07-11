@@ -659,6 +659,7 @@
 - [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
 - [x] CodeQL security analysis (`codeql.yml`)
 - [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot
+- [x] Lockstep library release gate — CI builds an external `store/sqldb` consumer from synthetic root+nested tags without local `replace`; the manual `Release` workflow validates the prepared root requirement and atomically publishes both module tags
 - [ ] Codecov or Coveralls integration
 - [ ] Release workflow with goreleaser — becomes relevant with `cmd/credo` (Phase 5.1); the library itself releases via git tags
 

@@ -18,9 +18,14 @@ jobs:
   release:
     name: Validate and tag both modules
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
 
     steps:
+      - name: Require the main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "release must be dispatched from refs/heads/main, got $GITHUB_REF" >&2
+          exit 1
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -31,13 +36,22 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Verify prepared module versions
-        run: go run ./scripts/releasegate prepared "${{ inputs.version }}"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: go run ./scripts/releasegate prepared "$VERSION"
 
       - name: Build an external consumer without replace
-        run: go run ./scripts/releasegate candidate "${{ inputs.version }}"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: go run ./scripts/releasegate candidate "$VERSION"
 
       - name: Verify both modules
         run: |
+          # The prepared nested go.mod points at a tag that this workflow has
+          # intentionally not published yet. Use an ephemeral workspace for
+          # in-tree tests; the preceding external-consumer gate separately
+          # proves the exact published, replace-free module graph.
+          go work init . ./store/sqldb
           go test -count=1 ./...
           (cd store/sqldb && go test -count=1 ./...)
           go vet ./...
