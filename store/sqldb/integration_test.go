@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,18 +23,47 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// openTestDB creates an in-memory SQLite DB for testing.
+var sqliteMemorySequence atomic.Uint64
+
+// openTestDB creates an isolated shared-memory SQLite DB with a bounded pool.
+// A bare :memory: DSN creates one database per physical connection, so a test
+// can otherwise lose its schema when database/sql opens a second connection.
 func openTestDB(t *testing.T) *sqldb.DB {
 	t.Helper()
+	maxIdle := 4
 	db, err := sqldb.Open(&sqldb.Config{
-		Driver: "sqlite",
-		DSN:    ":memory:",
+		Driver:  "sqlite",
+		DSN:     fmt.Sprintf("file:credo-test-%d?mode=memory&cache=shared", sqliteMemorySequence.Add(1)),
+		MaxOpen: 4,
+		MaxIdle: &maxIdle,
 	})
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
 	t.Cleanup(func() { db.Shutdown(context.Background()) })
 	return db
+}
+
+func TestOpenTestDB_SharesSchemaAcrossPoolConnections(t *testing.T) {
+	db := openTestDB(t)
+
+	first, err := db.Client().DB.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("acquire first connection: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	if _, err := first.ExecContext(t.Context(), "CREATE TABLE pool_probe (id INTEGER)"); err != nil {
+		t.Fatalf("create table on first connection: %v", err)
+	}
+
+	second, err := db.Client().DB.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("acquire second connection: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if _, err := second.ExecContext(t.Context(), "INSERT INTO pool_probe (id) VALUES (1)"); err != nil {
+		t.Fatalf("use first connection's schema from second connection: %v", err)
+	}
 }
 
 // createUsersTable creates a test table.
