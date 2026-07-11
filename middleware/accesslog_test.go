@@ -2,13 +2,95 @@ package middleware_test
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/fault"
 	"github.com/credo-go/credo/middleware"
+	"github.com/credo-go/credo/validation"
 )
+
+type accessLogSemanticError struct {
+	kind         fault.Kind
+	legacyStatus int
+}
+
+func (e accessLogSemanticError) Error() string         { return "semantic access-log error" }
+func (e accessLogSemanticError) FaultKind() fault.Kind { return e.kind }
+func (e accessLogSemanticError) HTTPStatus() int       { return e.legacyStatus }
+
+func TestAccessLog_ErrorClassificationMatchesRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantLevel  string
+	}{
+		{
+			name:       "semantic kind wins over conflicting legacy status",
+			err:        accessLogSemanticError{kind: fault.KindNotFound, legacyStatus: http.StatusServiceUnavailable},
+			wantStatus: http.StatusNotFound,
+			wantLevel:  "WARN",
+		},
+		{
+			name: "explicit HTTP error overrides wrapped semantic kind",
+			err: credo.NewHTTPError(http.StatusTeapot).WithInternal(
+				accessLogSemanticError{kind: fault.KindNotFound},
+			),
+			wantStatus: http.StatusTeapot,
+			wantLevel:  "WARN",
+		},
+		{
+			name: "unknown semantic kind fails closed",
+			err: accessLogSemanticError{
+				kind:         fault.KindUnknown,
+				legacyStatus: http.StatusTeapot,
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantLevel:  "ERROR",
+		},
+		{
+			name: "wrapped validation errors remain 422",
+			err: errors.Join(
+				errors.New("validation context"),
+				validation.Errors{{Field: "name", Code: "required", Message: "required"}},
+			),
+			wantStatus: http.StatusUnprocessableEntity,
+			wantLevel:  "WARN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, buf := newTestLogger(t)
+			app := mustNew(t, credo.WithoutAccessLog())
+			app.GET("/", func(*credo.Context) error {
+				return tt.err
+			}).Middleware(middleware.AccessLog(middleware.AccessLogConfig{Logger: logger}))
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("response status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatalf("parse access log: %v\nraw: %s", err, buf.String())
+			}
+			if got := int(entry["status"].(float64)); got != tt.wantStatus {
+				t.Errorf("logged status = %d, want %d", got, tt.wantStatus)
+			}
+			if got := entry["level"]; got != tt.wantLevel {
+				t.Errorf("logged level = %v, want %s", got, tt.wantLevel)
+			}
+		})
+	}
+}
 
 func TestAccessLog_NoDuplicateRequestID(t *testing.T) {
 	logger, buf := newTestLogger(t)

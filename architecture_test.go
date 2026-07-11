@@ -8,10 +8,13 @@ import (
 	"testing"
 )
 
-// allowedRootImports lists feature packages that the root package is
-// permitted to import. Each entry must have a documented justification.
+// allowedRootImports lists top-level Credo packages that the root package is
+// permitted to import. Each entry must have a documented justification;
+// foundational leaf contracts such as fault belong here alongside the few
+// explicitly allowed feature dependencies.
 var allowedRootImports = map[string]bool{
 	"config":     true, // RawConfig type alias (avoid circular import: config/ ↔ root)
+	"fault":      true, // transport-neutral semantic error contract (stdlib-only leaf)
 	"validation": true, // error handling + parse-don't-validate (documented exception)
 }
 

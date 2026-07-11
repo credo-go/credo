@@ -6,11 +6,14 @@
 package middleware
 
 import (
+	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/credo-go/credo"
 	internalobserve "github.com/credo-go/credo/internal/observe"
+	"github.com/credo-go/credo/validation"
 )
 
 // AccessLogConfig defines configuration for the AccessLog middleware.
@@ -79,7 +82,7 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 			duration := time.Since(start)
 
 			// Use the Response's tracked status and size.
-			status := internalobserve.Status(ctx.Response().Status(), err)
+			status := accessLogStatus(ctx.Response().Status(), err)
 
 			req := ctx.Request()
 			r := req.Request
@@ -115,6 +118,24 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 			return err
 		}
 	}
+}
+
+// accessLogStatus mirrors the root error handler's status precedence while
+// the route middleware is still inside that handler and the error response
+// has therefore not been committed yet. The shared observe classifier owns
+// semantic-fault and legacy HTTPStatus handling; only root-specific error
+// types are selected here.
+func accessLogStatus(status int, err error) int {
+	if status != 0 || err == nil {
+		return internalobserve.Status(status, err)
+	}
+	if _, ok := errors.AsType[validation.Errors](err); ok {
+		return http.StatusUnprocessableEntity
+	}
+	if httpErr, ok := errors.AsType[*credo.HTTPError](err); ok {
+		return httpErr.Code
+	}
+	return internalobserve.Status(status, err)
 }
 
 func normalizeAccessLogConfig(config AccessLogConfig) AccessLogConfig {

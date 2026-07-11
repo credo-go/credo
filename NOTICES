@@ -146,7 +146,7 @@ Adapted in:
                                                     selection delegated to golang.org/x/text/feature/plural
     Root-level files using internal/i18n (original Credo code):
       i18n.go                                     — UseI18n setup, I18nConfig
-      errors.go                                   — translateError, translateValidationErrors
+      errors.go                                   — classifyError, resolveMessage, translateValidationErrors
       context.go                                  — Locale(), T(), TPlural() methods
 
 ----------------------------------------------------------------------
