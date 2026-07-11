@@ -69,7 +69,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build
+      - name: Build (root)
+        run: go build ./...
+
+      - name: Build (store/sqldb)
+        working-directory: store/sqldb
         run: go build ./...
 
   tidy:
@@ -143,11 +147,18 @@ jobs:
       # generic methods (a prebuilt binary may lag the toolchain). The config
       # disables the linters whose SSA/IR engines panic on the 1.27 RC; the
       # lint-full-canary job below runs those non-blocking. See .golangci.yml.
-      - name: Run golangci-lint
+      - name: Run golangci-lint (root)
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           install-mode: goinstall
+
+      - name: Run golangci-lint (store/sqldb)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-mode: goinstall
+          working-directory: store/sqldb
 
   lint-full-canary:
     name: Lint (full, canary)
