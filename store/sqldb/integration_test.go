@@ -47,18 +47,18 @@ func openTestDB(t *testing.T) *sqldb.DB {
 func TestOpenTestDB_SharesSchemaAcrossPoolConnections(t *testing.T) {
 	db := openTestDB(t)
 
-	first, err := db.Client().DB.Conn(t.Context())
-	if err != nil {
-		t.Fatalf("acquire first connection: %v", err)
+	first, firstConnErr := db.Client().DB.Conn(t.Context())
+	if firstConnErr != nil {
+		t.Fatalf("acquire first connection: %v", firstConnErr)
 	}
 	t.Cleanup(func() { _ = first.Close() })
 	if _, err := first.ExecContext(t.Context(), "CREATE TABLE pool_probe (id INTEGER)"); err != nil {
 		t.Fatalf("create table on first connection: %v", err)
 	}
 
-	second, err := db.Client().DB.Conn(t.Context())
-	if err != nil {
-		t.Fatalf("acquire second connection: %v", err)
+	second, secondConnErr := db.Client().DB.Conn(t.Context())
+	if secondConnErr != nil {
+		t.Fatalf("acquire second connection: %v", secondConnErr)
 	}
 	t.Cleanup(func() { _ = second.Close() })
 	if _, err := second.ExecContext(t.Context(), "INSERT INTO pool_probe (id) VALUES (1)"); err != nil {
