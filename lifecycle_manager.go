@@ -62,10 +62,10 @@ func (s appState) String() string {
 //
 // It is held by exactly one App and references it back through app for the
 // cross-cutting pieces it needs (the compiled handler, DI container, server
-// config, logger). Keeping these nine fields and the concurrency-sensitive
+// config, logger). Keeping these fields and the concurrency-sensitive
 // drain logic in one type — rather than spread across the App struct — is the
 // whole point of the split; the public Run/Shutdown/State/Addr/OnStart/
-// OnShutdown methods on App stay as thin delegates onto this engine.
+// OnDrain/OnShutdown methods on App stay as thin delegates onto this engine.
 type lifecycleManager struct {
 	// app is the owning application, used for compile, DI finalize/shutdown,
 	// server config, and logging. Never nil for an App built by New.
@@ -101,6 +101,10 @@ type lifecycleManager struct {
 
 	// onStart holds hooks called during startup after the port is bound (FIFO order).
 	onStart []func(ctx context.Context) error
+
+	// onDrain holds subsystem hooks run concurrently with HTTP drain and before
+	// DI teardown. Registration order is identity only, not execution order.
+	onDrain []drainHook
 
 	// onShutdown holds hooks called during graceful shutdown (LIFO order).
 	onShutdown []func(ctx context.Context) error
@@ -490,18 +494,18 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 
 // drain runs the teardown chain shared by every shutdown path — graceful
 // Shutdown, context cancellation, a runtime serve failure, and a failed startup:
-// mark unready, cancel the lifecycle context, drain the HTTP server, tear down DI
-// singletons (reverse order), run OnShutdown hooks (LIFO), release the
-// server-session references, and store stateStopped.
+// mark unready, cancel the lifecycle context, drain HTTP and subsystem hooks in
+// parallel, tear down DI singletons (reverse order), run OnShutdown hooks
+// (LIFO), release the server-session references, and store stateStopped.
 //
 // The caller must have already moved the state out of the live states
 // (running/starting) so drain runs exactly once: initiateShutdown does this via
 // its running → stopping CAS; the startup-failure path stores stateStopping
 // directly (a non-running app cannot be reached by Shutdown).
 //
-// OnShutdown hooks run on *every* teardown, including a failed startup. They are
-// the session teardown point, not an OnStart mirror, so they must be idempotent
-// and must not assume any particular OnStart hook completed (ADR-006).
+// OnDrain and OnShutdown hooks run on *every* teardown, including a failed
+// startup. They are session teardown points, not OnStart mirrors, so they must
+// be idempotent and must not assume any particular OnStart hook completed.
 func (lm *lifecycleManager) drain(ctx context.Context) error {
 	// Phase 0: stop reporting ready so load balancers drain this instance
 	// before it stops accepting connections. Liveness stays up — the process
@@ -523,22 +527,10 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 		cancelFn()
 	}
 
-	// 2. Drain the HTTP servers (stop accepting, wait for in-flight handlers).
-	// Stop the redirect listener first so that, during the main server's drain
-	// window, no client is redirected to an HTTPS server that has just stopped
-	// accepting connections; a redirect response is instant, so its Shutdown
-	// returns near-immediately. On a failed-startup teardown Serve was never
-	// called, so the main srv has no registered listener and its Shutdown is a
-	// near no-op — serve()'s deferred l.Close() closes the bound listener.
-	if redirectSrv != nil {
-		if err := redirectSrv.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("credo: HTTP redirect drain: %w", err))
-		}
-	}
-	if srv != nil {
-		if err := srv.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("credo: server drain: %w", err))
-		}
+	// 2. Drain HTTP and subsystem handlers in parallel under the same absolute
+	// deadline. The HTTP branch preserves redirect-before-main ordering.
+	if err := lm.drainBeforeInfrastructure(ctx, redirectSrv, srv); err != nil {
+		errs = append(errs, err)
 	}
 
 	// 3. Tear down infrastructure — reverse-order DI singleton cleanup.
