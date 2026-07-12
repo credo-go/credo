@@ -34,7 +34,8 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 only as an `http.Handler`, the caller owns shutdown and must coordinate
 `Server.Shutdown` with its `http.Server.Shutdown` before tearing down shared
 infrastructure. The guide includes both managed and external-server examples,
-successful/incomplete outcomes, and shutdown-budget sizing.
+error-free, complete-with-error, and incomplete outcomes, plus shutdown-budget
+sizing.
 
 ## Operational boundaries
 

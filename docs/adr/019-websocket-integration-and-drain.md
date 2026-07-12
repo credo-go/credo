@@ -107,12 +107,16 @@ then drains HTTP servers and all `OnDrain` hooks concurrently. WebSocket drain:
    connection record, and close task;
 4. returns only when DI-dependent handler cleanup is finished.
 
-The first `Server.Shutdown` caller owns the drain budget. Concurrent callers
-wait without replacing it, and later calls return the stable first result. If
-the absolute deadline expires, the server reports an incomplete error with
-remaining counts, cancels connections, and attempts `CloseNow`; late handlers
-may finish afterward. The App continues DI and `OnShutdown` with the same,
-possibly expired context. It never calls an incomplete drain graceful success.
+The first `Server.Shutdown` caller owns the drain budget. Concurrent callers do
+not replace it: they wait for the owner's result unless their own context ends
+first. Calls made after the owner finishes return its stable result. If the
+owner context is cancelled or its absolute deadline expires, the server reports
+an incomplete error with remaining counts, cancels connections, and attempts
+`CloseNow`; late handlers may finish afterward. The App continues DI and
+`OnShutdown` with the same, possibly expired context. It never calls an
+incomplete drain graceful success. A close task may also fail after all tracked
+work settles; that is a closed, complete-with-error outcome rather than an
+incomplete drain.
 
 WebSocket is the first concrete `OnDrain` consumer. This does not introduce a
 general restartable `Service` taxonomy: workers continue to use lifecycle

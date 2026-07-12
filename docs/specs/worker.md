@@ -753,14 +753,20 @@ app.Run()
 app.Shutdown(ctx)
   ├─ state → stopping
   ├─ cancel app ctx              ← workers receive ctx.Done()
-  ├─ srv.Shutdown() — HTTP drain
+  ├─ parallel drain phase
+  │   ├─ srv.Shutdown() — HTTP drain
+  │   └─ OnDrain subsystem hooks
   ├─ container.Shutdown()        ← pool.Shutdown(ctx) called here
   │   └─ cancel pool ctx
   │   └─ wg.Wait() — wait for the per-worker goroutines (continuous and scheduled loops)
   └─ OnShutdown hooks (LIFO)
 ```
 
-Workers receive shutdown signal via context cancellation. The pool's `Shutdown` is called automatically because `Pool` implements `credo.Shutdowner` and is registered in the DI container.
+Workers receive shutdown signal via context cancellation. The pool does not use
+`OnDrain`; its `Shutdown` is called automatically during the following DI phase
+because `Pool` implements `credo.Shutdowner` and is registered in the container.
+HTTP/OnDrain, pool shutdown, and `OnShutdown` all consume the same absolute
+shutdown budget.
 
 ---
 

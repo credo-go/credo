@@ -482,6 +482,58 @@ func TestServerHandlerNilPanics(t *testing.T) {
 	server.Handler(nil)
 }
 
+func TestServerShutdownNilContextReturnsErrorWithoutStartingDrain(t *testing.T) {
+	_, server := newHandlerTestApp(t)
+
+	err := server.Shutdown(nil)
+	if err == nil || err.Error() != "credo/websocket: Server.Shutdown: nil context" {
+		t.Fatalf("Shutdown(nil) error = %v", err)
+	}
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() after rejected nil context = %v", err)
+	}
+}
+
+func TestServerShutdownCanCompleteWithCloseError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	server := &Server{
+		connections: make(map[*connectionRecord]struct{}),
+		changed:     make(chan struct{}),
+		drainDone:   make(chan struct{}),
+	}
+	connectionCtx, cancelConnection := context.WithCancelCause(context.Background())
+	record := &connectionRecord{
+		cancel:       cancelConnection,
+		close:        func(StatusCode, string) error { return closeErr },
+		closeNow:     func() error { return nil },
+		connectionID: "close-error",
+		closeDone:    make(chan struct{}),
+	}
+	server.connections[record] = struct{}{}
+	server.activeTokens = 1
+	go server.finish(record)
+
+	err := server.Shutdown(t.Context())
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Shutdown() error = %v, want close error", err)
+	}
+	if strings.Contains(err.Error(), "shutdown incomplete") {
+		t.Fatalf("completed Shutdown() was classified as incomplete: %v", err)
+	}
+	server.mu.Lock()
+	state := server.state
+	server.mu.Unlock()
+	if state != serverClosed {
+		t.Fatalf("state = %d, want closed", state)
+	}
+	if !errors.Is(context.Cause(connectionCtx), closeErr) {
+		t.Fatalf("connection cause = %v, want close error", context.Cause(connectionCtx))
+	}
+	if got := server.Shutdown(context.Background()); !errors.Is(got, closeErr) || got.Error() != err.Error() {
+		t.Fatalf("stable Shutdown() error = %v, want original result %v", got, err)
+	}
+}
+
 func TestServerShutdownDrainsHandlerAndIsStable(t *testing.T) {
 	app, server := newHandlerTestApp(t)
 	handlerStarted := make(chan struct{})

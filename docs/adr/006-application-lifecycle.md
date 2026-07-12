@@ -125,10 +125,10 @@ If any OnStart hook returns an error, startup aborts and the App runs the full t
 HTTP drain and OnDrain hooks share one absolute deadline. Hook execution order
 is intentionally unspecified. A hook that returns successfully must guarantee
 its subsystem can no longer execute handlers that depend on DI infrastructure.
-If the deadline expires, Credo reports the remaining HTTP/hook work as
-incomplete and proceeds to DI and OnShutdown with the same, possibly expired
-context. All errors are collected via `errors.Join` — no early return and no
-false graceful-success result.
+If the drain context is cancelled or its deadline expires, Credo reports the
+remaining HTTP/hook work as incomplete and proceeds to DI and OnShutdown with
+the same, possibly ended context. All errors are collected via `errors.Join` —
+no early return and no false graceful-success result.
 
 ### Lifecycle Hooks
 

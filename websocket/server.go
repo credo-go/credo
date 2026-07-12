@@ -104,12 +104,18 @@ func (s *Server) onDrain(ctx context.Context) error {
 
 // Shutdown stops admitting connections, sends active peers a Going Away close,
 // and waits for every synchronous Handler and adapter cleanup to return. The
-// first caller owns the global drain budget; concurrent callers only wait and
-// do not alter that budget. Repeated calls return the first owner's stable
-// result. A deadline can leave the server draining until late handlers return.
+// first caller owns the global drain budget. A concurrent caller waits for that
+// result unless its own context ends first; it never changes the owner's budget.
+// Calls made after the owner finishes return its stable result.
+//
+// If the owner context is cancelled or reaches its deadline before cleanup
+// finishes, Shutdown reports an incomplete drain and the server remains
+// draining until late handlers return. If cleanup finishes but a tracked close
+// operation failed, the server is closed and Shutdown returns that error.
+// A nil ctx is rejected without starting the drain.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if ctx == nil {
-		panic("credo/websocket: Server.Shutdown called with a nil context")
+		return errors.New("credo/websocket: Server.Shutdown: nil context")
 	}
 	s.mu.Lock()
 	if s.drainStarted {

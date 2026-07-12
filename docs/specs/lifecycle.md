@@ -108,9 +108,10 @@ Gracefully shuts down the server:
 The lifecycle context is cancelled **before** HTTP/OnDrain work to give
 background services maximum lead time. HTTP and OnDrain share one absolute
 deadline. Hooks are unordered; a nil result means the subsystem can no longer
-run handlers that depend on DI infrastructure. If the deadline expires, Credo
-joins an identified incomplete-drain error and continues DI/OnShutdown with the
-same, possibly expired context rather than claiming graceful success.
+run handlers that depend on DI infrastructure. If the drain context is
+cancelled or its deadline expires, Credo joins an identified incomplete-drain
+error and continues DI/OnShutdown with the same, possibly ended context rather
+than claiming graceful success.
 
 `Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 

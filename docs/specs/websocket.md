@@ -37,9 +37,10 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 returns a `*Server`, and registers App start/drain hooks. Invalid config, a nil
 App, multiple configs, or late registration is startup misuse and panics.
 
-`Server.Handler(nil)` and `Server.Shutdown(nil)` also panic. Runtime handshake,
-network, application, and deadline failures return errors or protocol close
-outcomes; they are not panics.
+`Server.Handler(nil)` also panics as registration misuse. `Server.Shutdown(nil)`
+returns an error without starting the drain. Runtime handshake, network,
+application, cancellation, and deadline failures return errors or protocol
+close outcomes; they are not panics.
 
 ## Public API
 
@@ -69,8 +70,8 @@ func CloseStatus(err error) StatusCode
 
 `StatusCode` exports the standard 1000–1015 status names used by the adapter.
 A server may send the explicitly supported statuses or application-private
-3000–4999 codes. Reserved receive-only statuses such as 1005, 1006, 1010, and
-1015 are rejected before a close frame is written.
+3000–4999 codes. Synthetic/not-on-wire statuses 1005, 1006, and 1015, plus the
+client-only status 1010, are rejected before a close frame is written.
 
 ## Configuration
 
@@ -213,15 +214,22 @@ mark unready
 
 WebSocket shutdown closes admission before new Accepts, sends 1001 to active
 peers, and waits for admission tokens, connection records, synchronous
-handlers, and tracked close tasks. The first caller owns the budget; concurrent
-callers wait and cannot replace it. Completed results are stable across later
-calls.
+handlers, and tracked close tasks. The first caller owns the budget. Concurrent
+callers cannot replace it: they receive the owner's result when it finishes, or
+their own context error if their wait ends first. Calls made after the owner
+finishes receive its stable result.
 
-If the deadline expires, `Server.Shutdown` returns an error that unwraps the
-deadline and reports remaining handler/connection/close-task counts. It applies
-best-effort force close and remains draining until late work finishes; it does
-not report `closed` early. App teardown continues with the same absolute,
-possibly expired context, so DI and `OnShutdown` may receive an expired context.
+If the owner context is cancelled or its deadline expires before cleanup
+finishes, `Server.Shutdown` returns an error that unwraps that context error and
+reports remaining handler/connection/close-task counts. It applies best-effort
+force close and remains draining until late work finishes; it does not report
+`closed` early. App teardown continues with the same absolute, possibly expired
+context, so DI and `OnShutdown` may receive an expired context.
+
+A non-nil result does not always mean incomplete. All tracked work may finish,
+the server may become `closed`, and a failed close task may still be returned as
+a complete-with-error result. Only a nil result means error-free graceful
+completion.
 
 When `App` is mounted only as an external `http.Handler`, its lifecycle state
 does not run. The owner must call the external `http.Server.Shutdown` and

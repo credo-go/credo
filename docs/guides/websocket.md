@@ -234,18 +234,25 @@ An `OnDrain` hook that consumes the whole budget leaves DI and `OnShutdown` an
 expired context. Explicit `app.Shutdown(ctx)` ignores `WithShutdownTimeout` and
 uses the caller's deadline exactly.
 
-A nil result is graceful completion. A deadline result is explicitly
-incomplete:
+A nil result is error-free graceful completion. A non-nil result has two
+possible shapes: teardown may have completed with a close or hook error, or the
+owner context may have ended while work was still pending. Only the latter is
+an incomplete drain:
 
 ```go
 shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
 if err := app.Shutdown(shutdownCtx); err != nil {
-    // errors.Is(err, context.DeadlineExceeded) may be true. The joined error
-    // identifies pending HTTP/OnDrain work; WebSocket diagnostics include
-    // remaining handler, connection, and close-task counts.
-    logger.Error("shutdown incomplete", "error", err)
+    if shutdownCtx.Err() != nil && errors.Is(err, shutdownCtx.Err()) {
+        // The joined error identifies pending HTTP/OnDrain work; WebSocket
+        // diagnostics include remaining handler, connection, and close-task
+        // counts.
+        logger.Error("shutdown incomplete", "error", err)
+    } else {
+        // All work settled, but one or more teardown operations failed.
+        logger.Error("shutdown completed with errors", "error", err)
+    }
 }
 ```
 
@@ -274,7 +281,7 @@ go func() { httpDone <- httpServer.Shutdown(ctx) }()
 go func() { wsDone <- ws.Shutdown(ctx) }()
 
 if err := errors.Join(<-httpDone, <-wsDone); err != nil {
-    logger.Error("network drain incomplete", "error", err)
+    logger.Error("network drain failed", "error", err)
 }
 
 // Only now close repositories, clients, and other shared infrastructure.
