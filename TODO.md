@@ -438,18 +438,33 @@
 - [ ] Tests
 - [ ] Update NOTICES
 
-### 4.4 WebSocket & SSE (`websocket/`)
+### 4.4 WebSocket (`websocket/`) and SSE
 
-**Source**: coder/websocket (ISC)
+**Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-> SSE is dependency-free (stdlib flusher) and may ship first as a quick win — increasingly relevant for LLM/streaming responses. WebSocket follows via coder/websocket adaptation.
+WebSocket server support is implemented as an adapter rather than copied
+protocol code. The canonical API stays on the existing router:
+`ws := websocket.Use(app, cfg)` and
+`app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect,
+heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain
+demand-gated follow-ups rather than MVP promises.
 
-- [ ] `ctx.SSE()` for Server-Sent Events (stdlib-only — can land before WebSocket)
-- [ ] Copy core upgrade + connection handling
-- [ ] `ctx.Upgrade()` API for WebSocket
-- [ ] Room/broadcast support
-- [ ] Tests
-- [ ] Update NOTICES
+- [x] Credo-owned message/close/config/connection façade over coder/websocket
+- [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
+- [x] RFC 7807 pre-upgrade errors and fail-loud non-Hijacker behavior
+- [x] App-managed `OnDrain` integration plus explicit external-server shutdown
+- [x] Real TCP/WSS/HTTP2-negative, race/conformance, fuzz, and observability coverage
+- [x] ADR/spec/guide/example and NOTICES attribution
+
+SSE is a separate deferred transport; it is not folded into the WebSocket
+package or lifecycle. Before shipping, `Response` and every supported wrapper
+chain must provide fail-loud `http.Flusher` capability/error semantics—silent
+buffering or a claimed-but-nonfunctional Flush is unacceptable. Only then
+should an SSE response API and disconnect/drain contract be designed.
+
+- [ ] Design and prove the Flush capability boundary across middleware
+- [ ] Specify SSE framing, heartbeat, disconnect, and drain semantics
+- [ ] Add an SSE API only after those gates pass
 
 ### 4.5 OpenAPI (`openapi/`)
 
