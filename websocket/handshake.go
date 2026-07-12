@@ -74,8 +74,8 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 		}
 	}()
 
-	if _, err := httpwriter.ResolveHijacker(ctx.Response()); err != nil {
-		return credo.NewHTTPError(http.StatusNotImplemented).WithInternal(err)
+	if _, resolveErr := httpwriter.ResolveHijacker(ctx.Response()); resolveErr != nil {
+		return credo.NewHTTPError(http.StatusNotImplemented).WithInternal(resolveErr)
 	}
 	connectionID := rand.Text()
 	route := ""

@@ -29,7 +29,8 @@ func TestConnectionAndAccessLogContract(t *testing.T) {
 	})).Name("events")
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	// coder/websocket owns and closes the HTTP response body on every path.
+	client, _, err := coderwebsocket.Dial( //nolint:bodyclose
 		t.Context(),
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/events",
 		&coderwebsocket.DialOptions{Subprotocols: []string{"events.v1"}},
@@ -121,7 +122,8 @@ func TestConnectionFailureLogsAreStructuredAndSecretSafe(t *testing.T) {
 			headers.Set("Origin", "https://allowed.example")
 			headers.Set("Authorization", "Bearer authorization-secret")
 			headers.Set("Cookie", "session=cookie-secret")
-			client, _, err := coderwebsocket.Dial(
+			// coder/websocket owns and closes the HTTP response body on every path.
+			client, _, err := coderwebsocket.Dial( //nolint:bodyclose
 				t.Context(),
 				"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws?token=query-secret",
 				&coderwebsocket.DialOptions{HTTPHeader: headers},
@@ -131,10 +133,10 @@ func TestConnectionFailureLogsAreStructuredAndSecretSafe(t *testing.T) {
 			}
 			defer client.CloseNow()
 			if tc.classification == "application_error" {
-				if err := client.Write(
+				if writeErr := client.Write(
 					t.Context(), coderwebsocket.MessageText, []byte("payload-secret"),
-				); err != nil {
-					t.Fatal(err)
+				); writeErr != nil {
+					t.Fatal(writeErr)
 				}
 			}
 			_, _, err = client.Read(t.Context())
@@ -179,17 +181,18 @@ func TestReadLimitLogsWarnWithoutPayload(t *testing.T) {
 	}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	// coder/websocket owns and closes the HTTP response body on every path.
+	client, _, err := coderwebsocket.Dial( //nolint:bodyclose
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.CloseNow()
-	if err := client.Write(
+	if writeErr := client.Write(
 		t.Context(), coderwebsocket.MessageText, []byte("payload-secret-too-large"),
-	); err != nil {
-		t.Fatal(err)
+	); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	_, _, err = client.Read(t.Context())
 	if got := coderwebsocket.CloseStatus(err); got != coderwebsocket.StatusMessageTooBig {
@@ -220,7 +223,8 @@ func TestPeerPolicyCloseLogsWarnWithoutRawReason(t *testing.T) {
 	}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	// coder/websocket owns and closes the HTTP response body on every path.
+	client, _, err := coderwebsocket.Dial( //nolint:bodyclose
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {

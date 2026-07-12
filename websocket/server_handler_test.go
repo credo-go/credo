@@ -18,6 +18,7 @@ import (
 	coderwebsocket "github.com/coder/websocket"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/auth"
 	"github.com/credo-go/credo/middleware"
 )
 
@@ -39,6 +40,25 @@ func validHandlerTestRequest(method string) *http.Request {
 	return r
 }
 
+func dialHandlerTest(
+	ctx context.Context,
+	url string,
+	opts *coderwebsocket.DialOptions,
+) (*coderwebsocket.Conn, error) {
+	// coder/websocket owns and closes the HTTP response body on every path.
+	conn, _, err := coderwebsocket.Dial(ctx, url, opts) //nolint:bodyclose
+	return conn, err
+}
+
+type handlerTestAuthenticator struct{}
+
+func (handlerTestAuthenticator) Authenticate(r *http.Request) (string, error) {
+	if r.Header.Get("Authorization") != "Bearer test-token" {
+		return "", errors.New("invalid test credential")
+	}
+	return "user-7", nil
+}
+
 func TestServerHandlerRealConnection(t *testing.T) {
 	app, server := newHandlerTestApp(t, Config{
 		Subprotocols:       []string{"echo.v1"},
@@ -56,20 +76,20 @@ func TestServerHandlerRealConnection(t *testing.T) {
 
 	httpServer := httptest.NewServer(app)
 	t.Cleanup(httpServer.Close)
-	client, response, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(),
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws",
 		&coderwebsocket.DialOptions{Subprotocols: []string{"echo.v1"}},
 	)
 	if err != nil {
-		t.Fatalf("Dial() response=%v error=%v", response, err)
+		t.Fatalf("Dial() error=%v", err)
 	}
 	t.Cleanup(func() { _ = client.CloseNow() })
 	if client.Subprotocol() != "echo.v1" {
 		t.Errorf("client subprotocol = %q", client.Subprotocol())
 	}
-	if err := client.Write(t.Context(), coderwebsocket.MessageText, []byte("hello")); err != nil {
-		t.Fatal(err)
+	if writeErr := client.Write(t.Context(), coderwebsocket.MessageText, []byte("hello")); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	typ, data, err := client.Read(t.Context())
 	if err != nil {
@@ -88,8 +108,119 @@ func TestServerHandlerRealConnection(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("connection context was not cancelled after normal close")
 	}
-	if context.Cause(connectionCtx) != context.Canceled {
+	if !errors.Is(context.Cause(connectionCtx), context.Canceled) {
 		t.Errorf("connection context cause = %v", context.Cause(connectionCtx))
+	}
+}
+
+func TestServerHandlerRouterMiddlewareAndAuthIntegration(t *testing.T) {
+	app, server := newHandlerTestApp(t)
+	var order []string
+	var orderMu sync.Mutex
+	record := func(name string) {
+		orderMu.Lock()
+		defer orderMu.Unlock()
+		order = append(order, name)
+	}
+	mark := func(name string) credo.Middleware {
+		return func(next credo.Handler) credo.Handler {
+			return func(ctx *credo.Context) error {
+				record(name)
+				return next(ctx)
+			}
+		}
+	}
+
+	app.GlobalMiddleware(
+		mark("global"),
+		middleware.Rewrite(middleware.RewriteRule{From: "/legacy/events", To: "/api/events"}),
+	)
+	group := app.Group("/api").Middleware(mark("group"))
+	group.GET("/events", server.Handler(func(ctx *credo.Context, _ *Conn) error {
+		record("handler")
+		user, ok := ctx.GetUser[string]()
+		if !ok || user != "user-7" {
+			return errors.New("authenticated user was not propagated")
+		}
+		if ctx.OriginalPath() != "/legacy/events" {
+			return errors.New("rewrite did not preserve original path")
+		}
+		return nil
+	})).Middleware(
+		auth.Middleware[string](handlerTestAuthenticator{}, nil),
+		mark("route"),
+	)
+
+	httpServer := httptest.NewServer(app)
+	defer httpServer.Close()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/legacy/events"
+
+	unauthorized, err := http.Get(strings.Replace(wsURL, "ws://", "http://", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want 401", unauthorized.StatusCode)
+	}
+	orderMu.Lock()
+	order = nil
+	orderMu.Unlock()
+
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer test-token")
+	client, err := dialHandlerTest(t.Context(), wsURL, &coderwebsocket.DialOptions{
+		HTTPHeader: headers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	_, _, err = client.Read(t.Context())
+	if got := coderwebsocket.CloseStatus(err); got != coderwebsocket.StatusNormalClosure {
+		t.Fatalf("close status = %d, want 1000; error=%v", got, err)
+	}
+	orderMu.Lock()
+	got := strings.Join(order, ",")
+	orderMu.Unlock()
+	if want := "global,group,route,handler"; got != want {
+		t.Fatalf("middleware order = %q, want %q", got, want)
+	}
+}
+
+func TestServerHandlerTrailingSlashRedirectPrecedesUpgrade(t *testing.T) {
+	app, server := newHandlerTestApp(t)
+	var handlerRan atomic.Bool
+	app.GET("/events", server.Handler(func(*credo.Context, *Conn) error {
+		handlerRan.Store(true)
+		return nil
+	}))
+	httpServer := httptest.NewServer(app)
+	defer httpServer.Close()
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpServer.URL+"/events/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	client := *httpServer.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("status = %d, want 301", response.StatusCode)
+	}
+	if location := response.Header.Get("Location"); location != "/events" {
+		t.Fatalf("Location = %q, want /events", location)
+	}
+	if handlerRan.Load() {
+		t.Fatal("WebSocket handler ran for trailing-slash redirect")
 	}
 }
 
@@ -318,7 +449,7 @@ func TestServerHandlerApplicationErrorAndPanicClose1011(t *testing.T) {
 			app.GET("/ws", server.Handler(tc.handler))
 			httpServer := httptest.NewServer(app)
 			defer httpServer.Close()
-			client, _, err := coderwebsocket.Dial(
+			client, err := dialHandlerTest(
 				t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 			)
 			if err != nil {
@@ -361,7 +492,7 @@ func TestServerShutdownDrainsHandlerAndIsStable(t *testing.T) {
 	}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {
@@ -402,7 +533,7 @@ func TestServerShutdownDeadlineIsIncompleteThenEventuallyClosed(t *testing.T) {
 	}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {
@@ -453,7 +584,7 @@ func TestServerShutdownWaiterCancellationDoesNotChangeOwner(t *testing.T) {
 	}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {
@@ -537,7 +668,7 @@ func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
 	if !app.IsRunning() {
 		t.Fatal("app did not start")
 	}
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws://"+app.Addr().String()+"/ws", nil,
 	)
 	if err != nil {
@@ -579,7 +710,7 @@ func TestServerHandlerWSSAndHTTP2Negative(t *testing.T) {
 	tlsServer.StartTLS()
 	defer tlsServer.Close()
 
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(),
 		"wss"+strings.TrimPrefix(tlsServer.URL, "https")+"/ws",
 		&coderwebsocket.DialOptions{HTTPClient: tlsServer.Client()},
@@ -615,7 +746,7 @@ func TestServerHandlerThroughCompressionMiddleware(t *testing.T) {
 		Middleware(middleware.Compress())
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {
@@ -640,7 +771,7 @@ func TestServerHandlerDetachesCredoRequestTimeout(t *testing.T) {
 	})).Middleware(middleware.Timeout(middleware.TimeoutConfig{Timeout: time.Millisecond}))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
-	client, _, err := coderwebsocket.Dial(
+	client, err := dialHandlerTest(
 		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
 	)
 	if err != nil {

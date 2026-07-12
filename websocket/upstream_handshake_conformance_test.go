@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	coderwebsocket "github.com/coder/websocket"
+
 	"github.com/credo-go/credo"
 )
 

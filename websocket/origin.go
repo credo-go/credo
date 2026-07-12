@@ -155,13 +155,13 @@ func parseOrigin(raw string, allowWildcard bool) (canonicalOrigin, bool, error) 
 		if net.ParseIP(host) != nil || strings.Count(host, ".") < 1 {
 			return canonicalOrigin{}, false, errors.New("wildcard suffix must be a multi-label DNS hostname")
 		}
-		if err := validateDNSName(host); err != nil {
-			return canonicalOrigin{}, false, err
+		if validationErr := validateDNSName(host); validationErr != nil {
+			return canonicalOrigin{}, false, validationErr
 		}
 	} else if ip := net.ParseIP(host); ip != nil {
 		host = ip.String()
-	} else if err := validateDNSName(host); err != nil {
-		return canonicalOrigin{}, false, err
+	} else if validationErr := validateDNSName(host); validationErr != nil {
+		return canonicalOrigin{}, false, validationErr
 	}
 
 	portText := parsed.Port()

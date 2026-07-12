@@ -103,7 +103,9 @@ func findCloseStatus(err error) (StatusCode, bool) {
 	if err == nil {
 		return 0, false
 	}
-	switch closeErr := err.(type) {
+	// Inspect only the current node before recursing so joined error order is
+	// preserved across both value and pointer CloseError representations.
+	switch closeErr := err.(type) { //nolint:errorlint
 	case CloseError:
 		return closeErr.Code, true
 	case *CloseError:

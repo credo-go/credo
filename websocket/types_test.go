@@ -138,7 +138,7 @@ func TestNormalizeErrorHidesUpstreamCloseError(t *testing.T) {
 		Reason: "private upstream text",
 	})
 	err := normalizeError(upstream)
-	closeErr, ok := err.(CloseError)
+	closeErr, ok := errors.AsType[CloseError](err)
 	if !ok {
 		t.Fatalf("normalizeError() type = %T, want CloseError", err)
 	}
@@ -150,7 +150,7 @@ func TestNormalizeErrorHidesUpstreamCloseError(t *testing.T) {
 	}
 
 	transport := errors.New("transport")
-	if got := normalizeError(transport); got != transport {
+	if got := normalizeError(transport); !errors.Is(got, transport) {
 		t.Fatal("normalizeError changed a non-close error")
 	}
 	tooBig := fmt.Errorf("read: %w", coderwebsocket.ErrMessageTooBig)

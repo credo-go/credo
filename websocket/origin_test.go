@@ -150,9 +150,9 @@ func TestOriginPolicyAuthorization(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := policy.authorize(tc.origins, tc.requestScheme, tc.requestHost)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("authorize() error = %v, wantErr %v", err, tc.wantErr)
+			gotErr := policy.authorize(tc.origins, tc.requestScheme, tc.requestHost)
+			if (gotErr != nil) != tc.wantErr {
+				t.Errorf("authorize() error = %v, wantErr %v", gotErr, tc.wantErr)
 			}
 		})
 	}

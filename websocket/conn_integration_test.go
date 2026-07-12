@@ -39,9 +39,9 @@ func openConnTestPair(
 	var serverCtx context.Context
 
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, err := coderwebsocket.Accept(w, r, resolved.acceptOptions())
-		if err != nil {
-			acceptErr <- err
+		raw, acceptFailure := coderwebsocket.Accept(w, r, resolved.acceptOptions())
+		if acceptFailure != nil {
+			acceptErr <- acceptFailure
 			return
 		}
 		ctx, cancel := context.WithCancelCause(
@@ -59,7 +59,8 @@ func openConnTestPair(
 	})
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
-	client, _, err := coderwebsocket.Dial(t.Context(), wsURL, dialOptions)
+	// coder/websocket owns and closes the HTTP response body on every path.
+	client, _, err := coderwebsocket.Dial(t.Context(), wsURL, dialOptions) //nolint:bodyclose
 	if err != nil {
 		t.Fatalf("Dial() error: %v", err)
 	}
@@ -107,8 +108,8 @@ func TestConnFacadeRoundTripContextAndSubprotocol(t *testing.T) {
 	if typ != MessageText || string(data) != "hello" {
 		t.Errorf("server Read() = (%d, %q), want text hello", typ, data)
 	}
-	if err := pair.server.Write(ctx, MessageBinary, []byte{1, 2, 3}); err != nil {
-		t.Fatal(err)
+	if writeErr := pair.server.Write(ctx, MessageBinary, []byte{1, 2, 3}); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	clientType, clientData, err := pair.client.Read(ctx)
 	if err != nil {

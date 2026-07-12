@@ -45,6 +45,15 @@ func TestCoderWebSocketPublicSurface(t *testing.T) {
 	if opts.CompressionMode == coderwebsocket.CompressionDisabled {
 		t.Fatal("compression mode was not retained")
 	}
+	if len(opts.Subprotocols) != 1 || opts.Subprotocols[0] != "credo.conformance.v1" {
+		t.Fatalf("subprotocols were not retained: %v", opts.Subprotocols)
+	}
+	if !opts.InsecureSkipVerify {
+		t.Fatal("origin bypass mapping was not retained")
+	}
+	if opts.CompressionThreshold != 512 {
+		t.Fatalf("compression threshold = %d, want 512", opts.CompressionThreshold)
+	}
 	if coderwebsocket.CompressionContextTakeover == opts.CompressionMode {
 		t.Fatal("compression modes are not distinct")
 	}

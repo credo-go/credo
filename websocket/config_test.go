@@ -214,3 +214,71 @@ func TestConfigPanicMentionsInvalidField(t *testing.T) {
 	}()
 	Use(mustNewWebSocketApp(t), Config{ReadLimit: -1})
 }
+
+func FuzzResolveConfig(f *testing.F) {
+	seeds := []struct {
+		origin      string
+		subprotocol string
+		readLimit   int64
+		threshold   int
+		mode        uint8
+		require     bool
+		insecure    bool
+	}{
+		{origin: "https://example.com", subprotocol: "events.v1"},
+		{
+			origin: "https://*.example.com", subprotocol: "chat", readLimit: 32768,
+			threshold: 512, mode: uint8(CompressionNoContextTakeover), require: true,
+		},
+		{origin: "not an origin", subprotocol: "bad token", readLimit: -1, mode: 255},
+		{insecure: true},
+	}
+	for _, seed := range seeds {
+		f.Add(
+			seed.origin, seed.subprotocol, seed.readLimit, seed.threshold,
+			seed.mode, seed.require, seed.insecure,
+		)
+	}
+
+	f.Fuzz(func(
+		t *testing.T,
+		origin string,
+		subprotocol string,
+		readLimit int64,
+		threshold int,
+		mode uint8,
+		require bool,
+		insecure bool,
+	) {
+		cfg := Config{
+			ReadLimit:               readLimit,
+			CompressionMode:         CompressionMode(mode),
+			CompressionThreshold:    threshold,
+			RequireSubprotocol:      require,
+			InsecureSkipOriginCheck: insecure,
+		}
+		if origin != "" {
+			cfg.AllowedOrigins = []string{origin}
+		}
+		if subprotocol != "" {
+			cfg.Subprotocols = []string{subprotocol}
+		}
+
+		resolved, err := resolveConfig(cfg)
+		if err != nil {
+			return
+		}
+		if resolved.readLimit <= 0 {
+			t.Fatalf("accepted non-positive read limit %d", resolved.readLimit)
+		}
+		if resolved.compressionThreshold < 0 {
+			t.Fatalf("accepted negative compression threshold %d", resolved.compressionThreshold)
+		}
+		if resolved.requireSubprotocol && len(resolved.subprotocols) == 0 {
+			t.Fatal("accepted required subprotocol policy without protocols")
+		}
+		if insecure && len(resolved.origins.allowed) != 0 {
+			t.Fatal("accepted insecure origin bypass with an allowlist")
+		}
+	})
+}
