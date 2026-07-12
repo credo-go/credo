@@ -77,6 +77,15 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 	if _, err := httpwriter.ResolveHijacker(ctx.Response()); err != nil {
 		return credo.NewHTTPError(http.StatusNotImplemented).WithInternal(err)
 	}
+	connectionID := rand.Text()
+	route := ""
+	if matched := ctx.Route(); matched != nil {
+		route = matched.GetName()
+		if route == "" {
+			route = matched.GetPattern()
+		}
+	}
+	logger := ctx.Logger().With("connection_id", connectionID)
 
 	request := ctx.Request().Request.Clone(ctx.Context())
 	request.Header = ctx.Request().Header.Clone()
@@ -95,8 +104,20 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 	raw, err := coderwebsocket.Accept(capture, request, opts)
 	if err != nil {
 		if ctx.Response().Committed() {
-			ctx.Logger().LogAttrs(ctx.Context(), slog.LevelError,
-				"websocket: handshake transport failure", slog.Any("error", err))
+			attrs := []slog.Attr{
+				slog.String("classification", "handshake_transport_error"),
+				slog.String("error_type", fmt.Sprintf("%T", err)),
+			}
+			if route != "" {
+				attrs = append(attrs, slog.String("route", route))
+			}
+			if selectedProtocol != "" {
+				attrs = append(attrs, slog.String("subprotocol", selectedProtocol))
+			}
+			logger.LogAttrs(ctx.Context(), slog.LevelError,
+				"websocket: handshake transport failure",
+				attrs...,
+			)
 			return nil
 		}
 		capture.publishErrorHeaders()
@@ -109,15 +130,6 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 
 	connectionCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx.Context()))
 	conn := newConn(raw, connectionCtx, s.config.readLimit)
-	connectionID := rand.Text()
-	route := ""
-	if matched := ctx.Route(); matched != nil {
-		route = matched.GetName()
-		if route == "" {
-			route = matched.GetPattern()
-		}
-	}
-	logger := ctx.Logger().With("connection_id", connectionID)
 	record := &connectionRecord{
 		conn: conn, close: conn.Close, closeNow: raw.CloseNow,
 		cancel: cancel, logger: logger,
@@ -127,43 +139,54 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 	tokenAttached = true
 	if !s.attach(record) {
 		s.finish(record)
+		logConnectionTerminal(record, nil, nil)
 		return nil
 	}
+	logConnectionOpen(record)
 
-	handlerErr, panicked := invokeHandler(handler, ctx, conn, logger)
+	handlerErr, panicInfo := invokeHandler(handler, ctx, conn)
 	switch {
-	case panicked:
-		s.startTerminal(record, StatusInternalError, "internal error", context.Canceled, false)
+	case panicInfo != nil:
+		s.startTerminal(
+			record, StatusInternalError, "internal error", context.Canceled, false, "panic",
+		)
 	case handlerErr == nil:
-		s.startTerminal(record, StatusNormalClosure, "", context.Canceled, false)
+		s.startTerminal(record, StatusNormalClosure, "", context.Canceled, false, "normal")
 	case CloseStatus(handlerErr) >= 0:
-		s.startTerminal(record, -1, "", handlerErr, false)
+		s.startTerminal(record, -1, "", handlerErr, false, classifyPeerClose(CloseStatus(handlerErr)))
+	case isOperationError(handlerErr):
+		s.startTerminal(
+			record, StatusInternalError, "internal error", handlerErr, false, "transport_error",
+		)
 	default:
-		logger.LogAttrs(connectionCtx, slog.LevelError,
-			"websocket: application handler failed", slog.Any("error", handlerErr))
-		s.startTerminal(record, StatusInternalError, "internal error", handlerErr, false)
+		s.startTerminal(
+			record, StatusInternalError, "internal error", handlerErr, false, "application_error",
+		)
 	}
 	s.finish(record)
+	logConnectionTerminal(record, handlerErr, panicInfo)
 	return nil
+}
+
+type handlerPanic struct {
+	typeName string
+	stack    string
 }
 
 func invokeHandler(
 	handler Handler,
 	ctx *credo.Context,
 	conn *Conn,
-	logger *slog.Logger,
-) (err error, panicked bool) {
+) (err error, panicInfo *handlerPanic) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			panicked = true
-			logger.LogAttrs(conn.Context(), slog.LevelError,
-				"websocket: application handler panic",
-				slog.Any("panic", recovered),
-				slog.String("stack", string(debug.Stack())),
-			)
+			panicInfo = &handlerPanic{
+				typeName: fmt.Sprintf("%T", recovered),
+				stack:    string(debug.Stack()),
+			}
 		}
 	}()
-	return handler(ctx, conn), false
+	return handler(ctx, conn), nil
 }
 
 func validateMechanicalHandshake(ctx *credo.Context) error {

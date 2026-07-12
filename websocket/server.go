@@ -34,6 +34,8 @@ type connectionRecord struct {
 	terminal         bool
 	terminalCause    error
 	shutdownTerminal bool
+	classification   string
+	closeCode        StatusCode
 }
 
 // Server owns the immutable policy and managed lifecycle state for WebSocket
@@ -41,6 +43,7 @@ type connectionRecord struct {
 // with [Use].
 type Server struct {
 	config resolvedConfig
+	logger *slog.Logger
 
 	mu           sync.Mutex
 	state        serverState
@@ -76,6 +79,7 @@ func Use(app *credo.App, cfg ...Config) *Server {
 	}
 	server := &Server{
 		config:      resolved,
+		logger:      app.Logger().With("module", "websocket"),
 		connections: make(map[*connectionRecord]struct{}),
 		changed:     make(chan struct{}),
 		drainDone:   make(chan struct{}),
@@ -132,7 +136,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.drainStarted = true
 	s.state = serverDraining
 	for record := range s.connections {
-		s.startTerminalLocked(record, StatusGoingAway, "", context.Canceled, true)
+		s.startTerminalLocked(record, StatusGoingAway, "", context.Canceled, true, "shutdown")
 	}
 	s.notifyLocked()
 	s.mu.Unlock()
@@ -186,6 +190,17 @@ func (s *Server) forceIncomplete(cause error) error {
 		remainingConnections: remainingConnections,
 		remainingCloseTasks:  remainingCloseTasks,
 	}
+	if s.logger != nil {
+		s.logger.LogAttrs(
+			context.Background(),
+			slog.LevelError,
+			"websocket: shutdown incomplete",
+			slog.String("classification", "shutdown_incomplete"),
+			slog.Int("remaining_handlers", remainingHandlers),
+			slog.Int("remaining_connections", remainingConnections),
+			slog.Int("remaining_close_tasks", remainingCloseTasks),
+		)
+	}
 	return errors.Join(append(errs, incomplete)...)
 }
 
@@ -225,7 +240,7 @@ func (s *Server) attach(record *connectionRecord) bool {
 	s.connections[record] = struct{}{}
 	open := s.state == serverOpen
 	if !open {
-		s.startTerminalLocked(record, StatusGoingAway, "", context.Canceled, true)
+		s.startTerminalLocked(record, StatusGoingAway, "", context.Canceled, true, "shutdown")
 	}
 	s.notifyLocked()
 	return open
@@ -256,9 +271,10 @@ func (s *Server) startTerminal(
 	reason string,
 	cause error,
 	shutdown bool,
+	classification string,
 ) {
 	s.mu.Lock()
-	s.startTerminalLocked(record, code, reason, cause, shutdown)
+	s.startTerminalLocked(record, code, reason, cause, shutdown, classification)
 	s.mu.Unlock()
 }
 
@@ -268,6 +284,7 @@ func (s *Server) startTerminalLocked(
 	reason string,
 	cause error,
 	shutdown bool,
+	classification string,
 ) {
 	if record.terminal {
 		return
@@ -275,6 +292,8 @@ func (s *Server) startTerminalLocked(
 	record.terminal = true
 	record.terminalCause = cause
 	record.shutdownTerminal = shutdown
+	record.classification = classification
+	record.closeCode = code
 	s.closeTasks++
 	s.notifyLocked()
 	go func() {
@@ -301,6 +320,9 @@ func (s *Server) startTerminalLocked(
 		close(record.closeDone)
 		s.notifyLocked()
 		s.mu.Unlock()
+		if shutdown && err != nil {
+			logConnectionFailure(record, "shutdown_close_error", err)
+		}
 	}()
 }
 

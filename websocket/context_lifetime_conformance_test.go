@@ -82,6 +82,7 @@ func (conformanceRawConfig) Exists(string) bool          { return false }
 
 type conformanceCapturedLog struct {
 	message string
+	level   slog.Level
 	attrs   []slog.Attr
 }
 
@@ -107,6 +108,12 @@ func (c *conformanceLogCapture) find(message string) (conformanceCapturedLog, bo
 	return conformanceCapturedLog{}, false
 }
 
+func (c *conformanceLogCapture) snapshot() []conformanceCapturedLog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.entries)
+}
+
 type conformanceLogHandler struct {
 	capture *conformanceLogCapture
 	attrs   []slog.Attr
@@ -122,7 +129,7 @@ func (h *conformanceLogHandler) Handle(_ context.Context, record slog.Record) er
 		attrs = append(attrs, attr)
 		return true
 	})
-	h.capture.append(conformanceCapturedLog{message: record.Message, attrs: attrs})
+	h.capture.append(conformanceCapturedLog{message: record.Message, level: record.Level, attrs: attrs})
 	return nil
 }
 

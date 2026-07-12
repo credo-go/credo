@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -627,11 +628,38 @@ func TestServerHandlerThroughCompressionMiddleware(t *testing.T) {
 	}
 }
 
+func TestServerHandlerDetachesCredoRequestTimeout(t *testing.T) {
+	app, server := newHandlerTestApp(t)
+	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {
+		select {
+		case <-time.After(30 * time.Millisecond):
+			return nil
+		case <-conn.Context().Done():
+			return context.Cause(conn.Context())
+		}
+	})).Middleware(middleware.Timeout(middleware.TimeoutConfig{Timeout: time.Millisecond}))
+	httpServer := httptest.NewServer(app)
+	defer httpServer.Close()
+	client, _, err := coderwebsocket.Dial(
+		t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	_, _, err = client.Read(t.Context())
+	if got := coderwebsocket.CloseStatus(err); got != coderwebsocket.StatusNormalClosure {
+		t.Fatalf("close after request timeout = %d, want 1000; error=%v", got, err)
+	}
+}
+
 func TestServerShutdownForceUnblocksTrackedCloseTask(t *testing.T) {
+	capture := &conformanceLogCapture{}
 	server := &Server{
 		connections: make(map[*connectionRecord]struct{}),
 		changed:     make(chan struct{}),
 		drainDone:   make(chan struct{}),
+		logger:      slog.New(&conformanceLogHandler{capture: capture}),
 	}
 	closeRelease := make(chan struct{})
 	closeNowCalled := make(chan struct{})
@@ -664,6 +692,14 @@ func TestServerShutdownForceUnblocksTrackedCloseTask(t *testing.T) {
 	if !strings.Contains(err.Error(), "close_tasks=1") {
 		t.Errorf("incomplete error lacks close-task count: %v", err)
 	}
+	incompleteLog := waitCapturedLog(t, capture, "websocket: shutdown incomplete")
+	if incompleteLog.level != slog.LevelError {
+		t.Errorf("incomplete log level = %v, want ERROR", incompleteLog.level)
+	}
+	assertLogString(t, incompleteLog, "classification", "shutdown_incomplete")
+	assertLogInt64(t, incompleteLog, "remaining_handlers", 1)
+	assertLogInt64(t, incompleteLog, "remaining_connections", 1)
+	assertLogInt64(t, incompleteLog, "remaining_close_tasks", 1)
 	select {
 	case <-closeNowCalled:
 	case <-time.After(time.Second):

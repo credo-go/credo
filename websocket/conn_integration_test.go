@@ -205,6 +205,23 @@ func TestConnFacadeCloseReadProcessesControlFrames(t *testing.T) {
 	}
 }
 
+func TestConnFacadeCloseReadRejectsUnexpectedData(t *testing.T) {
+	pair := openConnTestPair(t, Config{}, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	readDone := pair.server.CloseRead(ctx)
+	if readDone == nil {
+		t.Fatal("CloseRead() returned nil context")
+	}
+	if err := pair.client.Write(ctx, coderwebsocket.MessageText, []byte("unexpected")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := pair.client.Read(ctx)
+	if got := coderwebsocket.CloseStatus(err); got != coderwebsocket.StatusPolicyViolation {
+		t.Fatalf("unexpected-data close = %d, want 1008; error=%v", got, err)
+	}
+}
+
 func TestConnFacadeAppliesExplicitReadLimit(t *testing.T) {
 	pair := openConnTestPair(t, Config{ReadLimit: 32}, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

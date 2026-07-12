@@ -38,7 +38,7 @@ func (c *Conn) Context() context.Context {
 func (c *Conn) Read(ctx context.Context) (MessageType, []byte, error) {
 	typ, data, err := c.conn.Read(ctx)
 	if err != nil {
-		return 0, nil, normalizeError(err)
+		return 0, nil, normalizeOperationError("read", err)
 	}
 	mapped, err := messageTypeFromUpstream(typ)
 	if err != nil {
@@ -54,12 +54,12 @@ func (c *Conn) Write(ctx context.Context, typ MessageType, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return normalizeError(c.conn.Write(ctx, mapped, data))
+	return normalizeOperationError("write", c.conn.Write(ctx, mapped, data))
 }
 
 // Ping sends a ping and waits for its pong response within ctx.
 func (c *Conn) Ping(ctx context.Context) error {
-	return normalizeError(c.conn.Ping(ctx))
+	return normalizeOperationError("ping", c.conn.Ping(ctx))
 }
 
 // CloseRead starts processing control frames when the application does not
@@ -172,4 +172,23 @@ func normalizeError(err error) error {
 		return CloseError{Code: StatusCode(closeErr.Code), Reason: closeErr.Reason}
 	}
 	return err
+}
+
+type operationError struct {
+	operation string
+	cause     error
+}
+
+func (e *operationError) Error() string {
+	return fmt.Sprintf("websocket: %s: %v", e.operation, e.cause)
+}
+
+func (e *operationError) Unwrap() error { return e.cause }
+
+func normalizeOperationError(operation string, err error) error {
+	err = normalizeError(err)
+	if err == nil || CloseStatus(err) >= 0 {
+		return err
+	}
+	return &operationError{operation: operation, cause: err}
 }

@@ -30,3 +30,24 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 only as an `http.Handler`, the caller owns shutdown and must coordinate
 `Server.Shutdown` with its `http.Server.Shutdown` before tearing down shared
 infrastructure.
+
+## Operational boundaries
+
+- Origin authorization is a browser-CSRF boundary, not authentication.
+  Browsers cannot attach arbitrary authorization headers to the WebSocket
+  constructor; prefer secure cookies or a short-lived, single-use ticket.
+  Query-string tokens can appear in proxy logs and should be avoided.
+- Use `conn.Context()` for connection work. Values copied from the request
+  remain available, so a request-scoped database transaction can accidentally
+  stay open for the full connection lifetime; do not put such middleware on a
+  WebSocket route by default.
+- Every connection needs an active `Read` or `CloseRead` so ping, pong, and
+  close frames are processed. `CloseRead` rejects unexpected application data
+  with 1008. Credo does not provide an automatic heartbeat; applications should
+  size Ping deadlines against their proxy idle timeout.
+- HTTP timeout/buffering middleware may remove Hijacker support and produces a
+  pre-upgrade 501. HTTP compression middleware is supported, while WebSocket
+  frame compression is controlled separately by `CompressionMode`.
+- Raw stdlib middleware that hijacks outside Credo tracking, RFC 8441/HTTP/2
+  WebSockets, hubs/rooms, outbound clients, reconnect, and distributed fan-out
+  are outside the MVP contract.
