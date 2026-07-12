@@ -5,6 +5,7 @@ go 1.27
 toolchain go1.27rc1
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/sethvargo/go-limiter v1.1.0
