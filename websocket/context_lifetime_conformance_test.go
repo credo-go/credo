@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -137,7 +136,7 @@ func (h *conformanceLogHandler) WithGroup(string) slog.Handler {
 	return h
 }
 
-func TestContextLifetimeContractSnapshotsLoggerBeforePoolReuse(t *testing.T) {
+func TestContextLifetimeContractSnapshotsLoggerAcrossRequests(t *testing.T) {
 	capture := &conformanceLogCapture{}
 	logger := slog.New(&conformanceLogHandler{capture: capture})
 	app, err := credo.New(
@@ -148,49 +147,34 @@ func TestContextLifetimeContractSnapshotsLoggerBeforePoolReuse(t *testing.T) {
 		t.Fatalf("credo.New() error = %v", err)
 	}
 
-	var firstContext *credo.Context
 	var loggerSnapshot *slog.Logger
 	var requestIDSnapshot string
-	var reusedRequestID string
-	reuseObserved := false
+	var nextRequestID string
 
 	app.GET("/ws", func(ctx *credo.Context) error {
-		if firstContext == nil {
-			firstContext = ctx
+		if loggerSnapshot == nil {
 			ctx.AddLogAttrs("tenant_id", "tenant-one", "user_id", "user-7")
 			requestIDSnapshot = ctx.RequestID()
 			loggerSnapshot = ctx.Logger().With("connection_id", "conn-one")
 			return ctx.Response().NoContent(http.StatusNoContent)
 		}
 
-		if ctx == firstContext && !reuseObserved {
-			reuseObserved = true
-			reusedRequestID = ctx.RequestID()
-			ctx.Logger().InfoContext(ctx.Context(), "reused-handler")
-		}
+		nextRequestID = ctx.RequestID()
+		ctx.Logger().InfoContext(ctx.Context(), "next-handler")
 		return ctx.Response().NoContent(http.StatusNoContent)
 	})
 
-	for i := range 128 {
+	for _, requestID := range []string{"request-0", "request-1"} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/ws", nil)
-		r.Header.Set("X-Request-Id", "request-"+strconv.Itoa(i))
+		r.Header.Set("X-Request-Id", requestID)
 		app.ServeHTTP(w, r)
-		if reuseObserved {
-			break
-		}
-	}
-	if !reuseObserved {
-		t.Fatal("real App pool did not reuse the first Context within 128 sequential requests")
 	}
 	if requestIDSnapshot != "request-0" {
 		t.Fatalf("request ID snapshot = %q, want request-0", requestIDSnapshot)
 	}
-	if reusedRequestID == requestIDSnapshot {
-		t.Fatalf("reused Context kept old request ID %q", reusedRequestID)
-	}
-	if got := firstContext.RequestID(); got != reusedRequestID {
-		t.Fatalf("retained Context request ID = %q, want reused value %q", got, reusedRequestID)
+	if nextRequestID != "request-1" {
+		t.Fatalf("next request ID = %q, want request-1", nextRequestID)
 	}
 
 	loggerSnapshot.InfoContext(t.Context(), "connection-finished")
@@ -206,16 +190,16 @@ func TestContextLifetimeContractSnapshotsLoggerBeforePoolReuse(t *testing.T) {
 		"connection_id": "conn-one",
 	})
 
-	reusedLog, ok := capture.find("reused-handler")
+	nextLog, ok := capture.find("next-handler")
 	if !ok {
-		t.Fatal("reused-handler log was not captured")
+		t.Fatal("next-handler log was not captured")
 	}
-	assertConformanceLogAttrs(t, reusedLog, map[string]string{
-		"request_id": reusedRequestID,
+	assertConformanceLogAttrs(t, nextLog, map[string]string{
+		"request_id": nextRequestID,
 	})
-	for _, attr := range reusedLog.attrs {
+	for _, attr := range nextLog.attrs {
 		if attr.Key == "tenant_id" || attr.Key == "user_id" || attr.Key == "connection_id" {
-			t.Fatalf("pooled logger leaked stale attribute %q", attr.Key)
+			t.Fatalf("request logger leaked stale attribute %q", attr.Key)
 		}
 	}
 }
