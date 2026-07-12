@@ -287,6 +287,9 @@ func (c *Context) OriginalPath() string {
 // A maximum of 10 rewrites per request is enforced to prevent loops.
 // If exceeded, an error is returned and the request fails with 500.
 func (c *Context) Rewrite(path string) error {
+	if c.Response().Hijacked() {
+		return errors.New("credo: cannot rewrite after response is hijacked")
+	}
 	if c.Response().Committed() {
 		return errors.New("credo: cannot rewrite after response is committed")
 	}

@@ -825,6 +825,64 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	}
 }
 
+func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*credo.App)
+		handler   credo.Handler
+	}{
+		{
+			name: "handler_returns_error_after_hijack",
+			handler: func(ctx *credo.Context) error {
+				if _, _, err := ctx.Response().Hijack(); err != nil {
+					return err
+				}
+				return errors.New("post-hijack application error")
+			},
+		},
+		{
+			name: "renderer_hijacks_then_returns",
+			configure: func(app *credo.App) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+					_, _, _ = ctx.Response().Hijack()
+				})
+			},
+			handler: func(*credo.Context) error { return credo.ErrBadRequest },
+		},
+		{
+			name: "renderer_hijacks_then_panics",
+			configure: func(app *credo.App) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+					_, _, _ = ctx.Response().Hijack()
+					panic("renderer panic after hijack")
+				})
+			},
+			handler: func(*credo.Context) error { return credo.ErrBadRequest },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			if tt.configure != nil {
+				tt.configure(app)
+			}
+			app.GET("/ws", tt.handler)
+
+			w := newHijackResponseWriter()
+			r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+			app.ServeHTTP(w, r)
+
+			if w.hijackCalls != 1 {
+				t.Fatalf("Hijack calls = %d, want 1", w.hijackCalls)
+			}
+			if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
+				t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 func contains(s, substr string) bool {

@@ -179,11 +179,12 @@ func TestCoderAcceptCommits101BeforeActualHijack(t *testing.T) {
 	if got, want := base.events, []string{"write-header", "hijack"}; !slices.Equal(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
-	if !response.Committed() || response.Status() != http.StatusSwitchingProtocols {
+	if !response.Committed() || !response.Hijacked() || response.Status() != http.StatusSwitchingProtocols {
 		t.Fatalf(
-			"response state = status %d, committed %v; want 101, true",
+			"response state = status %d, committed %v, hijacked %v; want 101, true, true",
 			response.Status(),
 			response.Committed(),
+			response.Hijacked(),
 		)
 	}
 	if len(base.statuses) != 1 || base.statuses[0] != http.StatusSwitchingProtocols {
@@ -223,6 +224,9 @@ func TestCoderAcceptHijackFailureOccursAfter101(t *testing.T) {
 			response.Status(),
 			response.Committed(),
 		)
+	}
+	if response.Hijacked() {
+		t.Fatal("response Hijacked() = true after failed actual Hijack")
 	}
 	if got := base.body.String(); got != http.StatusText(http.StatusInternalServerError)+"\n" {
 		t.Fatalf("post-101 body = %q, want upstream second error body", got)

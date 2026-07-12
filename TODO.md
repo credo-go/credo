@@ -84,7 +84,7 @@
 - [x] Built-in panic recovery (`recover.go`) — outermost layer in `compile()`, `WithoutRecover()` opt-out
 - [x] `middleware/recover.go` — Optional per-group/route recovery with `Recover(cfg ...RecoverConfig)`
   - [x] `RecoverConfig`: Logger, DisableStackTrace, StackSize
-  - [x] Re-panic `http.ErrAbortHandler`, case-insensitive WebSocket upgrade check
+  - [x] Re-panic `http.ErrAbortHandler`; suppress HTTP fallback only after ground-truth `Response.Hijacked()`
 - [x] `middleware/accesslog.go` — Structured request logging (slog)
   - [x] `AccessLogConfig`: Logger, Skipper
   - [x] Log level by status: 2xx/3xx=Info, 4xx=Warn, 5xx=Error

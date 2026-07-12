@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/internal/httpheader"
 	internalobserve "github.com/credo-go/credo/internal/observe"
 )
 
@@ -82,9 +81,9 @@ func Recover(cfg ...RecoverConfig) credo.Middleware {
 					logger.LogAttrs(r.Context(), slog.LevelError,
 						"panic recovered", attrs...)
 
-					// Skip error propagation for upgraded connections where
-					// the response writer may already be hijacked.
-					if httpheader.HasToken(r.Header, "Connection", "upgrade") {
+					// Actual transport state, not request headers, decides
+					// whether the HTTP error pipeline is still available.
+					if ctx.Response().Hijacked() {
 						retErr = nil
 						return
 					}

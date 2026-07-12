@@ -1,8 +1,10 @@
 package middleware_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,26 @@ import (
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/middleware"
 )
+
+type recoverHijackWriter struct {
+	*httptest.ResponseRecorder
+	hijackCalls      int
+	writeHeaderCalls int
+}
+
+func newRecoverHijackWriter() *recoverHijackWriter {
+	return &recoverHijackWriter{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (w *recoverHijackWriter) WriteHeader(code int) {
+	w.writeHeaderCalls++
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+func (w *recoverHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijackCalls++
+	return nil, nil, nil
+}
 
 func TestRecover_CatchesStringPanic(t *testing.T) {
 	app := mustNew(t)
@@ -194,7 +216,7 @@ func TestRecover_RequestID_InLog(t *testing.T) {
 	}
 }
 
-func TestRecover_WebSocketUpgrade(t *testing.T) {
+func TestRecover_UpgradeHeaderBeforeHijackWritesErrorResponse(t *testing.T) {
 	tests := []struct {
 		name       string
 		connHeader string
@@ -215,11 +237,31 @@ func TestRecover_WebSocketUpgrade(t *testing.T) {
 			r.Header.Set("Connection", tt.connHeader)
 			app.ServeHTTP(w, r)
 
-			// Should NOT write 500 status for WebSocket upgrade
-			if w.Code != 200 {
-				t.Errorf("status = %d, want 200 (no status written for websocket)", w.Code)
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500 before actual Hijack", w.Code)
 			}
 		})
+	}
+}
+
+func TestRecover_ActualHijackDoesNotPropagateHTTPError(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ws", func(ctx *credo.Context) error {
+		if _, _, err := ctx.Response().Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		panic("post-hijack panic")
+	}).Middleware(middleware.Recover())
+
+	w := newRecoverHijackWriter()
+	r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	app.ServeHTTP(w, r)
+
+	if w.hijackCalls != 1 {
+		t.Fatalf("Hijack calls = %d, want 1", w.hijackCalls)
+	}
+	if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
+		t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
 	}
 }
 

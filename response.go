@@ -8,12 +8,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/credo-go/credo/internal/httpwriter"
 )
 
 const cacheControlNoCacheMustRevalidate = "no-cache, must-revalidate"
@@ -24,7 +25,7 @@ const cacheControlNoCacheMustRevalidate = "no-cache, must-revalidate"
 // The embedded ResponseWriter may be swapped by middleware that wraps the
 // writer (e.g., compression); the tracking state is framework-owned and
 // exposed read-only via [Response.Status], [Response.Size], and
-// [Response.Committed].
+// [Response.Committed], and [Response.Hijacked].
 type Response struct {
 	http.ResponseWriter
 
@@ -36,6 +37,9 @@ type Response struct {
 
 	// committed is true after WriteHeader has been called.
 	committed bool
+
+	// hijacked is true only after the effective underlying Hijack call succeeds.
+	hijacked bool
 }
 
 // NewResponse creates a new Response wrapping the given http.ResponseWriter.
@@ -60,10 +64,18 @@ func (r *Response) Committed() bool {
 	return r.committed
 }
 
+// Hijacked reports whether the underlying HTTP connection was successfully
+// taken over through [Response.Hijack]. Writing status or Upgrade headers alone
+// does not mark the response as hijacked. Middleware that bypasses Response and
+// hijacks a raw underlying writer cannot be observed by this state.
+func (r *Response) Hijacked() bool {
+	return r.hijacked
+}
+
 // WriteHeader sends an HTTP response header with the given status code.
 // It can only be called once per response.
 func (r *Response) WriteHeader(code int) {
-	if r.committed {
+	if r.committed || r.hijacked {
 		return
 	}
 	if code >= http.StatusBadRequest && hasCacheControlDirective(r.Header().Get("Cache-Control"), "immutable") {
@@ -86,6 +98,9 @@ func hasCacheControlDirective(value, directive string) bool {
 // Write writes the data to the connection as part of an HTTP reply.
 // If WriteHeader has not been called, it calls WriteHeader(200).
 func (r *Response) Write(b []byte) (int, error) {
+	if r.hijacked {
+		return 0, http.ErrHijacked
+	}
 	if !r.committed {
 		r.WriteHeader(http.StatusOK)
 	}
@@ -96,17 +111,23 @@ func (r *Response) Write(b []byte) (int, error) {
 
 // Flush sends any buffered data to the client.
 func (r *Response) Flush() {
+	if r.hijacked {
+		return
+	}
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// Hijack implements the http.Hijacker interface.
+// Hijack implements the http.Hijacker interface. It resolves nested Unwrap
+// chains and marks the response only after the effective Hijack call succeeds.
 func (r *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if h, ok := r.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
+	conn, rw, err := httpwriter.Hijack(r.ResponseWriter)
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, nil, errors.New("credo: response does not implement http.Hijacker")
+	r.hijacked = true
+	return conn, rw, nil
 }
 
 // Unwrap returns the underlying http.ResponseWriter.
@@ -120,6 +141,7 @@ func (r *Response) Reset(w http.ResponseWriter) {
 	r.status = 0
 	r.size = 0
 	r.committed = false
+	r.hijacked = false
 }
 
 // String implements fmt.Stringer for debugging.
