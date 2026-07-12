@@ -12,10 +12,10 @@ import (
 	"unicode/utf8"
 )
 
-type statusErr struct{ code int }
+type statusError struct{ code int }
 
-func (e statusErr) Error() string   { return "status error" }
-func (e statusErr) HTTPStatus() int { return e.code }
+func (e statusError) Error() string   { return "status error" }
+func (e statusError) HTTPStatus() int { return e.code }
 
 func TestStatus(t *testing.T) {
 	tests := []struct {
@@ -26,7 +26,7 @@ func TestStatus(t *testing.T) {
 	}{
 		{"tracked status wins over error", 201, errors.New("ignored"), 201},
 		{"no status, no error is 200", 0, nil, http.StatusOK},
-		{"status-provider error", 0, statusErr{code: 404}, 404},
+		{"status-provider error", 0, statusError{code: 404}, 404},
 		{"generic error is 500", 0, errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {

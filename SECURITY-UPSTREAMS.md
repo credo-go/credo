@@ -1,8 +1,27 @@
 # Upstream Security Provenance
 
-Credo **adapts** (forks-and-owns) source code from several upstream projects rather than importing them as dependencies. Standard dependency scanners (Dependabot, `govulncheck`) only see the modules in `go.mod` / `go.sum` — they do **not** see adapted code. This file records the provenance of adapted code so that upstream security advisories can be triaged against Credo's copies.
+Credo **adapts** (forks-and-owns) source code from several upstream projects and
+**wraps** selected infrastructure libraries behind Credo-owned APIs. Standard
+dependency scanners (Dependabot, `govulncheck`) see wrapped modules in `go.mod` /
+`go.sum`, but they do **not** see adapted code. This file records both monitoring
+surfaces so advisories and upgrades reach the correct review path.
 
-> **Wrapped (imported) dependencies** — bun, golang-jwt, go-limiter, yaml, mapstructure, x/text, and the SQL drivers — are covered by `go.mod` and standard tooling, so they are not repeated here.
+## Security-sensitive wrapped dependencies
+
+| Upstream | Exact baseline | Wrapped by | Automated monitoring | Upgrade gate |
+| --- | --- | --- | --- | --- |
+| [coder/websocket](https://github.com/coder/websocket) | `v1.8.15` (`9c8faad`) | `websocket/` | root Dependabot `gomod` entry and scheduled root `govulncheck ./...` | root test/race/lint CI, including `websocket/upstream_*_conformance_test.go` and the adapter's origin, handshake, real-network, and lifecycle suites |
+
+The selected coder/websocket tag states that the protocol engine passes the
+[Autobahn Testsuite](https://github.com/coder/websocket/tree/v1.8.15#readme). Credo treats
+that upstream protocol evidence as tag-scoped: an upgrade PR must record the
+candidate tag/commit and re-run the executable Credo conformance gate above.
+Credo does not claim that the adapter itself has a separate Autobahn report.
+
+Other wrapped dependencies — bun, golang-jwt, go-limiter, yaml, mapstructure,
+x/text, and SQL drivers — remain covered by their module manifests and the same
+standard automation. They are omitted from the table because they do not yet
+have an additional Credo-specific upgrade gate.
 
 ## Adapted sources
 
@@ -25,7 +44,7 @@ See [NOTICES](NOTICES) for the full per-file breakdown and copyright notices.
 
 ## How adapted code is monitored
 
-1. The scheduled [`upstream-watch`](.github/workflows/upstream-watch.yml) workflow runs `govulncheck` (covering the wrapped dependencies and the standard library) and prints the upstream list above as a monthly manual-review reminder.
+1. The scheduled [`upstream-watch`](.github/workflows/upstream-watch.yml) workflow runs `govulncheck` (covering wrapped dependencies, including coder/websocket, and the standard library) and prints the adapted-upstream list above as a monthly manual-review reminder.
 2. When an upstream advisory is published, the maintainer checks — using the NOTICES per-file map — whether the affected logic was adapted into Credo, and patches Credo's copy if so.
 
 Advisories are triaged by severity on a best-effort basis. There is **no fixed response-time guarantee** (see [SECURITY.md](SECURITY.md)).

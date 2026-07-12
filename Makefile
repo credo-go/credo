@@ -58,7 +58,7 @@ check:
 	@echo "=== vet ==="
 	$(GO) vet $(PKG)
 	@echo "=== lint ==="
-	-$(GOLANGCI_LINT) run $(PKG)
+	$(GOLANGCI_LINT) run $(PKG)
 	@echo "=== test ==="
 	$(GO) test $(GOFLAGS) -race -count=1 $(PKG)
 	@echo "=== bench ==="

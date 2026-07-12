@@ -9,14 +9,16 @@ on:
 permissions:
   contents: read
 
-# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc1`
-# directive in go.mod (the bare `1.27rc1` spec is not valid semver, so both the
+# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc2`
+# directive in go.mod (the bare `1.27rc2` spec is not valid semver, so both the
 # manifest lookup and the direct download fail). Pin the release candidate with
-# the semver-prerelease form setup-go accepts; it maps to the go1.27rc1 build.
+# the semver-prerelease form setup-go accepts; it maps to the go1.27rc2 build.
 # Once 1.27 GA ships and go.mod drops the rc toolchain line, the setup-go steps
 # can return to `go-version-file: go.mod`.
 env:
-  GO_VERSION: "1.27.0-rc.1"
+  GO_VERSION: "1.27.0-rc.2"
+  GOLANGCI_LINT_VERSION: "v2.12.2"
+  GOLANGCI_X_TOOLS_VERSION: "v0.48.0"
 
 jobs:
   test:
@@ -138,16 +140,24 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # install-mode goinstall builds golangci-lint from source with the Go
-      # toolchain set up above, so it links a go/types that understands Go 1.27
-      # generic methods (a prebuilt binary may lag the toolchain). The config
-      # disables the linters whose SSA/IR engines panic on the 1.27 RC; the
-      # lint-full-canary job below runs those non-blocking. See .golangci.yml.
+      # v2.12.2 pins x/tools v0.44.0, whose package loader cannot read Go 1.27
+      # generic-method export data. Build the exact linter release with only
+      # x/tools raised to the first locally verified compatible release. Remove
+      # this shim when a tagged golangci-lint includes that support.
+      - name: Build pinned golangci-lint
+        run: |
+          tool_dir="$RUNNER_TEMP/golangci-lint-build"
+          mkdir -p "$tool_dir"
+          cd "$tool_dir"
+          go mod init credo.tools/golangci-lint
+          go get \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+            golang.org/x/tools@${GOLANGCI_X_TOOLS_VERSION}
+          go build -o "$RUNNER_TEMP/golangci-lint" \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-          install-mode: goinstall
+        run: "$RUNNER_TEMP/golangci-lint run ./..."
 
   lint-full-canary:
     name: Lint (full, canary)
@@ -169,9 +179,19 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Build pinned golangci-lint
+        run: |
+          tool_dir="$RUNNER_TEMP/golangci-lint-build"
+          mkdir -p "$tool_dir"
+          cd "$tool_dir"
+          go mod init credo.tools/golangci-lint
+          go get \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+            golang.org/x/tools@${GOLANGCI_X_TOOLS_VERSION}
+          go build -o "$RUNNER_TEMP/golangci-lint" \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
       - name: Run golangci-lint (full)
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-          install-mode: goinstall
-          args: --enable=staticcheck --enable=unused --enable=gosec
+        run: >-
+          $RUNNER_TEMP/golangci-lint run ./...
+          --enable=staticcheck --enable=unused --enable=gosec

@@ -113,7 +113,6 @@ func (lm *lifecycleManager) runDrainPhase(
 	}()
 
 	for _, hook := range hooks {
-		hook := hook
 		label := fmt.Sprintf("OnDrain hook [%d] (%s)", hook.index, hook.source)
 		pending[hook.index] = drainWork{
 			key: hook.index, label: label, index: hook.index, source: hook.source,

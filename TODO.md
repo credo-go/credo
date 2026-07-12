@@ -620,7 +620,7 @@
 
 ### CI/CD
 
-- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; green on go1.27rc1 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
+- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; pinned to go1.27rc2 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
 - [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
 - [x] CodeQL security analysis (`codeql.yml`)
 - [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot

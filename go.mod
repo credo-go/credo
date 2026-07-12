@@ -2,7 +2,7 @@ module github.com/credo-go/credo
 
 go 1.27
 
-toolchain go1.27rc1
+toolchain go1.27rc2
 
 require (
 	github.com/coder/websocket v1.8.15
