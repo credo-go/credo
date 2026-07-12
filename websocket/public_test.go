@@ -20,8 +20,14 @@ type publicConnSurface interface {
 	Unwrap() *websocket.Conn
 }
 
+type publicServerSurface interface {
+	Handler(credows.Handler) credo.Handler
+	Shutdown(context.Context) error
+}
+
 var (
 	_ publicConnSurface                                   = (*credows.Conn)(nil)
+	_ publicServerSurface                                 = (*credows.Server)(nil)
 	_ error                                               = credows.CloseError{}
 	_ credows.Handler                                     = func(*credo.Context, *credows.Conn) error { return nil }
 	_ func(*credo.App, ...credows.Config) *credows.Server = credows.Use

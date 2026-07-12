@@ -9,5 +9,24 @@ The default policy is browser same-origin, optional subprotocol negotiation,
 disabled compression, and a 32 KiB per-message read limit. Origin checks are a
 browser-CSRF boundary, not authentication.
 
-The route handler and managed connection lifecycle are being implemented in the
-next plan phase; the package is not yet ready for application use.
+Minimal managed usage:
+
+```go
+ws := websocket.Use(app, websocket.Config{
+    AllowedOrigins: []string{"https://app.example.com"},
+    Subprotocols:   []string{"events.v1"},
+})
+
+app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) error {
+    typ, data, err := conn.Read(conn.Context())
+    if err != nil {
+        return err
+    }
+    return conn.Write(conn.Context(), typ, data)
+}))
+```
+
+`Use` integrates connection drain with the App lifecycle. When the App is used
+only as an `http.Handler`, the caller owns shutdown and must coordinate
+`Server.Shutdown` with its `http.Server.Shutdown` before tearing down shared
+infrastructure.
