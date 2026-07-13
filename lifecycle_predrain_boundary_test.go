@@ -261,8 +261,8 @@ func TestLifecycleManager_PreDrainLogsBoundaryBeforeHardBarrierReturns(t *testin
 		t.Fatalf("boundary pending_count = %d, want 1", pendingCount)
 	}
 	select {
-	case err := <-result:
-		t.Fatalf("pre-drain returned before hard barrier release: %v", err)
+	case phaseErr := <-result:
+		t.Fatalf("pre-drain returned before hard barrier release: %v", phaseErr)
 	default:
 	}
 
