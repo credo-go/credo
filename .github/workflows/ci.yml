@@ -53,7 +53,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: Run submodule tests (including Bun compatibility contracts)
         working-directory: store/sqldb
@@ -113,7 +113,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: Run real database contract tests
         working-directory: store/sqldb
@@ -143,7 +143,7 @@ jobs:
         run: go build ./...
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: Build (store/sqldb)
         working-directory: store/sqldb
@@ -181,14 +181,10 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
-
       - name: go mod tidy (store/sqldb)
-        working-directory: store/sqldb
         run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
+          go run ./scripts/releasegate tidy
+          git diff --exit-code -- store/sqldb/go.mod store/sqldb/go.sum
 
   examples:
     name: Examples
@@ -256,7 +252,7 @@ jobs:
           "$RUNNER_TEMP/golangci-lint" run --concurrency=1 ./...
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: Run golangci-lint (store/sqldb)
         working-directory: store/sqldb

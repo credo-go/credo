@@ -35,7 +35,7 @@ jobs:
         run: govulncheck ./...
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: govulncheck (store/sqldb submodule)
         working-directory: store/sqldb

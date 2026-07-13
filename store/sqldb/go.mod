@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27rc2
 
 require (
-	github.com/credo-go/credo v0.0.0
+	github.com/credo-go/credo v0.2.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/uptrace/bun v1.2.18
@@ -40,5 +40,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/credo-go/credo => ../..

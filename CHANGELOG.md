@@ -6,11 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 The `store/sqldb` submodule is versioned in lockstep with the root module (path-prefixed `store/sqldb/vX.Y.Z` tags — see [CONTRIBUTING.md#releasing](CONTRIBUTING.md#releasing)); its changes are recorded here.
 
+The `v0.1.0` section records the initial public development baseline; it was not published as a Git tag. Tagged root and `store/sqldb` releases begin with `v0.2.0`.
+
 | Release module | Compatible root module |
 | --- | --- |
 | `github.com/credo-go/credo/store/sqldb vX.Y.Z` | `github.com/credo-go/credo vX.Y.Z` |
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-07-13
 
 ### Added
 
@@ -224,9 +228,9 @@ The `store/sqldb` submodule is versioned in lockstep with the root module (path-
 - **Routing** — `App.Mount` is now atomic: a mount that conflicts with an existing explicit route registers nothing. `Mount` makes fourteen radix registrations (every forwarded method on both the exact prefix and the catch-all), and the radix tree has no delete, so a conflict discovered partway through previously stranded the earlier registrations as orphan routes — reachable by dispatch yet hidden from introspection. `Mount` now preflights every method/pattern pair and panics before mutating the tree if any explicit route already occupies one, leaving the router exactly as it was. See [ADR-007](docs/adr/007-router-and-routing.md).
 - **Docs** — `WithLogger`'s godoc no longer claims a "nop logger" is used when it is left unset; the framework default logger (a text handler on stderr) is, so access and request logging are on by default with no configuration.
 
-## [0.1.0] - 2026-06-10
+## [0.1.0] - 2026-06-10 — development baseline (untagged)
 
-Initial public release.
+Initial public development baseline.
 
 ### Added
 
@@ -250,5 +254,6 @@ Initial public release.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/credo-go/credo/releases/tag/v0.1.0
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/credo-go/credo/compare/cdb0643f6b6b006d7c5d2d81c916b3942874e6c6...v0.2.0
+[0.1.0]: https://github.com/credo-go/credo/commit/cdb0643f6b6b006d7c5d2d81c916b3942874e6c6
