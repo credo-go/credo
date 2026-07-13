@@ -194,8 +194,8 @@ func tidySQLDBModule(repoRoot string) (err error) {
 	temporaryReplace := false
 	switch {
 	case rootReplacementCount == 0:
-		if err := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "edit", "-replace="+rootModule+"=../.."); err != nil {
-			return fmt.Errorf("add temporary in-tree root replacement: %w", err)
+		if editErr := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "edit", "-replace="+rootModule+"=../.."); editErr != nil {
+			return fmt.Errorf("add temporary in-tree root replacement: %w", editErr)
 		}
 		temporaryReplace = true
 	case rootReplacementCount == 1 &&
@@ -219,8 +219,8 @@ func tidySQLDBModule(repoRoot string) (err error) {
 		}()
 	}
 
-	if err := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "tidy"); err != nil {
-		return fmt.Errorf("tidy store/sqldb: %w", err)
+	if tidyErr := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "tidy"); tidyErr != nil {
+		return fmt.Errorf("tidy store/sqldb: %w", tidyErr)
 	}
 
 	if !temporaryReplace {
@@ -252,8 +252,8 @@ func createInTreeWorkspace(repoRoot string) (err error) {
 		return fmt.Errorf("store/sqldb/go.mod does not require %s", rootModule)
 	}
 
-	if err := command(repoRoot, isolatedGoEnvironment, "go", "work", "init", ".", "./store/sqldb"); err != nil {
-		return fmt.Errorf("create in-tree module workspace: %w", err)
+	if initErr := command(repoRoot, isolatedGoEnvironment, "go", "work", "init", ".", "./store/sqldb"); initErr != nil {
+		return fmt.Errorf("create in-tree module workspace: %w", initErr)
 	}
 	defer func() {
 		if err != nil {
@@ -265,8 +265,8 @@ func createInTreeWorkspace(repoRoot string) (err error) {
 		"GOWORK=" + workFile,
 		"GOFLAGS=",
 	}
-	if err := command(repoRoot, workspaceEnvironment, "go", "work", "edit", "-replace="+rootModule+"@"+rootVersion+"=."); err != nil {
-		return fmt.Errorf("map the required root version into the workspace: %w", err)
+	if editErr := command(repoRoot, workspaceEnvironment, "go", "work", "edit", "-replace="+rootModule+"@"+rootVersion+"=."); editErr != nil {
+		return fmt.Errorf("map the required root version into the workspace: %w", editErr)
 	}
 
 	fmt.Printf("release gate: workspace maps %s %s to the in-tree root module\n", rootModule, rootVersion)
