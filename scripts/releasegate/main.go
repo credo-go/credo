@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 || len(args) > 2 {
-		return errors.New("usage: go run ./scripts/releasegate (candidate [vX.Y.Z] | prepared vX.Y.Z)")
+		return errors.New("usage: go run ./scripts/releasegate (candidate [vX.Y.Z] | prepared vX.Y.Z | tidy | workspace)")
 	}
 
 	mode := args[0]
@@ -45,10 +45,18 @@ func run(args []string) error {
 		if version == "" {
 			return errors.New("prepared mode requires vX.Y.Z")
 		}
+	case "tidy":
+		if version != "" {
+			return errors.New("tidy mode does not accept a version")
+		}
+	case "workspace":
+		if version != "" {
+			return errors.New("workspace mode does not accept a version")
+		}
 	default:
 		return fmt.Errorf("unknown mode %q", mode)
 	}
-	if !isCanonicalVersion(version) {
+	if mode != "tidy" && mode != "workspace" && !isCanonicalVersion(version) {
 		return fmt.Errorf("version must be canonical semver with a v prefix and no build metadata (got %q)", version)
 	}
 
@@ -57,6 +65,12 @@ func run(args []string) error {
 		return fmt.Errorf("find git checkout: %w", err)
 	}
 
+	if mode == "tidy" {
+		return tidySQLDBModule(repoRoot)
+	}
+	if mode == "workspace" {
+		return createInTreeWorkspace(repoRoot)
+	}
 	if mode == "prepared" {
 		if err := checkPreparedModule(repoRoot, version); err != nil {
 			return err
@@ -133,20 +147,136 @@ type moduleFile struct {
 	}
 	Replace []struct {
 		Old struct {
-			Path string
+			Path    string
+			Version string
+		}
+		New struct {
+			Path    string
+			Version string
 		}
 	}
 }
 
-func checkPreparedModule(repoRoot, version string) error {
-	raw, err := output(repoRoot, nil, "go", "mod", "edit", "-json", "store/sqldb/go.mod")
+var isolatedGoEnvironment = []string{
+	"GOWORK=off",
+	"GOFLAGS=",
+}
+
+func readSQLDBModule(repoRoot string) (moduleFile, error) {
+	raw, err := output(repoRoot, isolatedGoEnvironment, "go", "mod", "edit", "-json", "store/sqldb/go.mod")
 	if err != nil {
-		return fmt.Errorf("read store/sqldb/go.mod: %w", err)
+		return moduleFile{}, fmt.Errorf("read store/sqldb/go.mod: %w", err)
 	}
 
 	var mod moduleFile
 	if err := json.Unmarshal([]byte(raw), &mod); err != nil {
-		return fmt.Errorf("decode store/sqldb/go.mod: %w", err)
+		return moduleFile{}, fmt.Errorf("decode store/sqldb/go.mod: %w", err)
+	}
+	return mod, nil
+}
+
+func tidySQLDBModule(repoRoot string) (err error) {
+	sqldbDir := filepath.Join(repoRoot, "store", "sqldb")
+	mod, err := readSQLDBModule(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	rootReplacementIndex := -1
+	rootReplacementCount := 0
+	for index, replacement := range mod.Replace {
+		if replacement.Old.Path == rootModule {
+			rootReplacementIndex = index
+			rootReplacementCount++
+		}
+	}
+
+	temporaryReplace := false
+	switch {
+	case rootReplacementCount == 0:
+		if err := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "edit", "-replace="+rootModule+"=../.."); err != nil {
+			return fmt.Errorf("add temporary in-tree root replacement: %w", err)
+		}
+		temporaryReplace = true
+	case rootReplacementCount == 1 &&
+		mod.Replace[rootReplacementIndex].Old.Version == "" &&
+		mod.Replace[rootReplacementIndex].New.Path == "../.." &&
+		mod.Replace[rootReplacementIndex].New.Version == "":
+		// Preserve the bootstrap replacement already committed in go.mod.
+	default:
+		return fmt.Errorf("store/sqldb/go.mod has an unexpected replacement for %s", rootModule)
+	}
+
+	if temporaryReplace {
+		defer func() {
+			cleanupErr := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "edit", "-dropreplace="+rootModule)
+			if cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove temporary in-tree root replacement: %w", cleanupErr))
+			}
+			if err == nil {
+				fmt.Println("release gate: store/sqldb module is tidy against the in-tree root module")
+			}
+		}()
+	}
+
+	if err := command(sqldbDir, isolatedGoEnvironment, "go", "mod", "tidy"); err != nil {
+		return fmt.Errorf("tidy store/sqldb: %w", err)
+	}
+
+	if !temporaryReplace {
+		fmt.Println("release gate: store/sqldb module is tidy against the in-tree root module")
+	}
+	return nil
+}
+
+func createInTreeWorkspace(repoRoot string) (err error) {
+	workFile := filepath.Join(repoRoot, "go.work")
+	if _, statErr := os.Stat(workFile); statErr == nil {
+		return errors.New("go.work already exists; refusing to overwrite it")
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect go.work: %w", statErr)
+	}
+
+	mod, err := readSQLDBModule(repoRoot)
+	if err != nil {
+		return err
+	}
+	rootVersion := ""
+	for _, requirement := range mod.Require {
+		if requirement.Path == rootModule {
+			rootVersion = requirement.Version
+			break
+		}
+	}
+	if rootVersion == "" {
+		return fmt.Errorf("store/sqldb/go.mod does not require %s", rootModule)
+	}
+
+	if err := command(repoRoot, isolatedGoEnvironment, "go", "work", "init", ".", "./store/sqldb"); err != nil {
+		return fmt.Errorf("create in-tree module workspace: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.Remove(workFile))
+		}
+	}()
+
+	workspaceEnvironment := []string{
+		"GOWORK=" + workFile,
+		"GOFLAGS=",
+	}
+	if err := command(repoRoot, workspaceEnvironment, "go", "work", "edit", "-replace="+rootModule+"@"+rootVersion+"=."); err != nil {
+		return fmt.Errorf("map the required root version into the workspace: %w", err)
+	}
+
+	fmt.Printf("release gate: workspace maps %s %s to the in-tree root module\n", rootModule, rootVersion)
+	return nil
+}
+
+func checkPreparedModule(repoRoot, version string) error {
+	mod, err := readSQLDBModule(repoRoot)
+	if err != nil {
+		return err
 	}
 
 	rootVersion := ""

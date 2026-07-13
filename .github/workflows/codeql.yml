@@ -44,7 +44,7 @@ jobs:
         run: go build ./...
 
       - name: Create in-tree module workspace
-        run: go work init . ./store/sqldb
+        run: go run ./scripts/releasegate workspace
 
       - name: Build (store/sqldb)
         working-directory: store/sqldb

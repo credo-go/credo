@@ -99,8 +99,8 @@ Release both modules in this order:
 
 1. Ensure `main` is green and the working tree is clean.
 2. Finalize `CHANGELOG.md` and add reviewed, user-facing notes at `docs/releases/<version>.md`.
-3. In `store/sqldb/go.mod`, require that exact root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit the release preparation.
-4. Run `go run ./scripts/releasegate prepared v0.2.0` and `go run ./scripts/releasegate candidate v0.2.0`. The first command fails on dependency-version or `replace` drift; the second builds a temporary external consumer with isolated module and build caches.
+3. In `store/sqldb/go.mod`, require that exact root version. Run `go run ./scripts/releasegate tidy`; it preserves the canonical bootstrap `replace` when present, or adds and removes a temporary in-tree replacement when absent. Remove any root-module `replace` before committing the release preparation.
+4. Run `go run ./scripts/releasegate prepared vX.Y.Z` and `go run ./scripts/releasegate candidate vX.Y.Z`. The first command fails on dependency-version or `replace` drift; the second builds a temporary external consumer with isolated module and build caches.
 5. From the `main` branch, dispatch the `Release` GitHub Actions workflow with the exact version. It repeats the gates, atomically publishes the root and `store/sqldb/` tags, and creates one root GitHub Release. Stable `vX.Y.Z` releases are marked Latest; a prerelease semver such as `v0.3.0-beta.1` creates a GitHub pre-release instead.
 
 The release notes/CHANGELOG entry must retain the compatibility table above (with `X.Y.Z` replaced by the released version) whenever the lockstep policy changes. The release workflow waits for successful `CI` and `CodeQL` push runs on the exact release commit, then fails before tagging if the prepared `go.mod` version differs from its input or still contains the local replacement. Re-running the workflow is safe even after `main` advances: when both tags already exist, it checks out their shared commit, re-verifies it, and creates a missing GitHub Release. A partial tag pair or tags pointing at different commits fail loud.
@@ -108,7 +108,7 @@ The release notes/CHANGELOG entry must retain the compatibility table above (wit
 After the first release, local cross-module development can use an ignored workspace:
 
 ```sh
-go work init . ./store/sqldb
+go run ./scripts/releasegate workspace
 ```
 
 ## Coding Standards

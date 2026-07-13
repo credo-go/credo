@@ -140,7 +140,7 @@ jobs:
           # intentionally not published yet. Use an ephemeral workspace for
           # in-tree tests; the preceding external-consumer gate separately
           # proves the exact published, replace-free module graph.
-          go work init . ./store/sqldb
+          go run ./scripts/releasegate workspace
           go test -count=1 ./...
           (cd store/sqldb && go test -count=1 ./...)
           go vet ./...
