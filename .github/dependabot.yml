@@ -11,8 +11,8 @@
 
 version: 2
 updates:
-  # Root module: yaml.v3 + mapstructure (config), golang-jwt (auth),
-  # go-limiter (rate limiting), x/text (BCP 47).
+  # Root module: coder/websocket (WebSocket protocol), yaml.v3 + mapstructure
+  # (config), golang-jwt (auth), go-limiter (rate limiting), x/text (BCP 47).
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
@@ -35,7 +35,7 @@ updates:
       # lockstep at release time — see CONTRIBUTING.md#releasing.
       - dependency-name: "github.com/credo-go/credo"
 
-  # CI actions (checkout, setup-go, codeql-action, golangci-lint-action).
+  # CI actions (checkout, setup-go, codeql-action).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -203,7 +203,7 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 
 // handleError is the internal error handling pipeline. It performs:
 //  1. Panic recovery (if ErrorRenderer panics, logs and sends 500)
-//  2. Committed guard (logs warning if response already committed)
+//  2. Hijacked/committed guard (logs warning if the HTTP response is no longer writable)
 //  3. Error classification via classifyError
 //  4. Server error logging (5xx HTTPErrors with Internal, unhandled errors)
 //  5. ErrorRenderer dispatch (renderer is called even for HEAD — can set headers)
@@ -211,6 +211,11 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 func (app *App) handleError(err error, ctx *Context) {
 	defer app.recoverErrorRendererPanic(err, ctx)
 
+	if ctx.Response().Hijacked() {
+		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
+			"credo: error after response hijacked", slog.Any("error", err))
+		return
+	}
 	if ctx.Response().Committed() {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
 			"credo: error after response committed", slog.Any("error", err))
@@ -232,7 +237,7 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 	if r := recover(); r != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: ErrorRenderer panic", slog.Any("panic", r), slog.Any("error", err))
-		if !ctx.Response().Committed() {
+		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
 			ctx.Response().Header().Set("Content-Type", "application/problem+json")
 			ctx.Response().WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(ctx.Response()).Encode(NewProblemDetails( //nolint:errcheck
@@ -270,6 +275,9 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 	// Dispatch to ErrorRenderer or default.
 	if app.errorRenderer != nil {
 		app.errorRenderer(ctx, info)
+		if ctx.Response().Hijacked() {
+			return
+		}
 		if !ctx.Response().Committed() {
 			if isHEAD {
 				_ = ctx.Response().NoContent(pd.Status)

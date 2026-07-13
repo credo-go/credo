@@ -1,13 +1,14 @@
 NOTICES — Third-Party Code Attribution
 ======================================
 
-Credo includes code adapted from the following open-source projects.
-All original licenses and copyrights are preserved as required.
-Over time, adapted code may diverge significantly from its origin.
+Credo includes code adapted from and dependencies wrapped from the following
+open-source projects. All original licenses and copyrights are preserved as
+required. Over time, adapted code may diverge significantly from its origin;
+wrapped dependencies remain separately versioned modules.
 
-Each entry lists the source project, its license, and the Credo packages
-where adapted code resides. Original copyright headers are retained in
-individual source files.
+Each entry lists the source project, its license, and the Credo packages where
+adapted code or a wrapped dependency resides. Original copyright headers are
+retained in adapted source files; wrapped code stays in its upstream module.
 
 ----------------------------------------------------------------------
 
@@ -230,6 +231,36 @@ Wrapped in:
   - middleware/       — token bucket rate limiting middleware adapter
     Files:
       ratelimit.go    — RateLimit middleware wrapper over go-limiter store
+
+----------------------------------------------------------------------
+
+coder/websocket (https://github.com/coder/websocket)
+Version: v1.8.15 (commit 9c8faad)
+Copyright (c) 2025 Coder
+License: ISC (https://github.com/coder/websocket/blob/v1.8.15/LICENSE.txt)
+
+Wrapped in:
+  - websocket/        — Server-side WebSocket protocol adapter. Credo owns
+                         routing, security defaults, public façade, error and
+                         logging policy, and lifecycle drain; coder/websocket
+                         remains the imported wire-protocol engine.
+
+ISC license text:
+
+Permission to use, copy, modify, and distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+No coder/websocket source or tests are copied into Credo. The dependency is
+wrapped and exact-pinned in the root module.
 
 ----------------------------------------------------------------------
 

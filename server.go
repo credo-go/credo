@@ -88,11 +88,12 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 }
 
 // Shutdown gracefully shuts down the server: it cancels the lifecycle context,
-// drains in-flight requests, tears down DI singletons (reverse order), then
-// runs OnShutdown hooks (LIFO). The caller's ctx carries the deadline; unlike
+// drains in-flight HTTP requests and [App.OnDrain] subsystem hooks in parallel,
+// tears down DI singletons (reverse order), then runs OnShutdown hooks (LIFO).
+// The caller's ctx carries the shared absolute deadline; unlike
 // signal/cancellation-triggered shutdown it is not bounded by
 // [WithShutdownTimeout]. Returns an error if the server is not running, or if
-// any shutdown step fails (joined via errors.Join).
+// any shutdown step fails or remains incomplete (joined via errors.Join).
 func (app *App) Shutdown(ctx context.Context) error {
 	lm := app.lifecycle
 	err := lm.initiateShutdown(ctx)

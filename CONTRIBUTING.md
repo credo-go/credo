@@ -48,7 +48,18 @@ refactor(middleware): simplify chain composition
    - **How** to test it
 5. At least one maintainer review is required before merge.
 
-## Updating Bun
+## Wrapped Dependency Upgrades
+
+An upgrade to a wrapped protocol or infrastructure dependency must identify the
+candidate tag and commit, review its release/security notes, and pass the full
+root test, race, vet, build, tidy, and pinned-lint jobs. For
+`github.com/coder/websocket`, the root test job is also the executable upgrade
+gate: do not skip or weaken `websocket/upstream_*_conformance_test.go` or the
+origin, handshake, real-network, and lifecycle suites when updating the pin.
+Record the upstream tag's Autobahn/conformance evidence in the PR; Credo does
+not require a separate Autobahn run on every commit.
+
+### Updating Bun
 
 `store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery`
 state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its

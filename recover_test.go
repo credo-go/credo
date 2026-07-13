@@ -34,7 +34,7 @@ func TestBuiltinRecover_CatchesPanic(t *testing.T) {
 	}
 }
 
-func TestBuiltinRecover_WebSocketUpgrade_NoErrorResponse(t *testing.T) {
+func TestBuiltinRecover_UpgradeHeaderBeforeHijackWritesErrorResponse(t *testing.T) {
 	tests := []struct {
 		name       string
 		connHeader string
@@ -55,15 +55,33 @@ func TestBuiltinRecover_WebSocketUpgrade_NoErrorResponse(t *testing.T) {
 			r.Header.Set("Connection", tt.connHeader)
 			app.ServeHTTP(w, r)
 
-			// The writer may be hijacked on upgraded connections — the
-			// built-in recovery must not write a 500 response.
-			if w.Code != 200 {
-				t.Errorf("status = %d, want 200 (no status written for websocket)", w.Code)
+			// Upgrade request headers are not proof that the transport was
+			// hijacked. A pre-hijack panic must use the normal HTTP pipeline.
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", w.Code)
 			}
-			if w.Body.Len() != 0 {
-				t.Errorf("body = %q, want empty (no error response for websocket)", w.Body.String())
+			if w.Body.Len() == 0 {
+				t.Error("body is empty, want Problem Details")
 			}
 		})
+	}
+}
+
+func TestBuiltinRecover_ActualHijackDoesNotWriteErrorResponse(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ws", func(ctx *credo.Context) error {
+		if _, _, err := ctx.Response().Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		panic("post-hijack panic")
+	})
+
+	w := newHijackResponseWriter()
+	r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	app.ServeHTTP(w, r)
+
+	if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
+		t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
 	}
 }
 

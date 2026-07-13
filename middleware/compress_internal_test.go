@@ -2,11 +2,14 @@ package middleware
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/credo-go/credo/internal/httpwriter"
 )
 
 type countingResponseWriter struct {
@@ -31,6 +34,24 @@ func (w *countingResponseWriter) WriteHeader(_ int) {
 
 type hijackableWriter struct {
 	http.ResponseWriter
+}
+
+type unwrapOnlyWriter struct {
+	http.ResponseWriter
+}
+
+func (w *unwrapOnlyWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+type forwardingHijackWriter struct {
+	*unwrapOnlyWriter
+	calls int
+}
+
+func (w *forwardingHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.calls++
+	return nil, nil, nil
 }
 
 func (w *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -139,6 +160,29 @@ func TestCompressResponseWriter_FlushAndInterfaces(t *testing.T) {
 		cw := acquireCompressResponseWriter(rec, "gzip", 5, nil, nil)
 		if _, _, err := cw.Hijack(); err != nil {
 			t.Fatalf("unexpected hijack error: %v", err)
+		}
+	})
+
+	t.Run("hijack available through nested unwrap", func(t *testing.T) {
+		hijacker := &hijackableWriter{ResponseWriter: httptest.NewRecorder()}
+		rec := &unwrapOnlyWriter{ResponseWriter: &unwrapOnlyWriter{ResponseWriter: hijacker}}
+		cw := acquireCompressResponseWriter(rec, "gzip", 5, nil, nil)
+		if _, _, err := cw.Hijack(); err != nil {
+			t.Fatalf("nested Hijack() error = %v", err)
+		}
+	})
+
+	t.Run("forwarding hijacker cannot mask unsupported underlying", func(t *testing.T) {
+		rec := &forwardingHijackWriter{unwrapOnlyWriter: &unwrapOnlyWriter{
+			ResponseWriter: httptest.NewRecorder(),
+		}}
+		cw := acquireCompressResponseWriter(rec, "gzip", 5, nil, nil)
+		_, _, err := cw.Hijack()
+		if !errors.Is(err, httpwriter.ErrHijackerUnavailable) {
+			t.Fatalf("Hijack() error = %v, want unavailable", err)
+		}
+		if rec.calls != 0 {
+			t.Fatalf("forwarding Hijack calls = %d, want 0", rec.calls)
 		}
 	})
 

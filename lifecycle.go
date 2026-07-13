@@ -31,6 +31,31 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 	app.lifecycle.onShutdown = append(app.lifecycle.onShutdown, fn)
 }
 
+// OnDrain registers a subsystem drain hook that runs after the application
+// lifecycle context is cancelled and before DI infrastructure is shut down.
+// Hooks run concurrently with one another and with HTTP server draining; no
+// ordering between hooks is guaranteed. The ctx carries the same absolute
+// shutdown deadline used by the HTTP drain.
+//
+// A successful hook must ensure its subsystem can no longer run handlers that
+// depend on application infrastructure. Hooks also run during teardown after
+// an OnStart failure, so they must be idempotent and must not assume their
+// corresponding startup work completed. A hook that ignores ctx may outlive
+// the shutdown budget; Credo reports it as incomplete and proceeds with the
+// expired-context teardown contract rather than claiming graceful success.
+//
+// Must be called before Run; panics for a nil hook or after the App is frozen.
+func (app *App) OnDrain(fn func(ctx context.Context) error) {
+	app.checkFrozen("OnDrain")
+	if fn == nil {
+		panic("credo: OnDrain hook must not be nil")
+	}
+	app.lifecycle.onDrain = append(
+		app.lifecycle.onDrain,
+		newDrainHook(len(app.lifecycle.onDrain), fn),
+	)
+}
+
 // OnStart registers a function to be called during startup, after the port
 // is bound but before the server starts accepting connections. Hooks are
 // called in FIFO order (first registered, first called).

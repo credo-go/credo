@@ -84,7 +84,7 @@
 - [x] Built-in panic recovery (`recover.go`) — outermost layer in `compile()`, `WithoutRecover()` opt-out
 - [x] `middleware/recover.go` — Optional per-group/route recovery with `Recover(cfg ...RecoverConfig)`
   - [x] `RecoverConfig`: Logger, DisableStackTrace, StackSize
-  - [x] Re-panic `http.ErrAbortHandler`, case-insensitive WebSocket upgrade check
+  - [x] Re-panic `http.ErrAbortHandler`; suppress HTTP fallback only after ground-truth `Response.Hijacked()`
 - [x] `middleware/accesslog.go` — Structured request logging (slog)
   - [x] `AccessLogConfig`: Logger, Skipper
   - [x] Log level by status: 2xx/3xx=Info, 4xx=Warn, 5xx=Error
@@ -473,18 +473,33 @@
 - [ ] Tests
 - [ ] Update NOTICES
 
-### 4.4 WebSocket & SSE (`websocket/`)
+### 4.4 WebSocket (`websocket/`) and SSE
 
-**Source**: coder/websocket (ISC)
+**Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-> SSE is dependency-free (stdlib flusher) and may ship first as a quick win — increasingly relevant for LLM/streaming responses. WebSocket follows via coder/websocket adaptation.
+WebSocket server support is implemented as an adapter rather than copied
+protocol code. The canonical API stays on the existing router:
+`ws := websocket.Use(app, cfg)` and
+`app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect,
+heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain
+demand-gated follow-ups rather than MVP promises.
 
-- [ ] `ctx.SSE()` for Server-Sent Events (stdlib-only — can land before WebSocket)
-- [ ] Copy core upgrade + connection handling
-- [ ] `ctx.Upgrade()` API for WebSocket
-- [ ] Room/broadcast support
-- [ ] Tests
-- [ ] Update NOTICES
+- [x] Credo-owned message/close/config/connection façade over coder/websocket
+- [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
+- [x] RFC 7807 pre-upgrade errors and fail-loud non-Hijacker behavior
+- [x] App-managed `OnDrain` integration plus explicit external-server shutdown
+- [x] Real TCP/WSS/HTTP2-negative, race/conformance, fuzz, and observability coverage
+- [x] ADR/spec/guide/example and NOTICES attribution
+
+SSE is a separate deferred transport; it is not folded into the WebSocket
+package or lifecycle. Before shipping, `Response` and every supported wrapper
+chain must provide fail-loud `http.Flusher` capability/error semantics—silent
+buffering or a claimed-but-nonfunctional Flush is unacceptable. Only then
+should an SSE response API and disconnect/drain contract be designed.
+
+- [ ] Design and prove the Flush capability boundary across middleware
+- [ ] Specify SSE framing, heartbeat, disconnect, and drain semantics
+- [ ] Add an SSE API only after those gates pass
 
 ### 4.5 OpenAPI (`openapi/`)
 
@@ -655,7 +670,7 @@
 
 ### CI/CD
 
-- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; green on go1.27rc1 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
+- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; pinned to go1.27rc2 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
 - [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
 - [x] CodeQL security analysis (`codeql.yml`)
 - [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot

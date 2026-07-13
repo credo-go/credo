@@ -574,29 +574,36 @@ This is useful for:
 - message clients
 - background worker coordinators
 
-### Shutdowner vs OnShutdown
+### Shutdowner vs OnDrain vs OnShutdown
 
-Credo offers two shutdown mechanisms. Choose based on how the component is created:
+Credo offers three shutdown mechanisms. Choose based on ownership and when the
+component must stop:
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
 | `credo.Shutdowner` interface | DI-managed singletons (registered via `app.Provide` / `app.ProvideFactory` / `app.ProvideValue` / protected variant) | Reverse registration order while deadline remains live |
+| `app.OnDrain(fn)` | Subsystems that must stop admission and finish DI-dependent handlers before infrastructure closes | Concurrent with HTTP and other `OnDrain` hooks; before container shutdown |
 | `app.OnShutdown(fn)` | Components created outside DI — manual connections, background goroutines, third-party handles | LIFO (last registered, first called) |
 
 During graceful shutdown the full sequence is:
 
 1. Cancel lifecycle context
-2. Drain in-flight HTTP requests
-3. **Container shutdown** — traverses reverse registration order and attempts
-   each reached `Shutdowner` until the deadline expires
+2. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
+3. **Container shutdown** — traverses reverse registration order and gives
+   each reached `Shutdowner` at most one attempt while the deadline remains live
 4. **OnShutdown hooks** — runs registered hook functions in LIFO order
 
-Container shutdown (step 3) runs before OnShutdown hooks (step 4). A deadline
-can stop the DI traversal early, so "DI-owned" guarantees a sole framework
-owner and at-most-one attempt when reached, not successful closure of every
-resource.
+All phases receive the same absolute shutdown deadline. A slow HTTP or
+`OnDrain` path can consume the budget, leaving container cleanup and
+`OnShutdown` with an expired context. Container shutdown (step 3) still runs
+before `OnShutdown` hooks (step 4), but an expired deadline can stop the DI
+traversal early. "DI-owned" therefore guarantees a sole framework owner and at
+most one attempt when reached, not successful closure of every resource.
 
-If your service is already in the container, prefer `Shutdowner` — it requires no extra registration and the container handles ordering automatically. Use `OnShutdown` only for things the container does not own.
+If your service is already in the container, prefer `Shutdowner` for ordinary
+resource cleanup. Use `OnDrain` when the subsystem must quiesce DI-dependent
+work before container cleanup begins. Use `OnShutdown` for things the container
+does not own and that are safe to close after DI infrastructure.
 
 ---
 

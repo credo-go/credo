@@ -9,14 +9,16 @@ on:
 permissions:
   contents: read
 
-# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc1`
-# directive in go.mod (the bare `1.27rc1` spec is not valid semver, so both the
+# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc2`
+# directive in go.mod (the bare `1.27rc2` spec is not valid semver, so both the
 # manifest lookup and the direct download fail). Pin the release candidate with
-# the semver-prerelease form setup-go accepts; it maps to the go1.27rc1 build.
+# the semver-prerelease form setup-go accepts; it maps to the go1.27rc2 build.
 # Once 1.27 GA ships and go.mod drops the rc toolchain line, the setup-go steps
 # can return to `go-version-file: go.mod`.
 env:
-  GO_VERSION: "1.27.0-rc.1"
+  GO_VERSION: "1.27.0-rc.2"
+  GOLANGCI_LINT_VERSION: "v2.12.2"
+  GOLANGCI_X_TOOLS_VERSION: "v0.48.0"
 
 jobs:
   test:
@@ -220,29 +222,31 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # The latest release (v2.12.2) embeds x/tools v0.44.0, which races or
-      # corrupts Go 1.27 generic-method export imports. Pin the reviewed
-      # upstream x/tools v0.47.0 bump until golangci-lint releases supported
-      # Go 1.27 tooling, and keep required lint serial as an extra guard.
-      # The action cache key omits the lint version, so bypass it while pinned
-      # to avoid restoring analysis data written by v2.12.2/x-tools v0.44.0.
-      # The full-canary job remains non-blocking for incompatible SSA linters.
+      # v2.12.2 pins x/tools v0.44.0, whose package loader cannot read Go 1.27
+      # generic-method export data. Build the exact linter release with the
+      # reviewed x/tools v0.48.0 override until a tagged golangci-lint includes
+      # that support. Run required lint serially for both repository modules;
+      # the full-canary job remains non-blocking for incompatible SSA engines.
+      - name: Build pinned golangci-lint
+        run: |
+          tool_dir="$RUNNER_TEMP/golangci-lint-build"
+          mkdir -p "$tool_dir"
+          cd "$tool_dir"
+          go mod init credo.tools/golangci-lint
+          go get \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+            golang.org/x/tools@${GOLANGCI_X_TOOLS_VERSION}
+          go build -o "$RUNNER_TEMP/golangci-lint" \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
       - name: Run golangci-lint (root)
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: "87b977018c69c97519b000085daa8ce693e8ed22"
-          install-mode: goinstall
-          args: --concurrency=1
-          skip-cache: true
+        run: >-
+          "$RUNNER_TEMP/golangci-lint" run --concurrency=1 ./...
 
       - name: Run golangci-lint (store/sqldb)
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: "87b977018c69c97519b000085daa8ce693e8ed22"
-          install-mode: goinstall
-          args: --concurrency=1
-          skip-cache: true
-          working-directory: store/sqldb
+        working-directory: store/sqldb
+        run: >-
+          "$RUNNER_TEMP/golangci-lint" run --concurrency=1 ./...
 
   lint-full-canary:
     name: Lint (full, canary)
@@ -264,9 +268,19 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Build pinned golangci-lint
+        run: |
+          tool_dir="$RUNNER_TEMP/golangci-lint-build"
+          mkdir -p "$tool_dir"
+          cd "$tool_dir"
+          go mod init credo.tools/golangci-lint
+          go get \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+            golang.org/x/tools@${GOLANGCI_X_TOOLS_VERSION}
+          go build -o "$RUNNER_TEMP/golangci-lint" \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
       - name: Run golangci-lint (full)
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-          install-mode: goinstall
-          args: --enable=staticcheck --enable=unused --enable=gosec
+        run: >-
+          $RUNNER_TEMP/golangci-lint run ./...
+          --enable=staticcheck --enable=unused --enable=gosec

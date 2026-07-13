@@ -28,7 +28,7 @@ A failure is classed by how far startup progressed. **Pre-session** failures (TL
 | `building` | Initial. Route/middleware registration allowed |
 | `starting` | Transient. CAS claimed, ctx/server being written. Shutdown blocked |
 | `running` | Port bound, server accepting. Registration frozen. Shutdown allowed |
-| `stopping` | Draining HTTP, running hooks |
+| `stopping` | Draining HTTP and pre-infrastructure subsystems, then DI/hooks |
 | `stopped` | Fully stopped |
 
 State is stored as `atomic.Uint32` with `CompareAndSwap` transitions — no mutex on the hot path.
@@ -44,6 +44,7 @@ app.State() string                         // Current state name
 app.IsRunning() bool                       // Convenience check
 app.Addr() net.Addr                        // Actual bound address (nil before Run)
 app.OnStart(fn func(ctx context.Context) error)     // FIFO startup hook
+app.OnDrain(fn func(ctx context.Context) error)     // Parallel pre-DI subsystem drain
 app.OnShutdown(fn func(ctx context.Context) error)  // LIFO shutdown hook
 
 // Construction options:
@@ -106,7 +107,7 @@ Without an accessor the dead zone is structurally unreachable: there is no pre-`
 7. Store state = running
 ```
 
-If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (cancel lifecycle context → HTTP drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
+If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
 
 ### Shutdown Sequence
 
@@ -114,14 +115,20 @@ If any OnStart hook returns an error, startup aborts and the App runs the full t
 1. CAS running → stopping
 2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
 3. Cancel lifecycle context (signals background services)
-4. HTTP server drain (srv.Shutdown(ctx))
+4. In parallel: HTTP server drain and every OnDrain subsystem hook
 5. DI container shutdown (reverse-order singleton cleanup)
 6. OnShutdown hooks in LIFO order (last registered, first called)
 7. Clear bound address
 8. Store state = stopped
 ```
 
-All errors are collected via `errors.Join` — no early return.
+HTTP drain and OnDrain hooks share one absolute deadline. Hook execution order
+is intentionally unspecified. A hook that returns successfully must guarantee
+its subsystem can no longer execute handlers that depend on DI infrastructure.
+If the drain context is cancelled or its deadline expires, Credo reports the
+remaining HTTP/hook work as incomplete and proceeds to DI and OnShutdown with
+the same, possibly ended context. All errors are collected via `errors.Join` —
+no early return and no false graceful-success result.
 
 ### Lifecycle Hooks
 
@@ -153,6 +160,28 @@ app.OnShutdown(func(ctx context.Context) error {
 - Must be called before `Run()`; panics after compile (frozen guard)
 - Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
 
+**OnDrain** — called after lifecycle cancellation, concurrently with HTTP drain
+and with every other OnDrain hook, before DI teardown:
+
+```go
+app.OnDrain(func(ctx context.Context) error {
+    return subsystem.Shutdown(ctx)
+})
+```
+
+- No ordering guarantee between hooks; registration index/source identify errors only
+- Receives the shared absolute shutdown deadline
+- Must stop admission and wait for DI-dependent handlers/cleanup before returning nil
+- Runs on every teardown, including an OnStart failure; must be idempotent and tolerate partial startup
+- Panic is isolated and joined as an identified hook error; other drain work continues
+- Deadline-ignoring work is reported as incomplete and may return later, while teardown proceeds
+- Must be registered before compile; nil or late registration panics
+
+WebSocket is the first in-tree consumer: `websocket.Use` registers its
+connection registry drain here, proving that handlers finish before their DI
+repositories are closed. Future gRPC or pubsub servers may use the same narrow
+seam, but OnDrain is not a general startup/restartable Service abstraction.
+
 ### Frozen Guard
 
 After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. Late registration of routes, middleware, meta, status handlers, or shutdown hooks panics with a clear message. This prevents subtle race conditions from concurrent registration during serving.
@@ -170,7 +199,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | TLS cert preflight | The resolved config is built and validated before `stateRunning`, so a bad cert (missing/mismatched files, partial cert-without-key, a `WithTLSConfig` with no certificate source, or an explicit-but-empty/nil source — `WithTLSConfig(nil)`, `WithTLSFiles("", "")`) fails fast with the same pre-session rollback as a listen error. An explicit option recording that it was set lets an empty/nil value fail loud rather than silently downgrade to a lower-precedence source or plaintext |
 | HTTP→HTTPS via redirect listener, not dual-serve | `WithHTTPRedirect` adds a redirect-only second listener (301/308 to HTTPS), requiring TLS; its runtime failure tears the app down like the main listener (a requested redirect must not silently die while the app reports healthy), and on drain it closes before the main server. Rejected: a second listener serving the _app_ over plaintext (HTTP-without-TLS invites accidental cleartext traffic — not a supported mode) and auto-HSTS (a near-permanent client-side commitment — opt-in via `middleware.Secure` only, never automatic) |
 | Readiness unready on shutdown | Drain step 0 flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
-| Lifecycle-`Service` abstraction deferred | Background work uses `OnStart` + `Shutdowner` today (`worker.Pool`). A public `Service` interface with a guaranteed services-before-infra drain waits for in-tree consumers (gRPC/WS/pub-sub) — no speculative carriers pre-v1 |
+| Narrow `OnDrain`, lifecycle-`Service` still deferred | WebSocket needs a proven handlers-before-DI barrier, so unordered pre-infrastructure `OnDrain` hooks are concrete and public. Background startup/restartability is different: `worker.Pool` still uses lifecycle cancellation + DI `Shutdowner`, while a general `Service` taxonomy waits for multiple concrete consumers. Future gRPC/pubsub may use OnDrain without implying restart support. |
 | No post-compile hook registration | Frozen guard prevents race conditions |
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
@@ -189,6 +218,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - Readiness flips to 503 at shutdown start, so load balancers drain the instance before it stops accepting
 - Deterministic startup/shutdown sequence
 - Background services get clean shutdown signal via lifecycle context (delivered through `OnStart`)
+- Subsystems can prove their active handlers stop before DI infrastructure through `OnDrain`
 - LIFO hooks ensure correct resource cleanup order
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
