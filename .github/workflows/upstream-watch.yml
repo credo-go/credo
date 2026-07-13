@@ -34,6 +34,9 @@ jobs:
       - name: govulncheck (root module)
         run: govulncheck ./...
 
+      - name: Create in-tree module workspace
+        run: go work init . ./store/sqldb
+
       - name: govulncheck (store/sqldb submodule)
         working-directory: store/sqldb
         run: govulncheck ./...
