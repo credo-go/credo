@@ -500,8 +500,8 @@ For multi-database wiring and transaction behavior, see the [Data Access Guide](
 
 ## Lifecycle Hooks
 
-Credo provides `OnStart`, `OnDrain`, and `OnShutdown` hooks for startup and
-shutdown logic:
+Credo provides `OnStart`, `OnPreDrain`, `OnDrain`, and `OnShutdown` hooks for
+startup and shutdown logic:
 
 ```go
 func main() {
@@ -518,7 +518,7 @@ func main() {
     })
 
     // Run blocks until SIGINT/SIGTERM, then drains gracefully (default 30s;
-    // pass credo.WithShutdownTimeout to New to change the budget).
+    // pass credo.WithShutdownTimeout to New to change the deadline).
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
@@ -527,12 +527,20 @@ func main() {
 
 OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so resources an earlier hook started are released — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
 
+`OnPreDrain` is an early, narrow seam for work that must finish while
+lifecycle-bound workers and DI infrastructure are still live. Its hooks run
+without an ordering guarantee after readiness is withdrawn but before the
+lifecycle context is cancelled. Most subsystems should use `OnDrain`; choose
+`OnPreDrain` only when cancellation itself would tear down a required dependency
+too early. Deadline expiry is reported, but cannot abandon a running
+`OnPreDrain` hook: cancellation and teardown wait until every hook returns.
+
 `OnDrain` is the pre-infrastructure seam for a subsystem that must stop
 admission and wait for active DI-dependent handlers or cleanup. Its hooks run
 without an ordering guarantee, concurrently with one another and with HTTP
 drain. A hook may return `nil` only after its subsystem is safe for DI teardown.
 
-For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain (bounded by `WithShutdownTimeout`):
+For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain with the deadline set by `WithShutdownTimeout` (subject to the `OnPreDrain` hard-barrier rule above):
 
 ```go
 func main() {
@@ -554,18 +562,24 @@ For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdow
 Shutdown sequence:
 
 1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
-2. Cancel lifecycle context (signals background services)
-3. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
-4. DI Container shutdown (reverse-order singleton cleanup)
-5. OnShutdown hooks (LIFO)
+2. Run all `OnPreDrain` hooks while lifecycle workers and DI remain live
+3. Cancel lifecycle context (signals background services)
+4. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
+5. DI Container shutdown (reverse-order singleton cleanup)
+6. OnShutdown hooks (LIFO)
 
-These phases share one absolute shutdown budget. A slow HTTP or `OnDrain` path
-can leave DI cleanup and `OnShutdown` with an expired context.
+These phases receive one absolute shutdown budget. A slow `OnPreDrain` hook
+emits a waiting diagnostic when the budget ends, but remains a hard barrier so
+live workers and DI cannot be torn down underneath it. Once every pre-drain hook
+returns, its completion timestamp determines the final incomplete error and
+later phases advance with the same possibly-expired context. HTTP and
+`OnDrain` work keep the ordinary deadline-incomplete behavior.
 
 Services that implement `credo.Shutdowner` are cleaned up automatically by the
-DI container. Use `app.OnDrain(fn)` when subsystem handlers must stop before
-that cleanup; use `app.OnShutdown(fn)` for final non-DI cleanup that is safe
-after infrastructure teardown. See the [Dependency Injection
+DI container. Use `app.OnPreDrain(fn)` only when work must finish before
+lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop
+before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is
+safe after infrastructure teardown. See the [Dependency Injection
 guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed
 comparison.
 

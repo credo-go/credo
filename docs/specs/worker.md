@@ -752,6 +752,8 @@ app.Run()
 ```
 app.Shutdown(ctx)
   ├─ state → stopping
+  ├─ readiness → unready
+  ├─ OnPreDrain hooks            ← workers and DI remain live
   ├─ cancel app ctx              ← workers receive ctx.Done()
   ├─ parallel drain phase
   │   ├─ srv.Shutdown() — HTTP drain
@@ -765,8 +767,9 @@ app.Shutdown(ctx)
 Workers receive shutdown signal via context cancellation. The pool does not use
 `OnDrain`; its `Shutdown` is called automatically during the following DI phase
 because `Pool` implements `credo.Shutdowner` and is registered in the container.
-HTTP/OnDrain, pool shutdown, and `OnShutdown` all consume the same absolute
-shutdown budget.
+OnPreDrain, HTTP/OnDrain, pool shutdown, and `OnShutdown` all receive the same
+absolute shutdown deadline. An over-deadline OnPreDrain still finishes before
+worker cancellation and pool shutdown begin.
 
 ---
 

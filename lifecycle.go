@@ -31,6 +31,37 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 	app.lifecycle.onShutdown = append(app.lifecycle.onShutdown, fn)
 }
 
+// OnPreDrain registers an early subsystem drain hook that runs after shutdown
+// begins and readiness is withdrawn, but before the application lifecycle
+// context is cancelled. Hooks run concurrently with one another; registration
+// order is identity only, not execution order. The ctx carries the same
+// absolute shutdown deadline used by every later teardown phase.
+//
+// A successful hook must stop its subsystem's admission and finish work that
+// still depends on live background workers or DI infrastructure. Hooks also run
+// during teardown after an OnStart failure, so they must be idempotent and must
+// tolerate partial startup. If a hook is still running when ctx ends, Credo
+// logs a waiting diagnostic but keeps the lifecycle context and infrastructure
+// live until the hook actually returns. Its completion timestamp determines
+// the final identified incomplete error. Later teardown then continues with
+// the same, possibly expired context rather than racing the pre-drain work.
+//
+// Most subsystems should use [App.OnDrain], which runs after lifecycle
+// cancellation and concurrently with HTTP drain. OnPreDrain is for the narrower
+// case where cancellation itself would tear down a dependency too early.
+//
+// Must be called before Run; panics for a nil hook or after the App is frozen.
+func (app *App) OnPreDrain(fn func(ctx context.Context) error) {
+	app.checkFrozen("OnPreDrain")
+	if fn == nil {
+		panic("credo: OnPreDrain hook must not be nil")
+	}
+	app.lifecycle.onPreDrain = append(
+		app.lifecycle.onPreDrain,
+		newDrainHook(len(app.lifecycle.onPreDrain), fn),
+	)
+}
+
 // OnDrain registers a subsystem drain hook that runs after the application
 // lifecycle context is cancelled and before DI infrastructure is shut down.
 // Hooks run concurrently with one another and with HTTP server draining; no

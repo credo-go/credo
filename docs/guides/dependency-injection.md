@@ -574,36 +574,40 @@ This is useful for:
 - message clients
 - background worker coordinators
 
-### Shutdowner vs OnDrain vs OnShutdown
+### Shutdowner vs OnPreDrain vs OnDrain vs OnShutdown
 
-Credo offers three shutdown mechanisms. Choose based on ownership and when the
+Credo offers four shutdown mechanisms. Choose based on ownership and when the
 component must stop:
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
-| `credo.Shutdowner` interface | DI-managed singletons (registered via `app.Provide` / `app.ProvideFactory` / `app.ProvideValue` / protected variant) | Reverse registration order while deadline remains live |
-| `app.OnDrain(fn)` | Subsystems that must stop admission and finish DI-dependent handlers before infrastructure closes | Concurrent with HTTP and other `OnDrain` hooks; before container shutdown |
-| `app.OnShutdown(fn)` | Components created outside DI — manual connections, background goroutines, third-party handles | LIFO (last registered, first called) |
+| `credo.Shutdowner` interface | DI-managed singletons registered through `Provide`, `ProvideFactory`, `ProvideValue`, or the protected variant | Reverse registration order while the deadline remains live; an unreached entry may receive no attempt |
+| `app.OnPreDrain(fn)` | Narrow coordination that must finish while lifecycle-bound workers and DI remain live | Concurrent with other `OnPreDrain` hooks; before lifecycle cancellation; remains a hard teardown barrier |
+| `app.OnDrain(fn)` | Subsystems that must stop admission and finish DI-dependent handlers before infrastructure closes | Concurrent with HTTP and other `OnDrain` hooks; after lifecycle cancellation and before container shutdown |
+| `app.OnShutdown(fn)` | Components created outside DI and safe to close after infrastructure teardown | LIFO after container shutdown |
 
 During graceful shutdown the full sequence is:
 
-1. Cancel lifecycle context
-2. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
-3. **Container shutdown** — traverses reverse registration order and gives
-   each reached `Shutdowner` at most one attempt while the deadline remains live
-4. **OnShutdown hooks** — runs registered hook functions in LIFO order
+1. Withdraw readiness and run every `OnPreDrain` hook concurrently.
+2. Cancel lifecycle context
+3. Drain HTTP and every `OnDrain` subsystem in parallel.
+4. Traverse DI singletons in reverse registration order, attempting each
+   reached `Shutdowner` while the deadline remains live.
+5. Run `OnShutdown` hooks in LIFO order.
 
-All phases receive the same absolute shutdown deadline. A slow HTTP or
-`OnDrain` path can consume the budget, leaving container cleanup and
-`OnShutdown` with an expired context. Container shutdown (step 3) still runs
-before `OnShutdown` hooks (step 4), but an expired deadline can stop the DI
-traversal early. "DI-owned" therefore guarantees a sole framework owner and at
-most one attempt when reached, not successful closure of every resource.
+All phases receive the same absolute shutdown deadline. An over-deadline
+`OnPreDrain` hook is reported but remains a hard barrier until it returns;
+later phases then receive the same, possibly expired context. HTTP or `OnDrain`
+work that remains incomplete at the deadline is reported and teardown proceeds.
+Deadline exhaustion may prevent later DI registrations from receiving any
+shutdown attempt, so DI ownership guarantees one framework owner and at most
+one attempt when reached—not successful closure of every resource.
 
-If your service is already in the container, prefer `Shutdowner` for ordinary
-resource cleanup. Use `OnDrain` when the subsystem must quiesce DI-dependent
-work before container cleanup begins. Use `OnShutdown` for things the container
-does not own and that are safe to close after DI infrastructure.
+Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use
+`OnPreDrain` only when lifecycle cancellation would stop a dependency before
+required coordination can finish. Use `OnDrain` when a subsystem must quiesce
+DI-dependent work before container cleanup. Use `OnShutdown` for non-DI
+resources safe to close last.
 
 ---
 

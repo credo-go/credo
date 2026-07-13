@@ -25,9 +25,10 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Run starts the HTTP server and blocks until an interrupt (Ctrl+C) or
-// SIGTERM is received, then performs graceful shutdown bounded by
-// [WithShutdownTimeout]. A second signal during shutdown force-kills the
-// process. Returns nil on graceful shutdown.
+// SIGTERM is received, then performs graceful shutdown using the deadline set
+// by [WithShutdownTimeout]. An [App.OnPreDrain] hook that ignores that deadline
+// remains a hard teardown barrier and may delay return. A second signal during
+// shutdown force-kills the process. Returns nil on graceful shutdown.
 //
 // Run serves HTTPS automatically when TLS is configured via [WithTLSFiles],
 // [WithTLSConfig], or the server.tls.* config keys; otherwise it serves
@@ -49,8 +50,9 @@ func (app *App) Run() error {
 // RunContext starts the HTTP server and blocks until ctx is cancelled, the
 // server stops, or a programmatic [App.Shutdown]. Unlike [App.Run] it installs
 // no signal handler; cancellation is entirely the caller's. On ctx
-// cancellation the drain keeps ctx's values but drops its cancellation
-// (so an already-cancelled ctx still drains), bounded by [WithShutdownTimeout].
+// cancellation the drain keeps ctx's values but drops its cancellation and
+// applies the [WithShutdownTimeout] deadline. An [App.OnPreDrain] hook that
+// ignores that deadline remains a hard teardown barrier and may delay return.
 // Returns nil on graceful shutdown.
 //
 // Like [App.Run], RunContext serves HTTPS when TLS is configured (via
@@ -87,13 +89,15 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 	)
 }
 
-// Shutdown gracefully shuts down the server: it cancels the lifecycle context,
-// drains in-flight HTTP requests and [App.OnDrain] subsystem hooks in parallel,
-// tears down DI singletons (reverse order), then runs OnShutdown hooks (LIFO).
-// The caller's ctx carries the shared absolute deadline; unlike
-// signal/cancellation-triggered shutdown it is not bounded by
-// [WithShutdownTimeout]. Returns an error if the server is not running, or if
-// any shutdown step fails or remains incomplete (joined via errors.Join).
+// Shutdown gracefully shuts down the server: it withdraws readiness, runs
+// [App.OnPreDrain], cancels the lifecycle context, drains in-flight HTTP
+// requests and [App.OnDrain] subsystem hooks in parallel, tears down DI
+// singletons (reverse order), then runs OnShutdown hooks (LIFO). The caller's
+// ctx carries the shared absolute deadline; [WithShutdownTimeout] does not
+// replace it. An OnPreDrain hook that ignores ctx remains a hard teardown
+// barrier and may delay return beyond that deadline. Returns an error if the
+// server is not running, or if any shutdown step fails or remains incomplete
+// (joined via errors.Join).
 func (app *App) Shutdown(ctx context.Context) error {
 	lm := app.lifecycle
 	err := lm.initiateShutdown(ctx)

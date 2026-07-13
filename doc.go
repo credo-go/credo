@@ -57,7 +57,8 @@
 //     world (e.g. [App.UseHealth], [App.UseI18n]).
 //   - Set<X> / Remove<X> — imperative mutators for a single value or a
 //     replaceable component (e.g. [App.SetErrorRenderer], [Route.SetMeta]).
-//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnShutdown]).
+//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnPreDrain],
+//     [App.OnDrain], [App.OnShutdown]).
 //
 // Request logging is on by default (see [WithLogger]). Silence individual
 // routes or whole groups with the [MetaAccessLog] route meta, or noisy paths

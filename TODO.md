@@ -220,10 +220,12 @@
 - [x] `OnShutdown(fn)` — register shutdown hooks
 - [x] `State()` / `IsRunning()` — public accessors
 - [x] `OnStart(fn)` — register FIFO startup hooks
+- [x] `OnPreDrain(fn)` — register unordered pre-cancellation hooks for the narrow live-worker/live-DI drain phase
+- [x] `OnDrain(fn)` — register unordered pre-DI hooks concurrent with HTTP drain
 - [x] `Addr() net.Addr` — actual bound address accessor
-- [x] Registration guards: `checkFrozen()` on addRoute, Mount, StatusHandler, SetMeta, OnStart, OnShutdown
+- [x] Registration guards: `checkFrozen()` on addRoute, Mount, StatusHandler, SetMeta, OnStart, OnPreDrain, OnDrain, OnShutdown
 - [x] `frozen bool` → `atomic.Bool` (thread-safe)
-- [x] Tests (17 tests: state transitions, graceful drain, hooks, frozen guards)
+- [x] Tests: state transitions, graceful drain, hook ordering/failure/deadline behavior, frozen guards
 
 **App Config Bootstrap** — [ADR-005](docs/adr/005-configuration-architecture.md), [ADR-006](docs/adr/006-application-lifecycle.md)
 
