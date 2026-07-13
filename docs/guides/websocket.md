@@ -214,22 +214,26 @@ cancellation, but third-party middleware may still buffer or remove Hijacker.
 ## Managed Shutdown
 
 `websocket.Use` integrates automatically with `app.Run`, `RunContext`, and
-`ServeContext`. At shutdown, Credo marks readiness down, cancels the lifecycle
-context, and drains HTTP plus WebSocket concurrently. WebSocket admission
-closes, peers receive 1001 Going Away, and Credo waits for every synchronous
-handler before DI resources are shut down.
+`ServeContext`. At shutdown, Credo marks readiness down, completes every
+`OnPreDrain` hook, cancels the lifecycle context, and drains HTTP plus WebSocket
+concurrently. WebSocket admission closes and peers receive 1001 Going Away. On
+a completed drain, every synchronous handler finishes before DI resources are
+shut down; an incomplete drain is reported explicitly and teardown continues.
 
 Size `WithShutdownTimeout` for the whole shared absolute deadline:
 
 ```text
-max(HTTP drain, slowest OnDrain/WebSocket drain)
+slowest OnPreDrain hook + max(HTTP drain, slowest OnDrain/WebSocket drain)
 + DI cleanup
 + OnShutdown hooks
 + safety margin
 ```
 
-If HTTP and WebSocket can take 20 seconds, DI takes 3 seconds, hooks take 2
-seconds, and the deployment needs 5 seconds of margin, use at least 30 seconds.
+If OnPreDrain is negligible, HTTP and WebSocket can take 20 seconds, DI takes 3
+seconds, hooks take 2 seconds, and the deployment needs 5 seconds of margin,
+use at least 30 seconds. Add the slowest expected OnPreDrain duration when that
+phase performs material work.
+
 An `OnDrain` hook that consumes the whole budget leaves DI and `OnShutdown` an
 expired context. Explicit `app.Shutdown(ctx)` ignores `WithShutdownTimeout` and
 uses the caller's deadline exactly.

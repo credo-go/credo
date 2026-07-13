@@ -214,9 +214,9 @@
 
 **App Lifecycle State Machine** — [`docs/specs/lifecycle.md`](docs/specs/lifecycle.md)
 
-- [x] `appState` state machine: `building` → `running` → `stopping` → `stopped`
-- [x] Store `*http.Server` reference in `App`
-- [x] `Shutdown(ctx)` — graceful drain + LIFO shutdown hooks + `errors.Join`
+- [x] `appState` state machine: `building` → `starting` → `running` → `stopping` → `stopped`
+- [x] `lifecycleManager` owns the server session, listeners, lifecycle context, and bound address
+- [x] `Shutdown(ctx)` — readiness withdrawal → pre-drain → cancellation → HTTP/subsystem drain → DI teardown → LIFO hooks, with `errors.Join`
 - [x] `OnShutdown(fn)` — register shutdown hooks
 - [x] `State()` / `IsRunning()` — public accessors
 - [x] `OnStart(fn)` — register FIFO startup hooks

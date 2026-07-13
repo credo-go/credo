@@ -589,7 +589,7 @@ component must stop:
 During graceful shutdown the full sequence is:
 
 1. Withdraw readiness and run every `OnPreDrain` hook concurrently.
-2. Cancel lifecycle context
+2. Cancel the lifecycle context.
 3. Drain HTTP and every `OnDrain` subsystem in parallel.
 4. Traverse DI singletons in reverse registration order, attempting each
    reached `Shutdowner` while the deadline remains live.
@@ -601,7 +601,7 @@ later phases then receive the same, possibly expired context. HTTP or `OnDrain`
 work that remains incomplete at the deadline is reported and teardown proceeds.
 Deadline exhaustion may prevent later DI registrations from receiving any
 shutdown attempt, so DI ownership guarantees one framework owner and at most
-one attempt when reached—not successful closure of every resource.
+one attempt when reached — not successful closure of every resource.
 
 Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use
 `OnPreDrain` only when lifecycle cancellation would stop a dependency before

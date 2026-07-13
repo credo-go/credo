@@ -98,8 +98,9 @@ transaction scopes per operation.
 
 ADR-006's `App.OnDrain` is the canonical pre-infrastructure subsystem seam.
 `websocket.Use` registers `Server.Shutdown` there and captures the lifecycle
-context in `OnStart`. At shutdown start, the App cancels its lifecycle context,
-then drains HTTP servers and all `OnDrain` hooks concurrently. WebSocket drain:
+context in `OnStart`. After readiness is withdrawn and every `OnPreDrain` hook
+returns, the App cancels its lifecycle context, then drains HTTP servers and
+all `OnDrain` hooks concurrently. WebSocket drain:
 
 1. closes admission before Accept;
 2. sends active peers 1001 Going Away;

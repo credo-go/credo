@@ -525,7 +525,7 @@ func main() {
 }
 ```
 
-OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so resources an earlier hook started are released — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
+OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so cleanup of resources an earlier hook started is attempted — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
 
 `OnPreDrain` is an early, narrow seam for work that must finish while
 lifecycle-bound workers and DI infrastructure are still live. Its hooks run
@@ -575,11 +575,13 @@ returns, its completion timestamp determines the final incomplete error and
 later phases advance with the same possibly-expired context. HTTP and
 `OnDrain` work keep the ordinary deadline-incomplete behavior.
 
-Services that implement `credo.Shutdowner` are cleaned up automatically by the
-DI container. Use `app.OnPreDrain(fn)` only when work must finish before
-lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop
-before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is
-safe after infrastructure teardown. See the [Dependency Injection
+Services that implement `credo.Shutdowner` participate automatically in
+reverse-order DI cleanup while the shared deadline remains live; an entry not
+reached before deadline exhaustion may receive no attempt. Use
+`app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation,
+use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and
+use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after
+infrastructure teardown. See the [Dependency Injection
 guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed
 comparison.
 

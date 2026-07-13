@@ -153,20 +153,6 @@ app.OnStart(func(lifecycleCtx context.Context) error {
 - Fail-fast: the first error aborts startup, remaining hooks are skipped, the full teardown chain runs, and the App ends terminally `stopped` (a session that began tears down rather than rolling back)
 - Must be called before `Run()`; panics after compile (frozen guard)
 
-**OnShutdown** — called during graceful shutdown:
-
-```go
-app.OnShutdown(func(ctx context.Context) error {
-    return db.Close()
-})
-```
-
-- Hooks receive the shutdown deadline context from `Shutdown(ctx)`
-- LIFO order (reverse registration order) — resources opened last are closed first
-- Run on **every** teardown, including a failed startup — OnShutdown is the session teardown point, not an OnStart mirror, so hooks must be idempotent and must not assume any particular OnStart hook completed
-- Must be called before `Run()`; panics after compile (frozen guard)
-- Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
-
 **OnPreDrain** — called after state enters stopping and readiness is withdrawn,
 but before lifecycle cancellation:
 
@@ -206,9 +192,24 @@ app.OnDrain(func(ctx context.Context) error {
 - Must be registered before compile; nil or late registration panics
 
 WebSocket is the first in-tree consumer: `websocket.Use` registers its
-connection registry drain here, proving that handlers finish before their DI
-repositories are closed. Future gRPC or pubsub servers may use the same narrow
-seam, but OnDrain is not a general startup/restartable Service abstraction.
+connection registry drain here. A completed drain proves that handlers finish
+before their DI repositories are closed; an incomplete drain is identified and
+teardown continues. Future gRPC or pubsub servers may use the same narrow seam,
+but OnDrain is not a general startup/restartable Service abstraction.
+
+**OnShutdown** — called after DI teardown during every teardown:
+
+```go
+app.OnShutdown(func(ctx context.Context) error {
+    return externalClient.Shutdown(ctx)
+})
+```
+
+- Hooks receive the shutdown deadline context from `Shutdown(ctx)`
+- LIFO order (reverse registration order) — resources opened last are closed first
+- Run on **every** teardown, including a failed startup — OnShutdown is the session teardown point, not an OnStart mirror, so hooks must be idempotent and must not assume any particular OnStart hook completed
+- Must be called before `Run()`; panics after compile (frozen guard)
+- Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
 
 ### Frozen Guard
 
@@ -228,7 +229,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | HTTP→HTTPS via redirect listener, not dual-serve | `WithHTTPRedirect` adds a redirect-only second listener (301/308 to HTTPS), requiring TLS; its runtime failure tears the app down like the main listener (a requested redirect must not silently die while the app reports healthy), and on drain it closes before the main server. Rejected: a second listener serving the _app_ over plaintext (HTTP-without-TLS invites accidental cleartext traffic — not a supported mode) and auto-HSTS (a near-permanent client-side commitment — opt-in via `middleware.Secure` only, never automatic) |
 | Readiness unready on shutdown | Drain step 0 flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
 | Narrow `OnPreDrain` before lifecycle cancellation | A small class of coordination work must finish while lifecycle-bound workers and DI are still live. Unordered hooks provide a hard teardown barrier after readiness withdrawal: deadline expiry is reported, but cancellation and infrastructure teardown cannot race an unfinished hook. Rejected: abandoning a hook at the deadline, which breaks the live-dependency guarantee; moving lifecycle cancellation after all HTTP/OnDrain work, which would keep unrelated workers live for the whole drain; and using `OnDrain`, whose established contract begins after cancellation. |
-| Narrow `OnDrain`, lifecycle-`Service` still deferred | WebSocket needs a proven handlers-before-DI barrier, so unordered pre-infrastructure `OnDrain` hooks are concrete and public. Background startup/restartability is different: `worker.Pool` still uses lifecycle cancellation + DI `Shutdowner`, while a general `Service` taxonomy waits for multiple concrete consumers. Future gRPC/pubsub may use OnDrain without implying restart support. |
+| Narrow `OnDrain`, lifecycle-`Service` still deferred | On completed drains, `OnDrain` provides the handlers-before-DI proof; incomplete drains are identified and teardown proceeds. The unordered pre-infrastructure hook is concrete and public for WebSocket. Background startup/restartability is different: `worker.Pool` still uses lifecycle cancellation + DI `Shutdowner`, while a general `Service` taxonomy waits for multiple concrete consumers. Future gRPC/pubsub may use OnDrain without implying restart support. |
 | No post-compile hook registration | Frozen guard prevents race conditions |
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
@@ -248,11 +249,11 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - Deterministic startup/shutdown sequence
 - Background services get clean shutdown signal via lifecycle context (delivered through `OnStart`)
 - Narrow coordination work can finish while lifecycle workers and DI are still live through `OnPreDrain`
-- Subsystems can prove their active handlers stop before DI infrastructure through `OnDrain`
+- Successfully drained subsystems can prove their active handlers stop before DI infrastructure through `OnDrain`
 - LIFO hooks ensure correct resource cleanup order
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
-- Startup and runtime serve failures tear down resources through the same chain as graceful shutdown — a started worker, an open connection, or an acquired lock is released even when startup later fails, instead of leaking
+- Startup and runtime serve failures enter the same teardown chain as graceful shutdown, so cleanup of started resources is attempted instead of skipped; shared deadline semantics still apply
 
 **Negative:**
 

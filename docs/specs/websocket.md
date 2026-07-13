@@ -206,6 +206,7 @@ not flow into the HTTP renderer.
 
 ```text
 mark unready
+→ run all OnPreDrain hooks (hard barrier)
 → cancel lifecycle context
 → in parallel: HTTP drain + all OnDrain hooks (including WebSocket)
 → DI singleton shutdown

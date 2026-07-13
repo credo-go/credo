@@ -115,7 +115,8 @@ timestamp then determines its final identified incomplete error. Later phases
 receive the same, possibly ended context. OnDrain follows lifecycle cancellation
 and a nil result means the subsystem can no longer run handlers that depend on
 DI infrastructure; HTTP and OnDrain work retain the ordinary behavior of being
-reported incomplete and abandoned at the deadline.
+reported incomplete at the deadline. The framework stops waiting and proceeds
+while late work may continue.
 
 `Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 
@@ -147,8 +148,9 @@ withdrawn but before lifecycle cancellation. Most subsystems should not use it:
 if their work remains valid after cancellation, `OnDrain` is the later and safer
 barrier.
 
-`OnDrain` is a separate narrow seam: it exists for a subsystem that must stop
-admission and wait for active DI-dependent handlers before infrastructure teardown.
+`OnDrain` is a separate narrow seam: a successful hook proves that its
+subsystem stopped admission and active DI-dependent handlers before
+infrastructure teardown.
 `websocket.Use` is the first concrete consumer. Future gRPC/pubsub servers may
 also use it. It has no startup, name, restart, or ordering semantics.
 
@@ -171,12 +173,6 @@ If any hook returns an error, startup aborts: remaining hooks are skipped (fail-
 Typical uses include cache warm-up. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so `app.OnStart(db.Migrate)` is convenient for development and deliberate single-replica deployments. Multi-replica production should instead run the same method once in a deadline-bounded pre-deploy job; this also avoids relying on the independently-created lifecycle context for a migration deadline (see the [Store Spec](store.md)).
 
 Must be called before `compile()` (panics if frozen).
-
-### `app.OnShutdown(fn func(ctx context.Context) error)`
-
-Registers a shutdown hook. Hooks are called in LIFO order during `Shutdown`. The `ctx` parameter carries the shutdown deadline from `Shutdown(ctx)`. Must be called before `compile()` (panics if frozen).
-
-OnShutdown hooks run on **every** teardown, including a failed startup (an OnStart hook erroring after an earlier one ran). OnShutdown is therefore the session teardown point, not an OnStart mirror: hooks must be idempotent and must not assume any particular OnStart hook completed. (Because `onStart` and `onShutdown` are independent lists — not paired by index — a hook running without its conceptual counterpart was always possible; session-failure teardown only makes it routine.)
 
 ### `app.OnPreDrain(fn func(ctx context.Context) error)`
 
@@ -211,6 +207,20 @@ cancellation, Credo reports it as pending at the deadline and proceeds; a late
 return cannot turn the recorded incomplete result into success.
 
 Must be called before compile. A nil hook or late registration panics.
+
+### `app.OnShutdown(fn func(ctx context.Context) error)`
+
+Registers a final shutdown hook. Hooks run in LIFO order after DI teardown. The
+`ctx` parameter carries the shared shutdown deadline from `Shutdown(ctx)`. Must
+be called before `compile()` (panics if frozen).
+
+OnShutdown hooks run on **every** teardown, including a failed startup (an
+OnStart hook erroring after an earlier one ran). OnShutdown is therefore the
+session teardown point, not an OnStart mirror: hooks must be idempotent and must
+not assume any particular OnStart hook completed. Because `onStart` and
+`onShutdown` are independent lists — not pairs by index — a hook running without
+its conceptual counterpart was always possible; session-failure teardown only
+makes it routine.
 
 ### `credo.WithShutdownTimeout(d time.Duration) Option`
 
@@ -263,12 +273,9 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 
 ## Container Integration
 
-Shutdown hooks bridge the container's `Shutdowner` interface with the app lifecycle. The shutdown context is propagated for deadline-aware cleanup:
-
-```go
-app.OnShutdown(func(ctx context.Context) error {
-    return c.Shutdown(ctx)
-})
-```
-
-This pattern ensures DI-managed resources (DB connections, caches) are cleaned up during graceful shutdown with deadline awareness.
+Resolved DI singletons that implement `credo.Shutdowner` participate
+automatically in the container phase; do not register a second `OnShutdown`
+bridge for the same resource. The container traverses registrations in reverse
+order while the shared deadline remains live. A reached registration gets at
+most one shutdown attempt, while entries not reached before deadline exhaustion
+may receive no attempt.
