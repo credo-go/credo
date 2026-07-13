@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -17,10 +16,6 @@ const (
 	rootModule              = "github.com/credo-go/credo"
 	sqldbModule             = rootModule + "/store/sqldb"
 	defaultCandidateVersion = "v0.0.0-releasegate.1"
-)
-
-var versionPattern = regexp.MustCompile(
-	`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`,
 )
 
 func main() {
@@ -53,8 +48,8 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown mode %q", mode)
 	}
-	if !versionPattern.MatchString(version) {
-		return fmt.Errorf("version must be canonical semver with a v prefix (got %q)", version)
+	if !isCanonicalVersion(version) {
+		return fmt.Errorf("version must be canonical semver with a v prefix and no build metadata (got %q)", version)
 	}
 
 	repoRoot, err := output("", nil, "git", "rev-parse", "--show-toplevel")
@@ -71,6 +66,64 @@ func run(args []string) error {
 	}
 
 	return checkCandidate(repoRoot, version)
+}
+
+func isCanonicalVersion(version string) bool {
+	if !strings.HasPrefix(version, "v") || strings.Contains(version, "+") {
+		return false
+	}
+
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), "-", 2)
+	core := strings.Split(parts[0], ".")
+	if len(core) != 3 {
+		return false
+	}
+	for _, identifier := range core {
+		if !isCanonicalNumericIdentifier(identifier) {
+			return false
+		}
+	}
+
+	if len(parts) == 1 {
+		return true
+	}
+	for _, identifier := range strings.Split(parts[1], ".") {
+		if identifier == "" || !isPrereleaseIdentifier(identifier) {
+			return false
+		}
+		if isNumeric(identifier) && !isCanonicalNumericIdentifier(identifier) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCanonicalNumericIdentifier(identifier string) bool {
+	return isNumeric(identifier) && (identifier == "0" || identifier[0] != '0')
+}
+
+func isNumeric(identifier string) bool {
+	if identifier == "" {
+		return false
+	}
+	for _, char := range identifier {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isPrereleaseIdentifier(identifier string) bool {
+	for _, char := range identifier {
+		if (char < '0' || char > '9') &&
+			(char < 'A' || char > 'Z') &&
+			(char < 'a' || char > 'z') &&
+			char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 type moduleFile struct {
@@ -154,8 +207,8 @@ func checkCandidate(repoRoot, version string) error {
 	if err := command(repo, nil, "git", "add", "store/sqldb/go.mod"); err != nil {
 		return err
 	}
-	if err := command(repo, nil, "git", "commit", "--quiet", "-m", "chore: prepare synthetic release "+version); err != nil {
-		return fmt.Errorf("commit synthetic release: %w", err)
+	if _, err := commitStagedChanges(repo, "chore: prepare synthetic release "+version); err != nil {
+		return err
 	}
 	if err := command(repo, nil, "git", "tag", version); err != nil {
 		return fmt.Errorf("tag synthetic root module: %w", err)
@@ -174,14 +227,7 @@ func checkCandidate(repoRoot, version string) error {
 	}
 
 	repoURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(repo)}).String()
-	env := []string{
-		"GOPROXY=direct",
-		"GONOSUMDB=github.com/credo-go/credo*",
-		"GIT_ALLOW_PROTOCOL=file:https",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=url." + repoURL + ".insteadOf",
-		"GIT_CONFIG_VALUE_0=https://github.com/credo-go/credo",
-	}
+	env := candidateEnvironment(tmp, repoURL)
 	if err := command(consumer, env, "go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("resolve replace-free consumer: %w", err)
 	}
@@ -206,6 +252,44 @@ func checkCandidate(repoRoot, version string) error {
 
 	fmt.Printf("release gate: external consumer built %s %s without replace\n", sqldbModule, version)
 	return nil
+}
+
+func commitStagedChanges(repo, message string) (bool, error) {
+	cmd := exec.Command("git", "diff", "--cached", "--quiet")
+	cmd.Dir = repo
+	raw, err := cmd.CombinedOutput()
+	if err == nil {
+		return false, nil
+	}
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		detail := strings.TrimSpace(string(raw))
+		if detail != "" {
+			return false, fmt.Errorf("inspect staged release changes: %s: %w", detail, err)
+		}
+		return false, fmt.Errorf("inspect staged release changes: %w", err)
+	}
+
+	if err := command(repo, nil, "git", "commit", "--quiet", "-m", message); err != nil {
+		return false, fmt.Errorf("commit synthetic release: %w", err)
+	}
+	return true, nil
+}
+
+func candidateEnvironment(tmp, repoURL string) []string {
+	return []string{
+		"GOPROXY=direct",
+		"GONOSUMDB=github.com/credo-go/credo*",
+		"GOMODCACHE=" + filepath.Join(tmp, "gomodcache"),
+		"GOCACHE=" + filepath.Join(tmp, "gocache"),
+		"GOWORK=off",
+		"GOFLAGS=",
+		"GIT_ALLOW_PROTOCOL=file:https",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=url." + repoURL + ".insteadOf",
+		"GIT_CONFIG_VALUE_0=https://github.com/credo-go/credo",
+	}
 }
 
 func command(dir string, extraEnv []string, name string, args ...string) error {

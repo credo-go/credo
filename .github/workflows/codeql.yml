@@ -43,6 +43,9 @@ jobs:
       - name: Build (root module)
         run: go build ./...
 
+      - name: Create in-tree module workspace
+        run: go work init . ./store/sqldb
+
       - name: Build (store/sqldb)
         working-directory: store/sqldb
         run: go build ./...

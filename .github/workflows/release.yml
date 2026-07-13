@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Lockstep root and store/sqldb version (vX.Y.Z)
+        description: Lockstep root and store/sqldb version (vX.Y.Z[-prerelease])
         required: true
         type: string
 
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -16,7 +17,7 @@ env:
 
 jobs:
   release:
-    name: Validate and tag both modules
+    name: Validate, tag, and publish both modules
     runs-on: ubuntu-latest
 
     steps:
@@ -29,6 +30,94 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve new release or recovery commit
+        id: release_ref
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          root_ref="refs/tags/$VERSION"
+          sqldb_ref="refs/tags/store/sqldb/$VERSION"
+          root_exists=false
+          sqldb_exists=false
+          git show-ref --verify --quiet "$root_ref" && root_exists=true
+          git show-ref --verify --quiet "$sqldb_ref" && sqldb_exists=true
+
+          if [[ "$root_exists" != "$sqldb_exists" ]]; then
+            echo "incomplete lockstep tag pair: root=$root_exists sqldb=$sqldb_exists" >&2
+            exit 1
+          fi
+
+          if [[ "$root_exists" == true ]]; then
+            root_commit="$(git rev-parse "${root_ref}^{commit}")"
+            sqldb_commit="$(git rev-parse "${sqldb_ref}^{commit}")"
+            if [[ "$root_commit" != "$sqldb_commit" ]]; then
+              echo "lockstep tags point at different commits" >&2
+              echo "root=$root_commit sqldb=$sqldb_commit" >&2
+              exit 1
+            fi
+            release_commit="$root_commit"
+            git checkout --quiet --detach "$release_commit"
+            echo "recovering the release from existing lockstep tags at $release_commit"
+          else
+            release_commit="$(git rev-parse HEAD)"
+            if [[ "$release_commit" != "$GITHUB_SHA" ]]; then
+              echo "checked-out main HEAD differs from workflow SHA $GITHUB_SHA" >&2
+              exit 1
+            fi
+            echo "preparing a new release from main at $release_commit"
+          fi
+
+          echo "commit=$release_commit" >>"$GITHUB_OUTPUT"
+
+      - name: Require successful main CI for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release_ref.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          require_workflow_success() {
+            local workflow="$1"
+            local label="$2"
+            local state run_id status conclusion
+
+            for attempt in $(seq 1 90); do
+              state="$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" \
+                --commit "$RELEASE_COMMIT" \
+                --branch main \
+                --event push \
+                --limit 10 \
+                --json databaseId,status,conclusion \
+                --jq 'sort_by(.databaseId) | last | select(.) | [.databaseId, .status, (.conclusion // "")] | @tsv')"
+
+              if [[ -n "$state" ]]; then
+                IFS=$'\t' read -r run_id status conclusion <<<"$state"
+                if [[ "$status" == completed ]]; then
+                  if [[ "$conclusion" == success ]]; then
+                    echo "$label workflow run $run_id passed for $RELEASE_COMMIT"
+                    return 0
+                  fi
+                  echo "$label workflow run $run_id completed with $conclusion" >&2
+                  return 1
+                fi
+                echo "waiting for $label workflow run $run_id ($status)"
+              else
+                echo "waiting for the $label push workflow to appear for $RELEASE_COMMIT"
+              fi
+              sleep 10
+            done
+
+            echo "timed out waiting for successful $label workflow on $RELEASE_COMMIT" >&2
+            return 1
+          }
+
+          require_workflow_success ci.yml CI
+          require_workflow_success codeql.yml CodeQL
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -57,21 +146,47 @@ jobs:
           go vet ./...
           (cd store/sqldb && go vet ./...)
 
-      - name: Create lockstep tags
+      - name: Verify reviewed release notes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          notes_file="docs/releases/${VERSION}.md"
+          if [[ ! -s "$notes_file" ]]; then
+            echo "release notes must exist and be non-empty: $notes_file" >&2
+            exit 1
+          fi
+
+      - name: Create or verify lockstep tags
         env:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           root_tag="$VERSION"
           sqldb_tag="store/sqldb/$VERSION"
+          root_ref="refs/tags/$root_tag"
+          sqldb_ref="refs/tags/$sqldb_tag"
+          head_commit="$(git rev-parse HEAD)"
 
-          if git rev-parse --verify --quiet "refs/tags/$root_tag"; then
-            echo "tag already exists: $root_tag" >&2
+          root_exists=false
+          sqldb_exists=false
+          git show-ref --verify --quiet "$root_ref" && root_exists=true
+          git show-ref --verify --quiet "$sqldb_ref" && sqldb_exists=true
+
+          if [[ "$root_exists" != "$sqldb_exists" ]]; then
+            echo "incomplete lockstep tag pair: root=$root_exists sqldb=$sqldb_exists" >&2
             exit 1
           fi
-          if git rev-parse --verify --quiet "refs/tags/$sqldb_tag"; then
-            echo "tag already exists: $sqldb_tag" >&2
-            exit 1
+
+          if [[ "$root_exists" == true ]]; then
+            root_commit="$(git rev-parse "${root_ref}^{commit}")"
+            sqldb_commit="$(git rev-parse "${sqldb_ref}^{commit}")"
+            if [[ "$root_commit" != "$head_commit" || "$sqldb_commit" != "$head_commit" ]]; then
+              echo "existing lockstep tags do not point at release HEAD $head_commit" >&2
+              echo "root=$root_commit sqldb=$sqldb_commit" >&2
+              exit 1
+            fi
+            echo "lockstep tags already point at release HEAD; skipping tag push"
+            exit 0
           fi
 
           git config user.name "github-actions[bot]"
@@ -83,3 +198,50 @@ jobs:
           # root-then-submodule sequence: consumers can never observe only the
           # nested tag whose root dependency is still missing.
           git push --atomic origin "refs/tags/$root_tag" "refs/tags/$sqldb_tag"
+
+      - name: Create or verify GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          notes_file="docs/releases/${VERSION}.md"
+          expected_prerelease=false
+          [[ "$VERSION" == *-* ]] && expected_prerelease=true
+
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_state="$(gh release view "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName,isDraft,isPrerelease \
+              --jq '[.tagName, (.isDraft | tostring), (.isPrerelease | tostring)] | @tsv')"
+            IFS=$'\t' read -r release_tag release_draft release_prerelease <<<"$release_state"
+            if [[ "$release_tag" != "$VERSION" || "$release_draft" != false || "$release_prerelease" != "$expected_prerelease" ]]; then
+              echo "existing GitHub Release does not match requested tag/draft/prerelease state" >&2
+              exit 1
+            fi
+            expected_body="$(cat "$notes_file")"
+            release_body="$(gh release view "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json body \
+              --jq '.body')"
+            if [[ "$release_body" != "$expected_body" ]]; then
+              echo "existing GitHub Release body differs from reviewed notes in $notes_file" >&2
+              exit 1
+            fi
+            echo "GitHub Release already exists with the expected state"
+            exit 0
+          fi
+
+          release_args=(
+            "$VERSION"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "Credo $VERSION"
+            --notes-file "$notes_file"
+          )
+          if [[ "$expected_prerelease" == true ]]; then
+            release_args+=(--prerelease --latest=false)
+          else
+            release_args+=(--latest)
+          fi
+          gh release create "${release_args[@]}"
