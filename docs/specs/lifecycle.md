@@ -140,7 +140,7 @@ If any hook returns an error, startup aborts: remaining hooks are skipped (fail-
 
 `app.Addr()` is available inside hooks — critical for port-0 scenarios.
 
-Typical uses: cache warm-up, database migrations. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so opt-in auto-migration is `app.OnStart(db.Migrate)` (see the [Store Spec](store.md)).
+Typical uses include cache warm-up. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so `app.OnStart(db.Migrate)` is convenient for development and deliberate single-replica deployments. Multi-replica production should instead run the same method once in a deadline-bounded pre-deploy job; this also avoids relying on the independently-created lifecycle context for a migration deadline (see the [Store Spec](store.md)).
 
 Must be called before `compile()` (panics if frozen).
 

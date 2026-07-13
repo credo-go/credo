@@ -57,10 +57,10 @@ func TestBundle_FieldName_Fallback(t *testing.T) {
 func TestBundle_LoadDirFS(t *testing.T) {
 	fsys := fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "is required", "http.404": "Not found"}`),
+			Data: []byte(`{"v.required": "is required", "http.not_found": "Not found"}`),
 		},
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "zorunludur", "http.404": "Bulunamadı"}`),
+			Data: []byte(`{"v.required": "zorunludur", "http.not_found": "Bulunamadı"}`),
 		},
 		"tr/fields.json": &fstest.MapFile{
 			Data: []byte(`{"email": "e-posta adresi"}`),
@@ -141,8 +141,8 @@ func TestBundle_LoadDir(t *testing.T) {
 	if enMsgs["v.required"] == nil {
 		t.Error("v.required not found in English messages")
 	}
-	if enMsgs["http.404"] == nil {
-		t.Error("http.404 not found in English messages")
+	if enMsgs["http.not_found"] == nil {
+		t.Error("http.not_found not found in English messages")
 	}
 }
 
@@ -201,10 +201,10 @@ func TestBundle_LoadDirFS_InvalidFieldsJSON(t *testing.T) {
 func testFS() fs.FS {
 	return fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "is required", "http.404": "Not found", "http.500": "Internal server error"}`),
+			Data: []byte(`{"v.required": "is required", "http.not_found": "Not found", "http.internal_server_error": "Internal server error"}`),
 		},
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "zorunludur", "http.404": "Bulunamadı", "http.500": "Sunucu hatası"}`),
+			Data: []byte(`{"v.required": "zorunludur", "http.not_found": "Bulunamadı", "http.internal_server_error": "Sunucu hatası"}`),
 		},
 		"tr/fields.json": &fstest.MapFile{
 			Data: []byte(`{"email": "e-posta adresi", "name": "isim"}`),

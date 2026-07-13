@@ -1,7 +1,9 @@
 package pagination_test
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/credo-go/credo/pagination"
@@ -109,10 +111,58 @@ func TestOffset(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := pagination.PageRequest{Page: tt.page, PerPage: tt.perPage}
-			if got := r.Offset(); got != tt.wantOffset {
+			before := r
+			got, err := r.Offset()
+			if err != nil {
+				t.Fatalf("Offset() = %v", err)
+			}
+			if got != tt.wantOffset {
 				t.Errorf("Offset() = %d, want %d", got, tt.wantOffset)
 			}
+			if r != before {
+				t.Fatalf("Offset() mutated request: got %+v, want %+v", r, before)
+			}
 		})
+	}
+}
+
+func TestOffsetRejectsInvalidAndOverflow(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name string
+		req  pagination.PageRequest
+	}{
+		{"zero page", pagination.PageRequest{Page: 0, PerPage: 10}},
+		{"negative page", pagination.PageRequest{Page: -1, PerPage: 10}},
+		{"zero per page", pagination.PageRequest{Page: 1, PerPage: 0}},
+		{"negative per page", pagination.PageRequest{Page: 1, PerPage: -1}},
+		{"native int overflow", pagination.PageRequest{Page: maxInt, PerPage: 2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := tt.req
+			before := r
+			offset, err := r.Offset()
+			if !errors.Is(err, pagination.ErrInvalidPageRequest) {
+				t.Fatalf("Offset() = (%d, %v), want ErrInvalidPageRequest", offset, err)
+			}
+			if r != before {
+				t.Fatalf("Offset() mutated request: got %+v, want %+v", r, before)
+			}
+		})
+	}
+}
+
+func TestOffsetAcceptsNativeIntBoundary(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	r := pagination.PageRequest{Page: maxInt, PerPage: 1}
+	offset, err := r.Offset()
+	if err != nil {
+		t.Fatalf("Offset() = %v", err)
+	}
+	if offset != maxInt-1 {
+		t.Fatalf("Offset() = %d, want %d", offset, maxInt-1)
 	}
 }
 
@@ -135,6 +185,14 @@ func TestNewPage(t *testing.T) {
 		}
 		if p.TotalPages != 10 {
 			t.Errorf("TotalPages = %d, want 10", p.TotalPages)
+		}
+	})
+
+	t.Run("total pages does not overflow", func(t *testing.T) {
+		p := pagination.NewPage([]int{}, math.MaxInt64, 1, 2)
+		want := int64(math.MaxInt64/2 + 1)
+		if p.TotalPages != want {
+			t.Fatalf("TotalPages = %d, want %d", p.TotalPages, want)
 		}
 	})
 

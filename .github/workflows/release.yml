@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Lockstep root and store/sqldb version (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.27.0-rc.1"
+
+jobs:
+  release:
+    name: Validate and tag both modules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require the main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "release must be dispatched from refs/heads/main, got $GITHUB_REF" >&2
+          exit 1
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Verify prepared module versions
+        env:
+          VERSION: ${{ inputs.version }}
+        run: go run ./scripts/releasegate prepared "$VERSION"
+
+      - name: Build an external consumer without replace
+        env:
+          VERSION: ${{ inputs.version }}
+        run: go run ./scripts/releasegate candidate "$VERSION"
+
+      - name: Verify both modules
+        run: |
+          # The prepared nested go.mod points at a tag that this workflow has
+          # intentionally not published yet. Use an ephemeral workspace for
+          # in-tree tests; the preceding external-consumer gate separately
+          # proves the exact published, replace-free module graph.
+          go work init . ./store/sqldb
+          go test -count=1 ./...
+          (cd store/sqldb && go test -count=1 ./...)
+          go vet ./...
+          (cd store/sqldb && go vet ./...)
+
+      - name: Create lockstep tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          root_tag="$VERSION"
+          sqldb_tag="store/sqldb/$VERSION"
+
+          if git rev-parse --verify --quiet "refs/tags/$root_tag"; then
+            echo "tag already exists: $root_tag" >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$sqldb_tag"; then
+            echo "tag already exists: $sqldb_tag" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$root_tag" -m "Credo $VERSION"
+          git tag -a "$sqldb_tag" -m "Credo store/sqldb $VERSION (requires Credo $VERSION)"
+
+          # Publishing the pair atomically is stronger than a fallible manual
+          # root-then-submodule sequence: consumers can never observe only the
+          # nested tag whose root dependency is still missing.
+          git push --atomic origin "refs/tags/$root_tag" "refs/tags/$sqldb_tag"

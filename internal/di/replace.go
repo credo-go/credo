@@ -8,9 +8,9 @@ import (
 )
 
 // Replace registers a pre-built value for type T as a Singleton, overwriting
-// any existing registration for T. Unlike [ProvideValue], Replace does not
-// return an error when T is already registered: it replaces the binding and
-// discards the previous registration along with any cached singleton.
+// any existing unprotected registration. Bindings created by
+// [Container.ProvideProtectedValue] or locked by [Container.ProtectBinding]
+// reject replacement so external lifecycle state cannot diverge from DI.
 //
 // Replace is intended for composition-root overrides and testing, where a
 // real or default binding must be swapped for a stub or fake. The replacement
@@ -25,6 +25,9 @@ func (c *Container) Replace[T any](value T) error {
 	}
 
 	targetType := reflect.TypeFor[T]()
+	if existing, exists := c.registrations[targetType]; exists && existing.protected {
+		return fmt.Errorf("di: Replace[%s]: binding is protected", targetType)
+	}
 
 	reg := &registration{
 		resultType: targetType,

@@ -138,8 +138,9 @@ Detection order (handled internally, then passed to `ErrorRenderer`):
 1. **Response committed** → no-op (guard)
 2. **`validation.Errors`** → 422 with field-level errors
 3. **`*HTTPError`** → status from `Code`, title resolved from `MessageKey`
-4. **`HTTPStatus() int`** → status from interface (e.g., store errors)
-5. **Any other error** → 500 (message never leaked)
+4. **`fault.Provider`** → root default HTTP policy for the semantic kind
+5. **`HTTPStatus() int`** → legacy or explicit transport status
+6. **Any other error** → 500 (message never leaked)
 
 ```json
 {
@@ -198,24 +199,45 @@ app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
 
 ---
 
-## httpStatusProvider Interface
+## Semantic Fault Provider
 
-Errors from packages like `store/` implement `HTTPStatus() int`:
+Transport-neutral packages expose a semantic kind through the stdlib-only
+`fault` leaf package:
 
 ```go
-type httpStatusProvider interface {
-    HTTPStatus() int
+type Provider interface {
+    error
+    FaultKind() fault.Kind
 }
 ```
 
-The internal error handling pipeline detects this via `errors.As` without importing the package that defines the error. This enables clean dependency boundaries between the error handler and data access layers.
+The root pipeline maps known kinds to its default HTTP status/title without
+importing the feature package. `store.Error`, for example, carries a semantic
+kind plus driver code/constraint/resource/cause metadata; only the kind affects
+the default Problem Details response.
 
 ```go
-// store/errors.go
-var ErrNotFound = &StoreError{status: 404, msg: "not found"}
-
-func (e *StoreError) HTTPStatus() int { return e.status }
+if kind, ok := store.KindOf(err); ok {
+    switch kind {
+    case store.KindNotFound:
+        // domain-specific handling
+    case store.KindSerialization, store.KindDeadlock:
+        // transient condition; not automatic retry permission
+    }
+}
 ```
+
+An outer `*HTTPError` is checked first, so the service layer can override the
+default transport meaning while retaining the store cause:
+
+```go
+return credo.NewHTTPError(http.StatusUnprocessableEntity, "order.stock_conflict").
+    WithInternal(err)
+```
+
+`HTTPStatus() int` remains supported after semantic providers for legacy and
+explicit transport-specific errors. Store sentinels retain it only as a
+deprecated compatibility bridge.
 
 ---
 

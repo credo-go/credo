@@ -78,7 +78,7 @@ func TestLocalizer_LocalizeWithTag(t *testing.T) {
 	b := newTestBundle(t)
 	l := NewLocalizer(b, "tr")
 
-	s, tag, err := l.LocalizeWithTag("http.404", nil)
+	s, tag, err := l.LocalizeWithTag("http.not_found", nil)
 	if err != nil {
 		t.Fatalf("LocalizeWithTag: %v", err)
 	}

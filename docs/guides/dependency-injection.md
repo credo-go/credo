@@ -43,6 +43,11 @@ Provide / ProvideValue / Alias / BindMany
 - `Provide[T]`: register a constructor
 - `ProvideFactory[T]`: register a compiler-checked factory closure
 - `ProvideValue[T]`: register a pre-built singleton
+- `CanProvideValue[T]`: point-in-time frozen/direct-duplicate preflight
+- `ProvideProtectedValue[T]`: low-level pre-built binding that rejects later `Replace[T]`
+- `ProtectBinding[T](expected ...T)`: low-level blind or CAS-style protection
+  for an existing direct binding
+- `Replace[T]`: overwrite an ordinary pre-built binding; protected bindings reject it
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
 - `app.Finalize()`: freeze registrations and validate the dependency graph
@@ -242,6 +247,43 @@ Typical `ProvideValue` use cases:
 - pre-built SDK clients
 - test doubles
 - values created by another bootstrap system
+
+`app.CanProvideValue[T]()` is a non-mutating preflight for helpers that should
+avoid work before a predictable registration failure. It checks only whether
+the container is finalized or `T` already has a direct registration. It does
+not reserve `T`: another goroutine can still register or finalize before the
+real call, so the final `ProvideValue` or `ProvideProtectedValue` call remains
+authoritative and its error must still be handled.
+
+### Protected integration bindings
+
+Most application values should stay replaceable: use `ProvideValue`, especially
+when tests use overrides. A framework integration may also publish lifecycle or
+health state that must keep referring to the exact DI value. For that narrow
+case Credo exposes:
+
+```go
+if err := app.ProvideProtectedValue[Client](client); err != nil {
+    return err
+}
+
+// Or atomically verify and protect a value resolved by the composition root.
+if err := app.ProtectBinding[Client](client); err != nil {
+    return err
+}
+```
+
+After either path, `app.Replace[Client](other)` returns an error. Protection is
+about binding consistency only: it does not register shutdown hooks, health
+checks, aliases, or collection membership. `ProtectBinding[T]()` blindly
+protects an existing direct binding without resolving it and is idempotent.
+`ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies,
+against `Replace`, that the already-resolved singleton is comparable and still
+equals expected before protecting it. An unresolved, non-comparable, changed,
+or multiply supplied expected value returns an error without adding protection.
+Both forms require an existing binding and must run before Finalize.
+`store.Register` uses the expected-value form so replacing the Registry between
+validation and adoption cannot detach DI from readiness state.
 
 ### `ProvideFactory`: compiler-checked factory registration
 
@@ -519,7 +561,11 @@ func (c *Cache) Shutdown(ctx context.Context) error {
 }
 ```
 
-Credo calls `Shutdown(ctx)` during app shutdown in reverse registration order.
+Credo traverses DI-managed Shutdowners in reverse registration order. If the
+live shutdown deadline reaches an entry, that registration receives at most one
+`Shutdown(ctx)` attempt for the teardown. If the deadline expires before the
+traversal reaches it, that registration receives no attempt and the container
+reports the skipped remainder.
 
 This is useful for:
 
@@ -534,17 +580,21 @@ Credo offers two shutdown mechanisms. Choose based on how the component is creat
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
-| `credo.Shutdowner` interface | DI-managed singletons (registered via `app.Provide` / `app.ProvideValue`) | Reverse registration order |
+| `credo.Shutdowner` interface | DI-managed singletons (registered via `app.Provide` / `app.ProvideFactory` / `app.ProvideValue` / protected variant) | Reverse registration order while deadline remains live |
 | `app.OnShutdown(fn)` | Components created outside DI — manual connections, background goroutines, third-party handles | LIFO (last registered, first called) |
 
 During graceful shutdown the full sequence is:
 
 1. Cancel lifecycle context
 2. Drain in-flight HTTP requests
-3. **Container shutdown** — calls `Shutdown(ctx)` on every singleton that implements `Shutdowner`
+3. **Container shutdown** — traverses reverse registration order and attempts
+   each reached `Shutdowner` until the deadline expires
 4. **OnShutdown hooks** — runs registered hook functions in LIFO order
 
-Container shutdown (step 3) always runs before OnShutdown hooks (step 4), so DI-managed resources are released first.
+Container shutdown (step 3) runs before OnShutdown hooks (step 4). A deadline
+can stop the DI traversal early, so "DI-owned" guarantees a sole framework
+owner and at-most-one attempt when reached, not successful closure of every
+resource.
 
 If your service is already in the container, prefer `Shutdowner` — it requires no extra registration and the container handles ordering automatically. Use `OnShutdown` only for things the container does not own.
 

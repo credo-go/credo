@@ -5,42 +5,57 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/credo-go/credo"
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
-// DefaultPingTimeout is the default timeout for the initial health check
-// performed by [Register].
+// DefaultPingTimeout is the default context deadline for the initial health
+// check performed by [Register]. Lifecycle.Ping implementations must honor the
+// context; Register does not detach a non-cooperative Ping call.
 const DefaultPingTimeout = 5 * time.Second
 
 // RegisterOption configures a [Register] call.
 type RegisterOption func(*registerOptions)
 
 type registerOptions struct {
-	name        string
-	pingTimeout time.Duration
-	lifecycle   Lifecycle
+	name         string
+	nameSet      bool
+	pingTimeout  time.Duration
+	lifecycle    Lifecycle
+	lifecycleSet bool
+	callerOwned  bool
 }
 
 type registerPlan struct {
-	name        string
-	pingTimeout time.Duration
-	lifecycle   Lifecycle
+	name              string
+	pingTimeout       time.Duration
+	lifecycle         Lifecycle
+	lifecycleIdentity lifecycleIdentity
+	warningCodes      []string
 }
 
-// WithName sets the display name for health reporting.
-// If not set, the name is derived from the type parameter R via reflection.
+const maxRegistrationWarningCodeLength = 64
+
+// registrationWarningProvider is an optional, deliberately private seam used
+// by store implementations to surface low-cardinality, secret-free startup
+// diagnostics through Register's application logger.
+type registrationWarningProvider interface {
+	StoreRegistrationWarningCodes() []string
+}
+
+// WithName sets the stable identifier used in health reporting. It rejects an
+// empty or padded name, control characters, and the reserved "credo." prefix.
+// If omitted, Register uses the pointer-unwrapped, package-qualified name of R.
 func WithName(name string) RegisterOption {
 	return func(o *registerOptions) {
 		o.name = name
+		o.nameSet = true
 	}
 }
 
-// WithPingTimeout overrides the default ping timeout (5s) for the
+// WithPingTimeout overrides the default Ping context deadline (5s) for the
 // initial health check performed by [Register].
 func WithPingTimeout(d time.Duration) RegisterOption {
 	return func(o *registerOptions) {
@@ -48,13 +63,25 @@ func WithPingTimeout(d time.Duration) RegisterOption {
 	}
 }
 
-// WithLifecycle provides the Lifecycle handle when the value R does not
-// implement Lifecycle itself (e.g., a wrapper that keeps the connection
-// in a named field — wrappers that embed the connection inherit its
-// methods and need no explicit handle).
+// WithLifecycle provides the handle used for Ping and Health when value does
+// not implement Lifecycle itself. It must be paired with
+// [WithCallerOwnedLifecycle]: the caller retains responsibility for invoking
+// Shutdown on that separate handle. Prefer making value implement Lifecycle so
+// the framework can own shutdown.
 func WithLifecycle(lc Lifecycle) RegisterOption {
 	return func(o *registerOptions) {
 		o.lifecycle = lc
+		o.lifecycleSet = true
+	}
+}
+
+// WithCallerOwnedLifecycle explicitly keeps lifecycle shutdown ownership with
+// the caller when [WithLifecycle] is used for a value that cannot itself
+// implement Lifecycle. The caller must arrange shutdown, for example through
+// [credo.App.OnShutdown]. The option is invalid without [WithLifecycle].
+func WithCallerOwnedLifecycle() RegisterOption {
+	return func(o *registerOptions) {
+		o.callerOwned = true
 	}
 }
 
@@ -62,27 +89,31 @@ func WithLifecycle(lc Lifecycle) RegisterOption {
 // connection, and tracks it in the [Registry] for lifecycle and health
 // management.
 //
-// If value implements [Lifecycle], it is used directly for ping/shutdown/health.
-// Otherwise, provide the Lifecycle handle via [WithLifecycle].
+// If value implements [Lifecycle], it is used directly for Ping, Health, and
+// Shutdown. Otherwise, a separate health handle is accepted only through
+// [WithLifecycle] plus the explicit [WithCallerOwnedLifecycle] opt-out.
 //
 // Steps:
-//  1. Resolve Lifecycle — use value if it implements Lifecycle, otherwise WithLifecycle
-//  2. Ping — verify connection is alive (fail-fast at startup)
-//  3. Ensure Registry — resolve or create Registry in DI
-//  4. Track — add Lifecycle handle to Registry for ping/health aggregation
-//  5. DI register — register value as type R via [credo.App.ProvideValue]
+//  1. Validate name, lifecycle ownership, and predictable DI conflicts
+//  2. Resolve or create Registry and wire the internal readiness seam
+//  3. Privately reserve the unique store name, DI type, and lifecycle identity
+//  4. Ping the connection with a finite timeout
+//  5. Publish the DI value and Registry health entry together
+//  6. Emit validated, secret-free registration warning codes after publication
 //
-// Shutdown ownership: closing is the DI container's job alone. A value
-// that implements [credo.Shutdowner] (every Lifecycle does) is closed by
-// the container during app shutdown, in reverse registration order. The
-// Registry never closes connections. When value does not implement
-// Shutdowner — possible only with [WithLifecycle] — Register logs a
-// warning and closing stays with the caller: close the underlying
-// connection yourself (e.g. via [credo.App.OnShutdown]) or register a
-// value type that implements Shutdowner (embedding the connection does).
+// Shutdown ownership is unambiguous. A direct Lifecycle value is
+// framework-owned after successful registration. The DI container visits it in
+// reverse registration order and makes at most one shutdown attempt if the
+// live shutdown deadline reaches its entry. A separate WithLifecycle handle
+// remains caller-owned and requires WithCallerOwnedLifecycle; the caller must
+// arrange its shutdown. The Registry never closes connections.
 //
-// On failure, framework-owned registration state is rolled back. The
-// caller retains ownership of the provided lifecycle value.
+// On every error, including Ping or final DI publication failure, Register
+// exposes no health entry and does not acquire ownership. This does not undo an
+// independent raw DI publication performed by the caller or another goroutine.
+// Do not place the same lifecycle in DI through Provide, ProvideFactory,
+// ProvideValue, ProvideProtectedValue, or Replace and also through Register;
+// register it once and use [credo.App.Alias] for additional interface views.
 func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 	if app == nil {
 		return fmt.Errorf("store: app must not be nil")
@@ -96,26 +127,50 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 		return err
 	}
 
-	if pingErr := pingLifecycle(plan); pingErr != nil {
-		return pingErr
+	// Reject predictable local DI failures before creating infrastructure or
+	// performing network I/O. This is a point-in-time preflight; ProvideValue
+	// remains authoritative against external concurrent mutations.
+	if preflightErr := app.CanProvideValue[R](); preflightErr != nil {
+		return fmt.Errorf("store: register %q: %w", plan.name, preflightErr)
 	}
 
-	rollbackTrack, err := trackLifecycle(app, plan)
+	reg, err := ensureRegistry(app)
 	if err != nil {
 		return err
 	}
 
-	if err := publishValue(app, plan.name, value, rollbackTrack); err != nil {
-		return err
+	reservation, err := reg.reserveIdentified(
+		plan.name,
+		reflect.TypeFor[R](),
+		plan.lifecycle,
+		plan.lifecycleIdentity,
+	)
+	if err != nil {
+		return fmt.Errorf("store: reserve %q: %w", plan.name, err)
+	}
+	defer reservation.release()
+
+	// Re-check after Registry/seam setup so finalization or a concurrent value
+	// registration that won during setup is still caught before Ping.
+	if err := app.CanProvideValue[R](); err != nil {
+		return fmt.Errorf("store: register %q: %w", plan.name, err)
 	}
 
-	// The container only closes singletons that implement Shutdowner; a
-	// value without it (WithLifecycle registration) has no framework-owned
-	// closing path — surface that instead of leaking silently.
-	if _, ok := any(value).(credo.Shutdowner); !ok {
+	if pingErr := pingLifecycle(plan); pingErr != nil {
+		return pingErr
+	}
+
+	if err := reservation.commit(func() error {
+		return app.ProvideProtectedValue[R](value)
+	}); err != nil {
+		return fmt.Errorf("store: register %q: %w", plan.name, err)
+	}
+	for _, code := range plan.warningCodes {
 		app.Logger().Warn(
-			"store: connection will not be closed by the framework (registered value does not implement Shutdowner)",
+			"credo: store configuration warning",
+			"component", "store",
 			"store", plan.name,
+			"code", code,
 		)
 	}
 	return nil
@@ -135,38 +190,126 @@ func buildRegisterPlan[R any](value R, opts ...RegisterOption) (registerPlan, er
 	}
 
 	name := o.name
-	if name == "" {
+	if !o.nameSet {
 		name = registerName[R]()
+		if name == "" {
+			return registerPlan{}, fmt.Errorf(
+				"store: type %s has no stable default registration name; provide WithName", reflect.TypeFor[R](),
+			)
+		}
+	}
+	if err := internalhealth.ValidateName(name); err != nil {
+		return registerPlan{}, fmt.Errorf("store: invalid registration name: %w", err)
 	}
 
-	lc := resolveLifecycle(value, o.lifecycle)
-	if lc == nil {
-		return registerPlan{}, fmt.Errorf("store: %q does not implement Lifecycle and no WithLifecycle option provided", name)
+	valueLifecycle, implementsLifecycle := any(value).(Lifecycle)
+	if implementsLifecycle && isNilDynamicValue(valueLifecycle) {
+		implementsLifecycle = false
+	}
+	_, implementsShutdowner := any(value).(credo.Shutdowner)
+
+	var lc Lifecycle
+	switch {
+	case implementsLifecycle:
+		if o.lifecycleSet {
+			return registerPlan{}, fmt.Errorf(
+				"store: %q implements Lifecycle; WithLifecycle would split or duplicate ownership", name,
+			)
+		}
+		if o.callerOwned {
+			return registerPlan{}, fmt.Errorf(
+				"store: %q implements Lifecycle and is framework-owned; caller-owned opt-out is not supported", name,
+			)
+		}
+		lc = valueLifecycle
+	case o.lifecycleSet:
+		if isNilDynamicValue(o.lifecycle) {
+			return registerPlan{}, fmt.Errorf("store: %q WithLifecycle value must not be nil", name)
+		}
+		if implementsShutdowner {
+			return registerPlan{}, fmt.Errorf(
+				"store: %q implements credo.Shutdowner but not Lifecycle; Ping/Health and Shutdown cannot use different objects",
+				name,
+			)
+		}
+		if !o.callerOwned {
+			return registerPlan{}, fmt.Errorf(
+				"store: %q WithLifecycle requires explicit WithCallerOwnedLifecycle", name,
+			)
+		}
+		lc = o.lifecycle
+	case o.callerOwned:
+		return registerPlan{}, fmt.Errorf("store: %q WithCallerOwnedLifecycle requires WithLifecycle", name)
+	default:
+		return registerPlan{}, fmt.Errorf("store: %q does not implement Lifecycle", name)
+	}
+
+	warningCodes, err := snapshotRegistrationWarningCodes(lc)
+	if err != nil {
+		return registerPlan{}, err
+	}
+
+	identity, err := identifyLifecycle(lc)
+	if err != nil {
+		return registerPlan{}, fmt.Errorf("store: lifecycle identity for %q: %w", name, err)
 	}
 
 	return registerPlan{
-		name:        name,
-		pingTimeout: o.pingTimeout,
-		lifecycle:   lc,
+		name:              name,
+		pingTimeout:       o.pingTimeout,
+		lifecycle:         lc,
+		lifecycleIdentity: identity,
+		warningCodes:      warningCodes,
 	}, nil
+}
+
+func snapshotRegistrationWarningCodes(value any) ([]string, error) {
+	provider, ok := value.(registrationWarningProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	codes := provider.StoreRegistrationWarningCodes()
+	result := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for i, code := range codes {
+		if !validRegistrationWarningCode(code) {
+			// Never include the provider value in this error: an invalid code may
+			// accidentally contain a DSN, credential, or another secret.
+			return nil, fmt.Errorf("store: registration warning code at index %d is invalid", i)
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result, nil
+}
+
+func validRegistrationWarningCode(code string) bool {
+	if code == "" || len(code) > maxRegistrationWarningCodeLength {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func registerName[R any]() string {
 	rType := reflect.TypeFor[R]()
-	if name := rType.Name(); name != "" {
-		return name
+	for rType.Kind() == reflect.Pointer {
+		rType = rType.Elem()
+	}
+	if rType.Name() == "" {
+		return ""
 	}
 	return rType.String()
-}
-
-func resolveLifecycle[R any](value R, explicit Lifecycle) Lifecycle {
-	if explicit != nil {
-		return explicit
-	}
-	if lc, ok := any(value).(Lifecycle); ok {
-		return lc
-	}
-	return nil
 }
 
 func pingLifecycle(plan registerPlan) error {
@@ -179,87 +322,75 @@ func pingLifecycle(plan registerPlan) error {
 	return nil
 }
 
-func trackLifecycle(app *credo.App, plan registerPlan) (func() error, error) {
-	reg, err := ensureRegistry(app)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := reg.Add(plan.name, plan.lifecycle); err != nil {
-		return nil, fmt.Errorf("store: track %q: %w", plan.name, err)
-	}
-
-	rollback := func() error {
-		if reg.remove(plan.name) {
-			return nil
-		}
-		return fmt.Errorf("store: rollback track %q: not found", plan.name)
-	}
-
-	return rollback, nil
-}
-
-func publishValue[R any](app *credo.App, name string, value R, rollbackTrack func() error) error {
-	if err := app.ProvideValue[R](value); err != nil {
-		mainErr := fmt.Errorf("store: register %q: %w", name, err)
-		if rollbackTrack != nil {
-			if rollbackErr := rollbackTrack(); rollbackErr != nil {
-				mainErr = errors.Join(mainErr, rollbackErr)
-			}
-		}
-		return mainErr
-	}
-	return nil
-}
-
 func wireStoreHealth(app *credo.App, reg *Registry) error {
-	fn := internalhealth.StoreFunc(func(ctx context.Context) []internalhealth.StoreResult {
-		all := reg.HealthAll(ctx)
-		names := make([]string, 0, len(all))
-		for name := range all {
-			names = append(names, name)
-		}
-		slices.Sort(names)
-
-		results := make([]internalhealth.StoreResult, 0, len(names))
-		for _, name := range names {
-			h := all[name]
-			results = append(results, internalhealth.StoreResult{
-				Name:    name,
-				Status:  strings.ToLower(string(h.Status)),
-				Latency: h.Latency,
-			})
-		}
-		return results
+	if reg == nil {
+		return fmt.Errorf("store: wire health reporting: registry must not be nil")
+	}
+	fn := internalhealth.StoreFunc(func() []internalhealth.StoreCheck {
+		return reg.storeChecks()
 	})
-	// The readiness handler resolves this lazily on each check; providing it
-	// here (instead of pushing into the app) keeps the wiring module-internal.
-	if err := app.ProvideValue[internalhealth.StoreFunc](fn); err != nil {
+	// Replace is intentional: a composition root may have supplied Registry
+	// before the first Register call, and a previous publish attempt may have
+	// installed an obsolete or partial seam. Re-establishing this internal
+	// value is idempotent and keeps readiness bound to the resolved Registry.
+	if err := app.Replace[internalhealth.StoreFunc](fn); err != nil {
 		return fmt.Errorf("store: wire health reporting: %w", err)
 	}
 	return nil
 }
 
 // ensureRegistry resolves or creates the store [Registry] in the DI
-// container. On first call, a new Registry is created, registered as a
-// singleton, and wired into the app's health reporting exactly once.
+// container. Its binding is protected before use so DI and the readiness seam
+// cannot later diverge through Replace. The internal health seam is
+// idempotently re-established for both new and pre-provided registries, so an
+// interrupted wiring attempt is retryable on the next Register call.
 // The Registry has no Shutdown method, so the container's shutdown pass
 // skips it — closing tracked connections is not its job.
 func ensureRegistry(app *credo.App) (*Registry, error) {
-	reg, err := app.Resolve[*Registry]()
-	if err == nil {
-		return reg, nil
+	// Validate a pre-provided Registry before making its binding permanent.
+	// Expected-value ProtectBinding atomically rejects a concurrent Replace
+	// winner. A second Resolve then supplies the exact protected instance to the
+	// readiness seam.
+	if reg, err := app.Resolve[*Registry](); err == nil {
+		if reg == nil {
+			return nil, fmt.Errorf("store: resolved Registry must not be nil")
+		}
+		if err := app.ProtectBinding[*Registry](reg); err != nil {
+			return nil, fmt.Errorf("store: protect Registry binding: %w", err)
+		}
+		return resolveAndWireRegistry(app)
 	}
 
 	// First store connection — create and register the registry.
-	reg = &Registry{}
-	if err := app.ProvideValue[*Registry](reg); err != nil {
-		// Race: another goroutine may have registered between our Resolve and ProvideValue.
+	reg := &Registry{}
+	if err := app.ProvideProtectedValue[*Registry](reg); err != nil {
+		// Race or pre-provided constructor: adopt only a successfully resolved,
+		// non-nil Registry, then protect and re-resolve it before wiring.
 		resolved, resolveErr := app.Resolve[*Registry]()
-		if resolveErr == nil {
-			return resolved, nil
+		if resolveErr != nil || resolved == nil {
+			if resolveErr == nil {
+				resolveErr = fmt.Errorf("store: resolved Registry must not be nil")
+			}
+			return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, resolveErr))
 		}
-		return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, resolveErr))
+		if protectErr := app.ProtectBinding[*Registry](resolved); protectErr != nil {
+			return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, protectErr))
+		}
+		return resolveAndWireRegistry(app)
+	}
+	if err := wireStoreHealth(app, reg); err != nil {
+		return nil, err
+	}
+	return reg, nil
+}
+
+func resolveAndWireRegistry(app *credo.App) (*Registry, error) {
+	reg, err := app.Resolve[*Registry]()
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve protected Registry: %w", err)
+	}
+	if reg == nil {
+		return nil, fmt.Errorf("store: resolved Registry must not be nil")
 	}
 	if err := wireStoreHealth(app, reg); err != nil {
 		return nil, err
@@ -269,9 +400,23 @@ func ensureRegistry(app *credo.App) (*Registry, error) {
 
 // isNilValue reports whether value is a nil pointer, interface, or other nilable type.
 func isNilValue[R any](value R) bool {
-	v := reflect.ValueOf(&value).Elem()
+	return isNilDynamicValue(any(value))
+}
+
+func isNilDynamicValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	for v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return true
+		}
+		v = v.Elem()
+	}
 	switch v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice,
+		reflect.UnsafePointer:
 		return v.IsNil()
 	default:
 		return false

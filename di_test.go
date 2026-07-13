@@ -70,6 +70,68 @@ func TestProvideValue_Resolve(t *testing.T) {
 	}
 }
 
+func TestCanProvideValue(t *testing.T) {
+	t.Run("available then duplicate", func(t *testing.T) {
+		app := mustNew(t)
+		if err := app.CanProvideValue[*diSimpleService](); err != nil {
+			t.Fatalf("CanProvideValue() = %v, want nil", err)
+		}
+
+		app.MustProvideValue[*diSimpleService](&diSimpleService{})
+		preflightErr := app.CanProvideValue[*diSimpleService]()
+		provideErr := app.ProvideValue[*diSimpleService](&diSimpleService{})
+		if preflightErr == nil || provideErr == nil {
+			t.Fatalf("errors = (%v, %v), want duplicate errors", preflightErr, provideErr)
+		}
+		if preflightErr.Error() != provideErr.Error() {
+			t.Fatalf("CanProvideValue error = %q, ProvideValue error = %q", preflightErr, provideErr)
+		}
+	})
+
+	t.Run("finalized", func(t *testing.T) {
+		app := mustNew(t)
+		if err := app.Finalize(); err != nil {
+			t.Fatalf("Finalize() = %v", err)
+		}
+
+		preflightErr := app.CanProvideValue[*diSimpleService]()
+		provideErr := app.ProvideValue[*diSimpleService](&diSimpleService{})
+		if preflightErr == nil || provideErr == nil {
+			t.Fatalf("errors = (%v, %v), want finalized errors", preflightErr, provideErr)
+		}
+		if preflightErr.Error() != provideErr.Error() {
+			t.Fatalf("CanProvideValue error = %q, ProvideValue error = %q", preflightErr, provideErr)
+		}
+	})
+}
+
+func TestProtectedValueBinding(t *testing.T) {
+	app := mustNew(t)
+	original := &diSimpleService{Value: "original"}
+	if err := app.ProvideProtectedValue[*diSimpleService](original); err != nil {
+		t.Fatalf("ProvideProtectedValue() = %v", err)
+	}
+	if err := app.Replace[*diSimpleService](&diSimpleService{Value: "replacement"}); err == nil {
+		t.Fatal("Replace should reject a protected binding")
+	}
+	resolved, err := app.Resolve[*diSimpleService]()
+	if err != nil || resolved != original {
+		t.Fatalf("Resolve() = (%p, %v), want original %p", resolved, err, original)
+	}
+}
+
+func TestProtectBinding(t *testing.T) {
+	app := mustNew(t)
+	original := &diSimpleService{Value: "original"}
+	app.MustProvideValue[*diSimpleService](original)
+	if err := app.ProtectBinding[*diSimpleService](original); err != nil {
+		t.Fatalf("ProtectBinding() = %v", err)
+	}
+	if err := app.Replace[*diSimpleService](&diSimpleService{}); err == nil {
+		t.Fatal("Replace should reject a protected existing binding")
+	}
+}
+
 func TestProvideFactory_Resolve(t *testing.T) {
 	app := mustNew(t)
 	app.MustProvide[*diSimpleService](newDISimpleService)

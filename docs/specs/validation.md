@@ -311,7 +311,7 @@ The `Code` field enables i18n translation in Phase 3 without changing the error 
 
 **Field names are NOT translated** — `Field` is a stable technical identifier for frontend form-input matching. See [ADR-013](../adr/013-internationalization.md).
 
-**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Error types implementing `TranslationKeyer` provide their own lookup key. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
+**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Validation codes map to `"v." + code`; HTTP/domain errors use `HTTPError.MessageKey` or root semantic/status policy. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
 
 ---
 

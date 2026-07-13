@@ -10,12 +10,23 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/credo-go/credo/fault"
 )
 
-type statusErr struct{ code int }
+type statusError struct{ code int }
 
-func (e statusErr) Error() string   { return "status error" }
-func (e statusErr) HTTPStatus() int { return e.code }
+func (e statusError) Error() string   { return "status error" }
+func (e statusError) HTTPStatus() int { return e.code }
+
+type semanticStatusError struct {
+	kind   fault.Kind
+	legacy int
+}
+
+func (e semanticStatusError) Error() string         { return "semantic status error" }
+func (e semanticStatusError) FaultKind() fault.Kind { return e.kind }
+func (e semanticStatusError) HTTPStatus() int       { return e.legacy }
 
 func TestStatus(t *testing.T) {
 	tests := []struct {
@@ -26,7 +37,20 @@ func TestStatus(t *testing.T) {
 	}{
 		{"tracked status wins over error", 201, errors.New("ignored"), 201},
 		{"no status, no error is 200", 0, nil, http.StatusOK},
-		{"status-provider error", 0, statusErr{code: 404}, 404},
+		{"semantic status", 0, semanticStatusError{kind: fault.KindNotFound}, http.StatusNotFound},
+		{
+			"semantic status wins over conflicting legacy status",
+			0,
+			semanticStatusError{kind: fault.KindNotFound, legacy: http.StatusServiceUnavailable},
+			http.StatusNotFound,
+		},
+		{
+			"unknown semantic status fails closed",
+			0,
+			semanticStatusError{kind: fault.KindUnknown, legacy: http.StatusTeapot},
+			http.StatusInternalServerError,
+		},
+		{"status-provider error", 0, statusError{code: 404}, 404},
 		{"generic error is 500", 0, errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {

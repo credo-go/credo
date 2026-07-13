@@ -15,7 +15,7 @@ import (
 // It supports CLDR plural forms; for messages that don't need plurals,
 // only the Other field is populated (string shorthand in JSON).
 type Message struct {
-	// ID is the unique message identifier (e.g., "v.required", "http.404").
+	// ID is the unique message identifier (e.g., "v.required", "http.not_found").
 	ID string
 
 	// CLDR plural forms.

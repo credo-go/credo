@@ -410,10 +410,18 @@ User-read via `rc.Unmarshal("databases.<name>", &cfg)`.
 | `password` | string | `""` | Auth password |
 | `connect_timeout` | duration | `0` | Connection establishment timeout |
 | `max_open` | int | `0` (unlimited) | Max open connections |
-| `max_idle` | int | `0` | Max idle connections |
-| `max_lifetime` | duration | `0` | Max connection reuse duration |
+| `max_idle` | int or null | unset | Max idle connections; omitted uses the stdlib policy (subject to `max_open`), explicit `0` retains none |
+| `max_idle_time` | duration | `0` (disabled) | Max idle age before a connection is closed |
+| `max_lifetime` | duration | `0` (disabled) | Max connection lifetime |
 | `ssl_mode` | string | `""` | `"disable"`, `"require"`, `"verify-full"` |
 | `options` | map | `{}` | Driver-specific params |
+
+`max_open: 0` is not a conservative production limit: it preserves
+`database/sql`'s unlimited-open behavior. The canonical `store.Register` path
+logs `sqldb.pool.max_open_unlimited` after successful registration when the
+effective pool maximum is still unlimited; choose a finite value from the
+database connection budget divided across service replicas. When both are
+explicit and `max_open > 0`, `max_idle` must not exceed `max_open`.
 
 ### i18n — `i18n`
 

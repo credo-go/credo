@@ -9,6 +9,9 @@ import (
 	"runtime/debug"
 	"time"
 	"unicode/utf8"
+
+	"github.com/credo-go/credo/fault"
+	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
 )
 
 type httpStatusProvider interface {
@@ -24,6 +27,12 @@ func Status(status int, err error) int {
 	}
 	if err == nil {
 		return http.StatusOK
+	}
+	if provider, ok := fault.ProviderOf(err); ok {
+		if semanticStatus, known := internalfaultstatus.HTTP(provider.FaultKind()); known {
+			return semanticStatus
+		}
+		return http.StatusInternalServerError
 	}
 	if provider, ok := errors.AsType[httpStatusProvider](err); ok {
 		return provider.HTTPStatus()

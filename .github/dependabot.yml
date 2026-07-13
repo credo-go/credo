@@ -21,7 +21,8 @@ updates:
       go-minor-and-patch:
         update-types: ["minor", "patch"]
 
-  # store/sqldb submodule: uptrace/bun + dialects, modernc.org/sqlite (tests).
+  # store/sqldb submodule: uptrace/bun + dialects, real-DB drivers, and
+  # modernc.org/sqlite (tests).
   - package-ecosystem: "gomod"
     directory: "/store/sqldb"
     schedule:
@@ -31,7 +32,7 @@ updates:
         update-types: ["minor", "patch"]
     ignore:
       # The parent module is path-replaced (bootstrap) and bumped manually in
-      # lockstep at release time — see docs/releasing.md.
+      # lockstep at release time — see CONTRIBUTING.md#releasing.
       - dependency-name: "github.com/credo-go/credo"
 
   # CI actions (checkout, setup-go, codeql-action, golangci-lint-action).

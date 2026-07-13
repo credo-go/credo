@@ -1,6 +1,10 @@
 package pagination
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // Default pagination constants.
 const (
@@ -9,6 +13,11 @@ const (
 	MinPerPage     = 1
 	MaxPerPage     = 50
 )
+
+// ErrInvalidPageRequest reports that pagination execution values violate the
+// strict Page/PerPage or offset invariants. Normalize and Validate apply input
+// defaults; Offset uses this error instead of normalizing or clamping.
+var ErrInvalidPageRequest = errors.New("pagination: invalid page request")
 
 // PageRequest is an embeddable struct for pagination query parameters.
 // It works with BindQuery via query tags.
@@ -54,7 +63,7 @@ type SortConfig struct {
 	AllowedFields map[string]string // API field name → DB column name
 }
 
-// Normalize validates and normalizes pagination values in place.
+// Normalize applies pagination defaults and limits in place.
 // Zero or negative values are replaced with defaults. PerPage is clamped
 // to [MinPerPage, MaxPerPage]. For a custom upper bound, use
 // [PageRequest.NormalizeWithMax].
@@ -105,10 +114,30 @@ func (r *PageRequest) Validate() error {
 	return nil
 }
 
-// Offset returns the zero-based offset for SQL LIMIT/OFFSET queries.
-// It assumes Normalize has been called (or Validate via BindQuery).
-func (r *PageRequest) Offset() int {
-	return (r.Page - 1) * r.PerPage
+// Offset returns the zero-based offset for LIMIT/OFFSET queries. Unlike
+// Normalize and Validate, Offset is strict and never mutates, defaults, or
+// clamps the request. Page and PerPage must both be positive, and their offset
+// product must fit in an int; violations wrap [ErrInvalidPageRequest].
+// Adapters must additionally enforce any narrower driver or ORM limit.
+func (r PageRequest) Offset() (int, error) {
+	if r.Page < 1 {
+		return 0, fmt.Errorf("%w: page must be >= 1, got %d", ErrInvalidPageRequest, r.Page)
+	}
+	if r.PerPage < 1 {
+		return 0, fmt.Errorf("%w: per_page must be >= 1, got %d", ErrInvalidPageRequest, r.PerPage)
+	}
+
+	pageIndex := r.Page - 1
+	maxInt := int(^uint(0) >> 1)
+	if pageIndex > maxInt/r.PerPage {
+		return 0, fmt.Errorf(
+			"%w: offset overflows int for page=%d per_page=%d",
+			ErrInvalidPageRequest,
+			r.Page,
+			r.PerPage,
+		)
+	}
+	return pageIndex * r.PerPage, nil
 }
 
 // NewPage creates a [Page] from raw values. TotalPages is computed
@@ -119,8 +148,12 @@ func NewPage[T any](records []T, total int64, page, perPage int) *Page[T] {
 		records = []T{}
 	}
 	var totalPages int64
-	if perPage > 0 {
-		totalPages = (total + int64(perPage) - 1) / int64(perPage)
+	if total > 0 && perPage > 0 {
+		pageSize := int64(perPage)
+		totalPages = total / pageSize
+		if total%pageSize != 0 {
+			totalPages++
+		}
 	}
 	return &Page[T]{
 		Records:    records,

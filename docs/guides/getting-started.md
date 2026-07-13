@@ -439,6 +439,12 @@ app.UseHealth(credo.HealthConfig{
 })
 ```
 
+`CheckTimeout` is enforced by the runner, not merely passed to the callback.
+Even a check that ignores `ctx.Done()` cannot hold the HTTP response past the
+deadline. Because Go cannot kill that callback, overlapping probes join the
+same in-flight execution until it actually exits; repeated Kubernetes probes
+therefore do not create an unbounded goroutine per check.
+
 Register health routes on a specific group to apply shared middleware (e.g., IP restriction) and a path prefix:
 
 ```go
@@ -471,6 +477,17 @@ When using `store.Register`, store health is automatically wired into the readin
   }
 }
 ```
+
+Named and store checks run together in parallel, so readiness latency is close
+to the slowest check rather than the sum of all store latencies. A store panic
+or timeout becomes that store's `down` result without aborting sibling checks.
+Store causes are logged but masked from the response by default; set
+`HealthConfig.ExposeErrors` only for a network-restricted endpoint.
+
+All stores are currently critical. `UP` is ready; `DOWN`, `DEGRADED`, an
+unknown adapter status, or a custom-check/store name collision returns 503.
+Critical/optional store configuration is intentionally deferred to a separate
+API decision.
 
 For multi-database wiring and transaction behavior, see the [Data Access Guide](data-access.md).
 

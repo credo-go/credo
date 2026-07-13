@@ -2,6 +2,10 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -18,19 +22,39 @@ type mockLifecycle struct {
 	mu          sync.Mutex
 	pingCalled  bool
 	shutCalled  bool
+	pingCalls   int
+	shutCalls   int
+	pingStarted chan<- struct{}
+	pingRelease <-chan struct{}
 }
 
 func (m *mockLifecycle) Ping(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.pingCalled = true
-	return m.pingErr
+	m.pingCalls++
+	err := m.pingErr
+	started := m.pingStarted
+	release := m.pingRelease
+	m.mu.Unlock()
+
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (m *mockLifecycle) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.shutCalled = true
+	m.shutCalls++
 	if m.shutdownSeq != nil {
 		*m.shutdownSeq = append(*m.shutdownSeq, m.name)
 	}
@@ -43,39 +67,50 @@ func (m *mockLifecycle) Health(ctx context.Context) store.Health {
 	return m.health.Clone()
 }
 
-func TestRegistry_Add(t *testing.T) {
-	r := &store.Registry{}
-	lc := &mockLifecycle{}
+func (m *mockLifecycle) ResourceIdentity() any {
+	return m
+}
 
-	if err := r.Add("primary", lc); err != nil {
-		t.Fatalf("Add() = %v, want nil", err)
+func TestRegistry_HasNoPublicMutationMethod(t *testing.T) {
+	if _, exists := reflect.TypeOf(&store.Registry{}).MethodByName("Add"); exists {
+		t.Fatal("Registry.Add bypasses Register invariants and must not be exported")
 	}
 }
 
-func TestRegistry_Add_NilLifecycle(t *testing.T) {
-	r := &store.Registry{}
-	if err := r.Add("nil-lc", nil); err == nil {
-		t.Fatal("Add(nil lifecycle) should return error")
-	}
-}
+type registryPrimaryStore struct{ *mockLifecycle }
+type registryReplicaStore struct{ *mockLifecycle }
 
-func TestRegistry_Add_DuplicateName(t *testing.T) {
-	r := &store.Registry{}
-	lc := &mockLifecycle{}
-
-	if err := r.Add("primary", lc); err != nil {
-		t.Fatalf("first Add() = %v, want nil", err)
+func registeredRegistry(t *testing.T, primary, replica *mockLifecycle) *store.Registry {
+	t.Helper()
+	app := newTestApp(t)
+	if err := store.Register[*registryPrimaryStore](
+		app,
+		&registryPrimaryStore{mockLifecycle: primary},
+		store.WithName("primary"),
+	); err != nil {
+		t.Fatalf("Register(primary) = %v", err)
 	}
-	if err := r.Add("primary", lc); err == nil {
-		t.Fatal("second Add() with same name should return error")
+	if replica != nil {
+		if err := store.Register[*registryReplicaStore](
+			app,
+			&registryReplicaStore{mockLifecycle: replica},
+			store.WithName("replica"),
+		); err != nil {
+			t.Fatalf("Register(replica) = %v", err)
+		}
 	}
+	registry, err := app.Resolve[*store.Registry]()
+	if err != nil {
+		t.Fatalf("Resolve[*Registry]() = %v", err)
+	}
+	return registry
 }
 
 func TestRegistry_HealthAll(t *testing.T) {
-	r := &store.Registry{}
-
-	r.Add("primary", &mockLifecycle{health: store.Health{Status: store.StatusUp}})
-	r.Add("replica", &mockLifecycle{health: store.Health{Status: store.StatusDegraded}})
+	r := registeredRegistry(t,
+		&mockLifecycle{health: store.Health{Status: store.StatusUp}},
+		&mockLifecycle{health: store.Health{Status: store.StatusDegraded}},
+	)
 
 	result := r.HealthAll(context.Background())
 	if len(result) != 2 {
@@ -90,11 +125,10 @@ func TestRegistry_HealthAll(t *testing.T) {
 }
 
 func TestRegistry_HealthAll_ClonesDetails(t *testing.T) {
-	r := &store.Registry{}
-	r.Add("primary", &mockLifecycle{health: store.Health{
+	r := registeredRegistry(t, &mockLifecycle{health: store.Health{
 		Status:  store.StatusUp,
 		Details: map[string]any{"driver": "sqlite"},
-	}})
+	}}, nil)
 
 	result := r.HealthAll(context.Background())
 	result["primary"].Details["driver"] = "mutated"
@@ -102,6 +136,30 @@ func TestRegistry_HealthAll_ClonesDetails(t *testing.T) {
 	refreshed := r.HealthAll(context.Background())
 	if got := refreshed["primary"].Details["driver"]; got != "sqlite" {
 		t.Fatalf("HealthAll() leaked Details mutation, got %v", got)
+	}
+}
+
+func TestHealthClone_PreservesCauseIdentity(t *testing.T) {
+	cause := errors.New("connection refused")
+	health := store.Health{Status: store.StatusDown, Cause: cause}
+
+	clone := health.Clone()
+	if !errors.Is(clone.Cause, cause) {
+		t.Fatalf("Clone().Cause = %v, want original cause identity", clone.Cause)
+	}
+}
+
+func TestHealthCause_IsExcludedFromJSON(t *testing.T) {
+	const secret = "dial tcp internal-db:5432"
+	payload, err := json.Marshal(store.Health{
+		Status: store.StatusDown,
+		Cause:  errors.New(secret),
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(Health): %v", err)
+	}
+	if strings.Contains(string(payload), secret) || strings.Contains(string(payload), "Cause") {
+		t.Fatalf("Health JSON leaked Cause: %s", payload)
 	}
 }
 

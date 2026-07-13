@@ -3,197 +3,428 @@ package sqldb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"reflect"
+	"strconv"
 	"strings"
 
+	"github.com/credo-go/credo/fault"
 	"github.com/credo-go/credo/store"
 )
 
-// mapError maps Bun/driver errors to store.Err* sentinels.
-// Unmapped errors pass through unwrapped.
+type errorClassification struct {
+	kind      store.Kind
+	transient bool
+}
+
+func (db *DB) mapError(ctx context.Context, err error) error {
+	family := driverFamilyUnknown
+	if db != nil {
+		family = db.family
+	}
+	return mapError(ctx, family, err)
+}
+
+// mapError classifies a driver error without discarding its original cause.
+// SQLSTATE is the primary cross-driver path. A MySQL number wins when both are
+// present because it is more specific than broad classes such as 23 or 40001.
+// MySQL's strict envelope and SQLite's numeric Code are inspected only for the
+// DB's configured family, so arbitrary domain/hook messages are never
+// classified by loose substrings.
 //
-// Error mapping is best-effort: driver-specific codes are detected via
-// string/code matching without importing driver packages directly.
-//
-// context.Canceled is deliberately passed through unmapped: a cancelled
-// request is not a database timeout, and cancellation is handled at a
-// higher level (request pipeline), not as a data-access classification.
-func mapError(err error) error {
+// context.Canceled remains an application cancellation, not a store timeout.
+// PostgreSQL query_canceled and SQLite interrupt consult ctx because their
+// driver codes alone do not distinguish caller cancellation from a timeout.
+func mapError(ctx context.Context, family driverFamily, err error) error {
 	if err == nil {
 		return nil
 	}
-
-	// sql.ErrNoRows → store.ErrNotFound
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.Wrap(store.ErrNotFound, err)
+	if _, ok := fault.ProviderOf(err); ok {
+		return err
 	}
-
-	// Context deadline exceeded → store.ErrTimeout
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return store.Wrap(store.ErrTimeout, err)
+		return wrapMappedError(
+			errorClassification{kind: store.KindTimeout, transient: true},
+			"",
+			err,
+		)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return wrapMappedError(
+			errorClassification{kind: store.KindNotFound},
+			"",
+			err,
+		)
+	}
+	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) {
+		return wrapMappedError(
+			errorClassification{kind: store.KindUnavailable, transient: true},
+			"",
+			err,
+		)
 	}
 
-	// Driver-specific error detection via interface and string matching.
-	// We avoid importing driver packages by inspecting error strings/codes.
-
-	// Try to extract a SQLSTATE or error code via common driver interfaces.
-	code := extractSQLState(err)
-	if code != "" {
-		return wrapMappedError(mapSQLState(code), err)
+	// A MySQL number is more specific than its broad SQLSTATE class (for
+	// example 1062 vs class 23, or 1213 vs 40001), so inspect it first for a
+	// configured MySQL family.
+	if family == driverFamilyMySQL {
+		if number := extractMySQLErrNum(err); number > 0 {
+			if classification, ok := mapMySQLErrNum(number); ok {
+				return wrapMappedError(classification, strconv.FormatUint(uint64(number), 10), err)
+			}
+		}
 	}
 
-	// MySQL error number detection.
-	if num := extractMySQLErrNum(err); num > 0 {
-		return wrapMappedError(mapMySQLErrNum(num), err)
+	if code := extractSQLState(err); code != "" {
+		if code == "57014" {
+			return mapPostgresQueryCanceled(ctx, code, err)
+		}
+		if classification, ok := mapSQLState(code); ok {
+			return wrapMappedError(classification, code, err)
+		}
 	}
 
-	// Fallback: string-based detection for drivers without structured errors.
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "unique constraint") ||
-		strings.Contains(msg, "duplicate key") ||
-		strings.Contains(msg, "unique_violation") ||
-		strings.Contains(msg, "duplicate entry"):
-		return store.Wrap(store.ErrDuplicate, err)
-
-	case strings.Contains(msg, "foreign key constraint") ||
-		strings.Contains(msg, "foreign_key_violation"):
-		return store.Wrap(store.ErrConflict, err)
-
-	case strings.Contains(msg, "read-only") ||
-		strings.Contains(msg, "readonly") ||
-		strings.Contains(msg, "cannot execute") && strings.Contains(msg, "read-only"):
-		return store.Wrap(store.ErrReadOnly, err)
+	if family == driverFamilySQLite {
+		if code, ok := extractSQLiteCode(err); ok {
+			if primarySQLiteCode(code) == sqliteInterrupt {
+				return mapSQLiteInterrupt(ctx, code, err)
+			}
+			if classification, ok := mapSQLiteCode(code); ok {
+				return wrapMappedError(classification, strconv.Itoa(code), err)
+			}
+		}
 	}
 
 	return err
 }
 
-// sqlStateError is satisfied by pgx, lib/pq, and other drivers that expose
-// SQLSTATE codes via a SQLState() method. It embeds error so it can be used
-// with errors.AsType (every error in a chain implements Error, so this does
-// not change which values match).
+// sqlStateError is satisfied by pgx and other drivers exposing SQLSTATE.
 type sqlStateError interface {
 	error
 	SQLState() string
 }
 
-// pgCodeError is satisfied by lib/pq which uses Code instead of SQLState.
+// pgCodeError is satisfied by lib/pq, which exposes Code() string.
 type pgCodeError interface {
 	error
 	Code() string
 }
 
 func extractSQLState(err error) string {
-	if se, ok := errors.AsType[sqlStateError](err); ok {
-		if code := se.SQLState(); isSQLState(code) {
+	if stateError, ok := errors.AsType[sqlStateError](err); ok && !isNilDynamicValue(stateError) {
+		if code := stateError.SQLState(); isSQLState(code) {
 			return code
 		}
 	}
-
-	// lib/pq uses .Code() instead of .SQLState(). Any error type with a
-	// Code() string method satisfies pgCodeError, so the SQLSTATE shape
-	// check is what keeps unrelated codes (e.g. "ECONNRESET") out.
-	if pe, ok := errors.AsType[pgCodeError](err); ok {
-		if code := pe.Code(); isSQLState(code) {
+	if codeError, ok := errors.AsType[pgCodeError](err); ok && !isNilDynamicValue(codeError) {
+		if code := codeError.Code(); isSQLState(code) {
 			return code
 		}
 	}
-
 	return ""
 }
 
-// isSQLState reports whether code has the SQLSTATE shape: exactly five
-// digits or uppercase letters.
 func isSQLState(code string) bool {
 	if len(code) != 5 {
 		return false
 	}
 	for i := 0; i < len(code); i++ {
-		c := code[i]
-		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
+		char := code[i]
+		if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
 			return false
 		}
 	}
 	return true
 }
 
-func mapSQLState(code string) error {
+func mapSQLState(code string) (errorClassification, bool) {
 	switch code {
-	// unique_violation
 	case "23505":
-		return store.ErrDuplicate
-	// foreign_key_violation, not_null_violation
-	case "23503", "23502":
-		return store.ErrConflict
-	// serialization_failure, deadlock_detected — transient conflicts,
-	// the transaction is safe to retry
-	case "40001", "40P01":
-		return store.ErrConflict
-	// query_canceled — raised by statement_timeout
-	case "57014":
-		return store.ErrTimeout
-	// read_only_sql_transaction
+		return errorClassification{kind: store.KindAlreadyExists}, true
+	case "40001":
+		return errorClassification{kind: store.KindSerialization, transient: true}, true
+	case "40P01":
+		return errorClassification{kind: store.KindDeadlock, transient: true}, true
+	case "55P03":
+		return errorClassification{kind: store.KindContention, transient: true}, true
 	case "25006":
-		return store.ErrReadOnly
+		return errorClassification{kind: store.KindReadOnly}, true
+	case "57P01", "57P02", "57P03", "53300":
+		return errorClassification{kind: store.KindUnavailable, transient: true}, true
 	}
-	return nil
+
+	if strings.HasPrefix(code, "23") {
+		return errorClassification{kind: store.KindConstraint}, true
+	}
+	if strings.HasPrefix(code, "08") {
+		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+	}
+	return errorClassification{}, false
+}
+
+func mapPostgresQueryCanceled(ctx context.Context, code string, err error) error {
+	ctxErr := contextError(ctx)
+	switch {
+	case errors.Is(ctxErr, context.Canceled):
+		return joinContextCause(context.Canceled, err)
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		return wrapMappedError(
+			errorClassification{kind: store.KindTimeout, transient: true},
+			code,
+			joinContextCause(context.DeadlineExceeded, err),
+		)
+	}
+
+	// SQLSTATE 57014 means query_canceled, not necessarily timeout. The
+	// structured code makes this narrow message check safe: loose matching is
+	// never applied to arbitrary application errors.
+	if strings.Contains(strings.ToLower(err.Error()), "statement timeout") {
+		return wrapMappedError(
+			errorClassification{kind: store.KindTimeout, transient: true},
+			code,
+			err,
+		)
+	}
+	return err
 }
 
 func extractMySQLErrNum(err error) uint16 {
-	// The driver error is usually wrapped by the time it gets here
-	// (fmt.Errorf("...: %w", ...)), and the "Error NNNN" prefix only
-	// appears on the driver error itself — probe every error in the chain.
-	for ; err != nil; err = errors.Unwrap(err) {
-		if num := parseMySQLErrNum(err.Error()); num > 0 {
-			return num
-		}
-	}
-	return 0
-}
-
-func parseMySQLErrNum(msg string) uint16 {
-	// MySQL error formats:
-	//   go-sql-driver/mysql: "Error 1062 (23000): Duplicate entry..."
-	//   Simple format:       "Error 1062: Duplicate entry..."
-	if !strings.HasPrefix(msg, "Error ") {
+	if err == nil {
 		return 0
 	}
-	// Extract digits immediately after "Error ".
-	rest := msg[6:]
-	var num uint16
-	for i := 0; i < len(rest); i++ {
-		c := rest[i]
-		if c >= '0' && c <= '9' {
-			num = num*10 + uint16(c-'0')
-		} else {
+	if number := parseMySQLErrNum(err.Error()); number > 0 {
+		return number
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if number := extractMySQLErrNum(child); number > 0 {
+				return number
+			}
+		}
+		return 0
+	}
+	return extractMySQLErrNum(errors.Unwrap(err))
+}
+
+func parseMySQLErrNum(message string) uint16 {
+	if !strings.HasPrefix(message, "Error ") {
+		return 0
+	}
+	rest := message[len("Error "):]
+	digitCount := 0
+	var number uint32
+	for digitCount < len(rest) {
+		char := rest[digitCount]
+		if char < '0' || char > '9' {
 			break
 		}
+		number = number*10 + uint32(char-'0')
+		if number > 65535 {
+			return 0
+		}
+		digitCount++
 	}
-	return num
+	if digitCount == 0 {
+		return 0
+	}
+
+	suffix := rest[digitCount:]
+	if strings.HasPrefix(suffix, ":") {
+		return uint16(number)
+	}
+	if len(suffix) < len(" (00000):") || suffix[0] != ' ' || suffix[1] != '(' ||
+		suffix[7] != ')' || suffix[8] != ':' || !isSQLState(suffix[2:7]) {
+		return 0
+	}
+	return uint16(number)
 }
 
-func mapMySQLErrNum(num uint16) error {
-	switch num {
-	case 1062: // Duplicate entry
-		return store.ErrDuplicate
-	case 1451, 1452: // Foreign key constraint
-		return store.ErrConflict
-	case 1048: // Column cannot be null
-		return store.ErrConflict
-	case 1213: // Deadlock found — transaction is safe to retry
-		return store.ErrConflict
-	case 1205: // Lock wait timeout exceeded
-		return store.ErrTimeout
-	case 1290: // Read-only server
-		return store.ErrReadOnly
+func mapMySQLErrNum(number uint16) (errorClassification, bool) {
+	switch number {
+	case 1022, 1062:
+		return errorClassification{kind: store.KindAlreadyExists}, true
+	case 1048, 1216, 1217, 1451, 1452, 3819:
+		return errorClassification{kind: store.KindConstraint}, true
+	case 1213:
+		return errorClassification{kind: store.KindDeadlock, transient: true}, true
+	case 1205, 3572:
+		return errorClassification{kind: store.KindContention, transient: true}, true
+	case 1792, 1836:
+		return errorClassification{kind: store.KindReadOnly}, true
+	case 1040:
+		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+	default:
+		return errorClassification{}, false
 	}
-	return nil
 }
 
-func wrapMappedError(kind error, original error) error {
-	if kind == nil {
-		return original
+type sqliteCodeError interface {
+	error
+	Code() int
+}
+
+func extractSQLiteCode(err error) (int, bool) {
+	if codeError, ok := errors.AsType[sqliteCodeError](err); ok && !isNilDynamicValue(codeError) {
+		return codeError.Code(), true
 	}
-	return store.Wrap(kind, original)
+	return extractMattnSQLiteCode(err)
+}
+
+func isNilDynamicValue(value any) bool {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return true
+	}
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+func extractMattnSQLiteCode(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	value := reflect.ValueOf(err)
+	typeOfError := value.Type()
+	if typeOfError.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return 0, false
+		}
+		value = value.Elem()
+		typeOfError = typeOfError.Elem()
+	}
+	if typeOfError.PkgPath() == "github.com/mattn/go-sqlite3" &&
+		typeOfError.Name() == "Error" {
+		return extractSQLiteCodeFields(value)
+	}
+
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if code, found := extractMattnSQLiteCode(child); found {
+				return code, true
+			}
+		}
+		return 0, false
+	}
+	return extractMattnSQLiteCode(errors.Unwrap(err))
+}
+
+func extractSQLiteCodeFields(value reflect.Value) (int, bool) {
+	if value.Kind() != reflect.Struct {
+		return 0, false
+	}
+	for _, fieldName := range []string{"ExtendedCode", "Code"} {
+		field := value.FieldByName(fieldName)
+		if field.IsValid() && field.CanInt() {
+			code := int(field.Int())
+			if code != 0 {
+				return code, true
+			}
+		}
+	}
+	return 0, false
+}
+
+const (
+	sqliteBusy       = 5
+	sqliteLocked     = 6
+	sqliteReadOnly   = 8
+	sqliteInterrupt  = 9
+	sqliteIOError    = 10
+	sqliteCantOpen   = 14
+	sqliteConstraint = 19
+
+	sqliteConstraintCheck      = 275
+	sqliteBusyRecovery         = 261
+	sqliteLockedSharedCache    = 262
+	sqliteBusySnapshot         = 517
+	sqliteLockedVirtualTable   = 518
+	sqliteBusyTimeout          = 773
+	sqliteConstraintForeignKey = 787
+	sqliteReadOnlyRollback     = 776
+	sqliteReadOnlyDirectory    = 1544
+	sqliteConstraintNotNull    = 1299
+	sqliteConstraintPrimaryKey = 1555
+	sqliteConstraintUnique     = 2067
+	sqliteConstraintRowID      = 2579
+)
+
+func primarySQLiteCode(code int) int {
+	return code & 0xff
+}
+
+func mapSQLiteCode(code int) (errorClassification, bool) {
+	switch code {
+	case sqliteConstraintUnique, sqliteConstraintPrimaryKey, sqliteConstraintRowID:
+		return errorClassification{kind: store.KindAlreadyExists}, true
+	case sqliteConstraintCheck, sqliteConstraintForeignKey, sqliteConstraintNotNull:
+		return errorClassification{kind: store.KindConstraint}, true
+	case sqliteBusySnapshot:
+		return errorClassification{kind: store.KindSerialization, transient: true}, true
+	case sqliteBusy, sqliteBusyRecovery, sqliteBusyTimeout,
+		sqliteLocked, sqliteLockedSharedCache, sqliteLockedVirtualTable:
+		return errorClassification{kind: store.KindContention, transient: true}, true
+	case sqliteReadOnlyRollback, sqliteReadOnlyDirectory:
+		return errorClassification{kind: store.KindReadOnly}, true
+	}
+
+	switch primarySQLiteCode(code) {
+	case sqliteConstraint:
+		return errorClassification{kind: store.KindConstraint}, true
+	case sqliteReadOnly:
+		return errorClassification{kind: store.KindReadOnly}, true
+	case sqliteIOError, sqliteCantOpen:
+		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+	default:
+		return errorClassification{}, false
+	}
+}
+
+func mapSQLiteInterrupt(ctx context.Context, code int, err error) error {
+	ctxErr := contextError(ctx)
+	switch {
+	case errors.Is(ctxErr, context.Canceled):
+		return joinContextCause(context.Canceled, err)
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		return wrapMappedError(
+			errorClassification{kind: store.KindTimeout, transient: true},
+			strconv.Itoa(code),
+			joinContextCause(context.DeadlineExceeded, err),
+		)
+	default:
+		return err
+	}
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func joinContextCause(contextErr error, driverErr error) error {
+	if errors.Is(driverErr, contextErr) {
+		return driverErr
+	}
+	return errors.Join(contextErr, driverErr)
+}
+
+func wrapMappedError(classification errorClassification, code string, cause error) error {
+	if classification.kind == store.KindUnknown {
+		return cause
+	}
+	return &store.Error{
+		Kind:      classification.kind,
+		Code:      code,
+		Transient: classification.transient,
+		Cause:     cause,
+	}
 }
