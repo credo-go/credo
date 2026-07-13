@@ -228,10 +228,11 @@ func (c *Context) Get(key string) any {
 
 // Context returns the underlying request's [context.Context]. Use it
 // for APIs that take a context.Context — database queries, downstream
-// requests, or transaction propagation via
-// [github.com/credo-go/credo/store.GetTx]:
+// requests, or transaction propagation through a data-store API:
 //
-//	tx, ok := store.GetTx[*sql.Tx](ctx.Context())
+//	err := db.InTx(ctx.Context(), func(txCtx context.Context) error {
+//		return service.Update(txCtx)
+//	})
 //
 // The returned context is canceled when the request completes. For background
 // work that must outlive the request, detach it with [context.WithoutCancel]:
@@ -287,6 +288,9 @@ func (c *Context) OriginalPath() string {
 // A maximum of 10 rewrites per request is enforced to prevent loops.
 // If exceeded, an error is returned and the request fails with 500.
 func (c *Context) Rewrite(path string) error {
+	if c.Response().Hijacked() {
+		return errors.New("credo: cannot rewrite after response is hijacked")
+	}
 	if c.Response().Committed() {
 		return errors.New("credo: cannot rewrite after response is committed")
 	}

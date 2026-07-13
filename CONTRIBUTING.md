@@ -6,8 +6,9 @@ Thank you for your interest in contributing to Credo! This guide will help you g
 
 1. **Fork and clone** the repository.
 2. Ensure you have **Go 1.27+** installed.
-3. Run `make test` to verify your setup.
-4. Run `make lint` to check code style.
+3. Install `golangci-lint` and a race-enabled Go toolchain.
+4. Run `make check` to vet, lint, and test both the root module and the
+   `store/sqldb` submodule (the benchmark smoke step remains root-only).
 
 ## Branch Strategy
 
@@ -39,12 +40,45 @@ refactor(middleware): simplify chain composition
 
 1. Create a feature branch from `dev`.
 2. Write tests first (TDD is encouraged).
-3. Ensure `make lint` and `make test` pass locally.
+3. Ensure `make check` passes locally. If the platform cannot run `-race`, the
+   required CI race jobs remain authoritative and must pass before merge.
 4. Open a PR with a clear title and description explaining:
    - **What** changed
    - **Why** it changed
    - **How** to test it
 5. At least one maintainer review is required before merge.
+
+## Wrapped Dependency Upgrades
+
+An upgrade to a wrapped protocol or infrastructure dependency must identify the
+candidate tag and commit, review its release/security notes, and pass the full
+root test, race, vet, build, tidy, and pinned-lint jobs. For
+`github.com/coder/websocket`, the root test job is also the executable upgrade
+gate: do not skip or weaken `websocket/upstream_*_conformance_test.go` or the
+origin, handshake, real-network, and lifecycle suites when updating the pin.
+Record the upstream tag's Autobahn/conformance evidence in the PR; Credo does
+not require a separate Autobahn run on every commit.
+
+### Updating Bun
+
+`store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery`
+state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its
+three dialect modules together to the same reviewed release.
+
+Every Bun update must pass the full `Test (store/sqldb)` race job, including
+`TestBunSelectCloneLayoutCompatibility` and the critical query-state,
+pagination-count, and SQL-rendering contract tests. The normal build, tidy,
+lint, and real PostgreSQL/MySQL jobs must pass as well.
+
+If a Bun update changes private layout or SQL semantics, first evaluate an
+upstream fix, removing or narrowing the compatibility layer, or narrowing the
+Credo contract. Do not automatically expand unsafe private-field access or add
+SQL parser logic merely to preserve the previous implementation.
+
+Also re-check the migration finalizer limitation tracked in
+[Bun #1389](https://github.com/uptrace/bun/issues/1389): remove the Bun v1.2.18
+`.tx.up.sql` warning only after a conformance test proves that Commit/Rollback
+errors reach the caller and can gate the applied marker.
 
 ## Releasing
 
@@ -53,15 +87,23 @@ Credo is a multi-module repository:
 - `github.com/credo-go/credo` is the root framework module.
 - `github.com/credo-go/credo/store/sqldb` is a submodule for the Bun SQL wrapper and its heavier database dependencies.
 
-Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace github.com/credo-go/credo => ../..` so the submodule can test against the in-tree root module. Do not commit `go.work`; it is for local development only and is ignored by Git.
+Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace github.com/credo-go/credo => ../..` so the submodule can test against the in-tree root module. Do not commit `go.work`; it is for local development only and is ignored by Git. CI's `Release gate (replace-free consumer)` job creates temporary lockstep tags and builds an external consumer, so the publishable module graph is tested without changing this bootstrap state.
+
+The modules use the following compatibility rule:
+
+| `store/sqldb` version | Compatible root `credo` version |
+| --- | --- |
+| `vX.Y.Z` | exactly `vX.Y.Z` |
 
 Release both modules in this order:
 
 1. Ensure `main` is green and the working tree is clean.
 2. Finalize `CHANGELOG.md` by replacing the version's `Unreleased` marker with the release date.
-3. Tag and push the root module, for example `git tag v0.1.0`.
-4. In `store/sqldb/go.mod`, require the published root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit.
-5. Tag and push the submodule with its path prefix, for example `git tag store/sqldb/v0.1.0`.
+3. In `store/sqldb/go.mod`, require that exact root version and remove the bootstrap `replace`; then run `go mod tidy` inside `store/sqldb` and commit the release preparation.
+4. Run `go run ./scripts/releasegate prepared v0.1.0` and `go run ./scripts/releasegate candidate v0.1.0`. The first command fails on dependency-version or `replace` drift; the second builds a temporary external consumer.
+5. From the `main` branch, dispatch the `Release` GitHub Actions workflow with `version=v0.1.0`. It repeats the gates and atomically publishes `v0.1.0` plus `store/sqldb/v0.1.0`, so the nested tag is never visible without its required root tag.
+
+The release notes/CHANGELOG entry must retain the compatibility table above (with `X.Y.Z` replaced by the released version) whenever the lockstep policy changes. The release workflow deliberately fails before tagging if the prepared `go.mod` version differs from its input or still contains the local replacement.
 
 After the first release, local cross-module development can use an ignored workspace:
 

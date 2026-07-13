@@ -8,6 +8,8 @@ import (
 	"maps"
 	"net/http"
 
+	"github.com/credo-go/credo/fault"
+	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
 	internali18n "github.com/credo-go/credo/internal/i18n"
 	"github.com/credo-go/credo/validation"
 )
@@ -54,7 +56,7 @@ var builtInMessages = map[string]string{
 
 // statusToKey maps HTTP status codes to their MsgKey constants.
 // Used by the error handling pipeline to derive a message key from
-// errors that only carry a status code (e.g., store errors).
+// HTTPError and legacy/explicit errors that carry only a status code.
 var statusToKey = map[int]string{
 	http.StatusBadRequest:           MsgKeyBadRequest,
 	http.StatusUnauthorized:         MsgKeyUnauthorized,
@@ -201,7 +203,7 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 
 // handleError is the internal error handling pipeline. It performs:
 //  1. Panic recovery (if ErrorRenderer panics, logs and sends 500)
-//  2. Committed guard (logs warning if response already committed)
+//  2. Hijacked/committed guard (logs warning if the HTTP response is no longer writable)
 //  3. Error classification via classifyError
 //  4. Server error logging (5xx HTTPErrors with Internal, unhandled errors)
 //  5. ErrorRenderer dispatch (renderer is called even for HEAD — can set headers)
@@ -209,6 +211,11 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 func (app *App) handleError(err error, ctx *Context) {
 	defer app.recoverErrorRendererPanic(err, ctx)
 
+	if ctx.Response().Hijacked() {
+		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
+			"credo: error after response hijacked", slog.Any("error", err))
+		return
+	}
 	if ctx.Response().Committed() {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
 			"credo: error after response committed", slog.Any("error", err))
@@ -218,7 +225,7 @@ func (app *App) handleError(err error, ctx *Context) {
 	key, pd := app.classifyError(err, ctx)
 	pd.Instance = ctx.Request().URL.Path
 
-	app.logServerError(err, ctx)
+	app.logServerError(err, pd.Status, ctx)
 	app.renderError(ctx, ErrorInfo{
 		Err:        err,
 		MessageKey: key,
@@ -230,7 +237,7 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 	if r := recover(); r != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: ErrorRenderer panic", slog.Any("panic", r), slog.Any("error", err))
-		if !ctx.Response().Committed() {
+		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
 			ctx.Response().Header().Set("Content-Type", "application/problem+json")
 			ctx.Response().WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(ctx.Response()).Encode(NewProblemDetails( //nolint:errcheck
@@ -239,35 +246,26 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 	}
 }
 
-func (app *App) logServerError(err error, ctx *Context) {
-	if he, ok := errors.AsType[*HTTPError](err); ok {
-		if he.Code >= 500 {
-			// Log all 5xx faults, even sentinel errors with no Internal cause —
-			// a silent server error is worse than a slightly thin log line.
-			logErr := error(he)
-			if he.Internal != nil {
-				logErr = he.Internal
-			}
-			ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
-				"credo: server error", slog.Int("status", he.Code), slog.Any("error", logErr))
+func (app *App) logServerError(err error, status int, ctx *Context) {
+	if status < 500 {
+		return
+	}
+
+	message := "credo: server error"
+	if _, isHTTPError := errors.AsType[*HTTPError](err); !isHTTPError {
+		_, isFault := fault.ProviderOf(err)
+		_, hasLegacyStatus := asHTTPStatus(err)
+		if !isFault && !hasLegacyStatus {
+			message = "credo: unhandled error"
 		}
-		return
 	}
-	if _, ok := errors.AsType[validation.Errors](err); ok {
-		return
+
+	logErr := err
+	if he, ok := errors.AsType[*HTTPError](err); ok && he.Internal != nil {
+		logErr = he.Internal
 	}
-	if se, ok := asHTTPStatus(err); ok {
-		// Errors carrying an HTTP status (e.g. store errors). Only 5xx are
-		// server-side faults worth logging; 4xx are client errors.
-		if status := se.HTTPStatus(); status >= 500 {
-			ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
-				"credo: server error", slog.Int("status", status), slog.Any("error", err))
-		}
-		return
-	}
-	// Catch-all: unhandled error.
 	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
-		"credo: unhandled error", slog.Any("error", err))
+		message, slog.Int("status", status), slog.Any("error", logErr))
 }
 
 func (app *App) renderError(ctx *Context, info ErrorInfo) {
@@ -277,6 +275,9 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 	// Dispatch to ErrorRenderer or default.
 	if app.errorRenderer != nil {
 		app.errorRenderer(ctx, info)
+		if ctx.Response().Hijacked() {
+			return
+		}
 		if !ctx.Response().Committed() {
 			if isHEAD {
 				_ = ctx.Response().NoContent(pd.Status)
@@ -302,8 +303,9 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 // Classification order:
 //  1. validation.Errors → 422 Unprocessable Entity with field errors
 //  2. *HTTPError → status from Code, title resolved from MessageKey
-//  3. HTTPStatus() int interface → status from HTTPStatus() (e.g., store errors)
-//  4. Any other error → 500 Internal Server Error (message not leaked)
+//  3. fault.Provider → default root transport policy for the semantic kind
+//  4. HTTPStatus() int interface → legacy or explicit transport status
+//  5. Any other error → 500 Internal Server Error (message not leaked)
 func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails) {
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
 		if app.i18nBundle != nil && ctx.locale != "" {
@@ -319,6 +321,21 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 
 	if he, ok := errors.AsType[*HTTPError](err); ok {
 		return he.MessageKey, NewProblemDetails(he.Code, resolveMessage(ctx, he.MessageKey))
+	}
+
+	if provider, ok := fault.ProviderOf(err); ok {
+		status, known := internalfaultstatus.HTTP(provider.FaultKind())
+		if !known {
+			return MsgKeyInternalError, NewProblemDetails(
+				http.StatusInternalServerError,
+				resolveMessage(ctx, MsgKeyInternalError),
+			)
+		}
+		key := statusToKey[status]
+		if key == "" {
+			key = http.StatusText(status)
+		}
+		return key, NewProblemDetails(status, resolveMessage(ctx, key))
 	}
 
 	if se, ok := asHTTPStatus(err); ok {
@@ -365,7 +382,7 @@ func resolveMessage(ctx *Context, key string) string {
 
 // httpStatusProvider is implemented by errors that carry an HTTP status code.
 // This interface is detected via errors.As without requiring the error handler
-// to import the package that defines the error (e.g., store/).
+// to import the package that defines the error.
 type httpStatusProvider interface {
 	error
 	HTTPStatus() int

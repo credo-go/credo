@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 # Pin the Go 1.27 release candidate explicitly: actions/setup-go cannot resolve
-# the `toolchain go1.27rc1` directive from go.mod (see ci.yml for the full note).
+# the `toolchain go1.27rc2` directive from go.mod (see ci.yml for the full note).
 env:
-  GO_VERSION: "1.27.0-rc.1"
+  GO_VERSION: "1.27.0-rc.2"
 
 jobs:
   analyze:

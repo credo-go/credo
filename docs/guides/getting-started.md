@@ -439,6 +439,12 @@ app.UseHealth(credo.HealthConfig{
 })
 ```
 
+`CheckTimeout` is enforced by the runner, not merely passed to the callback.
+Even a check that ignores `ctx.Done()` cannot hold the HTTP response past the
+deadline. Because Go cannot kill that callback, overlapping probes join the
+same in-flight execution until it actually exits; repeated Kubernetes probes
+therefore do not create an unbounded goroutine per check.
+
 Register health routes on a specific group to apply shared middleware (e.g., IP restriction) and a path prefix:
 
 ```go
@@ -472,6 +478,17 @@ When using `store.Register`, store health is automatically wired into the readin
 }
 ```
 
+Named and store checks run together in parallel, so readiness latency is close
+to the slowest check rather than the sum of all store latencies. A store panic
+or timeout becomes that store's `down` result without aborting sibling checks.
+Store causes are logged but masked from the response by default; set
+`HealthConfig.ExposeErrors` only for a network-restricted endpoint.
+
+All stores are currently critical. `UP` is ready; `DOWN`, `DEGRADED`, an
+unknown adapter status, or a custom-check/store name collision returns 503.
+Critical/optional store configuration is intentionally deferred to a separate
+API decision.
+
 For multi-database wiring and transaction behavior, see the [Data Access Guide](data-access.md).
 
 ### Response Codes
@@ -483,7 +500,8 @@ For multi-database wiring and transaction behavior, see the [Data Access Guide](
 
 ## Lifecycle Hooks
 
-Credo provides `OnStart` and `OnShutdown` hooks for startup and shutdown logic:
+Credo provides `OnStart`, `OnPreDrain`, `OnDrain`, and `OnShutdown` hooks for
+startup and shutdown logic:
 
 ```go
 func main() {
@@ -500,16 +518,29 @@ func main() {
     })
 
     // Run blocks until SIGINT/SIGTERM, then drains gracefully (default 30s;
-    // pass credo.WithShutdownTimeout to New to change the budget).
+    // pass credo.WithShutdownTimeout to New to change the deadline).
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
 }
 ```
 
-OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so resources an earlier hook started are released — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
+OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so cleanup of resources an earlier hook started is attempted — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
 
-For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain (bounded by `WithShutdownTimeout`):
+`OnPreDrain` is an early, narrow seam for work that must finish while
+lifecycle-bound workers and DI infrastructure are still live. Its hooks run
+without an ordering guarantee after readiness is withdrawn but before the
+lifecycle context is cancelled. Most subsystems should use `OnDrain`; choose
+`OnPreDrain` only when cancellation itself would tear down a required dependency
+too early. Deadline expiry is reported, but cannot abandon a running
+`OnPreDrain` hook: cancellation and teardown wait until every hook returns.
+
+`OnDrain` is the pre-infrastructure seam for a subsystem that must stop
+admission and wait for active DI-dependent handlers or cleanup. Its hooks run
+without an ordering guarantee, concurrently with one another and with HTTP
+drain. A hook may return `nil` only after its subsystem is safe for DI teardown.
+
+For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain with the deadline set by `WithShutdownTimeout` (subject to the `OnPreDrain` hard-barrier rule above):
 
 ```go
 func main() {
@@ -531,12 +562,28 @@ For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdow
 Shutdown sequence:
 
 1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
-2. Cancel lifecycle context (signals background services)
-3. Drain in-flight HTTP requests
-4. DI Container shutdown (reverse-order singleton cleanup)
-5. OnShutdown hooks (LIFO)
+2. Run all `OnPreDrain` hooks while lifecycle workers and DI remain live
+3. Cancel lifecycle context (signals background services)
+4. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
+5. DI Container shutdown (reverse-order singleton cleanup)
+6. OnShutdown hooks (LIFO)
 
-Services that implement `credo.Shutdowner` are cleaned up automatically by the DI container. For components **not** managed by DI, use `app.OnShutdown(fn)` instead. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
+These phases receive one absolute shutdown budget. A slow `OnPreDrain` hook
+emits a waiting diagnostic when the budget ends, but remains a hard barrier so
+live workers and DI cannot be torn down underneath it. Once every pre-drain hook
+returns, its completion timestamp determines the final incomplete error and
+later phases advance with the same possibly-expired context. HTTP and
+`OnDrain` work keep the ordinary deadline-incomplete behavior.
+
+Services that implement `credo.Shutdowner` participate automatically in
+reverse-order DI cleanup while the shared deadline remains live; an entry not
+reached before deadline exhaustion may receive no attempt. Use
+`app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation,
+use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and
+use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after
+infrastructure teardown. See the [Dependency Injection
+guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed
+comparison.
 
 If you need managed background tasks, use `worker.Register(...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
 

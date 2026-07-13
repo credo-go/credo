@@ -729,7 +729,7 @@ func TestApp_OnStart_ContextCancelledOnShutdown(t *testing.T) {
 
 	select {
 	case <-lifecycleCtx.Done():
-		// good — cancelled at the start of shutdown
+		// good — cancelled during shutdown, after OnPreDrain
 	default:
 		t.Fatal("lifecycle context should be cancelled after shutdown")
 	}

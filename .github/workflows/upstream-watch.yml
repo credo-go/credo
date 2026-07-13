@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Keep this aligned with the root CI workflow while Go 1.27 is pre-GA.
+  GO_VERSION: "1.27.0-rc.2"
+
 jobs:
   watch:
     name: govulncheck + adapted-upstream reminder
@@ -22,7 +26,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

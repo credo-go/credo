@@ -39,10 +39,11 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Background workers + cron (`worker`) | Beta |
 | Pagination | Beta |
 | Outbound HTTP client (`httpclient`) | Beta |
+| Server WebSocket adapter (`websocket`) | Beta |
 | Observability — structured logging (slog via `Infra`) | Beta |
 | Observability — tracing (OpenTelemetry) | Experimental |
 | Observability — metrics (Prometheus) | Experimental |
-| pubsub (incl. in-process events) · grpc · websocket · openapi · admin server · CLI | Planned |
+| pubsub (incl. in-process events) · grpc · openapi · admin server · CLI | Planned |
 
 ## Installation
 
@@ -138,6 +139,7 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 - User guide: `docs/guides/data-access.md`
 - User guide: `docs/guides/configuration.md`
 - User guide: `docs/guides/localization.md`
+- User guide: `docs/guides/websocket.md`
 - Architecture decisions: `docs/adr/`
 - Detailed specs: `docs/specs/`
 

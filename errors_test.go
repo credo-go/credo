@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/fault"
+	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/validation"
 )
 
@@ -138,6 +140,120 @@ func TestHandleError_HTTPStatusInterface_Wrapped(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+}
+
+func TestHandleError_SemanticFaultPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		title  string
+	}{
+		{"not found", store.ErrNotFound, http.StatusNotFound, "Not Found"},
+		{"already exists", store.ErrAlreadyExists, http.StatusConflict, "Conflict"},
+		{"constraint", store.ErrConstraint, http.StatusConflict, "Conflict"},
+		{"serialization", store.ErrSerialization, http.StatusConflict, "Conflict"},
+		{"deadlock", store.ErrDeadlock, http.StatusConflict, "Conflict"},
+		{"contention", store.ErrContention, http.StatusConflict, "Conflict"},
+		{"timeout", store.ErrTimeout, http.StatusGatewayTimeout, "Gateway Timeout"},
+		{"unavailable", store.ErrUnavailable, http.StatusServiceUnavailable, "Service Unavailable"},
+		{"read only", store.ErrReadOnly, http.StatusServiceUnavailable, "Service Unavailable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.GET("/test", func(ctx *credo.Context) error {
+				return errors.Join(errors.New("repo"), fmt.Errorf("store: %w", tt.err))
+			})
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+
+			if w.Code != tt.status {
+				t.Fatalf("status = %d, want %d", w.Code, tt.status)
+			}
+			var pd credo.ProblemDetails
+			if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if pd.Title != tt.title {
+				t.Errorf("title = %q, want %q", pd.Title, tt.title)
+			}
+		})
+	}
+}
+
+func TestHandleError_HTTPErrorOverridesSemanticFault(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/test", func(ctx *credo.Context) error {
+		return credo.NewHTTPError(http.StatusUnprocessableEntity).
+			WithInternal(store.ErrConstraint)
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+}
+
+type unknownSemanticHTTPError struct {
+	kind fault.Kind
+}
+
+func (*unknownSemanticHTTPError) Error() string           { return "sensitive future fault" }
+func (e *unknownSemanticHTTPError) FaultKind() fault.Kind { return e.kind }
+func (*unknownSemanticHTTPError) HTTPStatus() int         { return http.StatusTeapot }
+
+func TestHandleError_UnknownSemanticFaultFailsClosed(t *testing.T) {
+	for _, kind := range []fault.Kind{fault.KindUnknown, fault.Kind("future_kind")} {
+		t.Run(string(kind), func(t *testing.T) {
+			app := mustNew(t)
+			app.GET("/test", func(ctx *credo.Context) error {
+				return &unknownSemanticHTTPError{kind: kind}
+			})
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want fail-closed %d", w.Code, http.StatusInternalServerError)
+			}
+			if contains(w.Body.String(), "sensitive") || contains(w.Body.String(), "future") {
+				t.Fatalf("body leaked semantic fault metadata: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
+	cause := errors.New("duplicate key secret@example.com")
+	structured := &store.Error{
+		Kind:       store.KindConstraint,
+		Resource:   "users",
+		Constraint: "users_email_key",
+		Code:       "23505",
+		Cause:      cause,
+	}
+
+	app := mustNew(t)
+	var renderedErr error
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+		renderedErr = info.Err
+		ctx.Response().JSON(info.Problem.Status, info.Problem) //nolint:errcheck
+	})
+	app.GET("/test", func(ctx *credo.Context) error { return structured })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if renderedErr != structured { //nolint:errorlint // The renderer must receive this exact error value.
+		t.Fatal("custom renderer did not receive the original structured error")
+	}
+	for _, secret := range []string{"secret@example.com", "users_email_key", "23505"} {
+		if contains(w.Body.String(), secret) {
+			t.Fatalf("body leaked %q: %s", secret, w.Body.String())
+		}
 	}
 }
 
@@ -285,6 +401,30 @@ func TestHandleError_UsesAppLogger(t *testing.T) {
 	}
 	if !contains(buf.String(), "credo: unhandled error") {
 		t.Errorf("expected app logger to receive error log, got: %q", buf.String())
+	}
+}
+
+func TestLogServerError_UsesClassifiedSemanticStatus(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	app, err := credo.New(credo.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/fault", func(ctx *credo.Context) error {
+		// The semantic policy must win over the deliberately conflicting legacy
+		// status for both response classification and server-error logging.
+		return &unknownSemanticHTTPError{kind: fault.KindUnavailable}
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fault", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	logOutput := buf.String()
+	if !contains(logOutput, "credo: server error") || !contains(logOutput, "status=503") {
+		t.Fatalf("semantic server fault log did not use classified status: %q", logOutput)
 	}
 }
 
@@ -822,6 +962,64 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	}
 	if receivedInfo.MessageKey != credo.MsgKeyRequestTimeout {
 		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyRequestTimeout)
+	}
+}
+
+func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*credo.App)
+		handler   credo.Handler
+	}{
+		{
+			name: "handler_returns_error_after_hijack",
+			handler: func(ctx *credo.Context) error {
+				if _, _, err := ctx.Response().Hijack(); err != nil {
+					return err
+				}
+				return errors.New("post-hijack application error")
+			},
+		},
+		{
+			name: "renderer_hijacks_then_returns",
+			configure: func(app *credo.App) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+					_, _, _ = ctx.Response().Hijack()
+				})
+			},
+			handler: func(*credo.Context) error { return credo.ErrBadRequest },
+		},
+		{
+			name: "renderer_hijacks_then_panics",
+			configure: func(app *credo.App) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+					_, _, _ = ctx.Response().Hijack()
+					panic("renderer panic after hijack")
+				})
+			},
+			handler: func(*credo.Context) error { return credo.ErrBadRequest },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			if tt.configure != nil {
+				tt.configure(app)
+			}
+			app.GET("/ws", tt.handler)
+
+			w := newHijackResponseWriter()
+			r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+			app.ServeHTTP(w, r)
+
+			if w.hijackCalls != 1 {
+				t.Fatalf("Hijack calls = %d, want 1", w.hijackCalls)
+			}
+			if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
+				t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
+			}
+		})
 	}
 }
 

@@ -43,8 +43,9 @@ Splitting the pipeline this way keeps custom renderers small: a renderer never r
 1. Response already committed → no-op (response is in-flight)
 2. validation.Errors → 422 Unprocessable Entity with field errors
 3. *HTTPError → status from Code, title resolved from MessageKey
-4. HTTPStatus() int interface → status from HTTPStatus() (e.g., store errors)
-5. Any other error → 500 Internal Server Error (message NOT leaked)
+4. fault.Provider → root default HTTP policy from the transport-neutral semantic kind
+5. HTTPStatus() int interface → legacy or explicit transport status
+6. Any other error → 500 Internal Server Error (message NOT leaked)
 ```
 
 Internal error details are never exposed to clients. Server errors (5xx) and unhandled errors are logged via `slog`.

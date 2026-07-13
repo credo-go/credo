@@ -329,10 +329,10 @@ func WithMaxBodyBytes(n int64) Option {
 
 // WithShutdownTimeout sets the graceful-shutdown drain budget used by the
 // signal-aware Run and by context-cancellation-triggered RunContext. The
-// drain (HTTP in-flight requests, DI singleton
-// cleanup, OnShutdown hooks) must complete within this duration. Zero (the
-// default) applies a 30s budget. An explicit Shutdown(ctx) call ignores this
-// and honours the caller's context deadline instead. Can also be set via the
+// parallel HTTP/OnDrain phase, DI singleton cleanup, and OnShutdown hooks must
+// complete within this single absolute budget. Zero (the default) applies a
+// 30s budget. An explicit Shutdown(ctx) call ignores this and honours the
+// caller's context deadline instead. Can also be set via the
 // server.shutdown_timeout config key.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(o *appOptions) {

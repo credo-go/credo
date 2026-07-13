@@ -18,7 +18,8 @@ When i18n is active, Credo also translates:
 
 - validation field messages returned from `BindBody()` and `BindQuery()`
 - `credo.HTTPError` messages such as `credo.ErrNotFound`
-- errors that expose only an HTTP status via `HTTPStatus() int`
+- semantic `fault.Provider` errors such as store errors, through root HTTP policy
+- legacy/explicit errors that expose only an HTTP status via `HTTPStatus() int`
 
 You do not import a public `i18n` package. The implementation stays internal.
 
@@ -42,8 +43,8 @@ locales/
 {
   "messages.welcome": "Welcome",
   "messages.hello_name": "Hello, {{.name}}",
-  "http.404": "Not found",
-  "http.500": "Internal server error",
+  "http.not_found": "Not found",
+  "http.internal_server_error": "Internal server error",
   "v.required": "is required",
   "v.email": "must be a valid email address"
 }
@@ -55,8 +56,8 @@ locales/
 {
   "messages.welcome": "Hos geldiniz",
   "messages.hello_name": "Merhaba, {{.name}}",
-  "http.404": "Bulunamadi",
-  "http.500": "Sunucu hatasi",
+  "http.not_found": "Bulunamadı",
+  "http.internal_server_error": "Sunucu hatası",
   "v.required": "zorunludur",
   "v.email": "gecerli bir e-posta adresi olmalidir"
 }
@@ -153,13 +154,13 @@ Example:
   "v.min": "must be at least {{.min}}",
   "v.max": "must be at most {{.max}}",
   "v.between": "must be between {{.min}} and {{.max}}",
-  "http.400": "Bad request",
-  "http.401": "Unauthorized",
-  "http.403": "Forbidden",
-  "http.404": "Not found",
-  "http.409": "Conflict",
-  "http.422": "Validation failed",
-  "http.500": "Internal server error"
+  "http.bad_request": "Bad request",
+  "http.unauthorized": "Unauthorized",
+  "http.forbidden": "Forbidden",
+  "http.not_found": "Not found",
+  "http.conflict": "Conflict",
+  "http.validation_failed": "Validation failed",
+  "http.internal_server_error": "Internal server error"
 }
 ```
 
@@ -660,8 +661,8 @@ If a key is missing, Credo keeps the original default message.
   "messages.user_created": "User created",
   "v.required": "{{.field}} is required",
   "v.email": "{{.field}} must be a valid email address",
-  "http.404": "Not found",
-  "http.500": "Internal server error"
+  "http.not_found": "Not found",
+  "http.internal_server_error": "Internal server error"
 }
 ```
 

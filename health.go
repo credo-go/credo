@@ -28,7 +28,9 @@ type HealthConfig struct {
 	// ReadinessPath is the path for the readiness endpoint. Default: "/ready".
 	ReadinessPath string
 
-	// CheckTimeout is the per-check timeout. Default: 5s.
+	// CheckTimeout is the enforced per-check timeout. Default: 5s. A callback
+	// that ignores cancellation cannot delay the response beyond this budget;
+	// overlapping requests share its still-running execution until it exits.
 	CheckTimeout time.Duration
 
 	// ExposeErrors includes check error strings in the readiness response
@@ -135,7 +137,9 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 }
 
 // AddLivenessCheck registers a named liveness check.
-// Panics if [App.UseHealth] has not been called first or if checker is nil.
+// Panics if [App.UseHealth] has not been called first, checker is nil, or name
+// is empty, padded with whitespace, contains control characters, uses the
+// reserved "credo." prefix, or duplicates another liveness check.
 func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
 	if app.healthEngine == nil {
 		panic("credo: UseHealth() must be called before AddLivenessCheck")
@@ -147,7 +151,9 @@ func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
 }
 
 // AddReadinessCheck registers a named readiness check.
-// Panics if [App.UseHealth] has not been called first or if checker is nil.
+// Panics if [App.UseHealth] has not been called first, checker is nil, or name
+// is empty, padded with whitespace, contains control characters, uses the
+// reserved "credo." prefix, or duplicates another readiness check.
 func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
 	if app.healthEngine == nil {
 		panic("credo: UseHealth() must be called before AddReadinessCheck")
@@ -198,6 +204,7 @@ func (app *App) readinessHandler(ctx *Context) error {
 	if status != "up" {
 		code = http.StatusServiceUnavailable
 		app.logFailedChecks("readiness", checks)
+		app.logFailedStores(stores)
 	}
 
 	checksMap := make(map[string]any, len(checks)+len(stores))
@@ -209,10 +216,14 @@ func (app *App) readinessHandler(ctx *Context) error {
 		checksMap[c.Name] = entry
 	}
 	for _, s := range stores {
-		checksMap[s.Name] = map[string]string{
+		entry := map[string]any{
 			"status":  s.Status,
 			"latency": s.Latency.String(),
 		}
+		if s.Error != "" && app.healthExposeErrors {
+			entry["error"] = s.Error
+		}
+		checksMap[s.Name] = entry
 	}
 
 	body := map[string]any{"status": status}
@@ -230,5 +241,21 @@ func (app *App) logFailedChecks(kind string, checks []healthCheckResult) {
 			app.logger.Warn("credo: health check failed",
 				"kind", kind, "check", c.Name, "error", c.Error)
 		}
+	}
+}
+
+func (app *App) logFailedStores(stores []internalhealth.StoreResult) {
+	for _, result := range stores {
+		if result.Status == "up" {
+			continue
+		}
+		app.logger.Warn("credo: health check failed",
+			"kind", "readiness",
+			"source", "store",
+			"check", result.Name,
+			"status", result.Status,
+			"latency", result.Latency,
+			"error", result.Error,
+		)
 	}
 }

@@ -81,11 +81,13 @@ func (q *InsertQuery) Unwrap() *bun.InsertQuery {
 // SelectQuery, so a deep copy is unavailable here; the shallow copy suffices
 // because bun reads — never mutates — the builder while generating SQL.
 //
-// Driver errors are mapped to store.Err* sentinels. Unique-constraint
-// violations become [store.ErrDuplicate]; foreign-key violations become
-// [store.ErrConflict].
+// Driver errors are mapped to semantic store errors. Unique-constraint
+// violations become [store.ErrAlreadyExists] (and retain the deprecated
+// [store.ErrDuplicate] match); foreign-key violations become
+// [store.ErrConstraint] (and retain the deprecated [store.ErrConflict]
+// umbrella match).
 func (q *InsertQuery) Exec(ctx context.Context, dest ...any) (sql.Result, error) {
 	raw := prepareQuery(ctx, q.raw, q.state, shallowCopy[bun.InsertQuery])
 	res, err := raw.Exec(ctx, dest...)
-	return res, mapError(err)
+	return res, q.state.db.mapError(ctx, err)
 }

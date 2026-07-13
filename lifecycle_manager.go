@@ -57,15 +57,16 @@ func (s appState) String() string {
 }
 
 // lifecycleManager owns the App's server-session lifecycle: the state machine,
-// the bound *http.Server and lifecycle context, the start/shutdown hooks, and the
+// the bound *http.Server and lifecycle context, the lifecycle hooks, and the
 // graceful-drain sequence shared by every Run* entry point and Shutdown.
 //
 // It is held by exactly one App and references it back through app for the
 // cross-cutting pieces it needs (the compiled handler, DI container, server
-// config, logger). Keeping these nine fields and the concurrency-sensitive
+// config, logger). Keeping these fields and the concurrency-sensitive
 // drain logic in one type — rather than spread across the App struct — is the
 // whole point of the split; the public Run/Shutdown/State/Addr/OnStart/
-// OnShutdown methods on App stay as thin delegates onto this engine.
+// OnPreDrain/OnDrain/OnShutdown methods on App stay as thin delegates onto this
+// engine.
 type lifecycleManager struct {
 	// app is the owning application, used for compile, DI finalize/shutdown,
 	// server config, and logging. Never nil for an App built by New.
@@ -90,8 +91,8 @@ type lifecycleManager struct {
 	// Protected by serverMu; drained alongside server.
 	redirectServer *http.Server
 
-	// ctx is the lifecycle context, created at Run() time. Cancelled at the
-	// beginning of Shutdown(). Background services select on ctx.Done().
+	// ctx is the lifecycle context, created at Run() time. Cancelled during
+	// Shutdown(), after OnPreDrain. Background services select on ctx.Done().
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -101,6 +102,14 @@ type lifecycleManager struct {
 
 	// onStart holds hooks called during startup after the port is bound (FIFO order).
 	onStart []func(ctx context.Context) error
+
+	// onPreDrain holds early hooks run before lifecycle cancellation. Registration
+	// order is identity only, not execution order.
+	onPreDrain []drainHook
+
+	// onDrain holds subsystem hooks run concurrently with HTTP drain and before
+	// DI teardown. Registration order is identity only, not execution order.
+	onDrain []drainHook
 
 	// onShutdown holds hooks called during graceful shutdown (LIFO order).
 	onShutdown []func(ctx context.Context) error
@@ -384,7 +393,7 @@ func (lm *lifecycleManager) serve(
 	}
 
 	// Phase 5: startup hooks (FIFO), before stateRunning to avoid racing
-	// Shutdown. Hooks receive the lifecycle context, cancelled when shutdown begins.
+	// Shutdown. Hooks receive the lifecycle context, cancelled after OnPreDrain.
 	//
 	// A hook failure here is a session failure, not a pre-session one: an
 	// earlier hook may have produced externally visible side effects (started
@@ -461,8 +470,8 @@ func (lm *lifecycleManager) serve(
 		return redirectFail
 	case <-ctx.Done():
 		// Caller cancelled (or a signal, via runSignal). We own the drain. The
-		// drain context drops the trigger's cancellation but keeps its values,
-		// bounded by the configured shutdown timeout.
+		// drain context drops the trigger's cancellation but keeps its values
+		// and carries the configured shutdown deadline.
 		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lm.shutdownTimeout())
 		defer cancel()
 		shutErr := lm.initiateShutdown(drainCtx)
@@ -490,18 +499,20 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 
 // drain runs the teardown chain shared by every shutdown path — graceful
 // Shutdown, context cancellation, a runtime serve failure, and a failed startup:
-// mark unready, cancel the lifecycle context, drain the HTTP server, tear down DI
-// singletons (reverse order), run OnShutdown hooks (LIFO), release the
-// server-session references, and store stateStopped.
+// mark unready, run OnPreDrain hooks, cancel the lifecycle context, drain HTTP
+// and OnDrain hooks in parallel, tear down DI singletons (reverse order), run
+// OnShutdown hooks (LIFO), release the server-session references, and store
+// stateStopped.
 //
 // The caller must have already moved the state out of the live states
 // (running/starting) so drain runs exactly once: initiateShutdown does this via
 // its running → stopping CAS; the startup-failure path stores stateStopping
 // directly (a non-running app cannot be reached by Shutdown).
 //
-// OnShutdown hooks run on *every* teardown, including a failed startup. They are
-// the session teardown point, not an OnStart mirror, so they must be idempotent
-// and must not assume any particular OnStart hook completed (ADR-006).
+// OnPreDrain, OnDrain, and OnShutdown hooks run on *every* teardown, including
+// a failed startup. They are session teardown points, not OnStart mirrors, so
+// they must be idempotent and must not assume any particular OnStart hook
+// completed.
 func (lm *lifecycleManager) drain(ctx context.Context) error {
 	// Phase 0: stop reporting ready so load balancers drain this instance
 	// before it stops accepting connections. Liveness stays up — the process
@@ -517,36 +528,34 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 	redirectSrv := lm.redirectServer
 	lm.serverMu.Unlock()
 
-	// 1. Cancel the lifecycle context — signals background services, and the context
-	// handed to OnStart hooks, to begin stopping.
+	// 1. Drain the narrow class of subsystems that must finish while lifecycle
+	// workers and DI infrastructure are still live. Hooks share the absolute
+	// shutdown deadline and have no ordering contract. Deadline expiry is
+	// reported, but this phase remains a hard barrier until every hook returns.
+	if err := lm.runPreDrainPhase(ctx); err != nil {
+		errs = append(errs, err)
+	}
+
+	// 2. Cancel the lifecycle context — signals background services, and the context
+	// handed to OnStart hooks, to begin stopping. This deliberately follows
+	// OnPreDrain, even when that phase returned an error or exhausted the budget;
+	// an over-deadline hook has still completed before cancellation reaches here.
 	if cancelFn != nil {
 		cancelFn()
 	}
 
-	// 2. Drain the HTTP servers (stop accepting, wait for in-flight handlers).
-	// Stop the redirect listener first so that, during the main server's drain
-	// window, no client is redirected to an HTTPS server that has just stopped
-	// accepting connections; a redirect response is instant, so its Shutdown
-	// returns near-immediately. On a failed-startup teardown Serve was never
-	// called, so the main srv has no registered listener and its Shutdown is a
-	// near no-op — serve()'s deferred l.Close() closes the bound listener.
-	if redirectSrv != nil {
-		if err := redirectSrv.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("credo: HTTP redirect drain: %w", err))
-		}
-	}
-	if srv != nil {
-		if err := srv.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("credo: server drain: %w", err))
-		}
+	// 3. Drain HTTP and subsystem handlers in parallel under the same absolute
+	// deadline. The HTTP branch preserves redirect-before-main ordering.
+	if err := lm.drainBeforeInfrastructure(ctx, redirectSrv, srv); err != nil {
+		errs = append(errs, err)
 	}
 
-	// 3. Tear down infrastructure — reverse-order DI singleton cleanup.
+	// 4. Tear down infrastructure — reverse-order DI singleton cleanup.
 	if err := lm.app.container.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}
 
-	// 4. User shutdown hooks (LIFO) — ctx carries the drain deadline.
+	// 5. User shutdown hooks (LIFO) — ctx carries the drain deadline.
 	for i := len(lm.onShutdown) - 1; i >= 0; i-- {
 		if err := lm.onShutdown[i](ctx); err != nil {
 			errs = append(errs, err)

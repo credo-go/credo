@@ -9,26 +9,31 @@ GOLANGCI_LINT ?= golangci-lint
 GOFLAGS ?=
 COVERPROFILE ?= coverage.out
 PKG := ./...
+SQLDB_DIR := store/sqldb
 
-## build: Build all binaries
+## build: Build the root module and store/sqldb submodule
 build:
 	$(GO) build $(GOFLAGS) $(PKG)
+	cd $(SQLDB_DIR) && $(GO) build $(GOFLAGS) $(PKG)
 
-## test: Run all tests
+## test: Run all tests in the root module and store/sqldb submodule
 test:
 	$(GO) test $(GOFLAGS) -race -count=1 $(PKG)
+	cd $(SQLDB_DIR) && $(GO) test $(GOFLAGS) -race -count=1 $(PKG)
 
-## lint: Run golangci-lint
+## lint: Run golangci-lint for the root module and store/sqldb submodule
 lint:
 	$(GOLANGCI_LINT) run $(PKG)
+	cd $(SQLDB_DIR) && $(GOLANGCI_LINT) run $(PKG)
 
 ## fmt: Format all Go files
 fmt:
 	$(GO) fmt $(PKG)
 
-## vet: Run go vet
+## vet: Run go vet for the root module and store/sqldb submodule
 vet:
 	$(GO) vet $(PKG)
+	cd $(SQLDB_DIR) && $(GO) vet $(PKG)
 
 ## bench: Run benchmarks
 bench:
@@ -56,11 +61,11 @@ generate:
 ## check: Run all quality gates (vet + lint + test + bench)
 check:
 	@echo "=== vet ==="
-	$(GO) vet $(PKG)
+	$(MAKE) vet
 	@echo "=== lint ==="
-	-$(GOLANGCI_LINT) run $(PKG)
+	$(MAKE) lint
 	@echo "=== test ==="
-	$(GO) test $(GOFLAGS) -race -count=1 $(PKG)
+	$(MAKE) test
 	@echo "=== bench ==="
 	$(GO) test $(GOFLAGS) -bench=. -benchmem -run='^$$' $(PKG)
 	@echo "=== all checks passed ==="

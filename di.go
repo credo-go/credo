@@ -66,15 +66,43 @@ func (app *App) ProvideValue[T any](value T) error {
 	return app.container.ProvideValue[T](value)
 }
 
+// ProvideProtectedValue registers a pre-built singleton whose binding cannot
+// later be overwritten through [App.Replace]. It is intended for integrations
+// that publish a value together with external lifecycle or health state and
+// therefore cannot safely allow the DI binding to diverge afterward.
+func (app *App) ProvideProtectedValue[T any](value T) error {
+	return app.container.ProvideProtectedValue[T](value)
+}
+
+// ProtectBinding prevents [App.Replace] from overwriting the existing direct
+// registration for T. It is idempotent and rejected after Finalize. The method
+// does not resolve or otherwise instantiate T. When one expected value is
+// supplied, protection is a compare-and-protect operation: it succeeds only if
+// the resolved singleton is still that same comparable value.
+func (app *App) ProtectBinding[T any](expected ...T) error {
+	return app.container.ProtectBinding[T](expected...)
+}
+
+// CanProvideValue reports whether [App.ProvideValue] could currently register
+// type T. It checks only whether the DI container is finalized or T already has
+// a direct registration, and does not mutate or reserve the registration.
+//
+// The result is a point-in-time preflight. A later ProvideValue call can still
+// fail if another registration or finalization occurs in between.
+func (app *App) CanProvideValue[T any]() error {
+	return app.container.CanProvideValue[T]()
+}
+
 // MustProvideValue is like [App.ProvideValue] but panics on error.
 func (app *App) MustProvideValue[T any](value T) {
 	app.container.MustProvideValue[T](value)
 }
 
 // Replace registers a pre-built value for type T, overwriting any existing
-// registration. Unlike [App.ProvideValue], it does not return an error when T
-// is already registered: it replaces the binding and discards any cached
-// singleton.
+// unprotected registration. Unlike [App.ProvideValue], a duplicate T is
+// normally replaced along with its cached singleton. Bindings published by
+// [App.ProvideProtectedValue] or locked through [App.ProtectBinding] reject
+// replacement because external lifecycle state depends on their identity.
 //
 // Replace is intended for composition-root overrides and tests where a real
 // binding is swapped for a stub or fake. Because the replacement is a value,
@@ -149,8 +177,9 @@ func (app *App) MustBindMany[I, T any]() {
 }
 
 // Finalize freezes the DI container and validates the dependency graph.
-// After Finalize, no more Provide, ProvideFactory, ProvideValue, Replace,
-// Alias, or BindMany calls are allowed.
+// After Finalize, no more Provide, ProvideFactory, ProvideValue,
+// ProvideProtectedValue, ProtectBinding, Replace, Alias, or BindMany calls are
+// allowed.
 // Finalize is idempotent. If not called explicitly, the Run* entry points call
 // it implicitly.
 //

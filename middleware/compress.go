@@ -17,6 +17,7 @@ import (
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/internal/httpheader"
+	"github.com/credo-go/credo/internal/httpwriter"
 )
 
 // Writer pools keyed by compression level. Default level pools are pre-created.
@@ -204,11 +205,7 @@ func (w *compressResponseWriter) Flush() {
 }
 
 func (w *compressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hj, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("credo/middleware: http.Hijacker is unavailable")
-	}
-	return hj.Hijack()
+	return httpwriter.Hijack(w.ResponseWriter)
 }
 
 func (w *compressResponseWriter) Push(target string, opts *http.PushOptions) error {

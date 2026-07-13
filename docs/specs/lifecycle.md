@@ -30,7 +30,7 @@ Failures split by how far startup got. A **pre-session** failure (TLS preflight 
 | `building` | 0 | Initial state. Route/MW/hook registration allowed. |
 | `starting` | 1 | Transient startup state. Run claimed; server/ctx being written; OnStart hooks executing. |
 | `running` | 2 | Server is listening. Registration frozen. |
-| `stopping` | 3 | Draining in-flight requests + running hooks. |
+| `stopping` | 3 | Readiness withdrawn; running OnPreDrain, lifecycle cancellation, HTTP/OnDrain, then DI/hooks. |
 | `stopped` | 4 | Fully stopped. Terminal state — reached by graceful shutdown or by a session-failure teardown (OnStart hook error / post-running serve error). |
 
 ## `frozen` vs `state`
@@ -58,19 +58,19 @@ Reports whether the server is in the `running` state.
 
 ### `app.Run() error`
 
-Compiles the handler chain, transitions to `running`, and serves HTTP — or HTTPS when TLS is configured (see [TLS](#tls)) — until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown bounded by `WithShutdownTimeout`. A second signal during shutdown force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
+Compiles the handler chain, transitions to `running`, and serves HTTP — or HTTPS when TLS is configured (see [TLS](#tls)) — until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown with the deadline set by `WithShutdownTimeout`. An `OnPreDrain` hook that ignores that deadline remains a hard teardown barrier and can delay return; a second signal force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
 
 `Run` is the safe default for a process whose lifetime is the server's. For explicit lifecycle control — tests, embedding, caller-driven cancellation — use `RunContext`.
 
 ### `app.RunContext(ctx context.Context) error`
 
-Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values but drops its cancellation (so an already-cancelled `ctx` still drains), bounded by `WithShutdownTimeout`. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the lifecycle context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
+Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values, drops its cancellation (so an already-cancelled `ctx` still drains), and applies the `WithShutdownTimeout` deadline. An `OnPreDrain` hook that ignores the deadline remains a hard teardown barrier and can delay return. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the lifecycle context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
 
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
 Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, H2C, or an externally managed listener. `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
 
-The lifecycle context (created at `Run`/`RunContext` time, cancelled at the start of shutdown) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect graceful shutdown.
+The lifecycle context (created at `Run`/`RunContext` time, cancelled during shutdown after `OnPreDrain`) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect graceful shutdown.
 
 ### TLS
 
@@ -97,21 +97,32 @@ Gracefully shuts down the server:
 
 1. Transitions from `running` → `stopping` (CAS; error if not running).
 2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so load balancers stop routing here before the drain. Liveness stays up.
-3. Cancels lifecycle context — signals background services to shut down.
-4. Drains in-flight HTTP requests via `http.Server.Shutdown(ctx)`.
-5. Shuts down DI container singletons via `container.Shutdown(ctx)`.
-6. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
-7. Collects all errors via `errors.Join`.
-8. Clears bound address (`Addr()` returns nil).
-9. Transitions to `stopped`.
+3. Runs every `OnPreDrain` hook concurrently while lifecycle workers and DI remain live.
+4. Cancels lifecycle context — signals background services to shut down.
+5. Drains HTTP servers and every `OnDrain` subsystem hook in parallel.
+6. Shuts down DI container singletons via `container.Shutdown(ctx)`.
+7. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
+8. Collects all errors via `errors.Join`.
+9. Clears bound address (`Addr()` returns nil).
+10. Transitions to `stopped`.
 
-The lifecycle context is cancelled **before** HTTP drain to give background services maximum lead time for shutdown.
+OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hooks are
+unordered within each phase. OnPreDrain is the narrow pre-cancellation phase and
+a hard teardown barrier: if the context ends while hooks are pending, Credo logs
+one structured waiting diagnostic but waits for every hook to return before
+lifecycle cancellation or infrastructure teardown. Each hook's completion
+timestamp then determines its final identified incomplete error. Later phases
+receive the same, possibly ended context. OnDrain follows lifecycle cancellation
+and a nil result means the subsystem can no longer run handlers that depend on
+DI infrastructure; HTTP and OnDrain work retain the ordinary behavior of being
+reported incomplete at the deadline. The framework stops waiting and proceeds
+while late work may continue.
 
 `Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 
 #### Drain context derivation
 
-An explicit `Shutdown(ctx)` honours the caller's `ctx` deadline as-is. Signal- and cancellation-triggered drains instead derive a bounded context from `WithShutdownTimeout` (default 30s):
+An explicit `Shutdown(ctx)` uses the caller's `ctx` deadline as-is. Signal- and cancellation-triggered drains instead derive a deadline context from `WithShutdownTimeout` (default 30s). In either case, deadline expiry is diagnostic for OnPreDrain rather than permission to violate its hard barrier, so a cancellation-ignoring hook can delay the final return:
 
 | Trigger | Drain context |
 | --- | --- |
@@ -126,33 +137,94 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 
 #### Background services and shutdown ordering
 
-Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the lifecycle context) and stops by implementing `Shutdowner`, so the DI container drains it during the container-shutdown step. The `worker.Pool` follows exactly this pattern.
+Background work is wired through the existing primitives: a component starts
+in an `OnStart` hook (receiving the lifecycle context) and normally stops by
+implementing `Shutdowner`, so the DI container drains it during the
+container-shutdown step. The `worker.Pool` follows exactly this pattern.
 
-A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with a guaranteed _services-drain-before-infrastructure_ phase (so a worker can still reach the database while it winds down) and a restartable/start-once taxonomy — is deliberately **deferred** until there are in-tree consumers (gRPC server, WebSocket hub, pub/sub subscriber). Introducing that public surface now, for packages that are still placeholders, would be the kind of speculative carrier the framework avoids pre-v1. Until then, services-before-infra ordering within the container step follows reverse registration order.
+`OnPreDrain` is the narrow exception for coordination that must complete while
+lifecycle-bound workers and DI are still live. It runs after readiness is
+withdrawn but before lifecycle cancellation. Most subsystems should not use it:
+if their work remains valid after cancellation, `OnDrain` is the later and safer
+barrier.
+
+`OnDrain` is a separate narrow seam: a successful hook proves that its
+subsystem stopped admission and active DI-dependent handlers before
+infrastructure teardown.
+`websocket.Use` is the first concrete consumer. Future gRPC/pubsub servers may
+also use it. It has no startup, name, restart, or ordering semantics.
+
+A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with
+a restartable/start-once taxonomy — remains deliberately **deferred** until
+multiple in-tree consumers require it. `OnDrain` does not migrate
+`worker.Pool`; workers retain lifecycle cancellation plus DI shutdown and
+reverse registration ordering.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
 Registers a startup hook. Hooks are called in **FIFO** order after the port is bound but before the server starts accepting connections (state is still `starting`). The `lifecycleCtx` parameter is the lifecycle context (created at `Run` time).
 
-The hook `lifecycleCtx` is the **lifecycle context** — created from `context.Background()` and cancelled at shutdown start — not the `ctx` passed to `RunContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
+The hook `lifecycleCtx` is the **lifecycle context** — created from `context.Background()` and cancelled after OnPreDrain during shutdown — not the `ctx` passed to `RunContext`. Cancelling the `RunContext` context **during** startup therefore does not cancel a running `OnStart` hook: a long hook (e.g. a migration) runs to completion, and the caller's cancellation is observed only **after** all hooks finish, at which point the app starts and then immediately begins graceful shutdown. This is deliberate — a background service spawned in a hook should bind to the lifecycle context (uniform across `Run`/`RunContext`/`ServeContext`), not the caller's startup-scoped context. If you need a hook the caller can abort mid-flight, capture that context in the hook closure and select on it yourself.
 
-If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (cancel lifecycle context → HTTP drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), bounded by `WithShutdownTimeout`.
+If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (mark unready → OnPreDrain → cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), with the deadline set by `WithShutdownTimeout` and the same hard-barrier exception for a cancellation-ignoring OnPreDrain hook.
 
 `app.Addr()` is available inside hooks — critical for port-0 scenarios.
 
-Typical uses: cache warm-up, database migrations. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so opt-in auto-migration is `app.OnStart(db.Migrate)` (see the [Store Spec](store.md)).
+Typical uses include cache warm-up. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so `app.OnStart(db.Migrate)` is convenient for development and deliberate single-replica deployments. Multi-replica production should instead run the same method once in a deadline-bounded pre-deploy job; this also avoids relying on the independently-created lifecycle context for a migration deadline (see the [Store Spec](store.md)).
 
 Must be called before `compile()` (panics if frozen).
 
+### `app.OnPreDrain(fn func(ctx context.Context) error)`
+
+Registers an early drain hook. After state becomes `stopping` and readiness is
+withdrawn, all OnPreDrain hooks run concurrently with one another but before
+the lifecycle context is cancelled. Registration order is diagnostic identity
+only and does not control execution.
+
+A successful hook must finish the work that specifically requires live
+lifecycle-bound workers or DI infrastructure. Hooks receive the shared absolute
+shutdown deadline, run during every teardown (including OnStart failure), and
+must be idempotent and tolerate partial startup. A panic is recovered and joined
+with its hook index/source while other hooks continue. If a hook ignores
+cancellation, Credo logs a structured waiting diagnostic when the deadline ends
+but does not cancel the lifecycle context or begin later teardown until that
+hook returns. Its completion timestamp then produces the final identified
+incomplete error. A nil hook or registration after compile panics.
+
+### `app.OnDrain(fn func(ctx context.Context) error)`
+
+Registers a pre-infrastructure subsystem drain hook. After lifecycle context
+cancellation, all OnDrain hooks run concurrently with one another and with HTTP
+server shutdown. Registration order is diagnostic identity only and does not
+control execution.
+
+A successful hook must close admission and wait until no handler or cleanup
+that uses DI infrastructure can run. Hooks receive the shared absolute shutdown
+deadline, run during every teardown (including OnStart failure), and must be
+idempotent and tolerate partial startup. A panic is recovered and joined with
+its hook index/source while other drain work continues. If a hook ignores
+cancellation, Credo reports it as pending at the deadline and proceeds; a late
+return cannot turn the recorded incomplete result into success.
+
+Must be called before compile. A nil hook or late registration panics.
+
 ### `app.OnShutdown(fn func(ctx context.Context) error)`
 
-Registers a shutdown hook. Hooks are called in LIFO order during `Shutdown`. The `ctx` parameter carries the shutdown deadline from `Shutdown(ctx)`. Must be called before `compile()` (panics if frozen).
+Registers a final shutdown hook. Hooks run in LIFO order after DI teardown. The
+`ctx` parameter carries the shared shutdown deadline from `Shutdown(ctx)`. Must
+be called before `compile()` (panics if frozen).
 
-OnShutdown hooks run on **every** teardown, including a failed startup (an OnStart hook erroring after an earlier one ran). OnShutdown is therefore the session teardown point, not an OnStart mirror: hooks must be idempotent and must not assume any particular OnStart hook completed. (Because `onStart` and `onShutdown` are independent lists — not paired by index — a hook running without its conceptual counterpart was always possible; session-failure teardown only makes it routine.)
+OnShutdown hooks run on **every** teardown, including a failed startup (an
+OnStart hook erroring after an earlier one ran). OnShutdown is therefore the
+session teardown point, not an OnStart mirror: hooks must be idempotent and must
+not assume any particular OnStart hook completed. Because `onStart` and
+`onShutdown` are independent lists — not pairs by index — a hook running without
+its conceptual counterpart was always possible; session-failure teardown only
+makes it routine.
 
 ### `credo.WithShutdownTimeout(d time.Duration) Option`
 
-Construction option (passed to `New`) setting the graceful-shutdown drain budget for the signal-aware `Run` and the cancellation-triggered `RunContext`/`ServeContext`. Zero (the default) applies 30s. An explicit `Shutdown(ctx)` ignores it and honours the caller's deadline instead. Also settable via the `server.shutdown_timeout` config key.
+Construction option (passed to `New`) setting the graceful-shutdown deadline for the signal-aware `Run` and the cancellation-triggered `RunContext`/`ServeContext`. Zero (the default) applies 30s. An explicit `Shutdown(ctx)` ignores it and uses the caller's deadline instead. An OnPreDrain hook that ignores cancellation can overrun either deadline because it remains a hard teardown barrier. Also settable via the `server.shutdown_timeout` config key.
 
 ### `credo.WithTLSFiles(certFile, keyFile string) Option`
 
@@ -183,6 +255,8 @@ The following methods panic if called after `compile()`:
 | `app.UseHealth()` | `checkFrozen("UseHealth")` |
 | `app.UseI18n()` | `checkFrozen("UseI18n")` |
 | `app.OnStart()` | `checkFrozen("OnStart")` |
+| `app.OnPreDrain()` | `checkFrozen("OnPreDrain")`; nil hook also panics |
+| `app.OnDrain()` | `checkFrozen("OnDrain")`; nil hook also panics |
 | `app.OnShutdown()` | `checkFrozen("OnShutdown")` |
 | `group.Middleware()` | `checkFrozen("Group.Middleware")` |
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
@@ -199,12 +273,9 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 
 ## Container Integration
 
-Shutdown hooks bridge the container's `Shutdowner` interface with the app lifecycle. The shutdown context is propagated for deadline-aware cleanup:
-
-```go
-app.OnShutdown(func(ctx context.Context) error {
-    return c.Shutdown(ctx)
-})
-```
-
-This pattern ensures DI-managed resources (DB connections, caches) are cleaned up during graceful shutdown with deadline awareness.
+Resolved DI singletons that implement `credo.Shutdowner` participate
+automatically in the container phase; do not register a second `OnShutdown`
+bridge for the same resource. The container traverses registrations in reverse
+order while the shared deadline remains live. A reached registration gets at
+most one shutdown attempt, while entries not reached before deadline exhaustion
+may receive no attempt.

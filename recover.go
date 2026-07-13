@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/credo-go/credo/internal/httpheader"
 	internalobserve "github.com/credo-go/credo/internal/observe"
 )
 
@@ -54,11 +53,10 @@ func builtinRecover(next Handler) Handler {
 					"panic recovered", attrs...,
 				)
 
-				// Skip the error response for upgraded connections — the
-				// writer may already be hijacked (WebSocket), and writing
-				// to it would panic or corrupt the stream. Mirrors
-				// middleware.Recover.
-				if httpheader.HasToken(r.Header, "Connection", "upgrade") {
+				// Once the effective transport has actually been hijacked,
+				// HTTP recovery cannot write a second response. Upgrade
+				// request headers alone are not transport state.
+				if ctx.Response().Hijacked() {
 					return
 				}
 

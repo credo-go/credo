@@ -2,7 +2,9 @@ package sqldb
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,7 +18,9 @@ type Config struct {
 	// Host is the database server hostname or IP address.
 	Host string
 
-	// Port is the database server port number.
+	// Port is the database server port number. It must be between 1 and 65535
+	// when Credo builds a PostgreSQL or MySQL DSN. Use DSN or WithConnector for
+	// driver-specific default-port behavior.
 	Port int
 
 	// Name is the database name.
@@ -28,27 +32,44 @@ type Config struct {
 	// Password is the database password.
 	Password string
 
-	// DSN is an optional raw DSN string. When set, Host, Port, Name,
-	// User, and Password are ignored.
+	// DSN is an optional raw DSN string. When set, it is used as-is and Credo
+	// does not merge Host, credentials, SSLMode, ConnectTimeout, or Options into
+	// it.
 	DSN string
 
-	// ConnectTimeout is the maximum time to wait for a connection
-	// to be established. Zero means no timeout.
+	// ConnectTimeout is the maximum time to wait for a connection to be
+	// established. Zero means no timeout. PostgreSQL DSNs represent this value
+	// in whole seconds, so positive fractional seconds are rounded up.
 	ConnectTimeout time.Duration
 
-	// MaxOpen is the maximum number of open connections (0 = unlimited).
+	// MaxOpen is the maximum number of open connections. Zero keeps the
+	// database/sql default, which is unlimited.
 	MaxOpen int
 
-	// MaxIdle is the maximum number of idle connections.
-	MaxIdle int
+	// MaxIdle is the maximum number of idle connections. Nil makes Credo leave
+	// the idle limit unset; the effective database/sql default remains subject
+	// to MaxOpen. A non-nil zero disables idle connections.
+	MaxIdle *int
 
-	// MaxLifetime is the maximum lifetime of a connection.
+	// MaxLifetime is the maximum lifetime of a connection. Zero disables the
+	// lifetime limit.
 	MaxLifetime time.Duration
 
-	// SSLMode sets the SSL/TLS mode (e.g., "disable", "require", "verify-full").
+	// MaxIdleTime is the maximum amount of time a connection may remain idle.
+	// Zero disables the idle-time limit.
+	MaxIdleTime time.Duration
+
+	// SSLMode sets the driver-specific SSL/TLS mode. PostgreSQL receives it as
+	// sslmode (for example, "require" or "verify-full"); MySQL receives it as
+	// tls (for example, "true" or a registered TLS config name). Credo does not
+	// impose a cross-driver TLS default.
 	SSLMode string
 
-	// Options holds additional driver-specific connection parameters.
+	// Options holds additional driver-specific connection parameters. Core
+	// PostgreSQL endpoint and credential keys are reserved, and an option may not
+	// duplicate SSLMode or ConnectTimeout when the corresponding field is set.
+	// MySQL parseTime is always true and cannot be overridden. Ambiguous sources
+	// fail when Credo builds the DSN; use DSN for full driver-native control.
 	Options map[string]string
 }
 
@@ -57,6 +78,9 @@ type Config struct {
 func (c *Config) buildDSN(family driverFamily) (string, error) {
 	if c.DSN != "" {
 		return c.DSN, nil
+	}
+	if err := c.validateStructuredDSN(family); err != nil {
+		return "", err
 	}
 
 	switch family {
@@ -71,10 +95,64 @@ func (c *Config) buildDSN(family driverFamily) (string, error) {
 	}
 }
 
+func (c *Config) validateStructuredDSN(family driverFamily) error {
+	switch family {
+	case driverFamilyPostgres, driverFamilyMySQL:
+		if c.Port < 1 || c.Port > 65535 {
+			return fmt.Errorf(
+				"sqldb: port must be between 1 and 65535 when building a network DSN, got %d",
+				c.Port,
+			)
+		}
+	}
+
+	switch family {
+	case driverFamilyPostgres:
+		for _, key := range []string{"host", "port", "dbname", "user", "password"} {
+			if _, exists := c.Options[key]; exists {
+				return structuredOptionConflict(key)
+			}
+		}
+		if c.SSLMode != "" {
+			if _, exists := c.Options["sslmode"]; exists {
+				return structuredOptionConflict("sslmode")
+			}
+		}
+		if c.ConnectTimeout > 0 {
+			if _, exists := c.Options["connect_timeout"]; exists {
+				return structuredOptionConflict("connect_timeout")
+			}
+		}
+	case driverFamilyMySQL:
+		if _, exists := c.Options["parseTime"]; exists {
+			return structuredOptionConflict("parseTime")
+		}
+		if c.SSLMode != "" {
+			if _, exists := c.Options["tls"]; exists {
+				return structuredOptionConflict("tls")
+			}
+		}
+		if c.ConnectTimeout > 0 {
+			if _, exists := c.Options["timeout"]; exists {
+				return structuredOptionConflict("timeout")
+			}
+		}
+	}
+
+	return nil
+}
+
+func structuredOptionConflict(key string) error {
+	return fmt.Errorf(
+		"sqldb: option %q is reserved or conflicts with structured DSN configuration; use one source or Config.DSN",
+		key,
+	)
+}
+
 func (c *Config) buildPostgresDSN() string {
 	u := &url.URL{
 		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		Path:   c.Name,
 	}
 	if c.User != "" {
@@ -90,7 +168,11 @@ func (c *Config) buildPostgresDSN() string {
 		q.Set("sslmode", c.SSLMode)
 	}
 	if c.ConnectTimeout > 0 {
-		q.Set("connect_timeout", fmt.Sprintf("%d", int(c.ConnectTimeout.Seconds())))
+		seconds := c.ConnectTimeout / time.Second
+		if c.ConnectTimeout%time.Second != 0 {
+			seconds++
+		}
+		q.Set("connect_timeout", strconv.FormatInt(int64(seconds), 10))
 	}
 	for k, v := range c.Options {
 		q.Set(k, v)
@@ -122,7 +204,9 @@ func (c *Config) buildMySQLDSN() string {
 		b.WriteByte('@')
 	}
 
-	fmt.Fprintf(&b, "tcp(%s:%d)", c.Host, c.Port)
+	b.WriteString("tcp(")
+	b.WriteString(net.JoinHostPort(c.Host, strconv.Itoa(c.Port)))
+	b.WriteByte(')')
 	b.WriteByte('/')
 	b.WriteString(c.Name)
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -301,7 +302,8 @@ func TestReadiness_CheckFails(t *testing.T) {
 }
 
 func TestReadiness_ErrorsMaskedByDefault(t *testing.T) {
-	app := mustNew(t)
+	logger, logs := newTestLogger(t)
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
 	app.UseHealth()
 	app.AddReadinessCheck("db", credo.HealthCheckFunc(func(context.Context) error {
 		return errors.New("dial tcp 10.0.1.5:5432: connection refused")
@@ -328,6 +330,9 @@ func TestReadiness_ErrorsMaskedByDefault(t *testing.T) {
 	if db["status"] != "down" {
 		t.Errorf("db status = %v, want down", db["status"])
 	}
+	if !strings.Contains(logs.String(), "connection refused") || !strings.Contains(logs.String(), `"check":"db"`) {
+		t.Errorf("masked named-check cause must remain in operator log: %s", logs.String())
+	}
 }
 
 func TestReadiness_ExposeErrorsOptIn(t *testing.T) {
@@ -353,10 +358,11 @@ func TestReadiness_StoreIntegration(t *testing.T) {
 	// Store health arrives through the module-internal DI seam, the same
 	// way store.Register provides it.
 	app := mustNew(t)
-	err := app.ProvideValue[internalhealth.StoreFunc](func(context.Context) []internalhealth.StoreResult {
-		return []internalhealth.StoreResult{
-			{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
-		}
+	storeProbe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
+		return internalhealth.Result{Status: "up", Latency: 2 * time.Millisecond}
+	})
+	err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+		return []internalhealth.StoreCheck{{Name: "postgres", Probe: storeProbe}}
 	})
 	if err != nil {
 		t.Fatalf("ProvideValue: %v", err)
@@ -386,6 +392,134 @@ func TestReadiness_StoreIntegration(t *testing.T) {
 	if pg["status"] != "up" {
 		t.Errorf("postgres status = %v, want %q", pg["status"], "up")
 	}
+}
+
+func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
+	const secret = "dial tcp 10.0.1.5:5432: connection refused"
+	tests := []struct {
+		name          string
+		exposeErrors  bool
+		wantBodyCause bool
+	}{
+		{name: "masked by default"},
+		{name: "explicitly exposed", exposeErrors: true, wantBodyCause: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, logs := newTestLogger(t)
+			app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+			probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
+				return internalhealth.Result{
+					Status:  "down",
+					Latency: 2 * time.Millisecond,
+					Cause:   errors.New(secret),
+				}
+			})
+			if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+				return []internalhealth.StoreCheck{{Name: "postgres", Probe: probe}}
+			}); err != nil {
+				t.Fatalf("ProvideValue: %v", err)
+			}
+			app.UseHealth(credo.HealthConfig{ExposeErrors: tt.exposeErrors})
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+			}
+			if got := strings.Contains(w.Body.String(), secret); got != tt.wantBodyCause {
+				t.Errorf("body contains cause = %v, want %v; body: %s", got, tt.wantBodyCause, w.Body.String())
+			}
+			if !strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), `"source":"store"`) {
+				t.Errorf("operator log must contain typed store cause and source; log: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
+	const invalidStatus = "dial tcp 10.0.1.5:5432"
+	logger, logs := newTestLogger(t)
+	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
+		return internalhealth.Result{Status: invalidStatus}
+	})
+	if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+		return []internalhealth.StoreCheck{{Name: "bad-adapter", Probe: probe}}
+	}); err != nil {
+		t.Fatalf("ProvideValue: %v", err)
+	}
+	app.UseHealth()
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if strings.Contains(w.Body.String(), invalidStatus) {
+		t.Fatalf("masked response leaked raw adapter status: %s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), invalidStatus) {
+		t.Errorf("operator log should retain invalid raw status: %s", logs.String())
+	}
+}
+
+func TestReadiness_CustomStoreNameCollisionDoesNotOverwrite(t *testing.T) {
+	app := mustNew(t)
+	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
+		return internalhealth.Result{Status: "up"}
+	})
+	if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+		return []internalhealth.StoreCheck{{Name: "database", Probe: probe}}
+	}); err != nil {
+		t.Fatalf("ProvideValue: %v", err)
+	}
+	app.UseHealth()
+	app.AddReadinessCheck("database", credo.HealthCheckFunc(func(context.Context) error { return nil }))
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Checks map[string]struct {
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := body.Checks["database"].Status; got != "up" {
+		t.Fatalf("named result was overwritten: status = %q, want up", got)
+	}
+	foundConflict := false
+	for name, result := range body.Checks {
+		if strings.HasPrefix(name, "credo.store_name_conflict.") && result.Status == "down" {
+			foundConflict = true
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("checks = %#v, want explicit down collision entry", body.Checks)
+	}
+}
+
+func TestAddReadinessCheck_DuplicateNamePanics(t *testing.T) {
+	app := mustNew(t)
+	app.UseHealth()
+	check := credo.HealthCheckFunc(func(context.Context) error { return nil })
+	app.AddReadinessCheck("database", check)
+
+	defer func() {
+		if recovered := recover(); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "duplicate readiness check") {
+			t.Fatalf("panic = %v, want duplicate readiness check", recovered)
+		}
+	}()
+	app.AddReadinessCheck("database", check)
 }
 
 func TestAddLivenessCheck_NoUseHealth_Panics(t *testing.T) {

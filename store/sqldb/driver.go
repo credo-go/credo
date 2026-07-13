@@ -3,6 +3,7 @@ package sqldb
 import (
 	"strings"
 
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/mysqldialect"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
@@ -19,13 +20,12 @@ const (
 )
 
 func resolveDriverFamily(driver string) driverFamily {
-	d := strings.ToLower(driver)
-	switch {
-	case strings.Contains(d, "postgres") || strings.Contains(d, "pgx"):
+	switch strings.ToLower(driver) {
+	case "postgres", "pgx":
 		return driverFamilyPostgres
-	case strings.Contains(d, "mysql"):
+	case "mysql":
 		return driverFamilyMySQL
-	case strings.Contains(d, "sqlite"):
+	case "sqlite", "sqlite3", "sqliteshim":
 		return driverFamilySQLite
 	default:
 		return driverFamilyUnknown
@@ -42,5 +42,21 @@ func (f driverFamily) dialect() schema.Dialect {
 		return sqlitedialect.New()
 	default:
 		return nil
+	}
+}
+
+func resolveDialectFamily(d schema.Dialect) driverFamily {
+	if d == nil {
+		return driverFamilyUnknown
+	}
+	switch d.Name() {
+	case dialect.PG:
+		return driverFamilyPostgres
+	case dialect.MySQL:
+		return driverFamilyMySQL
+	case dialect.SQLite:
+		return driverFamilySQLite
+	default:
+		return driverFamilyUnknown
 	}
 }

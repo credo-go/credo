@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -1542,6 +1543,29 @@ func TestRewrite_CommittedGuard(t *testing.T) {
 	}
 	if !strings.Contains(rewriteErr.Error(), "committed") {
 		t.Errorf("error = %q, want to contain 'committed'", rewriteErr.Error())
+	}
+}
+
+func TestRewrite_HijackedGuard(t *testing.T) {
+	app := mustNew(t)
+	var rewriteErr error
+	app.GET("/trigger", func(c *credo.Context) error {
+		if _, _, err := c.Response().Hijack(); err != nil {
+			return err
+		}
+		rewriteErr = c.Rewrite("/target")
+		return nil
+	})
+
+	w := newHijackResponseWriter()
+	r := httptest.NewRequest(http.MethodGet, "/trigger", nil)
+	app.ServeHTTP(w, r)
+
+	if rewriteErr == nil || !strings.Contains(rewriteErr.Error(), "hijacked") {
+		t.Fatalf("Rewrite() error = %v, want hijacked guard", rewriteErr)
+	}
+	if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
+		t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
 	}
 }
 

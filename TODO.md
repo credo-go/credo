@@ -84,7 +84,7 @@
 - [x] Built-in panic recovery (`recover.go`) — outermost layer in `compile()`, `WithoutRecover()` opt-out
 - [x] `middleware/recover.go` — Optional per-group/route recovery with `Recover(cfg ...RecoverConfig)`
   - [x] `RecoverConfig`: Logger, DisableStackTrace, StackSize
-  - [x] Re-panic `http.ErrAbortHandler`, case-insensitive WebSocket upgrade check
+  - [x] Re-panic `http.ErrAbortHandler`; suppress HTTP fallback only after ground-truth `Response.Hijacked()`
 - [x] `middleware/accesslog.go` — Structured request logging (slog)
   - [x] `AccessLogConfig`: Logger, Skipper
   - [x] Log level by status: 2xx/3xx=Info, 4xx=Warn, 5xx=Error
@@ -126,6 +126,8 @@
   - [x] `app.Provide[T](constructor)` — register with typed constructor
   - [x] `app.ProvideFactory[T](fn)` — compiler-checked factory closure; fn resolves its own deps, opaque to Finalize graph validation
   - [x] `app.ProvideValue[T](value)` — register pre-built value
+  - [x] `app.CanProvideValue[T]()` — read-only point-in-time frozen/direct-duplicate preflight for integrations that must validate before I/O; final normal/protected value publication remains authoritative
+  - [x] `app.ProvideProtectedValue[T]()` / `app.ProtectBinding[T](expected ...T)` — low-level Replace protection for DI values coupled to external lifecycle/health state; the optional expected value atomically compares the resolved singleton before protection, and ordinary bindings remain replaceable
 - [x] `app.Resolve[T]()` — retrieve instance
 - [x] `app.MustResolve[T]()` — panics if not found
 - [x] Lifecycle support: `Singleton` (only — RequestScoped removed)
@@ -189,7 +191,8 @@
 - [x] Default `ErrorRenderer` on `App` (internal `handleError` method)
 - [x] HTTP error types: `NewHTTPError(code, message)`
 - [x] Validation error → Problem Details conversion
-- [x] Tests
+- [x] Offset `Page` tests (input, logical COUNT, snapshot, metadata, mapping)
+- [ ] Cursor conformance tests (tamper/scope/rotation, stable mixed order, insert/delete versus offset drift, and real PostgreSQL/MySQL/SQLite round trips for large int/time/string plus consumer UUID/decimal keys)
 
 ### 2.5 Binding & Lifecycle Completion
 
@@ -211,16 +214,18 @@
 
 **App Lifecycle State Machine** — [`docs/specs/lifecycle.md`](docs/specs/lifecycle.md)
 
-- [x] `appState` state machine: `building` → `running` → `stopping` → `stopped`
-- [x] Store `*http.Server` reference in `App`
-- [x] `Shutdown(ctx)` — graceful drain + LIFO shutdown hooks + `errors.Join`
+- [x] `appState` state machine: `building` → `starting` → `running` → `stopping` → `stopped`
+- [x] `lifecycleManager` owns the server session, listeners, lifecycle context, and bound address
+- [x] `Shutdown(ctx)` — readiness withdrawal → pre-drain → cancellation → HTTP/subsystem drain → DI teardown → LIFO hooks, with `errors.Join`
 - [x] `OnShutdown(fn)` — register shutdown hooks
 - [x] `State()` / `IsRunning()` — public accessors
 - [x] `OnStart(fn)` — register FIFO startup hooks
+- [x] `OnPreDrain(fn)` — register unordered pre-cancellation hooks for the narrow live-worker/live-DI drain phase
+- [x] `OnDrain(fn)` — register unordered pre-DI hooks concurrent with HTTP drain
 - [x] `Addr() net.Addr` — actual bound address accessor
-- [x] Registration guards: `checkFrozen()` on addRoute, Mount, StatusHandler, SetMeta, OnStart, OnShutdown
+- [x] Registration guards: `checkFrozen()` on addRoute, Mount, StatusHandler, SetMeta, OnStart, OnPreDrain, OnDrain, OnShutdown
 - [x] `frozen bool` → `atomic.Bool` (thread-safe)
-- [x] Tests (17 tests: state transitions, graceful drain, hooks, frozen guards)
+- [x] Tests: state transitions, graceful drain, hook ordering/failure/deadline behavior, frozen guards
 
 **App Config Bootstrap** — [ADR-005](docs/adr/005-configuration-architecture.md), [ADR-006](docs/adr/006-application-lifecycle.md)
 
@@ -245,7 +250,7 @@
 - [x] Adapt go-i18n core to `internal/i18n/`: Bundle, Localizer, Message types
 - [x] CLDR plural rule support (`internal/i18n/internal/plural/` — 200+ languages)
 - [x] String-based public APIs: `TranslateForLang()`, `FieldNameForLang()`, `HasMessages()`
-- [x] `TranslationKeyer` interface in root package (replaces `ErrorTranslator`)
+- [x] Key-based HTTP translation through `HTTPError.MessageKey`, semantic `fault.Provider` root policy, and legacy `HTTPStatus()`→MsgKey mapping (no `TranslationKeyer` interface)
 - [x] Default error renderer i18n-aware (nil bundle check, zero cost when unused)
 - [x] `app.UseI18n(...)` — root package setup (bundle + locale detection middleware)
 - [x] `ctx.Locale()` / `ctx.T(key, data...)` — request-scoped locale access
@@ -294,33 +299,47 @@
 
 **Phase 3.3a — Core Package** (`store/`):
 
-- [x] `ErrNotFound`, `ErrDuplicate`, `ErrConflict`, `ErrTimeout`, `ErrReadOnly` sentinels
-- [x] `Lifecycle` interface (Ping, Shutdown, Health)
+- [x] Semantic store error model: transport-neutral `fault.Kind`/`store.Kind`, structured `store.Error`, exact sentinels (`AlreadyExists`, `Constraint`, `Serialization`, `Deadlock`, `Contention`, `Timeout`, `Unavailable`, `ReadOnly`), deprecated `ErrDuplicate` alias, and deprecated `ErrConflict` umbrella
+- [x] `Lifecycle` interface (Ping, Shutdown, Health) + optional explicit `LifecycleIdentityProvider` (`ResourceIdentity() any`; pointer-backed default recommended, token comparable/reflexive/stable)
 - [x] `Health` / `HealthStatus` types
-- [x] `Registry` — LIFO shutdown, HealthAll, duplicate name rejection
-- [x] `Register[R]()` — ping + DI + Registry registration
-- [x] `RegisterOption`: `WithName`, `WithPingTimeout`, `WithLifecycle` (`WithCritical`, `WithTags` deferred to health package)
-- [x] TX context helpers: `WithTx[T]`, `GetTx[T]`, `Conn[T]`
+- [x] `Registry` — read-only `HealthAll` facade; private name+type+declared-resource-identity reservation prevents incomplete/bypass/duplicate entries inside the `store.Register` ledger; no public mutation/shutdown path
+- [x] `Register[R]()` — local preflight + private reservation + deadline-scoped ping + protected DI publication/health commit; R and validated/adopted Registry bindings reject Replace, while invalid Registry bindings remain repairable before Finalize
+- [x] `RegisterOption`: `WithName`, `WithPingTimeout`, `WithLifecycle`, explicit `WithCallerOwnedLifecycle` opt-out (`WithCritical`, `WithTags` deferred to health package)
+- [x] Typed TX scope: `TxScope[T]` + `WithTx` / `GetTx` / `RequireTx` / `Conn`; per-scope type binding, nil/typed-nil rejection, and same-type multi-connection isolation (`WithTx[T]` / `GetTx[T]` / `Conn[T]` retained only as deprecated compatibility helpers)
 - [x] Tests (errors, registry, register, tx context)
 - [x] `store/doc.go`
 
 **Phase 3.3b — Bun Wrapper** (`store/sqldb/`, submodule: `github.com/credo-go/credo/store/sqldb`):
 
 - [x] `DB` type wrapping `*bun.DB` with lifecycle methods
-- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN, ConnectTimeout, MaxOpen, MaxIdle, MaxLifetime, SSLMode, Options)
+- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN,
+  ConnectTimeout, MaxOpen, pointer-valued MaxIdle, MaxLifetime, MaxIdleTime,
+  SSLMode, Options) + fail-loud pool validation, `DB.Stats`, cumulative health
+  diagnostics, successful-registration unlimited-pool warning, exact driver
+  aliases, IPv6-safe generated DSNs, non-zero network ports, rounded-up
+  PostgreSQL sub-second timeouts, secret-safe option-conflict rejection, and
+  explicit-nil plus known-family-mismatch dialect/connector rejection
 - [x] `Open(cfg, opts...)` — factory with functional options
-- [x] Error mapping (sql.ErrNoRows→ErrNotFound, unique→ErrDuplicate, FK→ErrConflict, timeout→ErrTimeout)
-- [x] `RunInTx` / `RunInTxWith` — TX management with context propagation and savepoints
+- [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
+- [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure
 - [x] Query builder proxies: `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`
-- [x] 5 guardrails: TX inject, Apply varargs+nil, Unwrap builder-only, QueryHook trace, raw terminals
-- [x] `Client() *bun.DB` escape hatch
-- [x] `Page[T]` typed pagination terminal on `SelectQuery` (replaced the `Paginate`/`PaginateRequest` free functions)
+- [x] 8 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, curated Select Limit/Offset int32 narrowing rejection, and fail-loud unsupported Count/Page shapes
+- [x] Select execution snapshots preserve explicit/raw `Conn`, builder errors, `WherePK`, soft-delete flags, model hooks and relation state across `Scan`/`Count`/`Exists`/`Page`
+- [x] Typed `One`/`All`/`Page` are model-less terminals: pre-bound `Select`/`Model`/`Apply` state returns `ErrTypedTerminalModel` before DB execution; optional query model args reject arity >1
+- [x] Escape hatches: transaction-aware `Conn(ctx) bun.IDB` / `RequireTx(ctx)` plus base-pool `Client() *bun.DB`
+- [x] Finite nested-savepoint creation/cleanup/ambient-abort wait budget: 5s default + `WithTxCleanupTimeout`; callback duration excluded; shared rollback-only state closes async-abort commit races
+- [x] `Page[T]` typed pagination terminal on `SelectQuery` (replaced the `Paginate`/`PaginateRequest` free functions); immutable request snapshot and strict pre-COUNT `ErrInvalidPageRequest` guard, including Bun v1.2.18's int32 LIMIT/OFFSET range
+- [x] Universal `_credo_count_source` logical count conformance: plain projections, ungrouped aggregates, `Distinct`, `Group`, and `Group+Having`; root ORDER/LIMIT/OFFSET/FOR is excluded; model SELECT hooks run on the private source, `QueryEvent.Model` remains visible, and soft-delete policy is not duplicated on the outer count
+- [x] Standalone `Having` and direct compound Count/Page reject pre-I/O with `ErrUnsupportedCountQuery`; MySQL server-oracle conformance under normal and `NO_BACKSLASH_ESCAPES` wraps logical-count 1060 after I/O with the driver cause, accepts server-valid wildcard/implicit expressions, and leaves non-count 1060 unchanged; advanced callers restructure unsafe shapes behind an outer derived table/CTE
+- [x] Count source renders exactly once and revalidates relation-callback mutations; predicates/projections survive, while model replacement, root ORDER/LIMIT/OFFSET/FOR, standalone Having, and compound roots fail pre-I/O
 - [x] Tests (db, config, error mapping, tx, query proxies, integration)
 
 **Phase 3.3c** (deferred):
 
 - [ ] Redis store contracts (depends on `pubsub/` design; also feeds the cache / rate-limit store / pubsub-backend stories)
 - [ ] Observability QueryHook for automatic trace spans (depends on Phase 3.5)
+- [ ] General resource-identity/lifecycle registry across store/pubsub/gRPC/worker only after a second concrete subsystem needs it; raw DI duplication remains outside the store ledger and unsupported
+- [ ] Fail-loud driver capability validation for requested `sql.TxOptions` isolation/read-only semantics; pinned modernc SQLite currently ignores isolation and does not enforce read-only, so SQLite snapshot guidance uses plain `InTx`
 
 **Phase 3.3d**:
 
@@ -330,19 +349,32 @@
 
 - [x] `db.InTx(ctx, fn)` — method-form TX sugar over `RunInTx` (handler-side ergonomics; called with `ctx.Context()`) — plus `db.InTxWith` for `sql.TxOptions` symmetry
 - [x] Migration wrapper over `bun/migrate` (replaces the goose plan; the optional `credo migrate:*` CLI sugar lives in Phase 5.1):
-  - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success by default so failed migrations are retried on next start)
-  - [x] `OnStart` lifecycle integration (opt-in auto-run on app start) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
+  - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success gives at-least-once re-attempt for Up errors surfaced by Bun, not automatic retry safety)
+  - [x] `OnStart` lifecycle integration (dev/single-replica opt-in) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
   - [x] `embed.FS` migration bundling support (Bun's `Discover` works on any `fs.FS`; covered by tests)
   - [x] Seeding: documented as plain migration files (no separate mechanism)
+  - [x] Cancellation-detached migration unlock with a fixed five-second caller bound; timeout is an uncertain outcome and is not automatically retried
+  - [x] Multi-replica production contract: one-shot pre-deploy job first, `OnStart` for dev/single-replica convenience, expand-contract and replay-safe/idempotent retry guidance
+  - [ ] Track [Bun #1389](https://github.com/uptrace/bun/issues/1389) and add a conformance test before promising `.tx.up.sql` commit-error → unapplied-marker correctness
 - [x] Tests (`migrate_test.go` + `InTx` cases in `integration_test.go`)
 
 ### 3.4 Health Checks (root package)
 
 **Source**: Original (written from scratch)
 
-> **2026-06-11 — engine folded into root.** The engine now lives unexported in the root package (`health_engine.go`); `internal/health/` holds only the module-internal DI seam (`StoreFunc`) through which `store.Register` contributes store health. `SetHealthStoreFunc`/`HealthStoreResult` were removed from the public API (see ADR-016 amendment). User-facing behavior is unchanged.
+> **2026-06-11 / 2026-07-10 — engine folded into root, bounded execution added.** The engine lives unexported in the root package (`health_engine.go`); `internal/health/` holds the stable bounded `Probe` primitive plus the module-internal per-store DI seam (`StoreFunc`). `SetHealthStoreFunc`/`HealthStoreResult` remain removed from the public API (see ADR-016).
 
 - [x] Engine with concurrent check execution (root, unexported; was `internal/health/`)
+- [x] Bounded common runner for named + store checks: immutable results,
+  enforced per-check deadlines, panic isolation, and parallel execution
+- [x] Stable per-check singleflight: overlapping probes reuse one execution;
+  non-cooperative callbacks cannot accumulate one goroutine per request
+- [x] Typed store health cause (`Health.Cause`, JSON-excluded), operator logging,
+  default response masking, and explicit `ExposeErrors` opt-in
+- [x] Store status allowlist and fail-closed custom/store name-collision handling
+- [x] Store registration/Registry typed-nil hardening
+- [ ] Optional/critical stores and bounded low-cardinality tags (separate API decision)
+- [x] Lifecycle ownership and Registry/seam atomicity hardening: direct `Lifecycle` is framework-owned; separate handle requires explicit caller-owned opt-out; default identity is the top-level Lifecycle and semantic wrappers explicitly forward `ResourceIdentity`; equal tokens cannot repeat inside the Register ledger; raw DI duplication is unsupported; failure leaves no visible entry/value; interface access uses `Alias`
 - [x] `HealthConfig` with `*bool` toggles, custom paths, check timeout
 - [x] `/health` (liveness) + `/ready` (readiness) handlers via `app.UseHealth()`
 - [x] `AddLivenessCheck` / `AddReadinessCheck` with `HealthChecker` interface
@@ -374,11 +406,16 @@
 **Source**: Original (no external source)
 
 - [x] `Page[T]` generic response type
-- [x] Offset/limit pagination
-- [ ] Cursor-based pagination (future — separate `CursorPage[T]` type)
-- [x] Auto-read `?page=`, `?limit=`, `?cursor=` from request
-- [x] `Meta` struct (total, current_page, per_page, last_page)
+- [x] Offset/limit pagination; strict non-mutating `Offset() (int, error)` rejects non-positive/native-overflow values while Normalize/Validate retain forgiving defaults and clamp policy
+- [x] Cursor/keyset design gate: forward-only `CursorPage[T]` is distinct from the working name `Slice[T]` for future total-free offset pagination; terminal-owned stable order, non-null immutable keys, explicit unique tie-breaker, `per_page+1`, no COUNT, and signed scope-bound token policy are fixed
+- [ ] Cursor-based pagination implementation — gate requires a concrete consumer, a fail-loud Bun post-hook ordering/window boundary, invalid-argument transport mapping, canonical wire-format golden vectors, and real PostgreSQL/MySQL/SQLite conformance; backward/nullable/expression-key/encrypted cursor variants remain deferred
+- [x] Auto-read `?page=` and `?per_page=` from request (reserved cursor input `?after=` remains deferred)
+- [x] `Meta` struct (`total_count`, `page`, `per_page`, `total_pages`, `has_next`, `has_prev`)
+- [x] `NewPage` computes ceiling division without overflowing `TotalPages` at `math.MaxInt64`
 - [x] `Map[U]` method on `Page[T]` — item projection (model → DTO) preserving pagination meta
+- [x] COUNT+SELECT isolation matrix and deterministic SQLite WAL drift/snapshot conformance; `Page` never starts an implicit transaction
+- [ ] First-class custom count source/strategy (defer until two real consumers repeat explicit `Count` + data query + `NewPage` composition)
+- [ ] Total-free offset response — `Slice[T]` is the working name and gets its own design gate; do not encode an unknown total in `Page`/`Meta`
 - [x] Tests
 
 ### 3.7 Test Utilities (`testutil/`)
@@ -438,18 +475,33 @@
 - [ ] Tests
 - [ ] Update NOTICES
 
-### 4.4 WebSocket & SSE (`websocket/`)
+### 4.4 WebSocket (`websocket/`) and SSE
 
-**Source**: coder/websocket (ISC)
+**Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-> SSE is dependency-free (stdlib flusher) and may ship first as a quick win — increasingly relevant for LLM/streaming responses. WebSocket follows via coder/websocket adaptation.
+WebSocket server support is implemented as an adapter rather than copied
+protocol code. The canonical API stays on the existing router:
+`ws := websocket.Use(app, cfg)` and
+`app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect,
+heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain
+demand-gated follow-ups rather than MVP promises.
 
-- [ ] `ctx.SSE()` for Server-Sent Events (stdlib-only — can land before WebSocket)
-- [ ] Copy core upgrade + connection handling
-- [ ] `ctx.Upgrade()` API for WebSocket
-- [ ] Room/broadcast support
-- [ ] Tests
-- [ ] Update NOTICES
+- [x] Credo-owned message/close/config/connection façade over coder/websocket
+- [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
+- [x] RFC 7807 pre-upgrade errors and fail-loud non-Hijacker behavior
+- [x] App-managed `OnDrain` integration plus explicit external-server shutdown
+- [x] Real TCP/WSS/HTTP2-negative, race/conformance, fuzz, and observability coverage
+- [x] ADR/spec/guide/example and NOTICES attribution
+
+SSE is a separate deferred transport; it is not folded into the WebSocket
+package or lifecycle. Before shipping, `Response` and every supported wrapper
+chain must provide fail-loud `http.Flusher` capability/error semantics—silent
+buffering or a claimed-but-nonfunctional Flush is unacceptable. Only then
+should an SSE response API and disconnect/drain contract be designed.
+
+- [ ] Design and prove the Flush capability boundary across middleware
+- [ ] Specify SSE framing, heartbeat, disconnect, and drain semantics
+- [ ] Add an SSE API only after those gates pass
 
 ### 4.5 OpenAPI (`openapi/`)
 
@@ -620,10 +672,11 @@
 
 ### CI/CD
 
-- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; green on go1.27rc1 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
+- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; pinned to go1.27rc2 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
 - [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
 - [x] CodeQL security analysis (`codeql.yml`)
 - [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot
+- [x] Lockstep library release gate — CI builds an external `store/sqldb` consumer from synthetic root+nested tags without local `replace`; the manual `Release` workflow validates the prepared root requirement and atomically publishes both module tags
 - [ ] Codecov or Coveralls integration
 - [ ] Release workflow with goreleaser — becomes relevant with `cmd/credo` (Phase 5.1); the library itself releases via git tags
 
