@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-22
+
 ### Added
 
 - **AccessLog policy controls** — the authoritative built-in access logger now supports a dedicated sink (`WithAccessLogLogger`), a dynamic status-derived threshold (`WithAccessLogMinLevel(slog.Leveler)`), and a positive post-response filter (`WithAccessLogResultFilter`). `AccessLogEntry` gives filters an immutable request/result snapshot while preserving the existing emitted attribute schema; `middleware.AccessLogConfig` exposes matching `MinLevel` and `ResultFilter` fields for route/group policies. Defaults remain unchanged (`Info`, all status classes), `Skipper` remains the pre-dispatch package convention, and `slog.LevelVar` can change the threshold at runtime. The built-in observes final error-renderer status/bytes/duration; configurable middleware retains its earlier observation boundary. See [ADR-010](docs/adr/010-middleware-architecture.md).
@@ -258,6 +260,7 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/credo-go/credo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/credo-go/credo/compare/cdb0643f6b6b006d7c5d2d81c916b3942874e6c6...v0.2.0
 [0.1.0]: https://github.com/credo-go/credo/commit/cdb0643f6b6b006d7c5d2d81c916b3942874e6c6
