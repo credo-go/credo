@@ -50,7 +50,7 @@
 //
 //   - With<X> / Without<X> — construction-time [Option] values passed to [New].
 //     They only set configuration and perform no I/O, so their order does not
-//     matter (e.g. [WithLogger], [WithAccessLogSkipper], [WithoutAccessLog]).
+//     matter (e.g. [WithLogger], [WithAccessLogMinLevel], [WithoutAccessLog]).
 //   - Use<X> — post-construction setup that mounts a subsystem: it registers
 //     routes or an engine and may read files. It therefore can fail — panicking
 //     on developer misuse, or returning an error when it touches the outside
@@ -61,8 +61,9 @@
 //     [App.OnDrain], [App.OnShutdown]).
 //
 // Request logging is on by default (see [WithLogger]). Silence individual
-// routes or whole groups with the [MetaAccessLog] route meta, or noisy paths
-// with [WithAccessLogSkipper]; health probes are silent by default
+// routes or whole groups with the [MetaAccessLog] route meta, noisy paths with
+// [WithAccessLogSkipper], or result classes with [WithAccessLogMinLevel] and
+// [WithAccessLogResultFilter]; health probes are silent by default
 // ([HealthConfig.LogRequests] re-enables them).
 //
 // # Panics and Errors

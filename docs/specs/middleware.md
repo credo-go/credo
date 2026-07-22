@@ -42,16 +42,18 @@ Three built-in middleware are applied automatically by `compile()` and require z
 
 **Execution chain:** `builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch`
 
-These built-in variants are zero-config. For custom configuration (custom header, custom generator, skipper, custom logger), disable the built-in and use the `middleware` package equivalents instead:
+RequestID custom headers/generators still use the configurable middleware. AccessLog custom sinks, thresholds, request skipping, and result filtering stay on the authoritative built-in layer:
 
 ```go
 app, err := credo.New(
-    credo.WithoutRequestID(),     // disable built-in
-    credo.WithoutAccessLog(), // disable built-in
+	credo.WithAccessLogLogger(accessLogger),
+	credo.WithAccessLogMinLevel(slog.LevelWarn),
+	credo.WithAccessLogSkipper(skipAssets),
+	credo.WithAccessLogResultFilter(keepInterestingResults),
+	credo.WithoutRequestID(), // custom RequestID middleware below
 )
 app.GlobalMiddleware(
-    middleware.RequestID(middleware.RequestIDConfig{Header: "X-Trace-Id"}),
-    middleware.AccessLog(middleware.AccessLogConfig{Skipper: mySkipper}),
+	middleware.RequestID(middleware.RequestIDConfig{Header: "X-Trace-Id"}),
 )
 ```
 
@@ -59,7 +61,31 @@ app.GlobalMiddleware(
 
 **request_id sourcing rule** (shared by built-in and `middleware` AccessLog/Recover): the `request_id` attribute is added explicitly only when the target logger does not already carry it — that is, when a custom `Logger` was configured, or when no request-scoped logger was set (`ctx.HasRequestLogger()`). This keeps `request_id` appearing exactly once per log record in every combination.
 
-**Access-log filtering.** The built-in access logger stays on by default but can skip requests two ways without `WithoutAccessLog()`: `WithAccessLogSkipper(func(*Context) bool)` (a pre-dispatch predicate, so only request-level data is reliable) and the `credo.MetaAccessLog` route meta set to `false` (per route, or per group via `LookupMeta` inheritance; a route value overrides its group; a non-bool value fails open and is logged). `middleware.AccessLog` honours both its `AccessLogConfig.Skipper` and `MetaAccessLog`. The emit core — attribute set, `"request completed"` message, and status→level mapping — is shared via `internal/observe.EmitAccessLog`; status drives the level, never whether a line is emitted.
+**Access-log contract.** Status maps to an actual record level: `1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`. `WithAccessLogMinLevel(slog.Leveler)` is an admission threshold, not a level rewrite; nil defaults to Info, a typed-nil provider is a `New` error, and concurrency-safe `slog.LevelVar` supports runtime changes. `WithAccessLogResultFilter(func(*Context, AccessLogEntry) bool)` is positive (`true = emit`), synchronous, concurrency-safe, and cannot restore an entry rejected by MinLevel. Its Context is pooled and must not be retained. The equivalent configurable fields are `AccessLogConfig.MinLevel` and `ResultFilter`; typed-nil MinLevel panics at middleware construction.
+
+```go
+// package credo
+type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
+
+func WithAccessLogLogger(*slog.Logger) Option
+func WithAccessLogMinLevel(slog.Leveler) Option
+func WithAccessLogSkipper(func(*Context) bool) Option
+func WithAccessLogResultFilter(AccessLogResultFilter) Option
+
+// package middleware
+type AccessLogConfig struct {
+	Logger       *slog.Logger
+	MinLevel     slog.Leveler
+	Skipper      Skipper
+	ResultFilter credo.AccessLogResultFilter
+}
+```
+
+Nil logger/filter values preserve defaults; nil MinLevel normalizes to Info. All four built-in controls perform no request-time work under `WithoutAccessLog`, although invalid typed-nil configuration is still rejected during `New`. A non-nil custom Leveler must be concurrency-safe and is read exactly once per eligible request.
+
+**Evaluation order:** `Skipper → handler → MetaAccessLog → status/level → MinLevel → snapshot → ResultFilter → emit`. The pre-dispatch Skipper (`true = skip`) sees only request data. `MetaAccessLog: false` then has precedence over result policies. Snapshot construction and ResultFilter are skipped for threshold/meta rejections. `AccessLogEntry.RequestID` is always populated from request state; the emitted `request_id` attribute is separately added only when the target logger does not already carry it. `RouteName` is filter metadata and is not emitted as `route_name`.
+
+The built-in producer runs outside recovery/error rendering and observes final status, bytes, and total duration when the inner pipeline completes. If recovery is disabled and a panic escapes, it records the 500 fallback and bytes written before the panic. `middleware.AccessLog` runs at its configured position; on returned-error paths status is its best pre-render classification, bytes are those written so far, and duration excludes later rendering. A custom access logger does not inherit arbitrary `ctx.AddLogAttrs` enrichment, although standard fields and request ID are emitted. Using built-in and configurable AccessLog together intentionally produces two records; disable the built-in only when that is not desired.
 
 The rule is convention-based: `HasRequestLogger` reports only that a request-scoped logger was set, not which attributes it carries (slog loggers are opaque). Middleware that replaces the logger without deriving from `ctx.Logger()` silently drops `request_id`, and the framework cannot detect it — enrich via `ctx.AddLogAttrs`, which derives by construction, and reserve `ctx.SetLogger` for genuine wholesale replacement.
 
@@ -186,13 +212,13 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | --- | --- | --- |
 | Panic recovery | Outermost layer, catches all panics | `WithoutRecover()` |
 | Request ID | `X-Request-Id` header + `ctx.Logger()` enrichment | `WithoutRequestID()` |
-| Access log | Structured request logging via `slog` using `Request.RealIP()` for `remote_addr`; filter with `WithAccessLogSkipper` or the `MetaAccessLog` route meta | `WithoutAccessLog()` |
+| Access log | Final structured request logging via `slog`; configure with `WithAccessLogLogger`, `WithAccessLogMinLevel`, `WithAccessLogSkipper`, `WithAccessLogResultFilter`, or `MetaAccessLog` | `WithoutAccessLog()` |
 
 ### Configurable (middleware package)
 
 | Middleware | Source | Description |
 | --- | --- | --- |
-| `AccessLog` | Chi | Structured request logging with Skipper, `MetaAccessLog` silencing, custom logger, `Request.RealIP()` client IP |
+| `AccessLog` | Chi | Route/group-scoped request logging with Skipper, MinLevel, ResultFilter, `MetaAccessLog`, custom logger, and an earlier error-path observation boundary |
 | `Recover` | Chi | Per-group/route panic recovery with custom config |
 | `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |

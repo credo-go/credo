@@ -3,9 +3,11 @@ package middleware_test
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/credo-go/credo"
@@ -527,5 +529,139 @@ func TestAccessLog_MetaSilenceWithCustomLogger(t *testing.T) {
 	app.ServeHTTP(w, httptest.NewRequest("GET", "/silent", nil))
 	if buf.Len() != 0 {
 		t.Errorf("expected no log for silenced route with custom logger, got: %s", buf.String())
+	}
+}
+
+func TestAccessLog_MinLevelAndResultFilter(t *testing.T) {
+	t.Run("Warn drops success before filter", func(t *testing.T) {
+		logger, buf := newTestLogger(t)
+		var calls atomic.Int32
+		app := mustNew(t, credo.WithoutAccessLog())
+		app.GET("/", func(ctx *credo.Context) error {
+			return ctx.Response().NoContent(200)
+		}).Middleware(middleware.AccessLog(middleware.AccessLogConfig{
+			Logger:   logger,
+			MinLevel: slog.LevelWarn,
+			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
+				calls.Add(1)
+				return true
+			},
+		}))
+
+		app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		if calls.Load() != 0 {
+			t.Fatalf("filter calls = %d, want 0", calls.Load())
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("Warn threshold logged 200: %s", buf.String())
+		}
+	})
+
+	t.Run("Warn keeps client error for filter", func(t *testing.T) {
+		logger, buf := newTestLogger(t)
+		var captured credo.AccessLogEntry
+		app := mustNew(t, credo.WithoutAccessLog())
+		app.GET("/", func(*credo.Context) error {
+			return credo.NewHTTPError(http.StatusNotFound)
+		}).Name("missing").Middleware(middleware.AccessLog(middleware.AccessLogConfig{
+			Logger:   logger,
+			MinLevel: slog.LevelWarn,
+			ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
+				captured = entry
+				return true
+			},
+		}))
+
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("response status = %d, want 404", w.Code)
+		}
+		if captured.Status != http.StatusNotFound {
+			t.Errorf("entry status = %d, want 404", captured.Status)
+		}
+		if captured.Bytes != 0 {
+			t.Errorf("middleware entry bytes = %d, want 0 before error rendering", captured.Bytes)
+		}
+		if captured.RouteName != "missing" {
+			t.Errorf("RouteName = %q, want missing", captured.RouteName)
+		}
+		if buf.Len() == 0 {
+			t.Fatal("expected access log")
+		}
+	})
+
+	t.Run("false skips log", func(t *testing.T) {
+		logger, buf := newTestLogger(t)
+		app := mustNew(t, credo.WithoutAccessLog())
+		app.GET("/", func(ctx *credo.Context) error {
+			return ctx.Response().NoContent(500)
+		}).Middleware(middleware.AccessLog(middleware.AccessLogConfig{
+			Logger: logger,
+			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
+				return false
+			},
+		}))
+
+		app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		if buf.Len() != 0 {
+			t.Fatalf("filter=false emitted log: %s", buf.String())
+		}
+	})
+}
+
+func TestAccessLog_LevelVarRuntimeUpdate(t *testing.T) {
+	logger, buf := newTestLogger(t)
+	var level slog.LevelVar
+	level.Set(slog.LevelWarn)
+
+	app := mustNew(t, credo.WithoutAccessLog())
+	app.GET("/", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	}).Middleware(middleware.AccessLog(middleware.AccessLogConfig{
+		Logger:   logger,
+		MinLevel: &level,
+	}))
+
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if buf.Len() != 0 {
+		t.Fatalf("Warn threshold logged 200: %s", buf.String())
+	}
+	level.Set(slog.LevelInfo)
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if buf.Len() == 0 {
+		t.Fatal("Info threshold did not log 200 after LevelVar update")
+	}
+}
+
+func TestAccessLog_TypedNilMinLevelPanicsAtConstruction(t *testing.T) {
+	var level *slog.LevelVar
+	defer func() {
+		r := recover()
+		message, ok := r.(string)
+		if !ok || !strings.Contains(message, "typed-nil slog.Leveler") {
+			t.Fatalf("panic = %v, want typed-nil Leveler panic", r)
+		}
+	}()
+	middleware.AccessLog(middleware.AccessLogConfig{MinLevel: level})
+}
+
+func TestAccessLog_BuiltInAndMiddlewareExplicitlyDoubleEmit(t *testing.T) {
+	builtInLogger, builtInBuf := newTestLogger(t)
+	middlewareLogger, middlewareBuf := newTestLogger(t)
+	app := mustNew(t, credo.WithLogger(builtInLogger), credo.WithoutRequestID())
+	app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
+		Logger: middlewareLogger,
+	}))
+	app.GET("/", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if got := strings.Count(builtInBuf.String(), "request completed"); got != 1 {
+		t.Errorf("built-in access-log count = %d, want 1", got)
+	}
+	if got := strings.Count(middlewareBuf.String(), "request completed"); got != 1 {
+		t.Errorf("middleware access-log count = %d, want 1", got)
 	}
 }

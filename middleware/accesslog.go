@@ -22,11 +22,22 @@ type AccessLogConfig struct {
 	// Default: ctx.Logger() (the request-scoped logger from the app).
 	Logger *slog.Logger
 
+	// MinLevel is the minimum status-derived level submitted to the logger.
+	// nil defaults to slog.LevelInfo. The Leveler is read once per eligible
+	// request and must be concurrency-safe. A typed-nil Leveler panics during
+	// middleware construction.
+	MinLevel slog.Leveler
+
 	// Skipper defines a function to skip logging for certain requests.
 	// When Skipper returns true, the request is not logged.
 	// Useful for health check endpoints or static assets.
 	// Default: DefaultSkipper (all requests are logged).
 	Skipper Skipper
+
+	// ResultFilter runs after route-meta silencing and MinLevel. true emits the
+	// observed entry; false skips it. It cannot restore an entry rejected by
+	// MinLevel. The callback may run concurrently and must not retain ctx.
+	ResultFilter credo.AccessLogResultFilter
 }
 
 // DefaultAccessLogConfig returns the default AccessLog middleware config.
@@ -34,7 +45,8 @@ type AccessLogConfig struct {
 // package-wide defaults.
 func DefaultAccessLogConfig() AccessLogConfig {
 	return AccessLogConfig{
-		Skipper: DefaultSkipper,
+		MinLevel: slog.LevelInfo,
+		Skipper:  DefaultSkipper,
 	}
 }
 
@@ -48,8 +60,14 @@ func DefaultAccessLogConfig() AccessLogConfig {
 // set to false (consulted after the handler, once the route is known), which
 // also silences a whole group via LookupMeta inheritance.
 //
+// MinLevel and ResultFilter only narrow the set of records; ResultFilter cannot
+// restore a record rejected by MinLevel. A custom Logger is not derived from
+// ctx.Logger(), so request-scoped attributes are not inherited; request_id is
+// still added explicitly. On returned-error paths this middleware observes the
+// response before the centralized error renderer, unlike the built-in logger.
+//
 // The log level varies by response status code:
-//   - 2xx, 3xx: slog.LevelInfo
+//   - 1xx, 2xx, 3xx: slog.LevelInfo
 //   - 4xx:      slog.LevelWarn
 //   - 5xx:      slog.LevelError
 func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
@@ -79,13 +97,32 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 				}
 			}
 
-			duration := time.Since(start)
-
 			// Use the Response's tracked status and size.
 			status := accessLogStatus(ctx.Response().Status(), err)
+			level := internalobserve.Level(status)
+			if level < config.MinLevel.Level() {
+				return err
+			}
 
 			req := ctx.Request()
 			r := req.Request
+			entry := credo.AccessLogEntry{
+				Method:       r.Method,
+				Path:         r.URL.Path,
+				OriginalPath: ctx.OriginalPath(),
+				Status:       status,
+				Bytes:        ctx.Response().Size(),
+				Duration:     time.Since(start),
+				RemoteAddr:   req.RealIP(),
+				UserAgent:    r.UserAgent(),
+				RequestID:    GetRequestID(ctx),
+			}
+			if route := ctx.Route(); route != nil {
+				entry.RouteName = route.GetName()
+			}
+			if config.ResultFilter != nil && !config.ResultFilter(ctx, entry) {
+				return err
+			}
 
 			logger := config.Logger
 			if logger == nil {
@@ -96,23 +133,23 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 			// already carry it: a custom Logger never does; ctx.Logger()
 			// does whenever a request-scoped logger was set (built-in
 			// request ID tier, RequestID middleware, or SetLogger).
-			requestID := ""
+			explicitRequestID := ""
 			if config.Logger != nil || !ctx.HasRequestLogger() {
-				requestID = GetRequestID(ctx)
+				explicitRequestID = entry.RequestID
 			}
 
 			internalobserve.EmitAccessLog(
 				r.Context(),
 				logger,
-				r.Method,
-				r.URL.Path,
-				status,
-				ctx.Response().Size(),
-				duration,
-				req.RealIP(),
-				r.UserAgent(),
-				ctx.OriginalPath(),
-				requestID,
+				entry.Method,
+				entry.Path,
+				entry.Status,
+				entry.Bytes,
+				entry.Duration,
+				entry.RemoteAddr,
+				entry.UserAgent,
+				entry.OriginalPath,
+				explicitRequestID,
 			)
 
 			return err
@@ -139,6 +176,12 @@ func accessLogStatus(status int, err error) int {
 }
 
 func normalizeAccessLogConfig(config AccessLogConfig) AccessLogConfig {
+	if internalobserve.IsTypedNilLeveler(config.MinLevel) {
+		panic("middleware: AccessLog MinLevel is a typed-nil slog.Leveler")
+	}
+	if config.MinLevel == nil {
+		config.MinLevel = slog.LevelInfo
+	}
 	if config.Skipper == nil {
 		config.Skipper = DefaultSkipper
 	}

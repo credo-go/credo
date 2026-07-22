@@ -18,9 +18,11 @@
 // # Built-in vs Configurable
 //
 // Credo provides built-in versions of Recover, RequestID, and AccessLog that are
-// auto-enabled with zero configuration. Use the middleware package equivalents
-// when you need custom configuration (e.g., custom header, skipper, custom
-// logger). Disable the built-in first to avoid duplicates:
+// auto-enabled with zero configuration. Built-in AccessLog also supports a
+// dedicated logger, minimum level, skipper, and post-response result filter;
+// keeping it preserves final error-renderer status, bytes, and duration. Use
+// this package's AccessLog for route/group-specific policies or a deliberate
+// second sink. Disable the built-in first when duplicate records are unwanted:
 //
 //	app, _ := credo.New(
 //	    credo.WithoutRequestID(),     // disable built-in

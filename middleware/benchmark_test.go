@@ -81,7 +81,7 @@ func BenchmarkSecure(b *testing.B) {
 	}
 }
 
-// BenchmarkAccessLog measures the access log middleware with fixed-size [8]slog.Attr
+// BenchmarkAccessLog measures the access log middleware with fixed-size [9]slog.Attr
 // array and io.Discard output to isolate middleware overhead from I/O.
 func BenchmarkAccessLog(b *testing.B) {
 	app := mustNewBench(b)

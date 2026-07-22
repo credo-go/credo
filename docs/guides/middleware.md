@@ -274,9 +274,9 @@ builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler
 
 The built-in RequestID enriches `ctx.Logger()` with a `request_id` attribute. All downstream logging (including the access log and panic recovery) automatically includes the request ID.
 
-### Silencing the Built-in Access Log
+### Configuring the Built-in Access Log
 
-You rarely need to disable the access logger to quiet noisy traffic — two filters keep it on while skipping selected requests:
+The built-in logger is the primary AccessLog configuration surface because it observes the final response outside recovery and error rendering. You rarely need to disable it merely to quiet noisy traffic.
 
 - **A skipper predicate.** `credo.WithAccessLogSkipper(func(*credo.Context) bool)` runs before routing, so decide from request-level data (path, headers). Return `true` to skip:
 
@@ -298,29 +298,56 @@ internal.GET("/audit", auditHandler).SetMeta(credo.MetaAccessLog, true) // ...ex
 
 A route-level value overrides its group's, so you can silence a group and keep one route loud. Only a bool `false` silences; any other value is ignored (the request is logged). The same meta is honoured by `middleware.AccessLog`. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
 
-### Using Custom Configuration
+#### Minimum level
 
-When you need custom headers, custom generators, or access-log skippers, disable the built-in and use the `middleware` package version:
+Status always determines the record's actual level: `1xx/2xx/3xx` are Info, `4xx` are Warn, and `5xx+` are Error. `WithAccessLogMinLevel` controls which of those records are admitted without changing their actual level:
+
+```go
+// Log only 4xx and 5xx.
+app, _ := credo.New(credo.WithAccessLogMinLevel(slog.LevelWarn))
+
+// Log only 5xx.
+app, _ := credo.New(credo.WithAccessLogMinLevel(slog.LevelError))
+```
+
+The default is Info. You can pass a concurrency-safe `*slog.LevelVar` to change the threshold at runtime. MinLevel is read once per eligible request.
+
+#### Result filtering
+
+`WithAccessLogResultFilter` runs after the handler, route-meta silencing, and MinLevel check. Return `true` to emit. For example, retain every error and any successful request slower than one second:
 
 ```go
 app, _ := credo.New(
-    credo.WithoutRequestID(),     // disable built-in
-    credo.WithoutAccessLog(), // disable built-in
-)
-app.GlobalMiddleware(
-    middleware.RequestID(middleware.RequestIDConfig{
-        Header: "X-Correlation-Id",
-        Generator: func() string { return uuid.NewString() },
-    }),
-    middleware.AccessLog(middleware.AccessLogConfig{
-        Skipper: func(ctx *credo.Context) bool {
-            return ctx.Request().URL.Path == "/health"
-        },
-    }),
+	credo.WithAccessLogMinLevel(slog.LevelInfo), // default; successes must reach the filter
+	credo.WithAccessLogResultFilter(func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+		return entry.Status >= 400 || entry.Duration >= time.Second
+	}),
 )
 ```
 
-> **Important:** Do not use both the built-in and middleware versions simultaneously — this produces duplicate headers and log entries.
+MinLevel and ResultFilter intersect. `Warn` in the preceding example would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `ctx.Response()`, for status, bytes, and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state.
+
+The Context parameter supports request/result combinations:
+
+```go
+app, _ := credo.New(credo.WithAccessLogResultFilter(
+	func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+		user, ok := ctx.GetUser[User]()
+		return (ok && user.TenantID == "audit-all") || entry.Status >= 400
+	},
+))
+```
+
+#### Dedicated AccessLog sink
+
+Keep the authoritative built-in boundary while routing access records to a separate JSON logger:
+
+```go
+accessLogger := slog.New(slog.NewJSONHandler(accessFile, nil))
+app, _ := credo.New(credo.WithAccessLogLogger(accessLogger))
+```
+
+The dedicated logger receives the standard AccessLog fields and an explicit request ID, but it is not derived from `ctx.Logger()` and therefore does not inherit arbitrary attributes added with `ctx.AddLogAttrs` or `ctx.SetLogger`.
 
 ---
 
@@ -373,23 +400,24 @@ app.GlobalMiddleware(middleware.RequestID(middleware.RequestIDConfig{
 
 ### AccessLog
 
-> **Note:** Access logging is built into the framework by default. The `middleware.AccessLog()` middleware is only needed when you want custom configuration (e.g., a Skipper function, custom logger). Disable the built-in first with `credo.WithoutAccessLog()`.
+> **Note:** Access logging is built into the framework by default, and the built-in supports a dedicated logger, MinLevel, Skipper, and ResultFilter. Use `middleware.AccessLog()` for route/group-specific policies or a deliberate second sink. Disable the built-in with `credo.WithoutAccessLog()` when duplicate records are not wanted.
 
-Logs each request with structured attributes: method, path, status, bytes, duration, real client address, user agent, and request ID (when RequestID middleware is active). Log level varies by status: 2xx/3xx = Info, 4xx = Warn, 5xx = Error.
+Logs each request with structured attributes: method, path, status, bytes, duration, real client address, user agent, and request ID (when RequestID middleware is active). Log level varies by status: 1xx/2xx/3xx = Info, 4xx = Warn, 5xx+ = Error.
 
-Skip logging for specific routes:
+For example, add a separate audit sink only to an admin group while keeping the normal built-in record:
 
 ```go
-app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
-    Skipper: func(ctx *credo.Context) bool {
-        return ctx.Request().URL.Path == "/health"
-    },
+admin.Middleware(middleware.AccessLog(middleware.AccessLogConfig{
+	Logger:   auditLogger,
+	MinLevel: slog.LevelWarn,
 }))
 ```
 
 The `credo.MetaAccessLog` route meta (`SetMeta(credo.MetaAccessLog, false)`) also silences logging here, exactly as it does for the built-in logger — useful for muting a route or group without a path check.
 
 When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, Credo includes `path_original` in the log entry.
+
+The configurable middleware observes at its position inside the centralized error handler. On a returned-error path its status is the best pre-render classification, bytes are those written so far, and duration excludes later error rendering. Prefer the built-in options when final response values matter.
 
 ### Rewrite
 
