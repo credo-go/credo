@@ -68,6 +68,7 @@ func TestLevel(t *testing.T) {
 		want   slog.Level
 	}{
 		{200, slog.LevelInfo},
+		{101, slog.LevelInfo},
 		{302, slog.LevelInfo},
 		{404, slog.LevelWarn},
 		{499, slog.LevelWarn},
@@ -78,6 +79,19 @@ func TestLevel(t *testing.T) {
 		if got := Level(tt.status); got != tt.want {
 			t.Errorf("Level(%d) = %v, want %v", tt.status, got, tt.want)
 		}
+	}
+}
+
+func TestIsTypedNilLeveler(t *testing.T) {
+	var typedNil *slog.LevelVar
+	if IsTypedNilLeveler(nil) {
+		t.Error("nil interface reported as typed-nil")
+	}
+	if !IsTypedNilLeveler(typedNil) {
+		t.Error("nil *slog.LevelVar was not reported as typed-nil")
+	}
+	if IsTypedNilLeveler(slog.LevelInfo) {
+		t.Error("slog.LevelInfo reported as typed-nil")
 	}
 }
 

@@ -245,7 +245,7 @@ api.Middleware(authMiddleware)
 app.GET("/admin", adminHandler).Middleware(requireAdmin)
 ```
 
-Credo includes built-in request IDs, access logging, and panic recovery (`WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`). Additional middleware: `CORS`, `Secure`, `Compress`, `Timeout`, `RateLimit`. Use `middleware.RequestID()` / `middleware.AccessLog()` when you disable the built-ins and need custom configuration. `middleware.Recover()` is available for per-group/route custom recovery config.
+Credo includes built-in request IDs, access logging, and panic recovery (`WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`). Configure the authoritative built-in access logger with `WithAccessLogLogger`, `WithAccessLogMinLevel`, `WithAccessLogSkipper`, and `WithAccessLogResultFilter`; use `middleware.AccessLog()` for route/group-specific policies. `middleware.RequestID()` provides custom request-ID headers/generators, and `middleware.Recover()` provides per-group/route recovery config. Additional middleware include `CORS`, `Secure`, `Compress`, `Timeout`, and `RateLimit`.
 
 See the [Middleware Guide](middleware.md) for the full list, configuration options, and custom middleware patterns.
 

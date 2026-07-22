@@ -87,7 +87,8 @@ app.GlobalMiddleware(middleware.AccessLog())
 
 // Custom config
 app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
-	Logger: slog.Default(),
+	Logger:   slog.Default(),
+	MinLevel: slog.LevelWarn,
 	Skipper: func(ctx *credo.Context) bool {
 		return ctx.Request().URL.Path == "/health"
 	},
@@ -96,12 +97,20 @@ app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
 
 ### Access-Log Filtering
 
-Access logging is on by default (philosophy #6, "observable by default"): the built-in tier logs every request through the framework default logger even when `WithLogger` is not called. Two opt-out mechanisms keep that default while taming log volume, and both the built-in logger and the configurable `middleware.AccessLog` honour them:
+Access logging is on by default (philosophy #6, "observable by default"): the built-in tier logs every request through the framework default logger even when `WithLogger` is not called. It is also the primary configuration surface because it observes the final response outside recovery and centralized error rendering. `WithAccessLogLogger` selects a dedicated sink without giving up that authoritative boundary; the logger is not derived from `ctx.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
+
+Filtering is split by observation phase, and the built-in and configurable variants share the same ordering:
 
 - **`WithAccessLogSkipper(func(*Context) bool)`** — a predicate consulted by the built-in logger before routing. Because it runs pre-dispatch, only request-level data is reliable (method, path, headers); `ctx.Route()` and the response status are not yet set. It suits blanket path/header skips (metrics scrape, static assets). The configurable middleware has the equivalent `AccessLogConfig.Skipper`.
 - **`MetaAccessLog` route meta** — `route.SetMeta(credo.MetaAccessLog, false)` silences a single route, and the same call on a `Group` silences everything under it via `LookupMeta` inheritance. A route-level value overrides a group-level one (the route is read before its parents), so a noisy group can be silenced while one route inside it stays logged. Only a bool `false` silences; any non-bool value is ignored and the request is logged (fail-open). The built-in logger reads this in its defer (after the route is known); the configurable middleware reads it after `next`.
+- **`WithAccessLogMinLevel(slog.Leveler)`** — compares the status-derived record level with a dynamic minimum. `nil` means Info; `slog.LevelVar` permits a concurrency-safe runtime change. The configurable field is `AccessLogConfig.MinLevel`.
+- **`WithAccessLogResultFilter(func(*Context, AccessLogEntry) bool)`** — a positive post-response predicate (`true` emits) for status, duration, byte count, route name, request ID, and request/user metadata. The configurable field is `AccessLogConfig.ResultFilter`. The pooled Context is synchronous-only and callbacks must be concurrency-safe.
 
-The attribute set, message, and status-derived level are produced once in `internal/observe.EmitAccessLog`, shared by both loggers; only the per-request primitive collection differs (the internal package cannot import the root `credo` package). Status drives the log _level_ (2xx/3xx → Info, 4xx → Warn, 5xx → Error), never whether a line is emitted.
+The exact order is `Skipper → handler → MetaAccessLog → status/level → MinLevel → AccessLogEntry snapshot → ResultFilter → emit`. `MinLevel` and `ResultFilter` intersect: the filter cannot restore a record rejected by the threshold. Status drives the actual log level (`1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`); `MinLevel` controls admission, never rewrites that level. The default remains Info, so zero configuration preserves every status class. Successful records retain the traffic/latency denominator while request metrics remain deferred; high-volume applications opt into Warn or Error.
+
+The attribute set and `"request completed"` emit core remain centralized in `internal/observe.EmitAccessLog`. `AccessLogEntry.RouteName` is filter metadata only and does not silently extend that schema. Request ID snapshotting is independent from emit-time duplicate prevention, so filters always see the ID even when the request-scoped logger already carries it.
+
+The two producers have different observation boundaries. The built-in snapshot contains final status, bytes, and error-rendering duration when the inner pipeline completes; with recovery explicitly disabled, an escaping panic instead uses the 500 fallback and bytes written so far. `middleware.AccessLog` runs at its configured global/group/route position; on returned-error paths its status is the best pre-render classification, bytes are those written so far, and duration excludes later error rendering. It remains useful for route/group-specific second sinks and policies. Enabling it while the built-in remains active intentionally emits two records; Credo does not silently reject this valid audit pattern.
 
 Health probes use `MetaAccessLog` internally: `UseHealth` registers `/health` and `/ready` with the meta set to `HealthConfig.LogRequests` (default `false`), so probe traffic is silent unless re-enabled. See [ADR-016](016-health-checks.md).
 
@@ -109,7 +118,9 @@ Health probes use `MetaAccessLog` internally: `UseHealth` registers `/health` an
 
 A **default-off** access logger was considered and rejected. The framework's nearest philosophical peer, GoFr (all-in-one), logs requests by default; the frameworks that default off — Goyave, Hertz, Echo, Chi — are all composable toolkits, the model Credo positions against (philosophy #1). Keeping the log on but easy to scope preserves "observable by default" without the volume cost.
 
-A **status-code skip list** was also rejected. Across the ecosystem the skip mechanism is a predicate — Hertz `WithLogConditionFunc(func(ctx, c) bool)`, Echo `Skipper`, Gin `Skip`/`SkipPaths` — while status codes drive _level_ mapping, not skipping. Credo follows the same split: a predicate (`Skipper`) and route meta for skipping, plus `Level()` for status. A success-level/sampling control (2xx → Debug, or 1/N sampling) remains an open question — it changes default semantics and is tracked separately.
+A **status-code skip list** was rejected. Across the ecosystem request-level skipping is a predicate — Hertz `WithLogConditionFunc(func(ctx, c) bool)`, Echo `Skipper`, Gin `Skip`/`SkipPaths`. Credo keeps the package-wide `Skipper` convention and adds the more general post-response `MinLevel` + `ResultFilter` composition instead of a fixed list.
+
+Changing successful requests to **Debug by default** or enabling a built-in fixed **1/N sampler** was rejected. Both silently weaken the zero-config traffic record and conflate the status-derived severity contract with admission. Applications can set `MinLevel` explicitly and implement deterministic request-ID sampling (or concurrency-safe counter sampling) in `ResultFilter`; general metrics and telemetry sampling remain Phase 3.5 work.
 
 ### Stdlib Adapter
 
@@ -136,7 +147,7 @@ The adapter handles request/response writer updates that stdlib middleware may a
 | Middleware  | Purpose                                           |
 | ----------- | ------------------------------------------------- |
 | `Recover`   | Per-group/route panic recovery with custom config |
-| `AccessLog` | Request logging with Skipper, `MetaAccessLog` silencing, and custom logger |
+| `AccessLog` | Route/group-scoped request logging with Skipper, MinLevel, ResultFilter, `MetaAccessLog`, and custom logger |
 | `RequestID` | X-Request-Id with custom header/generator/limit   |
 
 ### Frozen Guard

@@ -25,6 +25,42 @@ import (
 // [HealthConfig.LogRequests].
 const MetaAccessLog = "credo.accesslog"
 
+// AccessLogEntry is an immutable value snapshot captured at an access-log
+// producer's observation boundary. The built-in producer runs outside recovery
+// and error rendering, so Status, Bytes, and Duration are final when the inner
+// pipeline completes. If recovery is disabled and a panic escapes, Status uses
+// the built-in 500 fallback while Bytes reflects only what was written before
+// the panic. The configurable [middleware.AccessLog] runs at its middleware
+// position; on an error path Status is its best pre-render classification,
+// Bytes is the amount written so far, and Duration excludes later rendering.
+//
+// RouteName is available to [AccessLogResultFilter] but is not added to the
+// emitted structured-log attributes. RemoteAddr is the result of
+// [Request.RealIP]. RequestID is populated independently of whether the target
+// logger already carries the request_id attribute.
+type AccessLogEntry struct {
+	Method       string
+	Path         string
+	OriginalPath string
+	Status       int
+	Bytes        int64
+	Duration     time.Duration
+	RemoteAddr   string
+	UserAgent    string
+	RequestID    string
+	RouteName    string
+}
+
+// AccessLogResultFilter decides whether an observed access-log entry is
+// submitted to its logger. Returning true emits the entry; false skips it.
+// The Context is pooled and must not be retained. The same filter may be called
+// concurrently for multiple requests and must be concurrency-safe.
+//
+// For the built-in access logger this callback runs outside built-in recovery.
+// For [middleware.AccessLog] it runs inside built-in recovery unless that layer
+// was disabled or replaced.
+type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
+
 // accessLogSilenced reports whether the matched route (or an ancestor group)
 // set MetaAccessLog to false. A non-bool meta value fails open (not silenced),
 // and an unmatched request (404/405, ctx.route == nil) is never silenced.
@@ -65,10 +101,13 @@ func accessLogSilenced(ctx *Context) bool {
 // request-level data is reliable) and the [MetaAccessLog] route meta
 // (consulted in the defer, once the matched route is known).
 //
-// Log level varies by status: 2xx/3xx → Info, 4xx → Warn, 5xx → Error.
+// Log level varies by status: 1xx/2xx/3xx → Info, 4xx → Warn, 5xx → Error.
 // The request_id attribute is implicit in ctx.Logger() (set by builtinRequestID).
 func (app *App) builtinAccessLog(next Handler) Handler {
 	skip := app.accessLogSkipper
+	minLevel := app.accessLogMinLevel
+	filter := app.accessLogFilter
+	configuredLogger := app.accessLogLogger
 	return func(ctx *Context) error {
 		if skip != nil && skip(ctx) {
 			return next(ctx)
@@ -85,7 +124,6 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 				return
 			}
 
-			duration := time.Since(start)
 			status := ctx.Response().Status()
 
 			if panicked {
@@ -98,26 +136,51 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 			} else {
 				status = internalobserve.Status(status, err)
 			}
+			level := internalobserve.Level(status)
+			if level < minLevel.Level() {
+				return
+			}
 
 			req := ctx.Request()
 			r := req.Request
+			entry := AccessLogEntry{
+				Method:       r.Method,
+				Path:         r.URL.Path,
+				OriginalPath: ctx.OriginalPath(),
+				Status:       status,
+				Bytes:        ctx.Response().Size(),
+				Duration:     time.Since(start),
+				RemoteAddr:   req.RealIP(),
+				UserAgent:    r.UserAgent(),
+				RequestID:    ctx.RequestID(),
+			}
+			if route := ctx.Route(); route != nil {
+				entry.RouteName = route.GetName()
+			}
+			if filter != nil && !filter(ctx, entry) {
+				return
+			}
 
-			requestID := ""
-			if !ctx.HasRequestLogger() {
-				requestID = ctx.RequestID()
+			logger := configuredLogger
+			if logger == nil {
+				logger = ctx.Logger()
+			}
+			explicitRequestID := ""
+			if configuredLogger != nil || !ctx.HasRequestLogger() {
+				explicitRequestID = entry.RequestID
 			}
 			internalobserve.EmitAccessLog(
 				r.Context(),
-				ctx.Logger(),
-				r.Method,
-				r.URL.Path,
-				status,
-				ctx.Response().Size(),
-				duration,
-				req.RealIP(),
-				r.UserAgent(),
-				ctx.OriginalPath(),
-				requestID,
+				logger,
+				entry.Method,
+				entry.Path,
+				entry.Status,
+				entry.Bytes,
+				entry.Duration,
+				entry.RemoteAddr,
+				entry.UserAgent,
+				entry.OriginalPath,
+				explicitRequestID,
 			)
 		}()
 

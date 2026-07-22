@@ -19,7 +19,7 @@ The `observability/` directory therefore remains a planned package marker for no
 
 Credo treats observability in two layers:
 
-1. **Implemented logging baseline.** Request ID propagation, access logging, error logging, and service-scoped `Infra.Logger` are part of the root framework and are enabled by default, with explicit opt-out where appropriate.
+1. **Implemented logging baseline.** Request ID propagation, access logging, error logging, and service-scoped `Infra.Logger` are part of the root framework and are enabled by default, with explicit opt-out where appropriate. Access logs keep successful requests at Info by default so traffic and latency retain a denominator until request metrics exist; `WithAccessLogMinLevel` and `WithAccessLogResultFilter` provide access-log-specific, opt-in cost control without changing other framework log levels.
 2. **Planned telemetry adapters.** OpenTelemetry tracing and Prometheus metrics will be designed in Phase 3.5 against real adapters. Until that work is implemented, Credo does not expose public metrics/tracing carrier interfaces, no-op providers, or `Infra` fields for them.
 
 When tracing and metrics land, they should follow the wrap + pin strategy: OpenTelemetry and Prometheus remain external, version-pinned infrastructure libraries behind Credo-owned integration APIs. The root package should avoid importing adapter packages directly; any root-level surface must be a small, Credo-owned contract validated against the adapter implementation.
@@ -41,7 +41,7 @@ Deferred Phase 3.5 scope:
 - request/server trace propagation
 - outbound HTTP and SQL trace hooks
 - Prometheus metrics registry and request metrics
-- cost guardrails, sampling, and no-op defaults based on real adapter behavior
+- telemetry-wide cost guardrails, sampling, and no-op defaults based on real adapters (distinct from the implemented AccessLog threshold/filter escape hatch)
 
 ## Consequences
 

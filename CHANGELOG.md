@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **AccessLog policy controls** — the authoritative built-in access logger now supports a dedicated sink (`WithAccessLogLogger`), a dynamic status-derived threshold (`WithAccessLogMinLevel(slog.Leveler)`), and a positive post-response filter (`WithAccessLogResultFilter`). `AccessLogEntry` gives filters an immutable request/result snapshot while preserving the existing emitted attribute schema; `middleware.AccessLogConfig` exposes matching `MinLevel` and `ResultFilter` fields for route/group policies. Defaults remain unchanged (`Info`, all status classes), `Skipper` remains the pre-dispatch package convention, and `slog.LevelVar` can change the threshold at runtime. The built-in observes final error-renderer status/bytes/duration; configurable middleware retains its earlier observation boundary. See [ADR-010](docs/adr/010-middleware-architecture.md).
+
 ## [0.2.0] - 2026-07-13
 
 ### Added

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime/debug"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,23 @@ func Level(status int) slog.Level {
 		return slog.LevelWarn
 	default:
 		return slog.LevelInfo
+	}
+}
+
+// IsTypedNilLeveler reports whether level is a non-nil interface containing a
+// nil value. A nil interface is the documented default and is not typed-nil.
+// Callers use this during construction so a custom Leveler cannot panic later
+// on the request path.
+func IsTypedNilLeveler(level slog.Leveler) bool {
+	if level == nil {
+		return false
+	}
+	v := reflect.ValueOf(level)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 

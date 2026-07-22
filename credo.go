@@ -18,6 +18,7 @@ import (
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
 	internali18n "github.com/credo-go/credo/internal/i18n"
+	internalobserve "github.com/credo-go/credo/internal/observe"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
@@ -146,10 +147,22 @@ type App struct {
 	// Set via WithoutAccessLog option.
 	disableAccessLog bool
 
+	// accessLogLogger is the optional dedicated sink for built-in access-log
+	// records. nil uses the request-scoped logger.
+	accessLogLogger *slog.Logger
+
+	// accessLogMinLevel is the dynamic minimum status-derived level for the
+	// built-in access logger. It is normalized to Info during New.
+	accessLogMinLevel slog.Leveler
+
 	// accessLogSkipper, when non-nil, is consulted by the built-in access
 	// logger before routing; a true result skips logging for that request.
 	// Set via WithAccessLogSkipper option.
 	accessLogSkipper func(*Context) bool
+
+	// accessLogFilter, when non-nil, is consulted after the final response and
+	// minimum-level check. A true result emits the entry.
+	accessLogFilter AccessLogResultFilter
 
 	// debug enables development-mode warnings.
 	// Set via WithDebug option or server.debug config key.
@@ -164,8 +177,10 @@ type App struct {
 // RawConfig in DI. Passing WithRawConfig bypasses auto-load and registers the
 // given RawConfig instead.
 //
-// New returns an error if configuration loading fails or if server settings
-// contain invalid values (negative timeouts, invalid port).
+// New returns an error if configuration loading fails, server settings contain
+// invalid values (negative timeouts, invalid port), or an option contains an
+// invalid typed-nil value such as a non-nil [slog.Leveler] interface wrapping a
+// nil pointer.
 //
 // Usage:
 //
@@ -181,6 +196,12 @@ func New(opts ...Option) (*App, error) {
 	o := appOptions{}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if internalobserve.IsTypedNilLeveler(o.accessLogMinLevel) {
+		return nil, fmt.Errorf("credo: WithAccessLogMinLevel: typed-nil slog.Leveler")
+	}
+	if o.accessLogMinLevel == nil {
+		o.accessLogMinLevel = slog.LevelInfo
 	}
 
 	// Auto-load: if no RawConfig provided, load with defaults.
@@ -270,7 +291,10 @@ func New(opts ...Option) (*App, error) {
 		disableRecover:        o.disableRecover,
 		disableRequestID:      o.disableRequestID,
 		disableAccessLog:      o.disableAccessLog,
+		accessLogLogger:       o.accessLogLogger,
+		accessLogMinLevel:     o.accessLogMinLevel,
 		accessLogSkipper:      o.accessLogSkipper,
+		accessLogFilter:       o.accessLogFilter,
 		debug:                 o.debug || o.serverCfg.Debug,
 		trustedProxies:        trustedProxies,
 	}

@@ -86,8 +86,9 @@
   - [x] `RecoverConfig`: Logger, DisableStackTrace, StackSize
   - [x] Re-panic `http.ErrAbortHandler`; suppress HTTP fallback only after ground-truth `Response.Hijacked()`
 - [x] `middleware/accesslog.go` — Structured request logging (slog)
-  - [x] `AccessLogConfig`: Logger, Skipper
-  - [x] Log level by status: 2xx/3xx=Info, 4xx=Warn, 5xx=Error
+  - [x] `AccessLogConfig`: Logger, MinLevel, Skipper, ResultFilter
+  - [x] Built-in controls: dedicated Logger, MinLevel, Skipper, ResultFilter
+  - [x] Log level by status: 1xx/2xx/3xx=Info, 4xx=Warn, 5xx+=Error
 - [x] Add copyright headers (Chi + Echo attribution)
 - [x] Tests: 32 tests (requestid + recover + logger), -race clean
 - [x] Update NOTICES (Chi + Echo entries)

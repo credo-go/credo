@@ -10,15 +10,16 @@ import (
 )
 
 func ExampleAccessLog() {
-	app, err := credo.New(credo.WithoutAccessLog())
+	app, err := credo.New()
 	if err != nil {
 		panic(err)
 	}
 
-	app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
+	admin := app.Group("/admin")
+	admin.Middleware(middleware.AccessLog(middleware.AccessLogConfig{
 		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	}))
-	app.GET("/", func(ctx *credo.Context) error {
+	admin.GET("/audit", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, "ok")
 	})
 }

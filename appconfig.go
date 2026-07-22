@@ -88,7 +88,10 @@ type appOptions struct {
 	disableRecover    bool
 	disableRequestID  bool
 	disableAccessLog  bool
+	accessLogLogger   *slog.Logger
+	accessLogMinLevel slog.Leveler
 	accessLogSkipper  func(*Context) bool
+	accessLogFilter   AccessLogResultFilter
 	debug             bool
 	trustedProxies    []string
 	trustedProxiesSet bool
@@ -216,11 +219,40 @@ func WithoutRequestID() Option {
 // every request is logged with method, path, status, bytes, duration,
 // remote_addr (from Request.RealIP), and user_agent attributes.
 //
-// Disable this if you use [middleware.AccessLog] with custom configuration
-// (e.g., a Skipper function). Using both the built-in and middleware
-// loggers produces duplicate log entries.
+// The built-in remains the preferred surface for a dedicated sink, minimum
+// level, request skipper, or result filter because it observes final response
+// state. Disable it when [middleware.AccessLog] supplies a global replacement;
+// keeping both is allowed and produces two intentional log entries.
 func WithoutAccessLog() Option {
 	return func(o *appOptions) { o.disableAccessLog = true }
+}
+
+// WithAccessLogLogger sets a dedicated logger for built-in access-log records.
+// A nil logger keeps the default request-scoped logger. A dedicated logger
+// does not inherit attributes added through [Context.AddLogAttrs] or
+// [Context.SetLogger]; the framework still adds the standard access-log fields
+// and the request ID explicitly.
+//
+// Prefer this option over replacing the built-in logger with
+// [middleware.AccessLog] when only a separate sink is needed: the built-in
+// layer observes final error-renderer status, bytes, and duration. This option
+// has no effect when [WithoutAccessLog] is active.
+func WithAccessLogLogger(logger *slog.Logger) Option {
+	return func(o *appOptions) { o.accessLogLogger = logger }
+}
+
+// WithAccessLogMinLevel sets the minimum status-derived level the built-in
+// access logger submits. Status still determines the record's actual level:
+// 1xx/2xx/3xx are Info, 4xx are Warn, and 5xx+ are Error. A nil level defaults
+// to Info. A typed-nil Leveler is rejected by [New].
+//
+// The Leveler may be consulted concurrently and must be concurrency-safe;
+// [slog.LevelVar] supports runtime threshold changes. The level is read once
+// per eligible request, before [WithAccessLogResultFilter]. No request-time
+// work occurs when [WithoutAccessLog] is active, but typed-nil configuration is
+// still rejected during [New].
+func WithAccessLogMinLevel(level slog.Leveler) Option {
+	return func(o *appOptions) { o.accessLogMinLevel = level }
 }
 
 // WithAccessLogSkipper installs a predicate consulted by the built-in access
@@ -233,13 +265,29 @@ func WithoutAccessLog() Option {
 // The predicate runs BEFORE routing, so only request-level data is reliable
 // (method, path, and headers via ctx.Request()); ctx.Route(), route params,
 // and the response status are not yet set. For route-based decisions use
-// MetaAccessLog; status-based filtering is a separate, deferred concern.
+// MetaAccessLog. For post-response decisions use [WithAccessLogMinLevel] or
+// [WithAccessLogResultFilter].
 //
 // This has no effect when the built-in access logger is disabled via
 // [WithoutAccessLog]; the configurable [middleware.AccessLog] has its own
 // Skipper field.
 func WithAccessLogSkipper(skip func(*Context) bool) Option {
 	return func(o *appOptions) { o.accessLogSkipper = skip }
+}
+
+// WithAccessLogResultFilter installs a post-response predicate for the
+// built-in access logger. The filter runs only after route-meta silencing and
+// the minimum-level check; true emits the entry and false skips it. It cannot
+// restore an entry rejected by [WithAccessLogMinLevel]. A nil filter accepts
+// every entry that reaches it.
+//
+// The Context is pooled and valid only for the synchronous callback. The same
+// filter may run concurrently for multiple requests and must be concurrency-
+// safe. Use the AccessLogEntry fields, not ctx.Response(), for status, bytes,
+// and duration. A panic occurs outside built-in recovery. This option has no
+// effect when [WithoutAccessLog] is active.
+func WithAccessLogResultFilter(filter AccessLogResultFilter) Option {
+	return func(o *appOptions) { o.accessLogFilter = filter }
 }
 
 // WithDebug enables development-mode warnings. When active, the framework
