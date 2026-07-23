@@ -227,6 +227,35 @@ app.POST("/users", func(ctx *credo.Context) error {
 })
 ```
 
+#### Strict JSON bodies
+
+`BindBody` accepts exactly one JSON value per request: after the first value decodes, only whitespace may remain in the body. A second JSON document or trailing garbage fails the bind with reason `trailing_data`. This closes the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
+
+#### Decode error model
+
+Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carrying a machine-readable `Reason`, the affected `Field` path (when known), the `Expected` type for mismatches, and the JSON byte `Offset`. The error pipeline classifies it as `400 Bad Request` with `type: "https://credo.dev/errors/binding"`, mirroring the validation output shape — a single `errors[]` entry whose `code` is the reason:
+
+| Reason          | Meaning                                                                              |
+| --------------- | ------------------------------------------------------------------------------------ |
+| `syntax`        | malformed or truncated payload (JSON, XML, form encoding)                            |
+| `type_mismatch` | value type does not match the target field (`expected` param set, JSON offset known) |
+| `invalid_value` | value rejected by the field's `encoding.TextUnmarshaler`                             |
+| `empty_body`    | request body absent or empty                                                         |
+| `trailing_data` | content after the first JSON value                                                   |
+
+```json
+{
+  "type": "https://credo.dev/errors/binding",
+  "title": "Malformed Request",
+  "status": 400,
+  "errors": [
+    {"field": "age", "code": "type_mismatch", "message": "must be of type integer", "params": {"expected": "integer", "offset": 12}}
+  ]
+}
+```
+
+Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal` for logging and is never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages localize through i18n keys `bind.<reason>` with the same fallback chain and `{{.field}}` translation as validation messages. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
+
 ### BindQuery
 
 Reads URL query parameters into a struct.

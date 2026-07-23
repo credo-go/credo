@@ -14,6 +14,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **Typed bind errors** — `BindBody`/`BindQuery` decode failures now return `*credo.BindError` carrying a machine-readable `Reason` (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`), the affected field path, the expected type, and the JSON byte offset. The error pipeline classifies it as `400 Bad Request` with `type: "https://credo.dev/errors/binding"` and a single validation-shaped `errors[]` entry (`code` = reason), localizable via `bind.<reason>` i18n keys with the `http.bind_failed` title key. The underlying decoder error stays server-side (`Internal`); Go type names are not leaked (`expected` uses JSON terms). Body-size overruns keep their dedicated 413 classification. See [ADR-009](docs/adr/009-handler-and-error-handling.md) and the [Context spec](docs/specs/context.md).
+
+### Changed
+
+- **Breaking (behavioral)** — `BindBody` JSON decoding now enforces exactly one JSON value per body: content after the first value (a second document, or trailing garbage) is rejected with reason `trailing_data` instead of being silently ignored. Trailing whitespace remains accepted. Decode-error responses gained structured `errors[]` detail (previously a generic `invalid JSON body`-style title with no field information); the empty-body and scalar-conversion error messages changed accordingly.
+
 ## [0.3.0] - 2026-07-22
 
 ### Added

@@ -139,6 +139,7 @@ Recommended namespaces:
 - `emails.*` for email copy
 - `pages.*` for HTML/template copy
 - `v.*` for validation rules
+- `bind.*` for decode (bind) error reasons
 - `http.*` for HTTP error titles
 
 Example:
@@ -154,7 +155,10 @@ Example:
   "v.min": "must be at least {{.min}}",
   "v.max": "must be at most {{.max}}",
   "v.between": "must be between {{.min}} and {{.max}}",
+  "bind.type_mismatch": "must be of type {{.expected}}",
+  "bind.trailing_data": "request body must contain a single JSON value",
   "http.bad_request": "Bad request",
+  "http.bind_failed": "Malformed request",
   "http.unauthorized": "Unauthorized",
   "http.forbidden": "Forbidden",
   "http.not_found": "Not found",
@@ -443,6 +447,8 @@ With suitable locale files, Credo translates entries such as:
 - `v.max`
 - `v.between`
 
+Decode failures translate the same way through `bind.<reason>` keys (`bind.syntax`, `bind.type_mismatch`, `bind.invalid_value`, `bind.empty_body`, `bind.trailing_data`), with `{{.field}}`, `{{.expected}}`, and `{{.offset}}` available as template variables where applicable. The response `title` uses `http.bind_failed`.
+
 Example validation response:
 
 ```json
@@ -634,7 +640,7 @@ If a key is missing, Credo keeps the original default message.
 
 - keep keys stable; do not use raw English sentences as keys
 - always define `http.*` keys for the statuses your API returns often
-- add `v.*` keys early so `BindBody()` and `BindQuery()` become useful immediately
+- add `v.*` (and `bind.*`) keys early so `BindBody()` and `BindQuery()` become useful immediately
 - use `fields.json` only when server-generated messages need human field labels
 - prefer `ctx.T(...)` for response copy, not for control flow
 - when embedding locales, use `fs.Sub(...)` so `DirFS` points at the locale root

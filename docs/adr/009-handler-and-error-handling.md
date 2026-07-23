@@ -42,11 +42,14 @@ Splitting the pipeline this way keeps custom renderers small: a renderer never r
 ```
 1. Response already committed → no-op (response is in-flight)
 2. validation.Errors → 422 Unprocessable Entity with field errors
-3. *HTTPError → status from Code, title resolved from MessageKey
-4. fault.Provider → root default HTTP policy from the transport-neutral semantic kind
-5. HTTPStatus() int interface → legacy or explicit transport status
-6. Any other error → 500 Internal Server Error (message NOT leaked)
+3. *BindError → 400 Bad Request with a typed decode-reason errors entry
+4. *HTTPError → status from Code, title resolved from MessageKey
+5. fault.Provider → root default HTTP policy from the transport-neutral semantic kind
+6. HTTPStatus() int interface → legacy or explicit transport status
+7. Any other error → 500 Internal Server Error (message NOT leaked)
 ```
+
+`*BindError` is the typed decode failure returned by `BindBody`/`BindQuery` (see the [Context spec](../specs/context.md)). It renders like a one-entry validation failure — `type: "https://credo.dev/errors/binding"`, the machine-readable reason as the entry's `code` — so clients consume decode and validation failures through one shape while the status codes (400 vs 422) keep the parse/validate distinction.
 
 Internal error details are never exposed to clients. Server errors (5xx) and unhandled errors are logged via `slog`.
 

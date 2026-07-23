@@ -98,6 +98,8 @@ func createUser(ctx *credo.Context) error {
 
 Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, multipart (including file upload binding).
 
+JSON bodies are strict: exactly one JSON value is accepted and trailing content is rejected. Decode failures return a typed `*credo.BindError` (reason, field path, expected type, byte offset) that the error pipeline renders as a 400 RFC 7807 response mirroring the validation `errors[]` shape — parse errors are as structured as validation errors, completing the "parse, don't validate" contract. See the [Context spec](../specs/context.md) for the reason catalog.
+
 ### Proxy-Derived Client Metadata
 
 `Request.Scheme()` and `Request.RealIP()` centralize reverse-proxy metadata. Forwarded headers are default-deny: `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Ssl`, `Front-End-Https`, and `X-Real-IP` are considered only when the immediate peer `RemoteAddr` is in the app's trusted proxy CIDR list.

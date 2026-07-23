@@ -48,6 +48,7 @@
 - [x] Define `Context` struct with core methods ([ADR-008](docs/adr/008-context-design.md))
   - [x] Response helpers: `JSON()`, `XML()`, `HTML()`, `Text()`, `Blob()`, `Stream()` (on `Response`)
   - [x] `BindBody()` — JSON decoder + auto-validate ("parse, don't validate")
+  - [x] Strict JSON bodies + typed decode errors: exactly one JSON value per body (trailing data rejected), decode failures return `*BindError` with machine-readable reasons (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`) rendered as RFC 7807 `errors[]` (code = reason, i18n via `bind.<reason>`)
   - [x] `BindQuery()` — stub returning 501 (see Phase 2.5)
   - [x] `RouteParams()`, `QueryParam()` (no `FormValue()` — see [ADR-008](docs/adr/008-context-design.md)); `RouteParam(name)` single-value shortcut avoids retaining the framework-owned params map
   - [x] `Request()`, `Response()`, `Set()`, `Get()`

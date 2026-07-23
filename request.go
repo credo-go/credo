@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/netip"
@@ -212,14 +213,20 @@ func (r *Request) query() url.Values {
 //   - application/x-www-form-urlencoded (uses "form" struct tags)
 //   - multipart/form-data (uses "form" struct tags, including file fields)
 //
+// JSON bodies are strict: exactly one JSON value is accepted, and any
+// content after it (a second document, or trailing garbage) fails the bind
+// with [BindReasonTrailingData]. Trailing whitespace is allowed.
+//
 // If target implements [validation.Validatable], Validate() is called
 // automatically after successful decoding ("parse, don't validate").
 //
-// Returns 400 Bad Request for empty body or decode errors,
-// 415 Unsupported Media Type for unrecognized content types.
+// Decode failures return a [*BindError] carrying a typed reason (400 Bad
+// Request via the error pipeline). Exceeding the body-size limit returns
+// 413 Request Entity Too Large; an unrecognized content type returns
+// 415 Unsupported Media Type.
 func (r *Request) BindBody(target any) error {
 	if r.Body == nil {
-		return NewHTTPError(http.StatusBadRequest, "request body is empty")
+		return &BindError{Reason: BindReasonEmptyBody}
 	}
 
 	ct := r.Header.Get("Content-Type")
@@ -235,18 +242,28 @@ func (r *Request) BindBody(target any) error {
 
 	switch mediaType {
 	case "application/json":
-		if err := json.NewDecoder(r.Body).Decode(target); err != nil {
-			return bodyDecodeError("invalid JSON body", err)
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(target); err != nil {
+			return jsonBindError(err)
+		}
+		// Enforce a single JSON value per body: after the first value only
+		// whitespace may remain. Token() returns io.EOF for a clean end; a
+		// second value or trailing garbage yields a token or a syntax error.
+		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
+			if he, ok := maxBytesHTTPError(terr); ok {
+				return he
+			}
+			return &BindError{Reason: BindReasonTrailingData, Internal: terr}
 		}
 
 	case "application/xml", "text/xml":
 		if err := xml.NewDecoder(r.Body).Decode(target); err != nil {
-			return bodyDecodeError("invalid XML body", err)
+			return xmlBindError(err)
 		}
 
 	case "application/x-www-form-urlencoded":
 		if err := r.ParseForm(); err != nil {
-			return bodyDecodeError("invalid form body", err)
+			return formBindError(err)
 		}
 		if err := decodeValues(target, r.PostForm, "form"); err != nil {
 			return err
@@ -254,7 +271,7 @@ func (r *Request) BindBody(target any) error {
 
 	case "multipart/form-data":
 		if err := r.ParseMultipartForm(defaultMultipartMaxMemory); err != nil {
-			return bodyDecodeError("invalid multipart body", err)
+			return formBindError(err)
 		}
 		if err := decodeValues(target, url.Values(r.MultipartForm.Value), "form"); err != nil {
 			return err
@@ -271,15 +288,71 @@ func (r *Request) BindBody(target any) error {
 	return r.validateBoundTarget("BindBody", target)
 }
 
-// bodyDecodeError maps a body read/decode failure to the appropriate HTTP error:
-// 413 Request Entity Too Large when the body-size limit (http.MaxBytesReader)
-// was exceeded, otherwise 400 Bad Request with msg as the message key.
-func bodyDecodeError(msg string, err error) *HTTPError {
+// maxBytesHTTPError detects a body-size-limit overrun (http.MaxBytesReader)
+// anywhere in a decode error chain and maps it to 413 Request Entity Too
+// Large. Size overruns keep their dedicated status instead of becoming a
+// 400-class BindError.
+func maxBytesHTTPError(err error) (*HTTPError, bool) {
 	if mbe, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		return NewHTTPError(http.StatusRequestEntityTooLarge, "request body too large").
-			WithInternal(mbe)
+			WithInternal(mbe), true
 	}
-	return NewHTTPError(http.StatusBadRequest, msg).WithInternal(err)
+	return nil, false
+}
+
+// jsonBindError maps an encoding/json decode failure to a typed [BindError]
+// (or 413 for body-size overruns). Unknown error shapes — including errors
+// returned by custom json.Unmarshaler implementations — fall back to the
+// syntax reason; the original error is preserved as Internal for logging.
+func jsonBindError(err error) error {
+	if he, ok := maxBytesHTTPError(err); ok {
+		return he
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		return &BindError{Reason: BindReasonEmptyBody, Internal: err}
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return &BindError{Reason: BindReasonSyntax, Internal: err}
+	}
+	if se, ok := errors.AsType[*json.SyntaxError](err); ok {
+		return &BindError{Reason: BindReasonSyntax, Offset: se.Offset, Internal: err}
+	}
+	if ute, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return &BindError{
+			Reason:   BindReasonTypeMismatch,
+			Field:    ute.Field,
+			Expected: jsonTypeName(ute.Type),
+			Offset:   ute.Offset,
+			Internal: err,
+		}
+	}
+	if iue, ok := errors.AsType[*json.InvalidUnmarshalError](err); ok {
+		// Developer error (nil or non-pointer target), matching decodeValues.
+		return NewHTTPError(http.StatusBadRequest,
+			"bind target must be a non-nil pointer").WithInternal(iue)
+	}
+	return &BindError{Reason: BindReasonSyntax, Internal: err}
+}
+
+// xmlBindError maps an encoding/xml decode failure to a typed [BindError]
+// (or 413 for body-size overruns).
+func xmlBindError(err error) error {
+	if he, ok := maxBytesHTTPError(err); ok {
+		return he
+	}
+	if errors.Is(err, io.EOF) {
+		return &BindError{Reason: BindReasonEmptyBody, Internal: err}
+	}
+	return &BindError{Reason: BindReasonSyntax, Internal: err}
+}
+
+// formBindError maps a form/multipart parse failure to a typed [BindError]
+// (or 413 for body-size overruns).
+func formBindError(err error) error {
+	if he, ok := maxBytesHTTPError(err); ok {
+		return he
+	}
+	return &BindError{Reason: BindReasonSyntax, Internal: err}
 }
 
 // BindQuery decodes URL query parameters into target using `query:"name"` struct tags.
