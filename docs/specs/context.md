@@ -198,7 +198,7 @@ Reads request body. Content-Type determines decoder:
 
 | Content-Type                        | Decoder           | Status          |
 | ----------------------------------- | ----------------- | --------------- |
-| `application/json`                  | `encoding/json`   | **Implemented** |
+| `application/json`                  | `encoding/json/v2` | **Implemented** |
 | `application/xml`                   | `encoding/xml`    | **Implemented** |
 | `application/x-www-form-urlencoded` | Form decoder      | **Implemented** |
 | `multipart/form-data`               | Multipart decoder | **Implemented** |
