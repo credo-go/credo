@@ -216,6 +216,117 @@ func TestBindBody_JSON_TypeMismatch_Reason(t *testing.T) {
 	}
 }
 
+func TestBindBody_JSON_DuplicateField_Reason(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantField string
+	}{
+		{"top-level", `{"name":"a","name":"b"}`, "name"},
+		{"nested", `{"user":{"age":1,"age":2}}`, "user.age"},
+		{"case-variant", `{"name":"a","Name":"b"}`, "Name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.POST("/bind", func(ctx *credo.Context) error {
+				var v struct {
+					Name string `json:"name"`
+					User struct {
+						Age int `json:"age"`
+					} `json:"user"`
+				}
+				return ctx.Request().BindBody(&v)
+			})
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/bind", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", "application/json")
+			app.ServeHTTP(w, r)
+
+			assertBindReason(t, w, "duplicate_field", tt.wantField)
+		})
+	}
+}
+
+func TestBindBody_JSON_CaseInsensitiveMatch(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/bind", func(ctx *credo.Context) error {
+		var v struct {
+			Name string `json:"name"`
+		}
+		if err := ctx.Request().BindBody(&v); err != nil {
+			return err
+		}
+		return ctx.Response().Text(200, v.Name)
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/bind", strings.NewReader(`{"Name":"alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "alice" {
+		t.Errorf("bound value = %q, want %q (case-insensitive member matching)", w.Body.String(), "alice")
+	}
+}
+
+func TestBindBody_JSON_ArrayFieldPath(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/bind", func(ctx *credo.Context) error {
+		var v struct {
+			Items []struct {
+				N int `json:"n"`
+			} `json:"items"`
+		}
+		return ctx.Request().BindBody(&v)
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/bind", strings.NewReader(`{"items":[{"n":1},{"n":"x"}]}`))
+	r.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(w, r)
+
+	assertBindReason(t, w, "type_mismatch", "items[1].n")
+}
+
+func TestBindBody_JSON_InvalidValue_Reason(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/bind", func(ctx *credo.Context) error {
+		var v struct {
+			When time.Time `json:"when"`
+		}
+		return ctx.Request().BindBody(&v)
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/bind", strings.NewReader(`{"when":"notatime"}`))
+	r.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(w, r)
+
+	assertBindReason(t, w, "invalid_value", "when")
+}
+
+func TestBindBody_NilTarget(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/bind", func(ctx *credo.Context) error {
+		return ctx.Request().BindBody(nil)
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/bind", strings.NewReader(`{}`))
+	r.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(w, r)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
 func TestBindBody_Form_TypeMismatch_Reason(t *testing.T) {
 	app := mustNew(t)
 	app.POST("/bind", func(ctx *credo.Context) error {

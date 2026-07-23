@@ -5,7 +5,8 @@
 package credo
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"reflect"
 
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 	"github.com/credo-go/credo/validation"
@@ -213,9 +215,13 @@ func (r *Request) query() url.Values {
 //   - application/x-www-form-urlencoded (uses "form" struct tags)
 //   - multipart/form-data (uses "form" struct tags, including file fields)
 //
-// JSON bodies are strict: exactly one JSON value is accepted, and any
-// content after it (a second document, or trailing garbage) fails the bind
-// with [BindReasonTrailingData]. Trailing whitespace is allowed.
+// JSON bodies are decoded with encoding/json/v2 under strict semantics:
+// exactly one JSON value is accepted — any content after it (a second
+// document, or trailing garbage) fails the bind with
+// [BindReasonTrailingData] (trailing whitespace is allowed) — and object
+// members must be unique: a repeated member (including a case-variant
+// repeat) fails with [BindReasonDuplicateField]. Member names keep v1's
+// case-insensitive matching against struct fields.
 //
 // If target implements [validation.Validatable], Validate() is called
 // automatically after successful decoding ("parse, don't validate").
@@ -225,6 +231,12 @@ func (r *Request) query() url.Values {
 // 413 Request Entity Too Large; an unrecognized content type returns
 // 415 Unsupported Media Type.
 func (r *Request) BindBody(target any) error {
+	// Developer-error guard, checked before any decoding so it cannot be
+	// misreported as a client payload problem.
+	if rv := reflect.ValueOf(target); rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return NewHTTPError(http.StatusBadRequest, "bind target must be a non-nil pointer")
+	}
+
 	if r.Body == nil {
 		return &BindError{Reason: BindReasonEmptyBody}
 	}
@@ -242,14 +254,14 @@ func (r *Request) BindBody(target any) error {
 
 	switch mediaType {
 	case "application/json":
-		dec := json.NewDecoder(r.Body)
-		if err := dec.Decode(target); err != nil {
+		dec := jsontext.NewDecoder(r.Body)
+		if err := jsonv2.UnmarshalDecode(dec, target, jsonv2.MatchCaseInsensitiveNames(true)); err != nil {
 			return jsonBindError(err)
 		}
 		// Enforce a single JSON value per body: after the first value only
-		// whitespace may remain. Token() returns io.EOF for a clean end; a
+		// whitespace may remain. ReadToken returns io.EOF for a clean end; a
 		// second value or trailing garbage yields a token or a syntax error.
-		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
+		if _, terr := dec.ReadToken(); !errors.Is(terr, io.EOF) {
 			if he, ok := maxBytesHTTPError(terr); ok {
 				return he
 			}
@@ -300,36 +312,55 @@ func maxBytesHTTPError(err error) (*HTTPError, bool) {
 	return nil, false
 }
 
-// jsonBindError maps an encoding/json decode failure to a typed [BindError]
-// (or 413 for body-size overruns). Unknown error shapes — including errors
-// returned by custom json.Unmarshaler implementations — fall back to the
-// syntax reason; the original error is preserved as Internal for logging.
+// jsonBindError maps an encoding/json/v2 decode failure to a typed
+// [BindError] (or 413 for body-size overruns):
+//
+//   - io.EOF (empty or whitespace-only body) → empty_body
+//   - jsontext.ErrDuplicateName → duplicate_field with the member's path
+//   - other *jsontext.SyntacticError → syntax with the byte offset
+//   - *jsonv2.SemanticError with a nil inner error (pure JSON-kind vs Go-type
+//     clash) → type_mismatch with the expected JSON type term
+//   - *jsonv2.SemanticError with an inner error (right JSON kind, failed
+//     semantic conversion: time parse, TextUnmarshaler, overflow) →
+//     invalid_value
+//
+// Unknown error shapes fall back to the syntax reason; the original error
+// is always preserved as Internal for logging.
 func jsonBindError(err error) error {
 	if he, ok := maxBytesHTTPError(err); ok {
 		return he
 	}
-	switch {
-	case errors.Is(err, io.EOF):
+	if errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return &BindError{Reason: BindReasonEmptyBody, Internal: err}
-	case errors.Is(err, io.ErrUnexpectedEOF):
-		return &BindError{Reason: BindReasonSyntax, Internal: err}
 	}
-	if se, ok := errors.AsType[*json.SyntaxError](err); ok {
-		return &BindError{Reason: BindReasonSyntax, Offset: se.Offset, Internal: err}
+	if errors.Is(err, jsontext.ErrDuplicateName) {
+		be := &BindError{Reason: BindReasonDuplicateField, Internal: err}
+		if se, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
+			be.Field = jsonPointerToFieldPath(string(se.JSONPointer))
+			be.Offset = se.ByteOffset
+		}
+		return be
 	}
-	if ute, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+	if se, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
+		return &BindError{Reason: BindReasonSyntax, Offset: se.ByteOffset, Internal: err}
+	}
+	if sme, ok := errors.AsType[*jsonv2.SemanticError](err); ok {
+		field := jsonPointerToFieldPath(string(sme.JSONPointer))
+		if sme.Err != nil {
+			return &BindError{
+				Reason:   BindReasonInvalidValue,
+				Field:    field,
+				Offset:   sme.ByteOffset,
+				Internal: err,
+			}
+		}
 		return &BindError{
 			Reason:   BindReasonTypeMismatch,
-			Field:    ute.Field,
-			Expected: jsonTypeName(ute.Type),
-			Offset:   ute.Offset,
+			Field:    field,
+			Expected: jsonTypeName(sme.GoType),
+			Offset:   sme.ByteOffset,
 			Internal: err,
 		}
-	}
-	if iue, ok := errors.AsType[*json.InvalidUnmarshalError](err); ok {
-		// Developer error (nil or non-pointer target), matching decodeValues.
-		return NewHTTPError(http.StatusBadRequest,
-			"bind target must be a non-nil pointer").WithInternal(iue)
 	}
 	return &BindError{Reason: BindReasonSyntax, Internal: err}
 }

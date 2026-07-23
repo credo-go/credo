@@ -229,19 +229,26 @@ app.POST("/users", func(ctx *credo.Context) error {
 
 #### Strict JSON bodies
 
-`BindBody` accepts exactly one JSON value per request: after the first value decodes, only whitespace may remain in the body. A second JSON document or trailing garbage fails the bind with reason `trailing_data`. This closes the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
+JSON bodies are decoded with `encoding/json/v2` under strict semantics:
+
+- **Exactly one JSON value per request** — after the first value decodes, only whitespace may remain in the body. A second JSON document or trailing garbage fails the bind with reason `trailing_data`.
+- **Object members must be unique** — a repeated member fails the bind with reason `duplicate_field`. Because member matching is case-insensitive (see below), a case-variant repeat (`{"name":…,"Name":…}`) is also rejected.
+- **Member matching stays case-insensitive** — v1-compatible matching is preserved via `MatchCaseInsensitiveNames`, so existing clients sending `{"Name":…}` for a `name`-tagged field keep working (v2's case-sensitive default would silently leave the field empty).
+
+Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
 
 #### Decode error model
 
 Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carrying a machine-readable `Reason`, the affected `Field` path (when known), the `Expected` type for mismatches, and the JSON byte `Offset`. The error pipeline classifies it as `400 Bad Request` with `type: "https://credo.dev/errors/binding"`, mirroring the validation output shape — a single `errors[]` entry whose `code` is the reason:
 
-| Reason          | Meaning                                                                              |
-| --------------- | ------------------------------------------------------------------------------------ |
-| `syntax`        | malformed or truncated payload (JSON, XML, form encoding)                            |
-| `type_mismatch` | value type does not match the target field (`expected` param set, JSON offset known) |
-| `invalid_value` | value rejected by the field's `encoding.TextUnmarshaler`                             |
-| `empty_body`    | request body absent or empty                                                         |
-| `trailing_data` | content after the first JSON value                                                   |
+| Reason            | Meaning                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `syntax`          | malformed or truncated payload (JSON, XML, form encoding)                                                       |
+| `type_mismatch`   | value type does not match the target field (`expected` param set, JSON offset known)                            |
+| `invalid_value`   | value of the right shape failed semantic conversion (`encoding.TextUnmarshaler`, time parse, numeric overflow)  |
+| `empty_body`      | request body absent or empty                                                                                    |
+| `trailing_data`   | content after the first JSON value                                                                              |
+| `duplicate_field` | JSON object member appears more than once (including case-variant repeats)                                      |
 
 ```json
 {
@@ -310,7 +317,7 @@ app.GET("/users", func(ctx *credo.Context) error {
 
 10. **App back-reference** — Context holds an unexported `app *App` field set during pool construction (never changes, not touched by `reset()`). This enables the internal error handling pipeline to access `app.i18nBundle` for i18n translation without exposing the App publicly on Context. See [ADR-013](../adr/013-internationalization.md).
 
-11. **Reflection boundaries** — `BindBody` uses `encoding/json` internally (stdlib reflection). `BindQuery` will use reflection for struct tag reading (`query:"name"`). This is standard Go practice and distinct from the "generics over reflection" principle, which applies to DI resolution and validation rule execution hot paths.
+11. **Reflection boundaries** — `BindBody` uses `encoding/json/v2` internally (stdlib reflection). `BindQuery` will use reflection for struct tag reading (`query:"name"`). This is standard Go practice and distinct from the "generics over reflection" principle, which applies to DI resolution and validation rule execution hot paths.
 
 12. **Original path belongs on Context, not Request** — The original client path is framework lifecycle state, not raw HTTP state. Storing it on Context keeps it tied to dispatch/rewrite behavior and avoids mutating the wrapped `*http.Request`.
 

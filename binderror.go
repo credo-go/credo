@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 // BindErrorReason identifies why [Request.BindBody] or [Request.BindQuery]
@@ -24,9 +25,10 @@ const (
 	// non-numeric form/query value for an integer field.
 	BindReasonTypeMismatch BindErrorReason = "type_mismatch"
 
-	// BindReasonInvalidValue reports a value rejected by the target field's
-	// [encoding.TextUnmarshaler] (an unparseable time.Time, netip.Addr, or
-	// custom type).
+	// BindReasonInvalidValue reports a value of the right shape that failed
+	// semantic conversion: rejected by the target field's
+	// [encoding.TextUnmarshaler] or a semantic unmarshal step (an
+	// unparseable time.Time, netip.Addr, custom type, or numeric overflow).
 	BindReasonInvalidValue BindErrorReason = "invalid_value"
 
 	// BindReasonEmptyBody reports a request without a body where one is
@@ -36,6 +38,10 @@ const (
 	// BindReasonTrailingData reports extra content after the first JSON
 	// value in the request body. BindBody accepts exactly one JSON value.
 	BindReasonTrailingData BindErrorReason = "trailing_data"
+
+	// BindReasonDuplicateField reports a JSON object member that appears
+	// more than once (including case-variant repeats of the same field).
+	BindReasonDuplicateField BindErrorReason = "duplicate_field"
 )
 
 // BindError is the typed decode error returned by [Request.BindBody] and
@@ -119,6 +125,8 @@ func (e *BindError) message() string {
 		return "request body is empty"
 	case BindReasonTrailingData:
 		return "request body must contain a single JSON value"
+	case BindReasonDuplicateField:
+		return "must appear only once"
 	}
 	return "request could not be decoded"
 }
@@ -139,7 +147,43 @@ func (e *BindError) params() map[string]any {
 	return p
 }
 
-// jsonTypeName maps the Go target type of a json.UnmarshalTypeError to a
+// jsonPointerToFieldPath converts an RFC 6901 JSON Pointer (as reported by
+// encoding/json/v2 errors, e.g. "/user/age", "/items/1/n") to the dot-path
+// field convention used by validation errors ("user.age", "items[1].n").
+// Purely numeric segments are rendered as array indexes.
+func jsonPointerToFieldPath(pointer string) string {
+	if pointer == "" {
+		return ""
+	}
+	var b strings.Builder
+	for seg := range strings.SplitSeq(strings.TrimPrefix(pointer, "/"), "/") {
+		seg = strings.ReplaceAll(seg, "~1", "/")
+		seg = strings.ReplaceAll(seg, "~0", "~")
+		if isAllDigits(seg) {
+			b.WriteString("[" + seg + "]")
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// jsonTypeName maps the Go target type of a JSON semantic decode error to a
 // client-facing JSON type term. Go type names are deliberately not exposed.
 func jsonTypeName(t reflect.Type) string {
 	if t == nil {

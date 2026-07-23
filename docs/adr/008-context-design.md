@@ -98,7 +98,9 @@ func createUser(ctx *credo.Context) error {
 
 Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, multipart (including file upload binding).
 
-JSON bodies are strict: exactly one JSON value is accepted and trailing content is rejected. Decode failures return a typed `*credo.BindError` (reason, field path, expected type, byte offset) that the error pipeline renders as a 400 RFC 7807 response mirroring the validation `errors[]` shape — parse errors are as structured as validation errors, completing the "parse, don't validate" contract. See the [Context spec](../specs/context.md) for the reason catalog.
+JSON bodies are decoded with `encoding/json/v2` under strict semantics: exactly one JSON value is accepted (trailing content rejected) and duplicate object members are rejected — including case-variant repeats, since member matching keeps v1's case-insensitive behavior via `MatchCaseInsensitiveNames` for client compatibility. Decode failures return a typed `*credo.BindError` (reason, field path, expected type, byte offset) that the error pipeline renders as a 400 RFC 7807 response mirroring the validation `errors[]` shape — parse errors are as structured as validation errors, completing the "parse, don't validate" contract. See the [Context spec](../specs/context.md) for the reason catalog.
+
+Rejecting *unknown* members was considered and rejected: "must-ignore unknown fields" is the de-facto API-evolution norm (new client → old server must not break), the Go ecosystem default is lenient, and a strict mode would have required a permanent configuration surface for a policy question. Credo's strictness targets ambiguity (duplicates, trailing data) — payloads where two parsers could legitimately disagree — not extensibility.
 
 ### Proxy-Derived Client Metadata
 
