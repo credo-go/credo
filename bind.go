@@ -194,7 +194,7 @@ func setScalarField(field reflect.Value, kind reflect.Kind, name, val string) er
 	if field.CanAddr() {
 		if tu, ok := field.Addr().Interface().(encoding.TextUnmarshaler); ok {
 			if err := tu.UnmarshalText([]byte(val)); err != nil {
-				return NewHTTPError(http.StatusBadRequest, "invalid value for field '"+name+"'")
+				return &BindError{Reason: BindReasonInvalidValue, Field: name, Internal: err}
 			}
 			return nil
 		}
@@ -207,28 +207,32 @@ func setScalarField(field reflect.Value, kind reflect.Kind, name, val string) er
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(val, 10, intBitSize(kind))
 		if err != nil {
-			return NewHTTPError(http.StatusBadRequest, "invalid integer value for field '"+name+"'")
+			return &BindError{Reason: BindReasonTypeMismatch, Field: name,
+				Expected: "integer", Internal: err}
 		}
 		field.SetInt(n)
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(val, 10, intBitSize(kind))
 		if err != nil {
-			return NewHTTPError(http.StatusBadRequest, "invalid unsigned integer value for field '"+name+"'")
+			return &BindError{Reason: BindReasonTypeMismatch, Field: name,
+				Expected: "unsigned integer", Internal: err}
 		}
 		field.SetUint(n)
 
 	case reflect.Float32, reflect.Float64:
 		n, err := strconv.ParseFloat(val, floatBitSize(kind))
 		if err != nil {
-			return NewHTTPError(http.StatusBadRequest, "invalid float value for field '"+name+"'")
+			return &BindError{Reason: BindReasonTypeMismatch, Field: name,
+				Expected: "number", Internal: err}
 		}
 		field.SetFloat(n)
 
 	case reflect.Bool:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
-			return NewHTTPError(http.StatusBadRequest, "invalid boolean value for field '"+name+"'")
+			return &BindError{Reason: BindReasonTypeMismatch, Field: name,
+				Expected: "boolean", Internal: err}
 		}
 		field.SetBool(b)
 

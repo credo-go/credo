@@ -32,6 +32,7 @@ const (
 	MsgKeyGatewayTimeout      = "http.gateway_timeout"
 	MsgKeyRequestTimeout      = "http.request_timeout"
 	MsgKeyValidationFailed    = "http.validation_failed"
+	MsgKeyBindFailed          = "http.bind_failed"
 )
 
 // builtInMessages maps MsgKey constants to default English messages.
@@ -52,6 +53,7 @@ var builtInMessages = map[string]string{
 	MsgKeyGatewayTimeout:      "Gateway Timeout",
 	MsgKeyRequestTimeout:      "Request Timeout",
 	MsgKeyValidationFailed:    "Validation Failed",
+	MsgKeyBindFailed:          "Malformed Request",
 }
 
 // statusToKey maps HTTP status codes to their MsgKey constants.
@@ -302,10 +304,11 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 //
 // Classification order:
 //  1. validation.Errors → 422 Unprocessable Entity with field errors
-//  2. *HTTPError → status from Code, title resolved from MessageKey
-//  3. fault.Provider → default root transport policy for the semantic kind
-//  4. HTTPStatus() int interface → legacy or explicit transport status
-//  5. Any other error → 500 Internal Server Error (message not leaked)
+//  2. *BindError → 400 Bad Request with a typed decode-reason errors entry
+//  3. *HTTPError → status from Code, title resolved from MessageKey
+//  4. fault.Provider → default root transport policy for the semantic kind
+//  5. HTTPStatus() int interface → legacy or explicit transport status
+//  6. Any other error → 500 Internal Server Error (message not leaked)
 func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails) {
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
 		if app.i18nBundle != nil && ctx.locale != "" {
@@ -316,6 +319,15 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 			Title:  resolveMessage(ctx, MsgKeyValidationFailed),
 			Status: http.StatusUnprocessableEntity,
 			Errors: []validation.ValidationError(ve),
+		}
+	}
+
+	if be, ok := errors.AsType[*BindError](err); ok {
+		return MsgKeyBindFailed, &ProblemDetails{
+			Type:   "https://credo.dev/errors/binding",
+			Title:  resolveMessage(ctx, MsgKeyBindFailed),
+			Status: http.StatusBadRequest,
+			Errors: []validation.ValidationError{app.bindProblemError(ctx, be)},
 		}
 	}
 
@@ -416,6 +428,36 @@ func translateValidationErrors(bundle *internali18n.Bundle, lang string, ve vali
 		}
 	}
 	return result
+}
+
+// bindProblemError converts a [BindError] into the single errors[] entry of
+// the RFC 7807 response. The entry mirrors the validation error shape:
+// Code carries the machine-readable reason, Message the localized (or
+// default English) text, and Params the client-safe template variables.
+// Translation follows the validation pipeline: lookup key "bind.<reason>",
+// field names resolved via the bundle's field translations.
+func (app *App) bindProblemError(ctx *Context, be *BindError) validation.ValidationError {
+	ve := validation.ValidationError{
+		Field:   be.Field,
+		Code:    string(be.Reason),
+		Message: be.message(),
+		Params:  be.params(),
+	}
+
+	if app.i18nBundle != nil && ctx.locale != "" {
+		data := copyParams(ve.Params, be.Field)
+		if be.Field != "" {
+			if data == nil {
+				data = make(map[string]any, 1)
+			}
+			data["field"] = app.i18nBundle.FieldNameForLang(ctx.locale, be.Field)
+		}
+		if s, ok := app.i18nBundle.TranslateForLang(ctx.locale, "bind."+string(be.Reason), data); ok {
+			ve.Message = s
+		}
+	}
+
+	return ve
 }
 
 // copyParams creates a shallow copy of the params map, allocating space for
