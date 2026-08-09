@@ -343,22 +343,22 @@ func TestExtractSQLiteCodeFields_PrefersExtendedCode(t *testing.T) {
 	}
 }
 
-// mockNcrucesSQLiteShape mirrors ncruces/go-sqlite3's Error: codes are named
+// mockNcrucesSQLiteError mirrors ncruces/go-sqlite3's Error: codes are named
 // integer types returned from methods, not int fields.
 type (
 	mockNcrucesErrorCode         uint8
 	mockNcrucesExtendedErrorCode uint16
 )
 
-type mockNcrucesSQLiteShape struct {
+type mockNcrucesSQLiteError struct {
 	code mockNcrucesExtendedErrorCode
 }
 
-func (e *mockNcrucesSQLiteShape) Error() string { return fmt.Sprintf("sqlite3: code %d", e.code) }
-func (e *mockNcrucesSQLiteShape) Code() mockNcrucesErrorCode {
+func (e *mockNcrucesSQLiteError) Error() string { return fmt.Sprintf("sqlite3: code %d", e.code) }
+func (e *mockNcrucesSQLiteError) Code() mockNcrucesErrorCode {
 	return mockNcrucesErrorCode(e.code & 0xff)
 }
-func (e *mockNcrucesSQLiteShape) ExtendedCode() mockNcrucesExtendedErrorCode { return e.code }
+func (e *mockNcrucesSQLiteError) ExtendedCode() mockNcrucesExtendedErrorCode { return e.code }
 
 type mockStringCodeError struct{}
 
@@ -372,9 +372,9 @@ func TestExtractSQLiteCodeMethods_PrefersExtendedCode(t *testing.T) {
 		want  int
 		ok    bool
 	}{
-		{name: "extended", value: &mockNcrucesSQLiteShape{code: 2067}, want: 2067, ok: true},
-		{name: "primary only", value: &mockNcrucesSQLiteShape{code: 19}, want: 19, ok: true},
-		{name: "zero code", value: &mockNcrucesSQLiteShape{}, want: 0, ok: false},
+		{name: "extended", value: &mockNcrucesSQLiteError{code: 2067}, want: 2067, ok: true},
+		{name: "primary only", value: &mockNcrucesSQLiteError{code: 19}, want: 19, ok: true},
+		{name: "zero code", value: &mockNcrucesSQLiteError{}, want: 0, ok: false},
 		{name: "non-integer code method", value: mockStringCodeError{}, want: 0, ok: false},
 	}
 	for _, tt := range tests {
