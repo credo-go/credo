@@ -801,7 +801,9 @@ from the driver name, or from the configured Bun dialect for custom connectors).
 SQLSTATE is the structured cross-driver path; when MySQL provides both a number
 and a broad SQLSTATE class, its more specific number wins. Strict MySQL error
 envelopes are parsed only for MySQL, and SQLite numeric codes only for SQLite
-(`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn).
+(`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn,
+typed `ExtendedCode()`/`Code()` methods for ncruces — the latter two matched by
+package path via reflection, so no driver becomes a dependency).
 Unmapped errors pass through with exact identity. Loose message matching is
 forbidden because a scanner/query hook/domain error may legitimately contain
 text such as “duplicate key validation”.

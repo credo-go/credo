@@ -296,6 +296,15 @@ kind. Use `store.KindOf(err)` when a switch is clearer than several
 clear; it does **not** mean replaying the statement, transaction callback, or
 external side effects is safe.
 
+Classification is family-scoped and depends on the driver being recognized.
+PostgreSQL mapping is SQLSTATE-based and works with any driver exposing it
+(pgx, lib/pq); MySQL parses the strict server error envelope; SQLite code
+extraction recognizes the modernc, mattn, and ncruces drivers (matched
+structurally, so none becomes a Credo dependency). Errors from an unrecognized
+driver pass through unmapped — `errors.Is` branches against `store.Err*`
+silently stop matching — so verify mapping coverage before adopting a
+different driver.
+
 `store.ErrDuplicate` remains an alias of `ErrAlreadyExists`. The deprecated
 `ErrConflict` remains an umbrella match for constraint, serialization,
 deadlock, and contention during migration, but new code should branch on the

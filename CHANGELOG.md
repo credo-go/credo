@@ -14,6 +14,12 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-09
+
+### Fixed
+
+- **`store/sqldb`: ncruces/go-sqlite3 error classification** — the SQLite classifier now recognizes the [ncruces/go-sqlite3](https://github.com/ncruces/go-sqlite3) driver's typed error codes (`Code() ErrorCode`, `ExtendedCode() ExtendedErrorCode`), which previously satisfied neither the modernc `Code() int` interface nor the mattn field shape and passed through unclassified. Unique/constraint, busy/locked, and read-only failures from that driver now map to the same `store.Err*` sentinels as modernc and mattn. Recognition is structural (reflection over package path and method shape), so no SQLite driver becomes a Credo dependency. The [data access guide](docs/guides/data-access.md) now documents per-family driver recognition and the pass-through behavior of unrecognized drivers.
+
 ## [0.4.0] - 2026-07-23
 
 ### Added
@@ -270,7 +276,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/credo-go/credo/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/credo-go/credo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/credo-go/credo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/credo-go/credo/compare/cdb0643f6b6b006d7c5d2d81c916b3942874e6c6...v0.2.0
