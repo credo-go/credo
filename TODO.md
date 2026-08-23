@@ -420,6 +420,18 @@
 - [ ] Total-free offset response — `Slice[T]` is the working name and gets its own design gate; do not encode an unknown total in `Page`/`Meta`
 - [x] Tests
 
+### 3.8 Reload & Partial Config Reload (root + `config/`) — [ADR-020](docs/adr/020-reload-and-partial-config-reload.md)
+
+> Accepted 2026-08-23. Target: v0.5.0.
+
+- [x] ADR-020 + spec updates (`lifecycle.md`, `config.md`), ADR-005/006 cross-references
+- [ ] `config`: `Reloader` interface, `Changes` (sorted leaf-key symmetric difference), `(*Config).Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
+- [ ] root: `Reload(ctx)` (running-only, serialized, validate-before-publish, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-`Reloader` store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys
+- [ ] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
+- [ ] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
+- [ ] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
+- [ ] Docs: configuration guide ("Reloading Configuration", reloadable column, rotation), getting-started, new `docs/guides/deployment.md` (systemd `ExecReload`, containers, admin-endpoint reload), DI/worker/middleware cross-notes, README, `doc.go`, `examples/saas`, release notes
+
 ### 3.7 Test Utilities (`testutil/`)
 
 **Source**: Original (inspired by Yokai's test toolkit)
@@ -650,7 +662,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 - [ ] `doc.go` for every package (include maturity label)
 - [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
-- [x] ADRs tracked (18 total):
+- [x] ADRs tracked (20 total):
   - [x] [`001-framework-identity-and-goals.md`](docs/adr/001-framework-identity-and-goals.md) — Framework identity and goals
   - [x] [`002-code-acquisition-strategy.md`](docs/adr/002-code-acquisition-strategy.md) — Code acquisition strategy
   - [x] [`003-application-architecture.md`](docs/adr/003-application-architecture.md) — Application architecture
@@ -669,6 +681,8 @@ should an SSE response API and disconnect/drain contract be designed.
   - [x] [`016-health-checks.md`](docs/adr/016-health-checks.md) — Health checks
   - [x] [`017-static-file-serving.md`](docs/adr/017-static-file-serving.md) — Static file serving
   - [x] [`018-host-routing-and-rewrite.md`](docs/adr/018-host-routing-and-rewrite.md) — Host routing and rewrite
+  - [x] [`019-websocket-integration-and-drain.md`](docs/adr/019-websocket-integration-and-drain.md) — WebSocket integration and drain
+  - [x] [`020-reload-and-partial-config-reload.md`](docs/adr/020-reload-and-partial-config-reload.md) — Reload signal, partial config reload, TLS rotation (Accepted; implementation in 3.8)
 - [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
 - [x] Write guide: Infra injection model (Model 1) — covered by [`docs/guides/dependency-injection.md`](docs/guides/dependency-injection.md)
 

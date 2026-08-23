@@ -22,6 +22,8 @@ A naive approach (string key-based API like `GetString("db.host")`, `GetInt("ser
 
 Config is positioned as a "snapshot produced at startup," not as a "globally accessed service." `config.Load()` produces a `RawConfig`, modules call `Unmarshal` once at the boundary to create typed structs, then register them in DI. Business code receives typed config via constructors — string keys never appear beyond the module boundary.
 
+The snapshot is immutable for everything injected through DI. The one documented exception is opt-in and explicit: a module may subscribe to a section with `app.OnConfigChange[T](key, fn)` and receive a freshly decoded `T` when a trigger-driven reload (`SIGHUP` under `Run`, or `app.Reload`) changes that section. Unsubscribed sections stay restart-only and the framework reports them as such. The reload model — including why whole-config hot reload is rejected — is [ADR-020](020-reload-and-partial-config-reload.md).
+
 Use of string keys in business code is documented as an **anti-pattern**.
 
 ### RawConfig: 2-Method Interface
@@ -57,7 +59,7 @@ Config file loading uses cascade merge: all found base files are merged (later f
 Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 - Config may require different sections for each service (`*OrderConfig` vs `*DatabaseConfig`)
-- Config is an immutable startup-time snapshot; Logger/Metrics/Tracer are runtime infrastructure
+- Config is an immutable startup-time snapshot (partial reload is an explicit per-section subscription, ADR-020); Logger/Metrics/Tracer are runtime infrastructure
 - Passing typed config explicitly via DI is more type-safe
 
 ### Rejected Alternatives
@@ -75,6 +77,7 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 | ASP.NET `IOptions<T>` pattern | Extra abstraction layer, simple DI is sufficient in Go |
 | Global config instance | Makes multi-instance tests harder, independent Apps conflict |
 | Invalid config → panic | Config errors are expected scenarios, returning error is Go-idiomatic |
+| Whole-config hot reload (mutate the snapshot in place) | Typed structs already injected through DI cannot observe the change, so "reload" would apply an undefined subset. Partial reload is instead an explicit per-section subscription with validate-before-publish and a restart-required warning for everything else — [ADR-020](020-reload-and-partial-config-reload.md) |
 
 ## Consequences
 

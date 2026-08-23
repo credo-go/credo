@@ -47,9 +47,13 @@ app.OnStart(fn func(ctx context.Context) error)     // FIFO startup hook
 app.OnPreDrain(fn func(ctx context.Context) error)  // Parallel pre-cancellation drain
 app.OnDrain(fn func(ctx context.Context) error)     // Parallel pre-DI subsystem drain
 app.OnShutdown(fn func(ctx context.Context) error)  // LIFO shutdown hook
+app.Reload(ctx)                            // Trigger-driven partial reload (ADR-020)
+app.OnReload(fn func(ctx context.Context) error)    // FIFO reload hook
+app.OnConfigChange[T](key, fn)             // Typed per-section config subscriber
 
 // Construction options:
 credo.WithShutdownTimeout(d)               // Drain deadline for signal/cancel shutdown (default 30s)
+credo.WithReloadTimeout(d)                 // Budget for SIGHUP-triggered reloads (default 30s)
 credo.WithTLSFiles(certFile, keyFile)      // Serve HTTPS from a PEM cert/key pair
 credo.WithTLSConfig(cfg)                    // Serve HTTPS from a *tls.Config (mTLS, SNI, reload)
 credo.WithHTTPRedirect(addr)               // Second listener: redirect HTTP→HTTPS (requires TLS)
@@ -63,8 +67,8 @@ TLS is **server configuration, not a serve-method variant**. `Run`/`RunContext` 
 
 ```
 WithTLSConfig(*tls.Config)   →  highest: full crypto/tls surface (mTLS, SNI, GetCertificate reload, ALPN)
-WithTLSFiles(cert, key)      →  PEM file paths via option
-server.tls.cert_file/key_file →  the same paths via config
+WithTLSFiles(cert, key)      →  PEM file paths via option (rotated on reload, ADR-020)
+server.tls.cert_file/key_file →  the same paths via config (rotated on reload, ADR-020)
 (none)                       →  plaintext
 ```
 
@@ -211,6 +215,8 @@ app.OnShutdown(func(ctx context.Context) error {
 - Must be called before `Run()`; panics after compile (frozen guard)
 - Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
 
+**OnReload** — called by a trigger-driven reload (`SIGHUP` under `Run`, or `app.Reload`) after the config snapshot has been re-published and typed `OnConfigChange[T]` subscribers have run. FIFO; errors are joined and logged but never terminate the process; registration is frozen with the other hooks. The full model (partial config reload, validate-before-publish, file-based TLS rotation) is [ADR-020](020-reload-and-partial-config-reload.md).
+
 ### Frozen Guard
 
 After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. Late registration of routes, middleware, meta, status handlers, or shutdown hooks panics with a clear message. This prevents subtle race conditions from concurrent registration during serving.
@@ -220,6 +226,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | Decision | Rationale |
 | --- | --- |
 | Signal-aware `Run` default | `Run` handles SIGINT/SIGTERM and drains gracefully — the common case needs no boilerplate. `RunContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
+| SIGHUP reloads, never terminates | `Run` also handles SIGHUP (Unix) by calling `app.Reload` under `WithReloadTimeout`; a failed reload keeps the previous configuration and the process stays up. `RunContext`/`ServeContext` stay signal-free and use `app.Reload` directly. Rejected: letting SIGHUP fall through to Go's default handler (kills the process — the opposite of `systemctl reload`), SIGUSR1/2 (non-conventional), filesystem watching (ADR-020) |
 | `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, _before_ the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
