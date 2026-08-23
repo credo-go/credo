@@ -7,15 +7,19 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
 
 // startRun runs the fixture through Run (the signal-aware entry point) and
-// waits until it is running; Cleanup stops it through a programmatic Shutdown
-// so no SIGINT is sent to the test process.
-func (f *reloadFixture) startRun(t *testing.T) {
+// waits until it is running. It returns a stop function that shuts the app
+// down programmatically (no SIGINT to the test process) and waits for Run to
+// return, so the fixture's log buffer is quiescent afterwards; Cleanup calls
+// it if the test has not.
+func (f *reloadFixture) startRun(t *testing.T) (stop func()) {
 	t.Helper()
 	go func() { f.errC <- f.app.Run() }()
 	deadline := time.Now().Add(5 * time.Second)
@@ -25,16 +29,21 @@ func (f *reloadFixture) startRun(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = f.app.Shutdown(ctx)
-		select {
-		case <-f.errC:
-		case <-time.After(5 * time.Second):
-			t.Error("Run did not return after Shutdown")
-		}
-	})
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = f.app.Shutdown(ctx)
+			select {
+			case <-f.errC:
+			case <-time.After(5 * time.Second):
+				t.Error("Run did not return after Shutdown")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return stop
 }
 
 // signalIgnore makes SIGHUP a no-op for the process until the test ends, so a
@@ -65,14 +74,14 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 		got <- c.Limit
 		return nil
 	})
-	fail := false
+	var fail atomic.Bool
 	f.app.OnReload(func(context.Context) error {
-		if fail {
+		if fail.Load() {
 			return os.ErrInvalid
 		}
 		return nil
 	})
-	f.startRun(t)
+	stop := f.startRun(t)
 
 	writeYAML(t, f.path, "feature:\n  limit: 2\n")
 	sendHUP(t)
@@ -87,7 +96,7 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 
 	// A failing reload is logged, not fatal: the server keeps running and the
 	// next signal reloads again.
-	fail = true
+	fail.Store(true)
 	writeYAML(t, f.path, "feature:\n  limit: 3\n")
 	sendHUP(t)
 	select {
@@ -101,6 +110,7 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 	if !f.app.IsRunning() {
 		t.Fatal("a failing reload must not stop the server")
 	}
+	stop() // quiesce the logger before reading the buffer
 	if logs := f.logs.String(); !strings.Contains(logs, "credo: reload signal received") {
 		t.Errorf("missing signal log line:\n%s", logs)
 	}
