@@ -40,7 +40,7 @@
 //     compiles, so registration order affects execution order only —
 //     middleware added to a group after its routes still applies to them.
 //   - Route: fluent API with Name(), SetMeta(), Middleware()
-//   - ErrorRenderer: customizes error response formatting via App.SetErrorRenderer (classification/logging handled by framework)
+//   - ErrorRenderer: shapes error response bodies via App.SetErrorRenderer — returns the body (nil = default RFC 7807); classification, logging, status, and writing handled by framework
 //   - SuccessRenderer: opt-in uniform success envelope via App.SetSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped)
 //
 // # API Naming

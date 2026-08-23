@@ -367,14 +367,14 @@ Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`). Custom
 
 Internal errors (5xx) are logged but never leaked to the client.
 
-You can replace the error renderer to customize the response format:
+You can replace the error renderer to customize the response body — it returns the shape, and the framework keeps owning the status code, Content-Type, and the write (return nil to keep the default RFC 7807 body):
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
     // info.MessageKey — i18n key (for telemetry, client-side i18n)
     // info.Problem — classified *ProblemDetails (status, title, errors)
-    ctx.Response().JSON(info.Problem.Status, myFormat(info))
+    return myFormat(info)
 })
 ```
 

@@ -26,19 +26,30 @@ type ErrorInfo struct {
 	Problem *ProblemDetails
 }
 
-// ErrorRenderer formats an error response given a classified [ErrorInfo].
-// The framework handles error classification, logging, and committed-response
-// guards internally. ErrorRenderer is called for all HTTP methods including
-// HEAD, allowing it to set response headers (e.g., Retry-After,
-// WWW-Authenticate). For HEAD requests where the renderer does not commit
-// the response, the framework sends a status-only response (no body).
+// ErrorRenderer shapes the body of an error response given a classified
+// [ErrorInfo]. The framework owns everything around that shape: error
+// classification, logging, the status code (info.Problem.Status — mutate it
+// before returning to change it), the Content-Type, HEAD handling, and
+// committed-response guards.
 //
-// If ErrorRenderer does not write a response ([Response.Committed] remains
-// false), the framework sends a status-only response for HEAD, or falls back
-// to the default RFC 7807 JSON renderer for other methods.
+// The return value is the response body. A non-nil value is encoded as JSON
+// with the application's JSON profile and written with info.Problem.Status;
+// returning nil renders the default RFC 7807 Problem Details instead. Either
+// way the renderer never writes the response itself in the common case — it
+// only decides the shape.
+//
+// The renderer is called for all HTTP methods including HEAD, so it can set
+// response headers (e.g., Retry-After, WWW-Authenticate) on the [Context]
+// before returning; for HEAD the framework then sends a status-only response
+// and the returned body is discarded. Setting headers and returning nil is
+// the way to decorate the default RFC 7807 body.
+//
+// For the rare response that is not JSON at all, the renderer may commit the
+// response itself through the [Context] (as any handler could); once
+// [Response.Committed] reports true the return value is ignored.
 //
 // Register a custom renderer with [App.SetErrorRenderer].
-type ErrorRenderer func(ctx *Context, info ErrorInfo)
+type ErrorRenderer func(ctx *Context, info ErrorInfo) any
 
 // SuccessRenderer formats a successful response, given the status code and the
 // payload a handler wants to send. It is the success-side mirror of

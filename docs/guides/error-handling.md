@@ -131,7 +131,7 @@ MessageKey = "user.email_exists" (no i18n)
 
 ## Internal Error Pipeline
 
-The framework handles error classification, logging, and committed-response guards internally. The `ErrorRenderer` receives an `ErrorInfo` (containing the original error, the i18n message key, and the classified `*ProblemDetails`) and is responsible for writing the response. When no custom `ErrorRenderer` is set, the default renderer writes RFC 7807 Problem Details JSON. Those bytes are deterministic by contract: map keys — a validation error's `params`, for instance — are always sorted, even when the application disabled deterministic encoding through `WithJSONOptions` ([ADR-021](../adr/021-json-output-profile.md)).
+The framework handles error classification, logging, status writing, HEAD handling, and committed-response guards internally. The `ErrorRenderer` receives an `ErrorInfo` (containing the original error, the i18n message key, and the classified `*ProblemDetails`) and returns the response body — or nil for the default. When no custom `ErrorRenderer` is set (or it returns nil), the framework writes RFC 7807 Problem Details JSON. Those bytes are deterministic by contract: map keys — a validation error's `params`, for instance — are always sorted, even when the application disabled deterministic encoding through `WithJSONOptions` ([ADR-021](../adr/021-json-output-profile.md)).
 
 Detection order (handled internally, then passed to `ErrorRenderer`):
 
@@ -178,29 +178,29 @@ The practical consequence is for clients: a consumer that parses every non-2xx b
 
 ## Custom ErrorRenderer
 
-Replace the default renderer with `app.SetErrorRenderer` when you need a different response format (it must be set before the server starts). The `ErrorRenderer` receives an `ErrorInfo` containing:
+Replace the default body shape with `app.SetErrorRenderer` when your clients expect a different error format (it must be set before the server starts). The `ErrorRenderer` receives an `ErrorInfo` containing:
 
 - **`info.Err`** — the original error (for `errors.As`/`errors.Is`, Sentry, etc.)
 - **`info.MessageKey`** — the i18n key used to resolve the title (for telemetry, client-side i18n)
 - **`info.Problem`** — the classified `*ProblemDetails` (status, title, instance, validation errors)
 
-Error classification, logging, and the committed-response guard are all performed by the framework before the renderer is called. The renderer is called for all HTTP methods including HEAD, so it can set response headers (e.g., `Retry-After`, `WWW-Authenticate`). For HEAD requests where the renderer does not commit the response, the framework sends a status-only response (no body).
+and returns the body to send. The framework does the rest: classification and logging have already happened, and the status code (`info.Problem.Status`), the `Content-Type`, and the actual write stay framework-owned. A non-nil return is encoded as JSON with the application's JSON profile:
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
-    ctx.Response().JSON(info.Problem.Status, map[string]any{
+app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+    return map[string]any{
         "success": false,
         "code":    info.MessageKey,
         "message": info.Problem.Title,
-        "status":  info.Problem.Status,
-    })
+        "fields":  info.Problem.Errors,
+    }
 })
 ```
 
-Access the original error for observability integrations:
+Returning nil keeps the default RFC 7807 body, which makes side-effect-only renderers natural — report to Sentry, set headers, keep the standard shape:
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
     // Report to Sentry
     if info.Problem.Status >= 500 {
         sentry.CaptureException(info.Err)
@@ -211,12 +211,61 @@ app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
         ctx.Response().Header().Set("Retry-After", rl.RetryAfter())
     }
 
-    // Don't write body → fallback renders default RFC 7807 JSON
-    // (headers set above are preserved)
+    return nil // default RFC 7807 body, decorated with the headers above
 })
 ```
 
-> **Fallback safety:** If the `ErrorRenderer` panics, the framework recovers and writes a 500 response. If the renderer returns without committing the response (i.e., without calling `WriteHeader` or writing a body), the framework logs a warning and falls back to the default RFC 7807 JSON renderer. Setting headers without writing a body is a valid pattern — the fallback renderer will include those headers.
+To change the status code, mutate `info.Problem.Status` before returning — it is the classified status the framework writes for both body shapes. The renderer is also called for HEAD requests so it can set headers; the returned body is discarded and a status-only response goes out.
+
+Two guarantees close the contract. If the renderer panics, the framework recovers and writes a minimal 500. And for the rare error response that is not JSON at all, the renderer may commit the response itself through the `Context` — exactly as a handler could — after which the return value is ignored:
+
+```go
+app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+    if wantsPlainText(ctx) {
+        _ = ctx.Response().Text(info.Problem.Status, info.Problem.Title)
+        return nil // already committed; the framework writes nothing more
+    }
+    return myEnvelope(info)
+})
+```
+
+---
+
+## Response Envelopes
+
+`ErrorRenderer` is one half of a pair. Its success-side mirror is `SuccessRenderer`, installed with `app.SetSuccessRenderer` and consulted by exactly one call site: `ctx.Render(status, data)`. Installing both gives every response the application produces — success and failure, including the 404/405/panic/bind responses no handler produced — one envelope, while no handler ever constructs it:
+
+```go
+// The application's own envelope types. Credo ships no envelope shape;
+// both renderers are opt-in and nil by default.
+type Envelope[T any] struct {
+    Data      T      `json:"data"`
+    RequestID string `json:"request_id,omitempty"`
+}
+
+app.SetSuccessRenderer(func(c *credo.Context, status int, data any) error {
+    return c.Response().JSON(status, Envelope[any]{Data: data, RequestID: c.RequestID()})
+})
+
+app.SetErrorRenderer(func(c *credo.Context, info credo.ErrorInfo) any {
+    return map[string]any{
+        "error":      map[string]any{"code": info.MessageKey, "message": info.Problem.Title, "fields": info.Problem.Errors},
+        "request_id": c.RequestID(),
+    }
+})
+
+app.GET("/users/{id}", func(c *credo.Context) error {
+    u, err := svc.Get(c.Context(), c.Request().RouteParam("id"))
+    if err != nil {
+        return err                        // error envelope, applied by the pipeline
+    }
+    return c.Render(http.StatusOK, u)     // success envelope, applied by Render
+})
+```
+
+The seam is deliberately narrow on the success side: only `Render` consults the `SuccessRenderer`. The raw `Response` helpers — `JSON`, `XML`, `Text`, `Blob`, the streaming writers — are never intercepted, so handlers serving webhooks, health probes, or third-party-dictated shapes bypass the envelope by calling them directly. With no `SuccessRenderer` installed, `Render` falls back to plain `Response.JSON` and imposes nothing, so `Render` is safe to use as the default success verb from day one and the envelope becomes a one-line decision later.
+
+Note the signature asymmetry: a `SuccessRenderer` owns the write (it decides status, encoding, everything — its error return flows into the error pipeline like any handler error), while an `ErrorRenderer` only returns a shape. The error side runs inside the framework's pipeline, which must keep classification, logging, status, and HEAD semantics correct regardless of what the renderer does; the success side is ordinary handler code where full control is harmless.
 
 ---
 

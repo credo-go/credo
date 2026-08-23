@@ -535,7 +535,7 @@ func TestApp_FrozenPanic_SetErrorRenderer(t *testing.T) {
 			t.Fatal("expected panic from SetErrorRenderer after compile")
 		}
 	}()
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {})
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any { return nil })
 }
 
 func TestApp_FrozenPanic_SetMeta(t *testing.T) {

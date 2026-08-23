@@ -38,7 +38,7 @@ type App struct {
 	// mux is the underlying radix-tree router.
 	mux *mux
 
-	// errorRenderer formats error responses, set via SetErrorRenderer.
+	// errorRenderer shapes error response bodies, set via SetErrorRenderer.
 	// nil = default RFC 7807 JSON renderer.
 	errorRenderer ErrorRenderer
 
@@ -476,11 +476,14 @@ func (app *App) StatusHandler(code int, h Handler) {
 	app.statusHandlers[code] = h
 }
 
-// SetErrorRenderer sets the renderer that formats error responses. The
-// framework handles error classification, logging, HEAD handling, and
-// committed-response guards internally; the renderer receives an [ErrorInfo]
-// containing the original error, the i18n message key, and the classified
-// [ProblemDetails]. Passing nil restores the default RFC 7807 JSON renderer.
+// SetErrorRenderer sets the renderer that shapes error response bodies. The
+// framework handles error classification, logging, the status code, HEAD
+// handling, and committed-response guards internally; the renderer receives an
+// [ErrorInfo] containing the original error, the i18n message key, and the
+// classified [ProblemDetails], and returns the body to encode — or nil for the
+// default RFC 7807 body. Passing nil restores the default RFC 7807 JSON
+// renderer. It is the error-side mirror of [App.SetSuccessRenderer]: install
+// both to give every response, success and failure alike, one envelope.
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetErrorRenderer(r ErrorRenderer) {

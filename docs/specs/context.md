@@ -106,6 +106,15 @@ func (r *Response) Stream(code int, contentType string, rd io.Reader) error
 func (r *Response) SetCookie(cookie *http.Cookie)
 ```
 
+#### Render and the envelope seam
+
+```go
+// Method on *Context — the single call site that consults App.SetSuccessRenderer
+func (c *Context) Render(status int, data any) error
+```
+
+`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.SetSuccessRenderer`, it delegates status, encoding, and the write to the renderer (whose error return flows into the error pipeline like any handler error); with none installed it falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)); the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
+
 #### JSON output profile
 
 `Response.JSON` encodes with `encoding/json/v2` under an application-level profile ([ADR-021](../adr/021-json-output-profile.md)). Two axes are set by the framework; the rest are json/v2's defaults, which differ from `encoding/json` v1 on the wire:
