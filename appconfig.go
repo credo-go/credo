@@ -327,6 +327,11 @@ func WithAddr(host string, port int) Option {
 // config keys or to plaintext. For conditional TLS, omit the option entirely
 // rather than passing empty strings.
 //
+// The pair is served through GetCertificate backed by an atomic pointer, so
+// every [App.Reload] (SIGHUP under Run) re-reads the same two paths and swaps
+// the pair in for new handshakes; a failed re-read keeps the current pair and
+// is reported through the reload error. Open connections are never affected.
+//
 // This option performs no I/O; the files are read when the server starts.
 func WithTLSFiles(certFile, keyFile string) Option {
 	return func(o *appOptions) {

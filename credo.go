@@ -100,6 +100,11 @@ type App struct {
 	// than silently falling through to the server.tls.* config keys or plaintext.
 	tlsFilesSet bool
 
+	// tlsFiles serves the file-based key pair (WithTLSFiles / server.tls.*)
+	// through GetCertificate so a reload can rotate it (see tls_rotation.go).
+	// Inactive when TLS comes from WithTLSConfig or the server is plaintext.
+	tlsFiles fileCertSource
+
 	// httpRedirectAddr, when non-empty, is the plaintext listen address for the
 	// HTTP→HTTPS redirect listener (set via WithHTTPRedirect). Requires TLS;
 	// applies to Run/RunContext only (not ServeContext).
@@ -305,6 +310,7 @@ func New(opts ...Option) (*App, error) {
 		debug:                 o.debug || o.serverCfg.Debug,
 		trustedProxies:        trustedProxies,
 	}
+	app.addReloadParticipant(app.tlsReloadParticipant())
 	app.root = &Group{app: app}
 	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {

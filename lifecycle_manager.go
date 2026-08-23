@@ -172,19 +172,21 @@ func (app *App) resolveTLSConfig() (*tls.Config, error) {
 	case cf == "" || kf == "":
 		return nil, fmt.Errorf("TLS requires both cert_file and key_file (cert=%q key=%q)", cf, kf)
 	}
-	cert, err := tls.LoadX509KeyPair(cf, kf)
-	if err != nil {
-		return nil, fmt.Errorf("load TLS key pair: %w", err)
+	// Load the initial pair now so startup fails fast exactly as before, but
+	// serve it through GetCertificate + an atomic pointer so a reload can
+	// rotate it without touching the running server (tls_rotation.go).
+	if err := app.tlsFiles.load(cf, kf); err != nil {
+		return nil, err
 	}
-	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+	return &tls.Config{GetCertificate: app.tlsFiles.getCertificate}, nil
 }
 
 // serveFuncs builds the (preflight, serveFn) pair shared by Run and RunContext.
 // Preflight resolves the TLS config once — before stateRunning, so an invalid
 // certificate fails fast and rolls back to building. serveFn then serves HTTPS
-// with that resolved config when TLS is configured, or plaintext otherwise. The
-// key pair is loaded exactly once: ServeTLS reuses srv.TLSConfig rather than
-// reading the files again.
+// with that resolved config when TLS is configured, or plaintext otherwise.
+// ServeTLS reuses srv.TLSConfig rather than reading the files again; for the
+// file-based sources only a reload re-reads them (tls_rotation.go).
 func (app *App) serveFuncs() (func() error, func(*http.Server, net.Listener) error) {
 	var cfg *tls.Config
 	preflight := func() error {

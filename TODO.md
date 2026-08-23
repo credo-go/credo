@@ -428,8 +428,8 @@
 - [x] `config`: `Reloader` + two-phase `Stager`/`Staged` interfaces, `Changes` (sorted leaf-key symmetric difference), `(*Config).Stage()`/`Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
 - [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys
 - [x] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
-- [ ] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
-- [ ] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
+- [x] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
+- [x] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
 - [ ] Docs: configuration guide ("Reloading Configuration", reloadable column, rotation), getting-started, new `docs/guides/deployment.md` (systemd `ExecReload`, containers, admin-endpoint reload), DI/worker/middleware cross-notes, README, `doc.go`, `examples/saas`, release notes
 
 ### 3.7 Test Utilities (`testutil/`)
@@ -682,7 +682,7 @@ should an SSE response API and disconnect/drain contract be designed.
   - [x] [`017-static-file-serving.md`](docs/adr/017-static-file-serving.md) — Static file serving
   - [x] [`018-host-routing-and-rewrite.md`](docs/adr/018-host-routing-and-rewrite.md) — Host routing and rewrite
   - [x] [`019-websocket-integration-and-drain.md`](docs/adr/019-websocket-integration-and-drain.md) — WebSocket integration and drain
-  - [x] [`020-reload-and-partial-config-reload.md`](docs/adr/020-reload-and-partial-config-reload.md) — Reload signal, partial config reload, TLS rotation (Accepted; implementation in 3.8)
+  - [x] [`020-reload-and-partial-config-reload.md`](docs/adr/020-reload-and-partial-config-reload.md) — Reload signal, partial config reload, TLS rotation (Accepted; implemented in 3.8)
 - [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
 - [x] Write guide: Infra injection model (Model 1) — covered by [`docs/guides/dependency-injection.md`](docs/guides/dependency-injection.md)
 
