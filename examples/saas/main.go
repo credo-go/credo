@@ -1,14 +1,18 @@
 // Package main demonstrates a full SaaS application built with the Credo framework.
 //
 // Features shown:
-//   - Configuration loading (config.Load with YAML/JSON + env overrides)
+//   - Configuration loading (config.Load with JSON + .env + env overrides)
+//   - Typed config at the module boundary, injected via DI
+//   - Configuration reload: OnConfigChange re-reads one section on SIGHUP
+//     (systemctl reload) or app.Reload, here swapping the log level in place
 //   - Global middleware (built-in recover/request ID/access log, plus CORS,
 //     secure headers, compression)
-//   - Authentication (JWT + API key)
+//   - Authentication (JWT bearer tokens)
 //   - Route groups (public, authenticated, admin)
 //   - Dependency injection (Provide/Resolve with typed constructors)
 //   - Validation (programmatic rules, no struct tags)
 //   - Error handling (RFC 7807 Problem Details)
+//   - Health probes (/health, /ready) for container orchestration
 //   - Graceful shutdown with OnShutdown hooks
 package main
 
@@ -277,7 +281,7 @@ func run() error {
 	}
 
 	var dbCfg DatabaseConfig
-	if err := rawCfg.Unmarshal("database", &dbCfg); err != nil {
+	if err := rawCfg.Unmarshal("databases.default", &dbCfg); err != nil {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 

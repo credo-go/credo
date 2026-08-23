@@ -8,7 +8,13 @@ import (
 )
 
 func main() {
-	app, err := credo.New(credo.WithAddr("", 8080))
+	// credo.New auto-discovers config.json (then config.yaml, config.yml) in
+	// the working directory and reads its "server" section — the only section
+	// the framework reads for itself. The listen address comes from there, so
+	// editing config.json changes where this serves. Everything else you put in
+	// the file is yours: unmarshal it into a struct at startup and inject it
+	// through DI, as the saas example does.
+	app, err := credo.New()
 	if err != nil {
 		log.Fatal(err)
 	}
