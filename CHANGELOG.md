@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-24
+
 ### Changed
 
 - **Breaking:** `credo.SuccessRenderer` is now shape-only, completing the symmetry with v0.9.0's `ErrorRenderer`: `func(ctx *Context, info RenderInfo) any`. The renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body; the framework owns the write — status, the application JSON profile, and the bodiless-status rule apply centrally. Returning nil writes `Data` plain (selective enveloping); a renderer that commits the response itself keeps full control and its return value is ignored; a renderer panic is caught by built-in recovery like any handler panic. `Context.Render` gains variadic `RenderOption`s — `credo.RenderMessageKey(key)` and `credo.RenderMeta(v)` — carrying the two side channels every envelope needs (resolved message, pagination-style metadata); with no renderer installed they are silently dropped. Migration: change the signature from `func(c, status, data) error` to `func(c, info) any`, build the envelope and `return` it instead of writing; a renderer that wrote its own non-JSON response keeps the write and returns nil only after committing. See [ADR-009](docs/adr/009-handler-and-error-handling.md).
@@ -358,7 +360,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/credo-go/credo/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/credo-go/credo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/credo-go/credo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/credo-go/credo/compare/v0.6.0...v0.7.0
