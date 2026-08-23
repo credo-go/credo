@@ -2,8 +2,6 @@ module github.com/credo-go/credo/examples/saas
 
 go 1.27
 
-toolchain go1.27rc2
-
 require (
 	github.com/credo-go/credo v0.0.0
 	github.com/golang-jwt/jwt/v5 v5.3.1

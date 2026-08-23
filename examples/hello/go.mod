@@ -2,8 +2,6 @@ module github.com/credo-go/credo/examples/hello
 
 go 1.27
 
-toolchain go1.27rc2
-
 require github.com/credo-go/credo v0.0.0
 
 require (
