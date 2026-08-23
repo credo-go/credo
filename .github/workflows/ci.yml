@@ -185,7 +185,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [examples/saas, examples/hello]
+        include:
+          - module: examples/saas
+            smoke_url: http://127.0.0.1:8080/health
+          - module: examples/hello
+            smoke_url: http://127.0.0.1:8080/
     steps:
       - uses: actions/checkout@v7
 
@@ -210,6 +214,65 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+
+      # Building an example proves it compiles, not that it runs: the saas
+      # example spent releases unable to start because it read a config key its
+      # own file did not define, and build+vet stayed green throughout. Start
+      # it, serve one request, and shut it down.
+      - name: Smoke
+        working-directory: ${{ matrix.module }}
+        env:
+          URL: ${{ matrix.smoke_url }}
+        run: |
+          set -euo pipefail
+
+          BIN="$RUNNER_TEMP/example"
+          go build -o "$BIN" .
+
+          # The example reads its config from the working directory, so run the
+          # binary from here rather than from where it was built.
+          "$BIN" &
+          PID=$!
+          cleanup() { kill "$PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          # Poll rather than sleep a fixed amount: startup does config
+          # discovery, DI finalisation, and a port bind. A process that dies
+          # during any of those is the failure this step exists to catch, so
+          # check liveness every iteration and surface its exit status instead
+          # of waiting out the whole timeout.
+          ready=""
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::the example exited during startup"
+              trap - EXIT
+              wait "$PID" || true
+              exit 1
+            fi
+            if curl -fsS -o /dev/null --max-time 2 "$URL"; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+
+          if [ -z "$ready" ]; then
+            echo "::error::$URL never answered within 30s"
+            exit 1
+          fi
+          echo "$URL answered 200"
+
+          # SIGTERM is what a container runtime sends. Run blocks until it
+          # arrives, then drains and returns nil, so a non-zero exit here means
+          # the shutdown path broke.
+          trap - EXIT
+          kill -TERM "$PID"
+          if wait "$PID"; then
+            echo "graceful shutdown returned 0"
+          else
+            echo "::error::graceful shutdown exited $?"
+            exit 1
+          fi
 
   lint:
     name: Lint

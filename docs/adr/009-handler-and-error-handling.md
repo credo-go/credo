@@ -37,6 +37,14 @@ type ErrorInfo struct {
 
 Splitting the pipeline this way keeps custom renderers small: a renderer never re-implements classification, logging, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted. `ErrorInfo.Err` keeps the original error available for cross-cutting use (Sentry, audit logging, deriving `Retry-After` / `WWW-Authenticate` headers); `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. A fallback safety net catches a renderer that panics or writes nothing and emits a minimal 500.
 
+### Where the Pipeline Begins
+
+The pipeline covers every response the application produces, including the ones no handler produced: 404 and 405, `BindBody`/`BindQuery` failures, `max_body_bytes` overruns, and panics all reach `ErrorRenderer` as classified `ProblemDetails`, exactly like a returned error.
+
+It cannot cover what `net/http` rejects before routing. A request whose headers exceed `max_header_bytes` or `max_header_value_count` (431), whose request line or Host is malformed (400), or whose transfer encoding is unsupported (501) is answered by the standard library writing directly to the connection, while no `http.Handler` has been invoked. Those responses are `text/plain`, carry no request ID, are not logged — not even through the `http.Server.ErrorLog` bridge — and `ErrorRenderer` is never called for them.
+
+Credo does not try to hide this. Intercepting those responses would mean owning the connection loop instead of `net/http`'s, which trades the standard library's hardened HTTP/1.1 and HTTP/2 parsing for a bespoke one — a bad exchange for cosmetic uniformity on three malformed-request paths. The boundary is documented instead (see the [error-handling guide](../guides/error-handling.md)), so clients know to check `Content-Type` before parsing a non-2xx body as `application/problem+json`.
+
 ### Default Error Detection Order
 
 ```
@@ -172,3 +180,4 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
 - Every handler must return `error` (not just write response)
 - A custom `ErrorRenderer` requires understanding `ErrorInfo` fields (`Err`, `MessageKey`, `Problem`)
 - RFC 7807 JSON format may not suit all clients (mitigate: custom ErrorRenderer)
+- Uniformity stops at the standard library's own rejections: 431, malformed-request 400, and unsupported-transfer-encoding 501 are plain text written straight to the connection, unreachable by `ErrorRenderer` and absent from the logs

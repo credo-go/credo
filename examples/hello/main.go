@@ -32,5 +32,10 @@ func main() {
 		})
 	})
 
-	log.Fatal(app.Run())
+	// Run returns nil on a graceful shutdown, so guard the call: log.Fatal
+	// exits 1 unconditionally, which would report every clean SIGTERM stop as
+	// a crash to whatever supervises the process.
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
