@@ -209,7 +209,7 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 //  3. Error classification via classifyError
 //  4. Server error logging (5xx HTTPErrors with Internal, unhandled errors)
 //  5. ErrorRenderer dispatch (renderer is called even for HEAD — can set headers)
-//  6. HEAD/fallback guard (if renderer didn't commit: HEAD → NoContent, else → default JSON)
+//  6. Body write (HEAD → status only; renderer body → JSON; nil → default RFC 7807)
 func (app *App) handleError(err error, ctx *Context) {
 	defer app.recoverErrorRendererPanic(err, ctx)
 
@@ -272,30 +272,29 @@ func (app *App) logServerError(err error, status int, ctx *Context) {
 }
 
 func (app *App) renderError(ctx *Context, info ErrorInfo) {
-	pd := info.Problem
-	isHEAD := ctx.Request().Method == http.MethodHead
-
-	// Dispatch to ErrorRenderer or default.
+	var body any
 	if app.errorRenderer != nil {
-		app.errorRenderer(ctx, info)
-		if ctx.Response().Hijacked() {
+		body = app.errorRenderer(ctx, info)
+		if ctx.Response().Hijacked() || ctx.Response().Committed() {
+			// The renderer took full control and wrote the response itself;
+			// the returned body, if any, is irrelevant by contract.
 			return
 		}
-		if !ctx.Response().Committed() {
-			if isHEAD {
-				_ = ctx.Response().NoContent(pd.Status)
-			} else {
-				ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
-					"credo: ErrorRenderer did not write response, falling back to default")
-				defaultRenderError(ctx, pd)
-			}
-		}
-		return
 	}
 
-	// No custom renderer — use default.
-	if isHEAD {
+	// The renderer may have mutated info.Problem (typically Status), so the
+	// pointer is read only after it returns.
+	pd := info.Problem
+	if ctx.Request().Method == http.MethodHead {
+		// Renderer-set headers are preserved; a HEAD response carries no body.
 		_ = ctx.Response().NoContent(pd.Status)
+		return
+	}
+	if body != nil {
+		if err := ctx.Response().JSON(pd.Status, body); err != nil {
+			ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
+				"credo: failed to write error response", slog.Any("error", err))
+		}
 		return
 	}
 	defaultRenderError(ctx, pd)

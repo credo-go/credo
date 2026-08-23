@@ -239,9 +239,9 @@ func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 
 	app := mustNew(t)
 	var renderedErr error
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		renderedErr = info.Err
-		ctx.Response().JSON(info.Problem.Status, info.Problem) //nolint:errcheck
+		return info.Problem
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return structured })
 
@@ -481,12 +481,10 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		called = true
 		receivedInfo = info
-		ctx.Response().Header().Set("Content-Type", "application/json")
-		ctx.Response().WriteHeader(info.Problem.Status)
-		json.NewEncoder(ctx.Response()).Encode(map[string]string{"error": info.Problem.Title}) //nolint:errcheck
+		return map[string]string{"error": info.Problem.Title}
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -517,7 +515,7 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 	}
 }
 
-func TestHandleError_ErrorRendererFallback(t *testing.T) {
+func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	app, err := credo.New(credo.WithLogger(logger))
@@ -525,9 +523,11 @@ func TestHandleError_ErrorRendererFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ErrorRenderer that does NOT write a response (doesn't commit).
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
-		// intentionally empty — no write
+	// A nil body is the documented "keep the default RFC 7807 body" signal;
+	// headers set by the renderer decorate that default response.
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -538,7 +538,6 @@ func TestHandleError_ErrorRendererFallback(t *testing.T) {
 	r := httptest.NewRequest("GET", "/test", nil)
 	app.ServeHTTP(w, r)
 
-	// Should fall back to default RFC 7807 response.
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
@@ -546,8 +545,105 @@ func TestHandleError_ErrorRendererFallback(t *testing.T) {
 	if ct != "application/problem+json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
 	}
-	if !contains(buf.String(), "ErrorRenderer did not write response") {
-		t.Errorf("expected warning log about fallback, got: %q", buf.String())
+	if got := w.Header().Get("X-Error-Code"); got != credo.MsgKeyBadRequest {
+		t.Errorf("X-Error-Code = %q, want %q (renderer headers must survive)", got, credo.MsgKeyBadRequest)
+	}
+	// nil is intentional, not an accident: nothing is logged for it.
+	if contains(buf.String(), "did not write response") {
+		t.Errorf("nil body must not log a fallback warning, got: %q", buf.String())
+	}
+}
+
+func TestHandleError_ErrorRendererBody(t *testing.T) {
+	app := mustNew(t)
+
+	// The common case: the renderer returns the body and the framework owns
+	// status, Content-Type, and the write.
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+		return map[string]any{"code": info.MessageKey, "message": info.Problem.Title}
+	})
+
+	app.GET("/test", func(ctx *credo.Context) error {
+		return credo.NewHTTPError(http.StatusConflict, "user.email_exists")
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %q)", err, w.Body.String())
+	}
+	if got["code"] != "user.email_exists" {
+		t.Errorf("body code = %v, want user.email_exists", got["code"])
+	}
+}
+
+func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
+	app := mustNew(t)
+
+	// info.Problem is the renderer's status seam: mutating it before
+	// returning changes the written status for both body shapes.
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+		if info.MessageKey == credo.MsgKeyNotFound {
+			info.Problem.Status = http.StatusGone
+		}
+		return map[string]any{"status": info.Problem.Status}
+	})
+
+	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrNotFound })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
+	if w.Code != http.StatusGone {
+		t.Errorf("status = %d, want %d (renderer-mutated)", w.Code, http.StatusGone)
+	}
+}
+
+func TestHandleError_HEADDiscardsRendererBody(t *testing.T) {
+	app := mustNew(t)
+
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+		return map[string]any{"code": info.MessageKey}
+	})
+	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrForbidden })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("HEAD", "/test", nil))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("HEAD body = %q, want empty even when the renderer returns one", w.Body.String())
+	}
+}
+
+func TestHandleError_CommittedRendererIgnoresBody(t *testing.T) {
+	app := mustNew(t)
+
+	// Full-control escape hatch: once the renderer commits the response
+	// itself, the returned body must not be appended on top.
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+		_ = ctx.Response().Text(info.Problem.Status, "plain error")
+		return map[string]any{"must": "be ignored"}
+	})
+	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrBadRequest })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
+
+	if w.Body.String() != "plain error" {
+		t.Errorf("body = %q, want only the committed write", w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want the committed text/plain", ct)
 	}
 }
 
@@ -559,7 +655,7 @@ func TestHandleError_ErrorRendererPanics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		panic("renderer exploded")
 	})
 
@@ -685,11 +781,12 @@ func TestHandleError_HEADRemovesImmutableCacheControl(t *testing.T) {
 
 func TestHandleError_CustomRendererRemovesImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		ctx.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		ctx.Response().Header().Set("Content-Type", "application/problem+json")
 		ctx.Response().WriteHeader(info.Problem.Status)
 		json.NewEncoder(ctx.Response()).Encode(info.Problem) //nolint:errcheck
+		return nil
 	})
 	app.GET("/test", func(ctx *credo.Context) error {
 		return credo.ErrConflict
@@ -711,8 +808,9 @@ func TestHandleError_CommittedBeforeRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		rendererCalled = true
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -736,10 +834,11 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		rendererCalled = true
 		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
-		// Don't write body — framework handles HEAD NoContent fallback.
+		// nil body — the framework sends the status-only HEAD response.
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -769,12 +868,10 @@ func TestHandleError_RendererReceivesInstance(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		called = true
 		receivedInfo = info
-		ctx.Response().Header().Set("Content-Type", "application/problem+json")
-		ctx.Response().WriteHeader(info.Problem.Status)
-		json.NewEncoder(ctx.Response()).Encode(info.Problem) //nolint:errcheck
+		return info.Problem
 	})
 
 	app.GET("/api/items/{id}", func(ctx *credo.Context) error {
@@ -798,12 +895,10 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		called = true
 		receivedInfo = info
-		ctx.Response().Header().Set("Content-Type", "application/problem+json")
-		ctx.Response().WriteHeader(info.Problem.Status)
-		json.NewEncoder(ctx.Response()).Encode(info.Problem) //nolint:errcheck
+		return info.Problem
 	})
 
 	app.POST("/users", func(ctx *credo.Context) error {
@@ -837,9 +932,9 @@ func TestHandleError_ErrorInfoErrForSentry(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		receivedInfo = info
-		ctx.Response().WriteHeader(info.Problem.Status)
+		return nil
 	})
 
 	// Handler returns an HTTPError wrapping an internal error.
@@ -862,9 +957,9 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		receivedInfo = info
-		ctx.Response().WriteHeader(info.Problem.Status)
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -887,9 +982,9 @@ func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		receivedInfo = info
-		ctx.Response().WriteHeader(info.Problem.Status)
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -944,9 +1039,9 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) {
+	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 		receivedInfo = info
-		ctx.Response().WriteHeader(info.Problem.Status)
+		return nil
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -983,8 +1078,9 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_returns",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
+					return nil
 				})
 			},
 			handler: func(*credo.Context) error { return credo.ErrBadRequest },
@@ -992,7 +1088,7 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_panics",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
 					panic("renderer panic after hijack")
 				})

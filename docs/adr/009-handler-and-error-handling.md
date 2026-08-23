@@ -22,11 +22,11 @@ Handlers return `error` instead of writing error responses directly. This is the
 
 A returned error flows through the framework's internal error pipeline, which separates two concerns:
 
-1. **Framework internals** (the unexported `handleError` method) classify the error, log server faults (5xx and unhandled), suppress bodies on HEAD requests, and guard against writing to an already-committed response. These run once, correctly, for every error.
-2. **`ErrorRenderer`** decides only the response _format_. It receives an already-classified `ErrorInfo` and is pluggable via `App.SetErrorRenderer`; the default renders RFC 7807 Problem Details JSON.
+1. **Framework internals** (the unexported `handleError` method) classify the error, log server faults (5xx and unhandled), write the response with the classified status and a JSON Content-Type, suppress bodies on HEAD requests, and guard against writing to an already-committed response. These run once, correctly, for every error.
+2. **`ErrorRenderer`** decides only the response body's _shape_. It receives an already-classified `ErrorInfo` and returns the body to encode; it is pluggable via `App.SetErrorRenderer`, and the default renders RFC 7807 Problem Details JSON.
 
 ```go
-type ErrorRenderer func(ctx *Context, info ErrorInfo)
+type ErrorRenderer func(ctx *Context, info ErrorInfo) any
 
 type ErrorInfo struct {
     Err        error           // original error (errors.As, Sentry, custom headers)
@@ -35,7 +35,11 @@ type ErrorInfo struct {
 }
 ```
 
-Splitting the pipeline this way keeps custom renderers small: a renderer never re-implements classification, logging, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted. `ErrorInfo.Err` keeps the original error available for cross-cutting use (Sentry, audit logging, deriving `Retry-After` / `WWW-Authenticate` headers); `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. A fallback safety net catches a renderer that panics or writes nothing and emits a minimal 500.
+A non-nil return is encoded with the application's JSON profile and written with `info.Problem.Status` (mutable before returning — the renderer's one status seam); returning nil keeps the default RFC 7807 body, so a renderer can also run purely for its side effects — setting `Retry-After` / `WWW-Authenticate` headers, reporting to Sentry — and let the default shape stand. The renderer is invoked for HEAD too (headers again), with the returned body discarded. For the rare non-JSON error response, the renderer may commit the response itself through the Context; once committed, the return value is ignored. That committed check also means a renderer cannot double-write by both committing and returning.
+
+Splitting the pipeline this way keeps custom renderers total-function simple: a renderer maps `ErrorInfo` to a body value and never re-implements classification, logging, status writing, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted — or accidentally diverged, the failure mode of the earlier write-it-yourself contract, where every renderer repeated `WriteHeader` and encoding by hand and a missing write triggered a warn-and-fallback path. `ErrorInfo.Err` keeps the original error available for cross-cutting use; `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. A renderer that panics is caught and a minimal 500 emitted.
+
+The renderer is the error-side half of the response-envelope story: paired with `SuccessRenderer` (ADR-008's `Context.Render` seam), an application defines one envelope for every response it produces without a single handler knowing the envelope exists.
 
 ### Where the Pipeline Begins
 
@@ -173,7 +177,7 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
 - Centralized logging of server errors
 - i18n-aware error translation built-in
 - `WithInternal` pattern separates client message from debug info
-- Custom renderers stay small — classification, logging, and the HEAD/committed guards are handled by the framework, not the renderer
+- Custom renderers stay small — a renderer only returns a body shape; classification, logging, status, encoding, and the HEAD/committed guards are handled by the framework
 
 **Negative:**
 
