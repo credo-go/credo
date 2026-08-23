@@ -674,8 +674,8 @@ should an SSE response API and disconnect/drain contract be designed.
 
 ### CI/CD
 
-- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; pinned to go1.27rc2 (Go version pinned via a `GO_VERSION` env until 1.27 GA, then back to `go-version-file: go.mod`; the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
-- [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint fully supports Go 1.27 (re-merge at GA)
+- [x] GitHub Actions CI (`ci.yml`) — build, vet, `go mod tidy` check, tests, and an Examples gate; Go version resolved from `go-version-file: go.mod` (the floor equals the latest release today, so the "1.27 + latest" matrix is a single version)
+- [x] Automated golangci-lint on PRs — split into a blocking safe-set job and a non-blocking full canary job until golangci-lint's staticcheck/unused/gosec engines support Go 1.27 (tracked by the canary, independent of the 1.27 GA release)
 - [x] CodeQL security analysis (`codeql.yml`)
 - [x] Upstream advisory watch (`upstream-watch.yml`) — monthly govulncheck plus an adapted-upstream review reminder (`SECURITY-UPSTREAMS.md`); adapted code is invisible to Dependabot
 - [x] Lockstep library release gate — CI builds an external `store/sqldb` consumer from synthetic root+nested tags without local `replace`; the manual `Release` workflow validates the prepared root requirement and atomically publishes both module tags

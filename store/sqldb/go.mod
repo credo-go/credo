@@ -2,8 +2,6 @@ module github.com/credo-go/credo/store/sqldb
 
 go 1.27
 
-toolchain go1.27rc2
-
 require (
 	github.com/credo-go/credo v0.4.1
 	github.com/go-sql-driver/mysql v1.10.0

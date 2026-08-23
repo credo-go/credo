@@ -9,14 +9,7 @@ on:
 permissions:
   contents: read
 
-# Go 1.27 is pre-GA: actions/setup-go cannot resolve the `toolchain go1.27rc2`
-# directive in go.mod (the bare `1.27rc2` spec is not valid semver, so both the
-# manifest lookup and the direct download fail). Pin the release candidate with
-# the semver-prerelease form setup-go accepts; it maps to the go1.27rc2 build.
-# Once 1.27 GA ships and go.mod drops the rc toolchain line, the setup-go steps
-# can return to `go-version-file: go.mod`.
 env:
-  GO_VERSION: "1.27.0-rc.2"
   GOLANGCI_LINT_VERSION: "v2.12.2"
   GOLANGCI_X_TOOLS_VERSION: "v0.48.0"
 
@@ -30,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Download dependencies
         run: go mod download
@@ -50,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Create in-tree module workspace
         run: go run ./scripts/releasegate workspace
@@ -110,7 +103,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Create in-tree module workspace
         run: go run ./scripts/releasegate workspace
@@ -137,7 +130,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Build (root)
         run: go build ./...
@@ -160,7 +153,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Build external store/sqldb consumer
         run: go run ./scripts/releasegate candidate
@@ -174,7 +167,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: go mod tidy (root)
         run: |
@@ -199,7 +192,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       # Each example is its own module (replace github.com/credo-go/credo => ../..),
       # so it exercises the framework's generic-method call sites across a module
@@ -228,7 +221,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       # v2.12.2 pins x/tools v0.44.0, whose package loader cannot read Go 1.27
       # generic-method export data. Build the exact linter release with the
@@ -277,7 +270,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: Build pinned golangci-lint
         run: |

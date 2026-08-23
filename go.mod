@@ -2,8 +2,6 @@ module github.com/credo-go/credo
 
 go 1.27
 
-toolchain go1.27rc2
-
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/go-viper/mapstructure/v2 v2.5.0
