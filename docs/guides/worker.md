@@ -382,6 +382,39 @@ Currently, `worker.restart_delay` is used as the default restart delay for conti
 
 ---
 
+## Reloadable Settings
+
+Workers are registered once and run for the life of the process; a [config reload](configuration.md#reloading-configuration) does not re-register them or change `WithSchedule`. For a setting a worker should honour without a restart — a batch size, a concurrency cap, a polling interval — give the worker an atomic holder and swap it from an `OnConfigChange[T]` subscriber:
+
+```go
+type Sync struct {
+    cfg atomic.Pointer[SyncConfig]
+}
+
+func (s *Sync) Run(ctx context.Context) error {
+    for {
+        cfg := s.cfg.Load() // read the live value on every iteration
+        if err := s.runBatch(ctx, cfg.BatchSize); err != nil {
+            return err
+        }
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-time.After(cfg.Interval):
+        }
+    }
+}
+
+app.OnConfigChange("sync", func(ctx context.Context, next SyncConfig) error {
+    sync.cfg.Store(&next)
+    return nil
+})
+```
+
+A changed cron expression is restart-only; the reload logs it as `restart required`.
+
+---
+
 ## Best Practices
 
 - continuous workers should own their loop; scheduled workers should do one execution and return

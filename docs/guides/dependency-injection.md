@@ -611,6 +611,35 @@ resources safe to close last.
 
 ---
 
+## Config Changes and Singletons
+
+DI singletons are built once and never rebuilt — a [reload](configuration.md#reloading-configuration) does not re-run constructors or replace bindings. A typed config struct injected at startup is therefore a startup snapshot. When a service needs a value that can change at runtime, keep the live value inside the service behind an atomic holder and let an `OnConfigChange[T]` subscriber swap it:
+
+```go
+type RateLimiter struct {
+    limits atomic.Pointer[Limits]
+}
+
+func NewRateLimiter(infra credo.Infra, initial *Limits) *RateLimiter {
+    rl := &RateLimiter{}
+    rl.limits.Store(initial)
+    return rl
+}
+
+func (rl *RateLimiter) Apply(next Limits) { rl.limits.Store(&next) }
+
+// Composition root: the subscriber owns the swap; handlers only ever Load().
+rl := app.MustResolve[*RateLimiter]()
+app.OnConfigChange("limits", func(ctx context.Context, next Limits) error {
+    rl.Apply(next)
+    return nil
+})
+```
+
+Resources that cannot be swapped atomically — a database pool built from a changed DSN, a listener on a new port — are restart-only by design; the reload logs them as `restart required`.
+
+---
+
 ## Testing
 
 Most unit tests do not need the container at all. Construct the type directly:
