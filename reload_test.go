@@ -387,15 +387,15 @@ func changesOf(keys ...string) config.Changes {
 	}
 	defer os.RemoveAll(dir)
 	p := filepath.Join(dir, "c.yaml")
-	if err := os.WriteFile(p, []byte(before.String()), 0o644); err != nil {
-		panic(err)
+	if werr := os.WriteFile(p, []byte(before.String()), 0o644); werr != nil {
+		panic(werr)
 	}
 	c, err := config.Load(config.WithFiles(p), config.WithPrefix("NONE_"))
 	if err != nil {
 		panic(err)
 	}
-	if err := os.WriteFile(p, []byte(after.String()), 0o644); err != nil {
-		panic(err)
+	if werr := os.WriteFile(p, []byte(after.String()), 0o644); werr != nil {
+		panic(werr)
 	}
 	ch, err := c.Reload()
 	if err != nil {
