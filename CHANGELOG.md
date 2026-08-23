@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-23
+
 ### Added
 
 - `credo.WithJSONOptions(opts ...jsonv2.Options)`: overrides Credo's JSON response encoding profile per axis (for example `jsonv2.FormatNilSliceAsNull(true)`, `jsontext.EscapeForHTML(true)`, or `jsonv1.DefaultOptionsV1()` for full legacy output). Construction-time only; see [ADR-021](docs/adr/021-json-output-profile.md).
@@ -315,7 +317,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/credo-go/credo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/credo-go/credo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/credo-go/credo/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/credo-go/credo/compare/v0.4.0...v0.4.1
