@@ -202,6 +202,10 @@ func (app *App) serveFuncs() (func() error, func(*http.Server, net.Listener) err
 	}
 	serveFn := func(srv *http.Server, l net.Listener) error {
 		if cfg != nil {
+			// Assigned after buildServer, so the resolved TLS chain also
+			// overrides anything a WithHTTPServer callback put here. With no
+			// Credo TLS source the server is served plaintext by Serve, which
+			// ignores TLSConfig — a callback can never upgrade the listener.
 			srv.TLSConfig = cfg
 			return srv.ServeTLS(l, "", "")
 		}
@@ -359,7 +363,7 @@ func (lm *lifecycleManager) serve(
 	// Phase 3: build the server and publish ctx/cancel/server under serverMu
 	// while Shutdown cannot proceed (stateStarting blocks it).
 	appCtx, appCancel := context.WithCancel(context.Background())
-	srv := buildServer(app.serverCfg, app, app.Logger())
+	srv := buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
 	lm.serverMu.Lock()
 	lm.ctx = appCtx
 	lm.cancel = appCancel

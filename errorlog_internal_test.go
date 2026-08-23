@@ -43,7 +43,7 @@ func TestNewServerErrorLog(t *testing.T) {
 // builds carries the bridge, so net/http never falls back to the standard log
 // package's stderr output.
 func TestBuildServer_ErrorLogBridged(t *testing.T) {
-	srv := buildServer(serverConfig{Host: "127.0.0.1", Port: 8080}, http.DefaultServeMux, nil)
+	srv := buildServer(serverConfig{Host: "127.0.0.1", Port: 8080}, http.DefaultServeMux, nil, nil)
 	if srv.ErrorLog == nil {
 		t.Fatal("buildServer left ErrorLog nil; net/http would log to stderr")
 	}

@@ -236,6 +236,7 @@
 - [x] `Run()` / `RunContext()` / `ServeContext()` / `Shutdown()` lifecycle
 - [x] TLS as server config — `WithTLSFiles` / `WithTLSConfig` / `server.tls.*` (precedence; `Run`/`RunContext` serve HTTPS, no separate `RunTLS`)
 - [x] `config.Load(opts...)` returns `*config.Config` (satisfies `credo.RawConfig`); typed getters `Config.Get[T]` / `App.GetConfig[T]`
+- [x] `http.Server` escape hatch — `WithHTTPServer(fn)` last-word callback (Handler/Addr/TLSConfig re-imposed, redirect server excluded), `server.max_header_value_count`, `ErrorLog` → slog bridge ([ADR-006](docs/adr/006-application-lifecycle.md))
 
 **Import Boundary Fitness Test**
 
@@ -625,7 +626,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 - [ ] **Phase 3.5 observability** — metrics/tracing fields on `credo.Infra` designed against real OTel/Prometheus adapters. `Infra` is a constructor-boundary struct; adding fields after v1 is a break for every constructor that pattern-matches it.
 - [x] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
-- [ ] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`) — closes the class "stdlib added a field, Credo needs a release" permanently.
+- [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
 - [ ] **Typed endpoint / operation model decision** ([open-questions §2](docs/open-questions.md)) — resolved either way (adopt or reject with ADR); it shapes the `Handler` signature and OpenAPI (4.5), both frozen by v1.
 - [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.
 - [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:

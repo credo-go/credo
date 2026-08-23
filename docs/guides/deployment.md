@@ -95,7 +95,32 @@ Beyond Credo's own access and error logs, the standard library's server diagnost
 | `http: panic serving …` | A panic outside the framework recovery (only when `WithoutRecover` is set, or from a hijacked connection) |
 | `http: superfluous response.WriteHeader call from …` | A handler bug: the response was already committed |
 
-Filter them with `component=net/http` to separate them from Credo's own records. Note that header-limit rejections (`431`) never appear here — `net/http` writes that response directly to the connection without logging it; if you need to count them, terminate at a proxy that records status codes, or track connection state yourself.
+Filter them with `component=net/http` to separate them from Credo's own records. Note that header-limit rejections (`431`) never appear here — `net/http` writes that response directly to the connection without logging it; if you need to count them, terminate at a proxy that records status codes, or install a `ConnState` hook through [`WithHTTPServer`](#tuning-the-http-server).
+
+## Tuning the HTTP Server
+
+Most operational knobs are config keys (`read_timeout`, `max_header_bytes`, `max_header_value_count`, and the rest of the [`server` section](configuration.md#server--server)). For everything else `net/http` offers, `WithHTTPServer` hands you the server the framework built:
+
+```go
+app, err := credo.New(credo.WithHTTPServer(func(s *http.Server) {
+    // Serve HTTP/2 without TLS, behind a proxy that already terminated it.
+    s.Protocols = new(http.Protocols)
+    s.Protocols.SetHTTP1(true)
+    s.Protocols.SetUnencryptedHTTP2(true)
+
+    // Cap concurrent HTTP/2 streams per connection.
+    s.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 100}
+
+    // Count connections — including the 431s that never reach the logger.
+    s.ConnState = func(_ net.Conn, state http.ConnState) {
+        connGauge.WithLabelValues(state.String()).Inc()
+    }
+}))
+```
+
+The callback runs after every field Credo sets, so it wins on all of them, config keys included. Three exceptions are re-imposed afterwards, because the lifecycle depends on them: `Handler` (always the `App`), `Addr` (the listener is bound from it), and `TLSConfig` — configure TLS through `WithTLSFiles`/`WithTLSConfig`, never here, so a plaintext-configured listener can never quietly start serving TLS.
+
+Two more rules: the server's lifecycle methods (`Serve`, `ServeTLS`, `Shutdown`, `Close`, `RegisterOnShutdown`) belong to the framework, and the pointer must not be retained past the callback. The `WithHTTPRedirect` listener is a separate, fixed-function server and is deliberately left untouched. Everything set here is restart-only — a reload does not rebuild the server.
 
 ## Reload Without a Signal
 

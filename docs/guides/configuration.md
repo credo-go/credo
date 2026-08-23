@@ -455,6 +455,7 @@ Consumed automatically by `credo.New()`. The **Reloadable** column says what a [
 | `idle_timeout` | duration | `0` | restart | Max wait for next request (keep-alive) |
 | `read_header_timeout` | duration | `0` | restart | Max duration for reading headers |
 | `max_header_bytes` | int | `0` (Go default: 1 MB) | restart | Max header size in bytes |
+| `max_header_value_count` | int | `0` (Go default: 500) | restart | Max header lines per request; over the limit the request is answered with `431` — written straight to the connection by `net/http`, so it never appears in the logs. Negative values are rejected at `credo.New()` |
 | `max_body_bytes` | int64 | `4 MiB` | restart | Request body limit; `-1` disables it |
 | `shutdown_timeout` | duration | `30s` | restart | Drain budget for signal- or context-triggered shutdown |
 | `reload_timeout` | duration | `30s` | restart | Context budget for a `SIGHUP`-triggered reload under `Run()` |

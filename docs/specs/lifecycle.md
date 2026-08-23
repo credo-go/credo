@@ -70,7 +70,7 @@ Like `Run` but installs **no** signal handler — cancellation is entirely the c
 
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
-Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, H2C, or an externally managed listener. `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
+Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, or an externally managed listener. It supplies the *listener* only; the server is still the one the framework builds, so protocol-level settings such as H2C come from [`WithHTTPServer`](#credowithhttpserverfn-funchttpserver-option). `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
 
 The lifecycle context (created at `Run`/`RunContext` time, cancelled during shutdown after `OnPreDrain`) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect graceful shutdown.
 
@@ -89,11 +89,31 @@ All TLS validation runs once at **preflight**: a missing or mismatched key pair,
 
 `WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
 
+### Server construction and `WithHTTPServer`
+
+The `*http.Server` is built once per session. Credo maps the fields it has an opinion about and hands the rest to the caller, so the standard library gaining a field does not require a Credo release:
+
+```
+serverConfig  →  buildServer fields  →  ErrorLog bridge  →  WithHTTPServer callback  →  (preflight) TLS chain  →  listen/serve
+```
+
+The callback runs last among the construction steps, so it is the final word on every field before it — the config keys included. Three fields are re-imposed afterwards:
+
+| Field | Who wins | Note |
+| --- | --- | --- |
+| `Handler` | framework | Always the `App`; a replacement would bypass middleware, the error pipeline, and route introspection |
+| `Addr` | framework | The listener is bound from it, and `app.Addr()` reports it |
+| `TLSConfig` | framework | Assigned later by the TLS precedence chain. With no Credo TLS source the server runs under `Serve`, which ignores `TLSConfig` — a callback cannot upgrade a plaintext listener |
+| timeouts, `MaxHeaderBytes`, `MaxHeaderValueCount`, `ErrorLog` | callback | Framework-mapped from config, then overridable |
+| `Protocols`, `ConnState`, `BaseContext`, `ConnContext`, `TLSNextProto`, `DisableClientPriority` | callback | Reachable only this way |
+
+`Serve`, `ServeTLS`, `Shutdown`, `Close`, and `RegisterOnShutdown` belong to the lifecycle: the callback must not call them or retain the pointer past its return. The `WithHTTPRedirect` listener is a separate, fixed-function server and is not passed to the callback; it keeps its own mirrored `ErrorLog` and `ReadHeaderTimeout`. Everything the callback sets is restart-only — the server is constructed once per session, so a reload cannot change it.
+
 ### Server diagnostics (`http.Server.ErrorLog`)
 
 `net/http` reports its own problems — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls, hijacked-connection writes — through `http.Server.ErrorLog`. Credo wires that to the application logger, so those records arrive as structured entries at `ERROR` with `component=net/http` instead of going to the standard `log` package's stderr output. The stdlib message text is preserved verbatim (`http: TLS handshake error from …`), so existing greps and alerts keep matching. The redirect listener from `WithHTTPRedirect` shares the same bridge.
 
-Two rejections are **not** observable this way: a request that exceeds the header limits (`max_header_bytes`, or Go 1.27's header-value count) is answered with `431 Request Header Fields Too Large`, and an unsupported transfer encoding with `501`, both written straight to the connection by `net/http` without ever reaching `ErrorLog`.
+Two rejections are **not** observable this way: a request that exceeds the header limits (`max_header_bytes` or `max_header_value_count`) is answered with `431 Request Header Fields Too Large`, and an unsupported transfer encoding with `501`, both written straight to the connection by `net/http` without ever reaching `ErrorLog`.
 
 ### `app.Addr() net.Addr`
 
@@ -265,6 +285,10 @@ Construction option configuring HTTPS from a fully-formed `*tls.Config` — the 
 ### `credo.WithHTTPRedirect(addr string) Option`
 
 Construction option running a second, plaintext listener on `addr` (e.g. `":80"`) that permanently redirects every request to its HTTPS equivalent — 301 for GET/HEAD, 308 for other methods. Requires TLS (preflight fails fast otherwise); binds, serves, and drains with the main server, and a runtime failure of the listener tears the app down like a main-listener failure. Does not apply to `ServeContext`. See [TLS](#tls).
+
+### `credo.WithHTTPServer(fn func(*http.Server)) Option`
+
+Construction option registering a callback that receives the built `*http.Server`, keeping the whole `net/http` surface reachable — `Protocols` (including H2C), `HTTP2`, `ConnState`, `BaseContext`, `ConnContext`, `DisableClientPriority` — without an option per field. It runs once, after every framework-set field, and is the last word on all of them; `Handler`, `Addr`, and `TLSConfig` are re-imposed afterwards. The lifecycle methods (`Serve`, `ServeTLS`, `Shutdown`, `Close`, `RegisterOnShutdown`) are framework-owned and the pointer must not be retained past the call. The `WithHTTPRedirect` listener is excluded. A nil callback is a no-op. See [Server construction and `WithHTTPServer`](#server-construction-and-withhttpserver).
 
 ## Registration Guards
 
