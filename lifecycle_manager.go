@@ -359,7 +359,7 @@ func (lm *lifecycleManager) serve(
 	// Phase 3: build the server and publish ctx/cancel/server under serverMu
 	// while Shutdown cannot proceed (stateStarting blocks it).
 	appCtx, appCancel := context.WithCancel(context.Background())
-	srv := buildServer(app.serverCfg, app)
+	srv := buildServer(app.serverCfg, app, app.Logger())
 	lm.serverMu.Lock()
 	lm.ctx = appCtx
 	lm.cancel = appCancel
@@ -415,6 +415,7 @@ func (lm *lifecycleManager) serve(
 		rsrv := &http.Server{
 			Handler:           httpRedirectHandler(httpsPort),
 			ReadHeaderTimeout: app.serverCfg.ReadHeaderTimeout,
+			ErrorLog:          newServerErrorLog(app.Logger()),
 		}
 		lm.serverMu.Lock()
 		lm.redirectServer = rsrv

@@ -65,7 +65,7 @@ func TestBuildServer_IPv6(t *testing.T) {
 		Host: "::1",
 		Port: 8080,
 	}
-	srv := buildServer(cfg, http.DefaultServeMux)
+	srv := buildServer(cfg, http.DefaultServeMux, nil)
 	if srv.Addr != "[::1]:8080" {
 		t.Errorf("Addr = %q, want %q", srv.Addr, "[::1]:8080")
 	}
@@ -76,7 +76,7 @@ func TestBuildServer_IPv4(t *testing.T) {
 		Host: "127.0.0.1",
 		Port: 3000,
 	}
-	srv := buildServer(cfg, http.DefaultServeMux)
+	srv := buildServer(cfg, http.DefaultServeMux, nil)
 	if srv.Addr != "127.0.0.1:3000" {
 		t.Errorf("Addr = %q, want %q", srv.Addr, "127.0.0.1:3000")
 	}

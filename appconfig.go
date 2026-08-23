@@ -3,6 +3,7 @@ package credo
 import (
 	"crypto/tls"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -435,8 +436,10 @@ func WithReloadTimeout(d time.Duration) Option {
 	}
 }
 
-// buildServer creates an *http.Server from serverConfig.
-func buildServer(cfg serverConfig, handler http.Handler) *http.Server {
+// buildServer creates an *http.Server from serverConfig. logger receives the
+// server's own diagnostics through the [newServerErrorLog] bridge; a nil
+// logger falls back to the framework default.
+func buildServer(cfg serverConfig, handler http.Handler, logger *slog.Logger) *http.Server {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	return &http.Server{
 		Addr:              addr,
@@ -446,7 +449,33 @@ func buildServer(cfg serverConfig, handler http.Handler) *http.Server {
 		IdleTimeout:       cfg.IdleTimeout,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		MaxHeaderBytes:    cfg.MaxHeaderBytes,
+		ErrorLog:          newServerErrorLog(logger),
 	}
+}
+
+// newServerErrorLog bridges net/http's own diagnostics into the application
+// logger at Error level, tagged component=net/http. Without it the standard
+// library writes them to the log package's default output (stderr,
+// unstructured), where structured-logging consumers never see them.
+//
+// What this makes visible: TLS handshake failures, listener accept errors,
+// panics that escape the framework recovery, superfluous WriteHeader and
+// hijacked-connection writes, and malformed Content-Length or
+// Transfer-Encoding responses. The same logger is handed to the HTTP/2
+// server.
+//
+// What it does not cover: header-limit rejections (431, from MaxHeaderBytes
+// or the Go 1.27 MaxHeaderValueCount) and unsupported transfer encodings are
+// written straight to the connection by net/http and never reach ErrorLog.
+//
+// The stdlib message text is preserved verbatim ("http: TLS handshake error
+// from ...") so existing greps keep working. A nil logger falls back to the
+// framework default logger.
+func newServerErrorLog(logger *slog.Logger) *log.Logger {
+	if logger == nil {
+		logger = defaultLogger
+	}
+	return slog.NewLogLogger(logger.With("component", "net/http").Handler(), slog.LevelError)
 }
 
 // defaultReadHeaderTimeout is applied when the server config does not specify
