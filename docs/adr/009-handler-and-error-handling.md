@@ -39,7 +39,7 @@ A non-nil return is encoded with the application's JSON profile and written with
 
 Splitting the pipeline this way keeps custom renderers total-function simple: a renderer maps `ErrorInfo` to a body value and never re-implements classification, logging, status writing, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted — or accidentally diverged, the failure mode of the earlier write-it-yourself contract, where every renderer repeated `WriteHeader` and encoding by hand and a missing write triggered a warn-and-fallback path. `ErrorInfo.Err` keeps the original error available for cross-cutting use; `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. The machine-readable `code` and structured `details` are read from `info.Problem.Code` / `info.Problem.Details` — `ErrorInfo` deliberately gains no duplicate fields, so the classified `ProblemDetails` stays the single source of truth for wire-facing values. A renderer that panics is caught and a minimal 500 emitted.
 
-The renderer is the error-side half of the response-envelope story: paired with `SuccessRenderer` (ADR-008's `Context.Render` seam), an application defines one envelope for every response it produces without a single handler knowing the envelope exists.
+The renderer is the error-side half of the response-envelope story: paired with `SuccessRenderer` (ADR-008's `Context.Render` seam, `func(ctx, RenderInfo) any` — the same shape-only contract, with `RenderInfo` carrying status, data, and the optional message-key/meta side channels), an application defines one envelope for every response it produces without a single handler knowing the envelope exists.
 
 ### Where the Pipeline Begins
 

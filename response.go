@@ -203,23 +203,61 @@ func (r *Response) JSON(code int, v any) error {
 	return jsonv2.MarshalWrite(r, v, r.app.jsonOptions())
 }
 
+// RenderOption attaches an optional envelope side channel — a message key or
+// metadata — to a [Context.Render] call; see [RenderMessageKey] and
+// [RenderMeta]. (Named Render*, not With*: the With prefix is reserved for
+// construction-time App options.)
+type RenderOption func(*RenderInfo)
+
+// RenderMessageKey attaches an i18n message key to the [RenderInfo] a
+// [SuccessRenderer] receives. With no renderer installed it has no effect —
+// the side channel only exists for an envelope to consume.
+func RenderMessageKey(key string) RenderOption {
+	return func(info *RenderInfo) { info.MessageKey = key }
+}
+
+// RenderMeta attaches structured metadata (pagination, request echo, …) to
+// the [RenderInfo] a [SuccessRenderer] receives. With no renderer installed
+// it has no effect — the side channel only exists for an envelope to consume.
+func RenderMeta(v any) RenderOption {
+	return func(info *RenderInfo) { info.Meta = v }
+}
+
 // Render sends a successful response through the app's [SuccessRenderer] when
-// one is installed via [App.SetSuccessRenderer], letting an application apply a
-// uniform response envelope at a single seam. With no renderer installed (the
-// default), it falls back to plain JSON via [Response.JSON] and imposes no
-// envelope.
+// one is installed via [App.SetSuccessRenderer], letting an application apply
+// a uniform response envelope at a single seam. With no renderer installed
+// (the default), it writes data as plain JSON via [Response.JSON], imposes no
+// envelope, and any [RenderOption] side channels are dropped.
+//
+// With a renderer installed, the renderer returns the body shape and the
+// framework writes it with status and the application JSON profile; a nil
+// return writes data plain, and a renderer that committed the response itself
+// keeps full control (see [SuccessRenderer] for the contract). Body-forbidding
+// statuses (1xx, 204, 304) always render status-only.
 //
 // Render is the only success path that consults the renderer: the raw helpers
 // ([Response.JSON], [Response.XML], [Response.Text], [Response.Blob], and the
 // streaming writers) stay un-intercepted, so handlers serving webhooks, health
 // probes, or third-party-dictated shapes can always bypass the envelope by
-// calling them directly. A renderer error propagates to the caller (and thus
-// the error pipeline) like any handler error.
-func (c *Context) Render(status int, data any) error {
-	if c.app != nil && c.app.successRenderer != nil {
-		return c.app.successRenderer(c, status, data)
+// calling them directly.
+func (c *Context) Render(status int, data any, opts ...RenderOption) error {
+	if c.app == nil || c.app.successRenderer == nil {
+		return c.response.JSON(status, data)
 	}
-	return c.response.JSON(status, data)
+	info := RenderInfo{Status: status, Data: data}
+	for _, opt := range opts {
+		opt(&info)
+	}
+	body := c.app.successRenderer(c, info)
+	if c.response.Hijacked() || c.response.Committed() {
+		// The renderer took full control and wrote the response itself;
+		// the returned body, if any, is irrelevant by contract.
+		return nil
+	}
+	if body == nil {
+		return c.response.JSON(info.Status, info.Data)
+	}
+	return c.response.JSON(info.Status, body)
 }
 
 // Text sends a plain text response with the given status code.

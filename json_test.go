@@ -179,13 +179,14 @@ func TestRender_InheritsProfile(t *testing.T) {
 	}
 }
 
-// TestRender_SuccessRendererOwnsEncoding documents the boundary: once a
-// SuccessRenderer is installed it owns the response bytes, so the framework
-// profile applies only to whatever the renderer itself writes.
+// TestRender_SuccessRendererOwnsEncoding documents the full-control escape:
+// a SuccessRenderer that commits the response itself owns the bytes, so the
+// framework profile applies only to bodies the renderer returns.
 func TestRender_SuccessRendererOwnsEncoding(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, status int, data any) error {
-		return c.Response().Text(status, "rendered")
+	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+		_ = c.Response().Text(info.Status, "rendered")
+		return nil
 	})
 	app.GET("/r", func(ctx *credo.Context) error {
 		return ctx.Render(200, newProfileFixture())

@@ -112,10 +112,14 @@ Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) trea
 
 ```go
 // Method on *Context — the single call site that consults App.SetSuccessRenderer
-func (c *Context) Render(status int, data any) error
+func (c *Context) Render(status int, data any, opts ...RenderOption) error
+
+// Side channels for the renderer's envelope; silently dropped with no renderer
+func RenderMessageKey(key string) RenderOption
+func RenderMeta(v any) RenderOption
 ```
 
-`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.SetSuccessRenderer`, it delegates status, encoding, and the write to the renderer (whose error return flows into the error pipeline like any handler error); with none installed it falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)); the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
+`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` (`func(ctx, RenderInfo) any`) installed via `app.SetSuccessRenderer`, the renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract; the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
 
 #### JSON output profile
 

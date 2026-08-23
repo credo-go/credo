@@ -51,23 +51,52 @@ type ErrorInfo struct {
 // Register a custom renderer with [App.SetErrorRenderer].
 type ErrorRenderer func(ctx *Context, info ErrorInfo) any
 
-// SuccessRenderer formats a successful response, given the status code and the
-// payload a handler wants to send. It is the success-side mirror of
-// [ErrorRenderer]: opt-in, never installed by default, and consulted only
-// through [Context.Render] — the raw [Response] helpers ([Response.JSON],
+// RenderInfo carries a successful response's status, payload, and optional
+// envelope side channels to the [SuccessRenderer].
+type RenderInfo struct {
+	// Status is the HTTP status code the framework writes.
+	Status int
+
+	// Data is the payload the handler passed to [Context.Render].
+	Data any
+
+	// MessageKey is an optional i18n message key attached via
+	// [RenderMessageKey]; empty when none was given. A renderer whose
+	// envelope carries a human-readable message resolves it, typically
+	// through [Context.T].
+	MessageKey string
+
+	// Meta is optional structured metadata attached via [RenderMeta]
+	// (pagination, request echo, …); nil when none was given.
+	Meta any
+}
+
+// SuccessRenderer shapes the body of a successful response sent through
+// [Context.Render]. It is the success-side mirror of [ErrorRenderer] and
+// follows the same shape-only contract: the renderer returns the body, and the
+// framework owns the write — status (info.Status), the application JSON
+// profile, and the body-forbidding status rule (1xx/204/304 render
+// status-only) all apply centrally.
+//
+// The return value is the response body. A non-nil value is encoded as JSON
+// with the application's JSON profile and written with info.Status; returning
+// nil writes info.Data plain — the escape for a renderer that envelopes
+// selectively. For the rare response that is not JSON at all, the renderer may
+// commit the response itself through the [Context] (as any handler could);
+// once [Response.Committed] reports true the return value is ignored.
+//
+// It is opt-in, never installed by default, and consulted only through
+// [Context.Render] — the raw [Response] helpers ([Response.JSON],
 // [Response.XML], [Response.Text], [Response.Blob], and the streaming writers)
 // stay un-intercepted so webhooks, health probes, and third-party response
-// shapes always bypass any house envelope.
-//
-// A non-nil error returned by the renderer flows into the normal error pipeline
-// (classification, logging, [ErrorRenderer]), exactly as if the handler had
-// returned it. The renderer owns committing the response; if it writes nothing,
-// the framework treats the call as complete.
+// shapes always bypass any house envelope. A renderer that panics is treated
+// like a handler panic and caught by the built-in recovery layer.
 //
 // Register a custom renderer with [App.SetSuccessRenderer]. The single
-// status+data seam is also the integration point a future typed-endpoint layer
-// would route its typed result through, so one envelope policy covers both.
-type SuccessRenderer func(c *Context, status int, data any) error
+// [RenderInfo] seam is also the integration point a future typed-endpoint
+// layer would route its typed result through, so one envelope policy covers
+// both.
+type SuccessRenderer func(ctx *Context, info RenderInfo) any
 
 // Middleware is the single middleware type used throughout Credo.
 // All middleware — global, group, and route level — uses this signature.
