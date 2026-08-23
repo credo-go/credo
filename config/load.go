@@ -47,11 +47,10 @@ func Load(opts ...Option) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: load .env: %w", err)
 	}
-	if err := c.loadFiles(credoEnv(dotenv)); err != nil {
-		return nil, fmt.Errorf("config: load config file: %w", err)
+	c.src.env = credoEnv(dotenv)
+	if err := c.populate(dotenv); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
-	c.mergeDotenv(dotenv)
-	c.mergeEnv(os.Environ())
 	return c, nil
 }
 
@@ -68,18 +67,40 @@ func Load(opts ...Option) (*Config, error) {
 // snapshot access or pass it to credo.WithRawConfig as-is.
 func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
-	m, err := parseConfig(data, format)
-	if err != nil {
+	// Parse first so a malformed document fails before any .env I/O, and keep
+	// a private copy so the caller's slice cannot change what Reload replays.
+	if _, err := parseConfig(data, format); err != nil {
 		return nil, fmt.Errorf("config: load bytes: %w", err)
 	}
-	c.merge(m)
+	c.src.bytes = append([]byte(nil), data...)
+	c.src.format = format
 	dotenv, err := c.readDotenv()
 	if err != nil {
 		return nil, fmt.Errorf("config: load .env: %w", err)
 	}
+	if err := c.populate(dotenv); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	return c, nil
+}
+
+// populate fills the tree from the recorded source (embedded bytes or files
+// under the fixed CREDO_ENV), then overlays the parsed .env pairs and the
+// process environment. It is the single pipeline shared by Load, LoadBytes,
+// and Reload; the caller resolves dotenv and adds the top-level error prefix.
+func (c *Config) populate(dotenv map[string]string) error {
+	if c.src.bytes != nil {
+		m, err := parseConfig(c.src.bytes, c.src.format)
+		if err != nil {
+			return fmt.Errorf("load bytes: %w", err)
+		}
+		c.merge(m)
+	} else if err := c.loadFiles(c.src.env); err != nil {
+		return fmt.Errorf("load config file: %w", err)
+	}
 	c.mergeDotenv(dotenv)
 	c.mergeEnv(os.Environ())
-	return c, nil
+	return nil
 }
 
 // parseConfig parses raw JSON or YAML bytes into a string-keyed nested map.

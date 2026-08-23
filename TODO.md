@@ -425,7 +425,7 @@
 > Accepted 2026-08-23. Target: v0.5.0.
 
 - [x] ADR-020 + spec updates (`lifecycle.md`, `config.md`), ADR-005/006 cross-references
-- [ ] `config`: `Reloader` interface, `Changes` (sorted leaf-key symmetric difference), `(*Config).Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
+- [x] `config`: `Reloader` interface, `Changes` (sorted leaf-key symmetric difference), `(*Config).Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
 - [ ] root: `Reload(ctx)` (running-only, serialized, validate-before-publish, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-`Reloader` store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys
 - [ ] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
 - [ ] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched

@@ -44,6 +44,15 @@
 //	var serverCfg ServerConfig
 //	c.Unmarshal("server", &serverCfg)
 //
+// # Reload
+//
+// [Config.Reload] re-reads every source the Config was built from and swaps
+// the tree in atomically, returning the leaf keys that changed. It never
+// switches CREDO_ENV, and a failed re-read leaves the previous snapshot in
+// place. The credo package drives it from SIGHUP or app.Reload and notifies
+// typed per-section subscribers (ADR-020); call it directly only when you own
+// the reload trigger yourself.
+//
 // # Custom Prefix
 //
 // Use [WithPrefix] to override the default "CREDO_" env var prefix:
