@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27rc2
 
 require (
-	github.com/credo-go/credo v0.4.0
+	github.com/credo-go/credo v0.4.1
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/uptrace/bun v1.2.18
