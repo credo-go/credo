@@ -32,8 +32,10 @@ app.GET("/users/{id}", func(ctx *credo.Context) error {
 
 ```go
 type HTTPError struct {
-    Code       int    // HTTP status code
+    Status     int    // HTTP status code
+    Code       string // machine-readable error code (RFC 7807 "code" extension); derived from MessageKey when empty
     MessageKey string // i18n message key or literal fallback
+    Details    any    // structured client-safe detail (RFC 7807 "details" extension)
     Internal   error  // underlying error (never exposed to client)
 }
 ```
@@ -49,6 +51,11 @@ return credo.NewHTTPError(404, "user.not_found")
 
 // With internal error (logged, not exposed)
 return credo.NewHTTPError(500, "db.query_failed").WithInternal(err)
+
+// With an explicit machine-readable code and structured detail
+return credo.NewHTTPError(409, "user.email_exists").
+    WithCode("dup_email").
+    WithDetails(map[string]string{"field": "email"})
 ```
 
 ---
@@ -74,7 +81,7 @@ return credo.ErrNotFound.WithInternal(fmt.Errorf("user %s not in DB", id))
 // Server logs: user 42 not in DB
 ```
 
-The sentinels are shared package-level instances, like `io.EOF`: compare with `errors.Is` and treat them as immutable. Never assign to their fields — that would change the behavior of every handler in the process. `WithInternal` already returns a copy, and `NewHTTPError` builds fresh instances for custom statuses or message keys.
+The sentinels are shared package-level instances, like `io.EOF`: compare with `errors.Is` and treat them as immutable. Never assign to their fields — that would change the behavior of every handler in the process. `WithInternal`, `WithCode`, and `WithDetails` all return copies, and `NewHTTPError` builds fresh instances for custom statuses or message keys.
 
 ---
 
@@ -129,6 +136,28 @@ MessageKey = "user.email_exists" (no i18n)
 
 ---
 
+## Machine-Readable Codes and Details
+
+Alongside the human-readable title, every problem response can carry a machine-readable `code` and structured `details` — both RFC 7807 extension members clients can switch on without parsing text:
+
+```json
+{
+    "type": "about:blank",
+    "title": "user.email_exists",
+    "status": 409,
+    "code": "dup_email",
+    "details": { "field": "email" }
+}
+```
+
+- **Explicit**: `WithCode("dup_email")` and `WithDetails(v)` on `HTTPError` set them directly. `Details` is encoded with the application's JSON profile; put only client-safe data there.
+- **Derived**: when `Code` is empty, the pipeline derives it from the message key — the segment after the last dot (`"user.email_exists"` → `"email_exists"`, `MsgKeyNotFound` = `"http.not_found"` → `"not_found"`). A key without a dot is a literal human message and yields no code, so the member is omitted.
+- **Validation and binding**: `validation.Errors` responses carry `"code": "validation_failed"`; a `BindBody`/`BindQuery` failure carries the bind reason (`"syntax"`, `"type_mismatch"`, …) as the top-level code, matching the `errors[]` entry.
+
+The dotted-key convention (`domain.snake_case_code`) is thereby a framework guarantee: name your i18n message keys that way and the wire code comes for free; `WithCode` is the override for when the two must diverge.
+
+---
+
 ## Internal Error Pipeline
 
 The framework handles error classification, logging, status writing, HEAD handling, and committed-response guards internally. The `ErrorRenderer` receives an `ErrorInfo` (containing the original error, the i18n message key, and the classified `*ProblemDetails`) and returns the response body — or nil for the default. When no custom `ErrorRenderer` is set (or it returns nil), the framework writes RFC 7807 Problem Details JSON. Those bytes are deterministic by contract: map keys — a validation error's `params`, for instance — are always sorted, even when the application disabled deterministic encoding through `WithJSONOptions` ([ADR-021](../adr/021-json-output-profile.md)).
@@ -137,7 +166,7 @@ Detection order (handled internally, then passed to `ErrorRenderer`):
 
 1. **Response committed** → no-op (guard)
 2. **`validation.Errors`** → 422 with field-level errors
-3. **`*HTTPError`** → status from `Code`, title resolved from `MessageKey`
+3. **`*HTTPError`** → status from `Status`, title resolved from `MessageKey`
 4. **`fault.Provider`** → root default HTTP policy for the semantic kind
 5. **`HTTPStatus() int`** → legacy or explicit transport status
 6. **Any other error** → 500 (message never leaked)
@@ -147,7 +176,8 @@ Detection order (handled internally, then passed to `ErrorRenderer`):
     "type": "about:blank",
     "title": "Not Found",
     "status": 404,
-    "instance": "/api/users/999"
+    "instance": "/api/users/999",
+    "code": "not_found"
 }
 ```
 
@@ -313,13 +343,13 @@ deprecated compatibility bridge.
 
 ## Domain Errors (Service Layer)
 
-For service-layer sentinel errors, use `NewHTTPError` with domain-specific message keys:
+For service-layer sentinel errors, use `NewHTTPError` with domain-specific message keys. The dotted `domain.snake_case` form doubles as the wire `code` (last segment, derived automatically):
 
 ```go
 var (
-    ErrUserNotFound  = credo.NewHTTPError(404, "USER_NOT_FOUND")
-    ErrEmailExists   = credo.NewHTTPError(409, "EMAIL_EXISTS")
-    ErrRoleNotFound  = credo.NewHTTPError(422, "ROLE_NOT_FOUND")
+    ErrUserNotFound  = credo.NewHTTPError(404, "user.not_found")   // code: "not_found"
+    ErrEmailExists   = credo.NewHTTPError(409, "user.email_exists") // code: "email_exists"
+    ErrRoleNotFound  = credo.NewHTTPError(422, "user.role_not_found")
 )
 ```
 
@@ -329,7 +359,7 @@ Wrap internal errors with `WithInternal`:
 func (s *UserService) Create(ctx context.Context, input CreateInput) (*User, error) {
     exists, err := s.repo.EmailExists(ctx, input.Email)
     if err != nil {
-        return nil, credo.NewHTTPError(500, "USER_CREATE_FAILED").WithInternal(err)
+        return nil, credo.NewHTTPError(500, "user.create_failed").WithInternal(err)
     }
     if exists {
         return nil, ErrEmailExists
@@ -342,9 +372,9 @@ Add translations in locale files:
 
 ```json
 {
-    "USER_NOT_FOUND": "User not found.",
-    "EMAIL_EXISTS": "This email address is already registered.",
-    "USER_CREATE_FAILED": "An error occurred while creating the user."
+    "user.not_found": "User not found.",
+    "user.email_exists": "This email address is already registered.",
+    "user.create_failed": "An error occurred while creating the user."
 }
 ```
 

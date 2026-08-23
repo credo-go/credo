@@ -37,7 +37,7 @@ type ErrorInfo struct {
 
 A non-nil return is encoded with the application's JSON profile and written with `info.Problem.Status` (mutable before returning — the renderer's one status seam); returning nil keeps the default RFC 7807 body, so a renderer can also run purely for its side effects — setting `Retry-After` / `WWW-Authenticate` headers, reporting to Sentry — and let the default shape stand. The renderer is invoked for HEAD too (headers again), with the returned body discarded. For the rare non-JSON error response, the renderer may commit the response itself through the Context; once committed, the return value is ignored. That committed check also means a renderer cannot double-write by both committing and returning.
 
-Splitting the pipeline this way keeps custom renderers total-function simple: a renderer maps `ErrorInfo` to a body value and never re-implements classification, logging, status writing, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted — or accidentally diverged, the failure mode of the earlier write-it-yourself contract, where every renderer repeated `WriteHeader` and encoding by hand and a missing write triggered a warn-and-fallback path. `ErrorInfo.Err` keeps the original error available for cross-cutting use; `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. A renderer that panics is caught and a minimal 500 emitted.
+Splitting the pipeline this way keeps custom renderers total-function simple: a renderer maps `ErrorInfo` to a body value and never re-implements classification, logging, status writing, or the HEAD/committed guards, so those framework concerns cannot be accidentally omitted — or accidentally diverged, the failure mode of the earlier write-it-yourself contract, where every renderer repeated `WriteHeader` and encoding by hand and a missing write triggered a warn-and-fallback path. `ErrorInfo.Err` keeps the original error available for cross-cutting use; `ErrorInfo.MessageKey` preserves the raw i18n key for client-side i18n, telemetry grouping, or custom error-code mapping. The machine-readable `code` and structured `details` are read from `info.Problem.Code` / `info.Problem.Details` — `ErrorInfo` deliberately gains no duplicate fields, so the classified `ProblemDetails` stays the single source of truth for wire-facing values. A renderer that panics is caught and a minimal 500 emitted.
 
 The renderer is the error-side half of the response-envelope story: paired with `SuccessRenderer` (ADR-008's `Context.Render` seam), an application defines one envelope for every response it produces without a single handler knowing the envelope exists.
 
@@ -55,7 +55,7 @@ Credo does not try to hide this. Intercepting those responses would mean owning 
 1. Response already committed → no-op (response is in-flight)
 2. validation.Errors → 422 Unprocessable Entity with field errors
 3. *BindError → 400 Bad Request with a typed decode-reason errors entry
-4. *HTTPError → status from Code, title resolved from MessageKey
+4. *HTTPError → status from Status, title resolved from MessageKey
 5. fault.Provider → root default HTTP policy from the transport-neutral semantic kind
 6. HTTPStatus() int interface → legacy or explicit transport status
 7. Any other error → 500 Internal Server Error (message NOT leaked)
@@ -74,9 +74,12 @@ All error responses use the RFC 7807 Problem Details format:
     "type": "about:blank",
     "title": "Not Found",
     "status": 404,
-    "instance": "/api/users/999"
+    "instance": "/api/users/999",
+    "code": "not_found"
 }
 ```
+
+`code` and `details` are RFC 7807 extension members. `code` is the machine-readable twin of the human-readable `title`: taken from `HTTPError.Code` when set explicitly (`WithCode`), otherwise derived from the message key as the segment after the last dot (`"user.email_exists"` → `"email_exists"`); a dotless key is a literal human message and yields no code. This turns the dotted i18n key convention into a framework guarantee instead of an undocumented habit consumers reverse-engineered from `ErrorInfo.MessageKey`. Validation failures carry `"code": "validation_failed"`; bind failures carry the decode reason (`"syntax"`, `"type_mismatch"`, …) as the top-level code — the same value as their single `errors[]` entry, chosen over a `"bind."`-prefixed form for consistency with the last-segment rule. `details` carries `HTTPError.Details` verbatim (application JSON profile; client-safe data only).
 
 Validation errors include field-level details:
 
@@ -97,11 +100,15 @@ Validation errors include field-level details:
 
 ```go
 type HTTPError struct {
-    Code       int    // HTTP status code
+    Status     int    // HTTP status code
+    Code       string // machine-readable error code; derived from MessageKey when empty
     MessageKey string // i18n message key or literal fallback message
+    Details    any    // structured client-safe detail (RFC 7807 "details" extension)
     Internal   error  // underlying error (not exposed to client)
 }
 ```
+
+The status field is named `Status`, not `Code` (renamed pre-1.0): "code" is the industry-standard name for the machine-readable string code in error envelopes, so the HTTP status keeping that name would have forced the string code into an awkward synonym forever. The rename changes the field's type as well as its name, so no consumer breaks silently — `.Code` expecting an int fails to compile.
 
 Sentinel errors for common conditions:
 
@@ -116,12 +123,15 @@ var (
 )
 ```
 
-`WithInternal(err)` wraps an underlying error without exposing it:
+`WithInternal(err)` wraps an underlying error without exposing it; `WithCode` and `WithDetails` set the wire extensions. All three are copy-on-write, so sentinels stay immutable:
 
 ```go
 return credo.ErrNotFound.WithInternal(fmt.Errorf("user %d not found in DB", id))
 // Client sees: 404 Not Found
 // Server logs: user 42 not found in DB
+
+return credo.NewHTTPError(409, "user.email_exists").
+    WithCode("dup_email").WithDetails(map[string]string{"field": "email"})
 ```
 
 ### i18n Integration

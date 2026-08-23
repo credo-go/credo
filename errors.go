@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 
 	"github.com/credo-go/credo/fault"
 	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
@@ -84,11 +85,23 @@ var statusToKey = map[int]string{
 //  2. builtInMessages lookup — if MessageKey matches a built-in key, use it
 //  3. MessageKey itself — used as-is (works for literal messages)
 type HTTPError struct {
-	// Code is the HTTP status code.
-	Code int `json:"code"`
+	// Status is the HTTP status code.
+	Status int `json:"status"`
+
+	// Code is an optional machine-readable error code, rendered as the RFC
+	// 7807 "code" extension member. When empty, the pipeline derives it from
+	// MessageKey: the segment after the last dot ("user.email_exists" →
+	// "email_exists"); a key without a dot is treated as a literal human
+	// message and yields no code.
+	Code string `json:"code,omitempty"`
 
 	// MessageKey is the i18n message key or literal fallback message.
 	MessageKey string `json:"message_key"`
+
+	// Details carries optional structured, client-safe detail rendered as the
+	// RFC 7807 "details" extension member. It is encoded with the
+	// application's JSON profile; never place secrets or internal state here.
+	Details any `json:"-"`
 
 	// Internal is the underlying error (not exposed to the client).
 	Internal error `json:"-"`
@@ -97,29 +110,33 @@ type HTTPError struct {
 // NewHTTPError creates a new HTTPError with the given status code and
 // optional message key. If no message key is provided, the corresponding
 // MsgKey constant is used (falling back to http.StatusText for unknown codes).
-func NewHTTPError(code int, messageKey ...string) *HTTPError {
-	e := &HTTPError{Code: code}
+func NewHTTPError(status int, messageKey ...string) *HTTPError {
+	e := &HTTPError{Status: status}
 	if len(messageKey) > 0 {
 		e.MessageKey = messageKey[0]
-	} else if key, ok := statusToKey[code]; ok {
+	} else if key, ok := statusToKey[status]; ok {
 		e.MessageKey = key
 	} else {
-		e.MessageKey = http.StatusText(code)
+		e.MessageKey = http.StatusText(status)
 	}
 	return e
 }
 
 // Error implements the error interface.
 func (e *HTTPError) Error() string {
-	if e.Internal != nil {
-		return fmt.Sprintf("code=%d, key=%s, internal=%v", e.Code, e.MessageKey, e.Internal)
+	s := fmt.Sprintf("status=%d, key=%s", e.Status, e.MessageKey)
+	if e.Code != "" {
+		s += ", code=" + e.Code
 	}
-	return fmt.Sprintf("code=%d, key=%s", e.Code, e.MessageKey)
+	if e.Internal != nil {
+		s += fmt.Sprintf(", internal=%v", e.Internal)
+	}
+	return s
 }
 
 // HTTPStatus returns the HTTP status code carried by the error.
 func (e *HTTPError) HTTPStatus() int {
-	return e.Code
+	return e.Status
 }
 
 // Unwrap returns the internal error, supporting errors.Is/As.
@@ -127,13 +144,34 @@ func (e *HTTPError) Unwrap() error {
 	return e.Internal
 }
 
+// clone returns a shallow copy, backing the copy-on-write With* methods so
+// shared sentinels are never mutated.
+func (e *HTTPError) clone() *HTTPError {
+	c := *e
+	return &c
+}
+
 // WithInternal returns a copy of the error with the internal error set.
 func (e *HTTPError) WithInternal(err error) *HTTPError {
-	return &HTTPError{
-		Code:       e.Code,
-		MessageKey: e.MessageKey,
-		Internal:   err,
-	}
+	c := e.clone()
+	c.Internal = err
+	return c
+}
+
+// WithCode returns a copy of the error with the machine-readable code set,
+// overriding the default derivation from MessageKey.
+func (e *HTTPError) WithCode(code string) *HTTPError {
+	c := e.clone()
+	c.Code = code
+	return c
+}
+
+// WithDetails returns a copy of the error with structured client-safe detail
+// attached; it is rendered as the RFC 7807 "details" extension member.
+func (e *HTTPError) WithDetails(v any) *HTTPError {
+	c := e.clone()
+	c.Details = v
+	return c
 }
 
 // Sentinel errors for common HTTP error conditions.
@@ -173,6 +211,14 @@ type ProblemDetails struct {
 
 	// Instance is a URI reference that identifies the specific occurrence.
 	Instance string `json:"instance,omitempty"`
+
+	// Code is a machine-readable error code (RFC 7807 extension member).
+	// Populated from [HTTPError.Code] or derived from the message key.
+	Code string `json:"code,omitempty"`
+
+	// Details carries structured, client-safe detail about this occurrence
+	// (RFC 7807 extension member). Populated from [HTTPError.Details].
+	Details any `json:"details,omitempty"`
 
 	// Errors holds field-level validation errors (if any).
 	Errors []validation.ValidationError `json:"errors,omitempty"`
@@ -242,8 +288,8 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
 			ctx.Response().Header().Set("Content-Type", "application/problem+json")
 			ctx.Response().WriteHeader(http.StatusInternalServerError)
-			jsonv2.MarshalWrite(ctx.Response(), NewProblemDetails( //nolint:errcheck
-				http.StatusInternalServerError, resolveMessage(ctx, MsgKeyInternalError)),
+			jsonv2.MarshalWrite(ctx.Response(), //nolint:errcheck
+				newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError),
 				app.problemJSONOptions())
 		}
 	}
@@ -318,6 +364,7 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 			Type:   "https://credo.dev/errors/validation",
 			Title:  resolveMessage(ctx, MsgKeyValidationFailed),
 			Status: http.StatusUnprocessableEntity,
+			Code:   deriveErrorCode(MsgKeyValidationFailed),
 			Errors: []validation.ValidationError(ve),
 		}
 	}
@@ -327,27 +374,31 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 			Type:   "https://credo.dev/errors/binding",
 			Title:  resolveMessage(ctx, MsgKeyBindFailed),
 			Status: http.StatusBadRequest,
+			Code:   string(be.Reason),
 			Errors: []validation.ValidationError{app.bindProblemError(ctx, be)},
 		}
 	}
 
 	if he, ok := errors.AsType[*HTTPError](err); ok {
-		return he.MessageKey, NewProblemDetails(he.Code, resolveMessage(ctx, he.MessageKey))
+		pd := NewProblemDetails(he.Status, resolveMessage(ctx, he.MessageKey))
+		pd.Code = he.Code
+		if pd.Code == "" {
+			pd.Code = deriveErrorCode(he.MessageKey)
+		}
+		pd.Details = he.Details
+		return he.MessageKey, pd
 	}
 
 	if provider, ok := fault.ProviderOf(err); ok {
 		status, known := internalfaultstatus.HTTP(provider.FaultKind())
 		if !known {
-			return MsgKeyInternalError, NewProblemDetails(
-				http.StatusInternalServerError,
-				resolveMessage(ctx, MsgKeyInternalError),
-			)
+			return MsgKeyInternalError, newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError)
 		}
 		key := statusToKey[status]
 		if key == "" {
 			key = http.StatusText(status)
 		}
-		return key, NewProblemDetails(status, resolveMessage(ctx, key))
+		return key, newKeyedProblem(ctx, status, key)
 	}
 
 	if se, ok := asHTTPStatus(err); ok {
@@ -356,13 +407,29 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 		if key == "" {
 			key = http.StatusText(status)
 		}
-		return key, NewProblemDetails(status, resolveMessage(ctx, key))
+		return key, newKeyedProblem(ctx, status, key)
 	}
 
-	return MsgKeyInternalError, NewProblemDetails(
-		http.StatusInternalServerError,
-		resolveMessage(ctx, MsgKeyInternalError),
-	)
+	return MsgKeyInternalError, newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError)
+}
+
+// newKeyedProblem builds a ProblemDetails whose title and machine-readable
+// code both come from the same message key.
+func newKeyedProblem(ctx *Context, status int, key string) *ProblemDetails {
+	pd := NewProblemDetails(status, resolveMessage(ctx, key))
+	pd.Code = deriveErrorCode(key)
+	return pd
+}
+
+// deriveErrorCode derives the default machine-readable error code from a
+// message key: the segment after the last dot ("user.email_exists" →
+// "email_exists", "http.not_found" → "not_found"). A key without a dot is a
+// literal human message rather than a code namespace, so no code is derived.
+func deriveErrorCode(key string) string {
+	if i := strings.LastIndexByte(key, '.'); i >= 0 {
+		return key[i+1:]
+	}
+	return ""
 }
 
 // defaultRenderError writes an RFC 7807 Problem Details JSON response.

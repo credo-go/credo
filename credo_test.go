@@ -806,8 +806,8 @@ func TestApp_MultipleMethods(t *testing.T) {
 
 func TestHTTPError(t *testing.T) {
 	e := credo.NewHTTPError(404)
-	if e.Code != 404 {
-		t.Errorf("Code = %d, want 404", e.Code)
+	if e.Status != 404 {
+		t.Errorf("Status = %d, want 404", e.Status)
 	}
 	if e.MessageKey != credo.MsgKeyNotFound {
 		t.Errorf("MessageKey = %q, want %q", e.MessageKey, credo.MsgKeyNotFound)
@@ -823,8 +823,8 @@ func TestHTTPError(t *testing.T) {
 	if !errors.Is(wrapped.Internal, inner) {
 		t.Error("expected Internal to be set")
 	}
-	if wrapped.Code != 400 {
-		t.Error("WithInternal should preserve Code")
+	if wrapped.Status != 400 {
+		t.Error("WithInternal should preserve Status")
 	}
 }
 

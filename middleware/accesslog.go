@@ -170,7 +170,7 @@ func accessLogStatus(status int, err error) int {
 		return http.StatusUnprocessableEntity
 	}
 	if httpErr, ok := errors.AsType[*credo.HTTPError](err); ok {
-		return httpErr.Code
+		return httpErr.Status
 	}
 	return internalobserve.Status(status, err)
 }

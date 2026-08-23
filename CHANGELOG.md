@@ -14,6 +14,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `HTTPError.Code` (the HTTP status, an int) is renamed to `HTTPError.Status`. The field's type changes with its name, so nothing breaks silently — code reading `.Code` as an int fails to compile; replace it with `.Status` (or the unchanged `HTTPStatus()` method). `NewHTTPError`'s signature and the sentinels are unaffected. The rename frees the `Code` name for the machine-readable string code below.
+
+### Added
+
+- First-class machine-readable error codes and structured details on the RFC 7807 wire, as extension members: `HTTPError` gains `Code string` and `Details any` with copy-on-write `WithCode(string)` / `WithDetails(any)` builders, and `ProblemDetails` gains matching `code` / `details` members (`omitempty`). When `Code` is unset it is derived from the message key — the segment after the last dot (`"user.email_exists"` → `"email_exists"`, built-in `http.not_found` → `"not_found"`); a dotless literal message yields no code. Validation failures carry `"code": "validation_failed"`, bind failures the decode reason (`"syntax"`, `"type_mismatch"`, …) as the top-level code. Renderers read both off `info.Problem`; `ErrorInfo` gains no duplicate fields. See [ADR-009](docs/adr/009-handler-and-error-handling.md).
+
 ### Fixed
 
 - Body-writing response helpers (`Response.JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) now treat body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified — as status-only: the body and the Content-Type header are skipped and the call returns nil (`Stream`'s reader is never read). Previously `JSON(204, body)` failed inside net/http after the header was committed, surfacing as a spurious `"credo: error after response committed"` warning and a misleading `Content-Type: application/json` on a bodiless response; handlers no longer need to special-case 204 themselves. Handler-set headers such as ETag and Cache-Control on a 304 are preserved.
