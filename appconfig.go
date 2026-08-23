@@ -41,6 +41,12 @@ type serverConfig struct {
 	// ignores this and honours the caller's context deadline instead.
 	ShutdownTimeout time.Duration `credo:"shutdown_timeout"`
 
+	// ReloadTimeout bounds a reload triggered by SIGHUP under Run: the
+	// configuration re-read, subscribers, and OnReload hooks share this budget.
+	// Zero (the default) applies 30s. A programmatic Reload(ctx) ignores this
+	// and uses the caller's context instead.
+	ReloadTimeout time.Duration `credo:"reload_timeout"`
+
 	// MaxHeaderBytes controls the maximum number of bytes the
 	// server will read parsing the request header's keys and values.
 	MaxHeaderBytes int `credo:"max_header_bytes"`
@@ -112,6 +118,8 @@ type appOptions struct {
 	addrSet                  bool
 	shutdownTimeout          time.Duration
 	shutdownTimeoutSet       bool
+	reloadTimeout            time.Duration
+	reloadTimeoutSet         bool
 	maxBodyBytes             int64
 	maxBodyBytesSet          bool
 	redirectTrailingSlash    bool
@@ -389,6 +397,19 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
+// WithReloadTimeout sets the context budget for reloads triggered by SIGHUP
+// under Run: re-reading configuration, notifying [App.OnConfigChange]
+// subscribers, and running [App.OnReload] hooks must complete within it. Zero
+// (the default) applies a 30s budget. A programmatic [App.Reload] call ignores
+// this and honours the caller's context instead. Can also be set via the
+// server.reload_timeout config key.
+func WithReloadTimeout(d time.Duration) Option {
+	return func(o *appOptions) {
+		o.reloadTimeout = d
+		o.reloadTimeoutSet = true
+	}
+}
+
 // buildServer creates an *http.Server from serverConfig.
 func buildServer(cfg serverConfig, handler http.Handler) *http.Server {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
@@ -416,6 +437,10 @@ const defaultMaxBodyBytes = 4 << 20 // 4 MiB
 // matching the conventional 30s container stop-grace period.
 const defaultShutdownTimeout = 30 * time.Second
 
+// defaultReloadTimeout bounds a SIGHUP-triggered reload when none is
+// configured.
+const defaultReloadTimeout = 30 * time.Second
+
 // applyServerDefaults fills in safe defaults for server settings left at their
 // zero value (which would otherwise mean "no limit").
 func applyServerDefaults(c *serverConfig) {
@@ -427,6 +452,9 @@ func applyServerDefaults(c *serverConfig) {
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if c.ReloadTimeout == 0 {
+		c.ReloadTimeout = defaultReloadTimeout
 	}
 }
 
@@ -449,6 +477,9 @@ func validateServerConfig(c *serverConfig) error {
 	}
 	if c.ShutdownTimeout < 0 {
 		return fmt.Errorf("credo: invalid ShutdownTimeout %v: must not be negative", c.ShutdownTimeout)
+	}
+	if c.ReloadTimeout < 0 {
+		return fmt.Errorf("credo: invalid ReloadTimeout %v: must not be negative", c.ReloadTimeout)
 	}
 	if c.MaxHeaderBytes < 0 {
 		return fmt.Errorf("credo: invalid MaxHeaderBytes %d: must not be negative", c.MaxHeaderBytes)

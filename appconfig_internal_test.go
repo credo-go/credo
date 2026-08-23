@@ -90,6 +90,7 @@ func TestNew_ServerOptionsWinOverConfig(t *testing.T) {
 		"port":                    3000,
 		"max_body_bytes":          int64(0),
 		"shutdown_timeout":        1 * time.Second,
+		"reload_timeout":          1 * time.Second,
 		"redirect_trailing_slash": &configTrue,
 	}}
 
@@ -98,6 +99,7 @@ func TestNew_ServerOptionsWinOverConfig(t *testing.T) {
 		WithAddr("127.0.0.1", 9090),
 		WithMaxBodyBytes(-1),
 		WithShutdownTimeout(5*time.Second),
+		WithReloadTimeout(7*time.Second),
 		WithRedirectTrailingSlash(false),
 	)
 	if err != nil {
@@ -116,7 +118,34 @@ func TestNew_ServerOptionsWinOverConfig(t *testing.T) {
 		t.Errorf("WithShutdownTimeout lost to config: ShutdownTimeout=%v, want 5s",
 			app.serverCfg.ShutdownTimeout)
 	}
+	if app.serverCfg.ReloadTimeout != 7*time.Second || app.reloadTimeout() != 7*time.Second {
+		t.Errorf("WithReloadTimeout lost to config: ReloadTimeout=%v, want 7s", app.serverCfg.ReloadTimeout)
+	}
 	if app.redirectTrailingSlash {
 		t.Error("WithRedirectTrailingSlash(false) lost to config: redirectTrailingSlash=true, want false")
+	}
+}
+
+// TestNew_ReloadTimeout covers the config key, the default, and rejection of a
+// negative value, mirroring shutdown_timeout.
+func TestNew_ReloadTimeout(t *testing.T) {
+	app, err := New(WithRawConfig(stubServerRC{fields: map[string]any{"reload_timeout": 3 * time.Second}}))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if app.reloadTimeout() != 3*time.Second {
+		t.Errorf("server.reload_timeout: got %v, want 3s", app.reloadTimeout())
+	}
+
+	app, err = New(WithRawConfig(stubServerRC{fields: map[string]any{}}))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if app.reloadTimeout() != defaultReloadTimeout {
+		t.Errorf("default reload timeout: got %v, want %v", app.reloadTimeout(), defaultReloadTimeout)
+	}
+
+	if _, err := New(WithRawConfig(stubServerRC{fields: map[string]any{}}), WithReloadTimeout(-time.Second)); err == nil {
+		t.Error("negative WithReloadTimeout must be rejected by New")
 	}
 }

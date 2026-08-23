@@ -53,7 +53,17 @@ After publishing, every leaf key in `Changes` that no subscription covers is log
 ```go
 // config package
 type Reloader interface {
-    Reload() (Changes, error)
+    Reload() (Changes, error)          // one-shot: re-read and publish
+}
+
+type Stager interface {
+    Stage() (Staged, error)            // two-phase: candidate first, Commit later
+}
+
+type Staged interface {
+    RawConfig                          // reads the candidate
+    Changes() Changes
+    Commit()                           // publish atomically
 }
 
 type Changes struct { /* sorted leaf key paths that differ between old and new */ }
@@ -62,7 +72,7 @@ func (c Changes) Keys() []string               // copy of the changed leaf keys
 func (c Changes) Empty() bool
 ```
 
-`*config.Config` implements `Reloader`. `Reload` re-runs the pipeline that `Load` ran, builds the flattened key set of both snapshots, and returns the symmetric difference. On any load error it returns the error and leaves the current snapshot untouched. The internal map moves behind an `atomic.Pointer` (or RWMutex) so readers never observe a partially merged state; `RawConfig` itself stays a two-method interface (ADR-005). A custom `WithRawConfig` store that does not implement `Reloader` simply skips step 1: `Reload` then only runs `OnReload` hooks, and every `OnConfigChange` subscription is a registration-time error for that app (a subscription that can never fire is a misconfiguration, not a silent no-op).
+`*config.Config` implements both. `Stage` re-runs the pipeline that `Load` ran into a candidate tree, computes the flattened symmetric difference against the current snapshot, and returns a `Staged` handle; `Commit` swaps the tree under the config's RWMutex so readers never observe a partially merged state; `Reload` is `Stage` + `Commit`. On any load error the current snapshot is untouched. `RawConfig` itself stays a two-method interface (ADR-005). The App prefers `Stager` because only a candidate stage makes step 2 (validate before publish) possible; a custom store that implements only `Reloader` is published first and validated afterwards, and a store that implements neither skips step 1: `Reload` then only runs participants and `OnReload` hooks, and every `OnConfigChange` subscription is a registration-time panic for that app (a subscription that can never fire is a misconfiguration, not a silent no-op).
 
 ### `OnConfigChange[T]` is a generic method on `*App`
 
