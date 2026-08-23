@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-23
+
 ### Added
 
 - **Reload: `app.Reload`, `SIGHUP`, `OnReload`, `OnConfigChange[T]`** — a trigger-driven partial reload ([ADR-020](docs/adr/020-reload-and-partial-config-reload.md)). `app.Reload(ctx)` (running-only, serialized) stages the configuration through `config.Stager`, decodes and validates every affected `app.OnConfigChange[T](key, fn)` subscriber's `T` against the candidate before publishing (a failure aborts with the old snapshot untouched), then runs framework participants, affected subscribers in registration order, and `app.OnReload` hooks FIFO; errors and recovered panics are joined and returned, never rolled back, and never stop the process. Changed keys with no subscriber are logged once at `WARN` as `restart required` (key paths only). Under `app.Run()` on Unix, `SIGHUP` now triggers `Reload` within `WithReloadTimeout` / `server.reload_timeout` (default 30s), coalescing signals that arrive mid-reload; `RunContext`/`ServeContext` stay signal-free. `OnConfigChange` panics at registration when the `RawConfig` cannot reload.
@@ -289,7 +291,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/credo-go/credo/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/credo-go/credo/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/credo-go/credo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/credo-go/credo/compare/v0.2.0...v0.3.0
