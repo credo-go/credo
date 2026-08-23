@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-23
+
 ### Changed
 
 - Internal JSON decoding (JSON config files, i18n locale files, `testutil` log assertions, the release gate) moved from `encoding/json` to `encoding/json/v2`. JSON config and locale files now reject duplicate object members and invalid UTF-8 instead of taking the last value / substituting U+FFFD. `validation.Errors` additionally implements the v2 `MarshalJSONTo` interface; `MarshalJSON` is unchanged.
@@ -304,7 +306,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/credo-go/credo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/credo-go/credo/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/credo-go/credo/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/credo-go/credo/compare/v0.3.0...v0.4.0
