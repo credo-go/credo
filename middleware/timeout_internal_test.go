@@ -16,8 +16,8 @@ func TestDefaultTimeoutErrorHandler(t *testing.T) {
 		if !ok {
 			t.Fatalf("error type = %T, want *credo.HTTPError", err)
 		}
-		if he.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status code = %d, want %d", he.Code, http.StatusServiceUnavailable)
+		if he.Status != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d", he.Status, http.StatusServiceUnavailable)
 		}
 	})
 
