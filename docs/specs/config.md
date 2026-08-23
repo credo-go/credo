@@ -141,7 +141,7 @@ func (c Changes) Keys() []string
 func (c Changes) Empty() bool
 ```
 
-> Status: **Accepted, implementation pending** (Phase 3.8).
+> Status: **Implemented** in `config/` (Phase 3.8); the App-level orchestration is pending.
 
 `*Config` implements `Reloader`. `Reload` re-runs the load pipeline with the options captured by the original `Load` — the same files, prefix, and `.env` path, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — and atomically swaps the internal snapshot so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. It returns `Changes`, the sorted symmetric difference of the two trees' leaf key paths (values are never retained). Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). Process environment is re-read, but a supervisor's `EnvironmentFile=` is applied only at process start, so env-sourced changes still require a restart.
 

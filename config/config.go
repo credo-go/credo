@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -40,9 +41,23 @@ var _ RawConfig = (*Config)(nil)
 // variables, merged into a single nested map. Create with [Load] or
 // [LoadBytes], then use [Config.Unmarshal] to extract typed values. Pass an
 // empty key to decode the entire configuration tree.
+//
+// A Config is safe for concurrent reads. [Config.Reload] replaces the whole
+// tree atomically, so concurrent readers observe either the previous or the
+// new snapshot, never a mix.
 type Config struct {
+	mu   sync.RWMutex // guards data; the tree itself is never mutated after load
 	data map[string]any
 	opts options
+	src  source // how the tree was built, replayed by Reload
+}
+
+// source records the inputs [Load] or [LoadBytes] used, so that
+// [Config.Reload] can replay the same pipeline.
+type source struct {
+	bytes  []byte // non-nil for LoadBytes: the embedded document
+	format string // LoadBytes format
+	env    string // effective CREDO_ENV resolved at first load; fixed thereafter
 }
 
 // options holds configuration for loading behavior.
@@ -136,6 +151,8 @@ func (c *Config) logger() *slog.Logger {
 // merge incorporates a string-keyed map layer into the config tree; values in m
 // override existing ones, maps merge recursively.
 func (c *Config) merge(m map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	mergeMaps(m, c.data)
 }
 
@@ -146,6 +163,8 @@ func (c *Config) merge(m map[string]any) {
 // mutation of the config tree's internal state. An empty key returns the entire
 // nested tree.
 func (c *Config) get(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if key == "" {
 		return copyMap(c.data), true
 	}
@@ -214,12 +233,25 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
+// initialized reports whether the Config holds a tree (built by Load or
+// LoadBytes). Read under the lock so it cannot race a concurrent Reload swap.
+func (c *Config) initialized() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data != nil
+}
+
 // Exists reports whether the given key path exists in the merged configuration.
 // Dots in the key always act as path separators.
 func (c *Config) Exists(key string) bool {
 	if c == nil || key == "" {
 		return false
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	_, ok := lookup(c.data, key)
 	return ok
 }
@@ -248,7 +280,7 @@ func (c *Config) Exists(key string) bool {
 //
 // Returns an error if the key does not exist or decoding fails.
 func (c *Config) Unmarshal(key string, dst any) error {
-	if c == nil || c.data == nil {
+	if !c.initialized() {
 		return fmt.Errorf("config: instance not initialized")
 	}
 	val, ok := c.get(key)
