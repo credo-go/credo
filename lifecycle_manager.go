@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -232,7 +233,8 @@ func httpRedirectHandler(httpsPort string) http.Handler {
 	})
 }
 
-// runSignal runs a context-aware run function under SIGINT/SIGTERM handling.
+// runSignal runs a context-aware run function under SIGINT/SIGTERM handling,
+// plus SIGHUP-triggered reloads on platforms that have it (see reloadSignals).
 //
 // The signal handler — not the run function — decides when to reset signal
 // delivery and trigger shutdown. When the first signal arrives, stop() runs
@@ -250,18 +252,49 @@ func (lm *lifecycleManager) runSignal(run func(context.Context) error) error {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
 
+	// Reload signals are delivered on a capacity-one channel and handled
+	// synchronously on this goroutine, so reloads never overlap and signals
+	// that arrive mid-reload coalesce into at most one follow-up. The channel
+	// stays subscribed through the drain: a SIGHUP during shutdown is ignored
+	// rather than falling through to its default action (terminate).
+	hupCh := make(chan os.Signal, 1)
+	if sigs := reloadSignals(); len(sigs) > 0 {
+		signal.Notify(hupCh, sigs...)
+		defer signal.Stop(hupCh)
+	}
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(runCtx) }()
 
-	select {
-	case err := <-errCh:
-		// Server returned on its own: a serve error, a startup failure, or a
-		// programmatic Shutdown from another goroutine. Nothing to drain here.
-		return err
-	case <-sigCtx.Done():
-		stop()      // reset first: a second signal now force-kills the process
-		cancelRun() // trigger the run function's graceful-drain path
-		return <-errCh
+	for {
+		select {
+		case err := <-errCh:
+			// Server returned on its own: a serve error, a startup failure, or a
+			// programmatic Shutdown from another goroutine. Nothing to drain here.
+			return err
+		case <-sigCtx.Done():
+			stop()      // reset first: a second signal now force-kills the process
+			cancelRun() // trigger the run function's graceful-drain path
+			return <-errCh
+		case sig := <-hupCh:
+			lm.handleReloadSignal(sig)
+		}
+	}
+}
+
+// handleReloadSignal runs one signal-triggered reload under the
+// WithReloadTimeout budget. Reload does its own success/failure logging; this
+// only covers the case where there was nothing to reload (the signal landed
+// outside the running state), which is a no-op rather than an error.
+func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
+	app := lm.app
+	ctx, cancel := context.WithTimeout(context.Background(), app.reloadTimeout())
+	defer cancel()
+	app.logger.LogAttrs(ctx, slog.LevelInfo, "credo: reload signal received",
+		slog.String("signal", sig.String()))
+	if err := app.Reload(ctx); err != nil && !app.IsRunning() {
+		app.logger.LogAttrs(ctx, slog.LevelWarn, "credo: reload signal ignored",
+			slog.String("signal", sig.String()), slog.String("error", err.Error()))
 	}
 }
 

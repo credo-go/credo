@@ -30,6 +30,13 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // remains a hard teardown barrier and may delay return. A second signal during
 // shutdown force-kills the process. Returns nil on graceful shutdown.
 //
+// On Unix, Run also handles SIGHUP: each signal triggers [App.Reload] under
+// the [WithReloadTimeout] budget (systemctl reload, logrotate postrotate).
+// Reloads run one at a time, signals that arrive during a reload coalesce
+// into at most one follow-up, and a failed reload is logged but never stops
+// the server. There is no SIGHUP on Windows; there, and under [App.RunContext]
+// on every platform, the programmatic [App.Reload] is the only trigger.
+//
 // Run serves HTTPS automatically when TLS is configured via [WithTLSFiles],
 // [WithTLSConfig], or the server.tls.* config keys; otherwise it serves
 // plaintext. A misconfigured certificate (missing file, mismatched pair, or a

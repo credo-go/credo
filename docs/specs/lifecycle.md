@@ -1,6 +1,6 @@
 # Lifecycle Spec
 
-> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** except the SIGHUP signal path and file-based TLS rotation, which are pending (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
+> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** except file-based TLS rotation, which is pending (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
 ## Overview
 

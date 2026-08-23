@@ -427,7 +427,7 @@
 - [x] ADR-020 + spec updates (`lifecycle.md`, `config.md`), ADR-005/006 cross-references
 - [x] `config`: `Reloader` + two-phase `Stager`/`Staged` interfaces, `Changes` (sorted leaf-key symmetric difference), `(*Config).Stage()`/`Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
 - [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys
-- [ ] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
+- [x] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
 - [ ] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
 - [ ] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
 - [ ] Docs: configuration guide ("Reloading Configuration", reloadable column, rotation), getting-started, new `docs/guides/deployment.md` (systemd `ExecReload`, containers, admin-endpoint reload), DI/worker/middleware cross-notes, README, `doc.go`, `examples/saas`, release notes
