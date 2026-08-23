@@ -245,6 +245,7 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 		if err := next(ctx); err != nil {
 			app.handleError(err, ctx)
 		}
+		app.warnEnvelopeBypass(ctx)
 		return nil
 	}
 }
@@ -337,6 +338,10 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 		return
 	}
 	if body != nil {
+		// Framework-internal write: the error pipeline is not a success-
+		// envelope bypass.
+		ctx.Response().exemptJSON = true
+		defer func() { ctx.Response().exemptJSON = false }()
 		if err := ctx.Response().JSON(pd.Status, body); err != nil {
 			ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 				"credo: failed to write error response", slog.Any("error", err))
