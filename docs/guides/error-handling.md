@@ -131,7 +131,7 @@ MessageKey = "user.email_exists" (no i18n)
 
 ## Internal Error Pipeline
 
-The framework handles error classification, logging, and committed-response guards internally. The `ErrorRenderer` receives an `ErrorInfo` (containing the original error, the i18n message key, and the classified `*ProblemDetails`) and is responsible for writing the response. When no custom `ErrorRenderer` is set, the default renderer writes RFC 7807 Problem Details JSON.
+The framework handles error classification, logging, and committed-response guards internally. The `ErrorRenderer` receives an `ErrorInfo` (containing the original error, the i18n message key, and the classified `*ProblemDetails`) and is responsible for writing the response. When no custom `ErrorRenderer` is set, the default renderer writes RFC 7807 Problem Details JSON. Those bytes are deterministic by contract: map keys — a validation error's `params`, for instance — are always sorted, even when the application disabled deterministic encoding through `WithJSONOptions` ([ADR-021](../adr/021-json-output-profile.md)).
 
 Detection order (handled internally, then passed to `ErrorRenderer`):
 

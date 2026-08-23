@@ -2,6 +2,7 @@ package credo
 
 import (
 	"crypto/tls"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log"
 	"log/slog"
@@ -127,6 +128,7 @@ type appOptions struct {
 	reloadTimeout            time.Duration
 	reloadTimeoutSet         bool
 	strictBodies             bool
+	jsonOptions              []jsonv2.Options
 	maxBodyBytes             int64
 	maxBodyBytesSet          bool
 	redirectTrailingSlash    bool
@@ -325,6 +327,31 @@ func WithDebug() Option {
 // Only JSON decoding is affected; XML and form binding are unchanged.
 func WithStrictBodies() Option {
 	return func(o *appOptions) { o.strictBodies = true }
+}
+
+// WithJSONOptions overrides Credo's JSON response encoding profile. The
+// given options are applied after the framework defaults, so each one
+// overrides that axis and leaves the rest intact:
+//
+//	// keep encoding/json v1's null for nil slices
+//	credo.WithJSONOptions(jsonv2.FormatNilSliceAsNull(true))
+//
+//	// re-enable HTML escaping of < > &
+//	credo.WithJSONOptions(jsontext.EscapeForHTML(true))
+//
+//	// full legacy mode, byte-identical to encoding/json v1 except for the
+//	// trailing newline, which v1's Encoder added and json/v2 never writes
+//	credo.WithJSONOptions(jsonv1.DefaultOptionsV1())
+//
+// The profile applies to [Response.JSON] (and therefore to [Context.Render]'s
+// fallback) and to RFC 7807 Problem Details bodies, except that Problem
+// Details always sort map keys — error bodies are a framework contract.
+// Decoding is not affected: request-body policy is [WithStrictBodies].
+//
+// Repeated calls accumulate in order. Construction-time only; there is no
+// config-file key, since options are Go values.
+func WithJSONOptions(opts ...jsonv2.Options) Option {
+	return func(o *appOptions) { o.jsonOptions = append(o.jsonOptions, opts...) }
 }
 
 // WithAddr sets the listen address directly (for testing or programmatic use).

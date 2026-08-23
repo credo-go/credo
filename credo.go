@@ -7,6 +7,7 @@ package credo
 import (
 	"cmp"
 	"crypto/tls"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -181,6 +182,11 @@ type App struct {
 	// Set via WithStrictBodies option or server.strict_bodies config key.
 	strictBodies bool
 
+	// jsonOpts is the response encoding profile: the framework default
+	// (see defaultJSONOptions) with any WithJSONOptions overrides applied
+	// after it. Read through App.jsonOptions, which is nil-safe.
+	jsonOpts jsonv2.Options
+
 	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
 	trustedProxies []netip.Prefix
 }
@@ -313,6 +319,7 @@ func New(opts ...Option) (*App, error) {
 		accessLogFilter:       o.accessLogFilter,
 		debug:                 o.debug || o.serverCfg.Debug,
 		strictBodies:          o.strictBodies || o.serverCfg.StrictBodies,
+		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
 	}
 	app.addReloadParticipant(app.tlsReloadParticipant())
@@ -328,7 +335,7 @@ func New(opts ...Option) (*App, error) {
 				paramKeys:   make([]string, 0, 4),
 				paramValues: make([]string, 0, 4),
 			},
-			response: &Response{},
+			response: &Response{app: app},
 		}
 	})
 	return app, nil

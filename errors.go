@@ -1,7 +1,7 @@
 package credo
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -242,8 +242,9 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
 			ctx.Response().Header().Set("Content-Type", "application/problem+json")
 			ctx.Response().WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(ctx.Response()).Encode(NewProblemDetails( //nolint:errcheck
-				http.StatusInternalServerError, resolveMessage(ctx, MsgKeyInternalError)))
+			jsonv2.MarshalWrite(ctx.Response(), NewProblemDetails( //nolint:errcheck
+				http.StatusInternalServerError, resolveMessage(ctx, MsgKeyInternalError)),
+				app.problemJSONOptions())
 		}
 	}
 }
@@ -369,7 +370,7 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 func defaultRenderError(ctx *Context, pd *ProblemDetails) {
 	ctx.Response().Header().Set("Content-Type", "application/problem+json")
 	ctx.Response().WriteHeader(pd.Status)
-	if err := json.NewEncoder(ctx.Response()).Encode(pd); err != nil {
+	if err := jsonv2.MarshalWrite(ctx.Response(), pd, ctx.app.problemJSONOptions()); err != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: failed to write error response", slog.Any("error", err))
 	}

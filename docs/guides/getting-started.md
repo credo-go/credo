@@ -288,6 +288,14 @@ ctx.Response().NoContent(204)            // no body
 ctx.Response().Redirect(302, "/login")   // redirect
 ```
 
+JSON is encoded with `encoding/json/v2` under a documented profile ([ADR-021](../adr/021-json-output-profile.md)). Three points are worth knowing before you shape a response struct:
+
+- **Empty is `[]`, not `null`.** A nil slice encodes as `[]` and a nil map as `{}`, so clients can iterate without a null check.
+- **`omitempty` drops JSON-empty values**, not Go zero values — `0` and `false` are always written. Use `omitzero` when you want a zero number or an empty struct dropped.
+- **`time.Duration` encodes as integer nanoseconds** (and binds the same way). For a human-readable form, declare a named type with `MarshalText`/`UnmarshalText`; Go 1.27's json/v2 has no `format:` struct tag.
+
+Map keys are sorted, `<`, `>`, and `&` are written literally, and no trailing newline is added. `credo.WithJSONOptions(...)` overrides any of these for the whole application.
+
 ---
 
 ## Validation
