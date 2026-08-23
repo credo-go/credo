@@ -281,12 +281,14 @@ func run() error {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 
-	// 3. Configure logger
-	logLevel := slog.LevelInfo
+	// 3. Configure logger. The level lives in a slog.LevelVar so a config
+	// reload (SIGHUP / app.Reload) can change it without a restart — see the
+	// OnConfigChange subscriber below.
+	var logLevel slog.LevelVar
 	if appCfg.Debug {
-		logLevel = slog.LevelDebug
+		logLevel.Set(slog.LevelDebug)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel}))
 
 	// 4. Create app with config and logger
 	app, err := credo.New(
@@ -355,7 +357,19 @@ func run() error {
 		})
 	})
 
-	// 15. Lifecycle hooks
+	// 15. Lifecycle hooks. OnConfigChange makes the "app" section reloadable:
+	// flip app.debug in the config file and `systemctl reload` (SIGHUP) or
+	// app.Reload switches the log level in place. The new value is decoded and
+	// published atomically before this runs; nothing else in "app" is live.
+	app.OnConfigChange("app", func(ctx context.Context, next AppConfig) error {
+		if next.Debug {
+			logLevel.Set(slog.LevelDebug)
+		} else {
+			logLevel.Set(slog.LevelInfo)
+		}
+		logger.Info("log level reloaded", "debug", next.Debug)
+		return nil
+	})
 	app.OnStart(func(lifecycleCtx context.Context) error {
 		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr())
 		return nil

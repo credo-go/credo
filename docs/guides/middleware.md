@@ -568,7 +568,7 @@ app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
 }))
 ```
 
-To actually serve HTTPS, configure TLS at construction (`credo.WithTLSFiles` / `credo.WithTLSConfig`); to bounce plaintext callers to HTTPS, add `credo.WithHTTPRedirect(":80")`. HSTS is the complementary, client-side half: it makes browsers _prefer_ HTTPS on their own.
+To actually serve HTTPS, configure TLS at construction (`credo.WithTLSFiles` / `credo.WithTLSConfig`); to bounce plaintext callers to HTTPS, add `credo.WithHTTPRedirect(":80")`. File-based certificates rotate on every reload (`systemctl reload` / `app.Reload`), so an HSTS-committed domain never has to drop TLS to renew — see the [Deployment Guide](deployment.md#certificate-rotation-with-certbot). HSTS is the complementary, client-side half: it makes browsers _prefer_ HTTPS on their own.
 
 > **`HSTSPreloadEnabled` is a near-permanent commitment.** Submitting your domain to the browser preload list (which requires `max-age` ≥ 1 year, `includeSubDomains`, and the `preload` token) is slow and painful to undo — every subdomain becomes HTTPS-only in shipped browsers. Only enable it once every subdomain can serve HTTPS and you understand the rollback cost.
 

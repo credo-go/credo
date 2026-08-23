@@ -11,7 +11,7 @@
 - **All-in-one**: router, DI, config, validation, observability, data access -- one cohesive framework.
 - **Enterprise defaults**: Clean Architecture is the recommended path (CLI scaffolding + docs), but not enforced.
 - **Errors are values**: handlers return `error`; centralized error handling renders RFC 7807 Problem Details.
-- **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI.
+- **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI; `SIGHUP`/`app.Reload` re-reads it and notifies typed per-section subscribers, with file-based TLS certificates rotating on every reload.
 - **Integrated-first, explicit boundaries**: framework infrastructure is wired by convention; app deps and typed config stay visible and override-friendly.
 - **stdlib boundary compatibility**: `*credo.App` is an `http.Handler`; stdlib middleware can be adapted.
 
@@ -139,6 +139,7 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 - User guide: `docs/guides/dependency-injection.md`
 - User guide: `docs/guides/data-access.md`
 - User guide: `docs/guides/configuration.md`
+- User guide: `docs/guides/deployment.md`
 - User guide: `docs/guides/localization.md`
 - User guide: `docs/guides/websocket.md`
 - Architecture decisions: `docs/adr/`

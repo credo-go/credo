@@ -121,7 +121,9 @@ if err != nil {
 }
 ```
 
-Use `WithTLSConfig` when you need the full `crypto/tls` surface, such as mTLS, SNI, embedded certificates, or dynamic certificate reload:
+File-based certificates rotate without a restart: every `app.Reload` (or `systemctl reload` / `SIGHUP` under `Run()`) re-reads the pair, and new handshakes pick it up immediately — see [Reloading at Runtime](#reloading-at-runtime).
+
+Use `WithTLSConfig` when you need the full `crypto/tls` surface, such as mTLS, SNI, embedded certificates, or your own certificate rotation (Credo never touches a caller-supplied config):
 
 ```go
 app, err := credo.New(credo.WithTLSConfig(tlsConfig))
@@ -591,6 +593,27 @@ If you need managed background tasks, use `worker.Register(...)` instead of manu
 
 ---
 
+### Reloading at Runtime
+
+A running service can pick up config changes without restarting. `app.Run()` maps `SIGHUP` (Unix) to `app.Reload(ctx)`; `RunContext` callers invoke `Reload` themselves, for example from an admin endpoint. A reload re-reads the config sources and hands each changed section to the typed subscriber registered for it, validating the new value before anything is published:
+
+```go
+var level slog.LevelVar // wire this into your slog handler
+
+app.OnConfigChange("logging", func(ctx context.Context, next struct{ Level slog.Level }) error {
+    level.Set(next.Level)
+    return nil
+})
+
+app.OnReload(func(ctx context.Context) error {
+    return reopenAuditLog() // runs on every reload, config change or not
+})
+```
+
+What is live: subscribed sections, file-based TLS certificates (re-read on every reload), and `OnReload` hooks. What is not: server settings (`host`, `port`, timeouts — `credo.New()` reads them once) and any changed key with no subscriber, which the reload logs as `restart required`. The [Configuration Guide](configuration.md#reloading-configuration) has the full rules and the [Deployment Guide](deployment.md) shows the systemd and container wiring.
+
+---
+
 ## Putting It Together
 
 A minimal but realistic application:
@@ -678,7 +701,8 @@ func main() {
 
 ## What's Next
 
-- [Configuration Guide](configuration.md) — env files, typed config, env vars
+- [Configuration Guide](configuration.md) — env files, typed config, env vars, runtime reload
+- [Deployment Guide](deployment.md) — systemd, containers, signals, certificate rotation
 - [Dependency Injection Guide](dependency-injection.md) — Alias, Infra, testing
 - [Data Access Guide](data-access.md) — store.Register, transactions, multi-DB
 - [Routing Guide](routing.md) — host groups, rewrite middleware, internal forwarding

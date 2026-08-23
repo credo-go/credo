@@ -81,7 +81,10 @@
 //     network) — returns an error.
 //
 // This is why [App.UseHealth] panics on misuse (it only registers in-process
-// state) while [App.UseI18n] returns an error (it loads locale files).
+// state) while [App.UseI18n] returns an error (it loads locale files). The
+// same split applies to reload: registering [App.OnConfigChange] on a store
+// that cannot reload panics, while [App.Reload] itself — which re-reads files
+// and runs user hooks — returns an error.
 //
 // # Stability
 //

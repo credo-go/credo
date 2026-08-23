@@ -14,6 +14,19 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **Reload: `app.Reload`, `SIGHUP`, `OnReload`, `OnConfigChange[T]`** — a trigger-driven partial reload ([ADR-020](docs/adr/020-reload-and-partial-config-reload.md)). `app.Reload(ctx)` (running-only, serialized) stages the configuration through `config.Stager`, decodes and validates every affected `app.OnConfigChange[T](key, fn)` subscriber's `T` against the candidate before publishing (a failure aborts with the old snapshot untouched), then runs framework participants, affected subscribers in registration order, and `app.OnReload` hooks FIFO; errors and recovered panics are joined and returned, never rolled back, and never stop the process. Changed keys with no subscriber are logged once at `WARN` as `restart required` (key paths only). Under `app.Run()` on Unix, `SIGHUP` now triggers `Reload` within `WithReloadTimeout` / `server.reload_timeout` (default 30s), coalescing signals that arrive mid-reload; `RunContext`/`ServeContext` stay signal-free. `OnConfigChange` panics at registration when the `RawConfig` cannot reload.
+- **`config`: `Reloader`, `Stager`, `Staged`, `Changes`** — `*config.Config` re-runs its captured load pipeline (`Reload()` one-shot, or `Stage()` → inspect → `Commit()`) with an atomic snapshot swap; `Changes` is the sorted symmetric difference of leaf key paths with `Affects`/`Keys`/`Empty`. `CREDO_ENV` is fixed at first load.
+- **File-based TLS certificate rotation** — `WithTLSFiles` and `server.tls.*` serve the key pair through `GetCertificate` backed by an atomic pointer and re-read it on every reload (in-place rotation needs no config change; changed `server.tls.*` paths are followed). A pair that fails to load keeps the current certificate and surfaces through the reload error. `WithTLSConfig` is untouched.
+- **Deployment guide** — [`docs/guides/deployment.md`](docs/guides/deployment.md): signal table, systemd unit with `ExecReload`, `TimeoutStopSec` vs `WithShutdownTimeout`, `EnvironmentFile=` caveat, container/Kubernetes idioms, certbot deploy hook, admin-endpoint reload. The configuration guide gained "Reloading Configuration" and a **Reloadable** column.
+
+### Changed
+
+- **Go 1.27 GA toolchain** — modules, CI, and CodeQL now select the toolchain from `go.mod`; the `go1.27rc2` pin is gone. Dependency bumps: go-limiter v1.2.0, `golang.org/x/text` v0.41.0, modernc.org/sqlite v1.56.0.
+- **`SIGHUP` under `app.Run()`** no longer terminates the process (Go's default); it reloads. Supervisors that used `SIGHUP` to stop a Credo service should send `SIGTERM`.
+- **`WithTLSFiles` / `server.tls.*`** no longer populate `tls.Config.Certificates`; the pair is served through `GetCertificate`. Observable only to tests that inspected the resolved config.
+
 ## [0.4.1] - 2026-08-09
 
 ### Fixed

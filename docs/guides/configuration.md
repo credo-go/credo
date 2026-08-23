@@ -216,6 +216,65 @@ Use `MustGetConfig[T]` (or `cfg.MustGet[T]`) to panic on a missing or invalid re
 
 ---
 
+## Reloading Configuration
+
+The typed snapshot is loaded once at startup — but a long-running service can pick up changes to its config files without restarting. `app.Reload(ctx)` (or `SIGHUP` under `app.Run()` on Unix; see the [Deployment Guide](deployment.md)) re-reads every source the snapshot was built from, computes which leaf keys changed, and notifies the typed subscribers registered for those sections:
+
+```go
+app, err := credo.New()
+if err != nil {
+    log.Fatal(err)
+}
+
+// A reloadable section: decoded and validated on every change, then applied.
+type Limits struct {
+    RPS   int
+    Burst int
+}
+
+func (l Limits) Validate() error {
+    if l.RPS <= 0 || l.Burst < l.RPS {
+        return fmt.Errorf("limits: rps must be > 0 and burst >= rps")
+    }
+    return nil
+}
+
+var limits atomic.Pointer[Limits] // the live value; handlers read limits.Load()
+
+app.OnConfigChange("limits", func(ctx context.Context, next Limits) error {
+    limits.Store(&next)
+    return nil
+})
+
+// Log level without a restart: slog.LevelVar is already atomic.
+var level slog.LevelVar
+
+app.OnConfigChange("logging", func(ctx context.Context, next struct{ Level slog.Level }) error {
+    level.Set(next.Level)
+    return nil
+})
+```
+
+The rules that make this safe:
+
+- **Only affected subscribers run.** A subscriber for `limits` fires when any leaf under `limits` (or `limits` itself) changes; a change to `logging.level` does not touch it. Nested keys are independent subscriptions — `databases` and `databases.primary` both fire when `databases.primary.dsn` changes.
+- **Validate before publish.** Every affected `T` is decoded from the _candidate_ snapshot first; if `T` has a `Validate() error` method it runs too. Any failure aborts the reload before anything is published — the old snapshot stays current, no subscriber runs, and the error is returned (and logged as `reload aborted before publish`). A bad YAML edit can therefore never half-apply.
+- **Apply is the subscriber's job, and it is atomic in your domain.** The framework never rebuilds DI singletons. Hold reloadable values behind `atomic.Pointer[T]`, a `slog.LevelVar`, or a swappable limiter inside the service that owns them, and have the subscriber swap them (see [DI: Config Changes and Singletons](dependency-injection.md#config-changes-and-singletons)). Subscriber errors are collected, later subscribers still run, and the joined error is returned — there is no rollback.
+- **Unsubscribed changes mean a restart.** Every changed key that no subscriber (or framework participant) covers is logged once at `WARN` with `restart required` and the key paths — never the values. That log line is how you discover which sections still need a subscriber.
+- **`OnReload` for everything else.** `app.OnReload(func(ctx) error)` hooks run FIFO after the subscribers on every reload, whether or not config changed — re-open a rotated log file, refresh an allowlist, drive your own certificate rotation.
+
+Registration happens before `Run`; `OnConfigChange` panics at registration when the app's `RawConfig` cannot reload (a subscription that could never fire is a startup bug). `*config.Config` — the store `credo.New()` loads and the one `config.Load` returns — always can.
+
+What a reload does **not** do:
+
+- It never switches environments: `CREDO_ENV` is fixed at first load, so `config.dev.yaml` stays the overlay even if the variable changes.
+- It never applies server settings. `server.host`, ports, timeouts, body limits, and proxies are read by `credo.New()` once; changing them is a restart. The one exception is `server.tls.*`: file-based certificates are re-read on every reload (see [TLS Server Config](#tls-server-config)).
+- It cannot see environment changes the process never received. The process environment is re-read, but a supervisor's `EnvironmentFile=` is handed over at process start, so values sourced from env still require a restart.
+
+A custom `credo.WithRawConfig` store opts into all of this by implementing `config.Stager` (two-phase: stage a candidate, then commit — this is what enables validate-before-publish) or the one-shot `config.Reloader` (published first, validated after). The [Configuration Spec](../specs/config.md#reload--partial-reload-adr-020) has the contracts.
+
+---
+
 ## Multi-Database Config
 
 For multiple databases, keep each config section separate and unmarshal them independently at the module boundary:
@@ -360,6 +419,13 @@ File-based TLS can be configured through the `server.tls` section:
 
 When both paths are set, `Run()` and `RunContext()` serve HTTPS automatically. The key pair is loaded and validated at startup; missing files, mismatched pairs, and partial config fail before the server starts accepting connections.
 
+After startup the pair is served through `GetCertificate` backed by an atomic pointer, and **every reload re-reads it** — `app.Reload(ctx)`, or `systemctl reload` / `SIGHUP` under `Run()`. Rotating a certificate in place needs no config change at all; changing `server.tls.cert_file` / `key_file` in the config file moves the pair to the new paths on the next reload. New handshakes see the new certificate immediately, open connections are untouched, and a pair that fails to load keeps the current certificate serving while the failure surfaces through the reload error. An ACME deploy hook therefore reduces to one line:
+
+```sh
+# certbot renewal-hooks/deploy/credo.sh
+systemctl reload myservice
+```
+
 TLS sources resolve by precedence:
 
 ```text
@@ -368,7 +434,7 @@ WithTLSConfig(*tls.Config) > WithTLSFiles(cert, key) > server.tls.* > plaintext
 
 Each source is a whole-source override. For example, `WithTLSFiles` replaces both `server.tls.cert_file` and `server.tls.key_file`; it does not merge one path from the option with one path from config.
 
-Use `WithTLSConfig` for embedded certificates, mTLS, SNI, custom TLS versions, or dynamic certificate reload. To redirect plaintext HTTP callers to HTTPS, configure TLS and add `credo.WithHTTPRedirect(":80")`.
+Use `WithTLSConfig` for embedded certificates, mTLS, SNI, custom TLS versions, or when you want to own certificate rotation yourself: Credo never touches a caller-supplied `*tls.Config`, so drive it through your own `GetCertificate` (optionally refreshed from an `OnReload` hook). To redirect plaintext HTTP callers to HTTPS, configure TLS and add `credo.WithHTTPRedirect(":80")`.
 
 ---
 
@@ -378,22 +444,27 @@ Quick-lookup of the commonly used config keys.
 
 ### Server — `server`
 
-Consumed automatically by `credo.New()`.
+Consumed automatically by `credo.New()`. The **Reloadable** column says what a [reload](#reloading-configuration) does with a change: `restart` keys are read once at startup and changing them logs `restart required`.
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `host` | string | `""` (all interfaces) | Listen address |
-| `port` | int | `0` (OS-assigned) | Listen port (0–65535) |
-| `read_timeout` | duration | `0` | Max duration for reading entire request |
-| `write_timeout` | duration | `0` | Max duration for writing response |
-| `idle_timeout` | duration | `0` | Max wait for next request (keep-alive) |
-| `read_header_timeout` | duration | `0` | Max duration for reading headers |
-| `max_header_bytes` | int | `0` (Go default: 1 MB) | Max header size in bytes |
-| `redirect_trailing_slash` | bool | `true` | Auto-redirect when trailing slash variant matches (301/308) |
-| `debug` | bool | `false` | Enable development warnings |
-| `trusted_proxies` | []string | `[]` | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
-| `tls.cert_file` | string | `""` | PEM certificate file for HTTPS |
-| `tls.key_file` | string | `""` | PEM private key file for HTTPS |
+| Key | Type | Default | Reloadable | Description |
+| --- | --- | --- | --- | --- |
+| `host` | string | `""` (all interfaces) | restart | Listen address |
+| `port` | int | `0` (OS-assigned) | restart | Listen port (0–65535) |
+| `read_timeout` | duration | `0` | restart | Max duration for reading entire request |
+| `write_timeout` | duration | `0` | restart | Max duration for writing response |
+| `idle_timeout` | duration | `0` | restart | Max wait for next request (keep-alive) |
+| `read_header_timeout` | duration | `0` | restart | Max duration for reading headers |
+| `max_header_bytes` | int | `0` (Go default: 1 MB) | restart | Max header size in bytes |
+| `max_body_bytes` | int64 | `4 MiB` | restart | Request body limit; `-1` disables it |
+| `shutdown_timeout` | duration | `30s` | restart | Drain budget for signal- or context-triggered shutdown |
+| `reload_timeout` | duration | `30s` | restart | Context budget for a `SIGHUP`-triggered reload under `Run()` |
+| `redirect_trailing_slash` | bool | `true` | restart | Auto-redirect when trailing slash variant matches (301/308) |
+| `debug` | bool | `false` | restart | Enable development warnings |
+| `trusted_proxies` | []string | `[]` | restart | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
+| `tls.cert_file` | string | `""` | **yes** — re-read on every reload | PEM certificate file for HTTPS |
+| `tls.key_file` | string | `""` | **yes** — re-read on every reload | PEM private key file for HTTPS |
+
+Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your own) are reloadable exactly when the application registers an `OnConfigChange[T]` subscriber for them; without one, a change is restart-only.
 
 ### Databases — `databases.<name>`
 
@@ -465,5 +536,7 @@ User-read via `rc.Unmarshal("auth.<strategy>", &cfg)`.
 ## Related Documents
 
 - [Data Access Guide](data-access.md) — single DB and multi-DB wiring
+- [Deployment Guide](deployment.md) — systemd `ExecReload`, containers, certificate rotation hooks
 - [Configuration Spec](../specs/config.md) — API contracts, design rules
+- [ADR-020](../adr/020-reload-and-partial-config-reload.md) — reload signal and partial config reload
 - [ADR-005](../adr/005-configuration-architecture.md) — architecture decision
