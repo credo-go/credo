@@ -3,12 +3,18 @@
 # Section categories:
 #   [framework-read]  Automatically consumed by credo.New()
 #   [user-read]       Read via rawCfg.Unmarshal("key", &cfg) at module boundary, injected via DI
-#   [aspirational]    Config struct exists but is currently code-only; shown for reference
+#   [aspirational]    Not read by this example; shown for reference
 #
 # Precedence (lowest to highest):
 #   1. This file (config.yaml)
 #   2. .env file
 #   3. Process environment variables (CREDO_ prefix)
+#   4. Programmatic With* options passed to credo.New()
+#
+# Discovery looks for config.json, then config.yaml, then config.yml, and merges
+# every file it finds. This example ships YAML only, so there is one source of
+# truth; the hello example ships JSON. Keep one format per application unless a
+# layered merge is what you want.
 
 # ---------------------------------------------------------------------------
 # Server [framework-read]
@@ -23,6 +29,19 @@ server:
   idle_timeout: "60s"
   read_header_timeout: "5s"
   max_header_bytes: 1048576            # 1 MB (Go default when 0)
+  max_header_value_count: 500          # Header lines per request (Go default when 0).
+                                       # Over the limit: 431, written straight to the
+                                       # connection by net/http and never logged.
+  shutdown_timeout: "15s"              # Drain budget on SIGINT/SIGTERM (30s when 0).
+                                       # main.go also passes WithShutdownTimeout: a
+                                       # programmatic option always wins over its key.
+  reload_timeout: "30s"                # Budget for a SIGHUP-triggered app.Reload
+  strict_bodies: false                 # true: BindBody rejects unknown JSON members (400)
+  # trusted_proxies:                   # CIDRs allowed to set X-Forwarded-* (empty = none)
+  #   - "10.0.0.0/8"
+  # tls:                               # Serving HTTPS requires BOTH paths; the pair is
+  #   cert_file: "/etc/ssl/app.pem"    # re-read on every reload, rotating the certificate
+  #   key_file: "/etc/ssl/app.key"     # without dropping open connections.
 
 # ---------------------------------------------------------------------------
 # Databases [user-read]
@@ -55,19 +74,21 @@ databases:
   #   ssl_mode: "require"
 
 # ---------------------------------------------------------------------------
-# i18n [user-read]
-# Internationalization settings for i18n.Setup().
-# Usage:  rawCfg.Unmarshal("i18n", &cfg)
+# i18n [aspirational]
+# Internationalization settings. This example does not call app.UseI18n, so the
+# section is unread; it shows what rawCfg.Unmarshal("i18n", &cfg) would decode.
+# See docs/guides/localization.md for the wiring.
 # ---------------------------------------------------------------------------
 i18n:
   dir: "locales/"
   default: "en"
 
 # ---------------------------------------------------------------------------
-# Auth [user-read]
-# Authentication strategy settings. Function fields (Validator, KeyFunc,
-# ParseUser) are code-only and cannot appear in config files.
-# Usage:  rawCfg.Unmarshal("auth.jwt", &cfg)
+# Auth [aspirational]
+# Authentication strategy settings. This example builds its JWTConfig in Go
+# (see newJWTAuthenticator), so nothing below is read at runtime — it is shown
+# as the shape rawCfg.Unmarshal("auth.jwt", &cfg) would decode. Function fields
+# (Validator, KeyFunc, ParseUser) are always code-only.
 # ---------------------------------------------------------------------------
 auth:
   jwt:
