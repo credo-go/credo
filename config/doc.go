@@ -49,9 +49,11 @@
 // [Config.Reload] re-reads every source the Config was built from and swaps
 // the tree in atomically, returning the leaf keys that changed. It never
 // switches CREDO_ENV, and a failed re-read leaves the previous snapshot in
-// place. The credo package drives it from SIGHUP or app.Reload and notifies
-// typed per-section subscribers (ADR-020); call it directly only when you own
-// the reload trigger yourself.
+// place. [Config.Stage] is the two-phase form: inspect the candidate through
+// the returned [Staged] handle, then Commit. The credo package drives these
+// from SIGHUP or app.Reload, validating typed per-section subscribers against
+// the candidate before committing (ADR-020); call them directly only when you
+// own the reload trigger yourself.
 //
 // # Custom Prefix
 //

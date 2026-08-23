@@ -14,12 +14,41 @@ import (
 // Reload must be atomic from a reader's point of view — after it returns, a
 // concurrent Unmarshal or Exists sees either the previous or the new snapshot,
 // never a mix — and must leave the previous snapshot untouched on error.
+//
+// A store that also implements [Stager] lets the App validate the new
+// snapshot before it is published; a Reloader-only store is reloaded first and
+// validated afterwards, so a bad value reaches readers before it is reported.
 type Reloader interface {
 	Reload() (Changes, error)
 }
 
-// Compile-time interface satisfaction check.
-var _ Reloader = (*Config)(nil)
+// Stager is the two-phase form of [Reloader]: Stage re-reads the sources into
+// a candidate snapshot that can be inspected through the [Staged] handle
+// without affecting readers, and Staged.Commit publishes it. The App uses this
+// form when available so that typed subscribers are decoded and validated
+// against the candidate and a failure leaves the previous snapshot current.
+//
+// *Config implements Stager; [Config.Reload] is Stage followed by Commit.
+type Stager interface {
+	Stage() (Staged, error)
+}
+
+// Staged is a candidate snapshot produced by [Stager.Stage]. Its RawConfig
+// methods read the candidate, Changes reports how it differs from the snapshot
+// that was current when it was staged, and Commit publishes it atomically.
+// A Staged that is never committed is simply discarded.
+type Staged interface {
+	RawConfig
+	Changes() Changes
+	Commit()
+}
+
+// Compile-time interface satisfaction checks.
+var (
+	_ Reloader = (*Config)(nil)
+	_ Stager   = (*Config)(nil)
+	_ Staged   = (*staged)(nil)
+)
 
 // Changes is the set of leaf key paths whose value differs between two
 // configuration snapshots — added, removed, or changed. It records key paths
@@ -67,24 +96,62 @@ func (c Changes) Empty() bool {
 // Reload calls are serialized by the caller (the App does this), and the last
 // one to finish wins.
 func (c *Config) Reload() (Changes, error) {
+	s, err := c.Stage()
+	if err != nil {
+		return Changes{}, err
+	}
+	s.Commit()
+	return s.Changes(), nil
+}
+
+// Stage re-reads every source exactly as [Config.Reload] does, but returns the
+// candidate as a [Staged] handle instead of publishing it. Readers keep seeing
+// the current snapshot until Commit. Changes are computed against the snapshot
+// current at Stage time; callers that stage concurrently must serialize
+// themselves (the App does), as the last Commit wins.
+func (c *Config) Stage() (Staged, error) {
 	if !c.initialized() {
-		return Changes{}, fmt.Errorf("config: instance not initialized")
+		return nil, fmt.Errorf("config: instance not initialized")
 	}
 	fresh := &Config{data: make(map[string]any), opts: c.opts, src: c.src}
 	dotenv, err := fresh.readDotenv()
 	if err != nil {
-		return Changes{}, fmt.Errorf("config: reload: load .env: %w", err)
+		return nil, fmt.Errorf("config: reload: load .env: %w", err)
 	}
 	if err := fresh.populate(dotenv); err != nil {
-		return Changes{}, fmt.Errorf("config: reload: %w", err)
+		return nil, fmt.Errorf("config: reload: %w", err)
 	}
 
-	c.mu.Lock()
-	previous := c.data
-	c.data = fresh.data
-	c.mu.Unlock()
+	c.mu.RLock()
+	changes := diffTrees(c.data, fresh.data)
+	c.mu.RUnlock()
 
-	return diffTrees(previous, fresh.data), nil
+	return &staged{parent: c, fresh: fresh, changes: changes}, nil
+}
+
+// staged is the Staged handle for *Config: a fully built candidate tree plus
+// the diff against the parent's snapshot at Stage time.
+type staged struct {
+	parent  *Config
+	fresh   *Config
+	changes Changes
+}
+
+// Unmarshal decodes from the candidate snapshot.
+func (s *staged) Unmarshal(key string, dst any) error { return s.fresh.Unmarshal(key, dst) }
+
+// Exists reports presence in the candidate snapshot.
+func (s *staged) Exists(key string) bool { return s.fresh.Exists(key) }
+
+// Changes reports how the candidate differs from the snapshot that was current
+// when it was staged.
+func (s *staged) Changes() Changes { return s.changes }
+
+// Commit publishes the candidate atomically.
+func (s *staged) Commit() {
+	s.parent.mu.Lock()
+	s.parent.data = s.fresh.data
+	s.parent.mu.Unlock()
 }
 
 // diffTrees returns the sorted symmetric difference of the leaf key paths of

@@ -307,3 +307,63 @@ func TestReloadConcurrentReadersSeeWholeSnapshots(t *testing.T) {
 		t.Error("a reader observed a torn snapshot")
 	}
 }
+
+func TestStagePublishesOnlyOnCommit(t *testing.T) {
+	c, path := loadYAML(t, "server:\n  port: 8080\n")
+	writeFile(t, path, "server:\n  port: 9090\n")
+
+	staged, err := c.Stage()
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if !staged.Changes().Affects("server.port") {
+		t.Fatalf("staged changes = %v, want server.port", staged.Changes().Keys())
+	}
+	if port := c.MustGet[int]("server.port"); port != 8080 {
+		t.Errorf("parent must be unchanged before Commit; port = %d", port)
+	}
+	var candidate int
+	if err := staged.Unmarshal("server.port", &candidate); err != nil || candidate != 9090 {
+		t.Errorf("staged.Unmarshal = %d, %v; want 9090", candidate, err)
+	}
+	if !staged.Exists("server.port") || staged.Exists("nope") {
+		t.Error("staged.Exists must read the candidate")
+	}
+
+	staged.Commit()
+	if port := c.MustGet[int]("server.port"); port != 9090 {
+		t.Errorf("port after Commit = %d, want 9090", port)
+	}
+}
+
+func TestStageDiscardedWithoutCommit(t *testing.T) {
+	c, path := loadYAML(t, "a: 1\n")
+	writeFile(t, path, "a: 2\n")
+	if _, err := c.Stage(); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if a := c.MustGet[int]("a"); a != 1 {
+		t.Errorf("an uncommitted stage must not publish; a = %d", a)
+	}
+	changes, err := c.Reload()
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !changes.Affects("a") {
+		t.Errorf("Reload after a discarded stage must still see the change, got %v", changes.Keys())
+	}
+}
+
+func TestStageImplementsInterfaces(t *testing.T) {
+	var _ config.Stager = (*config.Config)(nil)
+	var rc config.RawConfig
+	c, _ := loadYAML(t, "a: 1\n")
+	staged, err := c.Stage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc = staged
+	if !rc.Exists("a") {
+		t.Error("Staged must satisfy RawConfig over the candidate")
+	}
+}
