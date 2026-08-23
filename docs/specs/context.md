@@ -106,6 +106,8 @@ func (r *Response) Stream(code int, contentType string, rd io.Reader) error
 func (r *Response) SetCookie(cookie *http.Cookie)
 ```
 
+Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) treats body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified (RFC 9110) — as status-only: the body **and** the Content-Type header are skipped, the call returns nil, and `Stream`'s reader is never read. Without this, writing a body to such a status fails inside net/http after the header is committed, and the returned error can only surface as a spurious "error after response committed" warning; a 204 also must not advertise a `Content-Type` it does not carry. Handler-set headers (ETag, Cache-Control on a 304) are untouched.
+
 #### Render and the envelope seam
 
 ```go

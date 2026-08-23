@@ -172,11 +172,32 @@ func (r *Response) String() string {
 
 // --- Response helpers (moved from context.go) ---
 
+// bodilessStatus reports whether the status code forbids a response body per
+// RFC 9110 (the inverse of net/http's bodyAllowedForStatus): 1xx
+// informational, 204 No Content, and 304 Not Modified.
+func bodilessStatus(code int) bool {
+	return (code >= 100 && code <= 199) ||
+		code == http.StatusNoContent ||
+		code == http.StatusNotModified
+}
+
 // JSON sends a JSON response with the given status code, encoded with the
 // application's JSON profile (see [WithJSONOptions]): deterministic map
 // ordering, nanosecond durations, v2 defaults for everything else — nil
 // slices and maps as [] and {}, no HTML escaping, no trailing newline.
+//
+// For status codes that forbid a response body (1xx, 204, 304), JSON — like
+// every body-writing helper — skips both the body and the Content-Type header
+// and writes the status line only, exactly as [Response.NoContent] would.
+// Writing a body to such a status would otherwise fail inside net/http
+// ("http: request method or response status code does not allow body") after
+// the header is already committed, surfacing as a spurious error the pipeline
+// can no longer render.
 func (r *Response) JSON(code int, v any) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", "application/json; charset=utf-8")
 	r.WriteHeader(code)
 	return jsonv2.MarshalWrite(r, v, r.app.jsonOptions())
@@ -203,7 +224,13 @@ func (c *Context) Render(status int, data any) error {
 
 // Text sends a plain text response with the given status code.
 // Named Text (not String) to avoid conflict with the fmt.Stringer interface.
+// Body-forbidding status codes (1xx, 204, 304) write the status only; see
+// [Response.JSON].
 func (r *Response) Text(code int, s string) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	r.WriteHeader(code)
 	_, err := io.WriteString(r, s)
@@ -211,7 +238,13 @@ func (r *Response) Text(code int, s string) error {
 }
 
 // HTML sends an HTML response with the given status code.
+// Body-forbidding status codes (1xx, 204, 304) write the status only; see
+// [Response.JSON].
 func (r *Response) HTML(code int, html string) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", "text/html; charset=utf-8")
 	r.WriteHeader(code)
 	_, err := io.WriteString(r, html)
@@ -219,7 +252,13 @@ func (r *Response) HTML(code int, html string) error {
 }
 
 // XML sends an XML response with the given status code.
+// Body-forbidding status codes (1xx, 204, 304) write the status only; see
+// [Response.JSON].
 func (r *Response) XML(code int, v any) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	r.WriteHeader(code)
 	return xml.NewEncoder(r).Encode(v)
@@ -242,7 +281,13 @@ func (r *Response) Redirect(code int, url string) error {
 }
 
 // Blob sends a binary response with the given content type.
+// Body-forbidding status codes (1xx, 204, 304) write the status only; see
+// [Response.JSON].
 func (r *Response) Blob(code int, contentType string, b []byte) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", contentType)
 	r.WriteHeader(code)
 	_, err := r.Write(b)
@@ -250,7 +295,13 @@ func (r *Response) Blob(code int, contentType string, b []byte) error {
 }
 
 // Stream sends a streaming response from the given reader.
+// Body-forbidding status codes (1xx, 204, 304) write the status only and
+// never read from rd; see [Response.JSON].
 func (r *Response) Stream(code int, contentType string, rd io.Reader) error {
+	if bodilessStatus(code) {
+		r.WriteHeader(code)
+		return nil
+	}
 	r.Header().Set("Content-Type", contentType)
 	r.WriteHeader(code)
 	_, err := io.Copy(r, rd)
