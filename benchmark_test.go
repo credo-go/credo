@@ -2,6 +2,8 @@ package credo_test
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,7 +46,14 @@ type benchPayload struct {
 
 func mustNewBench(b *testing.B, opts ...credo.Option) *credo.App {
 	b.Helper()
-	app, err := credo.New(opts...)
+	// Benchmarks keep the default-on observability pipeline (request ID +
+	// access log) in the measurement, but format log lines into io.Discard:
+	// terminal I/O would otherwise dominate every number. slog.DiscardHandler
+	// is deliberately NOT used — its disabled levels would skip the attribute
+	// formatting work that real deployments pay.
+	app, err := credo.New(append(
+		[]credo.Option{credo.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))},
+		opts...)...)
 	if err != nil {
 		b.Fatal(err)
 	}

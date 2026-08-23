@@ -26,8 +26,9 @@ func builtinRequestID(next Handler) Handler {
 		ctx.Set(requestIDKey, id)
 		ctx.Response().Header().Set(internalrequestid.Header, id)
 
-		// Enrich request-scoped logger with request_id.
-		ctx.AddLogAttrs("request_id", id)
+		// Enrich the request-scoped logger with request_id — deferred: the
+		// With call is paid on the first Logger() use, not per request.
+		ctx.pendingLogAttrID = id
 
 		return next(ctx)
 	}

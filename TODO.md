@@ -393,6 +393,8 @@
 **Source**: GoFr (Apache-2.0) + slog-multi (MIT, study only)
 
 > ⚠️ **v0.1.0 reframe.** Logging (slog) is real and featured; tracing (OTel) ships as _experimental_; a stable Prometheus metrics adapter is optional. Do **not** rush the full OTel wrapper before v1. **2026-06-11:** the speculative root-package `MeterProvider`/`TracerProvider` interfaces and `Infra.Metrics`/`Infra.Tracer` fields were removed (see §2.2 note). This phase starts from a clean slate: design the metrics/tracing carriers from real OTel/Prometheus adapters, aligned with the v1 / Go 1.27 window.
+>
+> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) when tracing is *not configured*, install a `NeverSample()` TracerProvider so the unconfigured hot path costs ~nothing — GoFr retrofitted this for a 528 B → 144 B/req win; design it in from the start. (2) Offer OTLP *push* metrics export alongside the Prometheus pull endpoint (serverless/scale-to-zero misses scrape intervals; one MeterProvider with two readers, no double counting, pull stays the default). (3) Choose histogram bucket boundaries per metric's native unit — GoFr's µs-scale datasource latencies all landed in `+Inf` under default buckets. (4) One span per request, named `<METHOD> <route-template>` per OTel HTTP semconv.
 
 - [ ] Structured logging setup (slog handlers)
 - [ ] OpenTelemetry trace provider wiring
@@ -456,6 +458,8 @@
 **Source**: watermill (MIT)
 
 > A typed in-process event API is pubsub's channel backend plus generics sugar, not a second eventing system.
+>
+> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) a panicking subscriber handler must leave the message *uncommitted* so it is redelivered — GoFr's recovery path swallowed the panic and acked, silently losing messages (v1.56.6). (2) A failing handler must engage backoff, not tight-loop on consecutive failures (v1.58.0). (3) Consumer spans must be *children* of the producer's trace (context propagated through message headers), with a span link kept for fan-out semantics (v1.56.2). (4) Backend adapters need explicit answers for: buffer-full backoff (no busy-spin), cancellable subscription goroutines that `Close` actually waits for, and reconnect/resubscribe that preserves consumer identity (GoFr's Redis Streams shipped all three bugs, v1.56.1).
 
 - [ ] Copy Publisher/Subscriber interfaces, Message type
 - [ ] Go channel in-process implementation
@@ -484,6 +488,8 @@
 **Source**: GoFr `grpc.go` (Apache-2.0)
 
 > Deliberately **thin** — the value is shared lifecycle + DI + `Infra` interceptors (logging/recovery/tracing), not wrapping gRPC itself. No codegen tooling, no gateway/transcoding. Late Phase 4, after observability (interceptors need it).
+>
+> **Design input from the GoFr v1.56–v1.59 review (2026-08-24):** the shutdown path's force-close fallback (after the graceful deadline) must nil-guard the server for apps that never registered a service — GoFr panicked on SIGTERM in exactly that state (v1.56.5).
 
 - [ ] Dual-protocol from same `App` struct (shared lifecycle: `Run`/`Shutdown`)
 - [ ] Shared DI container + `Infra` interceptors (logging, recovery, tracing)

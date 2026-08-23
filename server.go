@@ -12,7 +12,9 @@ import (
 // first call using sync.Once for thread safety.
 func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	app.handlerOnce.Do(app.compile)
-	if app.serverCfg.MaxBodyBytes > 0 && r.Body != nil {
+	// http.NoBody (every bodyless request the stdlib server delivers) has
+	// nothing to limit; skipping the wrap saves an allocation per request.
+	if app.serverCfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, app.serverCfg.MaxBodyBytes)
 	}
 	c := app.ctxPool.get()
