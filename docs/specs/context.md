@@ -121,6 +121,8 @@ func RenderMeta(v any) RenderOption
 
 `Render` is the opt-in success-envelope seam: with a `SuccessRenderer` (`func(ctx, RenderInfo) any`) installed via `app.SetSuccessRenderer`, the renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract; the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
 
+In debug mode, a handler that writes body-carrying JSON through the raw `Response.JSON` helper while a `SuccessRenderer` is installed triggers a `WARN` (envelope-bypass diagnostic); intentional raw routes silence it with the `credo.MetaRawResponse` route meta. Non-JSON writers are exempt by design.
+
 #### JSON output profile
 
 `Response.JSON` encodes with `encoding/json/v2` under an application-level profile ([ADR-021](../adr/021-json-output-profile.md)). Two axes are set by the framework; the rest are json/v2's defaults, which differ from `encoding/json` v1 on the wire:

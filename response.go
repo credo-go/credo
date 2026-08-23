@@ -41,6 +41,15 @@ type Response struct {
 	// hijacked is true only after the effective underlying Hijack call succeeds.
 	hijacked bool
 
+	// exemptJSON marks a framework-internal JSON write in progress
+	// (Context.Render, the error pipeline), so it does not count as an
+	// envelope bypass.
+	exemptJSON bool
+
+	// envelopeBypassed is true after a body-carrying JSON write outside
+	// Context.Render; read by the debug-mode envelope-bypass diagnostic.
+	envelopeBypassed bool
+
 	// app supplies the JSON encoding profile. Nil for a Response built with
 	// NewResponse, which then uses the framework default profile.
 	app *App
@@ -163,6 +172,8 @@ func (r *Response) Reset(w http.ResponseWriter) {
 	r.size = 0
 	r.committed = false
 	r.hijacked = false
+	r.exemptJSON = false
+	r.envelopeBypassed = false
 }
 
 // String implements fmt.Stringer for debugging.
@@ -197,6 +208,11 @@ func (r *Response) JSON(code int, v any) error {
 	if bodilessStatus(code) {
 		r.WriteHeader(code)
 		return nil
+	}
+	if !r.exemptJSON {
+		// A body-carrying JSON write outside Context.Render; feeds the
+		// debug-mode envelope-bypass diagnostic (see MetaRawResponse).
+		r.envelopeBypassed = true
 	}
 	r.Header().Set("Content-Type", "application/json; charset=utf-8")
 	r.WriteHeader(code)
@@ -241,6 +257,9 @@ func RenderMeta(v any) RenderOption {
 // probes, or third-party-dictated shapes can always bypass the envelope by
 // calling them directly.
 func (c *Context) Render(status int, data any, opts ...RenderOption) error {
+	// Every write below is the envelope seam itself, never a bypass of it.
+	c.response.exemptJSON = true
+	defer func() { c.response.exemptJSON = false }()
 	if c.app == nil || c.app.successRenderer == nil {
 		return c.response.JSON(status, data)
 	}

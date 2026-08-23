@@ -310,6 +310,19 @@ The seam is deliberately narrow on the success side: only `Render` consults the 
 
 The contracts mirror each other precisely: a nil return from the `SuccessRenderer` writes `info.Data` plain (selective enveloping), just as a nil from the `ErrorRenderer` keeps the default RFC 7807 body; a renderer that commits the response itself keeps full control and its return value is ignored; and a `SuccessRenderer` panic is caught by the same built-in recovery layer as any handler panic.
 
+### Detecting Envelope Bypass
+
+The narrow seam has one failure mode: once a team adopts a house envelope, a handler that habitually calls `Response().JSON` instead of `Render` skips it silently — legal by design, but usually unintentional. This cannot be enforced at compile time, so Credo ships a leak detector instead of a hard rule: with a `SuccessRenderer` installed **and** debug mode on (`WithDebug()` / `server.debug`), a handler that writes a body-carrying JSON response outside `Render` triggers a `WARN "credo: response bypassed the success envelope"` carrying the route pattern and name.
+
+Deliberate raw endpoints declare themselves with route meta, per route or inherited from a group (route value overrides group):
+
+```go
+app.POST("/webhooks/stripe", stripeHandler).SetMeta(credo.MetaRawResponse, true)
+app.Group("/callbacks").SetMeta(credo.MetaRawResponse, true)
+```
+
+Framework-internal JSON writes (`Render` itself, the error pipeline) never trigger it, and the non-JSON writers — `Text`, `Blob`, `XML`, the streaming writers — are exempt by design: they are never envelope targets. Production (non-debug) runs never pay for or emit the diagnostic.
+
 ---
 
 ## Semantic Fault Provider
