@@ -113,6 +113,23 @@ func (r *Response) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// WriteString writes the string to the connection as part of an HTTP reply,
+// implementing [io.StringWriter]. When the underlying ResponseWriter also
+// implements it (net/http's does), the string is written without the
+// []byte(s) copy that io.WriteString would otherwise allocate per call.
+// If WriteHeader has not been called, it calls WriteHeader(200).
+func (r *Response) WriteString(s string) (int, error) {
+	if r.hijacked {
+		return 0, http.ErrHijacked
+	}
+	if !r.committed {
+		r.WriteHeader(http.StatusOK)
+	}
+	n, err := io.WriteString(r.ResponseWriter, s)
+	r.size += int64(n)
+	return n, err
+}
+
 // Flush sends any buffered data to the client.
 func (r *Response) Flush() {
 	if r.hijacked {

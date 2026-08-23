@@ -25,11 +25,17 @@ import (
 // [App.OnStart] and [App.OnShutdown] receive a standard context.Context,
 // not *Context.
 type Context struct {
-	app              *App
-	request          *Request
-	response         *Response
-	route            *Route
-	logger           *slog.Logger
+	app      *App
+	request  *Request
+	response *Response
+	route    *Route
+	logger   *slog.Logger
+	// pendingLogAttrID defers the request ID tier's logger enrichment: the
+	// enriched logger (base.With("request_id", …)) is only built when
+	// Logger() is first called, so requests whose handlers never log skip
+	// the With allocations entirely. Framework emitters read it directly
+	// and attach the ID as an explicit attribute instead of materializing.
+	pendingLogAttrID string
 	locale           string
 	extra            map[string]any
 	originalPath     string // set in reset(), never modified after
@@ -85,9 +91,20 @@ func (c *Context) HasRoute() bool {
 // Logger returns the request-scoped logger. Falls back through the chain:
 // request logger → app logger → nop logger.
 func (c *Context) Logger() *slog.Logger {
+	if c.logger == nil && c.pendingLogAttrID != "" {
+		// Deferred request ID enrichment (see pendingLogAttrID): pay the
+		// With cost only when the logger is actually used.
+		c.logger = c.baseLogger().With("request_id", c.pendingLogAttrID)
+	}
 	if c.logger != nil {
 		return c.logger
 	}
+	return c.baseLogger()
+}
+
+// baseLogger returns the app logger (or the package default) without any
+// request-scoped enrichment.
+func (c *Context) baseLogger() *slog.Logger {
 	if c.app != nil {
 		return c.app.Logger()
 	}
@@ -132,17 +149,18 @@ func (c *Context) AddLogAttrs(args ...any) {
 	c.logger = c.Logger().With(args...)
 }
 
-// HasRequestLogger reports whether a request-scoped logger has been set for
-// this request — by the built-in request ID tier, middleware.RequestID,
-// [Context.SetLogger], or [Context.AddLogAttrs]. It does not inspect the
-// logger's attributes.
+// HasRequestLogger reports whether [Context.Logger] returns (or, for the
+// request ID tier's deferred enrichment, will return on first use) a
+// request-scoped logger — one set by the built-in request ID tier,
+// middleware.RequestID, [Context.SetLogger], or [Context.AddLogAttrs]. It
+// does not inspect the logger's attributes.
 //
 // The framework's log emitters (access log, panic recovery) use it as a
 // convention-based signal: under the derivation contract documented on
 // [Context.SetLogger], a request-scoped logger is assumed to already carry
 // request_id, so the emitters skip adding the attribute explicitly.
 func (c *Context) HasRequestLogger() bool {
-	return c.logger != nil
+	return c.logger != nil || c.pendingLogAttrID != ""
 }
 
 // RequestID returns the current request ID.
@@ -256,6 +274,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.response.Reset(w)
 	c.route = nil
 	c.logger = nil
+	c.pendingLogAttrID = ""
 	c.locale = ""
 	clear(c.extra)
 	if r.URL.RawPath != "" {

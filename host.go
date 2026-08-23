@@ -196,7 +196,10 @@ func (e *hostEntry) match(reversedLabels []string) (map[string]string, bool) {
 // Returns nil if no host matches (caller falls back to default mux).
 // Hosts are pre-sorted by specificity in compile().
 func (app *App) matchHost(host string) (*hostEntry, map[string]string) {
-	if host == "" {
+	// Fast path: no host-routed groups registered. Skipping the normalize +
+	// label-split work here removes per-request allocations for the common
+	// single-host application.
+	if host == "" || (len(app.staticHosts) == 0 && len(app.hosts) == 0) {
 		return nil, nil
 	}
 	host = normalizeRequestHost(host)

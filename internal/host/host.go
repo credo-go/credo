@@ -12,8 +12,12 @@ func NormalizeRequest(value string) string {
 		return ""
 	}
 	value = strings.ToLower(value)
-	if host, _, err := net.SplitHostPort(value); err == nil {
-		value = host
+	// Only attempt port stripping when a colon is present: a portless host is
+	// the common case, and net.SplitHostPort allocates an error for it.
+	if strings.IndexByte(value, ':') >= 0 {
+		if host, _, err := net.SplitHostPort(value); err == nil {
+			value = host
+		}
 	}
 	return strings.TrimSuffix(value, ".")
 }

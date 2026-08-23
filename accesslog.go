@@ -162,11 +162,21 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 			}
 
 			logger := configuredLogger
-			if logger == nil {
-				logger = ctx.Logger()
-			}
 			explicitRequestID := ""
-			if configuredLogger != nil || !ctx.HasRequestLogger() {
+			switch {
+			case configuredLogger != nil:
+				// A configured logger never carries request-scoped
+				// enrichment; attach the ID explicitly.
+				explicitRequestID = entry.RequestID
+			case ctx.logger != nil:
+				// A materialized request logger already carries request_id
+				// (derivation contract on Context.SetLogger).
+				logger = ctx.logger
+			default:
+				// No materialized request logger: log through the base
+				// logger with an explicit request_id, so the deferred
+				// enrichment stays unpaid for handlers that never log.
+				logger = ctx.baseLogger()
 				explicitRequestID = entry.RequestID
 			}
 			internalobserve.EmitAccessLog(
