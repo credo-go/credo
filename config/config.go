@@ -233,6 +233,17 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
+// initialized reports whether the Config holds a tree (built by Load or
+// LoadBytes). Read under the lock so it cannot race a concurrent Reload swap.
+func (c *Config) initialized() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data != nil
+}
+
 // Exists reports whether the given key path exists in the merged configuration.
 // Dots in the key always act as path separators.
 func (c *Config) Exists(key string) bool {
@@ -269,7 +280,7 @@ func (c *Config) Exists(key string) bool {
 //
 // Returns an error if the key does not exist or decoding fails.
 func (c *Config) Unmarshal(key string, dst any) error {
-	if c == nil || c.data == nil {
+	if !c.initialized() {
 		return fmt.Errorf("config: instance not initialized")
 	}
 	val, ok := c.get(key)

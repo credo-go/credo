@@ -67,7 +67,7 @@ func (c Changes) Empty() bool {
 // Reload calls are serialized by the caller (the App does this), and the last
 // one to finish wins.
 func (c *Config) Reload() (Changes, error) {
-	if c == nil || c.data == nil {
+	if !c.initialized() {
 		return Changes{}, fmt.Errorf("config: instance not initialized")
 	}
 	fresh := &Config{data: make(map[string]any), opts: c.opts, src: c.src}
