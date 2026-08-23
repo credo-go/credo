@@ -1,6 +1,6 @@
 # Lifecycle Spec
 
-> Status: **Implemented** (Phase 2.5, updated Phase 3+) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md)
+> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Accepted, implementation pending** (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
 ## Overview
 
@@ -60,11 +60,13 @@ Reports whether the server is in the `running` state.
 
 Compiles the handler chain, transitions to `running`, and serves HTTP — or HTTPS when TLS is configured (see [TLS](#tls)) — until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown with the deadline set by `WithShutdownTimeout`. An `OnPreDrain` hook that ignores that deadline remains a hard teardown barrier and can delay return; a second signal force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
 
+On Unix, `Run` also handles `SIGHUP`: each signal triggers [`app.Reload`](#appreloadctx-contextcontext-error) with the `WithReloadTimeout` budget, signals arriving during a reload coalesce into at most one follow-up, and a reload failure never stops the server. There is no SIGHUP on Windows; the programmatic `Reload` is the only trigger there.
+
 `Run` is the safe default for a process whose lifetime is the server's. For explicit lifecycle control — tests, embedding, caller-driven cancellation — use `RunContext`.
 
 ### `app.RunContext(ctx context.Context) error`
 
-Like `Run` but installs **no** signal handler — cancellation is entirely the caller's. Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values, drops its cancellation (so an already-cancelled `ctx` still drains), and applies the `WithShutdownTimeout` deadline. An `OnPreDrain` hook that ignores the deadline remains a hard teardown barrier and can delay return. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the lifecycle context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
+Like `Run` but installs **no** signal handler — cancellation is entirely the caller's, and so is reload (call `app.Reload` directly). Serves until `ctx` is cancelled, the server stops, or a programmatic `Shutdown`. On `ctx` cancellation the drain keeps `ctx`'s values, drops its cancellation (so an already-cancelled `ctx` still drains), and applies the `WithShutdownTimeout` deadline. An `OnPreDrain` hook that ignores the deadline remains a hard teardown barrier and can delay return. This is the entry point for tests, embedding, and tracing contexts. Cancelling `ctx` **during** startup does not abort an in-progress `OnStart` hook (hooks receive the lifecycle context, not `ctx`) — the cancellation takes effect only after all hooks complete; see the `app.OnStart` notes below.
 
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
@@ -79,11 +81,11 @@ TLS is server configuration, not a serve method. When a certificate source is co
 | Source | Precedence | Notes |
 | --- | --- | --- |
 | `WithTLSConfig(*tls.Config)` | highest | Full `crypto/tls` surface: mTLS, SNI, `GetCertificate` reload, ALPN. Cloned before use |
-| `WithTLSFiles(cert, key)` | middle | PEM file paths; overrides the config keys (resolved after unmarshal) |
-| `server.tls.cert_file` / `server.tls.key_file` | lowest | The same paths via config |
+| `WithTLSFiles(cert, key)` | middle | PEM file paths; overrides the config keys (resolved after unmarshal). Rotated on every reload |
+| `server.tls.cert_file` / `server.tls.key_file` | lowest | The same paths via config. Rotated on every reload (paths re-read from the new snapshot) |
 | _(none)_ | — | Plaintext |
 
-All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is loaded once and reused by the serve goroutine — no double load.
+All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is built once and reused by the serve goroutine — no double load. For the two file-based sources the key pair is served through `GetCertificate` backed by an atomic pointer: every [reload](#appreloadctx-contextcontext-error) re-reads the files and swaps the pair on success (new handshakes see the new certificate, open connections are untouched), while a failed re-read keeps the previous certificate and surfaces through the reload error. `WithTLSConfig` is never touched by reload; its owner drives rotation through their own `GetCertificate` (optionally from an `OnReload` hook).
 
 `WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
 
@@ -222,6 +224,24 @@ not assume any particular OnStart hook completed. Because `onStart` and
 its conceptual counterpart was always possible; session-failure teardown only
 makes it routine.
 
+### `app.Reload(ctx context.Context) error`
+
+Triggers a partial reload. Succeeds only in the `running` state: before `running` it returns an error (there is nothing to reload), and in `stopping`/`stopped` it returns an error that the signal path treats as a no-op. Concurrent calls are serialized; a caller that waits on the mutex then performs its own full reload, so after `Reload` returns the snapshot is at least as new as when it was called.
+
+The sequence is: (1) if the registered `RawConfig` implements `config.Reloader`, re-load all sources into a candidate snapshot and compute `config.Changes` — a load error aborts with the old snapshot untouched; (2) for every `OnConfigChange[T]` subscription affected by the diff, decode `T` from the candidate and, when `T` implements `validation.Validatable`, validate it — any failure aborts before anything is published; (3) publish the snapshot atomically, run framework reload participants (file-based TLS rotation), then affected `OnConfigChange` subscribers in registration order, then all `OnReload` hooks FIFO — errors and recovered panics are collected and the sequence continues (no rollback); (4) return `errors.Join` of the step-3 errors, log one Info summary (duration, changed-key count, subscribers notified, error count) and one Warn naming every changed key that no subscription or participant covers (`restart required`; key paths only, never values). A reload never stops the process.
+
+### `app.OnReload(fn func(ctx context.Context) error)`
+
+Registers a reload hook. Hooks run in **FIFO** order at the end of every reload, after the new snapshot is visible and typed subscribers have applied their sections, with the reload context (`WithReloadTimeout` for the signal path, the caller's for `Reload`). An error or recovered panic is joined into the `Reload` result and does not skip later hooks. Typical uses: re-open a log file after rotation, refresh an allowlist, drive rotation for a `WithTLSConfig` certificate. Must be called before `compile()` (panics if frozen); a nil hook panics.
+
+### `app.OnConfigChange[T](key string, fn func(ctx context.Context, next T) error)`
+
+Generic method (Go 1.27 concrete-type generic methods, as `Provide[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before `compile()`; a nil hook panics; registering one when the app's `RawConfig` does not implement `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
+
+### `credo.WithReloadTimeout(d time.Duration) Option`
+
+Construction option setting the context budget for SIGHUP-triggered reloads under `Run`. Zero (the default) applies 30s. A programmatic `Reload(ctx)` ignores it and uses the caller's context. Also settable via the `server.reload_timeout` config key.
+
 ### `credo.WithShutdownTimeout(d time.Duration) Option`
 
 Construction option (passed to `New`) setting the graceful-shutdown deadline for the signal-aware `Run` and the cancellation-triggered `RunContext`/`ServeContext`. Zero (the default) applies 30s. An explicit `Shutdown(ctx)` ignores it and uses the caller's deadline instead. An OnPreDrain hook that ignores cancellation can overrun either deadline because it remains a hard teardown barrier. Also settable via the `server.shutdown_timeout` config key.
@@ -258,6 +278,8 @@ The following methods panic if called after `compile()`:
 | `app.OnPreDrain()` | `checkFrozen("OnPreDrain")`; nil hook also panics |
 | `app.OnDrain()` | `checkFrozen("OnDrain")`; nil hook also panics |
 | `app.OnShutdown()` | `checkFrozen("OnShutdown")` |
+| `app.OnReload()` | `checkFrozen("OnReload")`; nil hook also panics |
+| `app.OnConfigChange[T]()` | `checkFrozen("OnConfigChange")`; nil hook panics; non-`Reloader` `RawConfig` panics |
 | `group.Middleware()` | `checkFrozen("Group.Middleware")` |
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
@@ -270,6 +292,7 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 - `server`, `ctx`, `cancel`, and `boundAddr` fields protected by `serverMu` mutex.
 - `compile()` guarded by `sync.Once`.
 - State transitions use `CompareAndSwap` — exactly one goroutine wins.
+- `Reload` is serialized by `reloadMu`; the SIGHUP channel has capacity one so signals during a reload coalesce. The config snapshot swap is atomic (see the [Config Spec](config.md)).
 
 ## Container Integration
 

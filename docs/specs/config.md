@@ -130,6 +130,21 @@ Behavior contract:
 - `Exists(key)` checks both leaf and intermediate keys.
 - Empty key `""` represents the root of the config tree.
 
+### Reload — Partial Reload (ADR-020)
+
+```go
+type Reloader interface { Reload() (Changes, error) }
+
+func (c *Config) Reload() (Changes, error)
+func (c Changes) Affects(prefix string) bool
+func (c Changes) Keys() []string
+func (c Changes) Empty() bool
+```
+
+> Status: **Accepted, implementation pending** (Phase 3.8).
+
+`*Config` implements `Reloader`. `Reload` re-runs the load pipeline with the options captured by the original `Load` — the same files, prefix, and `.env` path, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — and atomically swaps the internal snapshot so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. It returns `Changes`, the sorted symmetric difference of the two trees' leaf key paths (values are never retained). Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). Process environment is re-read, but a supervisor's `EnvironmentFile=` is applied only at process start, so env-sourced changes still require a restart.
+
 ### credo.New() Config Integration
 
 `credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; the keyed `app.GetConfig[T](key)` (below) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
@@ -324,6 +339,7 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 - **Type Conversion**: Failing to map a string env var to a struct's `int` field.
 - **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling.
 - All errors are returned, never panicked. Invalid config from `config.Load()` returns error.
+- **Reload Error**: any of the above during `Reload()` is returned and the previous snapshot stays current.
 
 ---
 
@@ -349,7 +365,7 @@ The provider/parser architecture, the byte/map provider interfaces, and the per-
 | `koanf.Sprint()`, `Print()` | Debug utilities, not part of Credo's public API |
 | `koanf.KeyMap()` (public) | Internal use only |
 | `koanf.All()` | `Raw()` is sufficient |
-| `koanf.Delete()`, `koanf.Set()` | No hot-reload, no runtime mutation |
+| `koanf.Delete()`, `koanf.Set()` | No in-place runtime mutation; reload is a trigger-driven atomic re-load of the whole snapshot with a per-section subscription model (ADR-020), not key-level writes |
 | `koanf.Slices()` | Edge case not in spec |
 | `maps.MergeStrict()` | Cut with `StrictMerge` |
 | `providers/consul`, `etcd`, `vault`, etc. | Remote/cloud config — out of scope |
