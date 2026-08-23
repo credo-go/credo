@@ -2,7 +2,7 @@
 package main
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/url"
@@ -169,7 +169,7 @@ func readSQLDBModule(repoRoot string) (moduleFile, error) {
 	}
 
 	var mod moduleFile
-	if err := json.Unmarshal([]byte(raw), &mod); err != nil {
+	if err := jsonv2.Unmarshal([]byte(raw), &mod); err != nil {
 		return moduleFile{}, fmt.Errorf("decode store/sqldb/go.mod: %w", err)
 	}
 	return mod, nil

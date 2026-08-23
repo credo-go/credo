@@ -5,6 +5,7 @@
 package credo
 
 import (
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"encoding/xml"
@@ -255,7 +256,14 @@ func (r *Request) BindBody(target any) error {
 	switch mediaType {
 	case "application/json":
 		dec := jsontext.NewDecoder(r.Body)
-		opts := []jsonv2.Options{jsonv2.MatchCaseInsensitiveNames(true)}
+		// FormatDurationAsNano: json/v2 has no default time.Duration
+		// representation and Go 1.27 ships without the `format:` tag, so
+		// without this option any Duration field would fail every bind.
+		// Durations decode as integer nanoseconds, as under encoding/json v1.
+		opts := []jsonv2.Options{
+			jsonv2.MatchCaseInsensitiveNames(true),
+			jsonv1.FormatDurationAsNano(true),
+		}
 		if r.app != nil && r.app.strictBodies {
 			opts = append(opts, jsonv2.RejectUnknownMembers(true))
 		}

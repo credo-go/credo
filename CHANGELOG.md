@@ -14,6 +14,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- Internal JSON decoding (JSON config files, i18n locale files, `testutil` log assertions, the release gate) moved from `encoding/json` to `encoding/json/v2`. JSON config and locale files now reject duplicate object members and invalid UTF-8 instead of taking the last value / substituting U+FFFD. `validation.Errors` additionally implements the v2 `MarshalJSONTo` interface; `MarshalJSON` is unchanged.
+
+### Fixed
+
+- `Request.BindBody` could not decode a target with a `time.Duration` field: every payload failed with 400 `invalid_value` because json/v2 has no default Duration representation (and Go 1.27 ships without the `format:` tag). Duration fields now decode as integer nanoseconds, matching `encoding/json` v1.
+
 ### Added
 
 - `middleware.ContractConfig.RequireContentType`: when set, a request that carries a body (positive or unknown `Content-Length`) but no or an empty `Content-Type` header fails a route's `MetaAccept` contract with 415 instead of passing. Default off; bodiless requests and routes without `MetaAccept` are unaffected. Flipping the default is a v1 item.

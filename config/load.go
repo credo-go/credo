@@ -1,7 +1,7 @@
 package config
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -109,8 +109,11 @@ func (c *Config) populate(dotenv map[string]string) error {
 func parseConfig(data []byte, format string) (map[string]any, error) {
 	switch strings.ToLower(strings.TrimPrefix(format, ".")) {
 	case FormatJSON:
+		// json/v2 rejects duplicate object members and invalid UTF-8 —
+		// a config file with a repeated key fails the load instead of
+		// silently taking the last value.
 		var out map[string]any
-		if err := json.Unmarshal(data, &out); err != nil {
+		if err := jsonv2.Unmarshal(data, &out); err != nil {
 			return nil, err
 		}
 		return out, nil
