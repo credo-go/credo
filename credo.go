@@ -10,6 +10,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -187,6 +188,10 @@ type App struct {
 	// after it. Read through App.jsonOptions, which is nil-safe.
 	jsonOpts jsonv2.Options
 
+	// configureServer is the WithHTTPServer callback, applied at the end of
+	// buildServer. nil when the option was not used.
+	configureServer func(*http.Server)
+
 	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
 	trustedProxies []netip.Prefix
 }
@@ -319,6 +324,7 @@ func New(opts ...Option) (*App, error) {
 		accessLogFilter:       o.accessLogFilter,
 		debug:                 o.debug || o.serverCfg.Debug,
 		strictBodies:          o.strictBodies || o.serverCfg.StrictBodies,
+		configureServer:       o.configureServer,
 		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
 	}

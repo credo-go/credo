@@ -14,6 +14,15 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- `credo.WithHTTPServer(fn func(*http.Server))`: a callback that receives the `*http.Server` the framework built, keeping the whole `net/http` surface reachable — `Protocols` (including H2C), `HTTP2`, `ConnState`, `BaseContext`, `ConnContext`, `DisableClientPriority` — without an option per stdlib field. It runs after every framework-set field, so it wins on all of them, config keys included; `Handler`, `Addr`, and `TLSConfig` are re-imposed afterwards (TLS is configured through `WithTLSFiles`/`WithTLSConfig`, never here). The `WithHTTPRedirect` listener is excluded, and everything set in the callback is restart-only. See [ADR-006](docs/adr/006-application-lifecycle.md).
+- `server.max_header_value_count` config key: caps the number of header lines per request (Go 1.27's `http.Server.MaxHeaderValueCount`). Zero keeps net/http's own default of 500; a negative value is rejected by `credo.New`. Requests over the limit receive `431`, written straight to the connection by `net/http` and therefore never logged.
+
+### Fixed
+
+- `App.ServeContext`'s documentation listed H2C among the listeners it enables. It supplies the listener only — the server still came from the framework, so `Protocols` was unreachable and H2C could not actually be served. The documentation now points at `WithHTTPServer`, which makes it work.
+
 ## [0.7.0] - 2026-08-23
 
 ### Added

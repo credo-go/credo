@@ -77,7 +77,15 @@ func (app *App) RunContext(ctx context.Context) error {
 // ServeContext serves on a caller-provided listener, sharing the same
 // lifecycle as [App.RunContext]. It is the escape hatch for listeners the
 // framework does not create itself — Unix sockets, a preconfigured test
-// listener, H2C, or an externally managed listener.
+// listener, or an externally managed listener. It supplies the listener only;
+// the server itself is still the one the framework builds, so protocol-level
+// settings such as H2C come from [WithHTTPServer]:
+//
+//	credo.WithHTTPServer(func(s *http.Server) {
+//		s.Protocols = new(http.Protocols)
+//		s.Protocols.SetHTTP1(true)
+//		s.Protocols.SetUnencryptedHTTP2(true)
+//	})
 //
 // ServeContext takes ownership of l: it is closed when the server stops,
 // matching net/http.Server.Serve semantics. Returns nil on graceful shutdown.

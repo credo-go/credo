@@ -53,6 +53,13 @@ type serverConfig struct {
 	// server will read parsing the request header's keys and values.
 	MaxHeaderBytes int `credo:"max_header_bytes"`
 
+	// MaxHeaderValueCount caps the number of header lines the server accepts
+	// in a request. Zero (the default) applies net/http's own default of 500;
+	// a positive value replaces it. Requests that exceed the limit receive
+	// 431 Request Header Fields Too Large, written straight to the connection
+	// by net/http — such rejections never reach the application logger.
+	MaxHeaderValueCount int `credo:"max_header_value_count"`
+
 	// MaxBodyBytes caps the number of bytes read from a request body
 	// (via http.MaxBytesReader), mitigating memory-exhaustion DoS.
 	// Zero (the default) applies a 4 MiB limit; a negative value disables it.
@@ -114,6 +121,7 @@ type appOptions struct {
 	tlsKeyFile        string
 	tlsFilesSet       bool
 	httpRedirectAddr  string
+	configureServer   func(*http.Server)
 
 	// Server settings from With* options live in these shadow fields, not in
 	// serverCfg, so a "server" config section decoded in New does not silently
@@ -426,6 +434,36 @@ func WithHTTPRedirect(addr string) Option {
 	return func(o *appOptions) { o.httpRedirectAddr = addr }
 }
 
+// WithHTTPServer registers a callback that receives the [http.Server] the
+// framework built, so the whole standard-library surface stays reachable
+// without Credo growing an option per field. It runs once, at construction
+// time, after every framework-set field — timeouts, MaxHeaderBytes,
+// MaxHeaderValueCount, and the ErrorLog bridge — so the callback has the last
+// word on all of them, config keys included:
+//
+//	credo.WithHTTPServer(func(s *http.Server) {
+//		s.Protocols = new(http.Protocols)
+//		s.Protocols.SetHTTP1(true)
+//		s.Protocols.SetUnencryptedHTTP2(true) // H2C
+//		s.ConnState = metrics.TrackConnState
+//	})
+//
+// Three fields are framework-owned and re-imposed after the callback returns,
+// because the lifecycle depends on them: Handler (always the App), Addr (the
+// listener is bound from it), and TLSConfig. TLS is configured through
+// [WithTLSConfig] or [WithTLSFiles], which resolve later at startup; a
+// TLSConfig set here is either overwritten by those or, with no Credo TLS
+// source configured, ignored — it never silently upgrades a plaintext server.
+//
+// The server's lifecycle methods (Serve, ServeTLS, Shutdown, Close,
+// RegisterOnShutdown) belong to the framework: the callback must not call them
+// or retain the pointer past its return. The [WithHTTPRedirect] listener is a
+// separate, fixed-function server and is deliberately not passed to the
+// callback. A nil callback is a no-op.
+func WithHTTPServer(fn func(*http.Server)) Option {
+	return func(o *appOptions) { o.configureServer = fn }
+}
+
 // WithMaxBodyBytes sets the maximum number of bytes read from any request body.
 // Requests whose body exceeds the limit receive 413 Request Entity Too Large.
 // A negative value disables the limit; zero (the default) applies a 4 MiB cap.
@@ -466,18 +504,33 @@ func WithReloadTimeout(d time.Duration) Option {
 // buildServer creates an *http.Server from serverConfig. logger receives the
 // server's own diagnostics through the [newServerErrorLog] bridge; a nil
 // logger falls back to the framework default.
-func buildServer(cfg serverConfig, handler http.Handler, logger *slog.Logger) *http.Server {
+//
+// configure is the [WithHTTPServer] callback. It runs last, after every
+// framework-set field, so it can override any of them; the fields the
+// lifecycle owns (Handler, Addr, TLSConfig) are re-imposed by the caller.
+func buildServer(cfg serverConfig, handler http.Handler, logger *slog.Logger, configure func(*http.Server)) *http.Server {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		MaxHeaderBytes:    cfg.MaxHeaderBytes,
-		ErrorLog:          newServerErrorLog(logger),
+	srv := &http.Server{
+		Addr:                addr,
+		Handler:             handler,
+		ReadTimeout:         cfg.ReadTimeout,
+		WriteTimeout:        cfg.WriteTimeout,
+		IdleTimeout:         cfg.IdleTimeout,
+		ReadHeaderTimeout:   cfg.ReadHeaderTimeout,
+		MaxHeaderBytes:      cfg.MaxHeaderBytes,
+		MaxHeaderValueCount: cfg.MaxHeaderValueCount,
+		ErrorLog:            newServerErrorLog(logger),
 	}
+	if configure != nil {
+		configure(srv)
+		// Re-impose the fields the lifecycle depends on. TLSConfig is not
+		// restored here but overwritten later, at preflight, by the TLS
+		// precedence chain; when no Credo TLS source is configured the
+		// server is served with Serve, which ignores TLSConfig entirely.
+		srv.Handler = handler
+		srv.Addr = addr
+	}
+	return srv
 }
 
 // newServerErrorLog bridges net/http's own diagnostics into the application
@@ -564,6 +617,12 @@ func validateServerConfig(c *serverConfig) error {
 	}
 	if c.MaxHeaderBytes < 0 {
 		return fmt.Errorf("credo: invalid MaxHeaderBytes %d: must not be negative", c.MaxHeaderBytes)
+	}
+	// Unlike MaxBodyBytes, a header-line limit has no "disabled" state in
+	// net/http: any value below 1 means the default. Rejecting negatives keeps
+	// a typo from reading as a deliberate opt-out that does not exist.
+	if c.MaxHeaderValueCount < 0 {
+		return fmt.Errorf("credo: invalid MaxHeaderValueCount %d: must not be negative", c.MaxHeaderValueCount)
 	}
 	return nil
 }
