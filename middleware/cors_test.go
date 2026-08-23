@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/credo-go/credo"
@@ -29,6 +30,46 @@ func TestCORS_SimpleRequest_AllowedOrigin(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want https://example.com", got)
+	}
+}
+
+// TestCORS_MultipleOrigins locks the multi-origin contract: the matched
+// origin (and only that origin) is echoed back per request, unmatched
+// origins get no allow header, and every response — matched or not —
+// carries Vary: Origin so shared caches never serve one origin's response
+// to another.
+func TestCORS_MultipleOrigins(t *testing.T) {
+	app := mustNew(t)
+	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+		AllowOrigins: []string{"https://app.example.com", "https://admin.example.com"},
+	}))
+	app.GET("/", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(http.StatusOK)
+	})
+
+	tests := []struct {
+		name   string
+		origin string
+		want   string // expected Access-Control-Allow-Origin ("" = absent)
+	}{
+		{"first origin matched", "https://app.example.com", "https://app.example.com"},
+		{"second origin matched", "https://admin.example.com", "https://admin.example.com"},
+		{"unlisted origin rejected", "https://evil.example.com", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("Origin", tt.origin)
+			app.ServeHTTP(w, r)
+
+			if got := w.Header().Get("Access-Control-Allow-Origin"); got != tt.want {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, tt.want)
+			}
+			if got := w.Header().Values("Vary"); !slices.Contains(got, "Origin") {
+				t.Errorf("Vary = %v, want it to contain Origin", got)
+			}
+		})
 	}
 }
 
