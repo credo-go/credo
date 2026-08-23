@@ -180,7 +180,11 @@ jobs:
           git diff --exit-code -- store/sqldb/go.mod store/sqldb/go.sum
 
   examples:
-    name: Examples
+    # Named explicitly so the check stays "Examples (examples/saas)". Without
+    # this, GitHub builds the job name from every matrix key, so adding one
+    # would rename the check and silently strand the required status check
+    # configured on the branch — blocking every PR.
+    name: Examples (${{ matrix.module }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
