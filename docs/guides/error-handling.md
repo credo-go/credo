@@ -155,6 +155,27 @@ Server errors (5xx) and unhandled errors are logged via `slog`. Internal error m
 
 ---
 
+## What the Pipeline Does Not Cover
+
+The pipeline starts when a request reaches the application. Everything that gets that far is uniform — including the responses no handler produced:
+
+| Response | Produced by | Shape |
+| --- | --- | --- |
+| Handler's returned error | error pipeline | RFC 7807, `ErrorRenderer` |
+| Panic (built-in recovery) | error pipeline | RFC 7807, `ErrorRenderer` |
+| 404 / 405 | error pipeline | RFC 7807, `ErrorRenderer` |
+| 400 from `BindBody` / `BindQuery` | error pipeline | RFC 7807, `ErrorRenderer` |
+| 413 over `max_body_bytes` | error pipeline | RFC 7807, `ErrorRenderer` |
+| **431** over `max_header_bytes` / `max_header_value_count` | `net/http`, direct to the connection | `text/plain`, one line |
+| **400** on a malformed request line or Host | `net/http`, direct to the connection | `text/plain`, one line |
+| **501** on an unsupported transfer encoding | `net/http`, direct to the connection | `text/plain`, one line |
+
+The bottom three never enter the pipeline, because `net/http` writes them before any `http.Handler` runs — it could not parse the request well enough to route it. They carry no `X-Request-Id`, they are not logged (not even through the `http.Server.ErrorLog` bridge), and `ErrorRenderer` is never called: installing a custom renderer does not change those bytes. This is a property of the standard library's server, not a Credo policy, and no Go framework can intercept them.
+
+The practical consequence is for clients: a consumer that parses every non-2xx body as `application/problem+json` will fail on these three. Check the `Content-Type` before parsing, or terminate at a proxy that normalises error bodies. To keep them rare, size `max_header_bytes` and `max_header_value_count` for your real traffic; to count them, install a `ConnState` hook through `WithHTTPServer` — you can observe the connections, but not rewrite the response.
+
+---
+
 ## Custom ErrorRenderer
 
 Replace the default renderer with `app.SetErrorRenderer` when you need a different response format (it must be set before the server starts). The `ErrorRenderer` receives an `ErrorInfo` containing:
