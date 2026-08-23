@@ -84,6 +84,19 @@ Kubernetes has no reload verb. Its two idioms are:
 
 ---
 
+## What Lands in Your Logs
+
+Beyond Credo's own access and error logs, the standard library's server diagnostics are bridged into the application logger at `ERROR` with `component=net/http`. In production these are the entries worth alerting on:
+
+| Message | Usually means |
+| --- | --- |
+| `http: TLS handshake error from …` | Wrong protocol on the TLS port, an expired or untrusted client certificate, a scanner, or a cipher/version mismatch |
+| `http: Accept error: …; retrying in …` | File-descriptor exhaustion or a listener fault — check `ulimit -n` |
+| `http: panic serving …` | A panic outside the framework recovery (only when `WithoutRecover` is set, or from a hijacked connection) |
+| `http: superfluous response.WriteHeader call from …` | A handler bug: the response was already committed |
+
+Filter them with `component=net/http` to separate them from Credo's own records. Note that header-limit rejections (`431`) never appear here — `net/http` writes that response directly to the connection without logging it; if you need to count them, terminate at a proxy that records status codes, or track connection state yourself.
+
 ## Reload Without a Signal
 
 When the runtime cannot send `SIGHUP`, or when you want the reload's result to be the exit status of the operation, expose `app.Reload` behind an authenticated admin route. `Reload` is safe to call from a handler: it is serialized, runs only while the server is running, and returns the joined errors of the steps that failed.

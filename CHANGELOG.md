@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- `net/http` server diagnostics — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls — now go through the application logger at `ERROR` with `component=net/http` instead of the standard `log` package's stderr output. The stdlib message text is unchanged. Header-limit rejections (`431`) are written directly to the connection by `net/http` and are still not logged.
+
 ## [0.6.0] - 2026-08-23
 
 ### Changed
