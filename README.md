@@ -9,7 +9,7 @@
 ## What Credo Optimizes For
 
 - **All-in-one**: router, DI, config, validation, observability, data access -- one cohesive framework.
-- **Enterprise defaults**: Clean Architecture is the recommended path (CLI scaffolding + docs), but not enforced.
+- **Enterprise defaults**: Clean Architecture is the recommended path (documented and supported by the DI design), but not enforced.
 - **Errors are values**: handlers return `error`; centralized error handling renders RFC 7807 Problem Details.
 - **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI; `SIGHUP`/`app.Reload` re-reads it and notifies typed per-section subscribers, with file-based TLS certificates rotating on every reload.
 - **Integrated-first, explicit boundaries**: framework infrastructure is wired by convention; app deps and typed config stay visible and override-friendly.
@@ -23,7 +23,7 @@ The project is early but actively maintained, with a focus on clear APIs, docume
 
 ## Maturity by Area
 
-Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what is solid, what is still experimental, and what is on the roadmap.
+Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what has shipped and what is still on the roadmap. Planned areas hold a placeholder directory and a roadmap entry, nothing importable yet.
 
 | Area | Status |
 | --- | --- |
@@ -41,8 +41,8 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Outbound HTTP client (`httpclient`) | Beta |
 | Server WebSocket adapter (`websocket`) | Beta |
 | Observability — structured logging (slog via `Infra`) | Beta |
-| Observability — tracing (OpenTelemetry) | Experimental |
-| Observability — metrics (Prometheus) | Experimental |
+| Observability — tracing (OpenTelemetry) | Planned |
+| Observability — metrics (Prometheus) | Planned |
 | pubsub (incl. in-process events) · grpc · openapi · admin server · CLI | Planned |
 
 ## Installation
@@ -53,7 +53,7 @@ go get github.com/credo-go/credo@latest
 
 > **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Provide[T]`, `q.Page[T]`, `ctx.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
 
-## Quick Start (Target API)
+## Quick Start
 
 ```go
 package main
@@ -135,12 +135,15 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 - User guide: `docs/guides/getting-started.md`
 - User guide: `docs/guides/routing.md`
 - User guide: `docs/guides/middleware.md`
+- User guide: `docs/guides/error-handling.md`
 - User guide: `docs/guides/proxy-trust.md`
 - User guide: `docs/guides/dependency-injection.md`
 - User guide: `docs/guides/data-access.md`
 - User guide: `docs/guides/configuration.md`
 - User guide: `docs/guides/deployment.md`
 - User guide: `docs/guides/localization.md`
+- User guide: `docs/guides/static-files.md`
+- User guide: `docs/guides/worker.md`
 - User guide: `docs/guides/websocket.md`
 - Architecture decisions: `docs/adr/`
 - Detailed specs: `docs/specs/`
