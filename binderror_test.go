@@ -567,3 +567,49 @@ func TestBindBody_StrictBodies_OtherDecodersUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// TestBindBody_JSON_DurationTarget pins the time.Duration policy: json/v2
+// has no default representation and Go 1.27 ships without the `format:` tag
+// (removed before GA, go.dev/issue/79071), so BindBody decodes Duration
+// fields as integer nanoseconds — the encoding/json v1 behavior — and a
+// valid payload never turns into a 400.
+func TestBindBody_JSON_DurationTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantDur  time.Duration
+		reason   string
+	}{
+		{"nanoseconds decode", `{"timeout":5000000000}`, 204, 5 * time.Second, ""},
+		{"string is a type mismatch", `{"timeout":"5s"}`, 400, 0, "type_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			var got time.Duration
+			app.POST("/bind", func(ctx *credo.Context) error {
+				var v struct {
+					Timeout time.Duration `json:"timeout"`
+				}
+				if err := ctx.Request().BindBody(&v); err != nil {
+					return err
+				}
+				got = v.Timeout
+				return ctx.Response().NoContent(204)
+			})
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/bind", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", "application/json")
+			app.ServeHTTP(w, r)
+			if w.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantCode, w.Body.String())
+			}
+			if tt.reason != "" {
+				assertBindReason(t, w, tt.reason, "timeout")
+			} else if got != tt.wantDur {
+				t.Fatalf("bound duration = %v, want %v", got, tt.wantDur)
+			}
+		})
+	}
+}

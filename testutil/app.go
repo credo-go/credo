@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"log/slog"
 	"strings"
 	"testing"
@@ -134,7 +134,7 @@ func buildConfig(tb testing.TB, pairs []configPair) credo.RawConfig {
 	for _, p := range pairs {
 		setNested(root, p.key, p.val)
 	}
-	data, err := json.Marshal(root)
+	data, err := jsonv2.Marshal(root)
 	if err != nil {
 		tb.Fatalf("testutil: marshal config: %v", err)
 	}

@@ -2,6 +2,8 @@ package validation
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"strings"
 )
@@ -54,6 +56,13 @@ func (e Errors) Error() string {
 func (e Errors) MarshalJSON() ([]byte, error) {
 	// Marshal the underlying slice to avoid infinite recursion.
 	return json.Marshal([]ValidationError(e))
+}
+
+// MarshalJSONTo implements the encoding/json/v2 marshaler interface,
+// streaming the underlying slice without the intermediate []byte that
+// MarshalJSON would otherwise force on v2 encoders.
+func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return jsonv2.MarshalEncode(enc, []ValidationError(e))
 }
 
 // Unwrap returns the individual field errors, letting [errors.As] (and

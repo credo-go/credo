@@ -3,6 +3,7 @@ package testutil
 import (
 	"bytes"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"log/slog"
 	"reflect"
 	"strconv"
@@ -69,7 +70,7 @@ func (b *LogBuffer) Entries() []map[string]any {
 			continue
 		}
 		var entry map[string]any
-		if err := json.Unmarshal(line, &entry); err != nil {
+		if err := jsonv2.Unmarshal(line, &entry); err != nil {
 			continue
 		}
 		entries = append(entries, entry)
@@ -114,7 +115,7 @@ func (b *LogBuffer) AssertNotHas(tb testing.TB, want LogEntry) {
 	tb.Helper()
 	for _, e := range b.Entries() {
 		if matchesEntry(e, want) {
-			data, _ := json.Marshal(e)
+			data, _ := jsonv2.Marshal(e, jsonv2.Deterministic(true))
 			tb.Errorf("log assertion failed: expected no record matching %s, found:\n  %s",
 				describeWant(want), data)
 			return
@@ -161,6 +162,8 @@ func matchesEntry(got map[string]any, want LogEntry) bool {
 
 // jsonNormalize round-trips v through JSON so that want values use the same
 // decoded representation as captured records (for example int becomes float64).
+// slog's JSONHandler encodes attribute values with encoding/json v1, so the
+// round-trip deliberately uses the same encoder (nil slice → null, etc.).
 func jsonNormalize(v any) any {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -193,7 +196,7 @@ func describeWant(want LogEntry) string {
 		add("msg", strconv.Quote(want.Message))
 	}
 	if len(want.Attrs) > 0 {
-		data, _ := json.Marshal(want.Attrs)
+		data, _ := jsonv2.Marshal(want.Attrs, jsonv2.Deterministic(true))
 		add("attrs", string(data))
 	}
 	sb.WriteByte('}')
@@ -209,7 +212,7 @@ func describeEntries(entries []map[string]any) string {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		data, _ := json.Marshal(e)
+		data, _ := jsonv2.Marshal(e, jsonv2.Deterministic(true))
 		sb.WriteString("  ")
 		sb.Write(data)
 	}

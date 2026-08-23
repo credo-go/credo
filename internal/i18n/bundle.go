@@ -9,7 +9,8 @@ package i18n
 
 import (
 	"cmp"
-	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -127,8 +128,8 @@ func (b *Bundle) loadMessages(fsys fs.FS, langPath string, tag language.Tag) err
 		return fmt.Errorf("i18n: read %q: %w", msgPath, err)
 	}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	var raw map[string]jsontext.Value
+	if err := jsonv2.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("i18n: parse %q: %w", msgPath, err)
 	}
 
@@ -161,7 +162,7 @@ func (b *Bundle) loadFields(fsys fs.FS, langPath string, tag language.Tag) error
 	}
 
 	var fields map[string]string
-	if err := json.Unmarshal(data, &fields); err != nil {
+	if err := jsonv2.Unmarshal(data, &fields); err != nil {
 		return fmt.Errorf("i18n: parse %q: %w", fieldsPath, err)
 	}
 

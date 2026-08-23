@@ -7,7 +7,8 @@
 package i18n
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 )
 
@@ -37,19 +38,19 @@ type Message struct {
 // Object value with plural forms:
 //
 //	"v.min_items": {"one": "must have at least {{.min}} item", "other": "must have at least {{.min}} items"}
-func messageFromJSON(id string, raw json.RawMessage) (*Message, error) {
+func messageFromJSON(id string, raw jsontext.Value) (*Message, error) {
 	msg := &Message{ID: id}
 
 	// Try string shorthand first.
 	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
+	if err := jsonv2.Unmarshal(raw, &s); err == nil {
 		msg.Other = s
 		return msg, nil
 	}
 
 	// Try object with plural forms.
 	var obj map[string]string
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	if err := jsonv2.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("i18n: message %q: expected string or object, got %s", id, string(raw))
 	}
 
