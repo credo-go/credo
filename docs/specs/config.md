@@ -134,16 +134,19 @@ Behavior contract:
 
 ```go
 type Reloader interface { Reload() (Changes, error) }
+type Stager interface { Stage() (Staged, error) }
+type Staged interface { RawConfig; Changes() Changes; Commit() }
 
-func (c *Config) Reload() (Changes, error)
+func (c *Config) Reload() (Changes, error)   // Stage + Commit
+func (c *Config) Stage() (Staged, error)
 func (c Changes) Affects(prefix string) bool
 func (c Changes) Keys() []string
 func (c Changes) Empty() bool
 ```
 
-> Status: **Implemented** in `config/` (Phase 3.8); the App-level orchestration is pending.
+> Status: **Implemented** (Phase 3.8).
 
-`*Config` implements `Reloader`. `Reload` re-runs the load pipeline with the options captured by the original `Load` — the same files, prefix, and `.env` path, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — and atomically swaps the internal snapshot so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. It returns `Changes`, the sorted symmetric difference of the two trees' leaf key paths (values are never retained). Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). Process environment is re-read, but a supervisor's `EnvironmentFile=` is applied only at process start, so env-sourced changes still require a restart.
+`*Config` implements both `Reloader` and `Stager`. `Stage` re-runs the load pipeline with the options captured by the original `Load` — the same files, prefix, and `.env` path, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — into a candidate returned as a `Staged` handle: a `RawConfig` over the candidate, `Changes()` — the sorted symmetric difference of leaf key paths against the snapshot current at stage time (values are never retained) — and `Commit()`, which swaps the internal snapshot atomically so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. An uncommitted candidate is discarded. `Reload` is `Stage` followed by `Commit`. Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader` (one-shot) or, to get validate-before-publish, `Stager`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). Process environment is re-read, but a supervisor's `EnvironmentFile=` is applied only at process start, so env-sourced changes still require a restart.
 
 ### credo.New() Config Integration
 

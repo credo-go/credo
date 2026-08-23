@@ -1,6 +1,6 @@
 # Lifecycle Spec
 
-> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Accepted, implementation pending** (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
+> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** except the SIGHUP signal path and file-based TLS rotation, which are pending (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
 ## Overview
 
@@ -228,7 +228,9 @@ makes it routine.
 
 Triggers a partial reload. Succeeds only in the `running` state: before `running` it returns an error (there is nothing to reload), and in `stopping`/`stopped` it returns an error that the signal path treats as a no-op. Concurrent calls are serialized; a caller that waits on the mutex then performs its own full reload, so after `Reload` returns the snapshot is at least as new as when it was called.
 
-The sequence is: (1) if the registered `RawConfig` implements `config.Reloader`, re-load all sources into a candidate snapshot and compute `config.Changes` — a load error aborts with the old snapshot untouched; (2) for every `OnConfigChange[T]` subscription affected by the diff, decode `T` from the candidate and, when `T` implements `validation.Validatable`, validate it — any failure aborts before anything is published; (3) publish the snapshot atomically, run framework reload participants (file-based TLS rotation), then affected `OnConfigChange` subscribers in registration order, then all `OnReload` hooks FIFO — errors and recovered panics are collected and the sequence continues (no rollback); (4) return `errors.Join` of the step-3 errors, log one Info summary (duration, changed-key count, subscribers notified, error count) and one Warn naming every changed key that no subscription or participant covers (`restart required`; key paths only, never values). A reload never stops the process.
+The sequence is: (1) if the registered `RawConfig` implements `config.Stager`, stage a candidate snapshot (`Stage()`) and take its `config.Changes` — a load error aborts with the old snapshot untouched; (2) for every `OnConfigChange[T]` subscription affected by the diff, decode `T` from the candidate and, when `T` has a `Validate() error` method, validate it — any failure aborts before anything is published (logged as `reload aborted before publish`); (3) `Commit()` the snapshot atomically, run framework reload participants (file-based TLS rotation), then affected `OnConfigChange` subscribers in registration order with the values decoded in step 2, then all `OnReload` hooks FIFO — errors and recovered panics are collected and the sequence continues (no rollback); (4) return `errors.Join` of the step-3 errors, log one Info summary (duration, whether config was reloaded, changed-key count, subscribers notified, error count) and one Warn naming every changed key that no subscription or participant covers (`restart required`; key paths only, never values). A reload never stops the process.
+
+A `RawConfig` that implements only `config.Reloader` has no candidate stage: its `Reload()` publishes first and affected subscribers are decoded from the live snapshot, so a decode failure is a step-3 error rather than an abort. A `RawConfig` that implements neither leaves the configuration untouched; only participants and `OnReload` hooks run, and `OnConfigChange` is a registration-time panic. A nil `ctx` is an error.
 
 ### `app.OnReload(fn func(ctx context.Context) error)`
 
@@ -236,7 +238,7 @@ Registers a reload hook. Hooks run in **FIFO** order at the end of every reload,
 
 ### `app.OnConfigChange[T](key string, fn func(ctx context.Context, next T) error)`
 
-Generic method (Go 1.27 concrete-type generic methods, as `Provide[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before `compile()`; a nil hook panics; registering one when the app's `RawConfig` does not implement `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
+Generic method (Go 1.27 concrete-type generic methods, as `Provide[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before `compile()`; a nil hook panics; registering one when the app's `RawConfig` implements neither `config.Stager` nor `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
 
 ### `credo.WithReloadTimeout(d time.Duration) Option`
 
@@ -279,7 +281,7 @@ The following methods panic if called after `compile()`:
 | `app.OnDrain()` | `checkFrozen("OnDrain")`; nil hook also panics |
 | `app.OnShutdown()` | `checkFrozen("OnShutdown")` |
 | `app.OnReload()` | `checkFrozen("OnReload")`; nil hook also panics |
-| `app.OnConfigChange[T]()` | `checkFrozen("OnConfigChange")`; nil hook panics; non-`Reloader` `RawConfig` panics |
+| `app.OnConfigChange[T]()` | `checkFrozen("OnConfigChange")`; nil hook panics; a `RawConfig` that is neither `Stager` nor `Reloader` panics |
 | `group.Middleware()` | `checkFrozen("Group.Middleware")` |
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
