@@ -77,6 +77,10 @@ type App struct {
 	// rawConfig holds the RawConfig passed via WithRawConfig option.
 	rawConfig RawConfig
 
+	// reload holds the OnReload hooks, OnConfigChange subscribers, framework
+	// reload participants, and the mutex serializing Reload (ADR-020).
+	reload reloadState
+
 	// serverCfg holds the server configuration (host, port, timeouts).
 	serverCfg serverConfig
 
@@ -232,6 +236,9 @@ func New(opts ...Option) (*App, error) {
 	}
 	if o.shutdownTimeoutSet {
 		o.serverCfg.ShutdownTimeout = o.shutdownTimeout
+	}
+	if o.reloadTimeoutSet {
+		o.serverCfg.ReloadTimeout = o.reloadTimeout
 	}
 	if o.maxBodyBytesSet {
 		o.serverCfg.MaxBodyBytes = o.maxBodyBytes
