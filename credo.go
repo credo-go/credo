@@ -177,6 +177,10 @@ type App struct {
 	// Set via WithDebug option or server.debug config key.
 	debug bool
 
+	// strictBodies makes BindBody reject unknown JSON object members.
+	// Set via WithStrictBodies option or server.strict_bodies config key.
+	strictBodies bool
+
 	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
 	trustedProxies []netip.Prefix
 }
@@ -308,6 +312,7 @@ func New(opts ...Option) (*App, error) {
 		accessLogSkipper:      o.accessLogSkipper,
 		accessLogFilter:       o.accessLogFilter,
 		debug:                 o.debug || o.serverCfg.Debug,
+		strictBodies:          o.strictBodies || o.serverCfg.StrictBodies,
 		trustedProxies:        trustedProxies,
 	}
 	app.addReloadParticipant(app.tlsReloadParticipant())

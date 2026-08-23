@@ -447,7 +447,7 @@ With suitable locale files, Credo translates entries such as:
 - `v.max`
 - `v.between`
 
-Decode failures translate the same way through `bind.<reason>` keys (`bind.syntax`, `bind.type_mismatch`, `bind.invalid_value`, `bind.empty_body`, `bind.trailing_data`, `bind.duplicate_field`), with `{{.field}}`, `{{.expected}}`, and `{{.offset}}` available as template variables where applicable. The response `title` uses `http.bind_failed`.
+Decode failures translate the same way through `bind.<reason>` keys (`bind.syntax`, `bind.type_mismatch`, `bind.invalid_value`, `bind.empty_body`, `bind.trailing_data`, `bind.duplicate_field`, `bind.unknown_field`), with `{{.field}}`, `{{.expected}}`, and `{{.offset}}` available as template variables where applicable. The response `title` uses `http.bind_failed`.
 
 Example validation response:
 

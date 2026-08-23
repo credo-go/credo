@@ -465,3 +465,105 @@ func TestBindError_ErrorString(t *testing.T) {
 		t.Errorf("HTTPStatus() = %d, want 400", be.HTTPStatus())
 	}
 }
+
+// strictBindApp builds an app with strict bodies and a /bind route decoding
+// into a two-level struct, returning the recorder for body.
+func strictBindPost(t *testing.T, body string, opts ...credo.Option) *httptest.ResponseRecorder {
+	t.Helper()
+	app := mustNew(t, opts...)
+	app.POST("/bind", func(ctx *credo.Context) error {
+		var v struct {
+			Name    string `json:"name"`
+			Address struct {
+				Zip string `json:"zip"`
+			} `json:"address"`
+		}
+		if err := ctx.Request().BindBody(&v); err != nil {
+			return err
+		}
+		return ctx.Response().Text(200, v.Name)
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/bind", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	app.ServeHTTP(w, r)
+	return w
+}
+
+// TestBindBody_JSON_UnknownField_LenientDefault locks the default posture:
+// unknown members are ignored unless strict bodies is enabled.
+func TestBindBody_JSON_UnknownField_LenientDefault(t *testing.T) {
+	w := strictBindPost(t, `{"name":"alice","extra":1}`)
+	if w.Code != 200 || w.Body.String() != "alice" {
+		t.Fatalf("lenient default: status=%d body=%q, want 200 alice", w.Code, w.Body.String())
+	}
+}
+
+func TestBindBody_JSON_UnknownField_Strict(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantField string
+	}{
+		{"top-level", `{"name":"alice","extra":1}`, "extra"},
+		{"nested", `{"name":"alice","address":{"zipp":"1"}}`, "address.zipp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := strictBindPost(t, tt.body, credo.WithStrictBodies())
+			pr := assertBindReason(t, w, "unknown_field", tt.wantField)
+			if off, ok := pr.Errors[0].Params["offset"].(float64); !ok || off <= 0 {
+				t.Errorf("params.offset = %v, want > 0", pr.Errors[0].Params["offset"])
+			}
+		})
+	}
+}
+
+// TestBindBody_JSON_UnknownField_Precedence pins the interplay with the
+// other member-level checks: case-insensitive matching happens before the
+// unknown decision, and a duplicate of a known member is reported as
+// duplicate_field, not unknown_field.
+func TestBindBody_JSON_UnknownField_Precedence(t *testing.T) {
+	w := strictBindPost(t, `{"Name":"alice"}`, credo.WithStrictBodies())
+	if w.Code != 200 || w.Body.String() != "alice" {
+		t.Fatalf("case-variant known member: status=%d body=%q, want 200 alice", w.Code, w.Body.String())
+	}
+
+	w = strictBindPost(t, `{"name":"a","Name":"b"}`, credo.WithStrictBodies())
+	assertBindReason(t, w, "duplicate_field", "Name")
+}
+
+// TestBindBody_StrictBodies_OtherDecodersUnchanged verifies strict bodies
+// only affects JSON: XML and form decoders keep ignoring extra input.
+func TestBindBody_StrictBodies_OtherDecodersUnchanged(t *testing.T) {
+	tests := []struct {
+		name string
+		ct   string
+		body string
+	}{
+		{"xml", "application/xml", `<v><name>alice</name><extra>1</extra></v>`},
+		{"form", "application/x-www-form-urlencoded", `name=alice&extra=1`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t, credo.WithStrictBodies())
+			app.POST("/bind", func(ctx *credo.Context) error {
+				var v struct {
+					XMLName struct{} `xml:"v" json:"-" form:"-"`
+					Name    string   `xml:"name" form:"name"`
+				}
+				if err := ctx.Request().BindBody(&v); err != nil {
+					return err
+				}
+				return ctx.Response().Text(200, v.Name)
+			})
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/bind", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", tt.ct)
+			app.ServeHTTP(w, r)
+			if w.Code != 200 || w.Body.String() != "alice" {
+				t.Fatalf("status=%d body=%q, want 200 alice", w.Code, w.Body.String())
+			}
+		})
+	}
+}

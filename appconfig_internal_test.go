@@ -149,3 +149,30 @@ func TestNew_ReloadTimeout(t *testing.T) {
 		t.Error("negative WithReloadTimeout must be rejected by New")
 	}
 }
+
+// TestNew_StrictBodies covers the config key, the option, and option-over-config.
+func TestNew_StrictBodies(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  map[string]any
+		opts []Option
+		want bool
+	}{
+		{"default off", map[string]any{}, nil, false},
+		{"config key", map[string]any{"strict_bodies": true}, nil, true},
+		{"option", map[string]any{}, []Option{WithStrictBodies()}, true},
+		{"option wins over false key", map[string]any{"strict_bodies": false}, []Option{WithStrictBodies()}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := append([]Option{WithRawConfig(stubServerRC{fields: tt.cfg})}, tt.opts...)
+			app, err := New(opts...)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			if app.strictBodies != tt.want {
+				t.Errorf("strictBodies = %v, want %v", app.strictBodies, tt.want)
+			}
+		})
+	}
+}

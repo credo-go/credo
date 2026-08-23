@@ -325,7 +325,7 @@ Validation errors are automatically converted to RFC 7807 Problem Details with a
 }
 ```
 
-Decode failures get the same structured treatment before validation ever runs: a malformed body, a wrong-typed value, a duplicated JSON member, or trailing content after the JSON value returns a 400 response in the same `errors[]` shape, with a machine-readable reason code (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`). See the [Context Spec](../specs/context.md) for the decode error model.
+Decode failures get the same structured treatment before validation ever runs: a malformed body, a wrong-typed value, a duplicated JSON member, or trailing content after the JSON value returns a 400 response in the same `errors[]` shape, with a machine-readable reason code (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`). Unknown JSON members are ignored by default; when your clients ship together with the server, `credo.WithStrictBodies()` (or `server.strict_bodies: true`) turns a misspelled member into a 400 with reason `unknown_field` instead of silently dropping it. See the [Context Spec](../specs/context.md) for the decode error model.
 
 See [Validation Spec](../specs/validation.md) for the full rule catalog.
 

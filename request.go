@@ -255,7 +255,11 @@ func (r *Request) BindBody(target any) error {
 	switch mediaType {
 	case "application/json":
 		dec := jsontext.NewDecoder(r.Body)
-		if err := jsonv2.UnmarshalDecode(dec, target, jsonv2.MatchCaseInsensitiveNames(true)); err != nil {
+		opts := []jsonv2.Options{jsonv2.MatchCaseInsensitiveNames(true)}
+		if r.app != nil && r.app.strictBodies {
+			opts = append(opts, jsonv2.RejectUnknownMembers(true))
+		}
+		if err := jsonv2.UnmarshalDecode(dec, target, opts...); err != nil {
 			return jsonBindError(err)
 		}
 		// Enforce a single JSON value per body: after the first value only
@@ -317,6 +321,8 @@ func maxBytesHTTPError(err error) (*HTTPError, bool) {
 //
 //   - io.EOF (empty or whitespace-only body) → empty_body
 //   - jsontext.ErrDuplicateName → duplicate_field with the member's path
+//   - jsonv2.ErrUnknownName (strict bodies only) → unknown_field with the
+//     member's path
 //   - other *jsontext.SyntacticError → syntax with the byte offset
 //   - *jsonv2.SemanticError with a nil inner error (pure JSON-kind vs Go-type
 //     clash) → type_mismatch with the expected JSON type term
@@ -343,6 +349,16 @@ func jsonBindError(err error) error {
 	}
 	if se, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
 		return &BindError{Reason: BindReasonSyntax, Offset: se.ByteOffset, Internal: err}
+	}
+	// ErrUnknownName arrives wrapped in a *SemanticError with Err set, so it
+	// must be recognised before the generic invalid_value branch below.
+	if errors.Is(err, jsonv2.ErrUnknownName) {
+		be := &BindError{Reason: BindReasonUnknownField, Internal: err}
+		if sme, ok := errors.AsType[*jsonv2.SemanticError](err); ok {
+			be.Field = jsonPointerToFieldPath(string(sme.JSONPointer))
+			be.Offset = sme.ByteOffset
+		}
+		return be
 	}
 	if sme, ok := errors.AsType[*jsonv2.SemanticError](err); ok {
 		field := jsonPointerToFieldPath(string(sme.JSONPointer))

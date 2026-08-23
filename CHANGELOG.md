@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- Strict request bodies: `credo.WithStrictBodies()` and the `server.strict_bodies` config key make `Request.BindBody` reject JSON object members that map to no target field with a 400 `BindError` of reason `unknown_field` (new `BindReasonUnknownField`, i18n key `bind.unknown_field`). The default stays lenient (unknown members ignored); the switch is app-wide and affects JSON only. ADR-008 revised accordingly.
+
 ## [0.5.0] - 2026-08-23
 
 ### Added

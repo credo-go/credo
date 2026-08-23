@@ -100,7 +100,7 @@ Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, mult
 
 JSON bodies are decoded with `encoding/json/v2` under strict semantics: exactly one JSON value is accepted (trailing content rejected) and duplicate object members are rejected — including case-variant repeats, since member matching keeps v1's case-insensitive behavior via `MatchCaseInsensitiveNames` for client compatibility. Decode failures return a typed `*credo.BindError` (reason, field path, expected type, byte offset) that the error pipeline renders as a 400 RFC 7807 response mirroring the validation `errors[]` shape — parse errors are as structured as validation errors, completing the "parse, don't validate" contract. See the [Context spec](../specs/context.md) for the reason catalog.
 
-Rejecting *unknown* members was considered and rejected: "must-ignore unknown fields" is the de-facto API-evolution norm (new client → old server must not break), the Go ecosystem default is lenient, and a strict mode would have required a permanent configuration surface for a policy question. Credo's strictness targets ambiguity (duplicates, trailing data) — payloads where two parsers could legitimately disagree — not extensibility.
+Unknown members are **ignored by default** and **rejected under an app-wide opt-in** (`credo.WithStrictBodies()` / `server.strict_bodies`, reason `unknown_field`). The lenient default stands because "must-ignore unknown fields" is the API-evolution norm for public and versioned APIs: clients deployed independently of the server must keep working when the server learns new fields, and the Go ecosystem default is lenient. The opt-in exists for the equally common shape where client and server ship together (one repository, one deploy): there an unknown member is almost always a misspelling or a stale client, and silently dropping it hides the bug until data goes missing. Strict mode is a single posture per application rather than a per-call `BindBody` option — mixed posture within one service makes the contract hard to reason about, and `BindQuery`/form binding have no equivalent switch, so a per-call knob would apply to JSON only. A Route-Meta override is deferred until a concrete need for mixed posture appears. Credo's always-on strictness still targets ambiguity (duplicates, trailing data) — payloads where two parsers could legitimately disagree; strict-unknown is a policy choice and therefore configurable, with the default favouring compatibility. Flipping the default at v1 is not planned.
 
 ### Proxy-Derived Client Metadata
 
@@ -138,6 +138,7 @@ Context instances are pooled for zero-allocation request handling. `reset()` cle
 | Separate `context/` package | stdlib name collision |
 | `FormValue()` on Context | Bypasses "parse, don't validate" — raw access encourages skipping validation |
 | `SetRequest()` on Context | Breaks pool invariants, encourages unsafe patterns |
+| Per-call `BindBody(target, opts...)` strict switch | Mixed posture inside one service; JSON-only knob with no `BindQuery`/form counterpart — strict bodies is app-wide (`WithStrictBodies`) |
 
 ## Consequences
 

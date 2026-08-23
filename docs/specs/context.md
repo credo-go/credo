@@ -234,6 +234,7 @@ JSON bodies are decoded with `encoding/json/v2` under strict semantics:
 - **Exactly one JSON value per request** — after the first value decodes, only whitespace may remain in the body. A second JSON document or trailing garbage fails the bind with reason `trailing_data`.
 - **Object members must be unique** — a repeated member fails the bind with reason `duplicate_field`. Because member matching is case-insensitive (see below), a case-variant repeat (`{"name":…,"Name":…}`) is also rejected.
 - **Member matching stays case-insensitive** — v1-compatible matching is preserved via `MatchCaseInsensitiveNames`, so existing clients sending `{"Name":…}` for a `name`-tagged field keep working (v2's case-sensitive default would silently leave the field empty).
+- **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input. Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a *known* member is reported as `duplicate_field`, while a repeated *unknown* member fails as `unknown_field` on its first occurrence.
 
 Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
 
@@ -249,6 +250,7 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 | `empty_body`      | request body absent or empty                                                                                    |
 | `trailing_data`   | content after the first JSON value                                                                              |
 | `duplicate_field` | JSON object member appears more than once (including case-variant repeats)                                      |
+| `unknown_field`   | JSON object member maps to no target field — strict bodies only (`WithStrictBodies` / `server.strict_bodies`)   |
 
 ```json
 {
