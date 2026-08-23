@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-24
+
 ### Changed
 
 - **Breaking:** `credo.ErrorRenderer` is now shape-only: `func(ctx *Context, info ErrorInfo) any`. The renderer returns the response body instead of writing it — a non-nil value is encoded with the application's JSON profile and written with `info.Problem.Status` (mutate it before returning to change the status); nil keeps the default RFC 7807 body, which turns headers-only and side-effect-only renderers (Sentry, `Retry-After`) into a plain `return nil`. Classification, logging, Content-Type, HEAD handling, and committed-response guards stay framework-owned; a renderer that commits the response itself keeps full control, and its return value is ignored. The previous warn-and-fallback path for a renderer that wrote nothing is gone — nil is the documented signal now. Migration: add `any` to the signature, replace the final write with `return body` (or `return nil` after a self-commit). See [ADR-009](docs/adr/009-handler-and-error-handling.md).
@@ -21,6 +23,11 @@ The `v0.1.0` section records the initial public development baseline; it was not
 ### Documentation
 
 - The response-envelope story is now actually documented: the error-handling guide gained a "Response Envelopes" section pairing `ErrorRenderer` with the long-shipped but under-documented `SuccessRenderer`/`Context.Render` seam, the context spec documents `Render`, and ADR-009 records the shape-only renderer contract.
+- Where the error pipeline begins is documented: 404/405, bind failures, 413, and panics all render as RFC 7807 through `ErrorRenderer`, while `net/http`'s pre-routing rejections (431, malformed-request 400, unsupported-transfer-encoding 501) are plain text written straight to the connection — see the error-handling guide's "What the Pipeline Does Not Cover".
+
+### Fixed
+
+- `examples/saas` failed at startup with a config-key mismatch; it is repaired, each example settles on a single config format (hello = JSON, saas = YAML), and `examples/hello` no longer reports a graceful shutdown as exit 1. CI now runs every example end to end — startup, a live request, and a clean SIGTERM — instead of only compiling it.
 
 ## [0.8.0] - 2026-08-23
 
@@ -336,7 +343,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/credo-go/credo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/credo-go/credo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/credo-go/credo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/credo-go/credo/compare/v0.5.0...v0.6.0
