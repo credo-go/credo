@@ -1,54 +1,15 @@
 package credo_test
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/credo-go/credo"
 )
-
-// syncBuffer captures log output written from connection goroutines while the
-// test polls it. net/http logs its diagnostics off the request path, so a
-// plain bytes.Buffer would be a data race.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// waitFor polls the captured logs until substr appears, returning the full
-// snapshot. net/http emits these records after the client observes the
-// response, so a poll is more reliable than a single read.
-func (b *syncBuffer) waitFor(t *testing.T, substr string) string {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if s := b.String(); strings.Contains(s, substr) {
-			return s
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("log containing %q not captured within 5s; got:\n%s", substr, b.String())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
 
 // newLoggingApp builds (but does not start) an app bound to a free port with
 // its logger captured by logs. Routes must be registered before [startApp],

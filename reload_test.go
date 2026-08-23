@@ -1,7 +1,6 @@
 package credo_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -20,7 +19,7 @@ import (
 type reloadFixture struct {
 	app  *credo.App
 	path string
-	logs *bytes.Buffer
+	logs *syncBuffer
 	errC chan error
 }
 
@@ -35,7 +34,7 @@ func newReloadFixture(t *testing.T, content string, opts ...credo.Option) *reloa
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	host, port, _ := freePort(t)
 	all := append([]credo.Option{

@@ -1,6 +1,7 @@
 package credo_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,45 @@ import (
 
 	"github.com/credo-go/credo"
 )
+
+// syncBuffer captures log output that a running server may write from
+// connection goroutines while the test reads it. net/http reports its own
+// diagnostics (TLS handshake failures, accept errors) off the request path
+// through the bridged ErrorLog, so any buffer shared with a running App must
+// be mutex-guarded.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor polls the captured logs until substr appears, returning the full
+// snapshot. Records emitted off the request path can land after the client
+// observes its response, so a poll is more reliable than a single read.
+func (b *syncBuffer) waitFor(t *testing.T, substr string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if s := b.String(); strings.Contains(s, substr) {
+			return s
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log containing %q not captured within 5s; got:\n%s", substr, b.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // freePort finds a free TCP port and returns host, port, and the combined addr.
 func freePort(t *testing.T) (string, int, string) {
