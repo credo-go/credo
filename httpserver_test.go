@@ -28,8 +28,8 @@ func rawRequest(t *testing.T, addr, req string) string {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := conn.Write([]byte(req)); err != nil {
-		t.Fatalf("write: %v", err)
+	if _, werr := conn.Write([]byte(req)); werr != nil {
+		t.Fatalf("write: %v", werr)
 	}
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
