@@ -271,7 +271,7 @@ func extractSQLiteCode(err error) (int, bool) {
 	if codeError, ok := errors.AsType[sqliteCodeError](err); ok && !isNilDynamicValue(codeError) {
 		return codeError.Code(), true
 	}
-	return extractMattnSQLiteCode(err)
+	return extractDriverSQLiteCode(err)
 }
 
 func isNilDynamicValue(value any) bool {
@@ -287,11 +287,17 @@ func isNilDynamicValue(value any) bool {
 	}
 }
 
-func extractMattnSQLiteCode(err error) (int, bool) {
+// extractDriverSQLiteCode recognizes SQLite driver errors that do not satisfy
+// sqliteCodeError: mattn/go-sqlite3 exposes plain Code/ExtendedCode fields,
+// while ncruces/go-sqlite3 returns typed codes (Code() ErrorCode,
+// ExtendedCode() ExtendedErrorCode). Both are matched by package path via
+// reflection so neither driver becomes a dependency.
+func extractDriverSQLiteCode(err error) (int, bool) {
 	if err == nil {
 		return 0, false
 	}
-	value := reflect.ValueOf(err)
+	pointer := reflect.ValueOf(err)
+	value := pointer
 	typeOfError := value.Type()
 	if typeOfError.Kind() == reflect.Pointer {
 		if value.IsNil() {
@@ -300,20 +306,24 @@ func extractMattnSQLiteCode(err error) (int, bool) {
 		value = value.Elem()
 		typeOfError = typeOfError.Elem()
 	}
-	if typeOfError.PkgPath() == "github.com/mattn/go-sqlite3" &&
-		typeOfError.Name() == "Error" {
-		return extractSQLiteCodeFields(value)
+	if typeOfError.Name() == "Error" {
+		switch typeOfError.PkgPath() {
+		case "github.com/mattn/go-sqlite3":
+			return extractSQLiteCodeFields(value)
+		case "github.com/ncruces/go-sqlite3":
+			return extractSQLiteCodeMethods(pointer)
+		}
 	}
 
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, child := range joined.Unwrap() {
-			if code, found := extractMattnSQLiteCode(child); found {
+			if code, found := extractDriverSQLiteCode(child); found {
 				return code, true
 			}
 		}
 		return 0, false
 	}
-	return extractMattnSQLiteCode(errors.Unwrap(err))
+	return extractDriverSQLiteCode(errors.Unwrap(err))
 }
 
 func extractSQLiteCodeFields(value reflect.Value) (int, bool) {
@@ -327,6 +337,37 @@ func extractSQLiteCodeFields(value reflect.Value) (int, bool) {
 			if code != 0 {
 				return code, true
 			}
+		}
+	}
+	return 0, false
+}
+
+// extractSQLiteCodeMethods reads nullary ExtendedCode/Code methods whose
+// result is any integer kind, covering drivers whose codes are named integer
+// types rather than int. ExtendedCode is preferred because it carries the
+// specific constraint variant.
+func extractSQLiteCodeMethods(value reflect.Value) (int, bool) {
+	for _, methodName := range []string{"ExtendedCode", "Code"} {
+		method := value.MethodByName(methodName)
+		if !method.IsValid() {
+			continue
+		}
+		methodType := method.Type()
+		if methodType.NumIn() != 0 || methodType.NumOut() != 1 {
+			continue
+		}
+		result := method.Call(nil)[0]
+		var code int
+		switch {
+		case result.CanInt():
+			code = int(result.Int())
+		case result.CanUint():
+			code = int(result.Uint())
+		default:
+			continue
+		}
+		if code != 0 {
+			return code, true
 		}
 	}
 	return 0, false
