@@ -48,7 +48,7 @@
 - [x] Define `Context` struct with core methods ([ADR-008](docs/adr/008-context-design.md))
   - [x] Response helpers: `JSON()`, `XML()`, `HTML()`, `Text()`, `Blob()`, `Stream()` (on `Response`)
   - [x] `BindBody()` — JSON decoder + auto-validate ("parse, don't validate")
-  - [x] Strict JSON bodies + typed decode errors: `encoding/json/v2` decoding with exactly one JSON value per body (trailing data rejected), duplicate object members rejected (incl. case-variant repeats; member matching stays v1 case-insensitive), decode failures return `*BindError` with machine-readable reasons (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`) rendered as RFC 7807 `errors[]` (code = reason, i18n via `bind.<reason>`); unknown-field rejection considered and rejected (must-ignore API evolution norm; strictness stays about ambiguity, not extensibility)
+  - [x] Strict JSON bodies + typed decode errors: `encoding/json/v2` decoding with exactly one JSON value per body (trailing data rejected), duplicate object members rejected (incl. case-variant repeats; member matching stays v1 case-insensitive), decode failures return `*BindError` with machine-readable reasons (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`) rendered as RFC 7807 `errors[]` (code = reason, i18n via `bind.<reason>`); unknown members ignored by default, rejected under the app-wide opt-in `WithStrictBodies()` / `server.strict_bodies` (reason `unknown_field`, v0.6.0; the must-ignore default stays for independently deployed clients, ADR-008 revised)
   - [x] `BindQuery()` — stub returning 501 (see Phase 2.5)
   - [x] `RouteParams()`, `QueryParam()` (no `FormValue()` — see [ADR-008](docs/adr/008-context-design.md)); `RouteParam(name)` single-value shortcut avoids retaining the framework-owned params map
   - [x] `Request()`, `Response()`, `Set()`, `Get()`
@@ -616,6 +616,27 @@ should an SSE response API and disconnect/drain contract be designed.
 ---
 
 ## Cross-Cutting Concerns
+
+### v1 Gate
+
+> v1.0.0 is cut when every box below is checked — never because a minor number got "high". Pre-1.0 minors are unbounded (`v0.10`, `v0.15`, …); each one is a consumer-facing theme, and a wire or behavioral change always gets its own minor. Items listed as **post-v1** are additive packages that do not block the tag and ship as `v1.x` minors.
+
+**Must land before v1** (each touches a surface that v1 freezes):
+
+- [ ] **Phase 3.5 observability** — metrics/tracing fields on `credo.Infra` designed against real OTel/Prometheus adapters. `Infra` is a constructor-boundary struct; adding fields after v1 is a break for every constructor that pattern-matches it.
+- [ ] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, ADR-021) — the response wire format must be the one v1 promises.
+- [ ] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`) — closes the class "stdlib added a field, Credo needs a release" permanently.
+- [ ] **Typed endpoint / operation model decision** ([open-questions §2](docs/open-questions.md)) — resolved either way (adopt or reject with ADR); it shapes the `Handler` signature and OpenAPI (4.5), both frozen by v1.
+- [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.
+- [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
+  - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
+  - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
+  - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
+- [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
+- [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
+- [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.
+
+**Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — blocked on the typed-endpoint decision, but the decision, not the generator, is the v1 item), admin server (4.9), controller registration (4.10), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
 
 ### Architecture Governance
 
