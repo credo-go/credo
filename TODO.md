@@ -624,7 +624,7 @@ should an SSE response API and disconnect/drain contract be designed.
 **Must land before v1** (each touches a surface that v1 freezes):
 
 - [ ] **Phase 3.5 observability** — metrics/tracing fields on `credo.Infra` designed against real OTel/Prometheus adapters. `Infra` is a constructor-boundary struct; adding fields after v1 is a break for every constructor that pattern-matches it.
-- [ ] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, ADR-021) — the response wire format must be the one v1 promises.
+- [x] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [ ] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`) — closes the class "stdlib added a field, Credo needs a release" permanently.
 - [ ] **Typed endpoint / operation model decision** ([open-questions §2](docs/open-questions.md)) — resolved either way (adopt or reject with ADR); it shapes the `Handler` signature and OpenAPI (4.5), both frozen by v1.
 - [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.

@@ -1,6 +1,6 @@
 # Context Spec
 
-**Status**: Approved **Package**: Root (`github.com/credo-go/credo`) **Sources**: Echo (MIT) **Depends on**: `internal/radix/` **ADRs**: [011-validation-strategy](../adr/011-validation-strategy.md), [008-context-design](../adr/008-context-design.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md)
+**Status**: Approved **Package**: Root (`github.com/credo-go/credo`) **Sources**: Echo (MIT) **Depends on**: `internal/radix/` **ADRs**: [011-validation-strategy](../adr/011-validation-strategy.md), [008-context-design](../adr/008-context-design.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md), [021-json-output-profile](../adr/021-json-output-profile.md)
 
 ---
 
@@ -105,6 +105,29 @@ func (r *Response) Blob(code int, contentType string, b []byte) error
 func (r *Response) Stream(code int, contentType string, rd io.Reader) error
 func (r *Response) SetCookie(cookie *http.Cookie)
 ```
+
+#### JSON output profile
+
+`Response.JSON` encodes with `encoding/json/v2` under an application-level profile ([ADR-021](../adr/021-json-output-profile.md)). Two axes are set by the framework; the rest are json/v2's defaults, which differ from `encoding/json` v1 on the wire:
+
+| Axis | Credo output | v1 behavior | Why |
+| --- | --- | --- | --- |
+| Map key order | sorted (`Deterministic`) | sorted | Byte-stable responses, golden files, and diffs |
+| `time.Duration` | integer nanoseconds | integer nanoseconds | json/v2 has no default representation and Go 1.27 has no `format:` tag; also what `BindBody` decodes |
+| nil slice / nil map | `[]` / `{}` | `null` | Clients iterate without a null guard |
+| `omitempty` | drops JSON-empty (`""`, `null`, `[]`, `{}`) | drops Go zero values | Matches what the tag says; use `omitzero` for the v1 meaning |
+| `<` `>` `&` | literal | escaped (`\u003c`) | Responses are `application/json`; browsers do not sniff them |
+| Trailing newline | none | `\n` | An artefact of v1's streaming `Encoder`, not part of the value |
+
+Override any axis for the whole application with `credo.WithJSONOptions(...)`; options are applied after the framework profile, so each one wins on its axis:
+
+```go
+credo.WithJSONOptions(jsonv2.FormatNilSliceAsNull(true))  // null for nil slices
+credo.WithJSONOptions(jsontext.EscapeForHTML(true))       // escape < > &
+credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
+```
+
+There is no per-call variant: one posture per application. `Context.Render` inherits the profile through its `Response.JSON` fallback; once a `SuccessRenderer` is installed it owns the response bytes. RFC 7807 Problem Details always sort map keys, even when the application disables `Deterministic` — error bodies are a framework contract.
 
 ---
 

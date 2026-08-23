@@ -14,8 +14,13 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- `credo.WithJSONOptions(opts ...jsonv2.Options)`: overrides Credo's JSON response encoding profile per axis (for example `jsonv2.FormatNilSliceAsNull(true)`, `jsontext.EscapeForHTML(true)`, or `jsonv1.DefaultOptionsV1()` for full legacy output). Construction-time only; see [ADR-021](docs/adr/021-json-output-profile.md).
+
 ### Changed
 
+- **Response encoding moved to `encoding/json/v2`** ([ADR-021](docs/adr/021-json-output-profile.md)). `Response.JSON` (and therefore `Context.Render`'s fallback) plus both RFC 7807 Problem Details writers now encode with a documented profile: sorted map keys and nanosecond `time.Duration`s as before, and four visible wire changes — nil slices and maps render as `[]` and `{}` instead of `null`, `omitempty` drops JSON-empty values rather than Go zero values (numbers and bools are no longer omitted; use `omitzero` for the old meaning), `<`, `>`, and `&` are no longer escaped, and no trailing newline is written. Each axis is opt-out through `WithJSONOptions`. Problem Details always sort map keys regardless of the application profile.
 - `net/http` server diagnostics — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls — now go through the application logger at `ERROR` with `component=net/http` instead of the standard `log` package's stderr output. The stdlib message text is unchanged. Header-limit rejections (`431`) are written directly to the connection by `net/http` and are still not logged.
 
 ## [0.6.0] - 2026-08-23

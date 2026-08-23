@@ -6,7 +6,7 @@ package credo
 
 import (
 	"bufio"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -40,6 +40,10 @@ type Response struct {
 
 	// hijacked is true only after the effective underlying Hijack call succeeds.
 	hijacked bool
+
+	// app supplies the JSON encoding profile. Nil for a Response built with
+	// NewResponse, which then uses the framework default profile.
+	app *App
 }
 
 // NewResponse creates a new Response wrapping the given http.ResponseWriter.
@@ -151,11 +155,14 @@ func (r *Response) String() string {
 
 // --- Response helpers (moved from context.go) ---
 
-// JSON sends a JSON response with the given status code.
+// JSON sends a JSON response with the given status code, encoded with the
+// application's JSON profile (see [WithJSONOptions]): deterministic map
+// ordering, nanosecond durations, v2 defaults for everything else — nil
+// slices and maps as [] and {}, no HTML escaping, no trailing newline.
 func (r *Response) JSON(code int, v any) error {
 	r.Header().Set("Content-Type", "application/json; charset=utf-8")
 	r.WriteHeader(code)
-	return json.NewEncoder(r).Encode(v)
+	return jsonv2.MarshalWrite(r, v, r.app.jsonOptions())
 }
 
 // Render sends a successful response through the app's [SuccessRenderer] when
