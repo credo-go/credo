@@ -318,3 +318,62 @@ func TestContractGuard_Skipper(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 }
+
+// TestContractGuard_RequireContentType covers the body-present signal for the
+// RequireContentType switch: Content-Length > 0 or unknown (-1, chunked /
+// HTTP/2) means "has body"; 0 or no body passes; a present-but-empty header
+// counts as absent; the switch only arms a declared MetaAccept contract.
+func TestContractGuard_RequireContentType(t *testing.T) {
+	type tc struct {
+		name    string
+		require bool
+		method  string
+		body    io.Reader
+		chunked bool
+		header  *string // nil = no header; "" = present but empty
+		accept  bool    // route declares MetaAccept
+		want    int
+	}
+	empty := ""
+	tests := []tc{
+		{"POST body no header", true, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusUnsupportedMediaType},
+		{"POST NoBody no header", true, http.MethodPost, http.NoBody, false, nil, true, http.StatusOK},
+		{"GET no header", true, http.MethodGet, nil, false, nil, true, http.StatusOK},
+		{"chunked POST no header", true, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusUnsupportedMediaType},
+		{"POST body empty header", true, http.MethodPost, strings.NewReader("{}"), false, &empty, true, http.StatusUnsupportedMediaType},
+		{"no MetaAccept contract", true, http.MethodPost, strings.NewReader("{}"), false, nil, false, http.StatusOK},
+		{"default off: POST body no header", false, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusOK},
+		{"default off: chunked no header", false, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := middleware.DefaultContractConfig()
+			cfg.RequireContentType = tt.require
+			app, g := contractGroup(t, cfg)
+			var route *credo.Route
+			if tt.method == http.MethodGet {
+				route = g.GET("/x", contractOK)
+			} else {
+				route = g.POST("/x", contractOK)
+			}
+			if tt.accept {
+				route.SetMeta(middleware.MetaAccept, "application/json")
+			}
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(tt.method, "/g/x", tt.body)
+			if tt.chunked {
+				r.ContentLength = -1
+				r.TransferEncoding = []string{"chunked"}
+			}
+			if tt.header != nil {
+				r.Header.Set("Content-Type", *tt.header)
+			}
+			app.ServeHTTP(w, r)
+
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.want, w.Body.String())
+			}
+		})
+	}
+}

@@ -540,6 +540,8 @@ should an SSE response API and disconnect/drain contract be designed.
 - [x] Define standard meta key constants in `middleware/` (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`)
 - [x] `middleware.ContractGuard()` — single meta-driven middleware that reads meta and enforces:
   - [x] `Accept` → Content-Type check (wildcards, param-insensitive) → 415 Unsupported Media Type
+  - [x] `ContractConfig.RequireContentType` — missing/empty Content-Type on a body-carrying request → 415 (default off)
+    - [ ] v1: flip `RequireContentType` default to true (breaking; announce one minor ahead)
   - [x] `MaxBody` → eager Content-Length + `http.MaxBytesReader` wrap → 413 Payload Too Large
   - [x] `RequireHeaders` → header existence check → 400 Bad Request
   - [x] `RequireQuery` → query param existence check → 400 Bad Request

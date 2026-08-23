@@ -767,7 +767,7 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // auth = false (override
 
 | Meta key | Value type | Enforced as |
 | --- | --- | --- |
-| `middleware.MetaAccept` | `string` / `[]string` | Content-Type allow-list -> 415 |
+| `middleware.MetaAccept` | `string` / `[]string` | Content-Type allow-list -> 415 (missing header passes unless `RequireContentType`) |
 | `middleware.MetaMaxBody` | `int` / `int64` | body byte cap (`MaxBytesReader`) -> 413 |
 | `middleware.MetaRequireHeaders` | `string` / `[]string` | required headers -> 400 |
 | `middleware.MetaRequireQuery` | `string` / `[]string` | required query params -> 400 |
@@ -785,6 +785,14 @@ api.POST("/users", createUser).
 ```
 
 Register ContractGuard at the **group or route level**, not via `app.GlobalMiddleware`. It reads matched-route metadata, and a route is only matched _after_ app-global middleware runs — group and route middleware run after the match, so the route (and its inherited group meta) is available there. Applied globally it degrades to a safe no-op rather than an error.
+
+By default a request with **no** `Content-Type` header passes the `MetaAccept` contract — there may be nothing to police. For a JSON API where every body must be labelled, set `ContractConfig.RequireContentType: true`: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected, so the switch arms a declared contract rather than adding a new one:
+
+```go
+api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
+    RequireContentType: true, // JSON API: every body must say what it is
+}))
+```
 
 `MetaMaxBody` complements the global body limit (`WithMaxBodyBytes`) as defense in depth: the global cap protects every route, while the per-route contract can tighten (or, with a negative value, lift) it for a specific endpoint.
 

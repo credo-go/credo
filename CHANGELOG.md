@@ -16,6 +16,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ### Added
 
+- `middleware.ContractConfig.RequireContentType`: when set, a request that carries a body (positive or unknown `Content-Length`) but no or an empty `Content-Type` header fails a route's `MetaAccept` contract with 415 instead of passing. Default off; bodiless requests and routes without `MetaAccept` are unaffected. Flipping the default is a v1 item.
 - Strict request bodies: `credo.WithStrictBodies()` and the `server.strict_bodies` config key make `Request.BindBody` reject JSON object members that map to no target field with a 400 `BindError` of reason `unknown_field` (new `BindReasonUnknownField`, i18n key `bind.unknown_field`). The default stays lenient (unknown members ignored); the switch is app-wide and affects JSON only. ADR-008 revised accordingly.
 
 ## [0.5.0] - 2026-08-23
