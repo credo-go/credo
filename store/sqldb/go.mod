@@ -3,7 +3,7 @@ module github.com/credo-go/credo/store/sqldb
 go 1.27
 
 require (
-	github.com/credo-go/credo v0.9.0
+	github.com/credo-go/credo v0.10.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/uptrace/bun v1.2.18

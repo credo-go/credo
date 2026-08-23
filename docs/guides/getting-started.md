@@ -363,7 +363,7 @@ return credo.ErrForbidden       // 403
 return credo.ErrBadRequest      // 400
 ```
 
-Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`). Custom keys are supported: `credo.NewHTTPError(404, "user.not_found")`. When i18n is configured, MessageKey is used as the translation key.
+Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`). Custom keys are supported: `credo.NewHTTPError(404, "user.not_found")`. When i18n is configured, MessageKey is used as the translation key. Dotted keys also yield the machine-readable `code` extension member automatically (`"user.not_found"` → `"code": "not_found"`); `WithCode`/`WithDetails` set it and structured `details` explicitly — see the [error-handling guide](error-handling.md).
 
 Internal errors (5xx) are logged but never leaked to the client.
 
@@ -373,10 +373,12 @@ You can replace the error renderer to customize the response body — it returns
 app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
     // info.MessageKey — i18n key (for telemetry, client-side i18n)
-    // info.Problem — classified *ProblemDetails (status, title, errors)
+    // info.Problem — classified *ProblemDetails (status, title, code, details, errors)
     return myFormat(info)
 })
 ```
+
+Its success-side mirror is `SetSuccessRenderer` + `ctx.Render(status, data)` — the opt-in response-envelope pair; the error-handling guide's "Response Envelopes" section shows both together.
 
 ---
 
