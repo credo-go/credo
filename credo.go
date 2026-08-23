@@ -491,12 +491,16 @@ func (app *App) SetErrorRenderer(r ErrorRenderer) {
 	app.errorRenderer = r
 }
 
-// SetSuccessRenderer sets the renderer that formats successful responses sent
+// SetSuccessRenderer sets the renderer that shapes successful responses sent
 // through [Context.Render]. It is opt-in: with no renderer installed, Render
 // falls back to plain JSON and the framework imposes no response envelope. The
-// raw [Response] helpers ([Response.JSON] and friends) are never routed through
-// it, so an enterprise envelope ({code,message,data}, HAL, JSON:API, …) applies
-// only where handlers opt in via Render. Passing nil restores the default.
+// renderer receives a [RenderInfo] (status, data, and any [RenderOption] side
+// channels) and returns the body to encode — nil writes the data plain; the
+// framework owns the write, mirroring [App.SetErrorRenderer]'s shape-only
+// contract. The raw [Response] helpers ([Response.JSON] and friends) are never
+// routed through it, so an enterprise envelope ({code,message,data}, HAL,
+// JSON:API, …) applies only where handlers opt in via Render. Passing nil
+// restores the default.
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetSuccessRenderer(r SuccessRenderer) {

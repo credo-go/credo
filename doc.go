@@ -41,7 +41,7 @@
 //     middleware added to a group after its routes still applies to them.
 //   - Route: fluent API with Name(), SetMeta(), Middleware()
 //   - ErrorRenderer: shapes error response bodies via App.SetErrorRenderer — returns the body (nil = default RFC 7807); classification, logging, status, and writing handled by framework
-//   - SuccessRenderer: opt-in uniform success envelope via App.SetSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped)
+//   - SuccessRenderer: opt-in uniform success envelope via App.SetSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped) — shape-only like ErrorRenderer: returns the body for a RenderInfo, the framework writes it
 //
 // # API Naming
 //

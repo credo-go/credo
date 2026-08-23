@@ -263,23 +263,29 @@ app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
 
 ## Response Envelopes
 
-`ErrorRenderer` is one half of a pair. Its success-side mirror is `SuccessRenderer`, installed with `app.SetSuccessRenderer` and consulted by exactly one call site: `ctx.Render(status, data)`. Installing both gives every response the application produces — success and failure, including the 404/405/panic/bind responses no handler produced — one envelope, while no handler ever constructs it:
+`ErrorRenderer` is one half of a pair. Its success-side mirror is `SuccessRenderer`, installed with `app.SetSuccessRenderer` and consulted by exactly one call site: `ctx.Render(status, data, opts...)`. Both follow the same shape-only contract — the renderer returns the body, the framework owns the write (status, JSON profile, bodiless-status rule) — so installing both gives every response the application produces — success and failure, including the 404/405/panic/bind responses no handler produced — one envelope, while no handler ever constructs it:
 
 ```go
 // The application's own envelope types. Credo ships no envelope shape;
 // both renderers are opt-in and nil by default.
 type Envelope[T any] struct {
     Data      T      `json:"data"`
+    Message   string `json:"message,omitempty"`
+    Meta      any    `json:"meta,omitempty"`
     RequestID string `json:"request_id,omitempty"`
 }
 
-app.SetSuccessRenderer(func(c *credo.Context, status int, data any) error {
-    return c.Response().JSON(status, Envelope[any]{Data: data, RequestID: c.RequestID()})
+app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+    msg := ""
+    if info.MessageKey != "" {
+        msg = c.T(info.MessageKey)
+    }
+    return Envelope[any]{Data: info.Data, Message: msg, Meta: info.Meta, RequestID: c.RequestID()}
 })
 
 app.SetErrorRenderer(func(c *credo.Context, info credo.ErrorInfo) any {
     return map[string]any{
-        "error":      map[string]any{"code": info.MessageKey, "message": info.Problem.Title, "fields": info.Problem.Errors},
+        "error":      map[string]any{"code": info.Problem.Code, "message": info.Problem.Title, "fields": info.Problem.Errors},
         "request_id": c.RequestID(),
     }
 })
@@ -291,11 +297,18 @@ app.GET("/users/{id}", func(c *credo.Context) error {
     }
     return c.Render(http.StatusOK, u)     // success envelope, applied by Render
 })
+
+app.POST("/users", func(c *credo.Context) error {
+    // ... create u ...
+    return c.Render(http.StatusCreated, u, credo.RenderMessageKey("user.created"))
+})
 ```
+
+`RenderInfo` carries the two side channels every envelope eventually needs — an optional message key (`credo.RenderMessageKey`, resolved by the renderer via `ctx.T`) and structured metadata such as pagination (`credo.RenderMeta`). With no renderer installed both are silently dropped: the side channels exist only for an envelope to consume.
 
 The seam is deliberately narrow on the success side: only `Render` consults the `SuccessRenderer`. The raw `Response` helpers — `JSON`, `XML`, `Text`, `Blob`, the streaming writers — are never intercepted, so handlers serving webhooks, health probes, or third-party-dictated shapes bypass the envelope by calling them directly. With no `SuccessRenderer` installed, `Render` falls back to plain `Response.JSON` and imposes nothing, so `Render` is safe to use as the default success verb from day one and the envelope becomes a one-line decision later.
 
-Note the signature asymmetry: a `SuccessRenderer` owns the write (it decides status, encoding, everything — its error return flows into the error pipeline like any handler error), while an `ErrorRenderer` only returns a shape. The error side runs inside the framework's pipeline, which must keep classification, logging, status, and HEAD semantics correct regardless of what the renderer does; the success side is ordinary handler code where full control is harmless.
+The contracts mirror each other precisely: a nil return from the `SuccessRenderer` writes `info.Data` plain (selective enveloping), just as a nil from the `ErrorRenderer` keeps the default RFC 7807 body; a renderer that commits the response itself keeps full control and its return value is ignored; and a `SuccessRenderer` panic is caught by the same built-in recovery layer as any handler panic.
 
 ---
 
