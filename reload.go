@@ -48,7 +48,10 @@ type reloadParticipant struct {
 	// prefixes are the config key prefixes this participant owns; changes under
 	// them are not reported as restart-required.
 	prefixes []string
-	run      func(ctx context.Context, changes config.Changes) error
+	// active, when set, reports whether the participant currently owns its
+	// prefixes; an inactive participant's prefixes are not treated as covered.
+	active func() bool
+	run    func(ctx context.Context, changes config.Changes) error
 }
 
 // covers reports whether key equals prefix or lies under it, segment-wise.
@@ -299,6 +302,9 @@ func (r *reloadState) uncovered(changes config.Changes) []string {
 		}
 		if !covered {
 			for _, p := range r.participants {
+				if p.active != nil && !p.active() {
+					continue
+				}
 				for _, prefix := range p.prefixes {
 					if covers(prefix, key) {
 						covered = true
