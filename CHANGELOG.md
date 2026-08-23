@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-23
+
 ### Added
 
 - `credo.WithHTTPServer(fn func(*http.Server))`: a callback that receives the `*http.Server` the framework built, keeping the whole `net/http` surface reachable — `Protocols` (including H2C), `HTTP2`, `ConnState`, `BaseContext`, `ConnContext`, `DisableClientPriority` — without an option per stdlib field. It runs after every framework-set field, so it wins on all of them, config keys included; `Handler`, `Addr`, and `TLSConfig` are re-imposed afterwards (TLS is configured through `WithTLSFiles`/`WithTLSConfig`, never here). The `WithHTTPRedirect` listener is excluded, and everything set in the callback is restart-only. See [ADR-006](docs/adr/006-application-lifecycle.md).
@@ -326,7 +328,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/credo-go/credo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/credo-go/credo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/credo-go/credo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/credo-go/credo/compare/v0.4.1...v0.5.0
