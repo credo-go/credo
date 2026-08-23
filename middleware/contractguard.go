@@ -29,7 +29,9 @@ import (
 const (
 	// MetaAccept restricts the request Content-Type to the listed media types.
 	// Values may use a "type/*" or "*/*" wildcard. Requests without a
-	// Content-Type header pass (there is no body to police).
+	// Content-Type header (or with an empty one) pass by default; set
+	// ContractConfig.RequireContentType to reject them with 415 when the
+	// request carries a body.
 	MetaAccept = "accept"
 
 	// MetaMaxBody caps the request body size in bytes for the route. It is
@@ -75,6 +77,14 @@ type ContractConfig struct {
 	// APIVersionHeader is the request header inspected for the MetaAPIVersion
 	// contract. Defaults to "X-API-Version".
 	APIVersionHeader string
+
+	// RequireContentType arms the MetaAccept contract against requests that
+	// carry a body but no (or an empty) Content-Type header: such requests
+	// are rejected with 415 instead of passing. A body is assumed when
+	// Content-Length is positive or unknown (chunked, HTTP/2 streams);
+	// requests with Content-Length 0 and bodiless requests pass, and routes
+	// without a MetaAccept contract are unaffected. Default false.
+	RequireContentType bool
 
 	// CustomChecks run after all built-in contracts have passed, in order.
 	// A check returns a non-nil error (typically a *credo.HTTPError) to reject
@@ -122,7 +132,7 @@ func ContractGuard(cfg ...ContractConfig) credo.Middleware {
 			route := ctx.Route()
 
 			if v, ok := route.LookupMeta(MetaAccept); ok {
-				if err := checkAccept(ctx, contractStrings(v)); err != nil {
+				if err := checkAccept(ctx, contractStrings(v), config.RequireContentType); err != nil {
 					return err
 				}
 			}
@@ -174,10 +184,14 @@ func normalizeContractConfig(c ContractConfig) ContractConfig {
 }
 
 // checkAccept enforces the Content-Type against the accepted media types.
-// Requests without a Content-Type header pass (no body to police).
-func checkAccept(ctx *credo.Context, accepted []string) error {
+// A missing or empty Content-Type passes unless require is set and the
+// request carries a body, in which case it is rejected with 415.
+func checkAccept(ctx *credo.Context, accepted []string, require bool) error {
 	ct := ctx.Request().Header.Get("Content-Type")
-	if ct == "" {
+	if strings.TrimSpace(ct) == "" {
+		if require && requestHasBody(ctx.Request().Request) {
+			return credo.NewHTTPError(http.StatusUnsupportedMediaType, "content type required")
+		}
 		return nil
 	}
 	got := ct
@@ -192,6 +206,14 @@ func checkAccept(ctx *credo.Context, accepted []string) error {
 	}
 	return credo.NewHTTPError(http.StatusUnsupportedMediaType,
 		"content type not accepted: "+ct)
+}
+
+// requestHasBody reports whether the request is expected to carry a body
+// without reading it: a positive Content-Length, or an unknown length (-1:
+// chunked transfer or an HTTP/2 stream). Content-Length 0 — which the
+// server also uses for bodiless requests — reports false.
+func requestHasBody(req *http.Request) bool {
+	return req.ContentLength > 0 || req.ContentLength == -1
 }
 
 // mediaTypeMatches reports whether got matches pattern, honoring "*/*" and
