@@ -66,6 +66,11 @@ type serverConfig struct {
 	// BindBody/BindQuery targets do not implement Validatable.
 	Debug bool `credo:"debug"`
 
+	// StrictBodies makes BindBody reject JSON object members that do not
+	// map to a field of the target (400, reason unknown_field). Default
+	// false: unknown members are ignored.
+	StrictBodies bool `credo:"strict_bodies"`
+
 	// TrustedProxies configures CIDR ranges whose forwarded headers are trusted.
 	TrustedProxies []string `credo:"trusted_proxies"`
 
@@ -120,6 +125,7 @@ type appOptions struct {
 	shutdownTimeoutSet       bool
 	reloadTimeout            time.Duration
 	reloadTimeoutSet         bool
+	strictBodies             bool
 	maxBodyBytes             int64
 	maxBodyBytesSet          bool
 	redirectTrailingSlash    bool
@@ -304,6 +310,20 @@ func WithAccessLogResultFilter(filter AccessLogResultFilter) Option {
 // server.debug config key.
 func WithDebug() Option {
 	return func(o *appOptions) { o.debug = true }
+}
+
+// WithStrictBodies makes [Request.BindBody] reject JSON payloads that carry
+// object members not mapping to any field of the target, returning a 400
+// [BindError] with reason [BindReasonUnknownField]. The default is lenient:
+// unknown members are ignored, which is the right posture for public APIs
+// whose clients must tolerate server-side additions. Enable strict bodies
+// when client and server ship together and a misspelled member should
+// surface as an error rather than silently drop. Can also be enabled via
+// the server.strict_bodies config key; the option wins over the key.
+//
+// Only JSON decoding is affected; XML and form binding are unchanged.
+func WithStrictBodies() Option {
+	return func(o *appOptions) { o.strictBodies = true }
 }
 
 // WithAddr sets the listen address directly (for testing or programmatic use).

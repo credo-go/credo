@@ -42,6 +42,12 @@ const (
 	// BindReasonDuplicateField reports a JSON object member that appears
 	// more than once (including case-variant repeats of the same field).
 	BindReasonDuplicateField BindErrorReason = "duplicate_field"
+
+	// BindReasonUnknownField reports a JSON object member that does not
+	// correspond to any field of the target. Only produced under strict
+	// bodies ([WithStrictBodies] or server.strict_bodies); by default
+	// unknown members are ignored.
+	BindReasonUnknownField BindErrorReason = "unknown_field"
 )
 
 // BindError is the typed decode error returned by [Request.BindBody] and
@@ -127,6 +133,8 @@ func (e *BindError) message() string {
 		return "request body must contain a single JSON value"
 	case BindReasonDuplicateField:
 		return "must appear only once"
+	case BindReasonUnknownField:
+		return "is not a known field"
 	}
 	return "request could not be decoded"
 }

@@ -460,6 +460,7 @@ Consumed automatically by `credo.New()`. The **Reloadable** column says what a [
 | `reload_timeout` | duration | `30s` | restart | Context budget for a `SIGHUP`-triggered reload under `Run()` |
 | `redirect_trailing_slash` | bool | `true` | restart | Auto-redirect when trailing slash variant matches (301/308) |
 | `debug` | bool | `false` | restart | Enable development warnings |
+| `strict_bodies` | bool | `false` | restart | Reject unknown JSON object members in `BindBody` (400 `unknown_field`); `credo.WithStrictBodies()` wins over this key |
 | `trusted_proxies` | []string | `[]` | restart | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
 | `tls.cert_file` | string | `""` | **yes** — re-read on every reload | PEM certificate file for HTTPS |
 | `tls.key_file` | string | `""` | **yes** — re-read on every reload | PEM private key file for HTTPS |
