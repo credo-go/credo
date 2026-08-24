@@ -27,5 +27,6 @@
   "errors.service_unavailable": "Hizmet kullanılamıyor",
   "errors.gateway_timeout": "Ağ geçidi zaman aşımına uğradı",
   "http.validation_failed": "Doğrulama başarısız",
-  "http.request_timeout": "İstek zaman aşımına uğradı"
+  "http.request_timeout": "İstek zaman aşımına uğradı",
+  "http.bind_failed": "Hatalı biçimlendirilmiş istek"
 }
