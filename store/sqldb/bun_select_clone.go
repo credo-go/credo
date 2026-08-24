@@ -26,6 +26,14 @@ import (
 //
 // Remove this compatibility layer once the pinned Bun release copies these
 // fields itself. Contract tests in query_select_state_test.go guard the update.
+//
+// Bun upgrade protocol: this layer structurally pins Bun (currently v1.2.18).
+// Any PR that bumps the Bun requirement must run the layout test in
+// bun_select_clone_test.go plus the full store/sqldb suite and merge only on
+// green. A layout change is caught fail-loud twice — at DB construction
+// (validateBunSelectCloneLayout via Open) and by the direct layout test — but
+// the protocol keeps the failure at upgrade-review time instead of the first
+// Open call of a consumer.
 type bunSelectCloneLayout struct {
 	conn                uintptr
 	err                 uintptr
