@@ -514,22 +514,27 @@ func translateValidationErrors(bundle *internali18n.Bundle, lang string, ve vali
 		result[i] = e // copy
 
 		// Lookup key: "v." + code
-		key := "v." + e.Code
-		data := copyParams(e.Params, e.Field)
-
-		// Inject translated field name if available.
-		if e.Field != "" {
-			if data == nil {
-				data = make(map[string]any, 1)
-			}
-			data["field"] = bundle.FieldNameForLang(lang, e.Field)
-		}
-
-		if s, ok := bundle.TranslateForLang(lang, key, data); ok {
+		if s, ok := translateFieldMessage(bundle, lang, "v."+e.Code, e.Params, e.Field); ok {
 			result[i].Message = s
 		}
 	}
 	return result
+}
+
+// translateFieldMessage resolves a field-scoped message through the bundle:
+// it copies params, injects the translated field name when field is non-empty,
+// and looks up key for lang. The boolean reports whether a translation exists.
+// Shared by the validation and bind errors[] flows so their field-name and
+// params handling cannot drift.
+func translateFieldMessage(bundle *internali18n.Bundle, lang, key string, params map[string]any, field string) (string, bool) {
+	data := copyParams(params, field)
+	if field != "" {
+		if data == nil {
+			data = make(map[string]any, 1)
+		}
+		data["field"] = bundle.FieldNameForLang(lang, field)
+	}
+	return bundle.TranslateForLang(lang, key, data)
 }
 
 // bindProblemError converts a [BindError] into the single errors[] entry of
@@ -547,14 +552,7 @@ func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Validat
 	}
 
 	if app.i18nBundle != nil && ctx.locale != "" {
-		data := copyParams(ve.Params, be.Field)
-		if be.Field != "" {
-			if data == nil {
-				data = make(map[string]any, 1)
-			}
-			data["field"] = app.i18nBundle.FieldNameForLang(ctx.locale, be.Field)
-		}
-		if s, ok := app.i18nBundle.TranslateForLang(ctx.locale, "bind."+string(be.Reason), data); ok {
+		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, "bind."+string(be.Reason), ve.Params, be.Field); ok {
 			ve.Message = s
 		}
 	}
