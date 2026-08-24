@@ -73,6 +73,7 @@ REFACTOR-PLAN.md
 
 # Internal design deliberation (resolved decisions live in the ADRs/specs)
 docs/open-questions.md
+docs/drafts/
 
 # Temporary files
 tmp/
