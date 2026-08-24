@@ -528,7 +528,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 **Source**: kin-openapi (MIT)
 
-> Hardest retrofit on the roadmap — the handler signature (`func(*Context) error`) carries no request/response types, so spec generation needs a meta/registration-based design. Write `docs/specs/openapi.md` > **before** implementation; do not rush this one.
+> Post-v1 design work. The v1 `func(*Context) error` surface carries no request/response types, so spec generation needs an explicit meta/registration model. Write `docs/specs/openapi.md` **before** implementation; do not rush this one.
 
 - [ ] Design spec first: how routes declare request/response types (Route Meta vs explicit registration)
 - [ ] Copy OpenAPI 3.x Go type definitions
@@ -633,7 +633,7 @@ should an SSE response API and disconnect/drain contract be designed.
 - [ ] **Phase 3.5 observability** — metrics/tracing fields on `credo.Infra` designed against real OTel/Prometheus adapters. `Infra` is a constructor-boundary struct; adding fields after v1 is a break for every constructor that pattern-matches it.
 - [x] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
-- [ ] **Typed endpoint / operation model decision** ([open-questions §2](docs/open-questions.md)) — resolved either way (adopt or reject with ADR); it shapes the `Handler` signature and OpenAPI (4.5), both frozen by v1.
+- [x] **Typed endpoint / operation model decision** — deferred to v2 or later; v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface.
 - [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.
 - [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
@@ -643,7 +643,7 @@ should an SSE response API and disconnect/drain contract be designed.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
 - [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.
 
-**Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — blocked on the typed-endpoint decision, but the decision, not the generator, is the v1 item), admin server (4.9), controller registration (4.10), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
+**Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — not a v1 blocker), admin server (4.9), controller registration (4.10), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
 
 ### Architecture Governance
 
