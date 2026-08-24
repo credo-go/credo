@@ -19,7 +19,8 @@ import (
 func TestHandleError_HTTPError(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/test", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(http.StatusNotFound, "user.not_found")
+		return credo.NewHTTPError(http.StatusNotFound, "not_found").
+			WithMessageKey("user.not_found")
 	})
 
 	w := httptest.NewRecorder()
@@ -488,7 +489,8 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(http.StatusNotFound, "user.not_found")
+		return credo.NewHTTPError(http.StatusNotFound, "not_found").
+			WithMessageKey("user.not_found")
 	})
 
 	w := httptest.NewRecorder()
@@ -545,8 +547,8 @@ func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 	if ct != "application/problem+json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
 	}
-	if got := w.Header().Get("X-Error-Code"); got != credo.MsgKeyBadRequest {
-		t.Errorf("X-Error-Code = %q, want %q (renderer headers must survive)", got, credo.MsgKeyBadRequest)
+	if got := w.Header().Get("X-Error-Code"); got != "errors.bad_request" {
+		t.Errorf("X-Error-Code = %q, want %q (renderer headers must survive)", got, "errors.bad_request")
 	}
 	// nil is intentional, not an accident: nothing is logged for it.
 	if contains(buf.String(), "did not write response") {
@@ -564,7 +566,8 @@ func TestHandleError_ErrorRendererBody(t *testing.T) {
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(http.StatusConflict, "user.email_exists")
+		return credo.NewHTTPError(http.StatusConflict, "email_exists").
+			WithMessageKey("user.email_exists")
 	})
 
 	w := httptest.NewRecorder()
@@ -591,7 +594,7 @@ func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
 	// info.Problem is the renderer's status seam: mutating it before
 	// returning changes the written status for both body shapes.
 	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		if info.MessageKey == credo.MsgKeyNotFound {
+		if info.MessageKey == "errors.not_found" {
 			info.Problem.Status = http.StatusGone
 		}
 		return map[string]any{"status": info.Problem.Status}
@@ -858,8 +861,8 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	if w.Body.Len() != 0 {
 		t.Errorf("HEAD body = %q, want empty", w.Body.String())
 	}
-	if got := w.Header().Get("X-Error-Code"); got != credo.MsgKeyForbidden {
-		t.Errorf("X-Error-Code = %q, want %q", got, credo.MsgKeyForbidden)
+	if got := w.Header().Get("X-Error-Code"); got != "errors.forbidden" {
+		t.Errorf("X-Error-Code = %q, want %q", got, "errors.forbidden")
 	}
 }
 
@@ -940,7 +943,7 @@ func TestHandleError_ErrorInfoErrForSentry(t *testing.T) {
 	// Handler returns an HTTPError wrapping an internal error.
 	innerErr := errors.New("db connection refused")
 	app.GET("/test", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(500, "db.error").WithInternal(innerErr)
+		return credo.NewHTTPError(500).WithMessageKey("db.error").WithInternal(innerErr)
 	})
 
 	w := httptest.NewRecorder()
@@ -973,8 +976,8 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
-	if receivedInfo.MessageKey != credo.MsgKeyNotFound {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyNotFound)
+	if receivedInfo.MessageKey != "errors.not_found" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.not_found")
 	}
 }
 
@@ -998,17 +1001,20 @@ func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
-	if receivedInfo.MessageKey != credo.MsgKeyInternalError {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyInternalError)
+	if receivedInfo.MessageKey != "errors.internal_server_error" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.internal_server_error")
 	}
 }
 
-// --- statusToKey coverage ---
+// --- frozen status-code coverage ---
 
-func TestNewHTTPError_RequestTimeout_UsesI18nKey(t *testing.T) {
+func TestNewHTTPError_RequestTimeout_UsesFrozenCode(t *testing.T) {
 	e := credo.NewHTTPError(http.StatusRequestTimeout)
-	if e.MessageKey != credo.MsgKeyRequestTimeout {
-		t.Errorf("NewHTTPError(408).MessageKey = %q, want %q", e.MessageKey, credo.MsgKeyRequestTimeout)
+	if e.Code != "request_timeout" {
+		t.Errorf("NewHTTPError(408).Code = %q, want %q", e.Code, "request_timeout")
+	}
+	if e.MessageKey != "" {
+		t.Errorf("NewHTTPError(408).MessageKey = %q, want empty", e.MessageKey)
 	}
 }
 
@@ -1055,8 +1061,8 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	if w.Code != http.StatusRequestTimeout {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestTimeout)
 	}
-	if receivedInfo.MessageKey != credo.MsgKeyRequestTimeout {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyRequestTimeout)
+	if receivedInfo.MessageKey != "errors.request_timeout" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.request_timeout")
 	}
 }
 

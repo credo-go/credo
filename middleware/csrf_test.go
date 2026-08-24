@@ -168,7 +168,8 @@ func TestCSRF_CustomErrorHandler(t *testing.T) {
 			if err == nil {
 				t.Error("ErrorHandler called with nil err")
 			}
-			return credo.NewHTTPError(http.StatusTeapot, "blocked by custom handler")
+			return credo.NewHTTPError(http.StatusTeapot).
+				WithMessageKey("blocked by custom handler")
 		},
 	})
 

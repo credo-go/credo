@@ -191,7 +191,8 @@ func loginHandler(ctx *credo.Context) error {
 	})
 	signed, err := token.SignedString(jwtSigningKey)
 	if err != nil {
-		return credo.NewHTTPError(http.StatusInternalServerError, "failed to sign token").WithInternal(err)
+		return credo.NewHTTPError(http.StatusInternalServerError, "token_signing_failed").
+			WithMessageKey("failed to sign token").WithInternal(err)
 	}
 	return ctx.Response().JSON(http.StatusOK, map[string]string{
 		"token": signed,
@@ -216,7 +217,8 @@ func createTenantHandler(svc *TenantService) credo.Handler {
 
 		tenant, err := svc.Create(ctx.Context(), &req)
 		if err != nil {
-			return credo.NewHTTPError(http.StatusInternalServerError, "failed to create tenant").WithInternal(err)
+			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_create_failed").
+				WithMessageKey("failed to create tenant").WithInternal(err)
 		}
 
 		return ctx.Response().JSON(http.StatusCreated, tenant)
@@ -227,7 +229,8 @@ func listTenantsHandler(svc *TenantService) credo.Handler {
 	return func(ctx *credo.Context) error {
 		tenants, err := svc.List(ctx.Context())
 		if err != nil {
-			return credo.NewHTTPError(http.StatusInternalServerError, "failed to list tenants").WithInternal(err)
+			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_list_failed").
+				WithMessageKey("failed to list tenants").WithInternal(err)
 		}
 		return ctx.Response().JSON(http.StatusOK, tenants)
 	}
@@ -255,8 +258,8 @@ func requireRole(role string) credo.Middleware {
 				return credo.ErrUnauthorized
 			}
 			if user.Role != role {
-				return credo.NewHTTPError(http.StatusForbidden,
-					fmt.Sprintf("role %q required, got %q", role, user.Role))
+				return credo.NewHTTPError(http.StatusForbidden, "role_required").
+					WithMessageKey(fmt.Sprintf("role %q required, got %q", role, user.Role))
 			}
 			return next(ctx)
 		}

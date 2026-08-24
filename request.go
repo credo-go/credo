@@ -235,7 +235,8 @@ func (r *Request) BindBody(target any) error {
 	// Developer-error guard, checked before any decoding so it cannot be
 	// misreported as a client payload problem.
 	if rv := reflect.ValueOf(target); rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return NewHTTPError(http.StatusBadRequest, "bind target must be a non-nil pointer")
+		return NewHTTPError(http.StatusBadRequest, "invalid_bind_target").
+			WithMessageKey("bind target must be a non-nil pointer")
 	}
 
 	if r.Body == nil {
@@ -305,8 +306,8 @@ func (r *Request) BindBody(target any) error {
 		}
 
 	default:
-		return NewHTTPError(http.StatusUnsupportedMediaType,
-			"unsupported content type: "+mediaType)
+		return NewHTTPError(http.StatusUnsupportedMediaType).
+			WithMessageKey("unsupported content type: " + mediaType)
 	}
 
 	return r.validateBoundTarget("BindBody", target)
@@ -318,7 +319,8 @@ func (r *Request) BindBody(target any) error {
 // 400-class BindError.
 func maxBytesHTTPError(err error) (*HTTPError, bool) {
 	if mbe, ok := errors.AsType[*http.MaxBytesError](err); ok {
-		return NewHTTPError(http.StatusRequestEntityTooLarge, "request body too large").
+		return NewHTTPError(http.StatusRequestEntityTooLarge).
+			WithMessageKey("request body too large").
 			WithInternal(mbe), true
 	}
 	return nil, false

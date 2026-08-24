@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"strings"
 
 	"github.com/credo-go/credo/fault"
 	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
@@ -57,30 +56,13 @@ var builtInMessages = map[string]string{
 	MsgKeyBindFailed:          "Malformed Request",
 }
 
-// statusToKey maps HTTP status codes to their MsgKey constants.
-// Used by the error handling pipeline to derive a message key from
-// HTTPError and legacy/explicit errors that carry only a status code.
-var statusToKey = map[int]string{
-	http.StatusBadRequest:           MsgKeyBadRequest,
-	http.StatusUnauthorized:         MsgKeyUnauthorized,
-	http.StatusForbidden:            MsgKeyForbidden,
-	http.StatusNotFound:             MsgKeyNotFound,
-	http.StatusMethodNotAllowed:     MsgKeyMethodNotAllowed,
-	http.StatusConflict:             MsgKeyConflict,
-	http.StatusUnsupportedMediaType: MsgKeyUnsupportedMedia,
-	http.StatusUnprocessableEntity:  MsgKeyUnprocessableEntity,
-	http.StatusTooManyRequests:      MsgKeyTooManyRequests,
-	http.StatusRequestTimeout:       MsgKeyRequestTimeout,
-	http.StatusInternalServerError:  MsgKeyInternalError,
-	http.StatusServiceUnavailable:   MsgKeyServiceUnavailable,
-	http.StatusGatewayTimeout:       MsgKeyGatewayTimeout,
-}
-
-// HTTPError represents an HTTP error with a status code and a message key.
-// The MessageKey field serves as both the i18n translation key and the
-// fallback message when no translation is found.
+// HTTPError represents an HTTP error carrying a status and a stable
+// machine-readable code, with an optional presentation message key.
 //
-// Resolution order for MessageKey (applied in the error handling pipeline):
+// Code is the primary wire identity; MessageKey only affects the
+// human-readable title. When MessageKey is empty, the title resolves through
+// the errors.<code> locale lookup, then http.StatusText, then "HTTP <status>".
+// When MessageKey is set, the existing three-level chain applies:
 //  1. i18n bundle lookup — if a translation exists for MessageKey, use it
 //  2. builtInMessages lookup — if MessageKey matches a built-in key, use it
 //  3. MessageKey itself — used as-is (works for literal messages)
@@ -88,14 +70,16 @@ type HTTPError struct {
 	// Status is the HTTP status code.
 	Status int `json:"status"`
 
-	// Code is an optional machine-readable error code, rendered as the RFC
-	// 7807 "code" extension member. When empty, the pipeline derives it from
-	// MessageKey: the segment after the last dot ("user.email_exists" →
-	// "email_exists"); a key without a dot is treated as a literal human
-	// message and yields no code.
+	// Code is the stable machine-readable error code, rendered as the RFC
+	// 7807 "code" extension member. [NewHTTPError] always materializes it:
+	// either the explicit code argument or the frozen default for the status
+	// (for example 404 → "not_found", unknown 499 → "http_499"). It must
+	// satisfy the machine-code grammar ^[a-z0-9]+(_[a-z0-9]+)*$.
 	Code string `json:"code,omitempty"`
 
-	// MessageKey is the i18n message key or literal fallback message.
+	// MessageKey is an optional i18n message key or literal fallback message
+	// used only for title presentation; it never contributes to Code. Attach
+	// one with [HTTPError.WithMessageKey].
 	MessageKey string `json:"message_key"`
 
 	// Details carries optional structured, client-safe detail rendered as the
@@ -107,26 +91,43 @@ type HTTPError struct {
 	Internal error `json:"-"`
 }
 
-// NewHTTPError creates a new HTTPError with the given status code and
-// optional message key. If no message key is provided, the corresponding
-// MsgKey constant is used (falling back to http.StatusText for unknown codes).
-func NewHTTPError(status int, messageKey ...string) *HTTPError {
-	e := &HTTPError{Status: status}
-	if len(messageKey) > 0 {
-		e.MessageKey = messageKey[0]
-	} else if key, ok := statusToKey[status]; ok {
-		e.MessageKey = key
-	} else {
-		e.MessageKey = http.StatusText(status)
+// NewHTTPError creates a new HTTPError with the given status and optional
+// stable machine-readable code. With no code argument, the frozen default
+// code for the status is used (404 → "not_found"; a status outside the
+// frozen table yields "http_<status>"). MessageKey starts empty; attach a
+// presentation key with [HTTPError.WithMessageKey].
+//
+// Misuse panics — this is a developer invariant violation, not a runtime
+// condition: a status outside 100..999, more than one code argument, or a
+// code that fails the machine-code grammar ^[a-z0-9]+(_[a-z0-9]+)*$ (which
+// includes an explicitly empty code). During a request, built-in recovery
+// converts the panic into a generic 500 without publishing the invalid value.
+func NewHTTPError(status int, code ...string) *HTTPError {
+	if !isValidHTTPStatus(status) {
+		panic(fmt.Sprintf("credo: NewHTTPError: status %d is outside the valid HTTP status domain 100..999", status))
 	}
-	return e
+	switch len(code) {
+	case 0:
+		return &HTTPError{Status: status, Code: defaultCodeForStatus(status)}
+	case 1:
+		if !isValidErrorCode(code[0]) {
+			panic(fmt.Sprintf("credo: NewHTTPError: %q is not a valid machine code (want ^[a-z0-9]+(_[a-z0-9]+)*$); since v0.11.0 the second argument is the machine code — attach message keys or literal text with WithMessageKey", code[0]))
+		}
+		return &HTTPError{Status: status, Code: code[0]}
+	default:
+		panic("credo: NewHTTPError: at most one machine code argument is allowed")
+	}
 }
 
-// Error implements the error interface.
+// Error implements the error interface. The diagnostic order is status,
+// code, key, internal; empty segments are omitted.
 func (e *HTTPError) Error() string {
-	s := fmt.Sprintf("status=%d, key=%s", e.Status, e.MessageKey)
+	s := fmt.Sprintf("status=%d", e.Status)
 	if e.Code != "" {
 		s += ", code=" + e.Code
+	}
+	if e.MessageKey != "" {
+		s += ", key=" + e.MessageKey
 	}
 	if e.Internal != nil {
 		s += fmt.Sprintf(", internal=%v", e.Internal)
@@ -158,11 +159,13 @@ func (e *HTTPError) WithInternal(err error) *HTTPError {
 	return c
 }
 
-// WithCode returns a copy of the error with the machine-readable code set,
-// overriding the default derivation from MessageKey.
-func (e *HTTPError) WithCode(code string) *HTTPError {
+// WithMessageKey returns a copy of the error with the presentation message
+// key set. The key affects only the human-readable title (resolved through
+// the i18n bundle → builtInMessages → literal chain); the machine-readable
+// Code is untouched.
+func (e *HTTPError) WithMessageKey(key string) *HTTPError {
 	c := e.clone()
-	c.Code = code
+	c.MessageKey = key
 	return c
 }
 
@@ -287,11 +290,10 @@ func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: ErrorRenderer panic", slog.Any("panic", r), slog.Any("error", err))
 		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
-			ctx.Response().Header().Set("Content-Type", "application/problem+json")
-			ctx.Response().WriteHeader(http.StatusInternalServerError)
-			jsonv2.MarshalWrite(ctx.Response(), //nolint:errcheck
-				newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError),
-				app.problemJSONOptions())
+			_, pd := codedProblem(ctx, http.StatusInternalServerError, "", "")
+			// A marshal failure inside panic recovery is deliberately
+			// swallowed; there is no safer response left to attempt.
+			writeProblemDetails(ctx, pd) //nolint:errcheck
 		}
 	}
 }
@@ -351,15 +353,21 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 	defaultRenderError(ctx, pd)
 }
 
-// classifyError converts an error into a message key and [ProblemDetails].
+// classifyError converts an error into an effective message key and
+// [ProblemDetails].
 //
 // Classification order:
 //  1. validation.Errors → 422 Unprocessable Entity with field errors
 //  2. *BindError → 400 Bad Request with a typed decode-reason errors entry
-//  3. *HTTPError → status from Code, title resolved from MessageKey
+//  3. *HTTPError → status/code from the error, title from MessageKey or the
+//     errors.<code> chain; invalid stored fields fail closed to a generic 500
 //  4. fault.Provider → default root transport policy for the semantic kind
-//  5. HTTPStatus() int interface → legacy or explicit transport status
+//  5. HTTPStatus() int interface → legacy or explicit transport status;
+//     out-of-domain statuses fail closed to a generic 500
 //  6. Any other error → 500 Internal Server Error (message not leaked)
+//
+// Every branch resolves its effective code and title through [codedProblem],
+// so the default pipeline always emits a non-empty machine code.
 func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails) {
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
 		if app.i18nBundle != nil && ctx.locale != "" {
@@ -369,7 +377,7 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 			Type:   "https://credo.dev/errors/validation",
 			Title:  resolveMessage(ctx, MsgKeyValidationFailed),
 			Status: http.StatusUnprocessableEntity,
-			Code:   deriveErrorCode(MsgKeyValidationFailed),
+			Code:   "validation_failed",
 			Errors: []validation.ValidationError(ve),
 		}
 	}
@@ -385,66 +393,88 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 	}
 
 	if he, ok := errors.AsType[*HTTPError](err); ok {
-		pd := NewProblemDetails(he.Status, resolveMessage(ctx, he.MessageKey))
-		pd.Code = he.Code
-		if pd.Code == "" {
-			pd.Code = deriveErrorCode(he.MessageKey)
+		// Fail closed on invalid directly constructed values: rebuild a
+		// generic internal-server problem and publish none of the invalid
+		// value's client-facing fields.
+		if !isValidHTTPStatus(he.Status) || (he.Code != "" && !isValidErrorCode(he.Code)) {
+			return codedProblem(ctx, http.StatusInternalServerError, "", "")
 		}
+		key, pd := codedProblem(ctx, he.Status, he.Code, he.MessageKey)
 		pd.Details = he.Details
-		return he.MessageKey, pd
+		return key, pd
 	}
 
 	if provider, ok := fault.ProviderOf(err); ok {
 		status, known := internalfaultstatus.HTTP(provider.FaultKind())
 		if !known {
-			return MsgKeyInternalError, newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError)
+			return codedProblem(ctx, http.StatusInternalServerError, "", "")
 		}
-		key := statusToKey[status]
-		if key == "" {
-			key = http.StatusText(status)
-		}
-		return key, newKeyedProblem(ctx, status, key)
+		return codedProblem(ctx, status, "", "")
 	}
 
 	if se, ok := asHTTPStatus(err); ok {
 		status := se.HTTPStatus()
-		key := statusToKey[status]
-		if key == "" {
-			key = http.StatusText(status)
+		if !isValidHTTPStatus(status) {
+			return codedProblem(ctx, http.StatusInternalServerError, "", "")
 		}
-		return key, newKeyedProblem(ctx, status, key)
+		return codedProblem(ctx, status, "", "")
 	}
 
-	return MsgKeyInternalError, newKeyedProblem(ctx, http.StatusInternalServerError, MsgKeyInternalError)
+	return codedProblem(ctx, http.StatusInternalServerError, "", "")
 }
 
-// newKeyedProblem builds a ProblemDetails whose title and machine-readable
-// code both come from the same message key.
-func newKeyedProblem(ctx *Context, status int, key string) *ProblemDetails {
-	pd := NewProblemDetails(status, resolveMessage(ctx, key))
-	pd.Code = deriveErrorCode(key)
-	return pd
-}
-
-// deriveErrorCode derives the default machine-readable error code from a
-// message key: the segment after the last dot ("user.email_exists" →
-// "email_exists", "http.not_found" → "not_found"). A key without a dot is a
-// literal human message rather than a code namespace, so no code is derived.
-func deriveErrorCode(key string) string {
-	if i := strings.LastIndexByte(key, '.'); i >= 0 {
-		return key[i+1:]
+// codedProblem is the single source of the effective-code and effective-title
+// calculation for the HTTPError, fault, legacy-status, and generic-500
+// classification branches. The effective code is the explicit code when
+// non-empty, otherwise the frozen default for the status. With an explicit
+// message key the title resolves through the existing three-level chain and
+// the key is returned as the effective key; without one the effective key is
+// "errors.<code>" and the title resolves as locale bundle lookup for that key,
+// then http.StatusText, then "HTTP <status>".
+func codedProblem(ctx *Context, status int, explicitCode, explicitKey string) (string, *ProblemDetails) {
+	code := explicitCode
+	if code == "" {
+		code = defaultCodeForStatus(status)
 	}
-	return ""
+
+	if explicitKey != "" {
+		pd := NewProblemDetails(status, resolveMessage(ctx, explicitKey))
+		pd.Code = code
+		return explicitKey, pd
+	}
+
+	key := "errors." + code
+	title := ""
+	if ctx.app != nil && ctx.app.i18nBundle != nil && ctx.locale != "" {
+		if s, ok := ctx.app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
+			title = s
+		}
+	}
+	if title == "" {
+		title = http.StatusText(status)
+	}
+	if title == "" {
+		title = fmt.Sprintf("HTTP %d", status)
+	}
+	pd := NewProblemDetails(status, title)
+	pd.Code = code
+	return key, pd
 }
 
 // defaultRenderError writes an RFC 7807 Problem Details JSON response.
 func defaultRenderError(ctx *Context, pd *ProblemDetails) {
-	ctx.Response().Header().Set("Content-Type", "application/problem+json")
-	ctx.Response().WriteHeader(pd.Status)
-	if err := jsonv2.MarshalWrite(ctx.Response(), pd, ctx.app.problemJSONOptions()); err != nil {
+	if err := writeProblemDetails(ctx, pd); err != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: failed to write error response", slog.Any("error", err))
 	}
+}
+
+// writeProblemDetails commits a Problem Details response and returns the
+// marshal error, letting callers choose their own failure policy.
+func writeProblemDetails(ctx *Context, pd *ProblemDetails) error {
+	ctx.Response().Header().Set("Content-Type", "application/problem+json")
+	ctx.Response().WriteHeader(pd.Status)
+	return jsonv2.MarshalWrite(ctx.Response(), pd, ctx.app.problemJSONOptions())
 }
 
 // resolveMessage resolves a message key to a human-readable string using

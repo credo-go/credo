@@ -330,7 +330,8 @@ func (r *Response) NoContent(code int) error {
 // Redirect sends an HTTP redirect response.
 func (r *Response) Redirect(code int, url string) error {
 	if code < 300 || code > 308 {
-		return NewHTTPError(http.StatusInternalServerError, "invalid redirect status code")
+		return NewHTTPError(http.StatusInternalServerError).
+			WithMessageKey("invalid redirect status code")
 	}
 	r.Header().Set("Location", url)
 	r.WriteHeader(code)

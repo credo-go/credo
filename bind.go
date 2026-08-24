@@ -128,7 +128,8 @@ func structValue(target any) (reflect.Value, reflect.Type, bool) {
 func decodeValues(target any, values url.Values, tagName string) error {
 	rv, t, ok := structValue(target)
 	if !ok {
-		return NewHTTPError(http.StatusBadRequest, "bind target must be a non-nil pointer to struct")
+		return NewHTTPError(http.StatusBadRequest, "invalid_bind_target").
+			WithMessageKey("bind target must be a non-nil pointer to struct")
 	}
 
 	tfields := cachedTagFields(t, tagName)
@@ -237,8 +238,8 @@ func setScalarField(field reflect.Value, kind reflect.Kind, name, val string) er
 		field.SetBool(b)
 
 	default:
-		return NewHTTPError(http.StatusBadRequest,
-			"unsupported field type '"+kind.String()+"' for field '"+name+"'")
+		return NewHTTPError(http.StatusBadRequest, "unsupported_bind_field_type").
+			WithMessageKey("unsupported field type '" + kind.String() + "' for field '" + name + "'")
 	}
 
 	return nil

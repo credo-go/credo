@@ -240,7 +240,8 @@ func TestContractGuard_CustomCheck(t *testing.T) {
 		CustomChecks: []func(*credo.Context) error{
 			func(ctx *credo.Context) error {
 				if ctx.Request().Header.Get("X-Block") != "" {
-					return credo.NewHTTPError(http.StatusTeapot, "blocked by custom check")
+					return credo.NewHTTPError(http.StatusTeapot).
+						WithMessageKey("blocked by custom check")
 				}
 				return nil
 			},
