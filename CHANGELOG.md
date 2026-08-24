@@ -14,6 +14,11 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- The shipped reference locale bundles (`internal/i18n/locales/{en,tr}`) now carry `http.bind_failed`, the explicit presentation key the framework sets on every bind-failure title, so applications that copy them get localized bind titles instead of the built-in English fallback.
+- `HTTPError.MessageKey`'s JSON tag gains `omitempty`, matching `Code` — observable only when marshaling an `HTTPError` directly (a codeless sentinel now marshals without an empty `"message_key"` member); the RFC 7807 wire built from `ProblemDetails` is unaffected.
+
 ## [0.11.0] - 2026-08-24
 
 ### Changed
@@ -28,11 +33,6 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - `HTTPError.WithMessageKey(key string)` — copy-on-write presentation-key builder, the successor to passing a key positionally. Title resolution is now two explicit chains: an explicit `MessageKey` resolves i18n bundle → built-in English default → the key itself as literal text; without a key the title resolves bundle(`errors.<code>`) → `http.StatusText` → `"HTTP <status>"`.
 - Every classified error now carries a `code` member on the wire: previously code-less bodies (sentinels without derivable keys, unknown statuses, generic 500s) gain the frozen default — a strictly additive RFC 7807 change. Errors whose code was previously derived from a built-in key keep byte-identical bodies.
 - An informational drift canary logs (never fails) when Go's `http.StatusText` diverges from the frozen table, so deliberate table updates remain a reviewed decision.
-
-### Fixed
-
-- The shipped reference locale bundles (`internal/i18n/locales/{en,tr}`) now carry `http.bind_failed`, the explicit presentation key the framework sets on every bind-failure title, so applications that copy them get localized bind titles instead of the built-in English fallback.
-- `HTTPError.MessageKey`'s JSON tag gains `omitempty`, matching `Code` — observable only when marshaling an `HTTPError` directly (a codeless sentinel now marshals without an empty `"message_key"` member); the RFC 7807 wire built from `ProblemDetails` is unaffected.
 
 ## [0.10.0] - 2026-08-24
 
