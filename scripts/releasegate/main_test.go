@@ -44,6 +44,120 @@ func TestIsCanonicalVersion(t *testing.T) {
 	}
 }
 
+func TestRunArgumentValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "no arguments", args: nil, wantErr: "usage:"},
+		{name: "too many arguments", args: []string{"candidate", "v0.1.0", "extra"}, wantErr: "usage:"},
+		{name: "unknown mode", args: []string{"frobnicate"}, wantErr: `unknown mode "frobnicate"`},
+		{name: "prepared without version", args: []string{"prepared"}, wantErr: "prepared mode requires"},
+		{name: "tidy with version", args: []string{"tidy", "v0.1.0"}, wantErr: "tidy mode does not accept"},
+		{name: "workspace with version", args: []string{"workspace", "v0.1.0"}, wantErr: "workspace mode does not accept"},
+		{name: "candidate without v prefix", args: []string{"candidate", "1.2.3"}, wantErr: "must be canonical semver"},
+		{name: "candidate with build metadata", args: []string{"candidate", "v1.2.3+build.1"}, wantErr: "must be canonical semver"},
+		{name: "prepared with leading zero", args: []string{"prepared", "v01.2.3"}, wantErr: "must be canonical semver"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := run(tt.args)
+			if err == nil {
+				t.Fatalf("run(%q) succeeded, want error containing %q", tt.args, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("run(%q) error = %q, want it to contain %q", tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckPreparedModule(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not available")
+	}
+	t.Setenv("GOWORK", filepath.Join(t.TempDir(), "toxic-go.work"))
+	t.Setenv("GOFLAGS", "-mod=vendor")
+
+	t.Run("prepared module passes", func(t *testing.T) {
+		repo := writeTidyFixture(t, "v0.11.0", "", false)
+
+		if err := checkPreparedModule(repo, "v0.11.0"); err != nil {
+			t.Fatalf("check prepared module: %v", err)
+		}
+	})
+
+	t.Run("version mismatch fails", func(t *testing.T) {
+		repo := writeTidyFixture(t, "v0.10.0", "", false)
+
+		err := checkPreparedModule(repo, "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "want v0.11.0") {
+			t.Fatalf("error = %v, want root-requirement mismatch", err)
+		}
+	})
+
+	t.Run("missing root requirement fails", func(t *testing.T) {
+		repo := t.TempDir()
+		sqldbDir := filepath.Join(repo, "store", "sqldb")
+		if err := os.MkdirAll(sqldbDir, 0o755); err != nil {
+			t.Fatalf("create store/sqldb: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(sqldbDir, "go.mod"), "module "+sqldbModule+"\n\ngo 1.27\n")
+
+		err := checkPreparedModule(repo, "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "want v0.11.0") {
+			t.Fatalf("error = %v, want root-requirement mismatch", err)
+		}
+	})
+
+	t.Run("leftover bootstrap replacement fails", func(t *testing.T) {
+		repo := writeTidyFixture(t, "v0.11.0", "replace "+rootModule+" => ../..\n", false)
+
+		err := checkPreparedModule(repo, "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "must not replace") {
+			t.Fatalf("error = %v, want replacement rejection", err)
+		}
+	})
+
+	t.Run("leftover foreign replacement fails", func(t *testing.T) {
+		repo := writeTidyFixture(t, "v0.11.0", "replace "+rootModule+" v0.11.0 => "+rootModule+" v0.10.0\n", false)
+
+		err := checkPreparedModule(repo, "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "must not replace") {
+			t.Fatalf("error = %v, want replacement rejection", err)
+		}
+	})
+}
+
+func TestReadSQLDBModuleErrors(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not available")
+	}
+
+	t.Run("missing module file", func(t *testing.T) {
+		_, err := readSQLDBModule(t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "read store/sqldb/go.mod") {
+			t.Fatalf("error = %v, want read failure", err)
+		}
+	})
+
+	t.Run("malformed module file", func(t *testing.T) {
+		repo := t.TempDir()
+		sqldbDir := filepath.Join(repo, "store", "sqldb")
+		if err := os.MkdirAll(sqldbDir, 0o755); err != nil {
+			t.Fatalf("create store/sqldb: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(sqldbDir, "go.mod"), "not a module file\n")
+
+		_, err := readSQLDBModule(repo)
+		if err == nil || !strings.Contains(err.Error(), "read store/sqldb/go.mod") {
+			t.Fatalf("error = %v, want read failure", err)
+		}
+	})
+}
+
 func TestCommitStagedChanges(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available")
