@@ -27,5 +27,6 @@
   "errors.service_unavailable": "Service unavailable",
   "errors.gateway_timeout": "Gateway timeout",
   "http.validation_failed": "Validation failed",
-  "http.request_timeout": "Request timeout"
+  "http.request_timeout": "Request timeout",
+  "http.bind_failed": "Malformed request"
 }
