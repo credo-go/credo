@@ -47,7 +47,7 @@ func createNotesTable(ctx context.Context, db *bun.DB) error {
 func countNotes(t *testing.T, db *sqldb.DB) int {
 	t.Helper()
 	var n int
-	if err := db.Client().NewRaw(`SELECT count(*) FROM notes`).Scan(context.Background(), &n); err != nil {
+	if err := db.Client().NewRaw(`SELECT count(*) FROM notes`).Scan(t.Context(), &n); err != nil {
 		t.Fatalf("count notes: %v", err)
 	}
 	return n
@@ -67,7 +67,7 @@ func assertNoUnexpectedMigrationCleanupError(t *testing.T, err error) {
 
 func TestMigrate_RunsPendingMigrations(t *testing.T) {
 	db := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.RegisterMigrations(newGoMigrations("1", createNotesTable))
 
@@ -83,7 +83,7 @@ func TestMigrate_RunsPendingMigrations(t *testing.T) {
 
 func TestMigrate_RerunDoesNotExecuteUp(t *testing.T) {
 	db := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	var runs int
 	db.RegisterMigrations(newGoMigrations("1", func(ctx context.Context, bdb *bun.DB) error {
@@ -104,7 +104,7 @@ func TestMigrate_RerunDoesNotExecuteUp(t *testing.T) {
 
 func TestMigrate_FailedMigrationRetriedOnNextRun(t *testing.T) {
 	db := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// First attempt fails; the wrapper's WithMarkAppliedOnSuccess default
 	// leaves the migration eligible for a later attempt. This does not imply
@@ -221,7 +221,7 @@ func TestMigrate_CanceledContextStillUnlocksAndRetries(t *testing.T) {
 
 func TestMigrate_DiscoverEmbedFS(t *testing.T) {
 	db := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// SQL migrations bundled into the binary via embed.FS; the seed row
 	// comes from a plain migration file (2_seed_notes.up.sql).
@@ -245,7 +245,7 @@ func TestMigrate_DiscoverEmbedFS(t *testing.T) {
 func TestMigrate_NoRegistration(t *testing.T) {
 	db := openTestDB(t)
 
-	err := db.Migrate(context.Background())
+	err := db.Migrate(t.Context())
 	if err == nil {
 		t.Fatal("Migrate() = nil, want error")
 	}

@@ -21,7 +21,7 @@ import (
 func TestInsertExec_BuilderReusableAfterTxRollback(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	q := db.Insert(&User{Name: "pin-insert", Email: "p@i.n"})
 
@@ -54,7 +54,7 @@ func TestInsertExec_BuilderReusableAfterTxRollback(t *testing.T) {
 func TestUpdateExec_BuilderReusableAfterTxRollback(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := db.Insert(&User{Name: "pin-update", Email: "old"}).Exec(ctx); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -93,7 +93,7 @@ func TestUpdateExec_BuilderReusableAfterTxRollback(t *testing.T) {
 func TestDeleteExec_BuilderReusableAfterTxRollback(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := db.Insert(&User{Name: "pin-delete", Email: "d@e.l"}).Exec(ctx); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -141,7 +141,7 @@ func TestDeleteExec_BuilderReusableAfterTxRollback(t *testing.T) {
 func TestUpdateExec_SameBuilderTwice(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := db.Insert(&User{Name: "pin-twice", Email: "old"}).Exec(ctx); err != nil {
 		t.Fatalf("seed: %v", err)

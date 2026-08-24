@@ -93,7 +93,7 @@ func TestRateLimitKeyFromContext(t *testing.T) {
 
 func TestInMemoryRateLimitStore_TakeResetAndSweep(t *testing.T) {
 	store := newInMemoryRateLimitStore(1, 2*time.Millisecond).(*inMemoryRateLimitStore)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	limit, remaining, _, ok, err := store.Take(ctx, "old")
 	if err != nil {
@@ -136,7 +136,7 @@ func TestInMemoryRateLimitStore_TakeResetAndSweep(t *testing.T) {
 
 func TestInMemoryRateLimitStore_SetBurstGetCloseAndContext(t *testing.T) {
 	store := newInMemoryRateLimitStore(1, time.Second).(*inMemoryRateLimitStore)
-	bg := context.Background()
+	bg := t.Context()
 
 	if err := store.Set(bg, "k", 2, time.Second); err != nil {
 		t.Fatalf("set: %v", err)
@@ -200,10 +200,10 @@ func TestInMemoryRateLimitStore_SetBurstGetCloseAndContext(t *testing.T) {
 func TestRateLimiter_CloseAndShutdown(t *testing.T) {
 	r := NewRateLimiter(RateLimitConfig{})
 
-	if err := r.Close(context.Background()); err != nil {
+	if err := r.Close(t.Context()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if err := r.Shutdown(context.Background()); err != nil {
+	if err := r.Shutdown(t.Context()); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestRateLimiter_Close_DoesNotCloseCustomStore(t *testing.T) {
 	store := &stubLimiterStore{}
 	r := NewRateLimiter(RateLimitConfig{Store: store})
 
-	if err := r.Close(context.Background()); err != nil {
+	if err := r.Close(t.Context()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 

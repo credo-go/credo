@@ -69,7 +69,7 @@ func TestOpenTestDB_SharesSchemaAcrossPoolConnections(t *testing.T) {
 // createUsersTable creates a test table.
 func createUsersTable(t *testing.T, db *sqldb.DB) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := db.Client().NewRaw(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,14 +109,14 @@ func (*blockingSavepointHook) AfterQuery(context.Context, *bun.QueryEvent) {}
 
 func TestDB_Ping(t *testing.T) {
 	db := openTestDB(t)
-	if err := db.Ping(context.Background()); err != nil {
+	if err := db.Ping(t.Context()); err != nil {
 		t.Fatalf("Ping() = %v", err)
 	}
 }
 
 func TestDB_Health_Up(t *testing.T) {
 	db := openTestDB(t)
-	h := db.Health(context.Background())
+	h := db.Health(t.Context())
 	if h.Status != store.StatusUp {
 		t.Errorf("Health().Status = %q, want %q", h.Status, store.StatusUp)
 	}
@@ -310,7 +310,7 @@ func TestDB_Client(t *testing.T) {
 func TestSelectQuery_Scan(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Insert via Client escape hatch.
 	_, err := db.Client().NewInsert().Model(&User{Name: "alice", Email: "a@b.c"}).Exec(ctx)
@@ -333,7 +333,7 @@ func TestSelectQuery_Scan_NotFound(t *testing.T) {
 	createUsersTable(t, db)
 
 	var user User
-	err := db.Select(&user).Where("name = ?", "nonexistent").Scan(context.Background())
+	err := db.Select(&user).Where("name = ?", "nonexistent").Scan(t.Context())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Select non-existent: err = %v, want store.ErrNotFound", err)
 	}
@@ -342,7 +342,7 @@ func TestSelectQuery_Scan_NotFound(t *testing.T) {
 func TestSelectQuery_Count(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Client().NewInsert().Model(&User{Name: "a", Email: "a@b"}).Exec(ctx)
 	db.Client().NewInsert().Model(&User{Name: "b", Email: "b@b"}).Exec(ctx)
@@ -359,7 +359,7 @@ func TestSelectQuery_Count(t *testing.T) {
 func TestSelectQuery_Exists(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Client().NewInsert().Model(&User{Name: "a", Email: "a@b"}).Exec(ctx)
 
@@ -397,7 +397,7 @@ func createOrdersTable(t *testing.T, db *sqldb.DB) {
 			user_id INTEGER NOT NULL,
 			total INTEGER NOT NULL
 		)
-	`).Exec(context.Background())
+	`).Exec(t.Context())
 	if err != nil {
 		t.Fatalf("create orders table: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestSelectQuery_Join(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	createOrdersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	u := &User{Name: "joiner", Email: "j@b"}
 	db.Insert(u).Exec(ctx)
@@ -434,7 +434,7 @@ func TestSelectQuery_JoinOn(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	createOrdersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	u := &User{Name: "joinon", Email: "jo@b"}
 	db.Insert(u).Exec(ctx)
@@ -457,7 +457,7 @@ func TestSelectQuery_JoinOnOr(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	createOrdersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	u := &User{Name: "joinor", Email: "jr@b"}
 	db.Insert(u).Exec(ctx)
@@ -480,7 +480,7 @@ func TestSelectQuery_JoinOnOr(t *testing.T) {
 func TestSelectQuery_TableExpr_ColumnExpr(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "u1", Email: "1@b"}).Exec(ctx)
 	db.Insert(&User{Name: "u2", Email: "2@b"}).Exec(ctx)
@@ -501,7 +501,7 @@ func TestSelectQuery_TableExpr_ColumnExpr(t *testing.T) {
 func TestSelectQuery_ExcludeColumn(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "exc", Email: "secret@b"}).Exec(ctx)
 
@@ -525,7 +525,7 @@ func TestSelectQuery_Join_PreservesInterceptors(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	createOrdersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Outside TX: nothing inserted yet.
 	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
@@ -565,7 +565,7 @@ func TestSelectQuery_Join_NotFound(t *testing.T) {
 	var user User
 	err := db.Select(&user).
 		Join("JOIN orders AS o ON o.user_id = ?TableAlias.id").
-		Scan(context.Background())
+		Scan(t.Context())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("empty JOIN Scan: err = %v, want store.ErrNotFound", err)
 	}
@@ -574,7 +574,7 @@ func TestSelectQuery_Join_NotFound(t *testing.T) {
 func TestInsertQuery_Exec(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res, err := db.Insert(&User{Name: "bob", Email: "bob@b"}).Exec(ctx)
 	if err != nil {
@@ -589,7 +589,7 @@ func TestInsertQuery_Exec(t *testing.T) {
 func TestInsertQuery_Exec_Duplicate(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "dup", Email: "a@b"}).Exec(ctx)
 
@@ -694,7 +694,7 @@ func TestRaw_ErrorMapping_SQLiteContention(t *testing.T) {
 func TestUpdateQuery_Exec(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "charlie", Email: "old@b"}).Exec(ctx)
 
@@ -714,7 +714,7 @@ func TestUpdateQuery_Exec(t *testing.T) {
 func TestDeleteQuery_Exec(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "dave", Email: "d@b"}).Exec(ctx)
 
@@ -733,7 +733,7 @@ func TestDeleteQuery_Exec(t *testing.T) {
 func TestRunInTx_CommitOnNil(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := sqldb.RunInTx(ctx, db, func(ctx context.Context) error {
 		_, err := db.Insert(&User{Name: "tx-user", Email: "tx@b"}).Exec(ctx)
@@ -754,7 +754,7 @@ func TestRunInTx_CommitOnNil(t *testing.T) {
 func TestRunInTxWith_CommitOnNil(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := sqldb.RunInTxWith(ctx, db, &sql.TxOptions{}, func(ctx context.Context) error {
 		_, err := db.Insert(&User{Name: "tx-with-user", Email: "with@b"}).Exec(ctx)
@@ -773,7 +773,7 @@ func TestRunInTxWith_CommitOnNil(t *testing.T) {
 func TestInTx_CommitOnNil(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := db.InTx(ctx, func(ctx context.Context) error {
 		_, err := db.Insert(&User{Name: "intx-user", Email: "intx@b"}).Exec(ctx)
@@ -792,7 +792,7 @@ func TestInTx_CommitOnNil(t *testing.T) {
 func TestInTx_RollbackOnError(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := db.InTx(ctx, func(ctx context.Context) error {
 		db.Insert(&User{Name: "intx-rollback", Email: "rb@b"}).Exec(ctx)
@@ -812,7 +812,7 @@ func TestInTx_RollbackOnError(t *testing.T) {
 func TestInTxWith_CommitOnNil(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := db.InTxWith(ctx, &sql.TxOptions{}, func(ctx context.Context) error {
 		_, err := db.Insert(&User{Name: "intxwith-user", Email: "iw@b"}).Exec(ctx)
@@ -831,7 +831,7 @@ func TestInTxWith_CommitOnNil(t *testing.T) {
 func TestRunInTx_RollbackOnError(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 	callbackErr := errors.New("domain duplicate key validation")
 
 	err := sqldb.RunInTx(ctx, db, func(ctx context.Context) error {
@@ -856,7 +856,7 @@ func TestRunInTx_RollbackOnError(t *testing.T) {
 func TestRunInTx_RollbackOnPanic(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 	panicValue := &struct{ message string }{message: "test panic"}
 
 	defer func() {
@@ -896,7 +896,7 @@ func TestRunInTx_NilCallbackFailsBeforeBegin(t *testing.T) {
 func TestRunInTx_TXInjection_ViaProxy(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Insert outside TX.
 	db.Insert(&User{Name: "pre-tx", Email: "pre@b"}).Exec(ctx)
@@ -924,7 +924,7 @@ func TestRunInTx_TXInjection_ViaProxy(t *testing.T) {
 func TestRunInTx_Nested_Savepoint(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := sqldb.RunInTx(ctx, db, func(outerCtx context.Context) error {
 		_, err := db.Insert(&User{Name: "outer", Email: "o@b"}).Exec(outerCtx)
@@ -1215,7 +1215,7 @@ func TestRunInTx_SameTypeMultiDBIsolation(t *testing.T) {
 	createUsersTable(t, primary)
 	createUsersTable(t, analytics)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := primary.Insert(&User{Name: "primary-only", Email: "p@b"}).Exec(ctx); err != nil {
 		t.Fatalf("primary insert: %v", err)
 	}
@@ -1361,7 +1361,7 @@ func TestDB_Conn_MultiDBScopeIsolation(t *testing.T) {
 func TestDB_Exec_Raw(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res, err := db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "raw-user", "r@b")
 	if err != nil {
@@ -1376,7 +1376,7 @@ func TestDB_Exec_Raw(t *testing.T) {
 func TestDB_QueryRow_Raw(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "qr-user", "q@b")
 
@@ -1393,7 +1393,7 @@ func TestDB_QueryRow_Raw(t *testing.T) {
 func TestDB_Query_Raw(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "q1", "a@b")
 	db.Exec(ctx, "INSERT INTO users (name, email) VALUES (?, ?)", "q2", "b@b")
@@ -1413,7 +1413,7 @@ func TestDB_Query_Raw(t *testing.T) {
 func TestDB_Exec_Raw_WithTX(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
 		_, err := db.Exec(txCtx, "INSERT INTO users (name, email) VALUES (?, ?)", "raw-tx", "rt@b")
@@ -1434,7 +1434,7 @@ func TestDB_Exec_Raw_WithTX(t *testing.T) {
 func TestSelectQuery_Reuse(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "reuse1", Email: "r1@b"}).Exec(ctx)
 	db.Insert(&User{Name: "reuse2", Email: "r2@b"}).Exec(ctx)
@@ -1464,7 +1464,7 @@ func TestSelectQuery_Reuse(t *testing.T) {
 func TestSelectQuery_One(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"alice", "bob"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b.c"}).Exec(ctx); err != nil {
@@ -1529,7 +1529,7 @@ func TestSelectQuery_One(t *testing.T) {
 func TestSelectQuery_All(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("empty result is a non-nil empty slice with nil error", func(t *testing.T) {
 		users, err := db.Select().All[User](ctx)
@@ -1568,7 +1568,7 @@ func TestSelectQuery_All(t *testing.T) {
 func TestSelectQuery_TypedTerminals_AmbientTx(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Seed one row outside the transaction.
 	if _, err := db.Insert(&User{Name: "outside", Email: "o@b"}).Exec(ctx); err != nil {
@@ -1606,7 +1606,7 @@ func TestSelectQuery_TypedTerminals_AmbientTx(t *testing.T) {
 func TestSelectQuery_TypedTerminals_Reuse(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "reuseA", Email: "a@b"}).Exec(ctx)
 	db.Insert(&User{Name: "reuseB", Email: "b@b"}).Exec(ctx)
@@ -1635,7 +1635,7 @@ func TestSelectQuery_TypedTerminals_Reuse(t *testing.T) {
 func TestSelectQuery_Page(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"anna", "beth", "cara"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -1664,7 +1664,7 @@ func TestSelectQuery_Page(t *testing.T) {
 func TestSelectQuery_Page_PointerElement(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"anna", "beth", "cara"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -1695,7 +1695,7 @@ func TestSelectQuery_Page_PointerElement(t *testing.T) {
 func TestSelectQuery_Page_EmptyResult(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// No rows: the SELECT is skipped, yet the returned Page echoes the
 	// requested page/per-page (NewPage with req values, not NewEmpty's
@@ -1719,7 +1719,7 @@ func TestSelectQuery_Page_EmptyResult(t *testing.T) {
 func TestSelectQuery_Page_DoesNotNormalize(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"anna", "beth", "cara"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -1746,7 +1746,7 @@ func TestSelectQuery_Page_DoesNotNormalize(t *testing.T) {
 func TestSelectQuery_Page_NilRequest(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := db.Select().Page[User](ctx, nil); err == nil {
 		t.Error("Page(nil req) should return an error")
@@ -1756,7 +1756,7 @@ func TestSelectQuery_Page_NilRequest(t *testing.T) {
 func TestSelectQuery_Page_InsideTx(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"anna", "beth", "cara"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -1804,7 +1804,7 @@ func TestSelectQuery_Page_InsideTx(t *testing.T) {
 func TestSelectQuery_Page_Reuse(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"reuseA", "reuseB", "reuseC"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -1839,7 +1839,7 @@ func TestSelectQuery_Page_Reuse(t *testing.T) {
 func TestSelectQuery_Apply(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "apply1", Email: "a@b"}).Exec(ctx)
 	db.Insert(&User{Name: "apply2", Email: "b@b"}).Exec(ctx)
@@ -1872,7 +1872,7 @@ func TestSelectQuery_Unwrap(t *testing.T) {
 func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"keep1", "target", "keep2"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@old"}).Exec(ctx); err != nil {
@@ -1944,7 +1944,7 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 func TestApplyQueryBuilder_PreservesErrorMapping(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Building the WHERE through the builder must not bypass the terminal
 	// interceptors: sql.ErrNoRows still maps to store.ErrNotFound.
@@ -1962,7 +1962,7 @@ func TestApplyQueryBuilder_PreservesErrorMapping(t *testing.T) {
 func TestApplyQueryBuilder_NilFnIsNoop(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := db.Insert(&User{Name: "solo", Email: "s@b"}).Exec(ctx); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -1981,7 +1981,7 @@ func TestApplyQueryBuilder_NilFnIsNoop(t *testing.T) {
 func TestApplyQueryBuilder_WhereGroup(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, name := range []string{"a", "b", "c"} {
 		if _, err := db.Insert(&User{Name: name, Email: name + "@b"}).Exec(ctx); err != nil {
@@ -2009,11 +2009,11 @@ func TestApplyQueryBuilder_WhereGroup(t *testing.T) {
 
 func TestRegister_Integration(t *testing.T) {
 	db := openTestDB(t)
-	if err := db.Ping(context.Background()); err != nil {
+	if err := db.Ping(t.Context()); err != nil {
 		t.Fatalf("Ping() = %v", err)
 	}
 
-	h := db.Health(context.Background())
+	h := db.Health(t.Context())
 	if h.Status != store.StatusUp {
 		t.Errorf("Health() = %q, want UP", h.Status)
 	}
@@ -2024,7 +2024,7 @@ func TestRegister_Integration(t *testing.T) {
 func TestSelectQuery_ExplicitConn(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "explicit", Email: "e@b"}).Exec(ctx)
 
@@ -2045,7 +2045,7 @@ func TestSelectQuery_ExplicitConn(t *testing.T) {
 // --- RunInTx nil db ---
 
 func TestRunInTx_NilDB(t *testing.T) {
-	err := sqldb.RunInTx(context.Background(), nil, func(ctx context.Context) error {
+	err := sqldb.RunInTx(t.Context(), nil, func(ctx context.Context) error {
 		return nil
 	})
 	if err == nil {
@@ -2058,7 +2058,7 @@ func TestRunInTx_NilDB(t *testing.T) {
 func TestDBConn_FallbackWhenNoTX(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "conntest", Email: "c@b"}).Exec(ctx)
 
@@ -2078,9 +2078,9 @@ func TestDB_Health_AfterShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	db.Shutdown(context.Background())
+	db.Shutdown(t.Context())
 
-	h := db.Health(context.Background())
+	h := db.Health(t.Context())
 	if h.Status != store.StatusDown {
 		t.Errorf("Health after shutdown = %q, want DOWN", h.Status)
 	}
@@ -2102,7 +2102,7 @@ func TestDB_Shutdown_ClosesPoolWhenContextCanceled(t *testing.T) {
 	// A shutdown driven by an already-canceled context must still close the
 	// pool; otherwise connections leak. Regression: Shutdown returned ctx.Err()
 	// before calling Close, skipping the close entirely.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if err := db.Shutdown(ctx); err != nil {
@@ -2110,7 +2110,7 @@ func TestDB_Shutdown_ClosesPoolWhenContextCanceled(t *testing.T) {
 	}
 
 	// The pool is closed: a ping now fails.
-	if err := db.Ping(context.Background()); err == nil {
+	if err := db.Ping(t.Context()); err == nil {
 		t.Fatal("Ping after Shutdown = nil, want error (pool should be closed)")
 	}
 }
@@ -2120,7 +2120,7 @@ func TestDB_Shutdown_ClosesPoolWhenContextCanceled(t *testing.T) {
 func TestInsertQuery_ErrorMapping_DuplicateKey(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	db.Insert(&User{Name: "unique", Email: "u@b"}).Exec(ctx)
 

@@ -130,7 +130,7 @@ func rawConfigWithServer(t *testing.T, server map[string]any) credo.RawConfig {
 // served, which is how the precedence tests prove which source won.
 func assertHTTPSPong(t *testing.T, app *credo.App, certFile string) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
@@ -188,7 +188,7 @@ func TestApp_RunContext_TLSFiles_BadCertFailFast(t *testing.T) {
 		credo.WithTLSFiles("nonexistent.crt", "nonexistent.key"))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal("RunContext with a missing cert should fail")
 	}
 	if app.IsRunning() {
@@ -209,7 +209,7 @@ func TestApp_WithTLSConfig_NoCertSource_PreflightError(t *testing.T) {
 			credo.WithTLSConfig(&tls.Config{}))
 		app.GET("/ping", pongHandler)
 
-		if err := app.RunContext(context.Background()); err == nil {
+		if err := app.RunContext(t.Context()); err == nil {
 			t.Fatal("empty tls.Config should fail at preflight")
 		}
 		if got := app.State(); got != "building" {
@@ -242,7 +242,7 @@ func TestApp_TLSConfigKeys_PartialFails(t *testing.T) {
 	app := mustNew(t, credo.WithRawConfig(rc), credo.WithAddr("127.0.0.1", 0))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal("partial TLS config (cert without key) should fail at preflight")
 	}
 	if got := app.State(); got != "building" {
@@ -259,7 +259,7 @@ func TestApp_WithTLSConfig_Nil_PreflightError(t *testing.T) {
 		credo.WithTLSConfig(nil))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal("WithTLSConfig(nil) should fail at preflight")
 	}
 	if got := app.State(); got != "building" {
@@ -282,7 +282,7 @@ func TestApp_WithTLSFiles_Empty_PreflightError(t *testing.T) {
 		credo.WithTLSFiles("", ""))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal(`WithTLSFiles("", "") should fail at preflight, not fall back to the config keys`)
 	}
 	if got := app.State(); got != "building" {
@@ -338,7 +338,7 @@ func TestApp_RunContext_NoTLS_ServesPlain(t *testing.T) {
 	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	app.GET("/ping", pongHandler)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
@@ -420,7 +420,7 @@ func TestApp_ServeContext_IgnoresConfiguredTLS(t *testing.T) {
 	}
 	addr := l.Addr().String()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.ServeContext(ctx, l) }()
 	waitRunning(t, app)
@@ -458,7 +458,7 @@ func TestApp_ServeContext_TLSNewListener_ServesHTTPS(t *testing.T) {
 	addr := tcpL.Addr().String()
 	tlsL := tls.NewListener(tcpL, &tls.Config{Certificates: []tls.Certificate{cert}})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.ServeContext(ctx, tlsL) }()
 	waitRunning(t, app)

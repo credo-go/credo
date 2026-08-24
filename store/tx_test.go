@@ -1,7 +1,6 @@
 package store_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -9,7 +8,7 @@ import (
 )
 
 func TestWithTx_GetTx_RoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tx := "mock-tx-handle"
 
 	ctx = store.WithTx[string](ctx, tx)
@@ -23,7 +22,7 @@ func TestWithTx_GetTx_RoundTrip(t *testing.T) {
 }
 
 func TestGetTx_NotPresent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	got, ok := store.GetTx[string](ctx)
 	if ok {
 		t.Fatal("GetTx returned true for empty context, want false")
@@ -34,7 +33,7 @@ func TestGetTx_NotPresent(t *testing.T) {
 }
 
 func TestConn_WithTx(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tx := "active-tx"
 	fallback := "fallback-conn"
 
@@ -46,7 +45,7 @@ func TestConn_WithTx(t *testing.T) {
 }
 
 func TestConn_WithoutTx(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	fallback := "fallback-conn"
 
 	got := store.Conn[string](ctx, fallback)
@@ -60,7 +59,7 @@ type testTxA struct{ id string }
 type testTxB struct{ id string }
 
 func TestWithTx_DifferentTypes_NoCollision(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	a := testTxA{id: "tx-a"}
 	b := testTxB{id: "tx-b"}
 
@@ -79,7 +78,7 @@ func TestWithTx_DifferentTypes_NoCollision(t *testing.T) {
 }
 
 func TestWithTxInScope_SameType_NoCollision(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scopeA := store.NewTxScope[string]()
 	scopeB := store.NewTxScope[string]()
 
@@ -100,7 +99,7 @@ func TestWithTxInScope_SameType_NoCollision(t *testing.T) {
 }
 
 func TestTxScope_Methods_RoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scope := store.NewTxScope[string]()
 
 	ctx = scope.WithTx(ctx, "scoped-tx")
@@ -115,7 +114,7 @@ func TestTxScope_Methods_RoundTrip(t *testing.T) {
 }
 
 func TestTxScope_Conn_Fallback(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scope := store.NewTxScope[string]()
 
 	if conn := scope.Conn(ctx, "fallback"); conn != "fallback" {
@@ -130,7 +129,7 @@ func TestTxScope_Conn_Fallback(t *testing.T) {
 // functions, so a value stored through a method must be readable through the
 // matching free function and vice versa — same scope, same key.
 func TestTxScope_Methods_MatchFreeFunctions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scope := store.NewTxScope[string]()
 
 	ctx = scope.WithTx(ctx, "via-method")
@@ -145,7 +144,7 @@ func TestTxScope_Methods_MatchFreeFunctions(t *testing.T) {
 }
 
 func TestTxScope_Methods_DistinctScopes_NoCollision(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scopeA := store.NewTxScope[string]()
 	scopeB := store.NewTxScope[string]()
 

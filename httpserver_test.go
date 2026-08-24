@@ -184,7 +184,7 @@ func TestWithHTTPServer_H2C(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.ServeContext(ctx, l) }()
 	waitRunning(t, app)
@@ -233,7 +233,7 @@ func TestWithHTTPServer_RedirectServerExcluded(t *testing.T) {
 		}))
 	app.GET("/ping", pongHandler)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
