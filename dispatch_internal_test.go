@@ -1,9 +1,11 @@
 package credo
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +57,115 @@ func TestMount_IntrospectionMethodsMatchRegistration(t *testing.T) {
 	}
 	if !slices.Equal(introspected, registered) {
 		t.Errorf("introspection Methods %v != radix-registered set %v", introspected, registered)
+	}
+}
+
+// dispatchOnceForTest runs a single dispatchOnce pass against app for the
+// given request, returning the recorder and the handler-chain error. It mirrors
+// ServeHTTP's pool acquire/reset/release but stops below the rewrite loop and
+// the centralized error renderer, so sentinel returns stay observable.
+func dispatchOnceForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	app.handlerOnce.Do(app.compile)
+	rec := httptest.NewRecorder()
+	c := app.ctxPool.get()
+	c.reset(rec, httptest.NewRequest(method, target, nil))
+	err := app.dispatchOnce(c)
+	app.ctxPool.put(c)
+	return rec, err
+}
+
+// TestDispatchOnce_UnknownMethod_NotFound locks the documented subtlety that a
+// method absent from the radix method map short-circuits to 404 — never 405 —
+// because no route could possibly match it.
+func TestDispatchOnce_UnknownMethod_NotFound(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
+
+	_, dispatchErr := dispatchOnceForTest(t, app, "FROB", "/x")
+	if !errors.Is(dispatchErr, ErrNotFound) {
+		t.Fatalf("unknown method dispatch = %v, want ErrNotFound", dispatchErr)
+	}
+}
+
+// TestDispatchOnce_MethodNotAllowed_SetsAllow verifies the 405 path returns
+// the sentinel and stamps the Allow header with the registered method set
+// before the error leaves dispatchOnce.
+func TestDispatchOnce_MethodNotAllowed_SetsAllow(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
+	app.PUT("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
+
+	rec, dispatchErr := dispatchOnceForTest(t, app, http.MethodPost, "/x")
+	if !errors.Is(dispatchErr, ErrMethodNotAllowed) {
+		t.Fatalf("POST to GET/PUT route = %v, want ErrMethodNotAllowed", dispatchErr)
+	}
+	allow := rec.Header().Get("Allow")
+	for _, want := range []string{http.MethodGet, http.MethodPut} {
+		if !strings.Contains(allow, want) {
+			t.Errorf("Allow = %q, want it to contain %s", allow, want)
+		}
+	}
+}
+
+// TestDispatchOnce_TrailingSlashRedirect verifies the alternate-path probe:
+// GET/HEAD redirect with 301, other methods with 308, and the query string is
+// preserved on the Location target.
+func TestDispatchOnce_TrailingSlashRedirect(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/users", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
+	app.POST("/users", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
+
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantLoc    string
+	}{
+		{"GET keeps query, 301", http.MethodGet, "/users/?q=1", http.StatusMovedPermanently, "/users?q=1"},
+		{"POST preserves method, 308", http.MethodPost, "/users/", http.StatusPermanentRedirect, "/users"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, dispatchErr := dispatchOnceForTest(t, app, tc.method, tc.target)
+			if dispatchErr != nil {
+				t.Fatalf("dispatchOnce = %v, want nil (redirect written)", dispatchErr)
+			}
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if got := rec.Header().Get("Location"); got != tc.wantLoc {
+				t.Errorf("Location = %q, want %q", got, tc.wantLoc)
+			}
+		})
+	}
+}
+
+// TestTrailingSlashAlternate locks the pure alternate-path derivation,
+// including the root-path guard.
+func TestTrailingSlashAlternate(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/", ""},
+		{"/users", "/users/"},
+		{"/users/", "/users"},
+		{"/a/b/", "/a/b"},
+	}
+	for _, tc := range tests {
+		if got := trailingSlashAlternate(tc.path); got != tc.want {
+			t.Errorf("trailingSlashAlternate(%q) = %q, want %q", tc.path, got, tc.want)
+		}
 	}
 }
