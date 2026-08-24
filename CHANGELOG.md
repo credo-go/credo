@@ -14,6 +14,21 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-24
+
+### Changed
+
+- **Breaking:** the machine-readable `Code` is now the primary stable identity of `HTTPError`, and `NewHTTPError`'s optional second argument is that code — not a message key: `NewHTTPError(status int, code ...string)`. The constructor is strict: it panics on a status outside `100..999`, on more than one code argument, and on a code that does not match `^[a-z0-9]+(_[a-z0-9]+)*$` (registration-time misuse fails fast; a panic reached at request time is caught by built-in recovery and rendered as a fail-closed generic 500 that publishes none of the invalid fields). A codeless call materializes `Code` from a frozen, committed `statusToCode` table generated once from Go 1.27's `http.StatusText` (62 entries, fixture-locked; unknown status → `http_<status>`) — the table never tracks the live standard library, so codes cannot silently rename. `WithCode` and message-key last-dot-segment code derivation are removed; message keys become optional presentation attached with the new copy-on-write `WithMessageKey`. The positional argument keeps its Go type while changing meaning, so old keyed calls may compile — the strict grammar turns dotted keys and literal messages into loud panics under test; see the migration table in [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md). See [ADR-009](docs/adr/009-handler-and-error-handling.md).
+- **Breaking:** sentinel field state changed: sentinels now materialize their code and carry no stored key — `ErrNotFound.Code == "not_found"`, `ErrNotFound.MessageKey == ""`. `ErrorInfo.MessageKey` continues to carry the effective classification key (now `errors.<code>`) to renderers. Default locale keys for built-in HTTP titles move from `http.*` to `errors.*` (`http.not_found` → `errors.not_found`); `http.validation_failed` and `http.request_timeout` are kept because framework code references them as explicit keys. Bundles using the old defaults must rename.
+- **Breaking:** `HTTPError.Error()` now prints machine identity first — `credo: http error: status=…, code=…, key=…, internal=…` — omitting empty segments. String assertions on the old format break.
+- Classification is fail-closed at the boundary: a directly constructed `HTTPError` struct with an out-of-domain status or grammar-violating code, and a legacy `HTTPStatus() int` provider returning a value outside `100..999`, are classified as a generic 500 and none of the invalid fields reach the wire.
+
+### Added
+
+- `HTTPError.WithMessageKey(key string)` — copy-on-write presentation-key builder, the successor to passing a key positionally. Title resolution is now two explicit chains: an explicit `MessageKey` resolves i18n bundle → built-in English default → the key itself as literal text; without a key the title resolves bundle(`errors.<code>`) → `http.StatusText` → `"HTTP <status>"`.
+- Every classified error now carries a `code` member on the wire: previously code-less bodies (sentinels without derivable keys, unknown statuses, generic 500s) gain the frozen default — a strictly additive RFC 7807 change. Errors whose code was previously derived from a built-in key keep byte-identical bodies.
+- An informational drift canary logs (never fails) when Go's `http.StatusText` diverges from the frozen table, so deliberate table updates remain a reviewed decision.
+
 ## [0.10.0] - 2026-08-24
 
 ### Changed
@@ -360,7 +375,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/credo-go/credo/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/credo-go/credo/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/credo-go/credo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/credo-go/credo/compare/v0.7.0...v0.8.0
