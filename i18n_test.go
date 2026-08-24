@@ -21,8 +21,8 @@ func i18nTestFS() fstest.MapFS {
 			Data: []byte(`{
 				"v.required": "is required",
 				"v.email": "must be a valid email",
-				"http.not_found": "Not found",
-				"http.internal_server_error": "Internal server error",
+				"errors.not_found": "Not found",
+				"errors.internal_server_error": "Internal server error",
 				"items": {"one": "{{.count}} item", "other": "{{.count}} items"}
 			}`),
 		},
@@ -30,8 +30,8 @@ func i18nTestFS() fstest.MapFS {
 			Data: []byte(`{
 				"v.required": "zorunludur",
 				"v.email": "geçerli bir e-posta adresi olmalıdır",
-				"http.not_found": "Bulunamadı",
-				"http.internal_server_error": "Sunucu hatası",
+				"errors.not_found": "Bulunamadı",
+				"errors.internal_server_error": "Sunucu hatası",
 				"items": {"one": "tek öğe", "other": "{{.count}} öğe"}
 			}`),
 		},

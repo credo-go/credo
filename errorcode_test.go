@@ -103,22 +103,6 @@ func TestStatusToCodeGrammar(t *testing.T) {
 	}
 }
 
-// TestStatusToCodeMatchesLegacyKeySegments proves byte parity between the
-// frozen table and the final segment of every legacy statusToKey entry, the
-// pre-inversion source of derived wire codes. When statusToKey is removed,
-// this parity guarantee devolves onto TestStatusToCodeFrozenFixture.
-func TestStatusToCodeMatchesLegacyKeySegments(t *testing.T) {
-	if len(statusToKey) == 0 {
-		t.Fatal("legacy statusToKey table is empty")
-	}
-	for status, key := range statusToKey {
-		segment := key[strings.LastIndex(key, ".")+1:]
-		if got := statusToCode[status]; got != segment {
-			t.Errorf("statusToCode[%d] = %q, want legacy key segment %q (from %q)", status, got, segment, key)
-		}
-	}
-}
-
 func TestDefaultCodeForStatus(t *testing.T) {
 	tests := []struct {
 		name   string

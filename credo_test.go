@@ -624,7 +624,7 @@ func TestApp_HEADAutoHandling(t *testing.T) {
 func TestApp_DefaultErrorHandling(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/error", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(422, "validation failed")
+		return credo.NewHTTPError(422).WithMessageKey("validation failed")
 	})
 
 	w := httptest.NewRecorder()
@@ -648,7 +648,7 @@ func TestApp_CustomErrorRenderer(t *testing.T) {
 	})
 
 	app.GET("/fail", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(500, "oops")
+		return credo.NewHTTPError(500).WithMessageKey("oops")
 	})
 
 	w := httptest.NewRecorder()
@@ -809,11 +809,14 @@ func TestHTTPError(t *testing.T) {
 	if e.Status != 404 {
 		t.Errorf("Status = %d, want 404", e.Status)
 	}
-	if e.MessageKey != credo.MsgKeyNotFound {
-		t.Errorf("MessageKey = %q, want %q", e.MessageKey, credo.MsgKeyNotFound)
+	if e.Code != "not_found" {
+		t.Errorf("Code = %q, want %q", e.Code, "not_found")
+	}
+	if e.MessageKey != "" {
+		t.Errorf("MessageKey = %q, want empty", e.MessageKey)
 	}
 
-	e = credo.NewHTTPError(400, "bad input")
+	e = credo.NewHTTPError(400).WithMessageKey("bad input")
 	if e.MessageKey != "bad input" {
 		t.Errorf("MessageKey = %q, want 'bad input'", e.MessageKey)
 	}
@@ -2229,7 +2232,7 @@ func TestApp_WrapStdMiddleware_RestoresWriterForErrorPipeline(t *testing.T) {
 
 	app.GlobalMiddleware(credo.WrapStdMiddleware(stdMW))
 	app.GET("/fail", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(418, "teapot")
+		return credo.NewHTTPError(418)
 	})
 
 	w := httptest.NewRecorder()

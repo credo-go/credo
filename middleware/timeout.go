@@ -83,7 +83,8 @@ func normalizeTimeoutConfig(config TimeoutConfig) TimeoutConfig {
 
 func defaultTimeoutErrorHandler(_ *credo.Context, err error) error {
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
-		return credo.NewHTTPError(http.StatusServiceUnavailable, credo.MsgKeyRequestTimeout).WithInternal(err)
+		return credo.NewHTTPError(http.StatusServiceUnavailable, "request_timeout").
+			WithMessageKey(credo.MsgKeyRequestTimeout).WithInternal(err)
 	}
 	return err
 }

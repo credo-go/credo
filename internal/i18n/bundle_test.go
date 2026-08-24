@@ -141,8 +141,8 @@ func TestBundle_LoadDir(t *testing.T) {
 	if enMsgs["v.required"] == nil {
 		t.Error("v.required not found in English messages")
 	}
-	if enMsgs["http.not_found"] == nil {
-		t.Error("http.not_found not found in English messages")
+	if enMsgs["errors.not_found"] == nil {
+		t.Error("errors.not_found not found in English messages")
 	}
 }
 

@@ -278,7 +278,7 @@ func TestBuiltinAccessLog_ErrorResponse_DurationIncludesRenderer(t *testing.T) {
 
 	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
 	app.GET("/fail", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(500, "test.error")
+		return credo.NewHTTPError(500).WithMessageKey("test.error")
 	})
 
 	w := httptest.NewRecorder()
@@ -820,7 +820,7 @@ func TestBuiltinAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
 		{
 			name: "returned error",
 			handler: func(*credo.Context) error {
-				return credo.NewHTTPError(500, "test.error")
+				return credo.NewHTTPError(500).WithMessageKey("test.error")
 			},
 		},
 		{

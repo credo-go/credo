@@ -393,7 +393,7 @@ type validatedStruct struct {
 
 func (v *validatedStruct) Validate() error {
 	if v.Name == "" {
-		return credo.NewHTTPError(422, "name is required")
+		return credo.NewHTTPError(422).WithMessageKey("name is required")
 	}
 	return nil
 }
@@ -405,7 +405,7 @@ type validatedQuery struct {
 
 func (q *validatedQuery) Validate() error {
 	if q.Name == "" {
-		return credo.NewHTTPError(422, "name is required")
+		return credo.NewHTTPError(422).WithMessageKey("name is required")
 	}
 	return nil
 }
@@ -424,7 +424,7 @@ type validatedFormInput struct {
 
 func (f *validatedFormInput) Validate() error {
 	if f.Name == "" {
-		return credo.NewHTTPError(422, "name is required")
+		return credo.NewHTTPError(422).WithMessageKey("name is required")
 	}
 	return nil
 }
@@ -443,7 +443,7 @@ type validatedXMLInput struct {
 
 func (x *validatedXMLInput) Validate() error {
 	if x.Name == "" {
-		return credo.NewHTTPError(422, "name is required")
+		return credo.NewHTTPError(422).WithMessageKey("name is required")
 	}
 	return nil
 }
