@@ -80,7 +80,7 @@ type HTTPError struct {
 	// MessageKey is an optional i18n message key or literal fallback message
 	// used only for title presentation; it never contributes to Code. Attach
 	// one with [HTTPError.WithMessageKey].
-	MessageKey string `json:"message_key"`
+	MessageKey string `json:"message_key,omitempty"`
 
 	// Details carries optional structured, client-safe detail rendered as the
 	// RFC 7807 "details" extension member. It is encoded with the
@@ -96,6 +96,10 @@ type HTTPError struct {
 // code for the status is used (404 → "not_found"; a status outside the
 // frozen table yields "http_<status>"). MessageKey starts empty; attach a
 // presentation key with [HTTPError.WithMessageKey].
+//
+// The status domain is the full valid range 100..999, not just the error
+// classes: NewHTTPError(200) is accepted and defaults to code "ok".
+// Restricting construction to 4xx/5xx semantics is the caller's concern.
 //
 // Misuse panics — this is a developer invariant violation, not a runtime
 // condition: a status outside 100..999, more than one code argument, or a
@@ -216,7 +220,8 @@ type ProblemDetails struct {
 	Instance string `json:"instance,omitempty"`
 
 	// Code is a machine-readable error code (RFC 7807 extension member).
-	// Populated from [HTTPError.Code] or derived from the message key.
+	// Populated from [HTTPError.Code]; the classification default comes from
+	// the frozen statusToCode table. Never derived from the message key.
 	Code string `json:"code,omitempty"`
 
 	// Details carries structured, client-safe detail about this occurrence
