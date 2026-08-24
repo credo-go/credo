@@ -96,7 +96,7 @@ func TestRegister_Success(t *testing.T) {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
 	}
 
-	health := reg.HealthAll(context.Background())
+	health := reg.HealthAll(t.Context())
 	if len(health) != 1 {
 		t.Fatalf("HealthAll() = %d entries, want 1", len(health))
 	}
@@ -352,7 +352,7 @@ func TestRegister_WithName(t *testing.T) {
 	}
 
 	reg, _ := app.Resolve[*store.Registry]()
-	health := reg.HealthAll(context.Background())
+	health := reg.HealthAll(t.Context())
 	if _, ok := health["custom-db"]; !ok {
 		t.Error("HealthAll should contain entry with custom name")
 	}

@@ -489,7 +489,7 @@ func TestServerShutdownNilContextReturnsErrorWithoutStartingDrain(t *testing.T) 
 	if err == nil || err.Error() != "credo/websocket: Server.Shutdown: nil context" {
 		t.Fatalf("Shutdown(nil) error = %v", err)
 	}
-	if err := server.Shutdown(context.Background()); err != nil {
+	if err := server.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown() after rejected nil context = %v", err)
 	}
 }
@@ -501,7 +501,7 @@ func TestServerShutdownCanCompleteWithCloseError(t *testing.T) {
 		changed:     make(chan struct{}),
 		drainDone:   make(chan struct{}),
 	}
-	connectionCtx, cancelConnection := context.WithCancelCause(context.Background())
+	connectionCtx, cancelConnection := context.WithCancelCause(t.Context())
 	record := &connectionRecord{
 		cancel:       cancelConnection,
 		close:        func(StatusCode, string) error { return closeErr },
@@ -529,7 +529,7 @@ func TestServerShutdownCanCompleteWithCloseError(t *testing.T) {
 	if !errors.Is(context.Cause(connectionCtx), closeErr) {
 		t.Fatalf("connection cause = %v, want close error", context.Cause(connectionCtx))
 	}
-	if got := server.Shutdown(context.Background()); !errors.Is(got, closeErr) || got.Error() != err.Error() {
+	if got := server.Shutdown(t.Context()); !errors.Is(got, closeErr) || got.Error() != err.Error() {
 		t.Fatalf("stable Shutdown() error = %v, want original result %v", got, err)
 	}
 }
@@ -562,7 +562,7 @@ func TestServerShutdownDrainsHandlerAndIsStable(t *testing.T) {
 	if err := <-shutdownDone; err != nil {
 		t.Fatalf("Shutdown() error: %v", err)
 	}
-	if err := server.Shutdown(context.Background()); err != nil {
+	if err := server.Shutdown(t.Context()); err != nil {
 		t.Fatalf("repeated Shutdown() error: %v", err)
 	}
 	server.mu.Lock()
@@ -710,7 +710,7 @@ func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
 		return readErr
 	}))
 
-	runCtx, cancelRun := context.WithCancel(context.Background())
+	runCtx, cancelRun := context.WithCancel(t.Context())
 	runDone := make(chan error, 1)
 	go func() { runDone <- app.RunContext(runCtx) }()
 	deadline := time.Now().Add(3 * time.Second)
@@ -847,7 +847,7 @@ func TestServerShutdownForceUnblocksTrackedCloseTask(t *testing.T) {
 	closeRelease := make(chan struct{})
 	closeNowCalled := make(chan struct{})
 	var releaseOnce sync.Once
-	connectionCtx, cancelConnection := context.WithCancelCause(context.Background())
+	connectionCtx, cancelConnection := context.WithCancelCause(t.Context())
 	record := &connectionRecord{
 		cancel: cancelConnection,
 		close: func(StatusCode, string) error {
@@ -918,7 +918,7 @@ func TestServerAttachRechecksDrainAfterAccept(t *testing.T) {
 		drainDone:    make(chan struct{}),
 		activeTokens: 1,
 	}
-	connectionCtx, cancelConnection := context.WithCancelCause(context.Background())
+	connectionCtx, cancelConnection := context.WithCancelCause(t.Context())
 	record := &connectionRecord{
 		cancel:       cancelConnection,
 		close:        func(StatusCode, string) error { return nil },

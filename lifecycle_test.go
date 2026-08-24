@@ -783,7 +783,7 @@ func TestApp_RunContext_CancelTriggersShutdown(t *testing.T) {
 		return ctx.Response().Text(200, "pong")
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
@@ -833,7 +833,7 @@ func TestApp_RunContext_DrainContextDerivation(t *testing.T) {
 		return nil
 	})
 
-	parent := context.WithValue(context.Background(), lifecycleCtxKey{}, "v1")
+	parent := context.WithValue(t.Context(), lifecycleCtxKey{}, "v1")
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -867,7 +867,7 @@ func TestApp_RunContext_AfterShutdown_SingleUse(t *testing.T) {
 		return ctx.Response().Text(200, "pong")
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
@@ -877,7 +877,7 @@ func TestApp_RunContext_AfterShutdown_SingleUse(t *testing.T) {
 		t.Fatalf("RunContext() error: %v", err)
 	}
 
-	err := app.RunContext(context.Background())
+	err := app.RunContext(t.Context())
 	if err == nil {
 		t.Fatal("second RunContext() after shutdown should return an error")
 	}
@@ -900,7 +900,7 @@ func TestApp_ServeContext_CustomListener(t *testing.T) {
 	}
 	addr := l.Addr().String()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.ServeContext(ctx, l) }()
 	waitRunning(t, app)
@@ -926,7 +926,7 @@ func TestApp_ServeContext_CustomListener(t *testing.T) {
 // TestApp_ServeContext_NilListener verifies ServeContext rejects a nil listener.
 func TestApp_ServeContext_NilListener(t *testing.T) {
 	app := mustNew(t)
-	if err := app.ServeContext(context.Background(), nil); err == nil {
+	if err := app.ServeContext(t.Context(), nil); err == nil {
 		t.Fatal("ServeContext(nil) should return an error")
 	}
 }

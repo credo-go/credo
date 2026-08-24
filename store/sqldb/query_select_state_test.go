@@ -408,7 +408,7 @@ func openSelectStateFileDB(t *testing.T, path string) *sqldb.DB {
 		t.Fatalf("open SQLite DB %q: %v", path, err)
 	}
 	t.Cleanup(func() {
-		if err := db.Shutdown(context.Background()); err != nil {
+		if err := db.Shutdown(t.Context()); err != nil {
 			t.Errorf("shutdown SQLite DB %q: %v", path, err)
 		}
 	})

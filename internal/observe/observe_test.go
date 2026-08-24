@@ -2,7 +2,6 @@ package observe
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -139,7 +138,7 @@ func TestEmitAccessLog(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	EmitAccessLog(context.Background(), logger, "GET", "/x", 503, 42, time.Second, "1.2.3.4", "curl", "/orig", "req-9")
+	EmitAccessLog(t.Context(), logger, "GET", "/x", 503, 42, time.Second, "1.2.3.4", "curl", "/orig", "req-9")
 
 	out := buf.String()
 	for _, want := range []string{

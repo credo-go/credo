@@ -1,7 +1,6 @@
 package sqldb_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -15,7 +14,7 @@ import (
 func TestQueryProxyBuilders(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("insert builders", func(t *testing.T) {
 		q := db.Insert(&User{Name: "z", Email: "z@z"}).

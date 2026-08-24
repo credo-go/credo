@@ -96,7 +96,7 @@ func (v *validatedLimits) Validate() error {
 
 func TestReload_NotRunning(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
-	if err := f.app.Reload(context.Background()); err == nil || !strings.Contains(err.Error(), `expected "running"`) {
+	if err := f.app.Reload(t.Context()); err == nil || !strings.Contains(err.Error(), `expected "running"`) {
 		t.Fatalf("Reload before Run: err = %v, want state error", err)
 	}
 	if err := f.app.Reload(nil); err == nil { //nolint:staticcheck // nil ctx is the condition under test
@@ -120,7 +120,7 @@ func TestReload_NotifiesAffectedSubscribersOnly(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "limits:\n  rps: 50\n  burst: 20\nother:\n  x: 1\n")
-	if err := f.app.Reload(context.Background()); err != nil {
+	if err := f.app.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if len(gotLimits) != 1 || gotLimits[0] != (limits{RPS: 50, Burst: 20}) {
@@ -131,7 +131,7 @@ func TestReload_NotifiesAffectedSubscribersOnly(t *testing.T) {
 	}
 
 	// No change → nobody is notified, and the snapshot is still readable.
-	if err := f.app.Reload(context.Background()); err != nil {
+	if err := f.app.Reload(t.Context()); err != nil {
 		t.Fatalf("second Reload: %v", err)
 	}
 	if len(gotLimits) != 1 {
@@ -151,7 +151,7 @@ func TestReload_NestedKeysAreIndependentSubscriptions(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "databases:\n  primary:\n    dsn: changed\n  replica:\n    dsn: b\n")
-	if err := f.app.Reload(context.Background()); err != nil {
+	if err := f.app.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if all != 1 || primary != 1 || replica != 0 {
@@ -169,7 +169,7 @@ func TestReload_DecodeFailureAbortsBeforePublish(t *testing.T) {
 
 	// rps becomes undecodable while name also changes: the whole reload aborts.
 	f.rewrite(t, "limits:\n  rps: not-a-number\nname: renamed\n")
-	err := f.app.Reload(context.Background())
+	err := f.app.Reload(t.Context())
 	if err == nil || !strings.Contains(err.Error(), `OnConfigChange[0] "limits"`) {
 		t.Fatalf("Reload err = %v, want decode failure for limits", err)
 	}
@@ -191,7 +191,7 @@ func TestReload_ValidationFailureAbortsBeforePublish(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "limits:\n  rps: 0\n")
-	err := f.app.Reload(context.Background())
+	err := f.app.Reload(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "rps must be positive") {
 		t.Fatalf("Reload err = %v, want validation failure", err)
 	}
@@ -213,7 +213,7 @@ func TestReload_SubscriberErrorDoesNotStopOthers(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "a: 2\nb: 2\n")
-	err := f.app.Reload(context.Background())
+	err := f.app.Reload(t.Context())
 	if err == nil {
 		t.Fatal("expected joined errors")
 	}
@@ -241,7 +241,7 @@ func TestReload_OnReloadOrderAndPanicRecovery(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "a: 2\n")
-	err := f.app.Reload(context.Background())
+	err := f.app.Reload(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "OnReload[1]: panic: boom") || !strings.Contains(err.Error(), "OnReload[2]: hook3 failed") {
 		t.Fatalf("Reload err = %v", err)
 	}
@@ -259,7 +259,7 @@ func TestReload_WarnsForUnsubscribedChanges(t *testing.T) {
 	f.start(t)
 
 	f.rewrite(t, "limits:\n  rps: 2\nserver:\n  read_timeout: 2s\nfeature:\n  flag: true\n")
-	if err := f.app.Reload(context.Background()); err != nil {
+	if err := f.app.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	logs := f.logs.String()
@@ -325,7 +325,7 @@ func TestReload_NonReloadableStore(t *testing.T) {
 		<-errC
 	})
 
-	if err := app.Reload(context.Background()); err != nil {
+	if err := app.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if hookCalls != 1 {
@@ -412,18 +412,18 @@ func TestReload_ReloaderOnlyStoreValidatesAfterPublish(t *testing.T) {
 	app.OnConfigChange[int]("b", func(context.Context, int) error { t.Error("b must not be applied"); return nil })
 
 	errC := make(chan error, 1)
-	go func() { errC <- app.RunContext(context.Background()) }()
+	go func() { errC <- app.RunContext(t.Context()) }()
 	for !app.IsRunning() {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		_ = app.Shutdown(ctx)
 		<-errC
 	})
 
-	err := app.Reload(context.Background())
+	err := app.Reload(t.Context())
 	if err == nil || !strings.Contains(err.Error(), `OnConfigChange[1] "b": not an int`) {
 		t.Fatalf("Reload err = %v, want post-publish decode failure for b", err)
 	}
@@ -454,7 +454,7 @@ func TestReload_ConcurrentCallsAreSerialized(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 5 {
 		wg.Go(func() {
-			if err := f.app.Reload(context.Background()); err != nil {
+			if err := f.app.Reload(t.Context()); err != nil {
 				t.Error(err)
 			}
 		})
