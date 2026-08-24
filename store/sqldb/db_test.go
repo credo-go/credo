@@ -109,7 +109,7 @@ func TestDB_StoreRegistrationWarningCodesReflectEffectivePool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open() = %v", err)
 		}
-		t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+		t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 		got := db.StoreRegistrationWarningCodes()
 		want := []string{maxOpenUnlimitedWarningCode}
@@ -133,7 +133,7 @@ func TestDB_StoreRegistrationWarningCodesReflectEffectivePool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open() = %v", err)
 		}
-		t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+		t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 		if got := db.StoreRegistrationWarningCodes(); got != nil {
 			t.Fatalf("StoreRegistrationWarningCodes() = %v, want nil", got)
@@ -241,7 +241,7 @@ func TestOpen_TxCleanupTimeout(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Open = %v", err)
 			}
-			t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+			t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 			if db.txCleanupTimeout != tt.want {
 				t.Fatalf("txCleanupTimeout = %s, want %s", db.txCleanupTimeout, tt.want)
 			}
@@ -275,7 +275,7 @@ func TestOpen_CustomDriverWithExplicitDialect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(custom driver, explicit dialect) = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 	if db.family != driverFamilySQLite {
 		t.Fatalf("custom driver family = %v, want SQLite from explicit dialect", db.family)
 	}
@@ -290,7 +290,7 @@ func TestOpen_CustomConnectorWithExplicitDialect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(custom connector, explicit dialect) = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 	if db.family != driverFamilySQLite {
 		t.Fatalf("custom connector family = %v, want SQLite from explicit dialect", db.family)
 	}

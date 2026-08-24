@@ -136,7 +136,7 @@ func TestDB_Stats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	stats := db.Stats()
 	if stats.MaxOpenConnections != 3 {
@@ -172,7 +172,7 @@ func TestDB_MaxIdlePresenceControlsRuntimePool(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Open() = %v", err)
 			}
-			t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+			t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 			if err := db.Ping(t.Context()); err != nil {
 				t.Fatalf("Ping() = %v", err)
@@ -198,7 +198,7 @@ func TestDB_Stats_WaitCounters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	held, err := db.Client().DB.Conn(t.Context())
 	if err != nil {
@@ -653,7 +653,7 @@ func TestRaw_ErrorMapping_SQLiteContention(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open(%q) = %v", dsn, err)
 		}
-		t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+		t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 		return db
 	}
 
@@ -1015,7 +1015,7 @@ func TestRunInTx_NestedSavepointCreationTimeoutFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -1112,7 +1112,7 @@ func TestRunInTx_TxCleanupTimeoutExcludesCallbackDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	err = db.InTx(t.Context(), func(outerCtx context.Context) error {
 		return db.InTx(outerCtx, func(context.Context) error {

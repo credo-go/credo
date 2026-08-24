@@ -227,7 +227,7 @@ func TestAbortAmbientTransaction_RollsBackRootSQLTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	if _, createErr := db.Client().NewRaw("CREATE TABLE tx_abort (id INTEGER)").Exec(t.Context()); createErr != nil {
 		t.Fatalf("create table = %v", createErr)

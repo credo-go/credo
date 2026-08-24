@@ -1,6 +1,7 @@
 package sqldb
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -66,13 +67,13 @@ func TestSelectQuery_PrepareUsesActualRawConnectionState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open primary DB: %v", err)
 	}
-	t.Cleanup(func() { _ = primary.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = primary.Shutdown(context.WithoutCancel(t.Context())) })
 
 	ambient, err := Open(&Config{Driver: "sqlite", DSN: ":memory:"})
 	if err != nil {
 		t.Fatalf("open ambient DB: %v", err)
 	}
-	t.Cleanup(func() { _ = ambient.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = ambient.Shutdown(context.WithoutCancel(t.Context())) })
 
 	ctx := primary.txScope.WithTx(t.Context(), ambient.Client())
 	tests := []struct {
