@@ -43,8 +43,8 @@ locales/
 {
   "messages.welcome": "Welcome",
   "messages.hello_name": "Hello, {{.name}}",
-  "http.not_found": "Not found",
-  "http.internal_server_error": "Internal server error",
+  "errors.not_found": "Not found",
+  "errors.internal_server_error": "Internal server error",
   "v.required": "is required",
   "v.email": "must be a valid email address"
 }
@@ -56,8 +56,8 @@ locales/
 {
   "messages.welcome": "Hos geldiniz",
   "messages.hello_name": "Merhaba, {{.name}}",
-  "http.not_found": "Bulunamadı",
-  "http.internal_server_error": "Sunucu hatası",
+  "errors.not_found": "Bulunamadı",
+  "errors.internal_server_error": "Sunucu hatası",
   "v.required": "zorunludur",
   "v.email": "gecerli bir e-posta adresi olmalidir"
 }
@@ -157,14 +157,14 @@ Example:
   "v.between": "must be between {{.min}} and {{.max}}",
   "bind.type_mismatch": "must be of type {{.expected}}",
   "bind.trailing_data": "request body must contain a single JSON value",
-  "http.bad_request": "Bad request",
+  "errors.bad_request": "Bad request",
+  "errors.unauthorized": "Unauthorized",
+  "errors.forbidden": "Forbidden",
+  "errors.not_found": "Not found",
+  "errors.conflict": "Conflict",
+  "errors.internal_server_error": "Internal server error",
   "http.bind_failed": "Malformed request",
-  "http.unauthorized": "Unauthorized",
-  "http.forbidden": "Forbidden",
-  "http.not_found": "Not found",
-  "http.conflict": "Conflict",
-  "http.validation_failed": "Validation failed",
-  "http.internal_server_error": "Internal server error"
+  "http.validation_failed": "Validation failed"
 }
 ```
 
@@ -478,13 +478,13 @@ Notes:
 
 ## Automatic HTTP Error Translation
 
-Credo translates `HTTPError.MessageKey` automatically via the `resolveMessage` 3-level fallback: i18n bundle → builtInMessages → key itself.
+Credo localizes error titles automatically. An error without an explicit `MessageKey` resolves through its effective classification key `errors.<code>` (bundle → `http.StatusText` → `"HTTP <status>"`); an explicit `MessageKey` resolves through the `resolveMessage` 3-level fallback: i18n bundle → builtInMessages → key itself.
 
 ```go
 app.GET("/users/{id}", func(ctx *credo.Context) error {
     id := ctx.Request().RouteParam("id")
     if id == "missing" {
-        return credo.ErrNotFound
+        return credo.ErrNotFound // code "not_found", no explicit key
     }
     return ctx.Response().JSON(http.StatusOK, map[string]string{"id": id})
 })
@@ -494,33 +494,19 @@ If `locales/tr/messages.json` contains:
 
 ```json
 {
-  "http.not_found": "Bulunamadı"
+  "errors.not_found": "Bulunamadı"
 }
 ```
 
 then the RFC 7807 problem title becomes `Bulunamadı` for Turkish requests.
 
-Built-in MsgKey constants used as locale keys:
+Default locale keys follow the frozen status codes — `errors.bad_request`, `errors.unauthorized`, `errors.forbidden`, `errors.not_found`, `errors.method_not_allowed`, `errors.conflict`, `errors.unprocessable_entity`, `errors.unsupported_media_type`, `errors.internal_server_error`, `errors.too_many_requests`, `errors.service_unavailable`, `errors.gateway_timeout`, `errors.request_timeout`, and so on for every status your app returns (an unknown status localizes under `errors.http_<status>`). Validation and bind titles keep their explicit keys `http.validation_failed` and `http.bind_failed`.
 
-- `http.bad_request`
-- `http.unauthorized`
-- `http.forbidden`
-- `http.not_found`
-- `http.method_not_allowed`
-- `http.conflict`
-- `http.unprocessable_entity`
-- `http.unsupported_media_type`
-- `http.internal_server_error`
-- `http.too_many_requests`
-- `http.service_unavailable`
-- `http.gateway_timeout`
-- `http.request_timeout`
-- `http.validation_failed`
-
-Custom message keys are also supported:
+Explicit presentation keys are attached with `WithMessageKey`:
 
 ```go
-return credo.NewHTTPError(http.StatusConflict, "user.email_exists")
+return credo.NewHTTPError(http.StatusConflict, "email_exists").
+    WithMessageKey("user.email_exists")
 ```
 
 If no translation is found, the key itself (`"user.email_exists"`) is used as the title.
@@ -667,8 +653,8 @@ If a key is missing, Credo keeps the original default message.
   "messages.user_created": "User created",
   "v.required": "{{.field}} is required",
   "v.email": "{{.field}} must be a valid email address",
-  "http.not_found": "Not found",
-  "http.internal_server_error": "Internal server error"
+  "errors.not_found": "Not found",
+  "errors.internal_server_error": "Internal server error"
 }
 ```
 

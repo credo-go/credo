@@ -347,8 +347,8 @@ Handlers return errors. The internal error handling pipeline converts them to RF
 func getUser(ctx *credo.Context) error {
     user, err := svc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
     if err != nil {
-        // Wrap with HTTP status
-        return credo.NewHTTPError(404, "user.not_found").WithInternal(err)
+        // Wrap with HTTP status and a stable machine code
+        return credo.NewHTTPError(404, "user_not_found").WithInternal(err)
     }
     return ctx.Response().JSON(200, user)
 }
@@ -363,7 +363,7 @@ return credo.ErrForbidden       // 403
 return credo.ErrBadRequest      // 400
 ```
 
-Sentinel errors use built-in MsgKey constants (e.g., `"http.not_found"`). Custom keys are supported: `credo.NewHTTPError(404, "user.not_found")`. When i18n is configured, MessageKey is used as the translation key. Dotted keys also yield the machine-readable `code` extension member automatically (`"user.not_found"` → `"code": "not_found"`); `WithCode`/`WithDetails` set it and structured `details` explicitly — see the [error-handling guide](error-handling.md).
+Every error response carries a stable machine-readable `code` extension member: the explicit `NewHTTPError` code argument, or the frozen default for the status (`404` → `"not_found"`). Human-readable titles are separate — attach an i18n key or literal text with `WithMessageKey`, or let the default resolve through the `errors.<code>` locale lookup and `http.StatusText`. `WithDetails` adds structured client-safe detail — see the [error-handling guide](error-handling.md).
 
 Internal errors (5xx) are logged but never leaked to the client.
 

@@ -86,6 +86,14 @@
 // that cannot reload panics, while [App.Reload] itself — which re-reads files
 // and runs user hooks — returns an error.
 //
+// The split is drawn by cause, not by execution phase: a developer invariant
+// violation panics even when the offending call happens to run during a
+// request. [NewHTTPError] with an out-of-domain status or a malformed machine
+// code is a bug in a constant, not a runtime condition — it panics on first
+// execution, and built-in recovery renders a generic 500 that never publishes
+// the invalid value. Request-derived text must map onto predeclared codes;
+// it is never passed through as a wire identity.
+//
 // # Stability
 //
 // Credo is Beta: shipped packages are usable for real development, with breaking

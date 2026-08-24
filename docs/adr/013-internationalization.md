@@ -18,9 +18,9 @@ ctx.Locale()                                     // detected language
 ctx.T("v.required")                              // translate
 ```
 
-Errors carry their own translation key rather than being matched by type. `HTTPError` holds a `MessageKey` field (e.g. `"http.not_found"`); the error pipeline (ADR-009) resolves it against the bundle. The same key doubles as the literal fallback, so a message survives even with no bundle configured.
+Errors carry their own translation key rather than being matched by type. `HTTPError` holds an optional `MessageKey` field (e.g. `"user.not_found"`); when set, the error pipeline (ADR-009) resolves it against the bundle, and the same key doubles as the literal fallback so a message survives even with no bundle configured. When no key is set, the title resolves through the effective classification key `errors.<code>` (e.g. `"errors.not_found"`), falling back to `http.StatusText`.
 
-> **Scope**: only errors that the root policy can classify get a translated title — `*HTTPError` (via `MessageKey`), semantic `fault.Provider` values (via the default kind policy), and legacy errors exposing `HTTPStatus() int` (via `statusToKey`). A plain error is classified as 500 and its message is never leaked to the client.
+> **Scope**: only errors that the root policy can classify get a translated title — `*HTTPError`, semantic `fault.Provider` values (via the default kind policy), and legacy errors exposing `HTTPStatus() int`; the latter two localize through `errors.<code>`. A plain error is classified as 500 and its message is never leaked to the client.
 
 ### Language Detection
 
@@ -53,7 +53,7 @@ Plural form selection is delegated to `golang.org/x/text/feature/plural` (CLDR d
 The error pipeline (ADR-009) resolves messages at render time; i18n plugs in at two points:
 
 1. **Validation errors** (`validation.Errors`) — `translateValidationErrors` translates each field error under the `"v." + code` key (e.g. `"v.required"`), injecting the translated field name when `fields.json` is present.
-2. **HTTP error titles** — `*HTTPError` (via its `MessageKey`), semantic fault kinds (via root policy), and legacy errors exposing `HTTPStatus() int` (mapped to a key such as `"http.not_found"` via `statusToKey`) are resolved by `resolveMessage`, a 3-level fallback: bundle → built-in English default → the key itself.
+2. **HTTP error titles** — an explicit `HTTPError.MessageKey` is resolved by `resolveMessage`, a 3-level fallback: bundle → built-in English default → the key itself. Errors without an explicit key — including semantic fault kinds and legacy `HTTPStatus() int` providers — resolve through the effective classification key `errors.<code>` (bundle → `http.StatusText` → `"HTTP <status>"`).
 
 With no bundle configured both paths fall through to the built-in/literal text, so translation is purely additive.
 
