@@ -392,8 +392,8 @@ func commitStagedChanges(repo, message string) (bool, error) {
 		return false, nil
 	}
 
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitErr.ExitCode() != 1 {
 		detail := strings.TrimSpace(string(raw))
 		if detail != "" {
 			return false, fmt.Errorf("inspect staged release changes: %s: %w", detail, err)
