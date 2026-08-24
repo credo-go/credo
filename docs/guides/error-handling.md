@@ -33,30 +33,33 @@ app.GET("/users/{id}", func(ctx *credo.Context) error {
 ```go
 type HTTPError struct {
     Status     int    // HTTP status code
-    Code       string // machine-readable error code (RFC 7807 "code" extension); derived from MessageKey when empty
-    MessageKey string // i18n message key or literal fallback
+    Code       string // stable machine-readable code (RFC 7807 "code" extension), materialized at construction
+    MessageKey string // optional presentation key or literal title; empty by default
     Details    any    // structured client-safe detail (RFC 7807 "details" extension)
     Internal   error  // underlying error (never exposed to client)
 }
 ```
 
-Create errors with `NewHTTPError`:
+Create errors with `NewHTTPError(status, code...)` — the optional second argument is the **machine code**, the error's stable wire identity:
 
 ```go
-// Auto-resolves MessageKey from status code
-return credo.NewHTTPError(404) // MessageKey = "http.not_found"
+// Frozen default code for the status
+return credo.NewHTTPError(404) // Code = "not_found"
 
-// Custom MessageKey
-return credo.NewHTTPError(404, "user.not_found")
+// Explicit machine code
+return credo.NewHTTPError(409, "email_exists")
 
-// With internal error (logged, not exposed)
-return credo.NewHTTPError(500, "db.query_failed").WithInternal(err)
+// With a presentation key (title only; the code is untouched)
+return credo.NewHTTPError(404, "user_not_found").
+    WithMessageKey("user.not_found")
 
-// With an explicit machine-readable code and structured detail
-return credo.NewHTTPError(409, "user.email_exists").
-    WithCode("dup_email").
-    WithDetails(map[string]string{"field": "email"})
+// With internal error (logged, not exposed) and structured detail
+return credo.NewHTTPError(409, "email_exists").
+    WithDetails(map[string]string{"field": "email"}).
+    WithInternal(err)
 ```
+
+Codes obey the grammar `^[a-z0-9]+(_[a-z0-9]+)*$`. `NewHTTPError` validates strictly and **panics** on misuse — a status outside `100..999`, more than one code argument, or a malformed code (dots, spaces, uppercase, or empty). A panic during a request is caught by built-in recovery and rendered as a generic 500 that never publishes the invalid value; the loud first-execution failure is deliberate, because a malformed code constant is a bug, not a runtime condition.
 
 ---
 
@@ -77,11 +80,11 @@ Wrap with internal context:
 
 ```go
 return credo.ErrNotFound.WithInternal(fmt.Errorf("user %s not in DB", id))
-// Client sees: 404 Not Found
+// Client sees: 404 Not Found, code "not_found"
 // Server logs: user 42 not in DB
 ```
 
-The sentinels are shared package-level instances, like `io.EOF`: compare with `errors.Is` and treat them as immutable. Never assign to their fields — that would change the behavior of every handler in the process. `WithInternal`, `WithCode`, and `WithDetails` all return copies, and `NewHTTPError` builds fresh instances for custom statuses or message keys.
+The sentinels are shared package-level instances, like `io.EOF`: compare with `errors.Is` and treat them as immutable. Never assign to their fields — that would change the behavior of every handler in the process. `WithInternal`, `WithMessageKey`, and `WithDetails` all return copies, and `NewHTTPError` builds fresh instances for custom statuses or codes. A sentinel's stored fields are `Code` materialized (`ErrNotFound.Code == "not_found"`) and `MessageKey` empty — presentation keys are opt-in.
 
 ---
 
@@ -106,55 +109,68 @@ Standard HTTP error keys:
 | `MsgKeyRequestTimeout` | `http.request_timeout` | Request Timeout |
 | `MsgKeyValidationFailed` | `http.validation_failed` | Validation Failed |
 
-`NewHTTPError(code)` without an explicit key auto-resolves via `statusToKey`.
+The constants remain as **explicit presentation keys** — attach one with `WithMessageKey` to keep a built-in title on a non-default status. Construction never auto-attaches a message key; default titles resolve through the `errors.<code>` chain below.
 
 ---
 
-## Message Resolution
+## Title Resolution
 
-The internal error handling pipeline resolves `MessageKey` to a human-readable string using a 3-level fallback:
+The pipeline resolves the human-readable title through one of two chains, selected by whether the error carries an explicit `MessageKey`:
+
+**Explicit key** — the 3-level fallback:
 
 1. **i18n bundle** — if `app.UseI18n()` is configured and the request locale has a translation for the key, use it
 2. **builtInMessages** — built-in English defaults for standard HTTP error keys
-3. **Key itself** — used as-is (works for literal messages and custom domain error codes)
+3. **Key itself** — used as-is (works for literal messages and domain-organized locale keys)
+
+**No key (the default)** — the effective lookup key is `errors.<code>`:
+
+1. **i18n bundle** — locale lookup for `errors.<code>`
+2. **`http.StatusText(status)`**
+3. **`"HTTP <status>"`** when the status has no standard text
 
 ```
-MessageKey = "http.not_found"
-  → i18n("tr", "http.not_found") = "Bulunamadı"  ← used
-  → builtInMessages["http.not_found"] = "Not Found"
-  → "http.not_found"
+NewHTTPError(404)                                  // code "not_found", no key
+  → i18n("tr", "errors.not_found") = "Bulunamadı"  ← used
+  → http.StatusText(404) = "Not Found"
+  → "HTTP 404"
 
-MessageKey = "user.email_exists"
+NewHTTPError(409, "email_exists").WithMessageKey("user.email_exists")
   → i18n("tr", "user.email_exists") = "Bu e-posta zaten kayıtlı"  ← used
   → builtInMessages["user.email_exists"] = (not found)
-  → "user.email_exists"
-
-MessageKey = "user.email_exists" (no i18n)
-  → builtInMessages["user.email_exists"] = (not found)
-  → "user.email_exists"  ← used as-is
+  → "user.email_exists"  ← literal fallback without i18n
 ```
+
+The `errors.` prefix exists because the locale bundle is one flat namespace shared by application, validation, bind, and error messages — a bare `conflict` lookup could be captured by an unrelated application message.
 
 ---
 
 ## Machine-Readable Codes and Details
 
-Alongside the human-readable title, every problem response can carry a machine-readable `code` and structured `details` — both RFC 7807 extension members clients can switch on without parsing text:
+Alongside the human-readable title, every problem response the default pipeline produces carries a machine-readable `code`, and optionally structured `details` — both RFC 7807 extension members clients can switch on without parsing text:
 
 ```json
 {
     "type": "about:blank",
     "title": "user.email_exists",
     "status": 409,
-    "code": "dup_email",
+    "code": "email_exists",
     "details": { "field": "email" }
 }
 ```
 
-- **Explicit**: `WithCode("dup_email")` and `WithDetails(v)` on `HTTPError` set them directly. `Details` is encoded with the application's JSON profile; put only client-safe data there.
-- **Derived**: when `Code` is empty, the pipeline derives it from the message key — the segment after the last dot (`"user.email_exists"` → `"email_exists"`, `MsgKeyNotFound` = `"http.not_found"` → `"not_found"`). A key without a dot is a literal human message and yields no code, so the member is omitted.
+- **Explicit**: the `NewHTTPError` code argument is the stable wire identity; `WithDetails(v)` attaches structured detail. `Details` is encoded with the application's JSON profile; put only client-safe data there.
+- **Default**: with no explicit code, the frozen `statusToCode` table supplies one (`404` → `"not_found"`, `413` → `"request_entity_too_large"`). A status outside the table yields the stable fallback `"http_<status>"` (`499` → `"http_499"`). The table is committed source generated once from Go 1.27 `http.StatusText`; runtime code never derives a wire identity from `StatusText`, so a standard-library rewording can never rename your codes.
 - **Validation and binding**: `validation.Errors` responses carry `"code": "validation_failed"`; a `BindBody`/`BindQuery` failure carries the bind reason (`"syntax"`, `"type_mismatch"`, …) as the top-level code, matching the `errors[]` entry.
 
-The dotted-key convention (`domain.snake_case_code`) is thereby a framework guarantee: name your i18n message keys that way and the wire code comes for free; `WithCode` is the override for when the two must diverge.
+The code is never derived from the message key: renaming a locale key can no longer rename a wire code. An organization that standardizes on a different code casing (for example AIP-193 `UPPER_SNAKE`) projects it in its `ErrorRenderer`:
+
+```go
+app.SetErrorRenderer(func(_ *credo.Context, info credo.ErrorInfo) any {
+    info.Problem.Code = strings.ToUpper(info.Problem.Code)
+    return nil // default RFC 7807 body with the projected code
+})
+```
 
 ---
 
@@ -166,9 +182,9 @@ Detection order (handled internally, then passed to `ErrorRenderer`):
 
 1. **Response committed** → no-op (guard)
 2. **`validation.Errors`** → 422 with field-level errors
-3. **`*HTTPError`** → status from `Status`, title resolved from `MessageKey`
+3. **`*HTTPError`** → status/code from the stored fields, title from `MessageKey` or the `errors.<code>` chain; invalid stored fields fail closed to a generic 500
 4. **`fault.Provider`** → root default HTTP policy for the semantic kind
-5. **`HTTPStatus() int`** → legacy or explicit transport status
+5. **`HTTPStatus() int`** → legacy or explicit transport status; out-of-domain statuses fail closed to a generic 500
 6. **Any other error** → 500 (message never leaked)
 
 ```json
@@ -211,7 +227,7 @@ The practical consequence is for clients: a consumer that parses every non-2xx b
 Replace the default body shape with `app.SetErrorRenderer` when your clients expect a different error format (it must be set before the server starts). The `ErrorRenderer` receives an `ErrorInfo` containing:
 
 - **`info.Err`** — the original error (for `errors.As`/`errors.Is`, Sentry, etc.)
-- **`info.MessageKey`** — the i18n key used to resolve the title (for telemetry, client-side i18n)
+- **`info.MessageKey`** — the effective i18n key used to resolve the title: the explicit `MessageKey` when one was attached, otherwise `errors.<code>` (for telemetry, client-side i18n)
 - **`info.Problem`** — the classified `*ProblemDetails` (status, title, instance, validation errors)
 
 and returns the body to send. The framework does the rest: classification and logging have already happened, and the status code (`info.Problem.Status`), the `Content-Type`, and the actual write stay framework-owned. A non-nil return is encoded as JSON with the application's JSON profile:
@@ -357,7 +373,8 @@ An outer `*HTTPError` is checked first, so the service layer can override the
 default transport meaning while retaining the store cause:
 
 ```go
-return credo.NewHTTPError(http.StatusUnprocessableEntity, "order.stock_conflict").
+return credo.NewHTTPError(http.StatusUnprocessableEntity, "stock_conflict").
+    WithMessageKey("order.stock_conflict").
     WithInternal(err)
 ```
 
@@ -369,13 +386,16 @@ deprecated compatibility bridge.
 
 ## Domain Errors (Service Layer)
 
-For service-layer sentinel errors, use `NewHTTPError` with domain-specific message keys. The dotted `domain.snake_case` form doubles as the wire `code` (last segment, derived automatically):
+For service-layer sentinel errors, author the stable machine code first and attach a domain-organized locale key for presentation:
 
 ```go
 var (
-    ErrUserNotFound  = credo.NewHTTPError(404, "user.not_found")   // code: "not_found"
-    ErrEmailExists   = credo.NewHTTPError(409, "user.email_exists") // code: "email_exists"
-    ErrRoleNotFound  = credo.NewHTTPError(422, "user.role_not_found")
+    ErrUserNotFound = credo.NewHTTPError(404, "user_not_found").
+        WithMessageKey("user.not_found")
+    ErrEmailExists = credo.NewHTTPError(409, "email_exists").
+        WithMessageKey("user.email_exists")
+    ErrRoleNotFound = credo.NewHTTPError(422, "role_not_found").
+        WithMessageKey("user.role_not_found")
 )
 ```
 
@@ -385,7 +405,8 @@ Wrap internal errors with `WithInternal`:
 func (s *UserService) Create(ctx context.Context, input CreateInput) (*User, error) {
     exists, err := s.repo.EmailExists(ctx, input.Email)
     if err != nil {
-        return nil, credo.NewHTTPError(500, "user.create_failed").WithInternal(err)
+        return nil, credo.NewHTTPError(500, "user_create_failed").
+            WithMessageKey("user.create_failed").WithInternal(err)
     }
     if exists {
         return nil, ErrEmailExists
@@ -394,13 +415,14 @@ func (s *UserService) Create(ctx context.Context, input CreateInput) (*User, err
 }
 ```
 
-Add translations in locale files:
+Add translations in locale files — explicit keys keep their own names; default (key-less) errors are localized through `errors.<code>`:
 
 ```json
 {
     "user.not_found": "User not found.",
     "user.email_exists": "This email address is already registered.",
-    "user.create_failed": "An error occurred while creating the user."
+    "user.create_failed": "An error occurred while creating the user.",
+    "errors.not_found": "Not found."
 }
 ```
 
@@ -411,6 +433,7 @@ Add translations in locale files:
 1. **Return errors, don't write them** — let the error pipeline decide format
 2. **Use sentinel errors** for known domain conditions (4xx)
 3. **Use `WithInternal`** for server errors (5xx) — separates client message from debug info
-4. **Define MessageKeys as constants** in your `types` package for consistency
-5. **Add translations** for all MessageKeys in your locale files
+4. **Author machine codes deliberately** — they are the wire contract your clients switch on; declare domain errors as sentinels so each code is written once
+5. **Add translations** for your explicit message keys, and `errors.<code>` entries for defaults you want localized
 6. **Never leak internal errors** — `WithInternal` ensures they are logged but not sent to the client
+7. **Never pass request-derived text as a code** — map it onto predeclared codes; a malformed code panics by design

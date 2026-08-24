@@ -192,7 +192,8 @@ func (o *Order) Validate() error {
 // Stateful checks belong in the service layer
 func (s *OrderService) Create(ctx context.Context, input Order) error {
     if exists, _ := s.repo.EmailExists(ctx, input.Email); exists {
-        return credo.NewHTTPError(409, "email already in use")
+        return credo.NewHTTPError(409, "email_exists").
+            WithMessageKey("email already in use")
     }
     // ...
 }
@@ -311,7 +312,7 @@ The `Code` field enables i18n translation in Phase 3 without changing the error 
 
 **Field names are NOT translated** — `Field` is a stable technical identifier for frontend form-input matching. See [ADR-013](../adr/013-internationalization.md).
 
-**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Validation codes map to `"v." + code`; HTTP/domain errors use `HTTPError.MessageKey` or root semantic/status policy. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
+**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Validation codes map to `"v." + code`; HTTP/domain error titles use the explicit `HTTPError.MessageKey` when set, otherwise the effective `errors.<code>` classification key. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
 
 ---
 

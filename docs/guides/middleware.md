@@ -175,7 +175,7 @@ func RequireJSON(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
         ct := ctx.Request().Header.Get("Content-Type")
         if ct != "" && !strings.HasPrefix(ct, "application/json") {
-            return credo.NewHTTPError(415, "http.unsupported_media_type")
+            return credo.NewHTTPError(415)
         }
         return next(ctx)
     }
@@ -206,7 +206,7 @@ Return an error or write a response without calling `next` to stop the chain:
 func MaintenanceMode(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
         if isUnderMaintenance() {
-            return credo.NewHTTPError(503, "http.service_unavailable")
+            return credo.NewHTTPError(503)
         }
         return next(ctx)
     }
@@ -594,7 +594,7 @@ api.Middleware(middleware.Timeout(middleware.TimeoutConfig{
     Timeout: 10 * time.Second,
     ErrorHandler: func(ctx *credo.Context, err error) error {
         if errors.Is(err, context.DeadlineExceeded) {
-            return credo.NewHTTPError(504, "http.gateway_timeout")
+            return credo.NewHTTPError(504)
         }
         return err
     },
@@ -807,7 +807,8 @@ api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
     CustomChecks: []func(*credo.Context) error{
         func(ctx *credo.Context) error {
             if ctx.Request().Header.Get("X-Tenant-Id") == "" {
-                return credo.NewHTTPError(http.StatusBadRequest, "tenant required")
+                return credo.NewHTTPError(http.StatusBadRequest, "tenant_required").
+                    WithMessageKey("tenant required")
             }
             return nil
         },
