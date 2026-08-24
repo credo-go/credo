@@ -173,13 +173,14 @@ func TestHTTPError_SentinelStoredFields(t *testing.T) {
 }
 
 // TestHTTPError_DirectMarshal locks the direct-marshal shape of HTTPError:
-// stored fields only, no effective-key synthesis.
+// stored fields only, empty optional members omitted, no effective-key
+// synthesis.
 func TestHTTPError_DirectMarshal(t *testing.T) {
 	raw, err := json.Marshal(credo.ErrNotFound)
 	if err != nil {
 		t.Fatalf("marshal sentinel: %v", err)
 	}
-	want := `{"status":404,"code":"not_found","message_key":""}`
+	want := `{"status":404,"code":"not_found"}`
 	if string(raw) != want {
 		t.Errorf("marshal = %s, want %s", raw, want)
 	}
