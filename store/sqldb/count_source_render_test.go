@@ -63,7 +63,7 @@ func TestSelectQuery_MySQLCountRendersRelationApplyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	var applies atomic.Int32
 	_, err = db.Select((*mysqlCountGuardParent)(nil)).
@@ -93,7 +93,7 @@ func TestSelectQuery_CountRejectsLateRelationWindowMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	var applies atomic.Int32
 	_, err = db.Select((*mysqlCountGuardParent)(nil)).
@@ -123,7 +123,7 @@ func TestSelectQuery_CountRejectsLateRelationShapeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
-	t.Cleanup(func() { _ = db.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
 
 	tests := []struct {
 		name  string
