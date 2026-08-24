@@ -112,7 +112,7 @@ func TestRegistry_HealthAll(t *testing.T) {
 		&mockLifecycle{health: store.Health{Status: store.StatusDegraded}},
 	)
 
-	result := r.HealthAll(context.Background())
+	result := r.HealthAll(t.Context())
 	if len(result) != 2 {
 		t.Fatalf("HealthAll() returned %d entries, want 2", len(result))
 	}
@@ -130,10 +130,10 @@ func TestRegistry_HealthAll_ClonesDetails(t *testing.T) {
 		Details: map[string]any{"driver": "sqlite"},
 	}}, nil)
 
-	result := r.HealthAll(context.Background())
+	result := r.HealthAll(t.Context())
 	result["primary"].Details["driver"] = "mutated"
 
-	refreshed := r.HealthAll(context.Background())
+	refreshed := r.HealthAll(t.Context())
 	if got := refreshed["primary"].Details["driver"]; got != "sqlite" {
 		t.Fatalf("HealthAll() leaked Details mutation, got %v", got)
 	}
@@ -165,7 +165,7 @@ func TestHealthCause_IsExcludedFromJSON(t *testing.T) {
 
 func TestRegistry_HealthAll_Empty(t *testing.T) {
 	r := &store.Registry{}
-	result := r.HealthAll(context.Background())
+	result := r.HealthAll(t.Context())
 	if len(result) != 0 {
 		t.Fatalf("HealthAll() on empty registry returned %d entries, want 0", len(result))
 	}

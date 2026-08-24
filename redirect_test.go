@@ -19,7 +19,7 @@ func TestApp_WithHTTPRedirect_RequiresTLS(t *testing.T) {
 		credo.WithHTTPRedirect("127.0.0.1:0"))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal("WithHTTPRedirect without TLS should fail at preflight")
 	}
 	if got := app.State(); got != "building" {
@@ -39,7 +39,7 @@ func TestApp_WithHTTPRedirect_RedirectsToHTTPS(t *testing.T) {
 		credo.WithHTTPRedirect(redirectAddr))
 	app.GET("/ping", pongHandler)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.RunContext(ctx) }()
 	waitRunning(t, app)
@@ -110,7 +110,7 @@ func TestApp_WithHTTPRedirect_ListenFailure_RollsBackState(t *testing.T) {
 		credo.WithHTTPRedirect(occupied.Addr().String()))
 	app.GET("/ping", pongHandler)
 
-	if err := app.RunContext(context.Background()); err == nil {
+	if err := app.RunContext(t.Context()); err == nil {
 		t.Fatal("redirect listen on an occupied port should fail")
 	}
 	if app.IsRunning() {
