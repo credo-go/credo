@@ -140,20 +140,22 @@ func (app *App) UseI18n(cfgs ...I18nConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := bundle.AddStringMessages(cfg.Default, map[string]string(cfg.Messages)); err != nil {
+	err = bundle.AddStringMessages(cfg.Default, map[string]string(cfg.Messages))
+	if err != nil {
 		return err
 	}
-	if err := bundle.AddFields(cfg.Default, map[string]string(cfg.Fields)); err != nil {
+	err = bundle.AddFields(cfg.Default, map[string]string(cfg.Fields))
+	if err != nil {
 		return err
 	}
 
 	if cfg.Dir != "" && !dirExplicit {
-		if _, err := os.Stat(cfg.Dir); err != nil {
-			if os.IsNotExist(err) {
+		if _, statErr := os.Stat(cfg.Dir); statErr != nil {
+			if os.IsNotExist(statErr) {
 				app.logger.Warn("credo: i18n inactive, locale directory not found or empty")
 				return nil
 			}
-			return fmt.Errorf("credo: inspect conventional i18n directory: %w", err)
+			return fmt.Errorf("credo: inspect conventional i18n directory: %w", statErr)
 		}
 	}
 
