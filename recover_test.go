@@ -25,12 +25,18 @@ func TestBuiltinRecover_CatchesPanic(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 
-	var pd map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
-		t.Fatalf("failed to parse problem details: %v", err)
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to parse error response: %v", err)
 	}
-	if pd["title"] != "Internal Server Error" {
-		t.Errorf("title = %v, want Internal Server Error", pd["title"])
+	if body["success"] != false {
+		t.Errorf("success = %v, want false", body["success"])
+	}
+	if body["code"] != "internal_server_error" {
+		t.Errorf("code = %v, want internal_server_error", body["code"])
+	}
+	if body["message"] != "Internal Server Error" {
+		t.Errorf("message = %v, want Internal Server Error", body["message"])
 	}
 }
 

@@ -48,7 +48,7 @@
 - [x] Define `Context` struct with core methods ([ADR-008](docs/adr/008-context-design.md))
   - [x] Response helpers: `JSON()`, `XML()`, `HTML()`, `Text()`, `Blob()`, `Stream()` (on `Response`)
   - [x] `BindBody()` — JSON decoder + auto-validate ("parse, don't validate")
-  - [x] Strict JSON bodies + typed decode errors: `encoding/json/v2` decoding with exactly one JSON value per body (trailing data rejected), duplicate object members rejected (incl. case-variant repeats; member matching stays v1 case-insensitive), decode failures return `*BindError` with machine-readable reasons (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`) rendered as RFC 7807 `errors[]` (code = reason, i18n via `bind.<reason>`); unknown members ignored by default, rejected under the app-wide opt-in `WithStrictBodies()` / `server.strict_bodies` (reason `unknown_field`, v0.6.0; the must-ignore default stays for independently deployed clients, ADR-008 revised)
+  - [x] Strict JSON bodies + typed decode errors: `encoding/json/v2` decoding with exactly one JSON value, duplicate-member rejection, typed `*BindError` reasons, top-level `bind_failed` plus exact nested reason, and scope-aware prefix-free i18n; unknown members are ignored by default and rejected by app-wide `WithStrictBodies()` / `server.strict_bodies`.
   - [x] `BindQuery()` — stub returning 501 (see Phase 2.5)
   - [x] `RouteParams()`, `QueryParam()` (no `FormValue()` — see [ADR-008](docs/adr/008-context-design.md)); `RouteParam(name)` single-value shortcut avoids retaining the framework-owned params map
   - [x] `Request()`, `Response()`, `Set()`, `Get()`
@@ -178,7 +178,7 @@
   - [x] `date_rules.go` — DateBefore, DateAfter
   - [x] `common_rules.go` — In, NotNil, By (inline custom)
 - [x] `ValidationError` struct with `Code` + `Params` fields (i18n-ready)
-- [x] RFC 7807 Problem Details error format (`Errors` type)
+- [x] Compact default error envelope with RFC 9457 opt-in (`Errors` integration)
 - [x] `validation/doc.go`
 - [x] Tests per rule group + integration tests (86 tests, -race clean)
 - [x] Update NOTICES
@@ -189,10 +189,10 @@
 
 ### 2.4 Error Handling
 
-- [x] RFC 7807 `ProblemDetails` struct
+- [x] Default `ErrorResponse` plus RFC 9457 `ProblemDetails` adapter type
 - [x] Default `ErrorRenderer` on `App` (internal `handleError` method)
-- [x] HTTP error types: `NewHTTPError(code, message)`
-- [x] Validation error → Problem Details conversion
+- [x] HTTP error types: `NewHTTPError(status, code...)`
+- [x] Validation error → normalized ErrorInfo/default envelope conversion
 - [x] Offset `Page` tests (input, logical COUNT, snapshot, metadata, mapping)
 - [ ] Cursor conformance tests (tamper/scope/rotation, stable mixed order, insert/delete versus offset drift, and real PostgreSQL/MySQL/SQLite round trips for large int/time/string plus consumer UUID/decimal keys)
 
@@ -260,7 +260,7 @@
 - [x] `I18nConfig` with zero-config defaults, RawConfig auto-read
 - [x] JSON-only locale file loader (directory-per-locale: `{lang}/messages.json` + `fields.json`)
 - [x] Two-mode field name translation (default: field-agnostic, opt-in: `fields.json`)
-- [x] Built-in locale files: English + Turkish (`internal/i18n/locales/`)
+- [x] Versioned English + Turkish starter catalogs (`examples/references/locales/`)
 - [x] Tests: internal engine + root integration + white-box translate tests
 - [x] Update NOTICES (go-i18n MIT attribution)
 
@@ -292,7 +292,7 @@
 - [x] `middleware/ratelimit.go` — from go-limiter (Apache-2.0)
 - [x] `middleware/compress.go` — gzip/deflate response compression (Chi source)
 - [x] `middleware/timeout.go` — request timeout (Echo source)
-- [x] `middleware/csrf.go` — CSRF protection via stdlib `net/http.CrossOriginProtection` (`CSRF(cfg ...CSRFConfig)`: TrustedOrigins, InsecureBypassPatterns, ErrorHandler; rejections → 403 RFC 7807 via error pipeline)
+- [x] `middleware/csrf.go` — CSRF protection via stdlib `net/http.CrossOriginProtection` (`CSRF(cfg ...CSRFConfig)`: TrustedOrigins, InsecureBypassPatterns, ErrorHandler; rejections → centralized 403 envelope)
 - [x] Tests per middleware
 - [x] Update NOTICES
 
@@ -509,7 +509,7 @@ demand-gated follow-ups rather than MVP promises.
 
 - [x] Credo-owned message/close/config/connection façade over coder/websocket
 - [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
-- [x] RFC 7807 pre-upgrade errors and fail-loud non-Hijacker behavior
+- [x] Centralized pre-upgrade error envelopes and fail-loud non-Hijacker behavior
 - [x] App-managed `OnDrain` integration plus explicit external-server shutdown
 - [x] Real TCP/WSS/HTTP2-negative, race/conformance, fuzz, and observability coverage
 - [x] ADR/spec/guide/example and NOTICES attribution
@@ -631,7 +631,7 @@ should an SSE response API and disconnect/drain contract be designed.
 **Must land before v1** (each touches a surface that v1 freezes):
 
 - [ ] **Phase 3.5 observability** — metrics/tracing fields on `credo.Infra` designed against real OTel/Prometheus adapters. `Infra` is a constructor-boundary struct; adding fields after v1 is a break for every constructor that pattern-matches it.
-- [x] **json/v2 output profile** (`Response.JSON`, Problem Details, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
+- [x] **json/v2 output profile** (`Response.JSON`, default error bodies, renderer bodies, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
 - [x] **Typed endpoint / operation model decision** — deferred to v2 or later; v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface.
 - [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.

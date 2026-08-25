@@ -14,9 +14,9 @@ import (
 
 var errAny = errors.New("wrapped application failure")
 
-func problemFromResponse(t *testing.T, w *httptest.ResponseRecorder) credo.ProblemDetails {
+func problemFromResponse(t *testing.T, w *httptest.ResponseRecorder) credo.ErrorResponse {
 	t.Helper()
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal problem body %q: %v", w.Body.String(), err)
 	}
@@ -97,8 +97,8 @@ func TestHandleError_UnknownStatusCodeFallback(t *testing.T) {
 	if pd.Code != "http_499" {
 		t.Errorf("code = %q, want %q (stable fallback for an unknown status)", pd.Code, "http_499")
 	}
-	if pd.Title != "HTTP 499" {
-		t.Errorf("title = %q, want %q (no StatusText for 499)", pd.Title, "HTTP 499")
+	if pd.Message != "HTTP 499" {
+		t.Errorf("message = %q, want %q (no StatusText for 499)", pd.Message, "HTTP 499")
 	}
 }
 
@@ -116,8 +116,8 @@ func TestHandleError_LiteralMessageKeepsDefaultCode(t *testing.T) {
 	if pd.Code != "bad_request" {
 		t.Errorf("code = %q, want %q (a literal message key never affects the code)", pd.Code, "bad_request")
 	}
-	if pd.Title != "just a literal message" {
-		t.Errorf("title = %q, want the literal message", pd.Title)
+	if pd.Message != "just a literal message" {
+		t.Errorf("message = %q, want the literal message", pd.Message)
 	}
 }
 
@@ -200,7 +200,7 @@ func TestHandleError_ValidationErrorsTopLevelCode(t *testing.T) {
 	}
 }
 
-func TestHandleError_BindErrorTopLevelCodeIsReason(t *testing.T) {
+func TestHandleError_BindErrorSeparatesClassificationAndReason(t *testing.T) {
 	type payload struct {
 		Name string `json:"name"`
 	}
@@ -222,8 +222,8 @@ func TestHandleError_BindErrorTopLevelCodeIsReason(t *testing.T) {
 		t.Fatalf("status = %d, want 400", w.Code)
 	}
 	pd := problemFromResponse(t, w)
-	if pd.Code != "syntax" {
-		t.Errorf("top-level code = %q, want %q (the bind reason)", pd.Code, "syntax")
+	if pd.Code != "bind_failed" {
+		t.Errorf("top-level code = %q, want %q", pd.Code, "bind_failed")
 	}
 	if len(pd.Errors) != 1 || pd.Errors[0].Code != "syntax" {
 		t.Errorf("errors[] = %+v, want a single entry with code %q", pd.Errors, "syntax")
@@ -232,13 +232,13 @@ func TestHandleError_BindErrorTopLevelCodeIsReason(t *testing.T) {
 
 // TestHandleError_RendererProjectsAlternateCodeCasing locks the documented
 // escape for organizations that standardize on a different code casing: the
-// ErrorRenderer mutates info.Problem.Code and returns nil, and the framework
-// renders the projected code because info.Problem is read after the renderer
+// ErrorRenderer mutates info.Code and returns nil, and the framework renders
+// the projected code because ErrorInfo is read after the renderer
 // returns.
 func TestHandleError_RendererProjectsAlternateCodeCasing(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(_ *credo.Context, info credo.ErrorInfo) any {
-		info.Problem.Code = strings.ToUpper(info.Problem.Code)
+	app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
+		info.Code = strings.ToUpper(info.Code)
 		return nil
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrConflict })
@@ -265,31 +265,31 @@ func TestErrorWire_Snapshots(t *testing.T) {
 			name:    "sentinel not found",
 			handler: func(*credo.Context) error { return credo.ErrNotFound },
 			status:  404,
-			body:    `{"type":"about:blank","title":"Not Found","status":404,"instance":"/snap","code":"not_found"}`,
+			body:    `{"success":false,"code":"not_found","message":"Not Found"}`,
 		},
 		{
 			name:    "413 gains its frozen code",
 			handler: func(*credo.Context) error { return credo.NewHTTPError(413) },
 			status:  413,
-			body:    `{"type":"about:blank","title":"Request Entity Too Large","status":413,"instance":"/snap","code":"request_entity_too_large"}`,
+			body:    `{"success":false,"code":"request_entity_too_large","message":"Request Entity Too Large"}`,
 		},
 		{
 			name:    "418 teapot",
 			handler: func(*credo.Context) error { return credo.NewHTTPError(418) },
 			status:  418,
-			body:    `{"type":"about:blank","title":"I'm a teapot","status":418,"instance":"/snap","code":"im_a_teapot"}`,
+			body:    `{"success":false,"code":"im_a_teapot","message":"I'm a teapot"}`,
 		},
 		{
 			name:    "unknown 499",
 			handler: func(*credo.Context) error { return credo.NewHTTPError(499) },
 			status:  499,
-			body:    `{"type":"about:blank","title":"HTTP 499","status":499,"instance":"/snap","code":"http_499"}`,
+			body:    `{"success":false,"code":"http_499","message":"HTTP 499"}`,
 		},
 		{
 			name:    "generic 500",
 			handler: func(*credo.Context) error { return errAny },
 			status:  500,
-			body:    `{"type":"about:blank","title":"Internal Server Error","status":500,"instance":"/snap","code":"internal_server_error"}`,
+			body:    `{"success":false,"code":"internal_server_error","message":"Internal Server Error"}`,
 		},
 	}
 

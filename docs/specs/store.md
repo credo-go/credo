@@ -71,7 +71,7 @@ func IsTransient(err error) bool
 
 `Error.Unwrap` preserves the original cause. `Code`, `Constraint`, `Resource`,
 and `Cause` are diagnostic metadata and are never emitted by Credo's default
-Problem Details renderer. `Transient` says a condition may clear; it is not a
+error renderer. `Transient` says a condition may clear; it is not a
 promise that replaying a statement, transaction callback, or externally
 visible operation is safe.
 

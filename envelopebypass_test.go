@@ -141,8 +141,8 @@ func TestEnvelopeBypass_ErrorPipelineDoesNotWarn(t *testing.T) {
 	logs := &syncBuffer{}
 	app := newBypassApp(t, logs)
 	// An ErrorRenderer body makes the pipeline itself write JSON.
-	app.SetErrorRenderer(func(c *credo.Context, info credo.ErrorInfo) any {
-		return map[string]any{"error": info.Problem.Title}
+	app.SetErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
+		return map[string]any{"error": info.Message}
 	})
 	app.GET("/fail", func(c *credo.Context) error {
 		return credo.ErrNotFound

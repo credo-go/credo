@@ -19,6 +19,10 @@ type ValidationError struct {
 	// Message is the default English error message.
 	Message string `json:"message"`
 
+	// MessageKey is an optional exact presentation key. It is used by Credo's
+	// i18n error pipeline and is never serialized to clients.
+	MessageKey string `json:"-"`
+
 	// Params holds template variables for localized messages,
 	// e.g. {"min": 2, "max": 100}.
 	//
@@ -37,7 +41,7 @@ func (e *ValidationError) Error() string {
 }
 
 // Errors is a collection of validation errors. It implements the error
-// interface and json.Marshaler for RFC 7807 integration.
+// interface and json.Marshaler for error-envelope integration.
 type Errors []ValidationError
 
 // Error implements the error interface. Returns a semicolon-separated summary.

@@ -14,30 +14,28 @@ import (
 	"github.com/credo-go/credo/validation"
 )
 
-// MsgKey constants define i18n message keys for standard HTTP errors.
-// These keys are used in locale files (e.g., locales/en/messages.json)
-// and as lookup keys for [builtInMessages].
+// MsgKey constants define Credo's bare default message keys for standard HTTP
+// errors. Applications may map them into their own namespaces with
+// [I18nConfig.ResolveMessageKey].
 const (
-	MsgKeyBadRequest          = "http.bad_request"
-	MsgKeyUnauthorized        = "http.unauthorized"
-	MsgKeyForbidden           = "http.forbidden"
-	MsgKeyNotFound            = "http.not_found"
-	MsgKeyMethodNotAllowed    = "http.method_not_allowed"
-	MsgKeyConflict            = "http.conflict"
-	MsgKeyUnprocessableEntity = "http.unprocessable_entity"
-	MsgKeyUnsupportedMedia    = "http.unsupported_media_type"
-	MsgKeyInternalError       = "http.internal_server_error"
-	MsgKeyTooManyRequests     = "http.too_many_requests"
-	MsgKeyServiceUnavailable  = "http.service_unavailable"
-	MsgKeyGatewayTimeout      = "http.gateway_timeout"
-	MsgKeyRequestTimeout      = "http.request_timeout"
-	MsgKeyValidationFailed    = "http.validation_failed"
-	MsgKeyBindFailed          = "http.bind_failed"
+	MsgKeyBadRequest          = "bad_request"
+	MsgKeyUnauthorized        = "unauthorized"
+	MsgKeyForbidden           = "forbidden"
+	MsgKeyNotFound            = "not_found"
+	MsgKeyMethodNotAllowed    = "method_not_allowed"
+	MsgKeyConflict            = "conflict"
+	MsgKeyUnprocessableEntity = "unprocessable_entity"
+	MsgKeyUnsupportedMedia    = "unsupported_media_type"
+	MsgKeyInternalError       = "internal_server_error"
+	MsgKeyTooManyRequests     = "too_many_requests"
+	MsgKeyServiceUnavailable  = "service_unavailable"
+	MsgKeyGatewayTimeout      = "gateway_timeout"
+	MsgKeyRequestTimeout      = "request_timeout"
+	MsgKeyValidationFailed    = "validation_failed"
+	MsgKeyBindFailed          = "bind_failed"
 )
 
-// builtInMessages maps MsgKey constants to default English messages.
-// Used as fallback when i18n is not configured or the key is not found
-// in locale files.
+// builtInMessages maps framework error codes to safe default English messages.
 var builtInMessages = map[string]string{
 	MsgKeyBadRequest:          "Bad Request",
 	MsgKeyUnauthorized:        "Unauthorized",
@@ -60,8 +58,9 @@ var builtInMessages = map[string]string{
 // machine-readable code, with an optional presentation message key.
 //
 // Code is the primary wire identity; MessageKey only affects the
-// human-readable title. When MessageKey is empty, the title resolves through
-// the errors.<code> locale lookup, then http.StatusText, then "HTTP <status>".
+// human-readable message. When MessageKey is empty, the message resolves
+// through the configured scoped resolver or bare Code lookup, then the safe
+// built-in/status fallback.
 // When MessageKey is set, the existing three-level chain applies:
 //  1. i18n bundle lookup — if a translation exists for MessageKey, use it
 //  2. builtInMessages lookup — if MessageKey matches a built-in key, use it
@@ -83,7 +82,7 @@ type HTTPError struct {
 	MessageKey string `json:"message_key,omitempty"`
 
 	// Details carries optional structured, client-safe detail rendered as the
-	// RFC 7807 "details" extension member. It is encoded with the
+	// default error response's "details" member. It is encoded with the
 	// application's JSON profile; never place secrets or internal state here.
 	Details any `json:"-"`
 
@@ -174,7 +173,7 @@ func (e *HTTPError) WithMessageKey(key string) *HTTPError {
 }
 
 // WithDetails returns a copy of the error with structured client-safe detail
-// attached; it is rendered as the RFC 7807 "details" extension member.
+// attached; it is rendered as the default response's "details" member.
 func (e *HTTPError) WithDetails(v any) *HTTPError {
 	c := e.clone()
 	c.Details = v
@@ -201,10 +200,21 @@ var (
 	ErrUnsupportedMediaType = NewHTTPError(http.StatusUnsupportedMediaType)
 )
 
-// ProblemDetails represents an RFC 7807 Problem Details response.
+// ErrorResponse is Credo's default JSON error envelope.
+type ErrorResponse struct {
+	Success bool                         `json:"success"`
+	Code    string                       `json:"code"`
+	Message string                       `json:"message"`
+	Details any                          `json:"details,omitempty"`
+	Errors  []validation.ValidationError `json:"errors,omitempty"`
+}
+
+// ProblemDetails represents an RFC 9457 Problem Details response. It is used
+// by the opt-in [RFC9457ErrorRenderer]; Credo's default envelope is
+// [ErrorResponse].
 type ProblemDetails struct {
 	// Type is a URI reference that identifies the problem type.
-	// Defaults to "about:blank" per RFC 7807.
+	// Defaults to "about:blank" per RFC 9457.
 	Type string `json:"type"`
 
 	// Title is a short, human-readable summary of the problem type.
@@ -219,13 +229,13 @@ type ProblemDetails struct {
 	// Instance is a URI reference that identifies the specific occurrence.
 	Instance string `json:"instance,omitempty"`
 
-	// Code is a machine-readable error code (RFC 7807 extension member).
+	// Code is a machine-readable error-code extension member.
 	// Populated from [HTTPError.Code]; the classification default comes from
 	// the frozen statusToCode table. Never derived from the message key.
 	Code string `json:"code,omitempty"`
 
-	// Details carries structured, client-safe detail about this occurrence
-	// (RFC 7807 extension member). Populated from [HTTPError.Details].
+	// Details carries structured, client-safe detail about this occurrence as
+	// an extension member. Populated from [HTTPError.Details].
 	Details any `json:"details,omitempty"`
 
 	// Errors holds field-level validation errors (if any).
@@ -233,12 +243,60 @@ type ProblemDetails struct {
 }
 
 // NewProblemDetails creates a new ProblemDetails with the given status and title.
-// Type defaults to "about:blank" per RFC 7807.
+// Type defaults to "about:blank" per RFC 9457.
 func NewProblemDetails(status int, title string) *ProblemDetails {
 	return &ProblemDetails{
 		Type:   "about:blank",
 		Title:  title,
 		Status: status,
+	}
+}
+
+// RFC9457Config configures [RFC9457ErrorRenderer].
+type RFC9457Config struct {
+	// ResolveType optionally returns the problem type URI for a normalized error.
+	// Empty means "about:blank". The callback is request-scoped and must not
+	// retain info.
+	ResolveType func(info *ErrorInfo) string
+}
+
+// RFC9457ErrorRenderer returns an ErrorRenderer that projects Credo's
+// normalized error model into RFC 9457 Problem Details. The response uses
+// application/problem+json; Code, Details, and Errors are extension members.
+func RFC9457ErrorRenderer(cfgs ...RFC9457Config) ErrorRenderer {
+	if len(cfgs) > 1 {
+		panic("credo: RFC9457ErrorRenderer accepts at most one config")
+	}
+	var cfg RFC9457Config
+	if len(cfgs) == 1 {
+		cfg = cfgs[0]
+	}
+	return func(ctx *Context, info *ErrorInfo) any {
+		problemType := "about:blank"
+		if cfg.ResolveType != nil {
+			if resolved := cfg.ResolveType(info); resolved != "" {
+				problemType = resolved
+			}
+		}
+		title := http.StatusText(info.Status)
+		if title == "" {
+			title = fmt.Sprintf("HTTP %d", info.Status)
+		}
+		detail := info.Message
+		if detail == title {
+			detail = ""
+		}
+		ctx.Response().Header().Set("Content-Type", "application/problem+json")
+		return &ProblemDetails{
+			Type:     problemType,
+			Title:    title,
+			Status:   info.Status,
+			Detail:   detail,
+			Instance: ctx.Request().URL.Path,
+			Code:     info.Code,
+			Details:  info.Details,
+			Errors:   info.Errors,
+		}
 	}
 }
 
@@ -264,9 +322,9 @@ func (app *App) builtinErrorHandler(next Handler) Handler {
 //  3. Error classification via classifyError
 //  4. Server error logging (5xx HTTPErrors with Internal, unhandled errors)
 //  5. ErrorRenderer dispatch (renderer is called even for HEAD — can set headers)
-//  6. Body write (HEAD → status only; renderer body → JSON; nil → default RFC 7807)
+//  6. Body write (HEAD → status only; renderer body → JSON; nil → default envelope)
 func (app *App) handleError(err error, ctx *Context) {
-	defer app.recoverErrorRendererPanic(err, ctx)
+	defer app.recoverErrorPipelinePanic(err, ctx)
 
 	if ctx.Response().Hijacked() {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
@@ -279,26 +337,20 @@ func (app *App) handleError(err error, ctx *Context) {
 		return
 	}
 
-	key, pd := app.classifyError(err, ctx)
-	pd.Instance = ctx.Request().URL.Path
-
-	app.logServerError(err, pd.Status, ctx)
-	app.renderError(ctx, ErrorInfo{
-		Err:        err,
-		MessageKey: key,
-		Problem:    pd,
-	})
+	info := app.classifyError(err, ctx)
+	info.Err = err
+	app.logServerError(err, info.Status, ctx)
+	app.renderError(ctx, info)
 }
 
-func (app *App) recoverErrorRendererPanic(err error, ctx *Context) {
+func (app *App) recoverErrorPipelinePanic(err error, ctx *Context) {
 	if r := recover(); r != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
-			"credo: ErrorRenderer panic", slog.Any("panic", r), slog.Any("error", err))
+			"credo: error pipeline panic", slog.Any("panic", r), slog.Any("error", err))
 		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
-			_, pd := codedProblem(ctx, http.StatusInternalServerError, "", "")
 			// A marshal failure inside panic recovery is deliberately
 			// swallowed; there is no safer response left to attempt.
-			writeProblemDetails(ctx, pd) //nolint:errcheck
+			writeDefaultError(ctx, safeInternalErrorInfo()) //nolint:errcheck
 		}
 	}
 }
@@ -325,7 +377,7 @@ func (app *App) logServerError(err error, status int, ctx *Context) {
 		message, slog.Int("status", status), slog.Any("error", logErr))
 }
 
-func (app *App) renderError(ctx *Context, info ErrorInfo) {
+func (app *App) renderError(ctx *Context, info *ErrorInfo) {
 	var body any
 	if app.errorRenderer != nil {
 		body = app.errorRenderer(ctx, info)
@@ -336,12 +388,20 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 		}
 	}
 
-	// The renderer may have mutated info.Problem (typically Status), so the
-	// pointer is read only after it returns.
-	pd := info.Problem
+	if !isValidHTTPStatus(info.Status) {
+		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
+			"credo: ErrorRenderer returned an invalid status",
+			slog.Int("status", info.Status), slog.Any("error", info.Err))
+		info = safeInternalErrorInfo()
+		body = nil
+	}
 	if ctx.Request().Method == http.MethodHead {
 		// Renderer-set headers are preserved; a HEAD response carries no body.
-		_ = ctx.Response().NoContent(pd.Status)
+		_ = ctx.Response().NoContent(info.Status)
+		return
+	}
+	if bodilessStatus(info.Status) {
+		_ = ctx.Response().NoContent(info.Status)
 		return
 	}
 	if body != nil {
@@ -349,52 +409,48 @@ func (app *App) renderError(ctx *Context, info ErrorInfo) {
 		// envelope bypass.
 		ctx.Response().exemptJSON = true
 		defer func() { ctx.Response().exemptJSON = false }()
-		if err := ctx.Response().JSON(pd.Status, body); err != nil {
+		if err := writeRenderedError(ctx, info.Status, body); err != nil {
 			ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 				"credo: failed to write error response", slog.Any("error", err))
 		}
 		return
 	}
-	defaultRenderError(ctx, pd)
+	defaultRenderError(ctx, info)
 }
 
-// classifyError converts an error into an effective message key and
-// [ProblemDetails].
+func writeRenderedError(ctx *Context, status int, body any) error {
+	if ctx.Response().Header().Get("Content-Type") == "" {
+		ctx.Response().Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+	ctx.Response().WriteHeader(status)
+	return jsonv2.MarshalWrite(ctx.Response(), body, ctx.app.jsonOptions())
+}
+
+// classifyError converts an error into normalized [ErrorInfo].
 //
 // Classification order:
 //  1. validation.Errors → 422 Unprocessable Entity with field errors
 //  2. *BindError → 400 Bad Request with a typed decode-reason errors entry
-//  3. *HTTPError → status/code from the error, title from MessageKey or the
-//     errors.<code> chain; invalid stored fields fail closed to a generic 500
+//  3. *HTTPError → status/code from the error and message from exact-key
+//     resolution; invalid stored fields fail closed to a generic 500
 //  4. fault.Provider → default root transport policy for the semantic kind
 //  5. HTTPStatus() int interface → legacy or explicit transport status;
 //     out-of-domain statuses fail closed to a generic 500
 //  6. Any other error → 500 Internal Server Error (message not leaked)
 //
-// Every branch resolves its effective code and title through [codedProblem],
+// Every branch resolves its effective code and message through [codedErrorInfo],
 // so the default pipeline always emits a non-empty machine code.
-func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails) {
+func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
-		if app.i18nBundle != nil && ctx.locale != "" {
-			ve = translateValidationErrors(app.i18nBundle, ctx.locale, ve)
-		}
-		return MsgKeyValidationFailed, &ProblemDetails{
-			Type:   "https://credo.dev/errors/validation",
-			Title:  resolveMessage(ctx, MsgKeyValidationFailed),
-			Status: http.StatusUnprocessableEntity,
-			Code:   "validation_failed",
-			Errors: []validation.ValidationError(ve),
-		}
+		info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, "validation_failed", "")
+		info.Errors = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
+		return info
 	}
 
 	if be, ok := errors.AsType[*BindError](err); ok {
-		return MsgKeyBindFailed, &ProblemDetails{
-			Type:   "https://credo.dev/errors/binding",
-			Title:  resolveMessage(ctx, MsgKeyBindFailed),
-			Status: http.StatusBadRequest,
-			Code:   string(be.Reason),
-			Errors: []validation.ValidationError{app.bindProblemError(ctx, be)},
-		}
+		info := app.codedErrorInfo(ctx, http.StatusBadRequest, "bind_failed", "")
+		info.Errors = []validation.ValidationError{app.bindProblemError(ctx, be)}
+		return info
 	}
 
 	if he, ok := errors.AsType[*HTTPError](err); ok {
@@ -402,101 +458,107 @@ func (app *App) classifyError(err error, ctx *Context) (string, *ProblemDetails)
 		// generic internal-server problem and publish none of the invalid
 		// value's client-facing fields.
 		if !isValidHTTPStatus(he.Status) || (he.Code != "" && !isValidErrorCode(he.Code)) {
-			return codedProblem(ctx, http.StatusInternalServerError, "", "")
+			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 		}
-		key, pd := codedProblem(ctx, he.Status, he.Code, he.MessageKey)
-		pd.Details = he.Details
-		return key, pd
+		info := app.codedErrorInfo(ctx, he.Status, he.Code, he.MessageKey)
+		info.Details = he.Details
+		return info
 	}
 
 	if provider, ok := fault.ProviderOf(err); ok {
 		status, known := internalfaultstatus.HTTP(provider.FaultKind())
 		if !known {
-			return codedProblem(ctx, http.StatusInternalServerError, "", "")
+			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 		}
-		return codedProblem(ctx, status, "", "")
+		return app.codedErrorInfo(ctx, status, "", "")
 	}
 
 	if se, ok := asHTTPStatus(err); ok {
 		status := se.HTTPStatus()
 		if !isValidHTTPStatus(status) {
-			return codedProblem(ctx, http.StatusInternalServerError, "", "")
+			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 		}
-		return codedProblem(ctx, status, "", "")
+		return app.codedErrorInfo(ctx, status, "", "")
 	}
 
-	return codedProblem(ctx, http.StatusInternalServerError, "", "")
+	return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 }
 
-// codedProblem is the single source of the effective-code and effective-title
+// codedErrorInfo is the single source of the effective-code and message
 // calculation for the HTTPError, fault, legacy-status, and generic-500
-// classification branches. The effective code is the explicit code when
-// non-empty, otherwise the frozen default for the status. With an explicit
-// message key the title resolves through the existing three-level chain and
-// the key is returned as the effective key; without one the effective key is
-// "errors.<code>" and the title resolves as locale bundle lookup for that key,
-// then http.StatusText, then "HTTP <status>".
-func codedProblem(ctx *Context, status int, explicitCode, explicitKey string) (string, *ProblemDetails) {
+// classification branches.
+func (app *App) codedErrorInfo(ctx *Context, status int, explicitCode, explicitKey string) *ErrorInfo {
 	code := explicitCode
 	if code == "" {
 		code = defaultCodeForStatus(status)
 	}
-
-	if explicitKey != "" {
-		pd := NewProblemDetails(status, resolveMessage(ctx, explicitKey))
-		pd.Code = code
-		return explicitKey, pd
-	}
-
-	key := "errors." + code
-	title := ""
-	if ctx.app != nil && ctx.app.i18nBundle != nil && ctx.locale != "" {
-		if s, ok := ctx.app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
-			title = s
-		}
-	}
-	if title == "" {
-		title = http.StatusText(status)
-	}
-	if title == "" {
-		title = fmt.Sprintf("HTTP %d", status)
-	}
-	pd := NewProblemDetails(status, title)
-	pd.Code = code
-	return key, pd
+	key, message := app.resolveErrorMessage(ctx, status, code, explicitKey)
+	return &ErrorInfo{Status: status, Code: code, MessageKey: key, Message: message}
 }
 
-// defaultRenderError writes an RFC 7807 Problem Details JSON response.
-func defaultRenderError(ctx *Context, pd *ProblemDetails) {
-	if err := writeProblemDetails(ctx, pd); err != nil {
+func safeInternalErrorInfo() *ErrorInfo {
+	return &ErrorInfo{
+		Status:     http.StatusInternalServerError,
+		Code:       "internal_server_error",
+		MessageKey: "internal_server_error",
+		Message:    "Internal Server Error",
+	}
+}
+
+// defaultRenderError writes Credo's default JSON error envelope.
+func defaultRenderError(ctx *Context, info *ErrorInfo) {
+	if err := writeDefaultError(ctx, info); err != nil {
 		ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 			"credo: failed to write error response", slog.Any("error", err))
 	}
 }
 
-// writeProblemDetails commits a Problem Details response and returns the
-// marshal error, letting callers choose their own failure policy.
-func writeProblemDetails(ctx *Context, pd *ProblemDetails) error {
-	ctx.Response().Header().Set("Content-Type", "application/problem+json")
-	ctx.Response().WriteHeader(pd.Status)
-	return jsonv2.MarshalWrite(ctx.Response(), pd, ctx.app.problemJSONOptions())
+func writeDefaultError(ctx *Context, info *ErrorInfo) error {
+	ctx.Response().Header().Set("Content-Type", "application/json; charset=utf-8")
+	ctx.Response().WriteHeader(info.Status)
+	return jsonv2.MarshalWrite(ctx.Response(), ErrorResponse{
+		Success: false,
+		Code:    info.Code,
+		Message: info.Message,
+		Details: info.Details,
+		Errors:  info.Errors,
+	}, ctx.app.errorJSONOptions())
 }
 
-// resolveMessage resolves a message key to a human-readable string using
-// a 3-level fallback: i18n bundle → builtInMessages → key itself.
-func resolveMessage(ctx *Context, key string) string {
-	// 1. i18n bundle
-	if ctx.app != nil && ctx.app.i18nBundle != nil && ctx.locale != "" {
-		if s, ok := ctx.app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
-			return s
+func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey string) (string, string) {
+	key, explicit := app.effectiveMessageKey(MessageScopeError, code, explicitKey)
+	if app.i18nBundle != nil && ctx.locale != "" {
+		if message, ok := app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
+			return key, message
 		}
 	}
-	// 2. built-in fallback
-	if msg, ok := builtInMessages[key]; ok {
-		return msg
+	if explicit {
+		if message, ok := builtInMessages[key]; ok {
+			return key, message
+		}
+		return key, key
 	}
-	// 3. key itself
-	return key
+	if message, ok := builtInMessages[code]; ok {
+		return key, message
+	}
+	if message := http.StatusText(status); message != "" {
+		return key, message
+	}
+	return key, fmt.Sprintf("HTTP %d", status)
+}
+
+func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string) (string, bool) {
+	if explicitKey != "" {
+		return explicitKey, true
+	}
+	if app != nil && app.messageKeyResolver != nil {
+		key := app.messageKeyResolver(MessageRef{Scope: scope, Code: code})
+		if key == "" {
+			panic(fmt.Sprintf("credo: MessageKeyResolver returned an empty key for scope %d code %q", scope, code))
+		}
+		return key, false
+	}
+	return code, false
 }
 
 // httpStatusProvider is implemented by errors that carry an HTTP status code.
@@ -512,15 +574,18 @@ func asHTTPStatus(err error) (httpStatusProvider, bool) {
 	return errors.AsType[httpStatusProvider](err)
 }
 
-// translateValidationErrors translates each validation error using the bundle.
-func translateValidationErrors(bundle *internali18n.Bundle, lang string, ve validation.Errors) validation.Errors {
+// translateValidationErrors resolves each validation error's exact key and
+// translates it when a bundle is active.
+func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) validation.Errors {
 	result := make(validation.Errors, len(ve))
 	for i, e := range ve {
 		result[i] = e // copy
-
-		// Lookup key: "v." + code
-		if s, ok := translateFieldMessage(bundle, lang, "v."+e.Code, e.Params, e.Field); ok {
-			result[i].Message = s
+		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
+		result[i].MessageKey = key
+		if app.i18nBundle != nil && ctx.locale != "" {
+			if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, e.Params, e.Field); ok {
+				result[i].Message = s
+			}
 		}
 	}
 	return result
@@ -543,21 +608,23 @@ func translateFieldMessage(bundle *internali18n.Bundle, lang, key string, params
 }
 
 // bindProblemError converts a [BindError] into the single errors[] entry of
-// the RFC 7807 response. The entry mirrors the validation error shape:
+// the default error response. The entry mirrors the validation error shape:
 // Code carries the machine-readable reason, Message the localized (or
 // default English) text, and Params the client-safe template variables.
-// Translation follows the validation pipeline: lookup key "bind.<reason>",
-// field names resolved via the bundle's field translations.
+// Translation follows the validation pipeline with a scoped exact key; field
+// names are resolved via the bundle's field translations.
 func (app *App) bindProblemError(ctx *Context, be *BindError) validation.ValidationError {
+	key, _ := app.effectiveMessageKey(MessageScopeBind, string(be.Reason), "")
 	ve := validation.ValidationError{
-		Field:   be.Field,
-		Code:    string(be.Reason),
-		Message: be.message(),
-		Params:  be.params(),
+		Field:      be.Field,
+		Code:       string(be.Reason),
+		Message:    be.message(),
+		MessageKey: key,
+		Params:     be.params(),
 	}
 
 	if app.i18nBundle != nil && ctx.locale != "" {
-		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, "bind."+string(be.Reason), ve.Params, be.Field); ok {
+		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, ve.Params, be.Field); ok {
 			ve.Message = s
 		}
 	}

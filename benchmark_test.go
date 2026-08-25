@@ -192,7 +192,7 @@ func BenchmarkServeHTTP_ParallelJSON(b *testing.B) {
 }
 
 // BenchmarkServeHTTP_NotFound measures the 404 path through
-// the error handling pipeline + ProblemDetails JSON encoding.
+// the error handling pipeline + default ErrorResponse JSON encoding.
 func BenchmarkServeHTTP_NotFound(b *testing.B) {
 	app := mustNewBench(b)
 	app.GET("/exists", func(ctx *credo.Context) error {

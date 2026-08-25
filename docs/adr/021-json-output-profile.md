@@ -4,7 +4,7 @@
 
 ## Context
 
-Credo decodes request bodies with `encoding/json/v2` ([ADR-008](008-context-design.md)): strict single-value bodies, duplicate-member rejection, and typed `*BindError` reasons. Encoding stayed on `encoding/json` v1 — `Response.JSON` used a `json.Encoder`, and so did both RFC 7807 Problem Details writers. Two decoders' worth of behavior in one framework is a maintenance hazard, and v1 is now the compatibility layer rather than the primary API.
+Credo decodes request bodies with `encoding/json/v2` ([ADR-008](008-context-design.md)): strict single-value bodies, duplicate-member rejection, and typed `*BindError` reasons. Encoding stayed on `encoding/json` v1 — `Response.JSON` and framework-owned error writers used `json.Encoder`. Two generations of JSON behavior in one framework are a maintenance hazard, and v1 is now the compatibility layer rather than the primary API.
 
 Moving the encode side is not a like-for-like swap. Unlike the decode sites (config files, locale files, test helpers), `Response.JSON` encodes **application data**, so every v1→v2 default difference is a visible wire change for every Credo application:
 
@@ -23,7 +23,7 @@ The Duration row is the hard constraint. Go issue 71631 was closed deliberately:
 
 ### One profile per application, applied at every framework encode site
 
-`Response.JSON` and both Problem Details writers encode through `jsonv2.MarshalWrite` with an application-level options value:
+`Response.JSON`, renderer-returned JSON, and the default error writer encode through `jsonv2.MarshalWrite` with an application-level options value:
 
 ```go
 var defaultJSONOptions = jsonv2.JoinOptions(
@@ -52,9 +52,13 @@ Options are appended after the framework profile, so each one overrides that axi
 
 There is no per-call `JSONWith(...)` variant, mirroring the strict-bodies decision ([ADR-008](008-context-design.md)): one posture per application. An application that needs a different envelope has `SetSuccessRenderer`; a handler that needs different bytes entirely can marshal them itself and write through `Response.Blob`.
 
-### Problem Details always sort map keys
+### Default error bodies always sort map keys
 
-RFC 7807 bodies are a framework contract consumed by clients, translators, and tests, so `Deterministic(true)` is re-applied after the application profile even when the application turned it off. Error bodies stay byte-stable across applications.
+Credo's default error envelope is a framework contract consumed by clients,
+translators, and tests, so `Deterministic(true)` is re-applied after the
+application profile even when the application turned it off. Custom renderer
+bodies, including the opt-in RFC 9457 renderer, use the application profile
+because the application selected that representation.
 
 ### Decoding policy stays separate
 
@@ -74,6 +78,6 @@ The profile governs encoding only. Request-body strictness is `WithStrictBodies`
 
 - Applications upgrading see four wire changes: `[]`/`{}` instead of `null`, JSON-empty `omitempty`, unescaped `<>&`, and no trailing newline. Each is opt-out per axis through `WithJSONOptions`; `DefaultOptionsV1()` restores all of them at once (except the trailing newline, which no option restores — it was never part of the value).
 - Response snapshot tests that hard-code `null` for empty arrays or `<` escapes need updating; that is the intended, visible cost of the change.
-- Framework-owned JSON is unaffected in shape: `ProblemDetails.Errors` is `omitempty` on a slice, which behaves identically under both rules, and health output renders durations as strings.
+- Framework-owned JSON is unaffected in shape: `ErrorResponse.Errors` is `omitempty` on a slice, which behaves identically under both rules, and health output renders durations as strings.
 - `time.Time` keeps RFC 3339 (no `format:` tag means no `unix` or custom layouts; a named type with `MarshalText` covers the rest).
 - If typed struct tags land in a future Go release with a Duration format mechanism, the P1 decision is worth revisiting — as a deliberate break, tracked in the v1 gate.

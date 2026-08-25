@@ -33,7 +33,7 @@
 // # Error Format
 //
 // Validation errors are returned as [Errors] ([]ValidationError), designed
-// for RFC 7807 Problem Details integration. Each error includes Field, Code,
+// for centralized error-envelope integration. Each error includes Field, Code,
 // Message, and optional Params for i18n template rendering.
 //
 // # PATCH Support

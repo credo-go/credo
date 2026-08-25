@@ -506,7 +506,7 @@ type ProductHandler struct {
 func (h *ProductHandler) List(ctx *credo.Context) error {
     var filter ProductFilter
     if err := ctx.Request().BindQuery(&filter); err != nil {
-        return err // RFC 7807 problem details on bind/validation failure
+        return err // centralized envelope on bind/validation failure
     }
 
     page, err := h.service.ListByFilter(ctx.Context(), &filter)

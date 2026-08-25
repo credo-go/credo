@@ -3,7 +3,8 @@
 # Section categories:
 #   [framework-read]  Automatically consumed by credo.New()
 #   [user-read]       Read via rawCfg.Unmarshal("key", &cfg) at module boundary, injected via DI
-#   [aspirational]    Not read by this example; shown for reference
+#
+# Complete copyable configuration references live in ../references/config.
 #
 # Precedence (lowest to highest):
 #   1. This file (config.yaml)
@@ -72,100 +73,6 @@ databases:
   #   max_idle: 2
   #   max_lifetime: "30m"
   #   ssl_mode: "require"
-
-# ---------------------------------------------------------------------------
-# i18n [aspirational]
-# Internationalization settings. This example does not call app.UseI18n, so the
-# section is unread; it shows what rawCfg.Unmarshal("i18n", &cfg) would decode.
-# See docs/guides/localization.md for the wiring.
-# ---------------------------------------------------------------------------
-i18n:
-  dir: "locales/"
-  default: "en"
-
-# ---------------------------------------------------------------------------
-# Auth [aspirational]
-# Authentication strategy settings. This example builds its JWTConfig in Go
-# (see newJWTAuthenticator), so nothing below is read at runtime — it is shown
-# as the shape rawCfg.Unmarshal("auth.jwt", &cfg) would decode. Function fields
-# (Validator, KeyFunc, ParseUser) are always code-only.
-# ---------------------------------------------------------------------------
-auth:
-  jwt:
-    header: "Authorization"
-    prefix: "Bearer"
-    signing_method: "RS256"
-    # query: "token"                   # Optional: extract from query param
-    # cookie: "jwt"                    # Optional: extract from cookie
-  api_key:
-    header: "X-API-Key"
-    # prefix: "ApiKey"                 # Optional: scheme prefix
-    # query: "api_key"                 # Optional: query param fallback
-  basic:
-    realm: "SaaS Admin"
-
-# ---------------------------------------------------------------------------
-# Middleware [aspirational]
-# These config structs exist but are currently instantiated in Go code only.
-# Shown here as forward reference for when config-driven middleware is added.
-# Function fields (Skipper, ErrorHandler, Generator, etc.) are always code-only.
-# ---------------------------------------------------------------------------
-middleware:
-  cors:
-    allow_origins:
-      - "https://app.example.com"
-      - "https://*.example.com"
-    allow_methods:
-      - "GET"
-      - "POST"
-      - "PUT"
-      - "PATCH"
-      - "DELETE"
-    allow_headers:
-      - "Authorization"
-      - "Content-Type"
-      - "X-Request-Id"
-    allow_credentials: true
-    expose_headers:
-      - "X-Request-Id"
-      - "X-RateLimit-Remaining"
-    max_age: 86400                     # 24 hours
-
-  compress:
-    level: 5
-    types:
-      - "text/html"
-      - "text/css"
-      - "text/plain"
-      - "application/json"
-      - "application/javascript"
-      - "image/svg+xml"
-
-  rate_limit:
-    tokens: 100
-    interval: "1m"
-
-  recover:
-    disable_stack_trace: false
-    stack_size: 8192
-
-  request_id:
-    header: "X-Request-Id"
-    limit: 64
-
-  secure:
-    xss_protection: "1; mode=block"
-    content_type_nosniff: "nosniff"
-    x_frame_options: "DENY"
-    hsts_max_age: 31536000             # 1 year
-    hsts_exclude_subdomains: false
-    hsts_preload_enabled: true
-    content_security_policy: "default-src 'self'; script-src 'self'"
-    csp_report_only: false
-    referrer_policy: "strict-origin-when-cross-origin"
-
-  timeout:
-    timeout: "30s"
 
 # ---------------------------------------------------------------------------
 # Application [user-read]

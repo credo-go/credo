@@ -50,10 +50,11 @@ func (b *Bundle) DefaultLanguage() language.Tag {
 // AddMessages registers messages for the given language tag.
 // If a message with the same ID already exists, it is overwritten.
 func (b *Bundle) AddMessages(tag language.Tag, msgs ...*Message) error {
-	if _, ok := b.messages[tag]; !ok {
-		b.messages[tag] = make(map[string]*messageTemplate)
-	}
+	compiled := make(map[string]*messageTemplate, len(msgs))
 	for _, msg := range msgs {
+		if msg == nil {
+			return fmt.Errorf("i18n: message must not be nil")
+		}
 		if msg.ID == "" {
 			return fmt.Errorf("i18n: message ID must not be empty")
 		}
@@ -61,17 +62,72 @@ func (b *Bundle) AddMessages(tag language.Tag, msgs ...*Message) error {
 		if err != nil {
 			return err
 		}
-		b.messages[tag][msg.ID] = mt
+		compiled[msg.ID] = mt
+	}
+	if len(compiled) == 0 {
+		return nil
+	}
+	if _, ok := b.messages[tag]; !ok {
+		b.messages[tag] = make(map[string]*messageTemplate)
+	}
+	for id, mt := range compiled {
+		b.messages[tag][id] = mt
 	}
 	b.rebuildMatcher()
 	return nil
 }
 
-// SetFields sets field name translations for the given language tag.
-// Used for opt-in field name injection (Mode 2 in ADR-008).
+// SetFields merges field-name translations for the given language tag.
+// Later values override matching keys.
 func (b *Bundle) SetFields(tag language.Tag, fields map[string]string) {
-	b.fields[tag] = maps.Clone(fields)
+	if _, ok := b.fields[tag]; !ok {
+		b.fields[tag] = make(map[string]string, len(fields))
+	}
+	maps.Copy(b.fields[tag], fields)
 	b.rebuildMatcher()
+}
+
+// AddStringMessages compiles exact message keys for tag. String values fill
+// the CLDR Other form; file catalogs remain the path for plural forms.
+func (b *Bundle) AddStringMessages(tag string, messages map[string]string) error {
+	parsed, err := ParseTag(tag)
+	if err != nil {
+		return err
+	}
+	keys := slices.Sorted(maps.Keys(messages))
+	compiled := make([]*Message, 0, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			return fmt.Errorf("i18n: message key must not be empty")
+		}
+		if messages[key] == "" {
+			return fmt.Errorf("i18n: message %q must not be empty", key)
+		}
+		compiled = append(compiled, &Message{ID: key, Other: messages[key]})
+	}
+	return b.AddMessages(parsed, compiled...)
+}
+
+// AddFields copies exact technical field paths and display names for tag.
+func (b *Bundle) AddFields(tag string, fields map[string]string) error {
+	parsed, err := ParseTag(tag)
+	if err != nil {
+		return err
+	}
+	copyFields := make(map[string]string, len(fields))
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
+		if key == "" {
+			return fmt.Errorf("i18n: field key must not be empty")
+		}
+		if fields[key] == "" {
+			return fmt.Errorf("i18n: field %q must not be empty", key)
+		}
+		copyFields[key] = fields[key]
+	}
+	if len(copyFields) > 0 {
+		b.SetFields(parsed, copyFields)
+	}
+	return nil
 }
 
 // LanguageTags returns all language tags that have messages loaded.
@@ -82,17 +138,32 @@ func (b *Bundle) LanguageTags() []language.Tag {
 // LoadDir loads locale files from a filesystem directory.
 // Expected structure: {dir}/{lang}/messages.json [+ fields.json]
 func (b *Bundle) LoadDir(dir string) error {
-	return b.LoadDirFS(os.DirFS(dir), ".")
+	_, err := b.LoadDirSource(dir)
+	return err
+}
+
+// LoadDirSource is LoadDir plus the number of message entries read from the
+// source. The count lets setup distinguish a valid overriding source from an
+// empty explicit source even when every key overrides a programmatic key.
+func (b *Bundle) LoadDirSource(dir string) (int, error) {
+	return b.LoadDirFSSource(os.DirFS(dir), ".")
 }
 
 // LoadDirFS loads locale files from an fs.FS.
 // Expected structure: {dir}/{lang}/messages.json [+ fields.json]
 func (b *Bundle) LoadDirFS(fsys fs.FS, dir string) error {
+	_, err := b.LoadDirFSSource(fsys, dir)
+	return err
+}
+
+// LoadDirFSSource is LoadDirFS plus the number of message entries read.
+func (b *Bundle) LoadDirFSSource(fsys fs.FS, dir string) (int, error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
-		return fmt.Errorf("i18n: read dir %q: %w", dir, err)
+		return 0, fmt.Errorf("i18n: read dir %q: %w", dir, err)
 	}
 
+	loaded := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -107,30 +178,32 @@ func (b *Bundle) LoadDirFS(fsys fs.FS, dir string) error {
 		langPath := filepath.Join(dir, langDir)
 
 		// Load messages.json
-		if err := b.loadMessages(fsys, langPath, tag); err != nil {
-			return err
+		count, err := b.loadMessages(fsys, langPath, tag)
+		if err != nil {
+			return 0, err
 		}
+		loaded += count
 
 		// Load fields.json (optional — missing file is OK, parse errors are not)
 		if err := b.loadFields(fsys, langPath, tag); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	b.rebuildMatcher()
-	return nil
+	return loaded, nil
 }
 
-func (b *Bundle) loadMessages(fsys fs.FS, langPath string, tag language.Tag) error {
+func (b *Bundle) loadMessages(fsys fs.FS, langPath string, tag language.Tag) (int, error) {
 	msgPath := filepath.Join(langPath, "messages.json")
 	data, err := fs.ReadFile(fsys, filepath.ToSlash(msgPath))
 	if err != nil {
-		return fmt.Errorf("i18n: read %q: %w", msgPath, err)
+		return 0, fmt.Errorf("i18n: read %q: %w", msgPath, err)
 	}
 
 	var raw map[string]jsontext.Value
 	if err := jsonv2.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("i18n: parse %q: %w", msgPath, err)
+		return 0, fmt.Errorf("i18n: parse %q: %w", msgPath, err)
 	}
 
 	if _, ok := b.messages[tag]; !ok {
@@ -140,15 +213,15 @@ func (b *Bundle) loadMessages(fsys fs.FS, langPath string, tag language.Tag) err
 	for id, val := range raw {
 		msg, err := messageFromJSON(id, val)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		mt, err := newMessageTemplate(msg)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		b.messages[tag][id] = mt
 	}
-	return nil
+	return len(raw), nil
 }
 
 func (b *Bundle) loadFields(fsys fs.FS, langPath string, tag language.Tag) error {
@@ -166,13 +239,16 @@ func (b *Bundle) loadFields(fsys fs.FS, langPath string, tag language.Tag) error
 		return fmt.Errorf("i18n: parse %q: %w", fieldsPath, err)
 	}
 
-	b.fields[tag] = fields
+	b.SetFields(tag, fields)
 	return nil
 }
 
 func (b *Bundle) rebuildMatcher() {
 	tags := make([]language.Tag, 0, len(b.messages))
-	for tag := range b.messages {
+	for tag, messages := range b.messages {
+		if len(messages) == 0 {
+			continue
+		}
 		tags = append(tags, tag)
 	}
 	// Sort for deterministic ordering; default language first.
@@ -319,7 +395,12 @@ func (b *Bundle) FieldNameForLang(lang, raw string) string {
 
 // HasMessages returns true if the bundle has any loaded messages.
 func (b *Bundle) HasMessages() bool {
-	return len(b.messages) > 0
+	for _, messages := range b.messages {
+		if len(messages) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultLang returns the default language as a string.

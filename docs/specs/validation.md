@@ -16,7 +16,7 @@ Validation is NOT a separate step. It is part of parsing:
 
 ```
 Request → BindBody(&input) → [decode] → [validate] → guaranteed valid output
-                                                    ↘ error → RFC 7807
+                                                    ↘ error → Credo envelope
 ```
 
 The `Validatable` interface is the bridge between binding and validation:
@@ -95,7 +95,7 @@ validation.Field(&c.Age, validation.Email())    // ✗ *int ≠ Rule[string]
 ```
 validation/
 ├── rule.go             Rule[T] interface, FieldRules, ValidateStruct, Field[T]
-├── errors.go           ValidationError, Errors type, RFC 7807 serialization
+├── errors.go           ValidationError, Errors type, envelope serialization
 ├── string_rules.go     Required[T], Email, URL, UUID, Regex, Length
 ├── numeric_rules.go    Min, Max, Between
 ├── collection_rules.go NotEmptySlice, NotEmptyMap, Each, When, NilSafe
@@ -270,16 +270,17 @@ When a field has no rules but implements `Validatable`, `ValidateStruct` auto-ca
 
 ---
 
-## Error Format — RFC 7807
+## Error Format
 
-Validation errors are classified by the framework's internal error pipeline and rendered as RFC 7807 Problem Details by the default renderer (or a custom `ErrorRenderer` if configured):
+Validation errors are classified as 422 by the framework's internal error
+pipeline and rendered in Credo's default error envelope (or by a configured
+`ErrorRenderer`):
 
 ```json
 {
-    "type": "https://credo.dev/errors/validation",
-    "title": "Validation Failed",
-    "status": 422,
-    "detail": "One or more fields failed validation.",
+    "success": false,
+    "code": "validation_failed",
+    "message": "Validation Failed",
     "errors": [
         {"field": "name", "code": "length", "message": "must be between 2 and 100 characters", "params": {"min": 2, "max": 100}},
         {"field": "email", "code": "email", "message": "must be a valid email address"},
@@ -295,10 +296,11 @@ Validation errors are classified by the framework's internal error pipeline and 
 
 // ValidationError represents a single field validation failure.
 type ValidationError struct {
-    Field   string         `json:"field"`           // Field path: "name", "address.city"
-    Code    string         `json:"code"`            // Rule identifier / i18n key: "required", "email"
-    Message string         `json:"message"`         // Default English message
-    Params  map[string]any `json:"params,omitempty"` // Template params: {min: 2, max: 100}
+    Field      string         `json:"field"`
+    Code       string         `json:"code"`
+    Message    string         `json:"message"`
+    MessageKey string         `json:"-"`              // optional exact presentation key
+    Params     map[string]any `json:"params,omitempty"`
 }
 
 // Errors is a collection of validation errors.
@@ -308,11 +310,18 @@ func (e Errors) Error() string  // implements error interface
 func (e Errors) MarshalJSON() ([]byte, error)
 ```
 
-The `Code` field enables i18n translation in Phase 3 without changing the error type. `Params` provides template variables for localized messages (e.g., `"must be between {{min}} and {{max}} characters"`).
+`Code` is the stable rule identity. `MessageKey`, when present, is an exact
+presentation key and is never serialized. `Params` provides template data.
 
-**Field names are NOT translated** — `Field` is a stable technical identifier for frontend form-input matching. See [ADR-013](../adr/013-internationalization.md).
+`Field` is always a stable technical identifier for frontend form-input
+matching. An optional Fields catalog may provide a display name only to the
+message template as `{{.field}}`; it never changes the wire `field` value.
 
-**Translation trigger** — Translation is triggered automatically by the framework's internal error handling when i18n is configured (via `app.UseI18n()`). Validation codes map to `"v." + code`; HTTP/domain error titles use the explicit `HTTPError.MessageKey` when set, otherwise the effective `errors.<code>` classification key. Translation never happens inside the validation engine. See [ADR-013](../adr/013-internationalization.md).
+**Translation trigger** — Translation happens in the framework's error
+pipeline when i18n is configured, never inside the validation engine. An
+explicit `MessageKey` wins; otherwise the optional scope-aware resolver is
+used; otherwise the bare `Code` is the exact key. Credo adds no prefix. See
+[ADR-013](../adr/013-internationalization.md).
 
 ---
 
@@ -349,7 +358,7 @@ The `Code` field enables i18n translation in Phase 3 without changing the error 
 | Auto-validate | No | No | No | Route MW | **BindBody/Query** |
 | Custom rules | Tag func | `Rule` interface | `Rule[T]` | Validator | **`Rule[T]`** |
 | PATCH support | Awkward | Good (nil ptr) | OmitEmpty | Separate rules | **NilSafe[T]** |
-| Error format | Custom | map[string]error | Structured | Nested JSON | **RFC 7807** |
+| Error format | Custom | map[string]error | Structured | Nested JSON | **Credo envelope; RFC 9457 opt-in** |
 | i18n | Translator | No | Templates | Built-in | **Code + Params** |
 | Reflection | Heavy (cached) | Moderate | None | Minimal | **Minimal (cached)** |
 
@@ -358,5 +367,5 @@ The `Code` field enables i18n translation in Phase 3 without changing the error 
 ## Implementation Phase
 
 - **Phase 2.3**: Core validation engine (`validation/` package)
-- **Phase 2.4**: RFC 7807 error integration with `ErrorRenderer`
+- **Phase 2.4**: centralized error integration with `ErrorRenderer`
 - **Phase 1.3** (completed): `Validatable` interface + `BindBody`/`BindQuery` (Context methods, auto-call Validate)

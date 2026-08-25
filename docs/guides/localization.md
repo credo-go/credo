@@ -43,10 +43,10 @@ locales/
 {
   "messages.welcome": "Welcome",
   "messages.hello_name": "Hello, {{.name}}",
-  "errors.not_found": "Not found",
-  "errors.internal_server_error": "Internal server error",
-  "v.required": "is required",
-  "v.email": "must be a valid email address"
+  "not_found": "Not found",
+  "internal_server_error": "Internal server error",
+  "required": "is required",
+  "email": "must be a valid email address"
 }
 ```
 
@@ -56,10 +56,10 @@ locales/
 {
   "messages.welcome": "Hos geldiniz",
   "messages.hello_name": "Merhaba, {{.name}}",
-  "errors.not_found": "Bulunamadı",
-  "errors.internal_server_error": "Sunucu hatası",
-  "v.required": "zorunludur",
-  "v.email": "gecerli bir e-posta adresi olmalidir"
+  "not_found": "Bulunamadı",
+  "internal_server_error": "Sunucu hatası",
+  "required": "zorunludur",
+  "email": "gecerli bir e-posta adresi olmalidir"
 }
 ```
 
@@ -104,6 +104,33 @@ With no arguments, `UseI18n` reads from `RawConfig` if the `i18n` key exists. If
 - `default = "en"`
 - language detection from the `Accept-Language` header
 
+### Programmatic default catalog
+
+For a deployment-independent default language, provide `Messages` and optional
+field display names in `Fields`:
+
+```go
+if err := app.UseI18n(credo.I18nConfig{
+    Default: "tr",
+    Messages: credo.I18nMessages{
+        "not_found":         "Kayıt bulunamadı",
+        "validation_failed": "Doğrulama başarısız",
+        "required":          "{{.field}} zorunludur",
+    },
+    Fields: credo.I18nFields{
+        "email": "e-posta adresi",
+    },
+}); err != nil {
+    log.Fatal(err)
+}
+```
+
+These maps represent only `Default`, are copied at setup, and may be the sole
+source. Add an explicit `Dir` or `DirFS` to layer multi-language files over
+them; file values override exact collisions and map-only keys remain. Supplying
+maps alone intentionally does not probe `./locales`. Use `DirFS` rather than an
+outer language map when translations must be embedded.
+
 ---
 
 ## Locale Directory Layout
@@ -125,7 +152,10 @@ Files:
 - `messages.json`: normal application messages plus validation and HTTP error keys
 - `fields.json`: optional display names for field-aware validation messages
 
-If the locale directory does not exist, or exists but contains no valid language folders with messages, `UseI18n` returns `nil` and Credo keeps i18n inactive.
+An absent conventional `locales/` directory discovered by zero-config setup is
+an inactive warning. An explicitly configured `Dir`, RawConfig directory, or
+`DirFS` is a declared deployment dependency: missing, unreadable, or empty
+sources return an error.
 
 ---
 
@@ -138,9 +168,26 @@ Recommended namespaces:
 - `messages.*` for normal application messages
 - `emails.*` for email copy
 - `pages.*` for HTML/template copy
-- `v.*` for validation rules
-- `bind.*` for decode (bind) error reasons
-- `http.*` for HTTP error titles
+- `validation.*` for validation rules
+- `request.*` for decode (bind) error reasons
+- `problem.*` for HTTP and top-level error messages
+
+Credo does not add these prefixes. Without a resolver, framework lookups use
+bare codes such as `required`, `syntax`, `not_found`, `validation_failed`, and
+`bind_failed`. To use the recommended namespaces, configure them explicitly:
+
+```go
+ResolveMessageKey: func(ref credo.MessageRef) string {
+    switch ref.Scope {
+    case credo.MessageScopeValidation:
+        return "validation." + ref.Code
+    case credo.MessageScopeBind:
+        return "request." + ref.Code
+    default:
+        return "problem." + ref.Code
+    }
+},
+```
 
 Example:
 
@@ -149,22 +196,22 @@ Example:
   "messages.welcome": "Welcome",
   "messages.hello_name": "Hello, {{.name}}",
   "messages.user_created": "User created",
-  "v.required": "is required",
-  "v.length": "must be between {{.min}} and {{.max}} characters",
-  "v.email": "must be a valid email address",
-  "v.min": "must be at least {{.min}}",
-  "v.max": "must be at most {{.max}}",
-  "v.between": "must be between {{.min}} and {{.max}}",
-  "bind.type_mismatch": "must be of type {{.expected}}",
-  "bind.trailing_data": "request body must contain a single JSON value",
-  "errors.bad_request": "Bad request",
-  "errors.unauthorized": "Unauthorized",
-  "errors.forbidden": "Forbidden",
-  "errors.not_found": "Not found",
-  "errors.conflict": "Conflict",
-  "errors.internal_server_error": "Internal server error",
-  "http.bind_failed": "Malformed request",
-  "http.validation_failed": "Validation failed"
+  "validation.required": "is required",
+  "validation.length": "must be between {{.min}} and {{.max}} characters",
+  "validation.email": "must be a valid email address",
+  "validation.min": "must be at least {{.min}}",
+  "validation.max": "must be at most {{.max}}",
+  "validation.between": "must be between {{.min}} and {{.max}}",
+  "request.type_mismatch": "must be of type {{.expected}}",
+  "request.trailing_data": "request body must contain a single JSON value",
+  "problem.bad_request": "Bad request",
+  "problem.unauthorized": "Unauthorized",
+  "problem.forbidden": "Forbidden",
+  "problem.not_found": "Not found",
+  "problem.conflict": "Conflict",
+  "problem.internal_server_error": "Internal server error",
+  "problem.bind_failed": "Malformed request",
+  "problem.validation_failed": "Validation failed"
 }
 ```
 
@@ -227,7 +274,7 @@ Then your validation message can use `{{.field}}`:
 
 ```json
 {
-  "v.required": "{{.field}} zorunludur"
+  "validation.required": "{{.field}} zorunludur"
 }
 ```
 
@@ -438,25 +485,27 @@ func createUser(ctx *credo.Context) error {
 }
 ```
 
-With suitable locale files, Credo translates entries such as:
+With the namespace resolver shown above, Credo translates entries such as:
 
-- `v.required`
-- `v.length`
-- `v.email`
-- `v.min`
-- `v.max`
-- `v.between`
+- `validation.required`
+- `validation.length`
+- `validation.email`
+- `validation.min`
+- `validation.max`
+- `validation.between`
 
-Decode failures translate the same way through `bind.<reason>` keys (`bind.syntax`, `bind.type_mismatch`, `bind.invalid_value`, `bind.empty_body`, `bind.trailing_data`, `bind.duplicate_field`, `bind.unknown_field`), with `{{.field}}`, `{{.expected}}`, and `{{.offset}}` available as template variables where applicable. The response `title` uses `http.bind_failed`.
+Decode failures use bind scope and exact reasons. With that resolver their keys
+are `request.syntax`, `request.type_mismatch`, `request.invalid_value`, and so
+on. `{{.field}}`, `{{.expected}}`, and `{{.offset}}` are available where
+applicable. The top-level message uses error scope + `bind_failed`.
 
 Example validation response:
 
 ```json
 {
-  "type": "https://credo.dev/errors/validation",
-  "title": "Validation Failed",
-  "status": 422,
-  "instance": "/users",
+  "success": false,
+  "code": "validation_failed",
+  "message": "Validation Failed",
   "errors": [
     {
       "field": "email",
@@ -472,13 +521,16 @@ Notes:
 - the field list stays machine-friendly
 - each field message is localized
 - Credo first tries the request locale, then the default locale, then the original validation message
-- the top-level RFC 7807 envelope remains the normal Credo error format
+- the top-level response uses Credo's default error envelope
 
 ---
 
 ## Automatic HTTP Error Translation
 
-Credo localizes error titles automatically. An error without an explicit `MessageKey` resolves through its effective classification key `errors.<code>` (bundle → `http.StatusText` → `"HTTP <status>"`); an explicit `MessageKey` resolves through the `resolveMessage` 3-level fallback: i18n bundle → builtInMessages → key itself.
+Credo localizes error messages automatically. An explicit `MessageKey` is an
+exact key and falls back to its literal value. Otherwise Credo invokes the
+optional scope-aware resolver, then uses the bare code. An implicit lookup miss
+falls back to built-in/HTTP status text, never to the resolver-generated key.
 
 ```go
 app.GET("/users/{id}", func(ctx *credo.Context) error {
@@ -494,13 +546,17 @@ If `locales/tr/messages.json` contains:
 
 ```json
 {
-  "errors.not_found": "Bulunamadı"
+  "not_found": "Bulunamadı"
 }
 ```
 
-then the RFC 7807 problem title becomes `Bulunamadı` for Turkish requests.
+then the default envelope message becomes `Bulunamadı` for Turkish requests.
 
-Default locale keys follow the frozen status codes — `errors.bad_request`, `errors.unauthorized`, `errors.forbidden`, `errors.not_found`, `errors.method_not_allowed`, `errors.conflict`, `errors.unprocessable_entity`, `errors.unsupported_media_type`, `errors.internal_server_error`, `errors.too_many_requests`, `errors.service_unavailable`, `errors.gateway_timeout`, `errors.request_timeout`, and so on for every status your app returns (an unknown status localizes under `errors.http_<status>`). Validation and bind titles keep their explicit keys `http.validation_failed` and `http.bind_failed`.
+Default keys are bare frozen status codes—`bad_request`, `unauthorized`,
+`forbidden`, `not_found`, `internal_server_error`, and so on. Unknown statuses
+use `http_<status>`. Validation and bind top-level keys are
+`validation_failed` and `bind_failed`. A resolver may namespace all error-scope
+keys consistently.
 
 Explicit presentation keys are attached with `WithMessageKey`:
 
@@ -509,7 +565,8 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
     WithMessageKey("user.email_exists")
 ```
 
-If no translation is found, the key itself (`"user.email_exists"`) is used as the title.
+If no translation is found, the explicit key itself (`"user.email_exists"`) is
+used as the message. It may therefore be a literal hard-coded message.
 
 ---
 
@@ -612,11 +669,8 @@ Typical causes:
 
 Check that your locale file contains the matching validation keys, for example:
 
-- `v.required`
-- `v.length`
-- `v.email`
-- `v.min`
-- `v.max`
+- bare `required`, `length`, `email`, `min`, and `max`, or the exact keys
+  produced by your configured resolver
 
 If a key is missing, Credo keeps the original default message.
 
@@ -626,7 +680,7 @@ If a key is missing, Credo keeps the original default message.
 
 - keep keys stable; do not use raw English sentences as keys
 - always define `http.*` keys for the statuses your API returns often
-- add `v.*` (and `bind.*`) keys early so `BindBody()` and `BindQuery()` become useful immediately
+- add validation and bind keys early so `BindBody()` and `BindQuery()` become useful immediately; use a resolver if those keys are namespaced
 - use `fields.json` only when server-generated messages need human field labels
 - prefer `ctx.T(...)` for response copy, not for control flow
 - when embedding locales, use `fs.Sub(...)` so `DirFS` points at the locale root
@@ -634,6 +688,11 @@ If a key is missing, Credo keeps the original default message.
 ---
 
 ## Complete Example
+
+Complete English and Turkish starter catalogs are available under
+[`examples/references/locales`](../../examples/references/locales/). The files
+are versioned copyable references, not catalogs embedded or loaded
+automatically by the framework.
 
 `config.json`:
 
@@ -651,10 +710,10 @@ If a key is missing, Credo keeps the original default message.
 ```json
 {
   "messages.user_created": "User created",
-  "v.required": "{{.field}} is required",
-  "v.email": "{{.field}} must be a valid email address",
-  "errors.not_found": "Not found",
-  "errors.internal_server_error": "Internal server error"
+  "required": "{{.field}} is required",
+  "email": "{{.field}} must be a valid email address",
+  "not_found": "Not found",
+  "internal_server_error": "Internal server error"
 }
 ```
 

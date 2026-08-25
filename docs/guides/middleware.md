@@ -498,7 +498,7 @@ What passes without configuration:
 
 **Subdomains are cross-origin.** A form on `app.example.com` posting to `api.example.com` is rejected (browsers send `Sec-Fetch-Site: same-site`) unless the frontend origin is listed in `TrustedOrigins`.
 
-Rejections return a 403 Problem Details response through the framework error pipeline; the detector's reason is logged but never exposed. Override with `ErrorHandler`:
+Rejections return a centralized 403 error envelope; the detector's reason is logged but never exposed. Override with `ErrorHandler`:
 
 ```go
 middleware.CSRF(middleware.CSRFConfig{
@@ -844,7 +844,7 @@ app.GlobalMiddleware(credo.WrapStdMiddleware(pkg.SomeMiddleware))
 
 The adapter handles request and response writer synchronization between the stdlib and Credo worlds.
 
-Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`ctx.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's RFC 7807 error pipeline (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
+Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`ctx.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's centralized error envelope (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
 
 ---
 

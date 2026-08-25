@@ -1,7 +1,7 @@
 // Package main demonstrates a full SaaS application built with the Credo framework.
 //
 // Features shown:
-//   - Configuration loading (config.Load with JSON + .env + env overrides)
+//   - Configuration loading (config.Load with YAML + .env + env overrides)
 //   - Typed config at the module boundary, injected via DI
 //   - Configuration reload: OnConfigChange re-reads one section on SIGHUP
 //     (systemctl reload) or app.Reload, here swapping the log level in place
@@ -11,7 +11,7 @@
 //   - Route groups (public, authenticated, admin)
 //   - Dependency injection (Provide/Resolve with typed constructors)
 //   - Validation (programmatic rules, no struct tags)
-//   - Error handling (RFC 7807 Problem Details)
+//   - Centralized error handling (Credo JSON envelope)
 //   - Health probes (/health, /ready) for container orchestration
 //   - Graceful shutdown with OnShutdown hooks
 package main
@@ -212,7 +212,7 @@ func createTenantHandler(svc *TenantService) credo.Handler {
 	return func(ctx *credo.Context) error {
 		var req CreateTenantRequest
 		if err := ctx.Request().BindBody(&req); err != nil {
-			return err // validation errors auto-converted to RFC 7807
+			return err // validation errors enter the centralized error envelope
 		}
 
 		tenant, err := svc.Create(ctx.Context(), &req)

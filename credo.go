@@ -39,7 +39,7 @@ type App struct {
 	mux *mux
 
 	// errorRenderer shapes error response bodies, set via SetErrorRenderer.
-	// nil = default RFC 7807 JSON renderer.
+	// nil = default Credo JSON error envelope.
 	errorRenderer ErrorRenderer
 
 	// successRenderer formats successful responses sent via Context.Render,
@@ -114,6 +114,10 @@ type App struct {
 
 	// i18nBundle holds the loaded i18n message bundle (nil if i18n inactive).
 	i18nBundle *internali18n.Bundle
+
+	// messageKeyResolver maps scoped machine codes to application-owned exact
+	// i18n keys. nil means the bare code is used.
+	messageKeyResolver MessageKeyResolver
 
 	// healthEngine holds the health check engine (nil if UseHealth not called).
 	healthEngine *healthEngine
@@ -479,9 +483,9 @@ func (app *App) StatusHandler(code int, h Handler) {
 // SetErrorRenderer sets the renderer that shapes error response bodies. The
 // framework handles error classification, logging, the status code, HEAD
 // handling, and committed-response guards internally; the renderer receives an
-// [ErrorInfo] containing the original error, the i18n message key, and the
-// classified [ProblemDetails], and returns the body to encode — or nil for the
-// default RFC 7807 body. Passing nil restores the default RFC 7807 JSON
+// request-scoped [ErrorInfo] containing normalized status, code, message key,
+// resolved message, details, and field errors, and returns the body to encode —
+// or nil for the default Credo body. Passing nil restores the default JSON
 // renderer. It is the error-side mirror of [App.SetSuccessRenderer]: install
 // both to give every response, success and failure alike, one envelope.
 //

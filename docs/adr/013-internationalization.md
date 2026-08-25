@@ -1,98 +1,146 @@
 # ADR-013: Internationalization
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-009
+**Status:** Accepted
+**Date:** 2026-03-01
+**Last revised:** 2026-08-26
+**Depends on:** ADR-009
 
 ## Context
 
-Enterprise applications (ADR-001) serving international users need error messages and validation feedback in the user's language. The i18n system must integrate with the framework's internal error handler (ADR-009) without coupling the root package to i18n implementation details.
+Credo must localize application text, HTTP/domain errors, validation failures,
+bind failures, and optional field display names without making machine error
+codes presentation-dependent. Applications also need a safe default-language
+catalog that does not depend on deployment files.
 
 ## Decision
 
-### Architecture
+### Architecture and public API
 
-i18n implementation lives in `internal/i18n/` — a pure message lookup engine with zero root package imports. The public API is exposed via the root package:
+The root package owns setup and request APIs; `internal/i18n` remains a root-
+independent message engine:
 
 ```go
-app.UseI18n(...)                                  // setup
-ctx.Locale()                                     // detected language
-ctx.T("v.required")                              // translate
+app.UseI18n(credo.I18nConfig{...})
+ctx.Locale()
+ctx.T("welcome", data)
+ctx.TPlural("items", count, data)
 ```
 
-Errors carry their own translation key rather than being matched by type. `HTTPError` holds an optional `MessageKey` field (e.g. `"user.not_found"`); when set, the error pipeline (ADR-009) resolves it against the bundle, and the same key doubles as the literal fallback so a message survives even with no bundle configured. When no key is set, the title resolves through the effective classification key `errors.<code>` (e.g. `"errors.not_found"`), falling back to `http.StatusText`.
+`Accept-Language` detection is the default. `I18nConfig.Detect` may replace it.
+The selected canonical tag is stored on the request Context.
 
-> **Scope**: only errors that the root policy can classify get a translated title — `*HTTPError`, semantic `fault.Provider` values (via the default kind policy), and legacy errors exposing `HTTPStatus() int`; the latter two localize through `errors.<code>`. A plain error is classified as 500 and its message is never leaked to the client.
+### Two catalogs, not one namespace
 
-### Language Detection
+`messages.json` contains message templates. `fields.json` maps exact technical
+field paths to display names. They stay separate because fields have different
+lookup/fallback semantics and should not require an artificial `field.` prefix.
 
-`UseI18n` adds a global middleware that detects the user's language. Default: reads `Accept-Language` header. Custom: via `I18nConfig.Detect` function.
-
-The detected locale is stored directly on the `Context` struct as the `locale` field, accessed via `ctx.Locale()`.
-
-### Message Bundles
-
-Locale files are JSON, organized by directory-per-locale:
-
-```
+```text
 locales/
-  en/
-    messages.json     # error messages
-    fields.json       # field name translations (opt-in)
-  tr/
-    messages.json
-    fields.json
+  en/messages.json
+  en/fields.json
+  tr/messages.json
+  tr/fields.json
 ```
 
-`Bundle` loads messages from the filesystem. String-based APIs (`TranslateForLang`, `FieldNameForLang`) bridge the internal/root boundary without exposing `language.Tag`.
+`ValidationError.Field` remains the stable technical path on the wire. The
+display name is injected only as template data (`{{.field}}`). Lookup uses the
+exact full path (`address.city`, `items[0]`). If the selected locale lacks a
+field name, Credo uses the raw path; it does not borrow the default language's
+field name and produce a mixed-language sentence.
 
-### CLDR Plural Rules
+### Programmatic default-language base
 
-Plural form selection is delegated to `golang.org/x/text/feature/plural` (CLDR data maintained upstream). `internal/i18n/plural.go` only decomposes the count into CLDR operands (derived from go-i18n). Six plural forms: zero, one, two, few, many, other. Public surface: `ctx.TPlural(key, count, data...)`; `ctx.T` always renders the Other form. `ctx.TPlural` is tolerant — an uninterpretable count renders the Other form; the strict, error-returning path lives in the internal `Localizer`.
+```go
+type I18nMessages map[string]string
+type I18nFields map[string]string
 
-### Error Translation
+type I18nConfig struct {
+    Dir      string
+    DirFS    fs.FS
+    Default  string
+    Detect   func(*http.Request) string
+    Messages I18nMessages
+    Fields   I18nFields
+    ResolveMessageKey MessageKeyResolver
+}
+```
 
-The error pipeline (ADR-009) resolves messages at render time; i18n plugs in at two points:
+`Messages` and `Fields` represent only the effective `Default` language. They
+are copied and templates are compiled during setup. Multi-language catalogs
+belong in `Dir`/`DirFS`; this avoids rebuilding Go code for translation work
+and avoids a second multi-language source of truth.
 
-1. **Validation errors** (`validation.Errors`) — `translateValidationErrors` translates each field error under the `"v." + code` key (e.g. `"v.required"`), injecting the translated field name when `fields.json` is present.
-2. **HTTP error titles** — an explicit `HTTPError.MessageKey` is resolved by `resolveMessage`, a 3-level fallback: bundle → built-in English default → the key itself. Errors without an explicit key — including semantic fault kinds and legacy `HTTPStatus() int` providers — resolve through the effective classification key `errors.<code>` (bundle → `http.StatusText` → `"HTTP <status>"`).
+Programmatic values are strings and populate the CLDR Other form. File-backed
+messages retain all plural forms. A public plural union/struct is deferred.
 
-With no bundle configured both paths fall through to the built-in/literal text, so translation is purely additive.
+Load order is programmatic base first, external source second. Both messages
+and fields merge by canonical language tag and exact key; external values
+override collisions while programmatic-only keys remain. No caller map is
+retained.
 
-### Two-Mode Field Translation
+### Source policy
 
-1. **Field-agnostic** (default): Only error messages are translated. Field names appear as-is from the struct.
-2. **Field-aware** (opt-in via `fields.json`): Field names are also translated (`"email"` → `"E-posta adresi"`).
+- `Messages` alone activates map-only i18n; `Messages + Fields` is field-aware.
+- `Fields` without any message source is an error.
+- Supplying maps without `Dir`/`DirFS` disables implicit `./locales` discovery.
+- Explicit `Dir` or `DirFS` is strict: missing, unreadable, malformed, or
+  message-empty is a setup error even when `Messages` could serve requests.
+- A RawConfig `i18n.dir` is explicit and follows the same fail-loud rule.
+- Only absent conventional `./locales` discovery from zero-config setup is an
+  inactive warning.
+- `Dir` and `DirFS` are mutually exclusive.
+- The complete bundle and middleware are published only after all sources
+  validate, so a failed setup exposes no partial catalog.
 
-### Code Prefix Convention
+This distinguishes an optional convention from a declared deployment
+dependency. Programmatic fallback prevents raw keys on individual misses; it
+must not hide the loss of an explicitly configured source.
 
-Validation rule codes are bare identifiers (`"required"`, `"length"`). Locale keys use a `"v."` prefix (`"v.required"`, `"v.length"`). This separates validation codes from other message namespaces.
+### Exact keys and application-owned namespaces
 
-### Design Decisions
+Credo never generates prefixes such as `errors.`, `http.`, `v.`, or `bind.`.
+For framework error flows, key selection is:
 
-| Decision | Rationale |
-| --- | --- |
-| JSON-only locale files | Zero dependency, industry standard, no YAML/TOML parser needed |
-| `internal/i18n/` engine | Pure message lookup, zero root imports, no circular deps |
-| Key-based message lookup | Errors carry a `MessageKey` resolved by `resolveMessage` — no type-dispatching error translator, and i18n stays out of the error's type identity |
-| `UseI18n` on App | Single setup method, frozen-guarded, zero-config defaults |
-| `ctx.locale` field | Direct struct field, no context key lookup overhead |
-| CLDR plurals via `x/text/feature/plural` | Battle-tested, 200+ languages, Unicode updates maintained upstream (originally adapted from go-i18n, replaced to drop ~1k generated lines) |
-| `golang.org/x/text/language` internal only | Never leaks into root API |
-| No template delimiter customization | `{{` `}}` is sufficient, reduces API surface |
-| `text/template`, not `html/template` | Messages are plain text rendered into JSON bodies and logs; unconditional HTML escaping would corrupt them. Matches go-i18n upstream. **Trust model:** locale files are developer-controlled code artifacts — review them like code (templates can call methods on the data passed to `T`); HTML escaping belongs to the HTML rendering layer (`html/template` escapes interpolated i18n strings automatically) |
+1. an explicit value-level `MessageKey` (exact);
+2. optional `ResolveMessageKey(MessageRef{Scope, Code})`;
+3. bare code/reason.
+
+`MessageScopeError`, `MessageScopeValidation`, and `MessageScopeBind` let an
+application apply namespaces without hidden string rules:
+
+```go
+ResolveMessageKey: func(ref credo.MessageRef) string {
+    switch ref.Scope {
+    case credo.MessageScopeValidation:
+        return "validation." + ref.Code
+    case credo.MessageScopeBind:
+        return "request." + ref.Code
+    default:
+        return "problem." + ref.Code
+    }
+},
+```
+
+Prefixes are recommended for large catalogs but optional. Explicit
+`HTTPError.MessageKey` and `ValidationError.MessageKey` bypass the resolver.
+The selected exact key is visible to `ErrorRenderer` as `ErrorInfo.MessageKey`;
+resolved text is `ErrorInfo.Message`.
+
+### Plurals and templates
+
+Plural selection uses `golang.org/x/text/feature/plural` CLDR data. `ctx.T`
+always renders Other. `ctx.TPlural` selects zero/one/two/few/many/other for
+file catalogs and uses Other for programmatic strings. Templates use
+`text/template`; locale sources are trusted application artifacts and must be
+reviewed like code. HTML escaping belongs at the HTML rendering boundary.
 
 ## Consequences
 
-**Positive:**
-
-- Error messages in user's language with proper pluralization
-- Zero cost when not configured (nil bundle check in error handler)
-- Minimal public API (3 methods + 2 types)
-- No circular imports — internal engine has zero root dependencies
-- Pure function translation — no hidden state, easy to test
-- 200+ languages supported via CLDR
-
-**Negative:**
-
-- JSON-only limits to simple key-value messages (no ICU MessageFormat)
-- Field-aware translation requires maintaining `fields.json` per locale
-- `golang.org/x/text` (language + feature/plural) as internal dependency
+- Applications can ship a safe default-language catalog in code and layer real
+  locale files over it.
+- Message and field catalogs retain clear, independent responsibilities.
+- Machine codes remain stable when presentation namespaces change.
+- Strict explicit-source handling catches deployment mistakes at startup.
+- Programmatic multi-language and plural-form APIs remain intentionally out of
+  scope; `DirFS` covers those uses.

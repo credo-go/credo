@@ -6,7 +6,7 @@ import (
 )
 
 // defaultJSONOptions is Credo's response encoding profile, applied by
-// [Response.JSON] and to RFC 7807 Problem Details bodies. It is
+// [Response.JSON] and to framework-owned default error bodies. It is
 // encoding/json/v2's default behavior with two deliberate adjustments:
 //
 //   - [jsonv2.Deterministic] — map keys are sorted, so responses, golden-file
@@ -40,10 +40,10 @@ func (app *App) jsonOptions() jsonv2.Options {
 	return app.jsonOpts
 }
 
-// problemJSONOptions returns the encoding profile for RFC 7807 Problem
-// Details. Error bodies are a framework contract consumed by clients and
+// errorJSONOptions returns the encoding profile for framework error
+// responses. Error bodies are a framework contract consumed by clients and
 // tests, so deterministic map ordering is imposed on top of the application
 // profile even when the application turned it off (later options win).
-func (app *App) problemJSONOptions() jsonv2.Options {
+func (app *App) errorJSONOptions() jsonv2.Options {
 	return jsonv2.JoinOptions(app.jsonOptions(), jsonv2.Deterministic(true))
 }

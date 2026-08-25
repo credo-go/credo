@@ -74,6 +74,11 @@ For overlapping keys, higher-numbered sources win. Non-overlapping keys from all
 
 ## Environment-Based Config
 
+Complete, equivalent YAML and JSON starter files plus an `.env.example` are
+available under [`examples/references/config`](../../examples/references/config/).
+They are versioned copyable references; choose one base format unless layered
+file merging is intentional.
+
 Set `CREDO_ENV` to load environment-specific overrides automatically:
 
 ```bash
@@ -504,6 +509,12 @@ Auto-read by `app.UseI18n()`.
 | --------- | ------ | ------------ | ------------------------- |
 | `dir`     | string | `"locales/"` | Locale file directory     |
 | `default` | string | `"en"`       | Default language (BCP 47) |
+
+An `i18n.dir` value is explicit configuration: a missing or message-empty
+directory makes `UseI18n` fail. Only absent conventional `locales/` discovery
+from zero-config setup is optional. `I18nConfig.Messages`, `Fields`, `DirFS`,
+`Detect`, and `ResolveMessageKey` are Go-only startup inputs; programmatic maps
+are copied snapshots and are not part of RawConfig or runtime reload.
 
 ### Auth — `auth.*`
 
