@@ -148,7 +148,7 @@ Validation occurs in this order:
 | Server draining | 503 |
 | No real Hijacker | 501 |
 
-The status body is rendered by Credo's RFC 7807 error pipeline; raw upstream
+The status body is rendered by Credo's centralized error pipeline; raw upstream
 plain text is not exposed. If actual Hijack fails after 101 was committed, HTTP
 is no longer a usable error channel. The adapter records a structured transport
 failure and returns nil to the HTTP error renderer so no second status/body is

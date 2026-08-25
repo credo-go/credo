@@ -70,7 +70,7 @@ Credo root maps `fault.Provider` after `*HTTPError` and before the legacy
 semantic input. The store sentinels retain `HTTPStatus()` only as a deprecated
 compatibility bridge; semantic `Kind` is the primary contract. Unknown kinds
 fail closed as 500. Constraint names, driver codes, resources, and causes are
-never serialized by the default Problem Details renderer.
+never serialized by the default error renderer.
 
 ### Context-Based TX
 

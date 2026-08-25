@@ -228,6 +228,109 @@ func TestCommitStagedChanges(t *testing.T) {
 	})
 }
 
+func TestCandidateTagsFollowHEAD(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	const version = "v0.11.0"
+	tests := []struct {
+		name        string
+		prepareHEAD func(*testing.T, string) string
+		wantCommit  bool
+	}{
+		{
+			name: "synthetic commit",
+			prepareHEAD: func(t *testing.T, repo string) string {
+				mustWriteFile(t, filepath.Join(repo, "tracked.txt"), "synthetic\n")
+				mustCommand(t, repo, "git", "add", "tracked.txt")
+				return mustOutput(t, repo, "git", "rev-parse", "HEAD")
+			},
+			wantCommit: true,
+		},
+		{
+			name: "no-op recovery",
+			prepareHEAD: func(t *testing.T, repo string) string {
+				mustWriteFile(t, filepath.Join(repo, "tracked.txt"), "prepared\n")
+				mustCommand(t, repo, "git", "add", "tracked.txt")
+				mustCommand(t, repo, "git", "commit", "--quiet", "-m", "prepared release")
+				return mustOutput(t, repo, "git", "rev-parse", "HEAD")
+			},
+			wantCommit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := writeTaggedGitFixture(t, version)
+			beforeCommit := tt.prepareHEAD(t, repo)
+
+			committed, err := commitStagedChanges(repo, "synthetic release")
+			if err != nil {
+				t.Fatalf("commit staged changes: %v", err)
+			}
+			if committed != tt.wantCommit {
+				t.Fatalf("commitStagedChanges committed = %t, want %t", committed, tt.wantCommit)
+			}
+			head := mustOutput(t, repo, "git", "rev-parse", "HEAD")
+			if tt.wantCommit && head == beforeCommit {
+				t.Fatalf("synthetic commit left HEAD at %s", head)
+			}
+			if !tt.wantCommit && head != beforeCommit {
+				t.Fatalf("no-op changed HEAD from %s to %s", beforeCommit, head)
+			}
+
+			if err := setCandidateTags(repo, version); err != nil {
+				t.Fatalf("set candidate tags: %v", err)
+			}
+			assertTagCommit(t, repo, version, head)
+			assertTagCommit(t, repo, "store/sqldb/"+version, head)
+
+			if err := setCandidateTags(repo, version); err != nil {
+				t.Fatalf("repeat set candidate tags: %v", err)
+			}
+			assertTagCommit(t, repo, version, head)
+			assertTagCommit(t, repo, "store/sqldb/"+version, head)
+		})
+	}
+}
+
+func TestCandidateTagErrorContext(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	t.Run("root tag", func(t *testing.T) {
+		err := setCandidateTags(t.TempDir(), "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "tag synthetic root module") {
+			t.Fatalf("error = %v, want root tag context", err)
+		}
+	})
+
+	t.Run("sqldb tag", func(t *testing.T) {
+		repo := writeTaggedGitFixture(t, "store")
+		err := setCandidateTags(repo, "v0.11.0")
+		if err == nil || !strings.Contains(err.Error(), "tag synthetic sqldb module") {
+			t.Fatalf("error = %v, want sqldb tag context", err)
+		}
+	})
+}
+
+func TestCheckCandidateRecoversExistingTags(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not available")
+	}
+
+	const version = "v0.11.0"
+	repo := writeCandidateRecoveryFixture(t, version)
+	if err := checkCandidate(repo, version); err != nil {
+		t.Fatalf("check candidate with inherited release tags: %v", err)
+	}
+}
+
 func TestCandidateEnvironmentIsolatesGoCaches(t *testing.T) {
 	tmp := t.TempDir()
 	globalModuleCache := filepath.Join(t.TempDir(), "global-modcache")
@@ -378,6 +481,57 @@ func writeTidyFixture(t *testing.T, rootVersion, replacement string, brokenImpor
 	}
 	mustWriteFile(t, filepath.Join(sqldbDir, "sqldb.go"), "package sqldb\n\nimport credo \""+importPath+"\"\n\nvar _ = credo.Version\n")
 	return repo
+}
+
+func writeTaggedGitFixture(t *testing.T, version string) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	mustCommand(t, repo, "git", "init", "--quiet")
+	mustCommand(t, repo, "git", "config", "user.name", "Credo release gate test")
+	mustCommand(t, repo, "git", "config", "user.email", "release-gate-test@credo.invalid")
+	mustWriteFile(t, filepath.Join(repo, "tracked.txt"), "initial\n")
+	mustCommand(t, repo, "git", "add", "tracked.txt")
+	mustCommand(t, repo, "git", "commit", "--quiet", "-m", "initial")
+	mustCommand(t, repo, "git", "tag", "-a", version, "-m", "stale root release")
+	if version != "store" {
+		mustCommand(t, repo, "git", "tag", "-a", "store/sqldb/"+version, "-m", "stale sqldb release")
+	}
+	return repo
+}
+
+func writeCandidateRecoveryFixture(t *testing.T, version string) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	sqldbDir := filepath.Join(repo, "store", "sqldb")
+	if err := os.MkdirAll(sqldbDir, 0o755); err != nil {
+		t.Fatalf("create store/sqldb: %v", err)
+	}
+	mustCommand(t, repo, "git", "init", "--quiet")
+	mustCommand(t, repo, "git", "config", "user.name", "Credo release gate test")
+	mustCommand(t, repo, "git", "config", "user.email", "release-gate-test@credo.invalid")
+
+	mustWriteFile(t, filepath.Join(repo, "go.mod"), "module "+rootModule+"\n\ngo 1.27\n")
+	mustWriteFile(t, filepath.Join(repo, "credo.go"), "package credo\n\nconst Version = \"fixture\"\n")
+	mustWriteFile(t, filepath.Join(sqldbDir, "go.mod"), "module "+sqldbModule+"\n\ngo 1.27\n\nrequire "+rootModule+" "+version+"\n")
+	mustWriteFile(t, filepath.Join(sqldbDir, "sqldb.go"), "package sqldb\n\nconst Stale = true\n")
+	mustCommand(t, repo, "git", "add", ".")
+	mustCommand(t, repo, "git", "commit", "--quiet", "-m", "stale release")
+	mustCommand(t, repo, "git", "tag", "-a", version, "-m", "stale root release")
+	mustCommand(t, repo, "git", "tag", "-a", "store/sqldb/"+version, "-m", "stale sqldb release")
+
+	mustWriteFile(t, filepath.Join(sqldbDir, "sqldb.go"), "package sqldb\n\nvar ErrUnsupportedCountQuery = struct{}{}\n")
+	mustCommand(t, repo, "git", "add", "store/sqldb/sqldb.go")
+	mustCommand(t, repo, "git", "commit", "--quiet", "-m", "prepare release")
+	return repo
+}
+
+func assertTagCommit(t *testing.T, repo, tag, want string) {
+	t.Helper()
+	if got := mustOutput(t, repo, "git", "rev-parse", tag+"^{commit}"); got != want {
+		t.Fatalf("tag %s points to %s, want %s", tag, got, want)
+	}
 }
 
 func assertRootReplacement(t *testing.T, repo, wantPath string) {

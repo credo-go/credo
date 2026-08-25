@@ -224,7 +224,7 @@ func TestServerHandlerTrailingSlashRedirectPrecedesUpgrade(t *testing.T) {
 	}
 }
 
-func TestServerHandlerPreAcceptFailuresUseProblemDetails(t *testing.T) {
+func TestServerHandlerPreAcceptFailuresUseErrorEnvelope(t *testing.T) {
 	app, server := newHandlerTestApp(t, Config{
 		AllowedOrigins: []string{"https://allowed.example"},
 		Subprotocols:   []string{"chat.v1"},
@@ -288,15 +288,15 @@ func TestServerHandlerPreAcceptFailuresUseProblemDetails(t *testing.T) {
 				t.Errorf("%s = %q, want %q", tc.header, w.Header().Get(tc.header), tc.value)
 			}
 			if method != http.MethodHead {
-				if contentType := w.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/problem+json") {
+				if contentType := w.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
 					t.Errorf("Content-Type = %q", contentType)
 				}
-				var problem credo.ProblemDetails
-				if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
-					t.Fatalf("problem JSON: %v; body=%s", err, w.Body.String())
+				var body credo.ErrorResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatalf("error JSON: %v; body=%s", err, w.Body.String())
 				}
-				if problem.Status != tc.want {
-					t.Errorf("problem status = %d, want %d", problem.Status, tc.want)
+				if body.Success || body.Code == "" || body.Message == "" {
+					t.Errorf("invalid error envelope: %#v", body)
 				}
 			}
 			if strings.Contains(w.Body.String(), "WebSocket protocol") {

@@ -11,8 +11,8 @@ import (
 // failed to decode the request payload into the target struct.
 //
 // Reason values are stable machine-readable identifiers: each appears as the
-// Code of the errors[] entry in the RFC 7807 response and as the i18n lookup
-// key ("bind.<reason>").
+// Code of the errors[] entry in the default response and as the scoped i18n
+// lookup reason.
 type BindErrorReason string
 
 const (
@@ -52,7 +52,7 @@ const (
 
 // BindError is the typed decode error returned by [Request.BindBody] and
 // [Request.BindQuery]. The error pipeline classifies it as 400 Bad Request
-// with an RFC 7807 body whose single errors[] entry mirrors the validation
+// with a default error body whose single errors[] entry mirrors the validation
 // output shape: Field, Code (the Reason), Message, and Params.
 //
 // Handlers normally return it unchanged. To branch on it, use
@@ -139,7 +139,7 @@ func (e *BindError) message() string {
 	return "request could not be decoded"
 }
 
-// params returns the template variables serialized into the RFC 7807
+// params returns the template variables serialized into the default response's
 // errors[] entry (and passed to i18n translation). Nil when empty.
 func (e *BindError) params() map[string]any {
 	var p map[string]any

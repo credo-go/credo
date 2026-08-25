@@ -87,7 +87,7 @@ Rules are organized by topic, not by implementation detail:
 
 ### Error Format
 
-Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, and message. The framework's internal error handler classifies these as 422 Unprocessable Entity and passes them to the `ErrorRenderer` (or the default RFC 7807 JSON renderer if none is configured) via `ErrorInfo` (ADR-009).
+Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the default Credo envelope (ADR-009).
 
 ### Rejected Alternatives
 
@@ -105,7 +105,7 @@ Validation errors return as `validation.Errors` (a slice of `ValidationError`), 
 - Composable — rules combine naturally (`When`, `Each`, `NilSafe`)
 - Testable — rules are regular Go values, testable in isolation
 - Auto-validation via `Validatable` — no manual validation calls needed
-- RFC 7807 error output — machine-readable, consistent
+- Stable machine-readable default envelope; RFC 9457 remains opt-in
 
 **Negative:**
 

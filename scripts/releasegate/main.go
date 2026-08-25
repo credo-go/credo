@@ -340,11 +340,8 @@ func checkCandidate(repoRoot, version string) error {
 	if _, err := commitStagedChanges(repo, "chore: prepare synthetic release "+version); err != nil {
 		return err
 	}
-	if err := command(repo, nil, "git", "tag", version); err != nil {
-		return fmt.Errorf("tag synthetic root module: %w", err)
-	}
-	if err := command(repo, nil, "git", "tag", "store/sqldb/"+version); err != nil {
-		return fmt.Errorf("tag synthetic sqldb module: %w", err)
+	if err := setCandidateTags(repo, version); err != nil {
+		return err
 	}
 
 	consumerMod := fmt.Sprintf("module credo.release.gate/consumer\n\ngo 1.27\n\nrequire %s %s\n", sqldbModule, version)
@@ -405,6 +402,20 @@ func commitStagedChanges(repo, message string) (bool, error) {
 		return false, fmt.Errorf("commit synthetic release: %w", err)
 	}
 	return true, nil
+}
+
+func setCandidateTags(repo, version string) error {
+	if err := setSyntheticTag(repo, version); err != nil {
+		return fmt.Errorf("tag synthetic root module: %w", err)
+	}
+	if err := setSyntheticTag(repo, "store/sqldb/"+version); err != nil {
+		return fmt.Errorf("tag synthetic sqldb module: %w", err)
+	}
+	return nil
+}
+
+func setSyntheticTag(repo, tag string) error {
+	return command(repo, nil, "git", "update-ref", "refs/tags/"+tag, "HEAD")
 }
 
 func candidateEnvironment(tmp, repoURL string) []string {

@@ -1,40 +1,55 @@
 package credo
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/credo-go/credo/validation"
+)
 
 // Handler is the Credo handler signature. Handlers return an error for
 // centralized error handling via the App's error handling pipeline.
 type Handler func(ctx *Context) error
 
-// ErrorInfo carries the original error and the framework-classified
-// [ProblemDetails] to the [ErrorRenderer].
+// ErrorInfo carries the original error and framework-normalized presentation
+// data to the [ErrorRenderer]. It is request-scoped and must not be retained
+// after the renderer returns.
 type ErrorInfo struct {
 	// Err is the original error returned by the handler.
 	// Use [errors.As] / [errors.Is] for type-specific behavior
 	// (e.g., Sentry reporting, extracting metadata for custom headers).
 	Err error
 
-	// MessageKey is the i18n message key used to resolve [ProblemDetails.Title].
-	// This is the raw key before resolution (e.g., "http.not_found",
-	// "user.email_exists"). Useful for client-side i18n, telemetry
-	// grouping, or custom error code mapping.
+	// Status is the HTTP status the framework writes. A renderer may change it
+	// before returning; invalid values fail closed to a generic 500 response.
+	Status int
+
+	// Code is the stable machine-readable error identity.
+	Code string
+
+	// MessageKey is the exact effective i18n key before resolution. It is the
+	// explicit key carried by the error, the configured resolver result, or the
+	// bare Code when neither exists.
 	MessageKey string
 
-	// Problem is the framework-classified RFC 7807 Problem Details.
-	// The renderer may use it as-is, modify it, or ignore it entirely
-	// and write a custom response format.
-	Problem *ProblemDetails
+	// Message is the resolved human-readable message, including safe fallback.
+	Message string
+
+	// Details is optional structured, client-safe application detail.
+	Details any
+
+	// Errors contains field-level validation or binding failures.
+	Errors []validation.ValidationError
 }
 
 // ErrorRenderer shapes the body of an error response given a classified
 // [ErrorInfo]. The framework owns everything around that shape: error
-// classification, logging, the status code (info.Problem.Status — mutate it
-// before returning to change it), the Content-Type, HEAD handling, and
+// classification, logging, the status code (info.Status — mutate it before
+// returning to change it), the Content-Type, HEAD handling, and
 // committed-response guards.
 //
 // The return value is the response body. A non-nil value is encoded as JSON
-// with the application's JSON profile and written with info.Problem.Status;
-// returning nil renders the default RFC 7807 Problem Details instead. Either
+// with the application's JSON profile and written with info.Status; returning
+// nil renders the default Credo error envelope instead. Either
 // way the renderer never writes the response itself in the common case — it
 // only decides the shape.
 //
@@ -42,14 +57,14 @@ type ErrorInfo struct {
 // response headers (e.g., Retry-After, WWW-Authenticate) on the [Context]
 // before returning; for HEAD the framework then sends a status-only response
 // and the returned body is discarded. Setting headers and returning nil is
-// the way to decorate the default RFC 7807 body.
+// the way to decorate the default error body.
 //
 // For the rare response that is not JSON at all, the renderer may commit the
 // response itself through the [Context] (as any handler could); once
 // [Response.Committed] reports true the return value is ignored.
 //
 // Register a custom renderer with [App.SetErrorRenderer].
-type ErrorRenderer func(ctx *Context, info ErrorInfo) any
+type ErrorRenderer func(ctx *Context, info *ErrorInfo) any
 
 // RenderInfo carries a successful response's status, payload, and optional
 // envelope side channels to the [SuccessRenderer].

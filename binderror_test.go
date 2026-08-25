@@ -11,12 +11,12 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// bindProblem mirrors the RFC 7807 fields asserted by bind error tests.
+// bindProblem mirrors the default Credo error fields asserted by bind tests.
 type bindProblem struct {
-	Type   string `json:"type"`
-	Title  string `json:"title"`
-	Status int    `json:"status"`
-	Errors []struct {
+	Success bool   `json:"success"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Errors  []struct {
 		Field   string         `json:"field"`
 		Code    string         `json:"code"`
 		Message string         `json:"message"`
@@ -34,19 +34,19 @@ func decodeBindProblem(t *testing.T, w *httptest.ResponseRecorder) bindProblem {
 }
 
 // assertBindReason asserts the standard shape of a bind error response:
-// 400, binding type URI, and a single errors[] entry with the given
-// reason code and field.
+// 400, bind_failed top-level classification, and a single errors[] entry with
+// the given reason code and field.
 func assertBindReason(t *testing.T, w *httptest.ResponseRecorder, code, field string) bindProblem {
 	t.Helper()
 	if w.Code != 400 {
 		t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
 	}
 	pr := decodeBindProblem(t, w)
-	if pr.Type != "https://credo.dev/errors/binding" {
-		t.Errorf("type = %q, want binding type URI", pr.Type)
+	if pr.Success {
+		t.Error("success = true, want false")
 	}
-	if pr.Status != 400 {
-		t.Errorf("problem status = %d, want 400", pr.Status)
+	if pr.Code != "bind_failed" {
+		t.Errorf("code = %q, want bind_failed", pr.Code)
 	}
 	if len(pr.Errors) != 1 {
 		t.Fatalf("len(errors) = %d, want 1 (body %q)", len(pr.Errors), w.Body.String())
@@ -115,8 +115,8 @@ func TestBindBody_JSON_ProblemShape(t *testing.T) {
 	app.ServeHTTP(w, r)
 
 	pr := assertBindReason(t, w, "trailing_data", "")
-	if pr.Title != "Malformed Request" {
-		t.Errorf("title = %q, want %q", pr.Title, "Malformed Request")
+	if pr.Message != "Malformed Request" {
+		t.Errorf("message = %q, want %q", pr.Message, "Malformed Request")
 	}
 	if pr.Errors[0].Message == "" {
 		t.Error("errors[0].message is empty, want default English message")

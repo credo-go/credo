@@ -14,10 +14,29 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-26
+
+### Changed
+
+- **Breaking:** the default error representation is now the compact Credo JSON envelope `{"success":false,"code":"…","message":"…","details":…,"errors":…}` with `application/json`, rather than RFC 7807 Problem Details. `ErrorRenderer` now receives request-scoped `*ErrorInfo{Err,Status,Code,MessageKey,Message,Details,Errors}`; mutate `info.Status` for a status override. RFC 9457 remains first-party opt-in through `RFC9457ErrorRenderer()` and `ProblemDetails`. Ordinary success payloads do not automatically gain `success:true`; use `SuccessRenderer` + `Context.Render` for a symmetric envelope.
+- **Breaking:** bind failures now use top-level code `bind_failed`; the exact decode reason remains in `errors[0].code`. Clients previously switching on the top-level reason must move that branch to the nested entry.
+- **Breaking:** framework message lookup no longer prepends `errors.`, `http.`, `v.`, or `bind.`. Explicit `HTTPError.MessageKey` / `ValidationError.MessageKey` is exact; otherwise `I18nConfig.ResolveMessageKey` may apply an application namespace, then the bare code/reason is used. Reference locale catalogs now use bare keys.
+- **Breaking hardening:** explicitly configured `I18nConfig.Dir`, `DirFS`, or RawConfig `i18n.dir` must exist and contain messages; absence/empty source is a setup error even when programmatic messages exist. Only missing conventional zero-config `locales/` discovery remains an inactive warning.
+
+### Added
+
+- `I18nConfig.Messages` and `Fields` provide a copied, single-default-language programmatic catalog. File catalogs merge afterward by exact key and override collisions; messages and field-display names remain separate catalogs. Programmatic strings use the CLDR Other form; multi-language/plural catalogs continue through `Dir`/`DirFS`.
+- Scope-aware message namespaces via `MessageScope`, `MessageRef`, `MessageKeyResolver`, and `I18nConfig.ResolveMessageKey`; `ValidationError.MessageKey` supplies an optional exact nested-error key without appearing on the wire.
+- `ErrorResponse`, `RFC9457ErrorRenderer`, and `RFC9457Config.ResolveType`.
+
 ### Fixed
 
-- The shipped reference locale bundles (`internal/i18n/locales/{en,tr}`) now carry `http.bind_failed`, the explicit presentation key the framework sets on every bind-failure title, so applications that copy them get localized bind titles instead of the built-in English fallback.
-- `HTTPError.MessageKey`'s JSON tag gains `omitempty`, matching `Code` — observable only when marshaling an `HTTPError` directly (a codeless sentinel now marshals without an empty `"message_key"` member); the RFC 7807 wire built from `ProblemDetails` is unaffected.
+- Release candidate validation now moves inherited lockstep version refs to the candidate HEAD with `git update-ref`, so recovery dispatches cannot fail on an existing tag or silently validate stale tagged content.
+- `HTTPError.MessageKey`'s JSON tag gains `omitempty`, matching `Code`; this is observable only when marshaling an `HTTPError` directly.
+
+### Documentation
+
+- Added versioned, copyable YAML and JSON configuration references plus complete English and Turkish `messages.json` / `fields.json` starter catalogs under [`examples/references`](examples/references/README.md). Runnable examples now contain only configuration they actually consume.
 
 ## [0.11.0] - 2026-08-24
 
@@ -380,7 +399,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/credo-go/credo/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/credo-go/credo/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/credo-go/credo/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/credo-go/credo/compare/v0.8.0...v0.9.0

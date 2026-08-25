@@ -50,7 +50,7 @@ is not added before usage evidence shows that explicit `GET` is inadequate.
 The adapter validates mechanical HTTP requirements, origin, subprotocol, and
 drain admission before calling the upstream `Accept`. A conditional response
 writer captures upstream pre-upgrade status, headers, and body. Before 101,
-failures return through Credo's RFC 7807 renderer; only protocol-relevant
+failures return through Credo's centralized error renderer; only protocol-relevant
 headers are published. Once 101 is committed, an actual Hijack failure is a
 transport failure: the adapter logs it and must not attempt a second HTTP
 status or body.

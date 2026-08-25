@@ -266,7 +266,7 @@ func TestBuiltinAccessLog_ErrorResponse_BytesAndStatus(t *testing.T) {
 	if accessEntry["level"] != "WARN" {
 		t.Errorf("access log level = %v, want WARN", accessEntry["level"])
 	}
-	// bytes must be > 0 because the error response body (RFC 7807 JSON)
+	// bytes must be > 0 because the default JSON error response body
 	// is now written before the access log fires.
 	if b, ok := accessEntry["bytes"].(float64); !ok || int(b) == 0 {
 		t.Errorf("access log bytes = %v, want > 0 (error response body)", accessEntry["bytes"])

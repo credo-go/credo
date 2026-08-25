@@ -268,7 +268,7 @@ func createUser(ctx *credo.Context) error {
     // JSON body (auto-validates if struct implements Validatable)
     var req CreateUserRequest
     if err := ctx.Request().BindBody(&req); err != nil {
-        return err // validation errors become RFC 7807 response
+        return err // validation errors enter Credo's default error envelope
     }
 
     _ = id
@@ -320,13 +320,13 @@ func (r *CreateUserRequest) Validate() error {
 }
 ```
 
-Validation errors are automatically converted to RFC 7807 Problem Details with a 422 status code:
+Validation errors are automatically converted to the default error envelope with a 422 status code:
 
 ```json
 {
-  "type": "https://credo.dev/errors/validation",
-  "title": "Validation Failed",
-  "status": 422,
+  "success": false,
+  "code": "validation_failed",
+  "message": "Validation Failed",
   "errors": [
     {"field": "email", "code": "email", "message": "must be a valid email address"}
   ]
@@ -341,7 +341,7 @@ See [Validation Spec](../specs/validation.md) for the full rule catalog.
 
 ## Error Handling
 
-Handlers return errors. The internal error handling pipeline converts them to RFC 7807 JSON responses:
+Handlers return errors. The internal pipeline converts them to a compact JSON envelope:
 
 ```go
 func getUser(ctx *credo.Context) error {
@@ -363,17 +363,23 @@ return credo.ErrForbidden       // 403
 return credo.ErrBadRequest      // 400
 ```
 
-Every error response carries a stable machine-readable `code` extension member: the explicit `NewHTTPError` code argument, or the frozen default for the status (`404` → `"not_found"`). Human-readable titles are separate — attach an i18n key or literal text with `WithMessageKey`, or let the default resolve through the `errors.<code>` locale lookup and `http.StatusText`. `WithDetails` adds structured client-safe detail — see the [error-handling guide](error-handling.md).
+Every default error response carries `success:false`, a stable machine-readable
+`code`, and a resolved `message`. Attach an exact i18n key or literal text with
+`WithMessageKey`, configure a scope-aware resolver, or let the bare code fall
+back to built-in/HTTP status text. `WithDetails` adds structured client-safe
+data. RFC 9457 is available as an opt-in renderer; see the
+[error-handling guide](error-handling.md).
 
 Internal errors (5xx) are logged but never leaked to the client.
 
-You can replace the error renderer to customize the response body — it returns the shape, and the framework keeps owning the status code, Content-Type, and the write (return nil to keep the default RFC 7807 body):
+You can replace the error renderer to customize the body. It returns the shape
+while the framework owns status, Content-Type, and the write; nil keeps the
+default body:
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
-    // info.MessageKey — i18n key (for telemetry, client-side i18n)
-    // info.Problem — classified *ProblemDetails (status, title, code, details, errors)
+    // info.Status / Code / MessageKey / Message / Details / Errors — normalized
     return myFormat(info)
 })
 ```

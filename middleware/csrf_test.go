@@ -142,7 +142,7 @@ func TestCSRF_InsecureBypassPattern(t *testing.T) {
 	})
 }
 
-func TestCSRF_DefaultDeny_RFC7807(t *testing.T) {
+func TestCSRF_DefaultDeny_ErrorEnvelope(t *testing.T) {
 	app := newCSRFApp(t)
 
 	w := httptest.NewRecorder()
@@ -153,8 +153,8 @@ func TestCSRF_DefaultDeny_RFC7807(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
 	}
-	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
-		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 	// The detector's reason stays internal — never in the response body.
 	if body := w.Body.String(); strings.Contains(body, "Sec-Fetch-Site") {

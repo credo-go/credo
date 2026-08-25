@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -19,19 +21,19 @@ func i18nTestFS() fstest.MapFS {
 	return fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
 			Data: []byte(`{
-				"v.required": "is required",
-				"v.email": "must be a valid email",
-				"errors.not_found": "Not found",
-				"errors.internal_server_error": "Internal server error",
+				"required": "is required",
+				"email": "must be a valid email",
+				"not_found": "Not found",
+				"internal_server_error": "Internal server error",
 				"items": {"one": "{{.count}} item", "other": "{{.count}} items"}
 			}`),
 		},
 		"tr/messages.json": &fstest.MapFile{
 			Data: []byte(`{
-				"v.required": "zorunludur",
-				"v.email": "geçerli bir e-posta adresi olmalıdır",
-				"errors.not_found": "Bulunamadı",
-				"errors.internal_server_error": "Sunucu hatası",
+				"required": "zorunludur",
+				"email": "geçerli bir e-posta adresi olmalıdır",
+				"not_found": "Bulunamadı",
+				"internal_server_error": "Sunucu hatası",
 				"items": {"one": "tek öğe", "other": "{{.count}} öğe"}
 			}`),
 		},
@@ -119,7 +121,7 @@ func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -156,12 +158,12 @@ func TestUseI18n_HTTPError_Turkish(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Title != "Bulunamadı" {
-		t.Errorf("title = %q, want %q", pd.Title, "Bulunamadı")
+	if pd.Message != "Bulunamadı" {
+		t.Errorf("message = %q, want %q", pd.Message, "Bulunamadı")
 	}
 }
 
@@ -185,7 +187,7 @@ func TestUseI18n_EnglishDefault(t *testing.T) {
 	r.Header.Set("Accept-Language", "en")
 	app.ServeHTTP(w, r)
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -219,7 +221,7 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 	r := httptest.NewRequest("POST", "/test?lang=tr", nil)
 	app.ServeHTTP(w, r)
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -228,28 +230,14 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 	}
 }
 
-func TestUseI18n_NoDir_Inactive(t *testing.T) {
+func TestUseI18n_ExplicitMissingDirErrors(t *testing.T) {
 	app := mustNew(t)
-	// Point to a non-existent directory
 	err := app.UseI18n(credo.I18nConfig{
 		Dir:     "nonexistent_locales/",
 		Default: "en",
 	})
-	if err != nil {
-		t.Fatalf("UseI18n should return nil for missing dir, got: %v", err)
-	}
-
-	// ctx.T should return the key as-is
-	app.GET("/test", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, ctx.T("v.required"))
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Body.String() != "v.required" {
-		t.Errorf("T() = %q, want %q (key passthrough)", w.Body.String(), "v.required")
+	if err == nil {
+		t.Fatal("expected an explicit missing locale directory to fail")
 	}
 }
 
@@ -345,7 +333,7 @@ func TestCtx_T(t *testing.T) {
 	}
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, ctx.T("v.required"))
+		return ctx.Response().Text(200, ctx.T("required"))
 	})
 
 	w := httptest.NewRecorder()
@@ -397,12 +385,12 @@ func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Title != "Bulunamadı" {
-		t.Errorf("title = %q, want %q", pd.Title, "Bulunamadı")
+	if pd.Message != "Bulunamadı" {
+		t.Errorf("message = %q, want %q", pd.Message, "Bulunamadı")
 	}
 }
 
@@ -454,6 +442,23 @@ func TestUseI18n_ZeroConfig_Defaults(t *testing.T) {
 	}
 }
 
+func TestUseI18n_ConventionalDirectoryExistsButIsInvalid(t *testing.T) {
+	root := t.TempDir()
+	localeDir := filepath.Join(root, "locales", "en")
+	if err := os.MkdirAll(localeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localeDir, "fields.json"), []byte(`{"email":"email address"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	app := mustNew(t)
+	if err := app.UseI18n(); err == nil {
+		t.Fatal("an existing malformed conventional catalog must fail, not look absent")
+	}
+}
+
 // badI18nRC is a mock RawConfig where "i18n" key exists but Unmarshal fails.
 type badI18nRC struct{}
 
@@ -465,6 +470,16 @@ func (b *badI18nRC) Unmarshal(key string, dst any) error {
 	return fmt.Errorf("key %q not found", key)
 }
 
+type missingDirI18nRC struct{}
+
+func (*missingDirI18nRC) Exists(key string) bool { return key == "i18n" }
+func (*missingDirI18nRC) Unmarshal(key string, dst any) error {
+	if key != "i18n" {
+		return fmt.Errorf("key %q not found", key)
+	}
+	return json.Unmarshal([]byte(`{"Dir":"missing-from-raw-config","Default":"en"}`), dst)
+}
+
 func TestUseI18n_InvalidRawConfig_Error(t *testing.T) {
 	app, err := credo.New(credo.WithRawConfig(&badI18nRC{}))
 	if err != nil {
@@ -474,6 +489,16 @@ func TestUseI18n_InvalidRawConfig_Error(t *testing.T) {
 	err = app.UseI18n()
 	if err == nil {
 		t.Error("expected error for invalid i18n config in RawConfig")
+	}
+}
+
+func TestUseI18n_ExplicitRawConfigDirErrors(t *testing.T) {
+	app, err := credo.New(credo.WithRawConfig(&missingDirI18nRC{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.UseI18n(); err == nil {
+		t.Fatal("expected missing RawConfig i18n.dir to fail")
 	}
 }
 
@@ -507,14 +532,214 @@ func TestUseI18n_LogsWhenInactive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.UseI18n(credo.I18nConfig{
-		Dir:     "nonexistent_locales/",
-		Default: "en",
-	}); err != nil {
+	if err := app.UseI18n(); err != nil {
 		t.Fatal(err)
 	}
 
 	if !strings.Contains(buf.String(), "i18n inactive") {
 		t.Errorf("expected 'i18n inactive' log, got: %q", buf.String())
+	}
+}
+
+func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
+	messages := credo.I18nMessages{
+		"validation_failed": "Validation failed",
+		"required":          "{{.field}} is required",
+		"hello":             "Hello {{.name}}",
+	}
+	fields := credo.I18nFields{"email": "email address"}
+	app := mustNew(t)
+	if err := app.UseI18n(credo.I18nConfig{
+		Default:  "en",
+		Messages: messages,
+		Fields:   fields,
+	}); err != nil {
+		t.Fatalf("UseI18n: %v", err)
+	}
+
+	// Setup owns snapshots, not the caller's mutable maps.
+	messages["hello"] = "mutated"
+	fields["email"] = "mutated"
+	app.GET("/hello", func(ctx *credo.Context) error {
+		return ctx.Response().Text(http.StatusOK, ctx.T("hello", map[string]any{"name": "Ada"}))
+	})
+	app.POST("/validate", func(*credo.Context) error {
+		return validation.Errors{{Field: "email", Code: "required", Message: "fallback"}}
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/hello", nil))
+	if got := w.Body.String(); got != "Hello Ada" {
+		t.Fatalf("message = %q, want Hello Ada", got)
+	}
+
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/validate", nil))
+	var body credo.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Errors) != 1 || body.Errors[0].Field != "email" || body.Errors[0].Message != "email address is required" {
+		t.Fatalf("validation errors = %#v", body.Errors)
+	}
+}
+
+func TestUseI18n_ProgrammaticAndFileCatalogLayering(t *testing.T) {
+	app := mustNew(t)
+	if err := app.UseI18n(credo.I18nConfig{
+		Default: "en",
+		Messages: credo.I18nMessages{
+			"shared":   "programmatic",
+			"map_only": "preserved",
+		},
+		Fields: credo.I18nFields{
+			"shared":   "programmatic field",
+			"map_only": "preserved field",
+		},
+		DirFS: fstest.MapFS{
+			"en/messages.json": &fstest.MapFile{Data: []byte(`{"shared":"file"}`)},
+			"en/fields.json":   &fstest.MapFile{Data: []byte(`{"shared":"file field"}`)},
+		},
+	}); err != nil {
+		t.Fatalf("UseI18n: %v", err)
+	}
+	app.GET("/values", func(ctx *credo.Context) error {
+		return ctx.Response().JSON(http.StatusOK, map[string]string{
+			"shared":   ctx.T("shared"),
+			"map_only": ctx.T("map_only"),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/values", nil))
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["shared"] != "file" || got["map_only"] != "preserved" {
+		t.Fatalf("messages = %#v", got)
+	}
+}
+
+func TestUseI18n_ProgrammaticSourceValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  credo.I18nConfig
+	}{
+		{name: "fields only", cfg: credo.I18nConfig{Fields: credo.I18nFields{"email": "email"}}},
+		{name: "dir and dirfs", cfg: credo.I18nConfig{Dir: "locales", DirFS: fstest.MapFS{}}},
+		{name: "empty explicit fs", cfg: credo.I18nConfig{DirFS: fstest.MapFS{}}},
+		{name: "missing explicit dir with messages", cfg: credo.I18nConfig{
+			Dir: "missing", Messages: credo.I18nMessages{"safe": "Safe"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			if err := app.UseI18n(tt.cfg); err == nil {
+				t.Fatal("expected setup error")
+			}
+		})
+	}
+}
+
+func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
+	var refs []credo.MessageRef
+	app := mustNew(t)
+	if err := app.UseI18n(credo.I18nConfig{
+		Default: "en",
+		Messages: credo.I18nMessages{
+			"problem.not_found":         "Missing",
+			"problem.validation_failed": "Invalid request",
+			"problem.bind_failed":       "Malformed request",
+			"validation.required":       "{{.field}} required",
+			"explicit.validation":       "Explicit {{.field}}",
+			"request.syntax":            "Malformed JSON",
+		},
+		ResolveMessageKey: func(ref credo.MessageRef) string {
+			refs = append(refs, ref)
+			switch ref.Scope {
+			case credo.MessageScopeValidation:
+				return "validation." + ref.Code
+			case credo.MessageScopeBind:
+				return "request." + ref.Code
+			default:
+				return "problem." + ref.Code
+			}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/missing", func(*credo.Context) error { return credo.ErrNotFound })
+	app.POST("/validation", func(*credo.Context) error {
+		return validation.Errors{
+			{Field: "a", Code: "required", Message: "fallback"},
+			{Field: "b", Code: "required", MessageKey: "explicit.validation", Message: "fallback"},
+		}
+	})
+	app.POST("/bind", func(*credo.Context) error {
+		return &credo.BindError{Reason: credo.BindReasonSyntax}
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	var body credo.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Message != "Missing" {
+		t.Errorf("error message = %q, want Missing", body.Message)
+	}
+
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/validation", nil))
+	body = credo.ErrorResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Message != "Invalid request" || body.Errors[0].Message != "a required" || body.Errors[1].Message != "Explicit b" {
+		t.Fatalf("resolved body = %#v", body)
+	}
+	w = httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/bind", nil))
+	body = credo.ErrorResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "bind_failed" || body.Message != "Malformed request" || body.Errors[0].Code != "syntax" || body.Errors[0].Message != "Malformed JSON" {
+		t.Fatalf("bind body = %#v", body)
+	}
+
+	if len(refs) != 5 {
+		t.Fatalf("resolver refs = %#v; explicit nested key must bypass resolver", refs)
+	}
+	if refs[0].Scope != credo.MessageScopeError || refs[1].Scope != credo.MessageScopeError || refs[2].Scope != credo.MessageScopeValidation || refs[3].Scope != credo.MessageScopeError || refs[4].Scope != credo.MessageScopeBind {
+		t.Fatalf("resolver scopes = %#v", refs)
+	}
+}
+
+func TestUseI18n_EmptyResolvedMessageKeyFailsClosed(t *testing.T) {
+	app := mustNew(t)
+	if err := app.UseI18n(credo.I18nConfig{
+		Messages: credo.I18nMessages{"not_found": "Missing"},
+		ResolveMessageKey: func(credo.MessageRef) string {
+			return ""
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.GET("/missing", func(*credo.Context) error { return credo.ErrNotFound })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	var body credo.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "internal_server_error" || body.Message != "Internal Server Error" || body.Success {
+		t.Fatalf("body = %#v", body)
 	}
 }

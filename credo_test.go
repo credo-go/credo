@@ -642,8 +642,8 @@ func TestApp_DefaultErrorHandling(t *testing.T) {
 
 func TestApp_CustomErrorRenderer(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		_ = ctx.Response().Text(info.Problem.Status, "custom: "+info.Problem.Title)
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		_ = ctx.Response().Text(info.Status, "custom: "+info.Message)
 		return nil
 	})
 

@@ -2,6 +2,8 @@ package i18n
 
 import (
 	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -24,6 +26,118 @@ func TestBundle_AddMessages(t *testing.T) {
 	}
 	if msgs["v.required"] == nil || msgs["v.email"] == nil {
 		t.Error("expected v.required and v.email to be loaded")
+	}
+}
+
+func TestBundle_AddStringMessagesAndFields(t *testing.T) {
+	b := NewBundle(language.English)
+	messages := map[string]string{
+		"required": "{{.field}} is required",
+		"items":    "{{.count}} items",
+	}
+	fields := map[string]string{"email": "email address"}
+	if err := b.AddStringMessages("en", messages); err != nil {
+		t.Fatalf("AddStringMessages: %v", err)
+	}
+	if err := b.AddFields("en", fields); err != nil {
+		t.Fatalf("AddFields: %v", err)
+	}
+
+	messages["required"] = "mutated"
+	fields["email"] = "mutated"
+	got, ok := b.TranslateForLang("en", "required", map[string]any{"field": b.FieldNameForLang("en", "email")})
+	if !ok || got != "email address is required" {
+		t.Fatalf("translation = %q, %v; want %q, true", got, ok, "email address is required")
+	}
+	got, ok = b.TranslatePluralForLang("en", "items", 2, nil)
+	if !ok || got != "2 items" {
+		t.Fatalf("plural Other = %q, %v; want %q, true", got, ok, "2 items")
+	}
+}
+
+func TestBundle_ProgrammaticCatalogValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages map[string]string
+		fields   map[string]string
+	}{
+		{name: "empty message key", messages: map[string]string{"": "value"}},
+		{name: "empty message value", messages: map[string]string{"key": ""}},
+		{name: "malformed template", messages: map[string]string{"key": "{{"}},
+		{name: "empty field key", fields: map[string]string{"": "value"}},
+		{name: "empty field value", fields: map[string]string{"field": ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewBundle(language.English)
+			var err error
+			if tt.messages != nil {
+				err = b.AddStringMessages("en", tt.messages)
+			} else {
+				err = b.AddFields("en", tt.fields)
+			}
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if b.HasMessages() {
+				t.Fatal("failed programmatic load must not publish messages")
+			}
+		})
+	}
+}
+
+func TestBundle_FileCatalogOverridesProgrammaticKeys(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.AddStringMessages("en", map[string]string{
+		"shared":   "programmatic",
+		"map_only": "preserved",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddFields("en", map[string]string{
+		"shared":   "programmatic field",
+		"map_only": "preserved field",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := fstest.MapFS{
+		"en/messages.json": &fstest.MapFile{Data: []byte(`{"shared":"file"}`)},
+		"en/fields.json":   &fstest.MapFile{Data: []byte(`{"shared":"file field"}`)},
+	}
+	count, err := b.LoadDirFSSource(f, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("loaded message count = %d, want 1", count)
+	}
+	for key, want := range map[string]string{"shared": "file", "map_only": "preserved"} {
+		got, ok := b.TranslateForLang("en", key, nil)
+		if !ok || got != want {
+			t.Errorf("message %q = %q, %v; want %q, true", key, got, ok, want)
+		}
+	}
+	if got := b.FieldNameForLang("en", "shared"); got != "file field" {
+		t.Errorf("shared field = %q, want file field", got)
+	}
+	if got := b.FieldNameForLang("en", "map_only"); got != "preserved field" {
+		t.Errorf("map-only field = %q, want preserved field", got)
+	}
+}
+
+func TestBundle_FieldNameDoesNotFallBackAcrossLanguages(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.AddStringMessages("en", map[string]string{"required": "required"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddStringMessages("tr", map[string]string{"required": "zorunlu"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddFields("en", map[string]string{"email": "email address"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.FieldNameForLang("tr", "email"); got != "email" {
+		t.Fatalf("Turkish field miss = %q, want raw technical path", got)
 	}
 }
 
@@ -128,9 +242,20 @@ func TestBundle_LoadDirFS_SkipsNonLangDirs(t *testing.T) {
 }
 
 func TestBundle_LoadDir(t *testing.T) {
-	// Use the bundled test locales.
+	dir := t.TempDir()
+	langDir := filepath.Join(dir, "en")
+	if err := os.MkdirAll(langDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(langDir, "messages.json"), []byte(`{
+		"required": "is required",
+		"not_found": "Not found"
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	b := NewBundle(language.English)
-	if err := b.LoadDir("locales"); err != nil {
+	if err := b.LoadDir(dir); err != nil {
 		t.Fatalf("LoadDir: %v", err)
 	}
 
@@ -138,11 +263,11 @@ func TestBundle_LoadDir(t *testing.T) {
 	if enMsgs == nil {
 		t.Fatal("English messages not loaded from filesystem")
 	}
-	if enMsgs["v.required"] == nil {
-		t.Error("v.required not found in English messages")
+	if enMsgs["required"] == nil {
+		t.Error("required not found in English messages")
 	}
-	if enMsgs["errors.not_found"] == nil {
-		t.Error("errors.not_found not found in English messages")
+	if enMsgs["not_found"] == nil {
+		t.Error("not_found not found in English messages")
 	}
 }
 

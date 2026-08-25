@@ -26,7 +26,7 @@ Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddlewar
 app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
 ```
 
-Adapted stdlib middleware is deliberately second-class: it sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), or the renderer. If it short-circuits by writing to the `ResponseWriter` directly, that response bypasses the RFC 7807 error pipeline — only responses produced by calling `next` flow back through Credo's error handling. The first-class path for anything that needs the principal or the error pipeline is a native `func(Handler) Handler`. See [ADR-010](../adr/010-middleware-architecture.md) and [ADR-012](../adr/012-authentication-and-authorization.md).
+Adapted stdlib middleware is deliberately second-class: it sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), or the renderer. If it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's error pipeline — only responses produced by calling `next` flow back through centralized handling. The first-class path for anything that needs the principal or the error pipeline is a native `func(Handler) Handler`. See [ADR-010](../adr/010-middleware-architecture.md) and [ADR-012](../adr/012-authentication-and-authorization.md).
 
 ---
 
@@ -303,7 +303,7 @@ Wraps the standard library's `net/http.CrossOriginProtection`: cross-origin dete
 - `Origin` matching the `Host` header passes (pre-2023 browsers).
 - Everything else is rejected — **including `Sec-Fetch-Site: same-site`**: subdomains are cross-origin, so `app.example.com` → `api.example.com` needs `TrustedOrigins: []string{"https://app.example.com"}`.
 
-**Credo integration:** the middleware calls the detector's `Check` method and routes rejections through the framework error pipeline — the default `ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason attached as internal error (RFC 7807 response, reason logged but never exposed). The stdlib deny handler is not used.
+**Credo integration:** the middleware calls the detector's `Check` method and routes rejections through the framework error pipeline — the default `ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason attached as internal error (default Credo envelope, reason logged but never exposed). The stdlib deny handler is not used.
 
 **Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 

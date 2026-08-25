@@ -138,11 +138,11 @@ func TestResponseJSON_LegacyMode(t *testing.T) {
 	}
 }
 
-// TestProblemDetails_AlwaysDeterministic locks the error-body contract: RFC
-// 7807 responses sort map keys — here a validation error's params — even when
+// TestErrorResponse_AlwaysDeterministic locks the default error-body contract:
+// responses sort map keys — here a validation error's params — even when
 // the application profile disabled deterministic encoding, because clients
 // and tests treat those bytes as a framework contract.
-func TestProblemDetails_AlwaysDeterministic(t *testing.T) {
+func TestErrorResponse_AlwaysDeterministic(t *testing.T) {
 	app := mustNew(t, credo.WithJSONOptions(jsonv2.Deterministic(false)))
 	app.GET("/boom", func(*credo.Context) error {
 		return validation.Errors{{

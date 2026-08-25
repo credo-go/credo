@@ -352,8 +352,8 @@ func WithStrictBodies() Option {
 //	credo.WithJSONOptions(jsonv1.DefaultOptionsV1())
 //
 // The profile applies to [Response.JSON] (and therefore to [Context.Render]'s
-// fallback) and to RFC 7807 Problem Details bodies, except that Problem
-// Details always sort map keys — error bodies are a framework contract.
+// fallback) and to framework-owned default error bodies, except that error
+// bodies always sort map keys — they are a framework contract.
 // Decoding is not affected: request-body policy is [WithStrictBodies].
 //
 // Repeated calls accumulate in order. Construction-time only; there is no

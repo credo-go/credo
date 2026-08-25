@@ -144,7 +144,7 @@ credo.WithJSONOptions(jsontext.EscapeForHTML(true))       // escape < > &
 credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
 ```
 
-There is no per-call variant: one posture per application. `Context.Render` inherits the profile through its `Response.JSON` fallback; once a `SuccessRenderer` is installed it owns the response bytes. RFC 7807 Problem Details always sort map keys, even when the application disables `Deterministic` — error bodies are a framework contract.
+There is no per-call variant: one posture per application. `Context.Render` inherits the profile through its `Response.JSON` fallback; once a `SuccessRenderer` is installed it owns the response bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic` — error bodies are a framework contract.
 
 ---
 
@@ -260,7 +260,7 @@ func (c *CreateUserInput) Validate() error {
 app.POST("/users", func(ctx *credo.Context) error {
     var input CreateUserInput
     if err := ctx.Request().BindBody(&input); err != nil {
-        return err // decode OR validation error → error pipeline → RFC 7807 (default)
+        return err // decode OR validation error → default Credo error envelope
     }
     // input is GUARANTEED valid here
     return ctx.Response().JSON(201, svc.CreateUser(input))
@@ -304,7 +304,7 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 }
 ```
 
-Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal` for logging and is never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages localize through i18n keys `bind.<reason>` with the same fallback chain and `{{.field}}` translation as validation messages. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
+Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal` for logging and is never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages use bind scope plus the exact reason: an optional resolver may namespace it, otherwise the bare reason is the key. Field display-name handling matches validation. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
 
 ### BindQuery
 

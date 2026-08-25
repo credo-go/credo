@@ -31,19 +31,16 @@ func TestHandleError_HTTPError(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Type != "about:blank" {
-		t.Errorf("type = %q, want %q", pd.Type, "about:blank")
+	if pd.Success {
+		t.Error("success = true, want false")
 	}
-	// No i18n, no builtInMessages match → key itself is used as title
-	if pd.Title != "user.not_found" {
-		t.Errorf("title = %q, want %q", pd.Title, "user.not_found")
-	}
-	if pd.Status != http.StatusNotFound {
-		t.Errorf("pd.status = %d, want %d", pd.Status, http.StatusNotFound)
+	// No i18n, no built-in match → explicit key is the literal fallback.
+	if pd.Message != "user.not_found" {
+		t.Errorf("message = %q, want %q", pd.Message, "user.not_found")
 	}
 }
 
@@ -64,19 +61,13 @@ func TestHandleError_ValidationErrors(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Type != "https://credo.dev/errors/validation" {
-		t.Errorf("type = %q, want %q", pd.Type, "https://credo.dev/errors/validation")
-	}
 	// builtInMessages fallback for MsgKeyValidationFailed
-	if pd.Title != "Validation Failed" {
-		t.Errorf("title = %q, want %q", pd.Title, "Validation Failed")
-	}
-	if pd.Status != http.StatusUnprocessableEntity {
-		t.Errorf("pd.status = %d, want %d", pd.Status, http.StatusUnprocessableEntity)
+	if pd.Message != "Validation Failed" {
+		t.Errorf("message = %q, want %q", pd.Message, "Validation Failed")
 	}
 	if len(pd.Errors) != 2 {
 		t.Fatalf("errors len = %d, want 2", len(pd.Errors))
@@ -112,19 +103,15 @@ func TestHandleError_HTTPStatusInterface(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Status != http.StatusNotFound {
-		t.Errorf("pd.Status = %d, want %d", pd.Status, http.StatusNotFound)
+	if pd.Message != "Not Found" {
+		t.Errorf("message = %q, want %q", pd.Message, "Not Found")
 	}
-	if pd.Title != "Not Found" {
-		t.Errorf("pd.Title = %q, want %q", pd.Title, "Not Found")
-	}
-	// Detail must NOT leak internal error messages (e.g., "store: record not found").
-	if pd.Detail != "" {
-		t.Errorf("pd.Detail = %q, want empty (should not leak internal message)", pd.Detail)
+	if contains(w.Body.String(), "store: record not found") {
+		t.Errorf("body leaks internal error: %s", w.Body.String())
 	}
 }
 
@@ -175,12 +162,12 @@ func TestHandleError_SemanticFaultPolicy(t *testing.T) {
 			if w.Code != tt.status {
 				t.Fatalf("status = %d, want %d", w.Code, tt.status)
 			}
-			var pd credo.ProblemDetails
+			var pd credo.ErrorResponse
 			if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if pd.Title != tt.title {
-				t.Errorf("title = %q, want %q", pd.Title, tt.title)
+			if pd.Message != tt.title {
+				t.Errorf("message = %q, want %q", pd.Message, tt.title)
 			}
 		})
 	}
@@ -240,9 +227,9 @@ func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 
 	app := mustNew(t)
 	var renderedErr error
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		renderedErr = info.Err
-		return info.Problem
+		return credo.ErrorResponse{Code: info.Code, Message: info.Message, Details: info.Details, Errors: info.Errors}
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return structured })
 
@@ -272,12 +259,12 @@ func TestHandleError_GenericError(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Title != "Internal Server Error" {
-		t.Errorf("title = %q, want %q", pd.Title, "Internal Server Error")
+	if pd.Message != "Internal Server Error" {
+		t.Errorf("message = %q, want %q", pd.Message, "Internal Server Error")
 	}
 	// Must NOT leak the error message
 	body := w.Body.String()
@@ -333,8 +320,21 @@ func TestHandleError_ContentType(t *testing.T) {
 	app.ServeHTTP(w, r)
 
 	ct := w.Header().Get("Content-Type")
-	if ct != "application/problem+json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	if ct != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=utf-8")
+	}
+}
+
+func TestDefaultSuccessPayloadIsNotAutomaticallyEnveloped(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/ok", func(ctx *credo.Context) error {
+		return ctx.Response().JSON(http.StatusOK, map[string]string{"value": "ok"})
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ok", nil))
+	if got, want := w.Body.String(), `{"value":"ok"}`; got != want {
+		t.Fatalf("body = %s, want %s; success:true requires SuccessRenderer + Render", got, want)
 	}
 }
 
@@ -361,8 +361,9 @@ func TestNewProblemDetails(t *testing.T) {
 	}
 }
 
-func TestHandleError_Instance(t *testing.T) {
+func TestRFC9457ErrorRenderer_Instance(t *testing.T) {
 	app := mustNew(t)
+	app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
 	app.GET("/api/users/{id}", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(http.StatusNotFound)
 	})
@@ -377,6 +378,36 @@ func TestHandleError_Instance(t *testing.T) {
 	}
 	if pd.Instance != "/api/users/42" {
 		t.Errorf("instance = %q, want %q", pd.Instance, "/api/users/42")
+	}
+}
+
+func TestRFC9457ErrorRenderer_ShapeAndTypeResolver(t *testing.T) {
+	app := mustNew(t)
+	app.SetErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
+		ResolveType: func(info *credo.ErrorInfo) string {
+			return "https://errors.example/" + info.Code
+		},
+	}))
+	app.GET("/conflict", func(*credo.Context) error {
+		return credo.NewHTTPError(http.StatusConflict, "email_exists").
+			WithMessageKey("Email already exists").
+			WithDetails(map[string]any{"field": "email"})
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/conflict", nil))
+	if got := w.Header().Get("Content-Type"); got != "application/problem+json" {
+		t.Fatalf("Content-Type = %q, want application/problem+json", got)
+	}
+	var body credo.ProblemDetails
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Type != "https://errors.example/email_exists" || body.Title != "Conflict" || body.Detail != "Email already exists" || body.Status != http.StatusConflict {
+		t.Fatalf("problem = %#v", body)
+	}
+	if body.Code != "email_exists" || body.Instance != "/conflict" {
+		t.Fatalf("problem extensions = %#v", body)
 	}
 }
 
@@ -482,10 +513,10 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
-		receivedInfo = info
-		return map[string]string{"error": info.Problem.Title}
+		receivedInfo = *info
+		return map[string]string{"error": info.Message}
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -503,11 +534,11 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 	if !called {
 		t.Fatal("ErrorRenderer was not called")
 	}
-	if receivedInfo.Problem.Status != http.StatusNotFound {
-		t.Errorf("pd.Status = %d, want %d", receivedInfo.Problem.Status, http.StatusNotFound)
+	if receivedInfo.Status != http.StatusNotFound {
+		t.Errorf("info.Status = %d, want %d", receivedInfo.Status, http.StatusNotFound)
 	}
-	if receivedInfo.Problem.Title != "user.not_found" {
-		t.Errorf("pd.Title = %q, want %q", receivedInfo.Problem.Title, "user.not_found")
+	if receivedInfo.Message != "user.not_found" {
+		t.Errorf("info.Message = %q, want %q", receivedInfo.Message, "user.not_found")
 	}
 	if receivedInfo.MessageKey != "user.not_found" {
 		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "user.not_found")
@@ -525,9 +556,9 @@ func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A nil body is the documented "keep the default RFC 7807 body" signal;
+	// A nil body is the documented "keep the default error body" signal;
 	// headers set by the renderer decorate that default response.
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
 		return nil
 	})
@@ -544,11 +575,11 @@ func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 	ct := w.Header().Get("Content-Type")
-	if ct != "application/problem+json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	if ct != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=utf-8")
 	}
-	if got := w.Header().Get("X-Error-Code"); got != "errors.bad_request" {
-		t.Errorf("X-Error-Code = %q, want %q (renderer headers must survive)", got, "errors.bad_request")
+	if got := w.Header().Get("X-Error-Code"); got != "bad_request" {
+		t.Errorf("X-Error-Code = %q, want %q (renderer headers must survive)", got, "bad_request")
 	}
 	// nil is intentional, not an accident: nothing is logged for it.
 	if contains(buf.String(), "did not write response") {
@@ -561,8 +592,8 @@ func TestHandleError_ErrorRendererBody(t *testing.T) {
 
 	// The common case: the renderer returns the body and the framework owns
 	// status, Content-Type, and the write.
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		return map[string]any{"code": info.MessageKey, "message": info.Problem.Title}
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		return map[string]any{"code": info.MessageKey, "message": info.Message}
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -591,13 +622,13 @@ func TestHandleError_ErrorRendererBody(t *testing.T) {
 func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
 	app := mustNew(t)
 
-	// info.Problem is the renderer's status seam: mutating it before
+	// info.Status is the renderer's status seam: mutating it before
 	// returning changes the written status for both body shapes.
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		if info.MessageKey == "errors.not_found" {
-			info.Problem.Status = http.StatusGone
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		if info.MessageKey == "not_found" {
+			info.Status = http.StatusGone
 		}
-		return map[string]any{"status": info.Problem.Status}
+		return map[string]any{"status": info.Status}
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrNotFound })
@@ -609,10 +640,32 @@ func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
 	}
 }
 
+func TestHandleError_ErrorRendererInvalidStatusFailsClosed(t *testing.T) {
+	app := mustNew(t)
+	app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
+		info.Status = 0
+		return map[string]string{"must": "not leak"}
+	})
+	app.GET("/test", func(*credo.Context) error { return credo.ErrNotFound })
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	var body credo.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "internal_server_error" || body.Message != "Internal Server Error" || body.Success {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestHandleError_HEADDiscardsRendererBody(t *testing.T) {
 	app := mustNew(t)
 
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		return map[string]any{"code": info.MessageKey}
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrForbidden })
@@ -633,8 +686,8 @@ func TestHandleError_CommittedRendererIgnoresBody(t *testing.T) {
 
 	// Full-control escape hatch: once the renderer commits the response
 	// itself, the returned body must not be appended on top.
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		_ = ctx.Response().Text(info.Problem.Status, "plain error")
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		_ = ctx.Response().Text(info.Status, "plain error")
 		return map[string]any{"must": "be ignored"}
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrBadRequest })
@@ -658,7 +711,7 @@ func TestHandleError_ErrorRendererPanics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		panic("renderer exploded")
 	})
 
@@ -675,14 +728,14 @@ func TestHandleError_ErrorRendererPanics(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
-	if !contains(buf.String(), "ErrorRenderer panic") {
+	if !contains(buf.String(), "error pipeline panic") {
 		t.Errorf("expected panic log, got: %q", buf.String())
 	}
 }
 
 func TestHandleError_ErrorRendererNil(t *testing.T) {
 	app := mustNew(t)
-	// ErrorRenderer is nil by default → RFC 7807 JSON.
+	// ErrorRenderer is nil by default → Credo JSON error envelope.
 	app.GET("/test", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(http.StatusConflict)
 	})
@@ -695,15 +748,15 @@ func TestHandleError_ErrorRendererNil(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
 	}
 	ct := w.Header().Get("Content-Type")
-	if ct != "application/problem+json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	if ct != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=utf-8")
 	}
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Title != "Conflict" {
-		t.Errorf("title = %q, want %q", pd.Title, "Conflict")
+	if pd.Message != "Conflict" {
+		t.Errorf("message = %q, want %q", pd.Message, "Conflict")
 	}
 }
 
@@ -784,11 +837,11 @@ func TestHandleError_HEADRemovesImmutableCacheControl(t *testing.T) {
 
 func TestHandleError_CustomRendererRemovesImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		ctx.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		ctx.Response().Header().Set("Content-Type", "application/problem+json")
-		ctx.Response().WriteHeader(info.Problem.Status)
-		json.NewEncoder(ctx.Response()).Encode(info.Problem) //nolint:errcheck
+		ctx.Response().WriteHeader(info.Status)
+		json.NewEncoder(ctx.Response()).Encode(info) //nolint:errcheck
 		return nil
 	})
 	app.GET("/test", func(ctx *credo.Context) error {
@@ -811,7 +864,7 @@ func TestHandleError_CommittedBeforeRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		rendererCalled = true
 		return nil
 	})
@@ -837,7 +890,7 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		rendererCalled = true
 		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
 		// nil body — the framework sends the status-only HEAD response.
@@ -861,20 +914,20 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	if w.Body.Len() != 0 {
 		t.Errorf("HEAD body = %q, want empty", w.Body.String())
 	}
-	if got := w.Header().Get("X-Error-Code"); got != "errors.forbidden" {
-		t.Errorf("X-Error-Code = %q, want %q", got, "errors.forbidden")
+	if got := w.Header().Get("X-Error-Code"); got != "forbidden" {
+		t.Errorf("X-Error-Code = %q, want %q", got, "forbidden")
 	}
 }
 
-func TestHandleError_RendererReceivesInstance(t *testing.T) {
+func TestHandleError_RendererCanReadRequestPath(t *testing.T) {
 	app := mustNew(t)
 
-	var receivedInfo credo.ErrorInfo
+	var receivedPath string
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
-		receivedInfo = info
-		return info.Problem
+		receivedPath = ctx.Request().URL.Path
+		return map[string]any{"code": info.Code, "message": info.Message}
 	})
 
 	app.GET("/api/items/{id}", func(ctx *credo.Context) error {
@@ -888,8 +941,8 @@ func TestHandleError_RendererReceivesInstance(t *testing.T) {
 	if !called {
 		t.Fatal("ErrorRenderer was not called")
 	}
-	if receivedInfo.Problem.Instance != "/api/items/42" {
-		t.Errorf("pd.Instance = %q, want %q", receivedInfo.Problem.Instance, "/api/items/42")
+	if receivedPath != "/api/items/42" {
+		t.Errorf("request path = %q, want %q", receivedPath, "/api/items/42")
 	}
 }
 
@@ -898,10 +951,10 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
-		receivedInfo = info
-		return info.Problem
+		receivedInfo = *info
+		return map[string]any{"code": info.Code, "message": info.Message, "errors": info.Errors}
 	})
 
 	app.POST("/users", func(ctx *credo.Context) error {
@@ -917,14 +970,14 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 	if !called {
 		t.Fatal("ErrorRenderer was not called")
 	}
-	if receivedInfo.Problem.Status != http.StatusUnprocessableEntity {
-		t.Errorf("pd.Status = %d, want %d", receivedInfo.Problem.Status, http.StatusUnprocessableEntity)
+	if receivedInfo.Status != http.StatusUnprocessableEntity {
+		t.Errorf("info.Status = %d, want %d", receivedInfo.Status, http.StatusUnprocessableEntity)
 	}
-	if len(receivedInfo.Problem.Errors) != 1 {
-		t.Fatalf("pd.Errors len = %d, want 1", len(receivedInfo.Problem.Errors))
+	if len(receivedInfo.Errors) != 1 {
+		t.Fatalf("info.Errors len = %d, want 1", len(receivedInfo.Errors))
 	}
-	if receivedInfo.Problem.Errors[0].Field != "name" {
-		t.Errorf("pd.Errors[0].Field = %q, want %q", receivedInfo.Problem.Errors[0].Field, "name")
+	if receivedInfo.Errors[0].Field != "name" {
+		t.Errorf("info.Errors[0].Field = %q, want %q", receivedInfo.Errors[0].Field, "name")
 	}
 	if receivedInfo.MessageKey != credo.MsgKeyValidationFailed {
 		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyValidationFailed)
@@ -935,8 +988,8 @@ func TestHandleError_ErrorInfoErrForSentry(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		receivedInfo = info
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		receivedInfo = *info
 		return nil
 	})
 
@@ -960,8 +1013,8 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		receivedInfo = info
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		receivedInfo = *info
 		return nil
 	})
 
@@ -976,8 +1029,8 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
-	if receivedInfo.MessageKey != "errors.not_found" {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.not_found")
+	if receivedInfo.MessageKey != "not_found" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "not_found")
 	}
 }
 
@@ -985,8 +1038,8 @@ func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		receivedInfo = info
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		receivedInfo = *info
 		return nil
 	})
 
@@ -1001,8 +1054,8 @@ func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
-	if receivedInfo.MessageKey != "errors.internal_server_error" {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.internal_server_error")
+	if receivedInfo.MessageKey != "internal_server_error" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "internal_server_error")
 	}
 }
 
@@ -1032,12 +1085,12 @@ func TestHandleError_RequestTimeout(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestTimeout)
 	}
 
-	var pd credo.ProblemDetails
+	var pd credo.ErrorResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Title != "Request Timeout" {
-		t.Errorf("title = %q, want %q", pd.Title, "Request Timeout")
+	if pd.Message != "Request Timeout" {
+		t.Errorf("message = %q, want %q", pd.Message, "Request Timeout")
 	}
 }
 
@@ -1045,8 +1098,8 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info credo.ErrorInfo) any {
-		receivedInfo = info
+	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+		receivedInfo = *info
 		return nil
 	})
 
@@ -1061,8 +1114,8 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	if w.Code != http.StatusRequestTimeout {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestTimeout)
 	}
-	if receivedInfo.MessageKey != "errors.request_timeout" {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "errors.request_timeout")
+	if receivedInfo.MessageKey != "request_timeout" {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "request_timeout")
 	}
 }
 
@@ -1084,7 +1137,7 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_returns",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) any {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
 					return nil
 				})
@@ -1094,7 +1147,7 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_panics",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ credo.ErrorInfo) any {
+				app.SetErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
 					panic("renderer panic after hijack")
 				})

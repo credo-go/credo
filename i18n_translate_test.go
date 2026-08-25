@@ -12,10 +12,10 @@ func newTranslateTestBundle(t *testing.T) *internali18n.Bundle {
 	t.Helper()
 	fsys := fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "is required", "http.not_found": "Not found", "http.internal_server_error": "Internal server error"}`),
+			Data: []byte(`{"required": "is required", "not_found": "Not found", "internal_server_error": "Internal server error"}`),
 		},
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "zorunludur", "http.not_found": "Bulunamadı", "http.internal_server_error": "Sunucu hatası"}`),
+			Data: []byte(`{"required": "zorunludur", "not_found": "Bulunamadı", "internal_server_error": "Sunucu hatası"}`),
 		},
 		"tr/fields.json": &fstest.MapFile{
 			Data: []byte(`{"email": "e-posta adresi", "name": "isim"}`),
@@ -40,7 +40,8 @@ func TestTranslateValidationErrors_Turkish(t *testing.T) {
 		{Field: "name", Code: "required", Message: "is required"},
 	}
 
-	translated := translateValidationErrors(b, "tr", ve)
+	app := &App{i18nBundle: b}
+	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
 
 	if len(translated) != 2 {
 		t.Fatalf("len = %d, want 2", len(translated))
@@ -56,7 +57,7 @@ func TestTranslateValidationErrors_Turkish(t *testing.T) {
 func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 	fsys := fstest.MapFS{
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "{{.field}} zorunludur"}`),
+			Data: []byte(`{"required": "{{.field}} zorunludur"}`),
 		},
 		"tr/fields.json": &fstest.MapFile{
 			Data: []byte(`{"email": "e-posta adresi"}`),
@@ -69,7 +70,8 @@ func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
-	translated := translateValidationErrors(b, "tr", ve)
+	app := &App{i18nBundle: b}
+	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
 	if translated[0].Message != "e-posta adresi zorunludur" {
 		t.Errorf("Message = %q, want %q", translated[0].Message, "e-posta adresi zorunludur")
 	}
@@ -78,7 +80,7 @@ func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 func TestTranslateValidationErrors_WithParams(t *testing.T) {
 	fsys := fstest.MapFS{
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.length": "{{.min}} ile {{.max}} karakter arasında olmalıdır"}`),
+			Data: []byte(`{"length": "{{.min}} ile {{.max}} karakter arasında olmalıdır"}`),
 		},
 	}
 	b, _ := internali18n.NewBundleFromString("en")
@@ -93,7 +95,8 @@ func TestTranslateValidationErrors_WithParams(t *testing.T) {
 		},
 	}
 
-	translated := translateValidationErrors(b, "tr", ve)
+	app := &App{i18nBundle: b}
+	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
 	want := "2 ile 100 karakter arasında olmalıdır"
 	if translated[0].Message != want {
 		t.Errorf("Message = %q, want %q", translated[0].Message, want)
@@ -107,7 +110,8 @@ func TestTranslateValidationErrors_MissingTranslation(t *testing.T) {
 		{Field: "name", Code: "custom_rule", Message: "custom message"},
 	}
 
-	translated := translateValidationErrors(b, "en", ve)
+	app := &App{i18nBundle: b}
+	translated := app.translateValidationErrors(&Context{app: app, locale: "en"}, ve)
 	if translated[0].Message != "custom message" {
 		t.Errorf("Message = %q, want %q (original)", translated[0].Message, "custom message")
 	}
@@ -119,7 +123,8 @@ func TestTranslateValidationErrors_DoesNotMutateOriginal(t *testing.T) {
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
-	_ = translateValidationErrors(b, "tr", original)
+	app := &App{i18nBundle: b}
+	_ = app.translateValidationErrors(&Context{app: app, locale: "tr"}, original)
 
 	if original[0].Message != "is required" {
 		t.Errorf("original mutated: Message = %q, want %q", original[0].Message, "is required")
@@ -134,7 +139,7 @@ func TestResolveMessage_WithI18n(t *testing.T) {
 	app := &App{i18nBundle: b}
 	ctx := &Context{app: app, locale: "tr"}
 
-	got := resolveMessage(ctx, MsgKeyNotFound)
+	_, got := app.resolveErrorMessage(ctx, 404, "not_found", "")
 	if got != "Bulunamadı" {
 		t.Errorf("resolveMessage() = %q, want %q", got, "Bulunamadı")
 	}
@@ -142,9 +147,10 @@ func TestResolveMessage_WithI18n(t *testing.T) {
 
 func TestResolveMessage_BuiltInFallback(t *testing.T) {
 	// No i18n configured — should fall through to builtInMessages
-	ctx := &Context{}
+	app := &App{}
+	ctx := &Context{app: app}
 
-	got := resolveMessage(ctx, MsgKeyNotFound)
+	_, got := app.resolveErrorMessage(ctx, 404, "not_found", "")
 	if got != "Not Found" {
 		t.Errorf("resolveMessage() = %q, want %q", got, "Not Found")
 	}
@@ -152,9 +158,10 @@ func TestResolveMessage_BuiltInFallback(t *testing.T) {
 
 func TestResolveMessage_KeyFallback(t *testing.T) {
 	// No i18n, unknown key — should return the key itself
-	ctx := &Context{}
+	app := &App{}
+	ctx := &Context{app: app}
 
-	got := resolveMessage(ctx, "app.custom_error")
+	_, got := app.resolveErrorMessage(ctx, 400, "custom_error", "app.custom_error")
 	if got != "app.custom_error" {
 		t.Errorf("resolveMessage() = %q, want %q", got, "app.custom_error")
 	}
@@ -173,7 +180,7 @@ func TestResolveMessage_I18nMiss_BuiltInHit(t *testing.T) {
 	app := &App{i18nBundle: b}
 	ctx := &Context{app: app, locale: "en"}
 
-	got := resolveMessage(ctx, MsgKeyConflict)
+	_, got := app.resolveErrorMessage(ctx, 409, "conflict", "")
 	if got != "Conflict" {
 		t.Errorf("resolveMessage() = %q, want %q", got, "Conflict")
 	}

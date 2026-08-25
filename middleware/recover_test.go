@@ -275,20 +275,20 @@ func TestRecover_ResponseBody(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	app.ServeHTTP(w, r)
 
-	if got := w.Header().Get("Content-Type"); got != "application/problem+json" {
-		t.Fatalf("Content-Type = %q, want application/problem+json", got)
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
 
-	var pd map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
-		t.Fatalf("failed to parse problem details: %v", err)
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to parse error response: %v", err)
 	}
 
-	if pd["title"] != "Internal Server Error" {
-		t.Errorf("title = %v, want Internal Server Error", pd["title"])
+	if body["success"] != false || body["code"] != "internal_server_error" {
+		t.Errorf("identity = %#v, want success=false/code=internal_server_error", body)
 	}
-	if status, ok := pd["status"].(float64); !ok || int(status) != 500 {
-		t.Errorf("status = %v, want 500", pd["status"])
+	if body["message"] != "Internal Server Error" {
+		t.Errorf("message = %v, want Internal Server Error", body["message"])
 	}
 }
 
