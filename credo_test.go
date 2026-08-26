@@ -1552,7 +1552,7 @@ func TestApp_Routes_MountAppearsAsSingleCleanEntry(t *testing.T) {
 	if m.Method != "" {
 		t.Errorf("mount Method = %q, want empty (see Methods)", m.Method)
 	}
-	want := []string{"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
+	want := []string{"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "QUERY"}
 	if !slices.Equal(m.Methods, want) {
 		t.Errorf("mount Methods = %v, want %v", m.Methods, want)
 	}
@@ -1727,8 +1727,8 @@ func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
 	_ = credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
 		if ri.Kind == credo.RouteKindMount && ri.Pattern == "/admin" {
 			sawMount = true
-			if len(ri.Methods) != 7 {
-				t.Errorf("mount Methods length = %d, want 7", len(ri.Methods))
+			if len(ri.Methods) != 8 {
+				t.Errorf("mount Methods length = %d, want 8", len(ri.Methods))
 			}
 		}
 		return nil

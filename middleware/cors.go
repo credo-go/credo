@@ -12,6 +12,8 @@ import (
 	"github.com/credo-go/credo/internal/httpheader"
 )
 
+const methodQuery = "QUERY"
+
 // CORSConfig defines configuration for CORS middleware.
 type CORSConfig struct {
 	// Skipper defines a function to skip middleware.
@@ -25,7 +27,7 @@ type CORSConfig struct {
 	AllowOriginFunc func(ctx *credo.Context, origin string) (allowedOrigin string, allowed bool, err error)
 
 	// AllowMethods defines allowed methods for preflight.
-	// Default: GET, HEAD, PUT, PATCH, POST, DELETE.
+	// Default: GET, HEAD, PUT, PATCH, POST, DELETE, QUERY.
 	AllowMethods []string
 
 	// AllowHeaders defines allowed request headers for preflight.
@@ -68,6 +70,7 @@ func DefaultCORSConfig() CORSConfig {
 			http.MethodPatch,
 			http.MethodPost,
 			http.MethodDelete,
+			methodQuery,
 		},
 	}
 }

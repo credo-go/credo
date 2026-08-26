@@ -35,6 +35,8 @@ const (
 	MsgKeyBindFailed          = "bind_failed"
 )
 
+const msgKeyContentTypeRequired = "content_type_required"
+
 // builtInMessages maps framework error codes to safe default English messages.
 var builtInMessages = map[string]string{
 	MsgKeyBadRequest:          "Bad Request",
@@ -52,6 +54,7 @@ var builtInMessages = map[string]string{
 	MsgKeyRequestTimeout:      "Request Timeout",
 	MsgKeyValidationFailed:    "Validation Failed",
 	MsgKeyBindFailed:          "Malformed Request",
+	msgKeyContentTypeRequired: "Content-Type is required for QUERY requests.",
 }
 
 // HTTPError represents an HTTP error carrying a status and a stable

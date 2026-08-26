@@ -35,9 +35,14 @@
 // # Safe-by-Default Retry
 //
 // [DefaultRetryIf] retries idempotent methods only (GET, HEAD, OPTIONS,
-// TRACE, PUT, DELETE) on transport errors and 5xx responses — POST is never
-// retried by default, and a request body is only replayed when req.GetBody
-// is set. See [NewRetryTransport].
+// TRACE, PUT, DELETE, QUERY) on transport errors and 5xx responses — POST is
+// never retried by default, and a request body is only replayed when
+// req.GetBody is set. See [NewRetryTransport].
+//
+// The client returned by [New] also preserves QUERY across 301/302 redirects
+// when its body can be replayed, leaves 303 and 307/308 to net/http, and returns
+// a non-replayable 301/302 response to the caller instead of silently changing
+// QUERY to GET. Assigning Client.CheckRedirect after New replaces this policy.
 //
 // # Trace Propagation
 //

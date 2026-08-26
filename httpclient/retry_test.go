@@ -60,6 +60,8 @@ func TestDefaultRetryIf(t *testing.T) {
 		{"TRACE 503", http.MethodTrace, 503, nil, true},
 		{"PUT 503", http.MethodPut, 503, nil, true},
 		{"DELETE transport error", http.MethodDelete, 0, errors.New("eof"), true},
+		{"QUERY 503", "QUERY", 503, nil, true},
+		{"QUERY transport error", "QUERY", 0, errors.New("eof"), true},
 		{"POST 503 not retried", http.MethodPost, 503, nil, false},
 		{"POST transport error not retried", http.MethodPost, 0, errors.New("eof"), false},
 		{"PATCH 503 not retried", http.MethodPatch, 503, nil, false},
@@ -274,6 +276,46 @@ func TestRetry_NoGetBody_NoRetry(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Errorf("server hits = %d, want 1 (no GetBody → single shot)", got)
+	}
+}
+
+func TestRetry_QUERY_ReplaysBody(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	hits := new(atomic.Int32)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		if hits.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), "QUERY", srv.URL, strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Transport: NewRetryTransport(nil, fastRetry(3))}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(bodies, ","); got != "payload,payload" {
+		t.Fatalf("bodies = %q, want payload,payload", got)
 	}
 }
 

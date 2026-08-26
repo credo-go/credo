@@ -14,6 +14,18 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **HTTP QUERY (RFC 10008)** — first-class `App.QUERY` / `Group.QUERY` registration, radix lookup, route introspection, mount forwarding, and CORS defaults. Matched QUERY requests require a non-blank `Content-Type` and fail through the centralized pipeline as `400 content_type_required`; `BindBody` retains its existing media/decode/validation contracts. Credo deliberately adds no GET twin, QUERY-only route option, automatic `Accept-Query`, automatic OPTIONS handler, or exported method constant.
+
+### Changed
+
+- `middleware.CSRF` treats QUERY as safe while CORS still requires browser preflight. `httpclient.DefaultRetryIf` recognizes QUERY as idempotent, and clients returned by `httpclient.New` preserve replayable QUERY requests across 301/302 redirects instead of allowing the stdlib's default QUERY→GET rewrite; non-replayable bodies return the 3xx response unchanged.
+
+### Documentation
+
+- Added QUERY contracts and deployment guidance across the router/context/middleware/httpclient specs, ADR-007, routing and middleware guides, README, hello example, and English/Turkish reference catalogs.
+
 ## [0.12.0] - 2026-08-26
 
 ### Changed

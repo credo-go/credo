@@ -19,7 +19,7 @@ The **lean core ships independently of observability hooks**. Tracing here is ma
 ## Goals
 
 1. **One factory, stdlib shape**: `New(opts...) *http.Client`. No custom `Get`/`Post` wrapper methods, no new request type.
-2. **Safe-by-default retry**: exponential backoff with full jitter, retrying only idempotent methods on transport errors and 5xx — POST is never retried by default.
+2. **Safe-by-default retry**: exponential backoff with full jitter, retrying only idempotent methods (including RFC 10008 QUERY) on transport errors and 5xx — POST is never retried by default.
 3. **Structured outbound logging**: one `slog` line per attempt with method, URL (query stripped), status, duration, attempt number, and trace ID when available. Secrets never logged.
 4. **Trace continuity before OTel**: forward the W3C `traceparent` from the inbound request to outbound calls, deriving a fresh span ID per attempt, so distributed traces stay connected even before Phase 3.5.
 5. **Composability**: each transport is exported (`NewRetryTransport`, `NewLoggingTransport`, `NewTraceTransport`) for use on existing clients.
@@ -98,13 +98,26 @@ http.Client.Timeout                  ← total budget, incl. all retries
 - **Backoff**: full-jitter exponential — sleep is a uniformly random duration in `[0, min(MaxDelay, MinDelay·2^(attempt-1)))`. Waits abort immediately when the request context is done.
 - **Default predicate** (`DefaultRetryIf`):
   - context canceled / deadline exceeded → never retry;
-  - non-idempotent method (anything other than GET, HEAD, OPTIONS, TRACE, PUT, DELETE) → never retry;
+  - non-idempotent method (anything other than GET, HEAD, OPTIONS, TRACE, PUT, DELETE, QUERY) → never retry;
   - transport error (`err != nil`) → retry;
   - `5xx` response → retry;
   - anything else (incl. `429`) → no retry. Override with `RetryIf`.
 - **Body replay**: a request with a body is retried only when `req.GetBody` is set (stdlib sets it automatically for `bytes.Buffer`/`bytes.Reader`/`strings.Reader` bodies). Without `GetBody`, the first response/error is returned as-is — a request is never silently re-sent with a half-consumed body.
 - **Exhaustion**: the _last_ response (or error) is returned unchanged — a final 503 arrives as `(resp, nil)` exactly like stdlib; no custom error wrapping.
 - Each attempt uses `req.Clone(ctx)` + a fresh `GetBody()` reader; the caller's request is never mutated. The response body of a _discarded_ attempt is drained (up to a small cap) and closed so the underlying connection can be reused.
+
+### QUERY redirect semantics
+
+`httpclient.New` installs a `CheckRedirect` policy because Go's default client rewrites QUERY to GET on 301/302. The policy preserves the RFC 10008 contract while retaining the stdlib redirect engine for URL resolution, cookie-jar behavior, Referer handling, credential stripping, response draining, and hop execution:
+
+- 301/302 preserve QUERY. A body is restored only through the original request's `GetBody`; without it the client returns the 3xx response unchanged via `http.ErrUseLastResponse` rather than silently sending GET.
+- The body headers stripped by `net/http` during its provisional rewrite (`Content-Type`, `Content-Encoding`, `Content-Language`, `Content-Location`) are restored with all their values, including for a bodyless QUERY.
+- Sensitive headers are never re-copied; the stdlib's cross-origin stripping remains authoritative.
+- 303 remains GET without a body. A later redirect in that chain also stays GET.
+- 307/308 remain under the stdlib behavior, which already preserves method and a replayable body.
+- The standard ten-redirect limit applies to every method.
+
+Each followed redirect hop traverses the configured transport chain, so retry, per-attempt logging, and trace propagation apply normally. Assigning `client.CheckRedirect` after `New` is the full-control escape hatch and replaces this QUERY policy entirely.
 
 ### Logging semantics
 
@@ -157,6 +170,7 @@ Manual W3C Trace Context (version `00`) — no OTel types:
 5. **Query strings stripped from logs** — URLs routinely carry tokens (`?api_key=`, signed URLs). Path+host is enough for diagnostics.
 6. **Stdlib-only, logger injected** — no `credo` import keeps the dependency direction clean (feature packages may import root, but this one needs nothing from it); `infra.Logger` is passed by the user at wiring time.
 7. **Plain DI registration** — `app.ProvideValue[*http.Client]` or a named wrapper type for multiple clients; no framework sugar.
+8. **QUERY redirect policy at the client seam** — retry without redirect correctness would still permit a silent method change. A small `CheckRedirect` policy restores only QUERY's method, replayable body, and body headers; a custom redirect transport would duplicate security-sensitive stdlib behavior.
 
 ---
 
@@ -167,10 +181,12 @@ httpclient/
 ├── doc.go            ← package documentation
 ├── httpclient.go     ← New, Option, options struct, chain assembly
 ├── retry.go          ← retry transport, RetryConfig, DefaultRetryIf, backoff
+├── redirect.go       ← QUERY redirect policy used by New
 ├── logging.go        ← logging transport
 ├── trace.go          ← TraceContext, parse/derive/inject, context accessors
 ├── httpclient_test.go
 ├── retry_test.go
+├── redirect_test.go
 ├── logging_test.go
 └── trace_test.go
 ```
@@ -184,6 +200,7 @@ httpclient/
 - Retry: 5xx then 200 succeeds for GET; attempt count correct
 - Retry: transport error then success
 - Retry: POST with 5xx is **not** retried by default
+- Retry: QUERY with a replayable body retries; a non-replayable body does not
 - Retry: `RetryIf` override enables POST retry
 - Retry: body replay via `GetBody`; no retry when `GetBody` is nil
 - Retry: context cancellation aborts the backoff wait
@@ -194,3 +211,4 @@ httpclient/
 - Trace: pre-set `traceparent` header is not overwritten
 - Trace: `TraceContextFromRequest`/`Set`/`Get` round-trip
 - Chain: canonical order regardless of option order (logging sees `attempt`, trace sets header per attempt)
+- Redirect: QUERY 301/302 method/body/body-header preservation, non-replayable 3xx return, 303→GET, 307/308, sensitive-header stripping, and ten-hop limit

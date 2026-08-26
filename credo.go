@@ -389,6 +389,14 @@ func (app *App) PATCH(pattern string, h Handler) *Route {
 	return app.root.PATCH(pattern, h)
 }
 
+// QUERY registers an RFC 10008 safe, idempotent query route whose query
+// representation travels in the request body. [Request.BindBody] provides the
+// standard decode-and-validate path. QUERY requests must include Content-Type.
+// Panics under the same conditions as [App.GET].
+func (app *App) QUERY(pattern string, h Handler) *Route {
+	return app.root.QUERY(pattern, h)
+}
+
 // HEAD registers an explicit HEAD route (overrides auto-generated one).
 // Panics under the same conditions as [App.GET].
 func (app *App) HEAD(pattern string, h Handler) *Route {

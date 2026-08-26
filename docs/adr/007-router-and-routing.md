@@ -45,6 +45,7 @@ app.POST(pattern, handler)   *Route
 app.PUT(pattern, handler)    *Route
 app.DELETE(pattern, handler)  *Route
 app.PATCH(pattern, handler)   *Route
+app.QUERY(pattern, handler)   *Route
 app.HEAD(pattern, handler)    *Route
 app.OPTIONS(pattern, handler) *Route
 ```
@@ -129,6 +130,14 @@ Status handlers are resolved from the root group.
 ### HEAD Auto-Handling
 
 Every `GET` registration automatically registers a `HEAD` handler that runs the same handler chain. An explicit `HEAD` registration overrides the auto-generated one.
+
+### QUERY Method
+
+Credo recognizes RFC 10008 QUERY as a standard safe, idempotent method and exposes the same registration shape on `App` and `Group`: `QUERY(pattern, handler) *Route`. The request content carries the query representation, so handlers normally use `Request.BindBody`; Credo never creates a GET or HEAD twin.
+
+A matched QUERY route requires a non-blank `Content-Type` before the application handler. Missing or blank values produce `400 content_type_required`, including for an empty body. This method-level guard also covers mounted handlers and runs inside ordinary middleware so authentication and observability keep their established order. A present header leaves media support and content consistency to `BindBody` or an application parser.
+
+Credo deliberately adds no QUERY-only content-type option, `Accept-Query` helper, reserved metadata key, automatic OPTIONS behavior, cache, or exported method constant. Applications may emit `Accept-Query` directly; a future automatic contract, if justified, must be generic across body-bearing methods. QUERY-aware caches must include request content and relevant metadata in their cache key.
 
 ### Mounting
 

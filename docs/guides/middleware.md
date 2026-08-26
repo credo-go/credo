@@ -445,7 +445,7 @@ app.GlobalMiddleware(middleware.CORS())
 // Restrict to specific origins
 app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
     AllowOrigins:     []string{"https://example.com"},
-    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "QUERY"},
     AllowHeaders:     []string{"Authorization", "Content-Type"},
     AllowCredentials: true,
     ExposeHeaders:    []string{"X-Total-Count"},
@@ -480,7 +480,7 @@ middleware.CORS(middleware.CORSConfig{
 Rejects state-changing cross-origin browser requests — no tokens, cookies, or session state. Wraps the standard library's `net/http.CrossOriginProtection`, which detects cross-origin requests via the `Sec-Fetch-Site` header (all modern browsers) with an Origin/Host fallback for older ones.
 
 ```go
-// Zero config: blocks cross-origin POST/PUT/PATCH/DELETE
+// Zero config: blocks cross-origin state-changing methods; QUERY is safe.
 app.GlobalMiddleware(middleware.CSRF())
 
 // Frontend on another origin + webhook endpoints
@@ -492,7 +492,7 @@ app.GlobalMiddleware(middleware.CSRF(middleware.CSRFConfig{
 
 What passes without configuration:
 
-- `GET`, `HEAD`, `OPTIONS` (safe methods — never change state in them)
+- `GET`, `HEAD`, `OPTIONS`, `QUERY` (safe methods — never change state in them)
 - same-origin browser requests
 - non-browser clients (curl, server-to-server, mobile SDKs) — requests without `Sec-Fetch-Site`/`Origin` headers are allowed
 
@@ -510,6 +510,8 @@ middleware.CSRF(middleware.CSRFConfig{
 ```
 
 CSRF and CORS are complementary: CORS controls whether a browser may _read_ a cross-origin response; CSRF stops cross-origin state changes from being _processed_. A browser frontend on another origin typically needs its origin in both `CORSConfig.AllowOrigins` and `CSRFConfig.TrustedOrigins`.
+
+QUERY is safe under RFC 10008, but it is not a CORS-safelisted method. Cross-origin fetch/XHR therefore needs a successful preflight; the default CORS configuration includes QUERY. HTML forms and navigation cannot produce QUERY, so Credo lets QUERY bypass Go 1.27's older GET/HEAD/OPTIONS-only CSRF safe list. A handler must never mutate state from QUERY.
 
 ### Compress
 

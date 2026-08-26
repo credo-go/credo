@@ -75,6 +75,18 @@ func main() {
         return ctx.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
     })
 
+    // RFC 10008 QUERY carries a structured, safe/idempotent query in the body.
+    // Clients must label it with Content-Type (for example application/json).
+    app.QUERY("/search", func(ctx *credo.Context) error {
+        var query struct {
+            Term string `json:"term"`
+        }
+        if err := ctx.Request().BindBody(&query); err != nil {
+            return err
+        }
+        return ctx.Response().JSON(200, query)
+    })
+
     // Every request is access-logged out of the box. Silence a route/group with
     // MetaAccessLog, skip a noisy path with WithAccessLogSkipper, or opt into
     // Warn/Error-only logging with WithAccessLogMinLevel. Health probes are

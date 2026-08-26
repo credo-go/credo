@@ -32,6 +32,20 @@ func main() {
 		})
 	})
 
+	// QUERY is safe and idempotent like GET, but carries a structured query in
+	// the request body. Credo requires Content-Type before this handler runs.
+	app.QUERY("/search", func(ctx *credo.Context) error {
+		var query struct {
+			Term string `json:"term"`
+		}
+		if err := ctx.Request().BindBody(&query); err != nil {
+			return err
+		}
+		return ctx.Response().JSON(http.StatusOK, map[string]string{
+			"term": query.Term,
+		})
+	})
+
 	// Run returns nil on a graceful shutdown, so guard the call: log.Fatal
 	// exits 1 unconditionally, which would report every clean SIGTERM stop as
 	// a crash to whatever supervises the process.

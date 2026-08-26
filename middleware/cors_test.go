@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
@@ -106,6 +107,27 @@ func TestCORS_Preflight_Allowed(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Max-Age"); got != "600" {
 		t.Fatalf("Access-Control-Max-Age = %q, want 600", got)
+	}
+}
+
+func TestCORS_DefaultPreflight_AllowsQUERY(t *testing.T) {
+	app := mustNew(t)
+	app.GlobalMiddleware(middleware.CORS())
+	app.QUERY("/search", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(http.StatusNoContent)
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodOptions, "/search", nil)
+	r.Header.Set("Origin", "https://example.com")
+	r.Header.Set("Access-Control-Request-Method", "QUERY")
+	app.ServeHTTP(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Methods"); !slices.Contains(strings.Split(got, ","), "QUERY") {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want QUERY", got)
 	}
 }
 
