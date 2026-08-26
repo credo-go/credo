@@ -1,4 +1,7 @@
 {
+  "app.welcome": "Hoş geldiniz, {{.name}}!",
+  "user.email_exists": "Bu e-posta adresiyle kayıtlı bir hesap zaten var.",
+
   "required": "zorunludur",
   "email": "geçerli bir e-posta adresi olmalıdır",
   "url": "geçerli bir URL olmalıdır",

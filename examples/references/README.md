@@ -13,8 +13,10 @@ because Credo merges all discovered config files in JSON, YAML, YML order.
 
 - `server` is read automatically by `credo.New`.
 - `i18n` is read when `app.UseI18n()` is called without an explicit file source.
-- `databases` and `app` demonstrate application-owned typed snapshots. Read
-  them at the composition root with `RawConfig.Unmarshal` or `GetConfig[T]`.
+- `databases` and `app` demonstrate application-owned typed snapshots. The
+  `default` and `analytics` entries show that applications may keep multiple
+  named database configurations. Read them at the composition root with
+  `RawConfig.Unmarshal` or `GetConfig[T]`.
 - Function-valued settings and programmatic options do not belong in these
   files.
 
@@ -34,6 +36,15 @@ conventional discovery or set `i18n.dir` explicitly.
 - `messages.json` contains application, validation, bind, and HTTP error
   message keys, including QUERY's `content_type_required` guard.
 - `fields.json` contains optional human-readable field labels.
+
+The catalogs begin with namespaced, application-owned example keys. The
+English catalog then uses a single `_comment` entry to separate those examples
+from Credo's programmatic built-in defaults. The built-in entries are repeated
+so the file remains a complete, copyable override catalog; file entries
+override the programmatic base, but unchanged built-in entries may be removed
+individually—or as a group—when the built-in English fallback is sufficient.
+`_comment` is documentation only, appears in the English file only, and has no
+special loader semantics.
 
 Credo does not add hidden prefixes to message keys. The supplied catalogs use
 bare framework codes; applications may adopt namespaces through explicit

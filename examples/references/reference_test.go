@@ -73,15 +73,22 @@ func TestReferenceConfigsAreEquivalentAndAccepted(t *testing.T) {
 	if yamlConfig.I18n.Dir != "locales/" || yamlConfig.I18n.Default != "en" {
 		t.Fatalf("unexpected i18n reference: %#v", yamlConfig.I18n)
 	}
+	if len(yamlConfig.Databases) != 2 {
+		t.Fatalf("database count = %d, want 2", len(yamlConfig.Databases))
+	}
+	if analytics, ok := yamlConfig.Databases["analytics"]; !ok || analytics.Name != "credo_analytics" {
+		t.Fatalf("unexpected analytics database reference: %#v", analytics)
+	}
 }
 
 func TestReferenceLocaleCatalogsLoad(t *testing.T) {
 	wants := map[string]struct {
 		notFound            string
 		contentTypeRequired string
+		welcome             string
 	}{
-		"en": {notFound: "Not found", contentTypeRequired: "Content-Type is required for QUERY requests."},
-		"tr": {notFound: "Bulunamadı", contentTypeRequired: "QUERY istekleri için Content-Type zorunludur."},
+		"en": {notFound: "Not found", contentTypeRequired: "Content-Type is required for QUERY requests.", welcome: "Welcome, Ada!"},
+		"tr": {notFound: "Bulunamadı", contentTypeRequired: "QUERY istekleri için Content-Type zorunludur.", welcome: "Hoş geldiniz, Ada!"},
 	}
 	for lang, want := range wants {
 		t.Run(lang, func(t *testing.T) {
@@ -97,12 +104,13 @@ func TestReferenceLocaleCatalogsLoad(t *testing.T) {
 				t.Fatalf("load reference locales: %v", err)
 			}
 			app.GET("/", func(ctx *credo.Context) error {
-				return ctx.Response().Text(http.StatusOK, ctx.T("not_found")+"|"+ctx.T("content_type_required"))
+				welcome := ctx.T("app.welcome", map[string]any{"name": "Ada"})
+				return ctx.Response().Text(http.StatusOK, ctx.T("not_found")+"|"+ctx.T("content_type_required")+"|"+welcome)
 			})
 
 			response := httptest.NewRecorder()
 			app.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-			wantBody := want.notFound + "|" + want.contentTypeRequired
+			wantBody := want.notFound + "|" + want.contentTypeRequired + "|" + want.welcome
 			if response.Code != http.StatusOK || response.Body.String() != wantBody {
 				t.Fatalf("response = (%d, %q), want (%d, %q)", response.Code, response.Body.String(), http.StatusOK, wantBody)
 			}

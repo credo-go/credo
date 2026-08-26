@@ -39,6 +39,21 @@
       "max_lifetime": "30m",
       "ssl_mode": "require",
       "options": {}
+    },
+    "analytics": {
+      "driver": "postgres",
+      "host": "analytics-db",
+      "port": 5432,
+      "name": "credo_analytics",
+      "user": "credo_analytics",
+      "password": "",
+      "connect_timeout": "5s",
+      "max_open": 10,
+      "max_idle": 2,
+      "max_idle_time": "5m",
+      "max_lifetime": "30m",
+      "ssl_mode": "require",
+      "options": {}
     }
   },
   "app": {
