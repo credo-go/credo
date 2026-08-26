@@ -40,6 +40,8 @@
 //     compiles, so registration order affects execution order only —
 //     middleware added to a group after its routes still applies to them.
 //   - Route: fluent API with Name(), SetMeta(), Middleware()
+//   - QUERY: first-class RFC 10008 routes via App.QUERY/Group.QUERY; request
+//     content requires Content-Type and is commonly decoded with BindBody
 //   - ErrorRenderer: receives normalized *ErrorInfo and shapes error response bodies via App.SetErrorRenderer — returns the body (nil = default Credo envelope); classification, localization, logging, status, and writing handled by framework; RFC 9457 is an opt-in renderer
 //   - SuccessRenderer: opt-in uniform success envelope via App.SetSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped) — shape-only like ErrorRenderer: returns the body for a RenderInfo, the framework writes it
 //

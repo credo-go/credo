@@ -35,6 +35,7 @@
 - [x] **3-tier middleware** (Goyave): Global / Group / Route levels
 - [x] **HEAD auto-handling**: GET routes automatically respond to HEAD (body discarded)
 - [x] **Trailing slash redirect**: Auto 301/308 redirect when trailing-slash variant matches
+- [x] **HTTP QUERY (RFC 10008)**: explicit `App.QUERY` / `Group.QUERY`, mandatory `Content-Type`, mount/CORS/CSRF integration, and outbound retry/redirect correctness; no GET twin or QUERY-only contract API (v0.13.0 theme)
 - [x] Write `doc.go` for root package
 - [x] Update NOTICES with exact files adapted
 - [x] Tests pass, `make lint` clean
@@ -567,6 +568,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 - [x] `httpclient.New(opts...)` — `*http.Client` factory with canonical RoundTripper chain: Client.Timeout → retry → logging → trace → base; composable `NewRetryTransport`/`NewLoggingTransport`/`NewTraceTransport` exports; spec: [`docs/specs/httpclient.md`](docs/specs/httpclient.md)
 - [x] `WithTimeout`, `WithRetry(cfg ...RetryConfig)` — full-jitter backoff; `DefaultRetryIf` never retries POST/429/context cancellation; GetBody-only body replay; exhaustion returns the last response unchanged
+- [x] RFC 10008 QUERY outbound semantics — default retry recognizes QUERY; `New` preserves replayable QUERY across 301/302, returns non-replayable 3xx unchanged, and leaves 303/307/308 to stdlib behavior
 - [x] Structured request/response logging via `WithLogging(*slog.Logger)` — package is stdlib-only; one line per attempt, query string + userinfo stripped, 5xx→Error / 4xx→Warn / else Info
 - [x] W3C `traceparent` propagation via `WithTracePropagation()` + `TraceContextFromRequest`/`SetTraceContext`/`GetTraceContext`; child span ID per attempt, invalid inbound → new root
 - [ ] Request/response metrics — duration histogram, status counter (depends on Phase 3.5)

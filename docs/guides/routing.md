@@ -93,6 +93,77 @@ Prefer keeping the route parameter as `{id}` and mapping it to a domain-specific
 
 ---
 
+## QUERY Requests (RFC 10008)
+
+Use QUERY when a safe, idempotent query needs a structured request representation that is impractical in a URL. Register it explicitly; Credo does not infer a QUERY route from GET because their input contracts differ.
+
+```go
+type ProductQuery struct {
+    Category string `json:"category"`
+    Limit    int    `json:"limit"`
+}
+
+func (q *ProductQuery) Validate() error {
+    return validation.ValidateStruct(q,
+        validation.Field(&q.Limit, validation.Between(1, 100)),
+    )
+}
+
+app.QUERY("/products", func(ctx *credo.Context) error {
+    var query ProductQuery
+    if err := ctx.Request().BindBody(&query); err != nil {
+        return err
+    }
+    return ctx.Response().JSON(http.StatusOK, searchProducts(query))
+})
+```
+
+Clients must send a non-blank `Content-Type`, even with an empty body. Missing or blank values return `400 content_type_required` before the application handler; unsupported types handled through `BindBody` return 415. Built-in, global, group, and route middleware still run before this guard.
+
+`Accept-Query` is optional capability advertisement, not permission to use QUERY. Set it directly when useful:
+
+```go
+ctx.Response().Header().Set("Accept-Query", "application/json")
+```
+
+When every response, including errors, should retain it, use ordinary application middleware:
+
+```go
+func AcceptQuery(mediaTypes ...string) credo.Middleware {
+    value := strings.Join(mediaTypes, ", ")
+    return func(next credo.Handler) credo.Handler {
+        return func(ctx *credo.Context) error {
+            ctx.Response().Header().Set("Accept-Query", value)
+            return next(ctx)
+        }
+    }
+}
+
+app.QUERY("/products", queryProducts).
+    Middleware(AcceptQuery("application/json"))
+```
+
+Credo does not synthesize OPTIONS. Advertise both method and media type explicitly when an application needs discovery:
+
+```go
+app.OPTIONS("/products", func(ctx *credo.Context) error {
+    ctx.Response().Header().Set("Allow", "OPTIONS, QUERY")
+    ctx.Response().Header().Set("Accept-Query", "application/json")
+    return ctx.Response().NoContent(http.StatusNoContent)
+})
+```
+
+If the application already uses `middleware.ContractGuard`, `MetaAccept` is the existing generic way to restrict request media types; it is optional and is not QUERY-specific:
+
+```go
+app.QUERY("/products", queryProducts).
+    SetMeta(middleware.MetaAccept, []string{"application/json"})
+```
+
+Verify that every proxy, WAF, CDN, API gateway, and observability pipeline in front of the service passes and records QUERY correctly. A QUERY-aware cache must include request content and relevant metadata in its cache key; use `Cache-Control: no-store` when the deployment chain cannot guarantee that.
+
+---
+
 ## Route Groups
 
 Use groups for shared prefixes and middleware:

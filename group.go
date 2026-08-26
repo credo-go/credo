@@ -65,6 +65,14 @@ func (g *Group) PATCH(pattern string, h Handler) *Route {
 	return g.app.addRoute("PATCH", joinPath(g.prefix, pattern), h, g)
 }
 
+// QUERY registers an RFC 10008 safe, idempotent query route whose query
+// representation travels in the request body. [Request.BindBody] provides the
+// standard decode-and-validate path. QUERY requests must include Content-Type.
+// Panics under the same conditions as [App.GET].
+func (g *Group) QUERY(pattern string, h Handler) *Route {
+	return g.app.addRoute(methodQuery, joinPath(g.prefix, pattern), h, g)
+}
+
 // HEAD registers a HEAD route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) HEAD(pattern string, h Handler) *Route {

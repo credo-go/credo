@@ -32,7 +32,7 @@ directory into an application root and either call `app.UseI18n()` for
 conventional discovery or set `i18n.dir` explicitly.
 
 - `messages.json` contains application, validation, bind, and HTTP error
-  message keys.
+  message keys, including QUERY's `content_type_required` guard.
 - `fields.json` contains optional human-readable field labels.
 
 Credo does not add hidden prefixes to message keys. The supplied catalogs use

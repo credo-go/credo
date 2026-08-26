@@ -27,5 +27,6 @@
   "service_unavailable": "Service unavailable",
   "gateway_timeout": "Gateway timeout",
   "validation_failed": "Validation failed",
-  "bind_failed": "Malformed request"
+  "bind_failed": "Malformed request",
+  "content_type_required": "Content-Type is required for QUERY requests."
 }

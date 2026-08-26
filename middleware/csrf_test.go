@@ -20,6 +20,7 @@ func newCSRFApp(t *testing.T, cfg ...middleware.CSRFConfig) *credo.App {
 	}
 	app.GET("/form", ok)
 	app.POST("/form", ok)
+	app.QUERY("/form", ok)
 	app.POST("/webhooks/github", ok)
 	return app
 }
@@ -38,12 +39,16 @@ func TestCSRF_CrossSiteUnsafeBlocked(t *testing.T) {
 		{"same-origin POST allowed", http.MethodPost, "same-origin", http.StatusOK},
 		{"none POST allowed (direct navigation)", http.MethodPost, "none", http.StatusOK},
 		{"cross-site GET allowed (safe method)", http.MethodGet, "cross-site", http.StatusOK},
+		{"cross-site QUERY allowed (RFC-safe method)", "QUERY", "cross-site", http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(tt.method, "/form", nil)
 			r.Header.Set("Sec-Fetch-Site", tt.fetchSite)
+			if tt.method == "QUERY" {
+				r.Header.Set("Content-Type", "application/json")
+			}
 			app.ServeHTTP(w, r)
 			if w.Code != tt.want {
 				t.Errorf("status = %d, want %d", w.Code, tt.want)

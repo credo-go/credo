@@ -48,7 +48,7 @@ func DefaultRetryConfig() RetryConfig {
 // idempotent method AND (transport error OR 5xx response), never after
 // context cancellation or deadline expiry.
 //
-// Idempotent methods are GET, HEAD, OPTIONS, TRACE, PUT, and DELETE.
+// Idempotent methods are GET, HEAD, OPTIONS, TRACE, PUT, DELETE, and QUERY.
 // Anything else — POST in particular — is never retried by default:
 // retrying a non-idempotent request can duplicate side effects (double
 // payments). Callers with idempotency keys can opt in via
@@ -60,7 +60,7 @@ func DefaultRetryIf(req *http.Request, resp *http.Response, err error) bool {
 	}
 	switch req.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions,
-		http.MethodTrace, http.MethodPut, http.MethodDelete:
+		http.MethodTrace, http.MethodPut, http.MethodDelete, methodQuery:
 	default:
 		return false
 	}

@@ -20,6 +20,7 @@ router.POST(pattern, handler)    *Route
 router.PUT(pattern, handler)     *Route
 router.DELETE(pattern, handler)  *Route
 router.PATCH(pattern, handler)   *Route
+router.QUERY(pattern, handler)   *Route
 router.HEAD(pattern, handler)    *Route
 router.OPTIONS(pattern, handler) *Route
 ```
@@ -187,11 +188,21 @@ app.Mount("/admin", adminMux)
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
-**Atomic registration:** a single `Mount` makes fourteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a mismatched parameter key or regexp matcher in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state.
+**Atomic registration:** a single `Mount` makes sixteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a mismatched parameter key or regexp matcher in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state.
 
 ### HEAD Auto-handling
 
 GET routes automatically respond to HEAD requests (body discarded). Explicit HEAD registration overrides the auto-generated one.
+
+### QUERY (RFC 10008)
+
+`App.QUERY` and `Group.QUERY` register explicit safe, idempotent QUERY routes. The query representation travels in request content and is normally decoded and validated with `ctx.Request().BindBody(&input)`. Credo does not generate a GET twin or a HEAD twin: GET query parameters and a QUERY body are different input contracts.
+
+Every matched QUERY request, including one dispatched to a mounted `http.Handler`, must carry a non-blank `Content-Type`. Missing or blank values fail before the application handler with `400 content_type_required`, even when the body is empty. A present but unsupported media type follows the normal binder contract and returns 415; malformed supported content follows the bind-error contract. The guard is innermost, so ordinary built-in/global/group/route middleware still runs first.
+
+`Accept-Query` advertisement is optional and application-owned. Set the response header directly or from application middleware when needed. Credo adds no QUERY-only registration option, metadata key, automatic OPTIONS handler, or media contract; `middleware.ContractGuard` with `MetaAccept` remains the generic opt-in request media contract.
+
+QUERY responses are cacheable only when the cache key incorporates request content and relevant metadata. Deployments that cannot guarantee body-aware behavior across caches, CDNs, proxies, WAFs, gateways, and observability tooling should use `Cache-Control: no-store` and verify that the entire chain preserves and records QUERY.
 
 ### Trailing Slash Redirect
 

@@ -12,6 +12,8 @@ import (
 	"github.com/credo-go/credo/internal/radix"
 )
 
+const methodQuery = "QUERY"
+
 // routeHandler is the payload the radix tree stores for every endpoint.
 // Credo routes carry route/handler/compiled; handlers attached via
 // [App.Mount] carry only mounted and are dispatched as raw http.Handlers
@@ -92,6 +94,15 @@ func (app *App) compileRoutes(m *mux) {
 		}
 		// Capture the leaf handler BEFORE clearing rh.handler.
 		leafHandler := rh.handler
+		if rh.route.method == methodQuery {
+			handler := leafHandler
+			leafHandler = func(c *Context) error {
+				if err := requireQueryContentType(c); err != nil {
+					return err
+				}
+				return handler(c)
+			}
+		}
 		leaf := func(c *Context) error {
 			err := leafHandler(c)
 			if errors.Is(err, errRewrite) && c.rewriteRequested {
@@ -224,6 +235,11 @@ func (app *App) dispatchOnce(c *Context) error {
 		}
 
 		// Mounted stdlib handler — dispatched raw, outside the compiled chain.
+		if r.Method == methodQuery {
+			if err := requireQueryContentType(c); err != nil {
+				return err
+			}
+		}
 		if pooled {
 			rh.mounted.ServeHTTP(c.response, withRouteContext(r, rctx))
 		} else {
@@ -255,6 +271,13 @@ func (app *App) dispatchOnce(c *Context) error {
 	}
 
 	return app.resolveStatusHandler(c, http.StatusNotFound)
+}
+
+func requireQueryContentType(c *Context) error {
+	if strings.TrimSpace(c.request.Header.Get("Content-Type")) == "" {
+		return NewHTTPError(http.StatusBadRequest, msgKeyContentTypeRequired)
+	}
+	return nil
 }
 
 // trailingSlashAlternate returns the path with the trailing slash toggled.
@@ -489,7 +512,7 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 		catchAll = "/{_mount...}"
 	}
 
-	// Preflight: the 14 registrations below — every forwarded method on both
+	// Preflight: the 16 registrations below — every forwarded method on both
 	// catchAll and exact — mutate a radix tree that has no delete. A duplicate
 	// route detected partway through would strand the registrations that already
 	// succeeded as orphan routes: reachable by dispatch yet invisible to
@@ -581,6 +604,7 @@ func mountForwardedMethods() []string {
 		http.MethodPatch,
 		http.MethodPost,
 		http.MethodPut,
+		methodQuery,
 	}
 }
 

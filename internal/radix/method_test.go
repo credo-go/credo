@@ -39,11 +39,11 @@ func TestRegisterMethod_NoBitCollision(t *testing.T) {
 		t.Errorf("PURGE and LINK have same bit: %b", custom1)
 	}
 	// Must be the correct next bits
-	if custom1 != 1<<10 {
-		t.Errorf("PURGE = %d, want %d", custom1, 1<<10)
+	if custom1 != 1<<11 {
+		t.Errorf("PURGE = %d, want %d", custom1, 1<<11)
 	}
-	if custom2 != 1<<11 {
-		t.Errorf("LINK = %d, want %d", custom2, 1<<11)
+	if custom2 != 1<<12 {
+		t.Errorf("LINK = %d, want %d", custom2, 1<<12)
 	}
 }
 
@@ -98,6 +98,7 @@ func TestLookupMethod(t *testing.T) {
 		{"POST", MPost, true},
 		{"PUT", MPut, true},
 		{"TRACE", MTrace, true},
+		{"QUERY", MQuery, true},
 		{"NONEXISTENT", 0, false},
 		{"PURGE", 0, false},
 	}
@@ -116,8 +117,8 @@ func TestLookupMethod(t *testing.T) {
 
 func TestAllMethods_ReturnsCopy(t *testing.T) {
 	all := AllMethods()
-	if len(all) != 9 {
-		t.Fatalf("AllMethods() returned %d entries, want 9", len(all))
+	if len(all) != 10 {
+		t.Fatalf("AllMethods() returned %d entries, want 10", len(all))
 	}
 	// Mutating the copy must not affect the global
 	all["FAKEMUTATE"] = 999
@@ -135,7 +136,7 @@ func TestMethodTypToString(t *testing.T) {
 	}{
 		{"single", MGet, []string{"GET"}},
 		{"multiple sorted", MGet | MPost | MDelete, []string{"DELETE", "GET", "POST"}},
-		{"all", mAny, []string{"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}},
+		{"all", mAny, []string{"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "QUERY", "TRACE"}},
 		{"zero", 0, nil},
 	}
 	for _, tt := range tests {

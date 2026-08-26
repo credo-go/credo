@@ -76,9 +76,12 @@ func TestReferenceConfigsAreEquivalentAndAccepted(t *testing.T) {
 }
 
 func TestReferenceLocaleCatalogsLoad(t *testing.T) {
-	wants := map[string]string{
-		"en": "Not found",
-		"tr": "Bulunamadı",
+	wants := map[string]struct {
+		notFound            string
+		contentTypeRequired string
+	}{
+		"en": {notFound: "Not found", contentTypeRequired: "Content-Type is required for QUERY requests."},
+		"tr": {notFound: "Bulunamadı", contentTypeRequired: "QUERY istekleri için Content-Type zorunludur."},
 	}
 	for lang, want := range wants {
 		t.Run(lang, func(t *testing.T) {
@@ -94,13 +97,14 @@ func TestReferenceLocaleCatalogsLoad(t *testing.T) {
 				t.Fatalf("load reference locales: %v", err)
 			}
 			app.GET("/", func(ctx *credo.Context) error {
-				return ctx.Response().Text(http.StatusOK, ctx.T("not_found"))
+				return ctx.Response().Text(http.StatusOK, ctx.T("not_found")+"|"+ctx.T("content_type_required"))
 			})
 
 			response := httptest.NewRecorder()
 			app.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-			if response.Code != http.StatusOK || response.Body.String() != want {
-				t.Fatalf("response = (%d, %q), want (%d, %q)", response.Code, response.Body.String(), http.StatusOK, want)
+			wantBody := want.notFound + "|" + want.contentTypeRequired
+			if response.Code != http.StatusOK || response.Body.String() != wantBody {
+				t.Fatalf("response = (%d, %q), want (%d, %q)", response.Code, response.Body.String(), http.StatusOK, wantBody)
 			}
 		})
 	}

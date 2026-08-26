@@ -236,6 +236,8 @@ type Validatable interface {
 
 Reads request body. Content-Type determines decoder:
 
+For ordinary methods, a missing `Content-Type` retains the JSON convenience default. A matched RFC 10008 QUERY route is stricter: routing requires a non-blank `Content-Type` before the handler, even for an empty body. Once present, `BindBody` uses the same decoder, validation, strict-body, and error contracts shown below; unsupported media types return 415.
+
 | Content-Type                        | Decoder           | Status          |
 | ----------------------------------- | ----------------- | --------------- |
 | `application/json`                  | `encoding/json/v2` | **Implemented** |

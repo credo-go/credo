@@ -73,8 +73,13 @@ func WithTracePropagation() Option {
 // Retry sits outermost so each attempt re-enters logging and trace: every
 // attempt gets its own log line and its own span ID.
 //
+// The returned client preserves RFC 10008 QUERY across 301/302 redirects when
+// its body can be replayed. A non-replayable QUERY returns the 3xx response
+// instead of being changed to GET. Assigning Client.CheckRedirect after New
+// replaces that policy entirely.
+//
 // New() with no options is equivalent to an http.Client with a cloned
-// default transport and no timeout.
+// default transport and no timeout, plus the QUERY-safe redirect policy.
 func New(opts ...Option) *http.Client {
 	var o options
 	for _, opt := range opts {
@@ -97,8 +102,9 @@ func New(opts ...Option) *http.Client {
 	}
 
 	return &http.Client{
-		Transport: rt,
-		Timeout:   o.timeout,
+		Transport:     rt,
+		Timeout:       o.timeout,
+		CheckRedirect: checkRedirect,
 	}
 }
 

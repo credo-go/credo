@@ -24,9 +24,12 @@ const (
 	MPost                          // POST
 	MPut                           // PUT
 	MTrace                         // TRACE
+	MQuery                         // QUERY
 
-	mAny = MConnect | MDelete | MGet | MHead | MOptions | MPatch | MPost | MPut | MTrace
+	mAny = MConnect | MDelete | MGet | MHead | MOptions | MPatch | MPost | MPut | MTrace | MQuery
 )
+
+const methodQuery = "QUERY"
 
 // standardMethodNames caches the reverse mapping from single-method bitmask
 // to HTTP method string for fast MethodTypToString on standard methods.
@@ -40,6 +43,7 @@ var standardMethodNames = map[MethodTyp]string{
 	MPost:    http.MethodPost,
 	MPut:     http.MethodPut,
 	MTrace:   http.MethodTrace,
+	MQuery:   methodQuery,
 }
 
 var (
@@ -55,11 +59,12 @@ var (
 		http.MethodPost:    MPost,
 		http.MethodPut:     MPut,
 		http.MethodTrace:   MTrace,
+		methodQuery:        MQuery,
 	}
 
 	// nextMethodBit is the next unused bit position for custom methods.
-	// MTrace occupies bit 9 (1<<9 = 512), so the next available is bit 10.
-	nextMethodBit = uint(10)
+	// MQuery occupies bit 10 (1<<10 = 1024), so the next available is bit 11.
+	nextMethodBit = uint(11)
 )
 
 // LookupMethod returns the MethodTyp for the given HTTP method string
@@ -87,6 +92,8 @@ func LookupMethod(method string) (MethodTyp, bool) {
 		return MPut, true
 	case http.MethodTrace:
 		return MTrace, true
+	case methodQuery:
+		return MQuery, true
 	}
 
 	// Slow path: custom methods (locked map lookup).

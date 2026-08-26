@@ -53,8 +53,9 @@ func DefaultCSRFConfig() CSRFConfig {
 // involved, so there is no per-request overhead beyond a header check.
 //
 // What passes, in detector order:
-//   - GET, HEAD, and OPTIONS — safe methods are always allowed; never
-//     perform state changes in them.
+//   - GET, HEAD, OPTIONS, and QUERY — safe methods are always allowed; never
+//     perform state changes in them. QUERY is handled explicitly because Go
+//     1.27's CrossOriginProtection predates RFC 10008.
 //   - Sec-Fetch-Site: same-origin or none — same-origin browser requests.
 //   - Requests with neither Sec-Fetch-Site nor Origin headers — non-browser
 //     clients (curl, server-to-server, mobile SDKs) are unaffected.
@@ -65,8 +66,8 @@ func DefaultCSRFConfig() CSRFConfig {
 //
 // Everything else — in particular Sec-Fetch-Site: cross-site and same-site
 // (subdomains!) — is rejected through [CSRFConfig.ErrorHandler] (default:
-// 403 Problem Details via the framework error pipeline; the stdlib deny
-// handler is not used).
+// centralized 403 error response via the framework error pipeline; the stdlib
+// deny handler is not used).
 //
 // CSRF and [CORS] are complementary, not interchangeable: CORS governs
 // whether a browser may *read* a cross-origin response, while CSRF
@@ -104,6 +105,14 @@ func CSRF(cfg ...CSRFConfig) credo.Middleware {
 	return func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			if config.Skipper(ctx) {
+				return next(ctx)
+			}
+			// RFC 10008 defines QUERY as safe. Browser fetch/XHR cannot issue a
+			// cross-origin QUERY without a CORS preflight, and forms/navigation
+			// cannot produce QUERY, so the classic preflight-free CSRF channel is
+			// unavailable. Keep this explicit compatibility layer for Go versions
+			// whose CrossOriginProtection safe-list lacks QUERY.
+			if ctx.Request().Method == methodQuery {
 				return next(ctx)
 			}
 

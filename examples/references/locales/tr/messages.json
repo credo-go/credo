@@ -27,5 +27,6 @@
   "service_unavailable": "Hizmet kullanılamıyor",
   "gateway_timeout": "Ağ geçidi zaman aşımına uğradı",
   "validation_failed": "Doğrulama başarısız",
-  "bind_failed": "Hatalı biçimlendirilmiş istek"
+  "bind_failed": "Hatalı biçimlendirilmiş istek",
+  "content_type_required": "QUERY istekleri için Content-Type zorunludur."
 }
