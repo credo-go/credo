@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-26
+
 ### Added
 
 - **HTTP QUERY (RFC 10008)** — first-class `App.QUERY` / `Group.QUERY` registration, radix lookup, route introspection, mount forwarding, and CORS defaults. Matched QUERY requests require a non-blank `Content-Type` and fail through the centralized pipeline as `400 content_type_required`; `BindBody` retains its existing media/decode/validation contracts. Credo deliberately adds no GET twin, QUERY-only route option, automatic `Accept-Query`, automatic OPTIONS handler, or exported method constant.
@@ -411,7 +413,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/credo-go/credo/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/credo-go/credo/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/credo-go/credo/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/credo-go/credo/compare/v0.9.0...v0.10.0
