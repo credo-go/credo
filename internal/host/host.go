@@ -29,7 +29,7 @@ func NormalizeRequest(value string) string {
 func PatternHasPort(pattern string) bool {
 	depth := 0
 	inBracket := false
-	for i := 0; i < len(pattern); i++ {
+	for i := range len(pattern) {
 		switch pattern[i] {
 		case '{':
 			depth++

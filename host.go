@@ -148,7 +148,7 @@ func hostPatternSemanticKey(segments []hostSegment) string {
 }
 
 func hostPatternHasWildcard(pattern string) bool {
-	for _, label := range strings.Split(pattern, ".") {
+	for label := range strings.SplitSeq(pattern, ".") {
 		if label == "*" {
 			return true
 		}
@@ -270,7 +270,7 @@ func (app *App) hostParamKeys(hostPattern string) []string {
 func compareHostEntries(a, b *hostEntry) int {
 	minLen := min(len(a.segments), len(b.segments))
 
-	for i := 0; i < minLen; i++ {
+	for i := range minLen {
 		sa := hostSegmentSpecificity(a.segments[i])
 		sb := hostSegmentSpecificity(b.segments[i])
 		if sa != sb {

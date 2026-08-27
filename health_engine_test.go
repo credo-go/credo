@@ -3,6 +3,7 @@ package credo
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -13,20 +14,19 @@ import (
 func staticStoreFunc(results ...internalhealth.StoreResult) internalhealth.StoreFunc {
 	checks := make([]internalhealth.StoreCheck, 0, len(results))
 	for _, storeResult := range results {
-		result := storeResult
 		checks = append(checks, internalhealth.StoreCheck{
-			Name: result.Name,
+			Name: storeResult.Name,
 			Probe: internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 				return internalhealth.Result{
-					Status:  result.Status,
-					Latency: result.Latency,
-					Cause:   result.Cause,
+					Status:  storeResult.Status,
+					Latency: storeResult.Latency,
+					Cause:   storeResult.Cause,
 				}
 			}),
 		})
 	}
 	return func() []internalhealth.StoreCheck {
-		return append([]internalhealth.StoreCheck(nil), checks...)
+		return slices.Clone(checks)
 	}
 }
 

@@ -103,7 +103,7 @@ func isValidErrorCode(code string) bool {
 		return false
 	}
 	previousUnderscore := true // a leading underscore is invalid
-	for i := 0; i < len(code); i++ {
+	for i := range len(code) {
 		c := code[i]
 		switch {
 		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':

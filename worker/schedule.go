@@ -239,9 +239,7 @@ type constantDelaySchedule struct {
 }
 
 func every(duration time.Duration) constantDelaySchedule {
-	if duration < time.Second {
-		duration = time.Second
-	}
+	duration = max(duration, time.Second)
 	return constantDelaySchedule{Delay: duration - time.Duration(duration.Nanoseconds())%time.Second}
 }
 

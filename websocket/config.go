@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"fmt"
+	"slices"
 
 	coderwebsocket "github.com/coder/websocket"
 )
@@ -113,7 +114,7 @@ func compressionModeToUpstream(mode CompressionMode) (coderwebsocket.Compression
 
 func (cfg resolvedConfig) acceptOptions() *coderwebsocket.AcceptOptions {
 	return &coderwebsocket.AcceptOptions{
-		Subprotocols:         append([]string(nil), cfg.subprotocols...),
+		Subprotocols:         slices.Clone(cfg.subprotocols),
 		InsecureSkipVerify:   true,
 		CompressionMode:      cfg.compressionMode,
 		CompressionThreshold: cfg.compressionThreshold,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -188,7 +189,7 @@ func (s *Server) forceIncomplete(cause error) error {
 		record.cancel(cancelCause)
 		go func(closeNow func() error) { _ = closeNow() }(record.closeNow)
 	}
-	errs := append([]error(nil), s.drainErrors...)
+	errs := slices.Clone(s.drainErrors)
 	s.mu.Unlock()
 	incomplete := &shutdownIncompleteError{
 		cause:                cause,

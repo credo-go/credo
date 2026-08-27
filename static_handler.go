@@ -307,10 +307,9 @@ func isSPACandidate(ctx *Context, filePath string) bool {
 // indicating a file extension (e.g., "app.js", "style.css", "logo.png").
 func hasFileExtension(p string) bool {
 	// Find the last path segment.
-	lastSlash := strings.LastIndexByte(p, '/')
 	lastSegment := p
-	if lastSlash >= 0 {
-		lastSegment = p[lastSlash+1:]
+	if _, after, ok := strings.CutLast(p, "/"); ok {
+		lastSegment = after
 	}
 	return strings.ContainsRune(lastSegment, '.')
 }

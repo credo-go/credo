@@ -39,7 +39,7 @@ func ResolveHijacker(w http.ResponseWriter) (http.Hijacker, error) {
 	seen := make(map[http.ResponseWriter]struct{})
 	trackComparable(seen, current)
 
-	for depth := 0; depth < maxUnwrapDepth; depth++ {
+	for range maxUnwrapDepth {
 		if u, ok := current.(unwrapper); ok {
 			next := u.Unwrap()
 			if next == nil {

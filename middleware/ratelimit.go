@@ -116,9 +116,7 @@ func buildRateLimitMiddleware(config RateLimitConfig) credo.Middleware {
 				return config.InternalErrorHandler(ctx, fmt.Errorf("rate limit take: %w", err))
 			}
 
-			if reset > maxUnixNano {
-				reset = maxUnixNano
-			}
+			reset = min(reset, maxUnixNano)
 			resetTime := time.Unix(0, int64(reset)).UTC()
 			headers := ctx.Response().Header()
 			headers.Set(headerRateLimitLimit, strconv.FormatUint(limit, 10))

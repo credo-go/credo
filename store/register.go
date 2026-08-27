@@ -291,7 +291,7 @@ func validRegistrationWarningCode(code string) bool {
 	if code == "" || len(code) > maxRegistrationWarningCodeLength {
 		return false
 	}
-	for i := 0; i < len(code); i++ {
+	for i := range len(code) {
 		c := code[i]
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
 			continue

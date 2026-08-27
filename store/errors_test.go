@@ -9,6 +9,11 @@ import (
 	"github.com/credo-go/credo/store"
 )
 
+type httpStatusError interface {
+	error
+	HTTPStatus() int
+}
+
 type outerFaultError struct {
 	kind  fault.Kind
 	cause error
@@ -58,8 +63,8 @@ func TestSentinelErrors_HTTPStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var se interface{ HTTPStatus() int }
-			if !errors.As(tt.err, &se) {
+			se, ok := errors.AsType[httpStatusError](tt.err)
+			if !ok {
 				t.Fatalf("errors.As did not match HTTPStatus interface for %v", tt.err)
 			}
 			if got := se.HTTPStatus(); got != tt.status {
@@ -76,8 +81,8 @@ func TestSentinelErrors_WrappedPreservesChain(t *testing.T) {
 		t.Error("errors.Is on wrapped error should match ErrNotFound")
 	}
 
-	var se interface{ HTTPStatus() int }
-	if !errors.As(wrapped, &se) {
+	se, ok := errors.AsType[httpStatusError](wrapped)
+	if !ok {
 		t.Fatal("errors.As should unwrap to find HTTPStatus on wrapped error")
 	}
 	if got := se.HTTPStatus(); got != 404 {
@@ -274,8 +279,8 @@ func TestWrap_PreservesCauseAndStatus(t *testing.T) {
 		t.Fatalf("wrapped error message = %q, want %q", wrapped.Error(), original.Error())
 	}
 
-	var se interface{ HTTPStatus() int }
-	if !errors.As(wrapped, &se) {
+	se, ok := errors.AsType[httpStatusError](wrapped)
+	if !ok {
 		t.Fatal("wrapped error should expose HTTPStatus")
 	}
 	if got := se.HTTPStatus(); got != 409 {
