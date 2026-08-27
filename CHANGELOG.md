@@ -14,6 +14,17 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-27
+
+### Changed
+
+- Modernized Credo's internals for Go 1.27 with standard-library cloning, iterator, integer-range, sorting, error-matching, URL-copying, and comparison idioms. These changes are internal and introduce no intended public API or wire-format changes.
+- UUID validation now uses Go 1.27's standard `uuid` parser while retaining Credo's existing accepted forms: canonical hyphenated and 32-digit plain UUIDs. Braced and URN forms remain rejected.
+
+### Documentation
+
+- Expanded the copyable configuration and English/Turkish locale reference files, with stronger conformance tests for the documented examples.
+
 ## [0.13.0] - 2026-08-26
 
 ### Added
@@ -413,7 +424,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/credo-go/credo/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/credo-go/credo/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/credo-go/credo/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/credo-go/credo/compare/v0.10.0...v0.11.0

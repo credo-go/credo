@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,7 +113,7 @@ func normalizeCompressConfig(config CompressConfig) CompressConfig {
 	if config.Level == 0 {
 		config.Level = defaults.Level
 	}
-	config.Types = append([]string(nil), config.Types...)
+	config.Types = slices.Clone(config.Types)
 	return config
 }
 
@@ -287,7 +288,7 @@ func selectCompressionEncoding(acceptEncoding string) string {
 	deflateQ := -1.0
 	wildcardQ := -1.0
 
-	for _, item := range strings.Split(acceptEncoding, ",") {
+	for item := range strings.SplitSeq(acceptEncoding, ",") {
 		name, q, ok := parseEncodingToken(item)
 		if !ok {
 			continue
@@ -295,17 +296,11 @@ func selectCompressionEncoding(acceptEncoding string) string {
 
 		switch name {
 		case "gzip":
-			if q > gzipQ {
-				gzipQ = q
-			}
+			gzipQ = max(gzipQ, q)
 		case "deflate":
-			if q > deflateQ {
-				deflateQ = q
-			}
+			deflateQ = max(deflateQ, q)
 		case "*":
-			if q > wildcardQ {
-				wildcardQ = q
-			}
+			wildcardQ = max(wildcardQ, q)
 		}
 	}
 
@@ -336,7 +331,7 @@ func parseEncodingToken(token string) (name string, q float64, ok bool) {
 	name = token
 	if i := strings.IndexByte(token, ';'); i >= 0 {
 		name = strings.TrimSpace(token[:i])
-		for _, part := range strings.Split(token[i+1:], ";") {
+		for part := range strings.SplitSeq(token[i+1:], ";") {
 			part = strings.TrimSpace(part)
 			if !strings.HasPrefix(part, "q=") {
 				continue
@@ -346,12 +341,7 @@ func parseEncodingToken(token string) (name string, q float64, ok bool) {
 			if err != nil {
 				return "", 0, false
 			}
-			if value < 0 {
-				value = 0
-			}
-			if value > 1 {
-				value = 1
-			}
+			value = min(max(value, 0), 1)
 			q = value
 			break
 		}

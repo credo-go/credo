@@ -6,6 +6,7 @@ package credo
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/credo-go/credo/internal/radix"
@@ -118,9 +119,7 @@ func (rs *routeStore) add(method, pattern string, rh *routeHandler) {
 func (rs *routeStore) snapshot() []routeEntry {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
-	cp := make([]routeEntry, len(rs.entries))
-	copy(cp, rs.entries)
-	return cp
+	return slices.Clone(rs.entries)
 }
 
 // mux is a radix-tree backed route storage. It handles insertion and

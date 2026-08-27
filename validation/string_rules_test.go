@@ -120,6 +120,8 @@ func TestUUID(t *testing.T) {
 		{"550E8400-E29B-41D4-A716-446655440000", true}, // uppercase
 		{"550e8400e29b41d4a716446655440000", true},     // no hyphens
 		{"", true}, // empty passes
+		{"{550e8400-e29b-41d4-a716-446655440000}", false},
+		{"urn:uuid:550e8400-e29b-41d4-a716-446655440000", false},
 		{"not-a-uuid", false},
 		{"550e8400-e29b-41d4-a716", false},              // too short
 		{"550e8400-e29b-41d4-a716-44665544000g", false}, // invalid hex

@@ -4,6 +4,7 @@ package di
 
 import (
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -88,9 +89,7 @@ func (c *Container) collectionBindings(t reflect.Type) []reflect.Type {
 		return nil
 	}
 
-	clone := make([]reflect.Type, len(bindings))
-	copy(clone, bindings)
-	return clone
+	return slices.Clone(bindings)
 }
 
 func isInterfaceSlice(t reflect.Type) bool {

@@ -30,7 +30,7 @@ func Resolve(value string, limit int, generator func() string) string {
 
 // IsValid reports whether id contains only safe header/log characters.
 func IsValid(id string) bool {
-	for i := 0; i < len(id); i++ {
+	for i := range len(id) {
 		c := id[i]
 		switch {
 		case c >= 'a' && c <= 'z':

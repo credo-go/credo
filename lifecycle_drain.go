@@ -1,6 +1,7 @@
 package credo
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -107,7 +108,7 @@ func (lm *lifecycleManager) drainBeforeInfrastructure(
 }
 
 func (lm *lifecycleManager) runPreDrainPhase(ctx context.Context) error {
-	hooks := append([]drainHook(nil), lm.onPreDrain...)
+	hooks := slices.Clone(lm.onPreDrain)
 	results := make(chan drainResult, len(hooks))
 	pending := make(map[int]drainWork, len(hooks))
 	lm.launchDrainHooks(ctx, preDrainHookPhase, hooks, results, pending)
@@ -150,10 +151,7 @@ func (lm *lifecycleManager) collectPreDrainResults(
 	var deadlineTimer *time.Timer
 	var deadlineDone <-chan time.Time
 	if deadline, ok := ctx.Deadline(); ok {
-		delay := time.Until(deadline)
-		if delay < 0 {
-			delay = 0
-		}
+		delay := max(time.Until(deadline), 0)
 		deadlineTimer = time.NewTimer(delay)
 		deadlineDone = deadlineTimer.C
 		defer func() {
@@ -220,7 +218,7 @@ func (lm *lifecycleManager) runDrainPhase(
 ) error {
 	const httpWorkKey = -1
 
-	hooks := append([]drainHook(nil), lm.onDrain...)
+	hooks := slices.Clone(lm.onDrain)
 	results := make(chan drainResult, len(hooks)+1)
 	pending := make(map[int]drainWork, len(hooks)+1)
 	pending[httpWorkKey] = drainWork{key: httpWorkKey, label: "HTTP drain", index: -1, source: "net/http"}
@@ -380,6 +378,6 @@ func sortedDrainWork(pending map[int]drainWork) []drainWork {
 	for _, item := range pending {
 		work = append(work, item)
 	}
-	sort.Slice(work, func(i, j int) bool { return work[i].key < work[j].key })
+	slices.SortFunc(work, func(a, b drainWork) int { return cmp.Compare(a.key, b.key) })
 	return work
 }

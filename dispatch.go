@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -569,10 +568,8 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 // rewriteRequest returns a shallow copy of r with URL.Path set to newPath
 // and URL.RawPath cleared. Used by Mount to adjust the path for sub-routers.
 func rewriteRequest(r *http.Request, newPath string) *http.Request {
-	r2 := new(http.Request)
-	*r2 = *r
-	r2.URL = new(url.URL)
-	*r2.URL = *r.URL
+	r2 := new(*r)
+	r2.URL = r.URL.Clone()
 	r2.URL.Path = newPath
 	r2.URL.RawPath = ""
 	return r2

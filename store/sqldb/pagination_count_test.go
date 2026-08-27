@@ -49,13 +49,13 @@ func (r *paginationQueryRecorder) Reset() {
 func (r *paginationQueryRecorder) Queries() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.queries...)
+	return slices.Clone(r.queries)
 }
 
 func (r *paginationQueryRecorder) Models() []bun.Model {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]bun.Model(nil), r.models...)
+	return slices.Clone(r.models)
 }
 
 func TestSelectQuery_PageLogicalCountConformance(t *testing.T) {

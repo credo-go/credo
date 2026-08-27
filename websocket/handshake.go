@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -271,7 +272,7 @@ func (w *handshakeWriter) publishSuccessHeaders() {
 	destination := w.response.Header()
 	clear(destination)
 	for key, values := range w.header {
-		destination[key] = append([]string(nil), values...)
+		destination[key] = slices.Clone(values)
 	}
 }
 
@@ -279,7 +280,7 @@ func (w *handshakeWriter) publishErrorHeaders() {
 	destination := w.response.Header()
 	for _, key := range protocolErrorHeaders {
 		if values, ok := w.header[http.CanonicalHeaderKey(key)]; ok {
-			destination[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
+			destination[http.CanonicalHeaderKey(key)] = slices.Clone(values)
 		}
 	}
 }

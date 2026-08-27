@@ -1,4 +1,8 @@
 {
+  "app.welcome": "Welcome, {{.name}}!",
+  "user.email_exists": "An account with this email already exists.",
+
+  "_comment": "The entries below repeat Credo's built-in English defaults and may be removed when the built-in fallback text is sufficient.",
   "required": "is required",
   "email": "must be a valid email address",
   "url": "must be a valid URL",

@@ -97,14 +97,9 @@ func (r *PageRequest) NormalizeWithMax(maxPerPage int) {
 	if r.PerPage <= 0 {
 		r.PerPage = DefaultPerPage
 	}
-	if r.PerPage > maxPerPage {
-		r.PerPage = maxPerPage
-	}
 	// Defensive: unreachable with current constants (MinPerPage=1,
 	// DefaultPerPage=50) but guards against future constant changes.
-	if r.PerPage < MinPerPage {
-		r.PerPage = MinPerPage
-	}
+	r.PerPage = max(min(r.PerPage, maxPerPage), MinPerPage)
 }
 
 // Validate implements [validation.Validatable] so that BindQuery

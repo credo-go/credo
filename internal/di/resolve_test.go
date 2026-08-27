@@ -144,7 +144,7 @@ func TestResolve_ConcurrentSingleton(t *testing.T) {
 	results := make([]*SimpleService, goroutines)
 	errs := make([]error, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Go(func() {
 			results[i], errs[i] = c.Resolve[*SimpleService]()
 		})

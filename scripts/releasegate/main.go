@@ -101,7 +101,7 @@ func isCanonicalVersion(version string) bool {
 	if len(parts) == 1 {
 		return true
 	}
-	for _, identifier := range strings.Split(parts[1], ".") {
+	for identifier := range strings.SplitSeq(parts[1], ".") {
 		if identifier == "" || !isPrereleaseIdentifier(identifier) {
 			return false
 		}

@@ -181,9 +181,7 @@ func (s *inMemoryRateLimitStore) Close(ctx context.Context) error {
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
-		for key := range sh.buckets {
-			delete(sh.buckets, key)
-		}
+		clear(sh.buckets)
 		sh.mu.Unlock()
 	}
 
@@ -222,7 +220,7 @@ func sweepShardLocked(sh *rateLimitShard, now time.Time) {
 // fnv1aHash computes an FNV-1a hash of the string.
 func fnv1aHash(s string) uint32 {
 	h := uint32(2166136261)
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		h ^= uint32(s[i])
 		h *= 16777619
 	}

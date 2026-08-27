@@ -5,19 +5,11 @@ import (
 	"net/url"
 	"regexp"
 	"unicode/utf8"
+	"uuid"
 )
 
-// Compiled regexes for string validation rules.
-var (
-	// emailRegex is a simplified RFC 5322 pattern.
-	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
-
-	// uuidHyphenRegex matches UUIDs with hyphens.
-	uuidHyphenRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-	// uuidPlainRegex matches UUIDs without hyphens.
-	uuidPlainRegex = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
-)
+// emailRegex is a simplified RFC 5322 pattern.
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
 
 // Required creates a [Rule] that fails if the value is the zero value for
 // type T. Works with any comparable type: strings, ints, bools, etc.
@@ -87,7 +79,12 @@ func (r *uuidRule) Validate(value string) error {
 	if value == "" {
 		return nil
 	}
-	if !uuidHyphenRegex.MatchString(value) && !uuidPlainRegex.MatchString(value) {
+	// uuid.Parse also accepts braced and URN forms. Keep UUID's documented
+	// contract limited to the plain and canonical hyphenated forms.
+	if len(value) != 32 && len(value) != 36 {
+		return newRuleError("uuid", "must be a valid UUID", nil)
+	}
+	if _, err := uuid.Parse(value); err != nil {
 		return newRuleError("uuid", "must be a valid UUID", nil)
 	}
 	return nil

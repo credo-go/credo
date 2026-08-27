@@ -271,7 +271,7 @@ func New(opts ...Option) (*App, error) {
 		o.serverCfg.RedirectTrailingSlash = &o.redirectTrailingSlash
 	}
 	if o.trustedProxiesSet {
-		o.serverCfg.TrustedProxies = append([]string(nil), o.trustedProxies...)
+		o.serverCfg.TrustedProxies = slices.Clone(o.trustedProxies)
 	}
 	// WithTLSFiles overrides the server.tls.* keys as a whole pair (not merged).
 	// It runs after unmarshal so the option wins over config, and fires whenever

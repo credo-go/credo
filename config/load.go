@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -72,7 +73,7 @@ func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	if _, err := parseConfig(data, format); err != nil {
 		return nil, fmt.Errorf("config: load bytes: %w", err)
 	}
-	c.src.bytes = append([]byte(nil), data...)
+	c.src.bytes = slices.Clone(data)
 	c.src.format = format
 	dotenv, err := c.readDotenv()
 	if err != nil {

@@ -5,6 +5,7 @@ package middleware
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -151,10 +152,10 @@ func CORS(cfg ...CORSConfig) credo.Middleware {
 }
 
 func normalizeCORSConfig(config CORSConfig) CORSConfig {
-	config.AllowOrigins = append([]string(nil), config.AllowOrigins...)
-	config.AllowMethods = append([]string(nil), config.AllowMethods...)
-	config.AllowHeaders = append([]string(nil), config.AllowHeaders...)
-	config.ExposeHeaders = append([]string(nil), config.ExposeHeaders...)
+	config.AllowOrigins = slices.Clone(config.AllowOrigins)
+	config.AllowMethods = slices.Clone(config.AllowMethods)
+	config.AllowHeaders = slices.Clone(config.AllowHeaders)
+	config.ExposeHeaders = slices.Clone(config.ExposeHeaders)
 
 	if config.Skipper == nil {
 		config.Skipper = DefaultSkipper

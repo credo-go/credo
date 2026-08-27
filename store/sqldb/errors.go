@@ -132,7 +132,7 @@ func isSQLState(code string) bool {
 	if len(code) != 5 {
 		return false
 	}
-	for i := 0; i < len(code); i++ {
+	for i := range len(code) {
 		char := code[i]
 		if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
 			return false

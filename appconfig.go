@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -213,7 +214,7 @@ func WithRedirectTrailingSlash(enabled bool) Option {
 // Invalid CIDR entries cause [New] to return an error.
 func WithTrustedProxies(cidrs ...string) Option {
 	return func(o *appOptions) {
-		o.trustedProxies = append([]string(nil), cidrs...)
+		o.trustedProxies = slices.Clone(cidrs)
 		o.trustedProxiesSet = true
 	}
 }

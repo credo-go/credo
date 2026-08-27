@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -207,13 +208,13 @@ func (e *healthEngine) checkReadiness(
 func (e *healthEngine) snapshotLiveness() []namedHealthCheck {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return append([]namedHealthCheck(nil), e.liveness...)
+	return slices.Clone(e.liveness)
 }
 
 func (e *healthEngine) snapshotReadiness() []namedHealthCheck {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return append([]namedHealthCheck(nil), e.readiness...)
+	return slices.Clone(e.readiness)
 }
 
 func scheduleNamedChecks(checks []namedHealthCheck) []scheduledHealthCheck {
@@ -274,13 +275,11 @@ func runHealthChecks(
 	results := make([]scheduledHealthResult, len(checks))
 	var wait sync.WaitGroup
 	for index, check := range checks {
-		idx := index
-		current := check
 		wait.Go(func() {
-			results[idx] = scheduledHealthResult{
-				name:   current.name,
-				source: current.source,
-				result: current.probe.Run(ctx, timeout),
+			results[index] = scheduledHealthResult{
+				name:   check.name,
+				source: check.source,
+				result: check.probe.Run(ctx, timeout),
 			}
 		})
 	}
@@ -322,10 +321,7 @@ func normalizeStoreResult(name string, result internalhealth.Result) internalhea
 	status := strings.ToLower(result.Status)
 	cause := result.Cause
 	causeText := result.Error
-	latency := result.Latency
-	if latency < 0 {
-		latency = 0
-	}
+	latency := max(result.Latency, 0)
 
 	switch status {
 	case "up":

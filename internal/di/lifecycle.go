@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 var contextType = reflect.TypeFor[context.Context]()
@@ -209,8 +210,7 @@ func (c *Container) cycleDependenciesForParam(paramType reflect.Type) []reflect.
 // shutdown deadline — services should respect ctx.Done() for timely cleanup.
 func (c *Container) Shutdown(ctx context.Context) error {
 	c.mu.RLock()
-	order := make([]reflect.Type, len(c.order))
-	copy(order, c.order)
+	order := slices.Clone(c.order)
 	c.mu.RUnlock()
 
 	var errs []error

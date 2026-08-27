@@ -189,9 +189,7 @@ func backoffCeiling(cfg RetryConfig, attempt int) time.Duration {
 	// Cap the first attempt too: the doubling loop never runs for attempt 1, so
 	// without this a MinDelay above MaxDelay would leak an uncapped ceiling,
 	// contradicting the documented min(MaxDelay, …).
-	if ceiling > cfg.MaxDelay {
-		ceiling = cfg.MaxDelay
-	}
+	ceiling = min(ceiling, cfg.MaxDelay)
 	return ceiling
 }
 
