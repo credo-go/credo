@@ -13,15 +13,17 @@ import (
 
 // bindProblem mirrors the default Credo error fields asserted by bind tests.
 type bindProblem struct {
-	Success bool   `json:"success"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Errors  []struct {
-		Field   string         `json:"field"`
-		Code    string         `json:"code"`
-		Message string         `json:"message"`
-		Params  map[string]any `json:"params"`
-	} `json:"errors"`
+	Success bool `json:"success"`
+	Error   struct {
+		Code       string `json:"code"`
+		Message    string `json:"message"`
+		Violations []struct {
+			Field   string         `json:"field"`
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Params  map[string]any `json:"params"`
+		} `json:"violations"`
+	} `json:"error"`
 }
 
 func decodeBindProblem(t *testing.T, w *httptest.ResponseRecorder) bindProblem {
@@ -34,8 +36,8 @@ func decodeBindProblem(t *testing.T, w *httptest.ResponseRecorder) bindProblem {
 }
 
 // assertBindReason asserts the standard shape of a bind error response:
-// 400, bind_failed top-level classification, and a single errors[] entry with
-// the given reason code and field.
+// 400, bind_failed top-level classification, and a single violations[] entry
+// with the given reason code and field.
 func assertBindReason(t *testing.T, w *httptest.ResponseRecorder, code, field string) bindProblem {
 	t.Helper()
 	if w.Code != 400 {
@@ -45,17 +47,17 @@ func assertBindReason(t *testing.T, w *httptest.ResponseRecorder, code, field st
 	if pr.Success {
 		t.Error("success = true, want false")
 	}
-	if pr.Code != "bind_failed" {
-		t.Errorf("code = %q, want bind_failed", pr.Code)
+	if pr.Error.Code != "bind_failed" {
+		t.Errorf("error.code = %q, want bind_failed", pr.Error.Code)
 	}
-	if len(pr.Errors) != 1 {
-		t.Fatalf("len(errors) = %d, want 1 (body %q)", len(pr.Errors), w.Body.String())
+	if len(pr.Error.Violations) != 1 {
+		t.Fatalf("len(violations) = %d, want 1 (body %q)", len(pr.Error.Violations), w.Body.String())
 	}
-	if pr.Errors[0].Code != code {
-		t.Errorf("errors[0].code = %q, want %q", pr.Errors[0].Code, code)
+	if pr.Error.Violations[0].Code != code {
+		t.Errorf("violations[0].code = %q, want %q", pr.Error.Violations[0].Code, code)
 	}
-	if pr.Errors[0].Field != field {
-		t.Errorf("errors[0].field = %q, want %q", pr.Errors[0].Field, field)
+	if pr.Error.Violations[0].Field != field {
+		t.Errorf("violations[0].field = %q, want %q", pr.Error.Violations[0].Field, field)
 	}
 	return pr
 }
@@ -115,11 +117,11 @@ func TestBindBody_JSON_ProblemShape(t *testing.T) {
 	app.ServeHTTP(w, r)
 
 	pr := assertBindReason(t, w, "trailing_data", "")
-	if pr.Message != "Malformed Request" {
-		t.Errorf("message = %q, want %q", pr.Message, "Malformed Request")
+	if pr.Error.Message != "Malformed Request" {
+		t.Errorf("error.message = %q, want %q", pr.Error.Message, "Malformed Request")
 	}
-	if pr.Errors[0].Message == "" {
-		t.Error("errors[0].message is empty, want default English message")
+	if pr.Error.Violations[0].Message == "" {
+		t.Error("violations[0].message is empty, want default English message")
 	}
 }
 
@@ -167,10 +169,10 @@ func TestBindBody_JSON_Syntax_Reason(t *testing.T) {
 			app.ServeHTTP(w, r)
 
 			pr := assertBindReason(t, w, "syntax", "")
-			offset, hasOffset := pr.Errors[0].Params["offset"]
+			offset, hasOffset := pr.Error.Violations[0].Params["offset"]
 			if tt.wantOffset {
 				if !hasOffset {
-					t.Fatalf("params.offset missing (params %v)", pr.Errors[0].Params)
+					t.Fatalf("params.offset missing (params %v)", pr.Error.Violations[0].Params)
 				}
 				if n, ok := offset.(float64); !ok || n <= 0 {
 					t.Errorf("params.offset = %v, want positive number", offset)
@@ -209,7 +211,7 @@ func TestBindBody_JSON_TypeMismatch_Reason(t *testing.T) {
 			app.ServeHTTP(w, r)
 
 			pr := assertBindReason(t, w, "type_mismatch", tt.wantField)
-			if got := pr.Errors[0].Params["expected"]; got != "integer" {
+			if got := pr.Error.Violations[0].Params["expected"]; got != "integer" {
 				t.Errorf("params.expected = %v, want %q", got, "integer")
 			}
 		})
@@ -340,7 +342,7 @@ func TestBindBody_Form_TypeMismatch_Reason(t *testing.T) {
 	app.ServeHTTP(w, r)
 
 	pr := assertBindReason(t, w, "type_mismatch", "age")
-	if got := pr.Errors[0].Params["expected"]; got != "integer" {
+	if got := pr.Error.Violations[0].Params["expected"]; got != "integer" {
 		t.Errorf("params.expected = %v, want %q", got, "integer")
 	}
 }
@@ -512,8 +514,8 @@ func TestBindBody_JSON_UnknownField_Strict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := strictBindPost(t, tt.body, credo.WithStrictBodies())
 			pr := assertBindReason(t, w, "unknown_field", tt.wantField)
-			if off, ok := pr.Errors[0].Params["offset"].(float64); !ok || off <= 0 {
-				t.Errorf("params.offset = %v, want > 0", pr.Errors[0].Params["offset"])
+			if off, ok := pr.Error.Violations[0].Params["offset"].(float64); !ok || off <= 0 {
+				t.Errorf("params.offset = %v, want > 0", pr.Error.Violations[0].Params["offset"])
 			}
 		})
 	}

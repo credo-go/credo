@@ -11,8 +11,8 @@ import (
 // failed to decode the request payload into the target struct.
 //
 // Reason values are stable machine-readable identifiers: each appears as the
-// Code of the errors[] entry in the default response and as the scoped i18n
-// lookup reason.
+// Code of the violations[] entry in the default response and as the scoped
+// i18n lookup reason.
 type BindErrorReason string
 
 const (
@@ -52,8 +52,8 @@ const (
 
 // BindError is the typed decode error returned by [Request.BindBody] and
 // [Request.BindQuery]. The error pipeline classifies it as 400 Bad Request
-// with a default error body whose single errors[] entry mirrors the validation
-// output shape: Field, Code (the Reason), Message, and Params.
+// with a default error body whose single violations[] entry mirrors the
+// validation output shape: Field, Code (the Reason), Message, and Params.
 //
 // Handlers normally return it unchanged. To branch on it, use
 // errors.AsType[*credo.BindError](err).
@@ -114,7 +114,7 @@ func (e *BindError) HTTPStatus() int {
 }
 
 // message returns the default English client-facing message for the
-// errors[] entry. Field-scoped reasons use the validation-message style
+// violations[] entry. Field-scoped reasons use the validation-message style
 // ("must be of type integer"); body-level reasons name their subject.
 func (e *BindError) message() string {
 	switch e.Reason {
@@ -140,7 +140,7 @@ func (e *BindError) message() string {
 }
 
 // params returns the template variables serialized into the default response's
-// errors[] entry (and passed to i18n translation). Nil when empty.
+// violations[] entry (and passed to i18n translation). Nil when empty.
 func (e *BindError) params() map[string]any {
 	var p map[string]any
 	if e.Expected != "" {

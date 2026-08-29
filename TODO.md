@@ -179,7 +179,7 @@
   - [x] `date_rules.go` — DateBefore, DateAfter
   - [x] `common_rules.go` — In, NotNil, By (inline custom)
 - [x] `ValidationError` struct with `Code` + `Params` fields (i18n-ready)
-- [x] Compact default error envelope with RFC 9457 opt-in (`Errors` integration)
+- [x] Compact default error envelope with RFC 9457 opt-in (`Violations` integration; nested `error` object since v0.14.0)
 - [x] `validation/doc.go`
 - [x] Tests per rule group + integration tests (86 tests, -race clean)
 - [x] Update NOTICES

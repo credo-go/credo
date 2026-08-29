@@ -492,7 +492,7 @@ func (app *App) StatusHandler(code int, h Handler) {
 // framework handles error classification, logging, the status code, HEAD
 // handling, and committed-response guards internally; the renderer receives an
 // request-scoped [ErrorInfo] containing normalized status, code, message key,
-// resolved message, details, and field errors, and returns the body to encode —
+// resolved message, details, and violations, and returns the body to encode —
 // or nil for the default Credo body. Passing nil restores the default JSON
 // renderer. It is the error-side mirror of [App.SetSuccessRenderer]: install
 // both to give every response, success and failure alike, one envelope.

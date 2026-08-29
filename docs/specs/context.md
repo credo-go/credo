@@ -283,7 +283,7 @@ Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`,
 
 #### Decode error model
 
-Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carrying a machine-readable `Reason`, the affected `Field` path (when known), the `Expected` type for mismatches, and the JSON byte `Offset`. The error pipeline classifies it as `400 Bad Request` with `type: "https://credo.dev/errors/binding"`, mirroring the validation output shape — a single `errors[]` entry whose `code` is the reason:
+Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carrying a machine-readable `Reason`, the affected `Field` path (when known), the `Expected` type for mismatches, and the JSON byte `Offset`. The error pipeline classifies it as `400 Bad Request` with top-level code `bind_failed`, mirroring the validation output shape — a single `violations[]` entry whose `code` is the reason:
 
 | Reason            | Meaning                                                                                                        |
 | ----------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -297,12 +297,14 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 
 ```json
 {
-  "type": "https://credo.dev/errors/binding",
-  "title": "Malformed Request",
-  "status": 400,
-  "errors": [
-    {"field": "age", "code": "type_mismatch", "message": "must be of type integer", "params": {"expected": "integer", "offset": 12}}
-  ]
+  "success": false,
+  "error": {
+    "code": "bind_failed",
+    "message": "Malformed Request",
+    "violations": [
+      {"field": "age", "code": "type_mismatch", "message": "must be of type integer", "params": {"expected": "integer", "offset": 12}}
+    ]
+  }
 }
 ```
 

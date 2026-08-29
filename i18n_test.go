@@ -125,14 +125,14 @@ func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(pd.Errors) != 1 {
-		t.Fatalf("errors count = %d, want 1", len(pd.Errors))
+	if len(pd.Error.Violations) != 1 {
+		t.Fatalf("errors count = %d, want 1", len(pd.Error.Violations))
 	}
-	if pd.Errors[0].Message != "zorunludur" {
-		t.Errorf("translated message = %q, want %q", pd.Errors[0].Message, "zorunludur")
+	if pd.Error.Violations[0].Message != "zorunludur" {
+		t.Errorf("translated message = %q, want %q", pd.Error.Violations[0].Message, "zorunludur")
 	}
-	if pd.Errors[0].Field != "email" {
-		t.Errorf("field = %q, want %q", pd.Errors[0].Field, "email")
+	if pd.Error.Violations[0].Field != "email" {
+		t.Errorf("field = %q, want %q", pd.Error.Violations[0].Field, "email")
 	}
 }
 
@@ -162,8 +162,8 @@ func TestUseI18n_HTTPError_Turkish(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Bulunamadı" {
-		t.Errorf("message = %q, want %q", pd.Message, "Bulunamadı")
+	if pd.Error.Message != "Bulunamadı" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Bulunamadı")
 	}
 }
 
@@ -191,11 +191,11 @@ func TestUseI18n_EnglishDefault(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(pd.Errors) != 1 {
-		t.Fatalf("errors count = %d, want 1", len(pd.Errors))
+	if len(pd.Error.Violations) != 1 {
+		t.Fatalf("errors count = %d, want 1", len(pd.Error.Violations))
 	}
-	if pd.Errors[0].Message != "is required" {
-		t.Errorf("message = %q, want %q", pd.Errors[0].Message, "is required")
+	if pd.Error.Violations[0].Message != "is required" {
+		t.Errorf("message = %q, want %q", pd.Error.Violations[0].Message, "is required")
 	}
 }
 
@@ -225,8 +225,8 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Errors[0].Message != "zorunludur" {
-		t.Errorf("message = %q, want %q", pd.Errors[0].Message, "zorunludur")
+	if pd.Error.Violations[0].Message != "zorunludur" {
+		t.Errorf("message = %q, want %q", pd.Error.Violations[0].Message, "zorunludur")
 	}
 }
 
@@ -389,8 +389,8 @@ func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Bulunamadı" {
-		t.Errorf("message = %q, want %q", pd.Message, "Bulunamadı")
+	if pd.Error.Message != "Bulunamadı" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Bulunamadı")
 	}
 }
 
@@ -579,8 +579,8 @@ func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Errors) != 1 || body.Errors[0].Field != "email" || body.Errors[0].Message != "email address is required" {
-		t.Fatalf("validation errors = %#v", body.Errors)
+	if len(body.Error.Violations) != 1 || body.Error.Violations[0].Field != "email" || body.Error.Violations[0].Message != "email address is required" {
+		t.Fatalf("validation errors = %#v", body.Error.Violations)
 	}
 }
 
@@ -687,8 +687,8 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Message != "Missing" {
-		t.Errorf("error message = %q, want Missing", body.Message)
+	if body.Error.Message != "Missing" {
+		t.Errorf("error message = %q, want Missing", body.Error.Message)
 	}
 
 	w = httptest.NewRecorder()
@@ -697,7 +697,7 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Message != "Invalid request" || body.Errors[0].Message != "a required" || body.Errors[1].Message != "Explicit b" {
+	if body.Error.Message != "Invalid request" || body.Error.Violations[0].Message != "a required" || body.Error.Violations[1].Message != "Explicit b" {
 		t.Fatalf("resolved body = %#v", body)
 	}
 	w = httptest.NewRecorder()
@@ -706,7 +706,7 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code != "bind_failed" || body.Message != "Malformed request" || body.Errors[0].Code != "syntax" || body.Errors[0].Message != "Malformed JSON" {
+	if body.Error.Code != "bind_failed" || body.Error.Message != "Malformed request" || body.Error.Violations[0].Code != "syntax" || body.Error.Violations[0].Message != "Malformed JSON" {
 		t.Fatalf("bind body = %#v", body)
 	}
 
@@ -739,7 +739,7 @@ func TestUseI18n_EmptyResolvedMessageKeyFailsClosed(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code != "internal_server_error" || body.Message != "Internal Server Error" || body.Success {
+	if body.Error.Code != "internal_server_error" || body.Error.Message != "Internal Server Error" || body.Success {
 		t.Fatalf("body = %#v", body)
 	}
 }

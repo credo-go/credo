@@ -325,15 +325,17 @@ Validation errors are automatically converted to the default error envelope with
 ```json
 {
   "success": false,
-  "code": "validation_failed",
-  "message": "Validation Failed",
-  "errors": [
-    {"field": "email", "code": "email", "message": "must be a valid email address"}
-  ]
+  "error": {
+    "code": "validation_failed",
+    "message": "Validation Failed",
+    "violations": [
+      {"field": "email", "code": "email", "message": "must be a valid email address"}
+    ]
+  }
 }
 ```
 
-Decode failures get the same structured treatment before validation ever runs: a malformed body, a wrong-typed value, a duplicated JSON member, or trailing content after the JSON value returns a 400 response in the same `errors[]` shape, with a machine-readable reason code (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`). Unknown JSON members are ignored by default; when your clients ship together with the server, `credo.WithStrictBodies()` (or `server.strict_bodies: true`) turns a misspelled member into a 400 with reason `unknown_field` instead of silently dropping it. See the [Context Spec](../specs/context.md) for the decode error model.
+Decode failures get the same structured treatment before validation ever runs: a malformed body, a wrong-typed value, a duplicated JSON member, or trailing content after the JSON value returns a 400 response in the same `violations[]` shape, with a machine-readable reason code (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`). Unknown JSON members are ignored by default; when your clients ship together with the server, `credo.WithStrictBodies()` (or `server.strict_bodies: true`) turns a misspelled member into a 400 with reason `unknown_field` instead of silently dropping it. See the [Context Spec](../specs/context.md) for the decode error model.
 
 See [Validation Spec](../specs/validation.md) for the full rule catalog.
 
@@ -363,8 +365,9 @@ return credo.ErrForbidden       // 403
 return credo.ErrBadRequest      // 400
 ```
 
-Every default error response carries `success:false`, a stable machine-readable
-`code`, and a resolved `message`. Attach an exact i18n key or literal text with
+Every default error response carries `success:false` at the top level and a
+nested `error` object with a stable machine-readable `code` and a resolved
+`message`. Attach an exact i18n key or literal text with
 `WithMessageKey`, configure a scope-aware resolver, or let the bare code fall
 back to built-in/HTTP status text. `WithDetails` adds structured client-safe
 data. RFC 9457 is available as an opt-in renderer; see the
