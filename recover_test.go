@@ -32,11 +32,15 @@ func TestBuiltinRecover_CatchesPanic(t *testing.T) {
 	if body["success"] != false {
 		t.Errorf("success = %v, want false", body["success"])
 	}
-	if body["code"] != "internal_server_error" {
-		t.Errorf("code = %v, want internal_server_error", body["code"])
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("error = %#v, want a JSON object", body["error"])
 	}
-	if body["message"] != "Internal Server Error" {
-		t.Errorf("message = %v, want Internal Server Error", body["message"])
+	if errObj["code"] != "internal_server_error" {
+		t.Errorf("error.code = %v, want internal_server_error", errObj["code"])
+	}
+	if errObj["message"] != "Internal Server Error" {
+		t.Errorf("error.message = %v, want Internal Server Error", errObj["message"])
 	}
 }
 

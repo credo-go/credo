@@ -295,7 +295,7 @@ func TestServerHandlerPreAcceptFailuresUseErrorEnvelope(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 					t.Fatalf("error JSON: %v; body=%s", err, w.Body.String())
 				}
-				if body.Success || body.Code == "" || body.Message == "" {
+				if body.Success || body.Error.Code == "" || body.Error.Message == "" {
 					t.Errorf("invalid error envelope: %#v", body)
 				}
 			}

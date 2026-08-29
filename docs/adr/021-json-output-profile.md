@@ -78,6 +78,6 @@ The profile governs encoding only. Request-body strictness is `WithStrictBodies`
 
 - Applications upgrading see four wire changes: `[]`/`{}` instead of `null`, JSON-empty `omitempty`, unescaped `<>&`, and no trailing newline. Each is opt-out per axis through `WithJSONOptions`; `DefaultOptionsV1()` restores all of them at once (except the trailing newline, which no option restores — it was never part of the value).
 - Response snapshot tests that hard-code `null` for empty arrays or `<` escapes need updating; that is the intended, visible cost of the change.
-- Framework-owned JSON is unaffected in shape: `ErrorResponse.Errors` is `omitempty` on a slice, which behaves identically under both rules, and health output renders durations as strings.
+- Framework-owned JSON is unaffected in shape: `ErrorBody.Violations` is `omitempty` on a slice, which behaves identically under both rules, and health output renders durations as strings.
 - `time.Time` keeps RFC 3339 (no `format:` tag means no `unix` or custom layouts; a named type with `MarshalText` covers the rest).
 - If typed struct tags land in a future Go release with a Duration format mechanism, the P1 decision is worth revisiting — as a deliberate break, tracked in the v1 gate.

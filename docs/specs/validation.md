@@ -279,13 +279,15 @@ pipeline and rendered in Credo's default error envelope (or by a configured
 ```json
 {
     "success": false,
-    "code": "validation_failed",
-    "message": "Validation Failed",
-    "errors": [
-        {"field": "name", "code": "length", "message": "must be between 2 and 100 characters", "params": {"min": 2, "max": 100}},
-        {"field": "email", "code": "email", "message": "must be a valid email address"},
-        {"field": "age", "code": "min", "message": "must be at least 18", "params": {"min": 18}}
-    ]
+    "error": {
+        "code": "validation_failed",
+        "message": "Validation Failed",
+        "violations": [
+            {"field": "name", "code": "length", "message": "must be between 2 and 100 characters", "params": {"min": 2, "max": 100}},
+            {"field": "email", "code": "email", "message": "must be a valid email address"},
+            {"field": "age", "code": "min", "message": "must be at least 18", "params": {"min": 18}}
+        ]
+    }
 }
 ```
 

@@ -284,11 +284,12 @@ func TestRecover_ResponseBody(t *testing.T) {
 		t.Fatalf("failed to parse error response: %v", err)
 	}
 
-	if body["success"] != false || body["code"] != "internal_server_error" {
-		t.Errorf("identity = %#v, want success=false/code=internal_server_error", body)
+	errObj, _ := body["error"].(map[string]any)
+	if body["success"] != false || errObj["code"] != "internal_server_error" {
+		t.Errorf("identity = %#v, want success=false/error.code=internal_server_error", body)
 	}
-	if body["message"] != "Internal Server Error" {
-		t.Errorf("message = %v, want Internal Server Error", body["message"])
+	if errObj["message"] != "Internal Server Error" {
+		t.Errorf("error.message = %v, want Internal Server Error", errObj["message"])
 	}
 }
 

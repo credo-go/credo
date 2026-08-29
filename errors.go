@@ -203,13 +203,31 @@ var (
 	ErrUnsupportedMediaType = NewHTTPError(http.StatusUnsupportedMediaType)
 )
 
-// ErrorResponse is Credo's default JSON error envelope.
+// ErrorResponse is Credo's default JSON error envelope. The top level carries
+// only the success discriminator; everything about the error itself lives in
+// the nested [ErrorBody] object, mirroring how a success envelope pairs
+// "success" with a data payload.
 type ErrorResponse struct {
-	Success bool                         `json:"success"`
-	Code    string                       `json:"code"`
-	Message string                       `json:"message"`
-	Details any                          `json:"details,omitempty"`
-	Errors  []validation.ValidationError `json:"errors,omitempty"`
+	Success bool      `json:"success"`
+	Error   ErrorBody `json:"error"`
+}
+
+// ErrorBody is the error object nested inside [ErrorResponse].
+type ErrorBody struct {
+	// Code is the stable machine-readable error identity.
+	Code string `json:"code"`
+
+	// Message is the resolved human-readable message.
+	Message string `json:"message"`
+
+	// Details carries optional structured, client-safe detail.
+	Details any `json:"details,omitempty"`
+
+	// Violations lists rule violations behind the error: field-scoped
+	// validation failures and document-scoped bind (body-contract) failures.
+	// A bind entry's Field may be empty when the violation concerns the whole
+	// body (for example a JSON syntax error).
+	Violations []validation.ValidationError `json:"violations,omitempty"`
 }
 
 // ProblemDetails represents an RFC 9457 Problem Details response. It is used
@@ -241,8 +259,9 @@ type ProblemDetails struct {
 	// an extension member. Populated from [HTTPError.Details].
 	Details any `json:"details,omitempty"`
 
-	// Errors holds field-level validation errors (if any).
-	Errors []validation.ValidationError `json:"errors,omitempty"`
+	// Violations holds validation or binding rule violations (if any) as an
+	// extension member, matching the default envelope's vocabulary.
+	Violations []validation.ValidationError `json:"violations,omitempty"`
 }
 
 // NewProblemDetails creates a new ProblemDetails with the given status and title.
@@ -265,7 +284,8 @@ type RFC9457Config struct {
 
 // RFC9457ErrorRenderer returns an ErrorRenderer that projects Credo's
 // normalized error model into RFC 9457 Problem Details. The response uses
-// application/problem+json; Code, Details, and Errors are extension members.
+// application/problem+json; Code, Details, and Violations are extension
+// members.
 func RFC9457ErrorRenderer(cfgs ...RFC9457Config) ErrorRenderer {
 	if len(cfgs) > 1 {
 		panic("credo: RFC9457ErrorRenderer accepts at most one config")
@@ -291,14 +311,14 @@ func RFC9457ErrorRenderer(cfgs ...RFC9457Config) ErrorRenderer {
 		}
 		ctx.Response().Header().Set("Content-Type", "application/problem+json")
 		return &ProblemDetails{
-			Type:     problemType,
-			Title:    title,
-			Status:   info.Status,
-			Detail:   detail,
-			Instance: ctx.Request().URL.Path,
-			Code:     info.Code,
-			Details:  info.Details,
-			Errors:   info.Errors,
+			Type:       problemType,
+			Title:      title,
+			Status:     info.Status,
+			Detail:     detail,
+			Instance:   ctx.Request().URL.Path,
+			Code:       info.Code,
+			Details:    info.Details,
+			Violations: info.Violations,
 		}
 	}
 }
@@ -432,8 +452,8 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 // classifyError converts an error into normalized [ErrorInfo].
 //
 // Classification order:
-//  1. validation.Errors → 422 Unprocessable Entity with field errors
-//  2. *BindError → 400 Bad Request with a typed decode-reason errors entry
+//  1. validation.Errors → 422 Unprocessable Entity with field violations
+//  2. *BindError → 400 Bad Request with a typed decode-reason violations entry
 //  3. *HTTPError → status/code from the error and message from exact-key
 //     resolution; invalid stored fields fail closed to a generic 500
 //  4. fault.Provider → default root transport policy for the semantic kind
@@ -446,13 +466,13 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
 		info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, "validation_failed", "")
-		info.Errors = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
+		info.Violations = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
 		return info
 	}
 
 	if be, ok := errors.AsType[*BindError](err); ok {
 		info := app.codedErrorInfo(ctx, http.StatusBadRequest, "bind_failed", "")
-		info.Errors = []validation.ValidationError{app.bindProblemError(ctx, be)}
+		info.Violations = []validation.ValidationError{app.bindProblemError(ctx, be)}
 		return info
 	}
 
@@ -521,10 +541,12 @@ func writeDefaultError(ctx *Context, info *ErrorInfo) error {
 	ctx.Response().WriteHeader(info.Status)
 	return jsonv2.MarshalWrite(ctx.Response(), ErrorResponse{
 		Success: false,
-		Code:    info.Code,
-		Message: info.Message,
-		Details: info.Details,
-		Errors:  info.Errors,
+		Error: ErrorBody{
+			Code:       info.Code,
+			Message:    info.Message,
+			Details:    info.Details,
+			Violations: info.Violations,
+		},
 	}, ctx.app.errorJSONOptions())
 }
 
@@ -597,8 +619,8 @@ func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) va
 // translateFieldMessage resolves a field-scoped message through the bundle:
 // it copies params, injects the translated field name when field is non-empty,
 // and looks up key for lang. The boolean reports whether a translation exists.
-// Shared by the validation and bind errors[] flows so their field-name and
-// params handling cannot drift.
+// Shared by the validation and bind violations[] flows so their field-name
+// and params handling cannot drift.
 func translateFieldMessage(bundle *internali18n.Bundle, lang, key string, params map[string]any, field string) (string, bool) {
 	data := copyParams(params, field)
 	if field != "" {
@@ -610,8 +632,8 @@ func translateFieldMessage(bundle *internali18n.Bundle, lang, key string, params
 	return bundle.TranslateForLang(lang, key, data)
 }
 
-// bindProblemError converts a [BindError] into the single errors[] entry of
-// the default error response. The entry mirrors the validation error shape:
+// bindProblemError converts a [BindError] into the single violations[] entry
+// of the default error response. The entry mirrors the validation error shape:
 // Code carries the machine-readable reason, Message the localized (or
 // default English) text, and Params the client-safe template variables.
 // Translation follows the validation pipeline with a scoped exact key; field

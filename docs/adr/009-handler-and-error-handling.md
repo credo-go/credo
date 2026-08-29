@@ -65,21 +65,33 @@ charset=utf-8`:
 
 ```go
 type ErrorResponse struct {
-    Success bool                         `json:"success"`
-    Code    string                       `json:"code"`
-    Message string                       `json:"message"`
-    Details any                          `json:"details,omitempty"`
-    Errors  []validation.ValidationError `json:"errors,omitempty"`
+    Success bool      `json:"success"`
+    Error   ErrorBody `json:"error"`
+}
+
+type ErrorBody struct {
+    Code       string                       `json:"code"`
+    Message    string                       `json:"message"`
+    Details    any                          `json:"details,omitempty"`
+    Violations []validation.ValidationError `json:"violations,omitempty"`
 }
 ```
 
 ```json
 {
   "success": false,
-  "code": "user_not_found",
-  "message": "Kayıt bulunamadı"
+  "error": {
+    "code": "user_not_found",
+    "message": "Kayıt bulunamadı"
+  }
 }
 ```
+
+The top level carries only the `success` discriminator; everything about the
+error itself lives in the nested `error` object. This keeps envelope-level and
+error-level fields at separate altitudes and mirrors a symmetric success
+envelope pairing `success` with a data payload. Clients read `success`, then
+take `data` or `error` as one unit.
 
 `success` is always present and false on the default error body. It is an error
 discriminator, not a promise that normal successes gain `success:true`.
@@ -87,9 +99,16 @@ discriminator, not a promise that normal successes gain `success:true`.
 success envelope install `SuccessRenderer` and use `Context.Render`.
 
 Validation uses top-level code `validation_failed`; bind/decode uses
-`bind_failed`. A bind entry in `errors[]` keeps its exact reason (`syntax`,
+`bind_failed`. A bind entry in `violations[]` keeps its exact reason (`syntax`,
 `type_mismatch`, and so on). This deliberately separates the broad error class
-from the actionable field-level cause.
+from the actionable per-violation cause.
+
+The array is named `violations`, not `errors` or `fields`, because its entries
+are rule violations of two kinds: field-scoped validation failures and
+document-scoped bind (body-contract) failures whose `field` may be empty (a
+JSON syntax error concerns the whole body). `fields` would misname the
+document-scoped entries, and `error.errors` stutters; `violations` is honest
+for both (compare Google AIP-193 `field_violations`).
 
 Framework-owned error JSON is deterministic even if the application disables
 deterministic map ordering for ordinary responses.
@@ -140,7 +159,8 @@ app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
 
 The renderer writes `application/problem+json` and maps normalized information
 to `type`, `title`, `status`, `detail`, and `instance`, with `code`, `details`,
-and `errors` as extension members. `about:blank` is the default type;
+and `violations` as extension members (the extension vocabulary matches the
+default envelope). `about:blank` is the default type;
 `RFC9457Config.ResolveType` can supply application problem-type URIs. The
 public `ProblemDetails` helper type is retained for this adapter.
 
@@ -166,6 +186,8 @@ the built-in; `middleware.Recover` remains available for group/route policy.
   localized message directly in a renderer.
 - RFC 9457 interoperability remains a one-line opt-in.
 - Changing from Problem Details to `ErrorResponse`, changing the default media
-  type, changing `ErrorRenderer` to `*ErrorInfo`, and changing bind's top-level
-  code are pre-v1 breaking migrations and must be called out separately.
+  type, changing `ErrorRenderer` to `*ErrorInfo`, changing bind's top-level
+  code, and nesting the envelope (flat fields → `error` object, `errors[]` →
+  `violations[]`) are pre-v1 breaking migrations and must be called out
+  separately.
 - Uniformity still stops at pre-routing standard-library rejections.

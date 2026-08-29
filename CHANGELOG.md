@@ -14,6 +14,12 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (wire):** the default error envelope is now nested. The top level carries only the `success:false` discriminator; `code`, `message`, and `details` moved into a nested `error` object, and the `errors[]` array was renamed and moved to `error.violations[]`: `{"success":false,"error":{"code":…,"message":…,"details":…,"violations":[…]}}`. The array is named `violations` because it carries field-scoped validation failures and document-scoped bind failures alike (a bind entry's `field` may be empty for whole-body violations such as a JSON syntax error). Violation entry shape, top-level codes (`validation_failed`, `bind_failed`), status mapping, i18n resolution, and deterministic encoding are unchanged. Clients that parsed top-level `code`/`message`/`errors` must switch to `error.code`/`error.message`/`error.violations`; a custom `ErrorRenderer` can reproduce the old flat shape if needed.
+- **BREAKING (Go API):** `ErrorResponse` now nests an `ErrorBody` (`ErrorResponse.Error`) instead of flat `Code`/`Message`/`Details`/`Errors` fields, and `ErrorInfo.Errors` was renamed to `ErrorInfo.Violations`. Custom `ErrorRenderer` implementations reading `info.Errors` must switch to `info.Violations`.
+- **BREAKING (wire, RFC 9457 opt-in):** `RFC9457ErrorRenderer`'s validation extension member was renamed from `errors` to `violations` (`ProblemDetails.Violations`), keeping the extension vocabulary consistent with the default envelope. The `type`, `title`, `status`, `detail`, `instance`, `code`, and `details` members are unchanged.
+
 ## [0.13.1] - 2026-08-27
 
 ### Changed

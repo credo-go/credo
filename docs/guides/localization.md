@@ -504,15 +504,17 @@ Example validation response:
 ```json
 {
   "success": false,
-  "code": "validation_failed",
-  "message": "Validation Failed",
-  "errors": [
-    {
-      "field": "email",
-      "code": "required",
-      "message": "e-posta adresi zorunludur"
-    }
-  ]
+  "error": {
+    "code": "validation_failed",
+    "message": "Validation Failed",
+    "violations": [
+      {
+        "field": "email",
+        "code": "required",
+        "message": "e-posta adresi zorunludur"
+      }
+    ]
+  }
 }
 ```
 

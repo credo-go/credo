@@ -37,8 +37,10 @@ type ErrorInfo struct {
 	// Details is optional structured, client-safe application detail.
 	Details any
 
-	// Errors contains field-level validation or binding failures.
-	Errors []validation.ValidationError
+	// Violations contains validation or binding rule violations. Validation
+	// entries are field-scoped; a bind entry's Field may be empty when the
+	// violation concerns the whole body (for example a JSON syntax error).
+	Violations []validation.ValidationError
 }
 
 // ErrorRenderer shapes the body of an error response given a classified

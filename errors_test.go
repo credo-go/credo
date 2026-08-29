@@ -39,8 +39,8 @@ func TestHandleError_HTTPError(t *testing.T) {
 		t.Error("success = true, want false")
 	}
 	// No i18n, no built-in match → explicit key is the literal fallback.
-	if pd.Message != "user.not_found" {
-		t.Errorf("message = %q, want %q", pd.Message, "user.not_found")
+	if pd.Error.Message != "user.not_found" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "user.not_found")
 	}
 }
 
@@ -66,17 +66,17 @@ func TestHandleError_ValidationErrors(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	// builtInMessages fallback for MsgKeyValidationFailed
-	if pd.Message != "Validation Failed" {
-		t.Errorf("message = %q, want %q", pd.Message, "Validation Failed")
+	if pd.Error.Message != "Validation Failed" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Validation Failed")
 	}
-	if len(pd.Errors) != 2 {
-		t.Fatalf("errors len = %d, want 2", len(pd.Errors))
+	if len(pd.Error.Violations) != 2 {
+		t.Fatalf("errors len = %d, want 2", len(pd.Error.Violations))
 	}
-	if pd.Errors[0].Field != "name" || pd.Errors[0].Code != "required" {
-		t.Errorf("errors[0] = %+v, want field=name code=required", pd.Errors[0])
+	if pd.Error.Violations[0].Field != "name" || pd.Error.Violations[0].Code != "required" {
+		t.Errorf("errors[0] = %+v, want field=name code=required", pd.Error.Violations[0])
 	}
-	if pd.Errors[1].Field != "email" || pd.Errors[1].Code != "email" {
-		t.Errorf("errors[1] = %+v, want field=email code=email", pd.Errors[1])
+	if pd.Error.Violations[1].Field != "email" || pd.Error.Violations[1].Code != "email" {
+		t.Errorf("errors[1] = %+v, want field=email code=email", pd.Error.Violations[1])
 	}
 }
 
@@ -107,8 +107,8 @@ func TestHandleError_HTTPStatusInterface(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Not Found" {
-		t.Errorf("message = %q, want %q", pd.Message, "Not Found")
+	if pd.Error.Message != "Not Found" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Not Found")
 	}
 	if contains(w.Body.String(), "store: record not found") {
 		t.Errorf("body leaks internal error: %s", w.Body.String())
@@ -166,8 +166,8 @@ func TestHandleError_SemanticFaultPolicy(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if pd.Message != tt.title {
-				t.Errorf("message = %q, want %q", pd.Message, tt.title)
+			if pd.Error.Message != tt.title {
+				t.Errorf("message = %q, want %q", pd.Error.Message, tt.title)
 			}
 		})
 	}
@@ -229,7 +229,7 @@ func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 	var renderedErr error
 	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		renderedErr = info.Err
-		return credo.ErrorResponse{Code: info.Code, Message: info.Message, Details: info.Details, Errors: info.Errors}
+		return credo.ErrorResponse{Error: credo.ErrorBody{Code: info.Code, Message: info.Message, Details: info.Details, Violations: info.Violations}}
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return structured })
 
@@ -263,8 +263,8 @@ func TestHandleError_GenericError(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Internal Server Error" {
-		t.Errorf("message = %q, want %q", pd.Message, "Internal Server Error")
+	if pd.Error.Message != "Internal Server Error" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Internal Server Error")
 	}
 	// Must NOT leak the error message
 	body := w.Body.String()
@@ -356,8 +356,8 @@ func TestNewProblemDetails(t *testing.T) {
 	if pd.Instance != "" {
 		t.Errorf("Instance = %q, want empty", pd.Instance)
 	}
-	if pd.Errors != nil {
-		t.Errorf("Errors = %v, want nil", pd.Errors)
+	if pd.Violations != nil {
+		t.Errorf("Violations = %v, want nil", pd.Violations)
 	}
 }
 
@@ -657,7 +657,7 @@ func TestHandleError_ErrorRendererInvalidStatusFailsClosed(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code != "internal_server_error" || body.Message != "Internal Server Error" || body.Success {
+	if body.Error.Code != "internal_server_error" || body.Error.Message != "Internal Server Error" || body.Success {
 		t.Fatalf("body = %#v", body)
 	}
 }
@@ -755,8 +755,8 @@ func TestHandleError_ErrorRendererNil(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Conflict" {
-		t.Errorf("message = %q, want %q", pd.Message, "Conflict")
+	if pd.Error.Message != "Conflict" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Conflict")
 	}
 }
 
@@ -954,7 +954,7 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
 		receivedInfo = *info
-		return map[string]any{"code": info.Code, "message": info.Message, "errors": info.Errors}
+		return map[string]any{"code": info.Code, "message": info.Message, "violations": info.Violations}
 	})
 
 	app.POST("/users", func(ctx *credo.Context) error {
@@ -973,11 +973,11 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 	if receivedInfo.Status != http.StatusUnprocessableEntity {
 		t.Errorf("info.Status = %d, want %d", receivedInfo.Status, http.StatusUnprocessableEntity)
 	}
-	if len(receivedInfo.Errors) != 1 {
-		t.Fatalf("info.Errors len = %d, want 1", len(receivedInfo.Errors))
+	if len(receivedInfo.Violations) != 1 {
+		t.Fatalf("info.Violations len = %d, want 1", len(receivedInfo.Violations))
 	}
-	if receivedInfo.Errors[0].Field != "name" {
-		t.Errorf("info.Errors[0].Field = %q, want %q", receivedInfo.Errors[0].Field, "name")
+	if receivedInfo.Violations[0].Field != "name" {
+		t.Errorf("info.Violations[0].Field = %q, want %q", receivedInfo.Violations[0].Field, "name")
 	}
 	if receivedInfo.MessageKey != credo.MsgKeyValidationFailed {
 		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyValidationFailed)
@@ -1089,8 +1089,8 @@ func TestHandleError_RequestTimeout(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pd.Message != "Request Timeout" {
-		t.Errorf("message = %q, want %q", pd.Message, "Request Timeout")
+	if pd.Error.Message != "Request Timeout" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Request Timeout")
 	}
 }
 

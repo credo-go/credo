@@ -21,15 +21,18 @@ app.GET("/users/{id}", func(ctx *credo.Context) error {
 ```json
 {
   "success": false,
-  "code": "user_not_found",
-  "message": "Not Found"
+  "error": {
+    "code": "user_not_found",
+    "message": "Not Found"
+  }
 }
 ```
 
-The HTTP status is carried by the status line. The default body contains
-`success:false`, stable `code`, resolved `message`, optional client-safe
-`details`, and optional field `errors`. Its media type is `application/json`.
-The body is deterministically encoded.
+The HTTP status is carried by the status line. The top level of the default
+body holds only the `success:false` discriminator; the nested `error` object
+carries the stable `code`, resolved `message`, optional client-safe `details`,
+and optional `violations`. Its media type is `application/json`. The body is
+deterministically encoded.
 
 `success:false` is an error discriminator. Ordinary successful calls remain
 plain payloads and do not automatically gain `success:true`. Use
@@ -73,19 +76,26 @@ Validation errors use 422 and top-level code `validation_failed`:
 ```json
 {
   "success": false,
-  "code": "validation_failed",
-  "message": "Validation Failed",
-  "errors": [
-    {"field":"email","code":"required","message":"email is required"}
-  ]
+  "error": {
+    "code": "validation_failed",
+    "message": "Validation Failed",
+    "violations": [
+      {"field":"email","code":"required","message":"email is required"}
+    ]
+  }
 }
 ```
 
 Bind/decode errors use 400 and top-level code `bind_failed`. The nested entry's
 code is the exact reason (`syntax`, `type_mismatch`, `empty_body`,
 `trailing_data`, `duplicate_field`, `unknown_field`, or `invalid_value`). This
-lets clients switch on the broad class at the top and the actionable cause in
-`errors[0].code`.
+lets clients switch on the broad class in `error.code` and the actionable cause
+in `error.violations[0].code`.
+
+The array is named `violations` because it carries two kinds of entries:
+field-scoped validation failures and document-scoped bind failures. A bind
+entry's `field` may be empty when the violation concerns the whole body — a
+JSON syntax error, for example.
 
 ## Localization and message keys
 
@@ -122,17 +132,17 @@ Install a shape-only renderer before the app is finalized:
 ```go
 app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     return map[string]any{
-        "ok":      false,
-        "error":   info.Code,
-        "message": info.Message,
-        "details": info.Details,
-        "fields":  info.Errors,
+        "ok":         false,
+        "error":      info.Code,
+        "message":    info.Message,
+        "details":    info.Details,
+        "violations": info.Violations,
     }
 })
 ```
 
 `ErrorInfo` contains the original error, effective status, code, exact message
-key, already resolved message, details, and field errors. It is request-scoped;
+key, already resolved message, details, and violations. It is request-scoped;
 do not retain it. The framework writes the returned body and owns JSON options,
 HEAD/bodiless rules, and the status.
 
@@ -159,7 +169,7 @@ app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
 ```
 
 It writes `application/problem+json`, uses `about:blank` by default, and carries
-Credo's `code`, `details`, and `errors` as extension members. To map codes to
+Credo's `code`, `details`, and `violations` as extension members. To map codes to
 problem-type URIs:
 
 ```go
@@ -182,7 +192,7 @@ app.SetSuccessRenderer(func(_ *credo.Context, info credo.RenderInfo) any {
     return map[string]any{"success": true, "data": info.Data, "meta": info.Meta}
 })
 app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
-    return map[string]any{"success": false, "code": info.Code, "message": info.Message}
+    return map[string]any{"success": false, "error": map[string]any{"code": info.Code, "message": info.Message}}
 })
 
 // Uses SuccessRenderer.
