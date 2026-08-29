@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-29
+
 ### Changed
 
 - **BREAKING (wire):** the default error envelope is now nested. The top level carries only the `success:false` discriminator; `code`, `message`, and `details` moved into a nested `error` object, and the `errors[]` array was renamed and moved to `error.violations[]`: `{"success":false,"error":{"code":…,"message":…,"details":…,"violations":[…]}}`. The array is named `violations` because it carries field-scoped validation failures and document-scoped bind failures alike (a bind entry's `field` may be empty for whole-body violations such as a JSON syntax error). Violation entry shape, top-level codes (`validation_failed`, `bind_failed`), status mapping, i18n resolution, and deterministic encoding are unchanged. Clients that parsed top-level `code`/`message`/`errors` must switch to `error.code`/`error.message`/`error.violations`; a custom `ErrorRenderer` can reproduce the old flat shape if needed.
@@ -430,7 +432,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/credo-go/credo/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/credo-go/credo/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/credo-go/credo/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/credo-go/credo/compare/v0.11.0...v0.12.0
