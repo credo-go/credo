@@ -122,7 +122,7 @@ cfg, err := config.Load(opts...) // returns (*config.Config, error)
 - Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
 - Returns error on I/O failure, parse error, or invalid config. Never panics. There is no `MustLoad` — a filesystem-touching load surfaces its error.
 - No package-global instance — each call produces an independent `Config`.
-- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning). `WithoutDotenv` + `WithDotenvPath` is a contradiction and returns an error.
+- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithStrictDecoding()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning). `WithoutDotenv` + `WithDotenvPath` is a contradiction and returns an error.
 
 ### config.RawConfig Interface
 
@@ -255,6 +255,30 @@ For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-c
   - Both sources map to the same config keys; only the prefix handling differs.
 - **Dotted Keys**: Internal config tree uses dotted notation for nested lookups.
 - **Map Key Constraint**: Map keys in `map[string]T` fields must **not** contain double underscores (`__`), as `__` is the nesting delimiter. A key like `my__db` would be misinterpreted as two nesting levels instead of a single map key. Use `_` or `-` instead (e.g., `my_db`, `read-replica`).
+
+---
+
+## Strict Decoding
+
+`WithStrictDecoding()` switches every typed decode from the Config to strict mode. Default (weak) mode is unchanged and remains the default.
+
+| Aspect | Default (weak) | Strict |
+| --- | --- | --- |
+| Unknown keys (config keys with no target field, nested included) | Silently ignored | Error naming the key path |
+| `"123"` → int, `"true"` → bool, general weak coercion | Allowed | Error |
+| Duration strings (`"5s"` → `time.Duration`) | Allowed | Allowed (retained hook) |
+| `encoding.TextUnmarshaler` fields | Allowed | Allowed (retained hook) |
+| Numeric kind conversions (JSON `float64` → int field) | Allowed | Allowed (native decoding, not weak coercion) |
+
+The policy rides on the Config instance, so one option covers every decode path: `Unmarshal`, `Get`/`MustGet`, the `Staged` candidate from `Stage` (and therefore `OnConfigChange` reload subscriber validation), and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction under a strict store.
+
+Consequences to design for:
+
+- **Typed sources only**: env vars and `.env` entries are always strings, so string overrides on typed fields fail to decode under strict mode. Pair with `WithoutProcessEnv()`/`WithoutDotenv()`, or stay on weak decoding when env overrides are needed.
+- **Complete typed views**: every struct that decodes a section — including narrow `OnConfigChange[T]` subscribers and full-tree decodes — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
+- **Error hygiene scope**: unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
+
+Whether strict becomes the default at v1 is tracked in `TODO.md` (v1 Gate breaking batch).
 
 ---
 

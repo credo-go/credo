@@ -70,6 +70,7 @@ type options struct {
 	dotenvOptional bool         // true: missing explicit .env is a warning, not an error
 	noProcessEnv   bool         // true: ignore the process environment entirely (merge layer + bootstrap keys)
 	noDotenv       bool         // true: never read a .env file
+	strict         bool         // true: reject unknown keys and disable weak type coercion
 	logger         *slog.Logger // load-time warnings; nil means slog.Default()
 }
 
@@ -132,6 +133,37 @@ func WithoutProcessEnv() Option {
 // [Load] (and [LoadBytes]) return an error.
 func WithoutDotenv() Option {
 	return func(o *options) { o.noDotenv = true }
+}
+
+// WithStrictDecoding makes every typed decode from this Config strict:
+// unknown keys — keys present in the configuration that do not map to a field
+// of the target — become errors (nested sections included), and weak type
+// coercion is disabled, so a string "123" no longer decodes into an int and a
+// string "true" no longer decodes into a bool. Two deliberate coercions are
+// retained: strings still decode through [encoding.TextUnmarshaler]
+// implementations, and duration strings such as "5s" still decode into
+// [time.Duration]. Numeric kind conversions (a JSON number into an int or
+// float field) are native decoding, not weak coercion, and keep working.
+//
+// The policy rides on the Config instance: it applies to [Config.Unmarshal],
+// [Config.Get], [Config.MustGet], the [Staged] candidate produced by
+// [Config.Stage] (and therefore to reload subscriber validation), and to the
+// framework's own decode of the "server" section when the Config is passed to
+// credo.New — an unknown key under "server" then fails app construction.
+//
+// Strict decoding is designed for typed sources (config files, [LoadBytes]
+// documents). Environment variables and .env entries are always strings, so
+// string-to-number and string-to-bool overrides on typed fields fail to
+// decode under strict mode — pair it with [WithoutProcessEnv] and
+// [WithoutDotenv], or keep the default weak decoding when such overrides are
+// needed. Under strict mode every typed view must also be complete: a struct
+// that decodes a section (including narrow reload subscribers) must cover all
+// of that section's keys.
+//
+// Unknown-key errors report key paths and never configuration values; type
+// mismatch errors may quote the offending value.
+func WithStrictDecoding() Option {
+	return func(o *options) { o.strict = true }
 }
 
 // WithDotenvPath overrides the .env file path. Takes precedence over
@@ -219,10 +251,15 @@ func (c *Config) get(key string) (any, bool) {
 // MapFieldName converts PascalCase struct field names to snake_case so that
 // config keys like "max_open" automatically match fields like "MaxOpen"
 // without explicit struct tags. Explicit "credo" tags always take precedence.
+//
+// Under [WithStrictDecoding] unknown keys are rejected and weak type coercion
+// is off; the decode hooks (TextUnmarshaler, duration strings) stay active in
+// both modes.
 func (c *Config) newDecoder(dst any) (*mapstructure.Decoder, error) {
 	return mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           dst,
-		WeaklyTypedInput: true,
+		WeaklyTypedInput: !c.opts.strict,
+		ErrorUnused:      c.opts.strict,
 		TagName:          "credo",
 		MapFieldName:     toSnakeCase,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
@@ -299,10 +336,11 @@ func (c *Config) Exists(key string) bool {
 // Pass an empty key ("") to decode the entire configuration tree into dst.
 // Dots in the key always act as path separators.
 //
-// Type coercion uses mapstructure's WeaklyTypedInput, which handles common
-// conversions like string to int, string to bool, int to float64, etc.
-// This is particularly useful when env vars (always strings) override
-// typed YAML/JSON values.
+// By default, type coercion uses mapstructure's WeaklyTypedInput, which
+// handles common conversions like string to int, string to bool, int to
+// float64, etc. This is particularly useful when env vars (always strings)
+// override typed YAML/JSON values. Under [WithStrictDecoding], weak coercion
+// is off and unknown keys are rejected; see that option for the full policy.
 //
 // If dst implements Validate() error, validation is called automatically
 // after a successful decode.
@@ -358,8 +396,9 @@ func (c *Config) Unmarshal(key string, dst any) error {
 //
 // T may be a struct, map, slice, or primitive. The same rules as
 // [Config.Unmarshal] apply: a missing key or decode failure returns an error,
-// type coercion uses WeaklyTypedInput, and a T implementing Validate() error is
-// validated after decoding. On error the zero value of T is returned.
+// type coercion is weak by default and strict under [WithStrictDecoding], and
+// a T implementing Validate() error is validated after decoding. On error the
+// zero value of T is returned.
 //
 // Get is a bootstrap/composition-root helper. Prefer extracting typed config
 // here and injecting it into services via DI over reading string keys inside

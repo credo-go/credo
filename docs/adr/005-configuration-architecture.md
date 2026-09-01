@@ -115,3 +115,11 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 **Rationale**: deployments that mandate a single authoritative config file (reproducible images, security-sensitive services) previously had no way to shut out ambient sources — a stray `.env` in the working directory or a `CREDO_*` variable in the process environment silently altered configuration, and tests inherited whatever the developer's shell exported. The source-kill boundary (bootstrap keys included) was chosen over a merge-layer-only skip so that "the process environment does not exist for config purposes" holds without exceptions.
 
 **Rejected alternative — repurposing `WithPrefix("")`**: an empty prefix removes the filter and matches *every* environment variable; overloading it as "disable" would be a breaking, surprising reinterpretation. Disabling a source is an explicit, separate intent.
+
+## Strict Decoding
+
+**`WithStrictDecoding()` option added**: typed decodes reject unknown keys (nested included) and drop weak string-to-number/bool coercion, while the TextUnmarshaler and duration-string decode hooks — and native numeric kind conversions — keep working. The policy lives on the Config instance, so it uniformly covers `Unmarshal`/`Get`, the `Stage` candidate (reload subscriber validation), and the framework's own `server` section decode in `credo.New`.
+
+**Rationale**: unknown-key typos are the dominant operational config hazard — a misspelled key silently becomes a default value. Weak coercion additionally masks type errors in file-based configs, where values are already typed. Strict mode is opt-in because weak coercion is what makes string env/.env overrides on typed fields work; strict decoding targets typed sources and pairs with the source opt-outs above. Whether strict becomes the default at v1 is a deferred breaking-batch decision (TODO.md v1 Gate).
+
+**Rejected alternatives**: splitting into separate unknown-key and coercion options (two half-strict modes to explain; no demonstrated demand — revisit if it appears); sanitizing all decode errors to guarantee value-free messages (brittle wrapper around mapstructure, destroys debuggability — instead the guarantee is scoped: unknown-key errors are path-only, type-mismatch errors may quote the value).

@@ -90,6 +90,21 @@ Each opt-out removes its source entirely, bootstrap keys included: `WithoutProce
 
 Note that `config.WithPrefix("")` is **not** a way to disable environment variables — an empty prefix removes the filter and merges every process environment variable into the tree.
 
+### Strict Decoding
+
+Hermetic setups usually also want typo detection: with `config.WithStrictDecoding()`, a config key that does not map to a field of the target struct is an error (nested sections included), and weak string coercion (`"8080"` → int, `"true"` → bool) is off. Duration strings (`"5s"`), `encoding.TextUnmarshaler` fields, and JSON numbers into int fields keep decoding:
+
+```go
+rawCfg, err := config.Load(
+    config.WithFiles("config.json"),
+    config.WithoutProcessEnv(),
+    config.WithoutDotenv(),
+    config.WithStrictDecoding(),
+)
+```
+
+Strict mode applies to every decode from that store: `Unmarshal`/`Get`, reload validation, and the framework's own `server` section read in `credo.New` — a typo under `server.*` then fails startup instead of silently using a default. Two things to design for: string env/.env overrides on typed fields no longer decode (strict mode is meant for typed, file-only sources like the setup above), and every struct that decodes a section must cover all of that section's keys — including narrow `OnConfigChange` subscribers and full-tree decodes (a config with a `server` section needs a `Server` field on a full-tree target).
+
 ---
 
 ## Environment-Based Config

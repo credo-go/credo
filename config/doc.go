@@ -62,6 +62,15 @@
 // the candidate before committing (ADR-020); call them directly only when you
 // own the reload trigger yourself.
 //
+// # Strict Decoding
+//
+// [WithStrictDecoding] makes every typed decode reject unknown keys and
+// disables weak string-to-number/bool coercion (TextUnmarshaler and duration
+// strings keep working). It suits typed sources — config files and [LoadBytes]
+// documents — and pairs naturally with [WithoutProcessEnv] and
+// [WithoutDotenv]; string env overrides on typed fields do not decode under
+// strict mode. The default remains weak decoding.
+//
 // # Custom Prefix
 //
 // Use [WithPrefix] to override the default "CREDO_" env var prefix:
