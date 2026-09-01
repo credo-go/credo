@@ -68,7 +68,17 @@ type options struct {
 
 	dotenvPath     string       // override .env file path (takes precedence over CREDO_ENV_FILE)
 	dotenvOptional bool         // true: missing explicit .env is a warning, not an error
+	noProcessEnv   bool         // true: ignore the process environment entirely (merge layer + bootstrap keys)
+	noDotenv       bool         // true: never read a .env file
 	logger         *slog.Logger // load-time warnings; nil means slog.Default()
+}
+
+// validate rejects contradictory option combinations before any I/O.
+func (o *options) validate() error {
+	if o.noDotenv && o.dotenvPath != "" {
+		return fmt.Errorf("conflicting options: WithoutDotenv and WithDotenvPath")
+	}
+	return nil
 }
 
 // Option configures the loading behavior of a Config instance.
@@ -95,8 +105,33 @@ func WithFiles(files ...string) Option {
 }
 
 // WithPrefix overrides the default environment variable prefix ("CREDO_").
+//
+// An empty prefix does not disable the environment source — it removes the
+// filter, so every process environment variable is merged into the tree.
+// To disable the source entirely, use [WithoutProcessEnv].
 func WithPrefix(prefix string) Option {
 	return func(o *options) { o.prefix = prefix }
+}
+
+// WithoutProcessEnv disables the process environment as a configuration
+// source. No environment variables are merged into the tree (regardless of
+// [WithPrefix]), and the env-sourced bootstrap keys are ignored too: CREDO_ENV
+// is not read from the process environment and CREDO_ENV_FILE does not
+// influence .env resolution. [WithDotenvPath] still works, and a CREDO_ENV
+// entry inside an applicable .env file still drives env-specific file
+// derivation — combine with [WithoutDotenv] for fully hermetic loading where
+// only the config files (or [LoadBytes] document) are read.
+func WithoutProcessEnv() Option {
+	return func(o *options) { o.noProcessEnv = true }
+}
+
+// WithoutDotenv disables the .env file as a configuration source. No .env
+// file is read at all: the default ".env" is not probed, CREDO_ENV_FILE is
+// not consulted, and no CREDO_ENV bootstrap value can come from a .env file.
+// Combining it with an explicit [WithDotenvPath] is contradictory and makes
+// [Load] (and [LoadBytes]) return an error.
+func WithoutDotenv() Option {
+	return func(o *options) { o.noDotenv = true }
 }
 
 // WithDotenvPath overrides the .env file path. Takes precedence over
@@ -105,7 +140,8 @@ func WithPrefix(prefix string) Option {
 //
 // By default, an explicit path must exist: if the file is missing,
 // [Load] returns an error. To make a missing file non-fatal, combine
-// with [WithDotenvOptional].
+// with [WithDotenvOptional]. Combining with [WithoutDotenv] is
+// contradictory and makes [Load] return an error.
 func WithDotenvPath(path string) Option {
 	return func(o *options) { o.dotenvPath = path }
 }

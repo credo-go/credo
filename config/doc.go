@@ -11,8 +11,15 @@
 //  2. Env-specific files — when CREDO_ENV is set (via process env or the .env file).
 //     Discovery mode: config.{env}.*. Explicit mode ([WithFiles]): name.{env}.ext.
 //  3. .env file — resolved via [WithDotenvPath], CREDO_ENV_FILE, or default ".env";
-//     read and parsed exactly once per Load
-//  4. Process environment variables — CREDO_* prefix (configurable)
+//     read and parsed exactly once per Load. Disable with [WithoutDotenv].
+//  4. Process environment variables — CREDO_* prefix (configurable).
+//     Disable with [WithoutProcessEnv].
+//
+// Each opt-out removes its source entirely, bootstrap keys included:
+// [WithoutProcessEnv] also ignores the env-sourced CREDO_ENV and
+// CREDO_ENV_FILE values, and [WithoutDotenv] never reads any .env file.
+// Combining both with [WithFiles] (or [LoadBytes]) yields fully hermetic
+// loading where only the listed files (or the embedded document) are read.
 //
 // # Quick Start
 //

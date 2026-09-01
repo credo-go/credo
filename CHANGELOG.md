@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **Hermetic config loading** — `config.WithoutProcessEnv()` and `config.WithoutDotenv()` disable the process-environment and `.env` sources entirely, bootstrap keys included: `WithoutProcessEnv` also ignores the env-sourced `CREDO_ENV`/`CREDO_ENV_FILE`, and `WithoutDotenv` never reads a `.env` file from any path (combining it with `WithDotenvPath` is rejected as contradictory). `Reload`/`Stage` replay the opt-outs, so a disabled source cannot leak in at reload time. Defaults are unchanged; `WithPrefix("")` remains "match every variable", not an opt-out.
+
 ## [0.14.0] - 2026-08-29
 
 ### Changed

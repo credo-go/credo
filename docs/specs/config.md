@@ -44,10 +44,23 @@ Configuration merges in this order (lowest to highest priority):
    - **Discovery mode**: fixed pattern `config.{env}.json`, `config.{env}.yaml`, `config.{env}.yml`.
    - **Explicit mode**: derived from each specified file by inserting `.{env}` before the extension (e.g., `myapp.yaml` → `myapp.production.yaml`). Derived files are optional — missing files are silently skipped.
    - `CREDO_ENV` can be set via process environment variable or in the `.env` file. Process env takes precedence.
-3. **.env file**: Resolved via `CREDO_ENV_FILE` or default `.env`. All entries are loaded (no prefix filtering). Keys are normalized using the same lowercase + `__` → `.` pipeline (see [Key Model & Env Normalization](#key-model--env-normalization)).
-4. **Process environment variables**: Prefixed (default `CREDO_*`, overridable via `WithPrefix()`). Only variables matching the active prefix are loaded. Bootstrap environment variables (`CREDO_ENV_FILE`, `CREDO_ENV`) are always excluded from the merged configuration.
+3. **.env file**: Resolved via `CREDO_ENV_FILE` or default `.env`. All entries are loaded (no prefix filtering). Keys are normalized using the same lowercase + `__` → `.` pipeline (see [Key Model & Env Normalization](#key-model--env-normalization)). Disabled entirely by `WithoutDotenv()`.
+4. **Process environment variables**: Prefixed (default `CREDO_*`, overridable via `WithPrefix()`). Only variables matching the active prefix are loaded. Bootstrap environment variables (`CREDO_ENV_FILE`, `CREDO_ENV`) are always excluded from the merged configuration. Disabled entirely by `WithoutProcessEnv()`.
 
 Later sources override earlier sources on key conflicts.
+
+### Source Opt-Outs — Hermetic Loading
+
+`WithoutProcessEnv()` and `WithoutDotenv()` disable sources 4 and 3 respectively. Each opt-out kills its **whole source, bootstrap keys included** — not just the merge layer:
+
+| Option | Merge layer | Bootstrap keys | Still works |
+| --- | --- | --- | --- |
+| `WithoutProcessEnv()` | No env vars merged (regardless of `WithPrefix`) | Process-env `CREDO_ENV` ignored; `CREDO_ENV_FILE` not consulted | `WithDotenvPath` (programmatic); a `.env`-sourced `CREDO_ENV` still drives env-specific file derivation |
+| `WithoutDotenv()` | No `.env` entries merged | No `.env` file read at all, so no `.env`-sourced `CREDO_ENV` | Process-env `CREDO_ENV` still drives env-specific file derivation |
+
+Combining both with `WithFiles(...)` (or `LoadBytes`) yields **fully hermetic loading**: only the listed files (or the embedded document) are read, and `Reload`/`Stage` replay the same opt-outs — a disabled source can never leak in at reload time. An empty `WithPrefix("")` is not an opt-out: it removes the filter and merges every process environment variable.
+
+`WithoutDotenv()` combined with an explicit `WithDotenvPath(...)` is contradictory and fails loud: `Load`/`LoadBytes` return an error. `WithoutDotenv()` + `WithDotenvOptional()` is merely redundant and is allowed.
 
 ### Config File Discovery — Cascade Merge Semantics
 
@@ -68,7 +81,8 @@ To load specific files (bypassing discovery), use `WithFiles("path/to/myconfig.j
 
 ## .env Resolution Policy
 
-- **Case 1: `CREDO_ENV_FILE` is set**: Credo attempts to load the file from the specified path. If the file is missing, `config.Load` returns an error (explicit intent).
+- **Case 0: `WithoutDotenv()` is set**: No `.env` file is read at all — `CREDO_ENV_FILE` is not consulted and the default `.env` is not probed.
+- **Case 1: `CREDO_ENV_FILE` is set**: Credo attempts to load the file from the specified path. If the file is missing, `config.Load` returns an error (explicit intent). Under `WithoutProcessEnv()` the variable is not consulted (resolution falls through to the default `.env`).
 - **Case 2: `CREDO_ENV_FILE` is NOT set**: Credo attempts to load `.env` from the current working directory. If missing, it is silently ignored (zero-config local DX).
 - **Bootstrap key stability**: `CREDO_ENV_FILE` and `CREDO_ENV` are fixed bootstrap key names. They are intentionally not affected by `WithPrefix()` — bootstrap behavior is Credo's own concern, not the application's. They control loading behavior only and are never merged into the config tree.
 - **Single-pass `.env` read**: The `.env` file is read and parsed exactly once per `Load`. `CREDO_ENV` is taken from the parsed pairs _before_ config files load (enabling `.env`-based environment selection), while the pairs themselves are merged into the config tree _after_ config files — so the precedence chain is unchanged. Process env var `CREDO_ENV` always takes precedence over the `.env` value. Because the read happens up front, `.env` errors (missing explicit file, parse failure) surface before config-file errors.
@@ -108,7 +122,7 @@ cfg, err := config.Load(opts...) // returns (*config.Config, error)
 - Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
 - Returns error on I/O failure, parse error, or invalid config. Never panics. There is no `MustLoad` — a filesystem-touching load surfaces its error.
 - No package-global instance — each call produces an independent `Config`.
-- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning).
+- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning). `WithoutDotenv` + `WithDotenvPath` is a contradiction and returns an error.
 
 ### config.RawConfig Interface
 

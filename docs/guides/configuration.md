@@ -70,6 +70,26 @@ Configuration sources are merged in this order (later overrides earlier):
 
 For overlapping keys, higher-numbered sources win. Non-overlapping keys from all sources are preserved.
 
+Sources 3 and 4 can be disabled entirely with `config.WithoutDotenv()` and `config.WithoutProcessEnv()` — see [Hermetic Config](#hermetic-config).
+
+---
+
+## Hermetic Config
+
+For deployments where configuration must come from a known file and nothing else — reproducible container images, security-sensitive services, tests that must not be affected by the developer's shell — disable the ambient sources explicitly:
+
+```go
+rawCfg, err := config.Load(
+    config.WithFiles("config.json"),   // required: Load fails if missing
+    config.WithoutProcessEnv(),        // no env vars, no env-sourced CREDO_ENV / CREDO_ENV_FILE
+    config.WithoutDotenv(),            // no .env file, from any path
+)
+```
+
+Each opt-out removes its source entirely, bootstrap keys included: `WithoutProcessEnv()` also stops `CREDO_ENV` and `CREDO_ENV_FILE` from being read out of the process environment, and `WithoutDotenv()` never reads a `.env` file at all. `Reload` replays the same opt-outs, so a disabled source cannot leak in later. The same options work with `config.LoadBytes` for fully hermetic embedded configuration.
+
+Note that `config.WithPrefix("")` is **not** a way to disable environment variables — an empty prefix removes the filter and merges every process environment variable into the tree.
+
 ---
 
 ## Environment-Based Config
