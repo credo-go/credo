@@ -384,6 +384,12 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ---
 
+## Redacted Formatting
+
+`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the `Changes` doctrine (key paths only, never values, safe to log). The methods are on the pointer type; nobody should copy a `Config` (it contains a mutex — `go vet` flags it).
+
+---
+
 ## Koanf Adaptation Scope
 
 Credo forks koanf and trims aggressively. Only what Credo needs is kept; everything else is deleted at copy time. This keeps the dependency graph clean and the codebase small.

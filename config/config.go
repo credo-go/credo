@@ -306,6 +306,31 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
+// String returns a redacted, metadata-only description of the Config — the
+// number of leaf keys, never any key names or values — so formatting a
+// *Config with %v, %s, or %+v cannot leak secrets into logs or error
+// messages. The methods are declared on *Config; formatting a dereferenced
+// Config copy bypasses them (and copies a mutex, which go vet flags).
+func (c *Config) String() string {
+	if c == nil {
+		return "config.Config(nil)"
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.data == nil {
+		return "config.Config(uninitialized)"
+	}
+	return fmt.Sprintf("config.Config(%d keys, values redacted)", len(flatten(c.data)))
+}
+
+// GoString returns the same redacted description as [Config.String], so the
+// %#v verb cannot dump the config tree either.
+func (c *Config) GoString() string { return c.String() }
+
+// LogValue implements [slog.LogValuer] with the same redacted description, so
+// passing a *Config as an slog attribute value logs metadata only.
+func (c *Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
+
 // initialized reports whether the Config holds a tree (built by Load or
 // LoadBytes). Read under the lock so it cannot race a concurrent Reload swap.
 func (c *Config) initialized() bool {
