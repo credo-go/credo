@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-01
+
 ### Added
 
 - **Hermetic config loading** — `config.WithoutProcessEnv()` and `config.WithoutDotenv()` disable the process-environment and `.env` sources entirely, bootstrap keys included: `WithoutProcessEnv` also ignores the env-sourced `CREDO_ENV`/`CREDO_ENV_FILE`, and `WithoutDotenv` never reads a `.env` file from any path (combining it with `WithDotenvPath` is rejected as contradictory). `Reload`/`Stage` replay the opt-outs, so a disabled source cannot leak in at reload time. Defaults are unchanged; `WithPrefix("")` remains "match every variable", not an opt-out.
@@ -439,7 +441,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/credo-go/credo/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/credo-go/credo/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/credo-go/credo/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/credo-go/credo/compare/v0.12.0...v0.13.0
