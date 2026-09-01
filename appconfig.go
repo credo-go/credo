@@ -110,20 +110,20 @@ type appOptions struct {
 	disableRequestID     bool
 	disableAccessLog     bool
 	disableReloadSignals bool
-	accessLogLogger   *slog.Logger
-	accessLogMinLevel slog.Leveler
-	accessLogSkipper  func(*Context) bool
-	accessLogFilter   AccessLogResultFilter
-	debug             bool
-	trustedProxies    []string
-	trustedProxiesSet bool
-	tlsConfig         *tls.Config
-	tlsConfigSet      bool
-	tlsCertFile       string
-	tlsKeyFile        string
-	tlsFilesSet       bool
-	httpRedirectAddr  string
-	configureServer   func(*http.Server)
+	accessLogLogger      *slog.Logger
+	accessLogMinLevel    slog.Leveler
+	accessLogSkipper     func(*Context) bool
+	accessLogFilter      AccessLogResultFilter
+	debug                bool
+	trustedProxies       []string
+	trustedProxiesSet    bool
+	tlsConfig            *tls.Config
+	tlsConfigSet         bool
+	tlsCertFile          string
+	tlsKeyFile           string
+	tlsFilesSet          bool
+	httpRedirectAddr     string
+	configureServer      func(*http.Server)
 
 	// Server settings from With* options live in these shadow fields, not in
 	// serverCfg, so a "server" config section decoded in New does not silently
