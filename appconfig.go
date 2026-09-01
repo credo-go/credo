@@ -103,12 +103,13 @@ type Option func(*appOptions)
 
 // appOptions collects all App construction options.
 type appOptions struct {
-	rawConfig         RawConfig
-	serverCfg         serverConfig
-	logger            *slog.Logger
-	disableRecover    bool
-	disableRequestID  bool
-	disableAccessLog  bool
+	rawConfig            RawConfig
+	serverCfg            serverConfig
+	logger               *slog.Logger
+	disableRecover       bool
+	disableRequestID     bool
+	disableAccessLog     bool
+	disableReloadSignals bool
 	accessLogLogger   *slog.Logger
 	accessLogMinLevel slog.Leveler
 	accessLogSkipper  func(*Context) bool
@@ -487,6 +488,19 @@ func WithShutdownTimeout(d time.Duration) Option {
 		o.shutdownTimeout = d
 		o.shutdownTimeoutSet = true
 	}
+}
+
+// WithoutReloadSignals disables signal-triggered reloads under [App.Run]:
+// SIGHUP no longer triggers [App.Reload]. The signal is still captured — and
+// ignored with an Info log line — so a stray SIGHUP (logrotate postrotate, a
+// forgotten systemd reload directive, a closing terminal) can never terminate
+// the process; raw Unix signal disposition, where an unhandled SIGHUP kills
+// the process, remains available via [App.RunContext] or [App.ServeContext],
+// which install no signal handlers at all. Programmatic [App.Reload] calls are
+// unaffected. On platforms without reload signals (Windows) this option is a
+// no-op. SIGINT/SIGTERM shutdown handling under Run is unchanged.
+func WithoutReloadSignals() Option {
+	return func(o *appOptions) { o.disableReloadSignals = true }
 }
 
 // WithReloadTimeout sets the context budget for reloads triggered by SIGHUP

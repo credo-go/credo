@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/credo-go/credo"
 )
 
 // startRun runs the fixture through Run (the signal-aware entry point) and
@@ -113,6 +115,59 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 	stop() // quiesce the logger before reading the buffer
 	if logs := f.logs.String(); !strings.Contains(logs, "credo: reload signal received") {
 		t.Errorf("missing signal log line:\n%s", logs)
+	}
+}
+
+// TestRun_WithoutReloadSignals verifies the opt-out semantics: under Run with
+// WithoutReloadSignals, a SIGHUP is received and ignored — no reload runs, the
+// server stays up, and the ignore is logged — while programmatic Reload keeps
+// working. The signal must not fall through to its default action (terminate),
+// which the test proves by surviving its own SIGHUP without signal.Ignore.
+func TestRun_WithoutReloadSignals(t *testing.T) {
+	f := newReloadFixture(t, "feature:\n  limit: 1\n", credo.WithoutReloadSignals())
+	type feature struct {
+		Limit int `credo:"limit"`
+	}
+	got := make(chan int, 2)
+	f.app.OnConfigChange("feature", func(_ context.Context, c feature) error {
+		got <- c.Limit
+		return nil
+	})
+	stop := f.startRun(t)
+
+	writeYAML(t, f.path, "feature:\n  limit: 2\n")
+	sendHUP(t)
+	select {
+	case v := <-got:
+		t.Fatalf("SIGHUP must be ignored under WithoutReloadSignals, but subscriber got limit=%d", v)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if !f.app.IsRunning() {
+		t.Fatal("an ignored SIGHUP must not stop the server")
+	}
+
+	// Programmatic Reload is unaffected by the option.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.app.Reload(ctx); err != nil {
+		t.Fatalf("programmatic Reload: %v", err)
+	}
+	select {
+	case v := <-got:
+		if v != 2 {
+			t.Fatalf("subscriber got limit=%d, want 2", v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("programmatic Reload did not notify the subscriber")
+	}
+
+	stop() // quiesce the logger before reading the buffer
+	logs := f.logs.String()
+	if !strings.Contains(logs, "reload signal ignored (reload signals disabled)") {
+		t.Errorf("missing ignore log line:\n%s", logs)
+	}
+	if strings.Contains(logs, "credo: reload signal received") {
+		t.Errorf("signal must not reach the reload path:\n%s", logs)
 	}
 }
 

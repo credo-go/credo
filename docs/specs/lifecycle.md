@@ -62,6 +62,8 @@ Compiles the handler chain, transitions to `running`, and serves HTTP — or HTT
 
 On Unix, `Run` also handles `SIGHUP`: each signal triggers [`app.Reload`](#appreloadctx-contextcontext-error) with the `WithReloadTimeout` budget, signals arriving during a reload coalesce into at most one follow-up, and a reload failure never stops the server. There is no SIGHUP on Windows; the programmatic `Reload` is the only trigger there.
 
+`credo.WithoutReloadSignals()` disables the reload trigger without changing the rest of `Run`'s signal policy: SIGHUP is still captured — so a stray signal can never fall through to its default action and terminate the process — but is ignored with an Info log line (`credo: reload signal ignored (reload signals disabled)`). SIGINT/SIGTERM handling and programmatic `Reload` are unaffected; the option is a no-op on Windows. Raw Unix signal disposition (an unhandled SIGHUP terminates) remains available via `RunContext`/`ServeContext`, which install no signal handlers.
+
 `Run` is the safe default for a process whose lifetime is the server's. For explicit lifecycle control — tests, embedding, caller-driven cancellation — use `RunContext`.
 
 ### `app.RunContext(ctx context.Context) error`

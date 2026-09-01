@@ -292,8 +292,19 @@ func (lm *lifecycleManager) runSignal(run func(context.Context) error) error {
 // WithReloadTimeout budget. Reload does its own success/failure logging; this
 // only covers the case where there was nothing to reload (the signal landed
 // outside the running state), which is a no-op rather than an error.
+//
+// Under WithoutReloadSignals the signal is still received here — subscribing
+// keeps a stray SIGHUP from falling through to its default action (terminate),
+// the same doctrine that keeps the channel subscribed through the drain — but
+// it is logged and ignored instead of triggering a reload.
 func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
 	app := lm.app
+	if app.disableReloadSignals {
+		app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+			"credo: reload signal ignored (reload signals disabled)",
+			slog.String("signal", sig.String()))
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), app.reloadTimeout())
 	defer cancel()
 	app.logger.LogAttrs(ctx, slog.LevelInfo, "credo: reload signal received",

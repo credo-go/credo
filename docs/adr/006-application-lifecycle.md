@@ -54,6 +54,7 @@ app.OnConfigChange[T](key, fn)             // Typed per-section config subscribe
 // Construction options:
 credo.WithShutdownTimeout(d)               // Drain deadline for signal/cancel shutdown (default 30s)
 credo.WithReloadTimeout(d)                 // Budget for SIGHUP-triggered reloads (default 30s)
+credo.WithoutReloadSignals()               // SIGHUP under Run: logged no-op instead of Reload
 credo.WithTLSFiles(certFile, keyFile)      // Serve HTTPS from a PEM cert/key pair
 credo.WithTLSConfig(cfg)                    // Serve HTTPS from a *tls.Config (mTLS, SNI, reload)
 credo.WithHTTPRedirect(addr)               // Second listener: redirect HTTP→HTTPS (requires TLS)
@@ -249,7 +250,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | Decision | Rationale |
 | --- | --- |
 | Signal-aware `Run` default | `Run` handles SIGINT/SIGTERM and drains gracefully — the common case needs no boilerplate. `RunContext`/`ServeContext` give callers full control with no signal handler (tests, embedding, custom signal sets) |
-| SIGHUP reloads, never terminates | `Run` also handles SIGHUP (Unix) by calling `app.Reload` under `WithReloadTimeout`; a failed reload keeps the previous configuration and the process stays up. `RunContext`/`ServeContext` stay signal-free and use `app.Reload` directly. Rejected: letting SIGHUP fall through to Go's default handler (kills the process — the opposite of `systemctl reload`), SIGUSR1/2 (non-conventional), filesystem watching (ADR-020) |
+| SIGHUP reloads, never terminates | `Run` also handles SIGHUP (Unix) by calling `app.Reload` under `WithReloadTimeout`; a failed reload keeps the previous configuration and the process stays up. `WithoutReloadSignals()` opts out with subscribe-and-ignore semantics: the signal is still captured (never falls through to terminate) but is logged and ignored instead of reloading. `RunContext`/`ServeContext` stay signal-free and use `app.Reload` directly. Rejected: letting SIGHUP fall through to Go's default handler (kills the process — the opposite of `systemctl reload`), SIGUSR1/2 (non-conventional), filesystem watching (ADR-020) |
 | `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, _before_ the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
