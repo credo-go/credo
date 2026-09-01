@@ -38,17 +38,24 @@ var bootstrapKeys = map[string]bool{
 // file loading (the process environment wins), and its entries are merged
 // into the config tree after file loading.
 //
+// Layers 3 and 4 can be disabled entirely with [WithoutDotenv] and
+// [WithoutProcessEnv]; each opt-out also removes its source's bootstrap keys
+// (CREDO_ENV, CREDO_ENV_FILE) from consideration.
+//
 // Load is NOT concurrency-safe; call it once at startup.
 //
 // The returned *Config satisfies [RawConfig]; use [Config.Get] for typed
 // snapshot access or pass it to credo.WithRawConfig as-is.
 func Load(opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
+	if err := c.opts.validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	dotenv, err := c.readDotenv()
 	if err != nil {
 		return nil, fmt.Errorf("config: load .env: %w", err)
 	}
-	c.src.env = credoEnv(dotenv)
+	c.src.env = c.credoEnv(dotenv)
 	if err := c.populate(dotenv); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
@@ -68,6 +75,9 @@ func Load(opts ...Option) (*Config, error) {
 // snapshot access or pass it to credo.WithRawConfig as-is.
 func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
+	if err := c.opts.validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	// Parse first so a malformed document fails before any .env I/O, and keep
 	// a private copy so the caller's slice cannot change what Reload replays.
 	if _, err := parseConfig(data, format); err != nil {
@@ -100,7 +110,9 @@ func (c *Config) populate(dotenv map[string]string) error {
 		return fmt.Errorf("load config file: %w", err)
 	}
 	c.mergeDotenv(dotenv)
-	c.mergeEnv(os.Environ())
+	if !c.opts.noProcessEnv {
+		c.mergeEnv(os.Environ())
+	}
 	return nil
 }
 
@@ -228,26 +240,35 @@ func deriveEnvFile(path, env string) string {
 // --- .env file ---
 
 // credoEnv returns the effective CREDO_ENV value: the process environment
-// wins over the .env file. Empty when neither source sets it.
-func credoEnv(dotenv map[string]string) string {
-	if env := os.Getenv("CREDO_ENV"); env != "" {
-		return env
+// wins over the .env file. Empty when neither source sets it. Under
+// [WithoutProcessEnv] the process environment is not consulted, so only an
+// applicable .env file can set it (the dotenv map is already nil under
+// [WithoutDotenv]).
+func (c *Config) credoEnv(dotenv map[string]string) string {
+	if !c.opts.noProcessEnv {
+		if env := os.Getenv("CREDO_ENV"); env != "" {
+			return env
+		}
 	}
 	return dotenv["CREDO_ENV"]
 }
 
 // readDotenv resolves the .env path and parses the file once. The returned
-// map is nil when no .env applies (missing default file, or missing
-// explicit file with [WithDotenvOptional]).
+// map is nil when no .env applies (missing default file, missing explicit
+// file with [WithDotenvOptional], or [WithoutDotenv]).
 //
 // Resolution order: [WithDotenvPath] (programmatic) > CREDO_ENV_FILE
-// (env var) > ".env" (default). When an explicit path is used (via either
-// mechanism), a missing file is an error unless [WithDotenvOptional] was
-// set. The default implicit ".env" is always optional.
+// (env var, skipped under [WithoutProcessEnv]) > ".env" (default). When an
+// explicit path is used (via either mechanism), a missing file is an error
+// unless [WithDotenvOptional] was set. The default implicit ".env" is always
+// optional.
 func (c *Config) readDotenv() (map[string]string, error) {
+	if c.opts.noDotenv {
+		return nil, nil
+	}
 	path := c.opts.dotenvPath
 	explicit := path != ""
-	if !explicit {
+	if !explicit && !c.opts.noProcessEnv {
 		path = os.Getenv("CREDO_ENV_FILE")
 		explicit = path != ""
 	}

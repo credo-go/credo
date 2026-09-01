@@ -162,6 +162,10 @@ type App struct {
 	// Set via WithoutAccessLog option.
 	disableAccessLog bool
 
+	// disableReloadSignals makes Run ignore (and log) reload signals instead
+	// of triggering App.Reload. Set via WithoutReloadSignals option.
+	disableReloadSignals bool
+
 	// accessLogLogger is the optional dedicated sink for built-in access-log
 	// records. nil uses the request-scoped logger.
 	accessLogLogger *slog.Logger
@@ -322,6 +326,7 @@ func New(opts ...Option) (*App, error) {
 		disableRecover:        o.disableRecover,
 		disableRequestID:      o.disableRequestID,
 		disableAccessLog:      o.disableAccessLog,
+		disableReloadSignals:  o.disableReloadSignals,
 		accessLogLogger:       o.accessLogLogger,
 		accessLogMinLevel:     o.accessLogMinLevel,
 		accessLogSkipper:      o.accessLogSkipper,

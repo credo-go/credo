@@ -104,6 +104,28 @@ func TestReload_NotRunning(t *testing.T) {
 	}
 }
 
+// TestReload_WithoutReloadSignalsKeepsProgrammaticReload pins the
+// cross-platform half of WithoutReloadSignals: the option constructs on every
+// platform and programmatic Reload is unaffected (only the Run signal path is
+// disabled — covered by the unix-only signal tests).
+func TestReload_WithoutReloadSignalsKeepsProgrammaticReload(t *testing.T) {
+	f := newReloadFixture(t, "limits:\n  rps: 10\n", credo.WithoutReloadSignals())
+	var got []limits
+	f.app.OnConfigChange[limits]("limits", func(_ context.Context, next limits) error {
+		got = append(got, next)
+		return nil
+	})
+	f.start(t)
+
+	f.rewrite(t, "limits:\n  rps: 20\n")
+	if err := f.app.Reload(t.Context()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(got) != 1 || got[0].RPS != 20 {
+		t.Fatalf("subscriber calls = %v, want one call with rps=20", got)
+	}
+}
+
 func TestReload_NotifiesAffectedSubscribersOnly(t *testing.T) {
 	f := newReloadFixture(t, "limits:\n  rps: 10\n  burst: 20\nother:\n  x: 1\n")
 

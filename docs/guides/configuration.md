@@ -70,6 +70,41 @@ Configuration sources are merged in this order (later overrides earlier):
 
 For overlapping keys, higher-numbered sources win. Non-overlapping keys from all sources are preserved.
 
+Sources 3 and 4 can be disabled entirely with `config.WithoutDotenv()` and `config.WithoutProcessEnv()` — see [Hermetic Config](#hermetic-config).
+
+---
+
+## Hermetic Config
+
+For deployments where configuration must come from a known file and nothing else — reproducible container images, security-sensitive services, tests that must not be affected by the developer's shell — disable the ambient sources explicitly:
+
+```go
+rawCfg, err := config.Load(
+    config.WithFiles("config.json"),   // required: Load fails if missing
+    config.WithoutProcessEnv(),        // no env vars, no env-sourced CREDO_ENV / CREDO_ENV_FILE
+    config.WithoutDotenv(),            // no .env file, from any path
+)
+```
+
+Each opt-out removes its source entirely, bootstrap keys included: `WithoutProcessEnv()` also stops `CREDO_ENV` and `CREDO_ENV_FILE` from being read out of the process environment, and `WithoutDotenv()` never reads a `.env` file at all. `Reload` replays the same opt-outs, so a disabled source cannot leak in later. The same options work with `config.LoadBytes` for fully hermetic embedded configuration.
+
+Note that `config.WithPrefix("")` is **not** a way to disable environment variables — an empty prefix removes the filter and merges every process environment variable into the tree.
+
+### Strict Decoding
+
+Hermetic setups usually also want typo detection: with `config.WithStrictDecoding()`, a config key that does not map to a field of the target struct is an error (nested sections included), and weak string coercion (`"8080"` → int, `"true"` → bool) is off. Duration strings (`"5s"`), `encoding.TextUnmarshaler` fields, and JSON numbers into int fields keep decoding:
+
+```go
+rawCfg, err := config.Load(
+    config.WithFiles("config.json"),
+    config.WithoutProcessEnv(),
+    config.WithoutDotenv(),
+    config.WithStrictDecoding(),
+)
+```
+
+Strict mode applies to every decode from that store: `Unmarshal`/`Get`, reload validation, and the framework's own `server` section read in `credo.New` — a typo under `server.*` then fails startup instead of silently using a default. Two things to design for: string env/.env overrides on typed fields no longer decode (strict mode is meant for typed, file-only sources like the setup above), and every struct that decodes a section must cover all of that section's keys — including narrow `OnConfigChange` subscribers and full-tree decodes (a config with a `server` section needs a `Server` field on a full-tree target).
+
 ---
 
 ## Environment-Based Config

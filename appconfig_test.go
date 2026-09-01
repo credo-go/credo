@@ -314,3 +314,43 @@ func TestApp_MustGetConfig(t *testing.T) {
 		_ = app.MustGetConfig[int]("missing")
 	})
 }
+
+// TestNew_StrictConfigServerSection verifies that a WithStrictDecoding store
+// makes the framework's own "server" decode strict — an unknown server.* key
+// fails New — and pins that serverConfig covers every documented server.* key,
+// so a fully spelled-out server section still constructs.
+func TestNew_StrictConfigServerSection(t *testing.T) {
+	strictRC := func(t *testing.T, doc string) *config.Config {
+		t.Helper()
+		rc, err := config.LoadBytes([]byte(doc), config.FormatJSON,
+			config.WithoutProcessEnv(), config.WithoutDotenv(), config.WithStrictDecoding())
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		return rc
+	}
+
+	t.Run("unknown server key fails New", func(t *testing.T) {
+		rc := strictRC(t, `{"server":{"port":8080,"prot":1}}`)
+		if _, err := credo.New(credo.WithRawConfig(rc)); err == nil {
+			t.Error("New with unknown server.* key under strict decoding: expected error, got nil")
+		}
+	})
+
+	t.Run("every documented server key decodes", func(t *testing.T) {
+		// Mirrors the server reference table in docs/guides/configuration.md.
+		// A key documented there but missing from serverConfig fails this test.
+		rc := strictRC(t, `{"server":{
+			"host":"127.0.0.1","port":8080,
+			"read_timeout":"1s","write_timeout":"1s","idle_timeout":"1s","read_header_timeout":"1s",
+			"shutdown_timeout":"1s","reload_timeout":"1s",
+			"max_header_bytes":4096,"max_header_value_count":100,"max_body_bytes":1024,
+			"redirect_trailing_slash":true,"debug":true,"strict_bodies":true,
+			"trusted_proxies":["10.0.0.0/8"],
+			"tls":{"cert_file":"","key_file":""}
+		}}`)
+		if _, err := credo.New(credo.WithRawConfig(rc)); err != nil {
+			t.Errorf("New with all documented server keys under strict decoding: %v", err)
+		}
+	})
+}

@@ -17,6 +17,8 @@ This guide covers what a Credo process expects from the environment that runs it
 
 There is no `SIGHUP` on Windows. The programmatic `app.Reload(ctx)` works identically on every platform and is the trigger to expose from an admin endpoint when the runtime has no reload verb (see [Reload Without a Signal](#reload-without-a-signal)).
 
+For deployments where configuration must never change through a signal — an immutable, file-only setup, or an environment where something else already sends `SIGHUP` (logrotate postrotate scripts, orchestration habits) — `credo.WithoutReloadSignals()` turns the signal into a logged no-op: `SIGHUP` is still captured, so it can never terminate the process, but no reload runs (`credo: reload signal ignored (reload signals disabled)` at Info). `SIGINT`/`SIGTERM` shutdown and programmatic `app.Reload` keep working.
+
 What a reload does and does not change is defined in the [Configuration Guide](configuration.md#reloading-configuration): typed `OnConfigChange[T]` subscribers receive their re-decoded sections, file-based TLS certificates are re-read, `OnReload` hooks run, and every other changed key is logged as **restart required**.
 
 ---
