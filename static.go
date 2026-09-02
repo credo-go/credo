@@ -1,12 +1,15 @@
 package credo
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"strings"
 	"time"
+
+	internalstatic "github.com/credo-go/credo/internal/static"
 )
 
 // StaticCacheContext describes a successfully resolved static response for
@@ -128,14 +131,6 @@ func StaticCacheImmutableAssets(maxAge time.Duration) func(StaticCacheContext) s
 		}
 		return assetValue
 	}
-}
-
-// indexName returns the configured index file name, defaulting to "index.html".
-func (cfg *StaticConfig) indexName() string {
-	if cfg.Index != "" {
-		return cfg.Index
-	}
-	return "index.html"
 }
 
 // StaticRoute represents a static file serving endpoint. It wraps the two
@@ -353,4 +348,64 @@ func resolveMaxAge(d time.Duration) int {
 		return 0
 	}
 	return int(d.Seconds())
+}
+
+// internal converts the public config into the internal/static shape. The
+// CacheControl hook is wrapped so the public StaticCacheContext type stays
+// the one application code sees.
+func (cfg StaticConfig) internal() internalstatic.Config {
+	out := internalstatic.Config{
+		Index:    cfg.Index,
+		Browse:   cfg.Browse,
+		SPA:      cfg.SPA,
+		Download: cfg.Download,
+	}
+	if cc := cfg.CacheControl; cc != nil {
+		out.CacheControl = func(c internalstatic.CacheContext) string {
+			return cc(StaticCacheContext(c))
+		}
+	}
+	return out
+}
+
+// newStaticHandler returns the handler for the catch-all route registered by
+// Static(); the captured remainder selects the file.
+func newStaticHandler(fsys fs.FS, cfg StaticConfig) Handler {
+	srv := internalstatic.NewServer(fsys, cfg.internal())
+	return func(ctx *Context) error {
+		req := ctx.Request()
+		return mapStaticError(srv.Serve(ctx.Response(), req.Request, ctx.OriginalPath(), req.RouteParam("_static")))
+	}
+}
+
+// newStaticIndexHandler returns the handler for the exact prefix match
+// (e.g., GET /static without trailing slash), which serves the index file.
+func newStaticIndexHandler(fsys fs.FS, cfg StaticConfig) Handler {
+	srv := internalstatic.NewServer(fsys, cfg.internal())
+	return func(ctx *Context) error {
+		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Request, ctx.OriginalPath(), ""))
+	}
+}
+
+// newFileHandler returns a handler that serves a single named file.
+func newFileHandler(fsys fs.FS, name string, cfg StaticConfig) Handler {
+	srv := internalstatic.NewFileServer(fsys, name, cfg.internal())
+	return func(ctx *Context) error {
+		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Request, ctx.OriginalPath()))
+	}
+}
+
+// mapStaticError translates internal/static sentinels into the framework's
+// HTTP errors so they flow through the centralized error pipeline.
+func mapStaticError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, internalstatic.ErrNotFound):
+		return ErrNotFound
+	case errors.Is(err, internalstatic.ErrBadRequest):
+		return ErrBadRequest
+	default:
+		return err
+	}
 }

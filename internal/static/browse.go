@@ -1,8 +1,9 @@
-package credo
+package static
 
 import (
 	"fmt"
 	"html"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -11,17 +12,17 @@ import (
 )
 
 // serveDirListing renders a minimal HTML directory listing.
-func serveDirListing(ctx *Context, fsys fs.FS, cleanPath, urlPath string, cfg StaticConfig) error {
+func serveDirListing(ex exchange, fsys fs.FS, cleanPath, urlPath string, cfg Config) error {
 	entries, err := fs.ReadDir(fsys, cleanPath)
 	if err != nil {
 		return ErrNotFound
 	}
 
-	cacheCtx := setStaticHeaders(ctx, cleanPath, directoryListingName(urlPath), cfg)
-	ctx.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
-	ctx.Response().Header().Set("X-Content-Type-Options", "nosniff")
-	applyStaticCacheControl(ctx.Response(), cacheCtx, cfg, http.StatusOK)
-	ctx.Response().WriteHeader(http.StatusOK)
+	cacheCtx := setHeaders(ex, cleanPath, directoryListingName(urlPath), cfg)
+	ex.w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	ex.w.Header().Set("X-Content-Type-Options", "nosniff")
+	applyCacheControl(ex.w, cacheCtx, cfg, http.StatusOK)
+	ex.w.WriteHeader(http.StatusOK)
 
 	// Determine the display path for the heading.
 	displayPath := "/" + urlPath
@@ -78,7 +79,7 @@ func serveDirListing(ctx *Context, fsys fs.FS, cleanPath, urlPath string, cfg St
 
 	b.WriteString("</table>\n</body>\n</html>\n")
 
-	_, writeErr := fmt.Fprint(ctx.Response(), b.String())
+	_, writeErr := io.WriteString(ex.w, b.String())
 	return writeErr
 }
 
