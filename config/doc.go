@@ -82,5 +82,5 @@
 // Map-merge utilities adapted from koanf (MIT).
 // See NOTICES file for full attribution.
 //
-// Maturity: experimental
+// Maturity: beta
 package config

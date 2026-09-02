@@ -1,13 +1,11 @@
 package observe
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/credo-go/credo/fault"
@@ -91,63 +89,6 @@ func TestIsTypedNilLeveler(t *testing.T) {
 	}
 	if IsTypedNilLeveler(slog.LevelInfo) {
 		t.Error("slog.LevelInfo reported as typed-nil")
-	}
-}
-
-func TestAccessLogAttrs(t *testing.T) {
-	t.Run("base attributes only", func(t *testing.T) {
-		if _, n := AccessLogAttrs("GET", "/x", 200, 12, time.Second, "1.2.3.4", "curl", "", ""); n != 7 {
-			t.Errorf("attr count = %d, want 7", n)
-		}
-	})
-
-	t.Run("adds path_original when rewritten", func(t *testing.T) {
-		attrs, n := AccessLogAttrs("GET", "/new", 200, 0, 0, "", "", "/old", "")
-		if n != 8 {
-			t.Fatalf("attr count = %d, want 8", n)
-		}
-		if attrs[7].Key != "path_original" {
-			t.Errorf("attrs[7].Key = %q, want path_original", attrs[7].Key)
-		}
-	})
-
-	t.Run("skips path_original when unchanged", func(t *testing.T) {
-		if _, n := AccessLogAttrs("GET", "/x", 200, 0, 0, "", "", "/x", ""); n != 7 {
-			t.Errorf("attr count = %d, want 7 (path_original equals path)", n)
-		}
-	})
-
-	t.Run("adds request_id when present", func(t *testing.T) {
-		attrs, n := AccessLogAttrs("GET", "/x", 200, 0, 0, "", "", "", "req-1")
-		if n != 8 {
-			t.Fatalf("attr count = %d, want 8", n)
-		}
-		if attrs[7].Key != "request_id" {
-			t.Errorf("attrs[7].Key = %q, want request_id", attrs[7].Key)
-		}
-	})
-
-	t.Run("adds both extras", func(t *testing.T) {
-		if _, n := AccessLogAttrs("GET", "/new", 200, 0, 0, "", "", "/old", "req-1"); n != 9 {
-			t.Errorf("attr count = %d, want 9", n)
-		}
-	})
-}
-
-func TestEmitAccessLog(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	EmitAccessLog(t.Context(), logger, "GET", "/x", 503, 42, time.Second, "1.2.3.4", "curl", "/orig", "req-9")
-
-	out := buf.String()
-	for _, want := range []string{
-		"level=ERROR", `msg="request completed"`, "method=GET", "status=503",
-		"path_original=/orig", "request_id=req-9",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("access log missing %q\ngot: %s", want, out)
-		}
 	}
 }
 

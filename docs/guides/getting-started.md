@@ -214,9 +214,9 @@ tenant.GET("/dashboard", tenantDashboard)
 You can also normalize URLs before routing:
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/v1/{path...}", To: "/api/v1/{path}"},
+}}))
 ```
 
 For conditional handler-driven forwards, use `ctx.Rewrite("/new-path")`. See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and `OriginalPath()`.

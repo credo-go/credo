@@ -25,10 +25,26 @@ func (app *App) IsRunning() bool {
 // not an OnStart mirror, so hooks must be idempotent and must not assume any
 // particular OnStart hook completed.
 //
-// Must be called before Run; panics if called after compile.
+// Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnShutdown(fn func(ctx context.Context) error) {
-	app.checkFrozen("OnShutdown")
-	app.lifecycle.onShutdown = append(app.lifecycle.onShutdown, fn)
+	app.registerHook("App.OnShutdown", fn, &app.lifecycle.onShutdown)
+}
+
+// checkHookRegistration is the shared guard for every On* registration: the
+// pre-compile window and a non-nil hook, so a programming error surfaces at
+// registration rather than as a nil-function call during startup, reload, or
+// teardown. label names the API as Type.Method.
+func (app *App) checkHookRegistration(label string, fnIsNil bool) {
+	app.checkFrozen(label)
+	if fnIsNil {
+		panic("credo: " + label + ": hook must not be nil")
+	}
+}
+
+// registerHook appends a plain context hook after checkHookRegistration.
+func (app *App) registerHook(label string, fn func(ctx context.Context) error, hooks *[]func(ctx context.Context) error) {
+	app.checkHookRegistration(label, fn == nil)
+	*hooks = append(*hooks, fn)
 }
 
 // OnPreDrain registers an early subsystem drain hook that runs after shutdown
@@ -52,10 +68,7 @@ func (app *App) OnShutdown(fn func(ctx context.Context) error) {
 //
 // Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnPreDrain(fn func(ctx context.Context) error) {
-	app.checkFrozen("OnPreDrain")
-	if fn == nil {
-		panic("credo: OnPreDrain hook must not be nil")
-	}
+	app.checkHookRegistration("App.OnPreDrain", fn == nil)
 	app.lifecycle.onPreDrain = append(
 		app.lifecycle.onPreDrain,
 		newDrainHook(len(app.lifecycle.onPreDrain), fn),
@@ -77,10 +90,7 @@ func (app *App) OnPreDrain(fn func(ctx context.Context) error) {
 //
 // Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnDrain(fn func(ctx context.Context) error) {
-	app.checkFrozen("OnDrain")
-	if fn == nil {
-		panic("credo: OnDrain hook must not be nil")
-	}
+	app.checkHookRegistration("App.OnDrain", fn == nil)
 	app.lifecycle.onDrain = append(
 		app.lifecycle.onDrain,
 		newDrainHook(len(app.lifecycle.onDrain), fn),
@@ -103,10 +113,9 @@ func (app *App) OnDrain(fn func(ctx context.Context) error) {
 // in directly as app.OnStart(db.Migrate) for development and deliberate
 // single-replica deployments; multi-replica production should use one
 // deadline-bounded pre-deploy migration job instead.
-// Must be called before Run; panics if called after compile.
+// Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnStart(fn func(ctx context.Context) error) {
-	app.checkFrozen("OnStart")
-	app.lifecycle.onStart = append(app.lifecycle.onStart, fn)
+	app.registerHook("App.OnStart", fn, &app.lifecycle.onStart)
 }
 
 // Addr returns the actual network address the server is listening on.
@@ -139,8 +148,10 @@ func (app *App) IsDebug() bool {
 	return app != nil && app.debug
 }
 
-// checkFrozen panics if the app has been compiled (frozen).
-// Used to guard against late registration of routes, middleware, etc.
+// checkFrozen panics if the app has been compiled (frozen). Used to guard
+// against late registration of routes, middleware, hooks, and renderers. what
+// names the API as Type.Method (for example "App.GET", "Group.SetMeta") so the
+// panic text reads uniformly.
 func (app *App) checkFrozen(what string) {
 	if app.frozen.Load() {
 		panic("credo: " + what + " called after app was compiled")

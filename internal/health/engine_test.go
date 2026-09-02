@@ -1,4 +1,4 @@
-package credo
+package health
 
 import (
 	"context"
@@ -7,17 +7,15 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
-
-	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
-func staticStoreFunc(results ...internalhealth.StoreResult) internalhealth.StoreFunc {
-	checks := make([]internalhealth.StoreCheck, 0, len(results))
+func staticStoreFunc(results ...StoreResult) StoreFunc {
+	checks := make([]StoreCheck, 0, len(results))
 	for _, storeResult := range results {
-		checks = append(checks, internalhealth.StoreCheck{
+		checks = append(checks, StoreCheck{
 			Name: storeResult.Name,
-			Probe: internalhealth.NewProbe(func(context.Context) internalhealth.Result {
-				return internalhealth.Result{
+			Probe: NewProbe(func(context.Context) Result {
+				return Result{
 					Status:  storeResult.Status,
 					Latency: storeResult.Latency,
 					Cause:   storeResult.Cause,
@@ -25,14 +23,14 @@ func staticStoreFunc(results ...internalhealth.StoreResult) internalhealth.Store
 			}),
 		})
 	}
-	return func() []internalhealth.StoreCheck {
+	return func() []StoreCheck {
 		return slices.Clone(checks)
 	}
 }
 
-func TestHealthEngine_NoChecks_LivenessUp(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	status, checks := e.checkLiveness(t.Context())
+func TestEngine_NoChecks_LivenessUp(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	status, checks := e.CheckLiveness(t.Context())
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -41,12 +39,12 @@ func TestHealthEngine_NoChecks_LivenessUp(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_LivenessPass(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addLiveness("ok1", func(context.Context) error { return nil })
-	e.addLiveness("ok2", func(context.Context) error { return nil })
+func TestEngine_LivenessPass(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddLiveness("ok1", func(context.Context) error { return nil })
+	e.AddLiveness("ok2", func(context.Context) error { return nil })
 
-	status, checks := e.checkLiveness(t.Context())
+	status, checks := e.CheckLiveness(t.Context())
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -63,12 +61,12 @@ func TestHealthEngine_LivenessPass(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_LivenessFail(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addLiveness("ok", func(context.Context) error { return nil })
-	e.addLiveness("bad", func(context.Context) error { return errors.New("boom") })
+func TestEngine_LivenessFail(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddLiveness("ok", func(context.Context) error { return nil })
+	e.AddLiveness("bad", func(context.Context) error { return errors.New("boom") })
 
-	status, checks := e.checkLiveness(t.Context())
+	status, checks := e.CheckLiveness(t.Context())
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}
@@ -93,11 +91,11 @@ func TestHealthEngine_LivenessFail(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_ReadinessPass(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addReadiness("dep1", func(context.Context) error { return nil })
+func TestEngine_ReadinessPass(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddReadiness("dep1", func(context.Context) error { return nil })
 
-	status, checks, stores := e.checkReadiness(t.Context(), nil)
+	status, checks, stores := e.CheckReadiness(t.Context(), nil)
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -112,30 +110,30 @@ func TestHealthEngine_ReadinessPass(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_ReadinessFail(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addReadiness("ok", func(context.Context) error { return nil })
-	e.addReadiness("bad", func(context.Context) error { return errors.New("not ready") })
+func TestEngine_ReadinessFail(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddReadiness("ok", func(context.Context) error { return nil })
+	e.AddReadiness("bad", func(context.Context) error { return errors.New("not ready") })
 
-	status, _, _ := e.checkReadiness(t.Context(), nil)
+	status, _, _ := e.CheckReadiness(t.Context(), nil)
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}
 }
 
-func TestHealthEngine_ConcurrentExecution(t *testing.T) {
+func TestEngine_ConcurrentExecution(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		e := newHealthEngine(10 * time.Second)
+		e := NewEngine(10 * time.Second)
 		for index, delay := range []time.Duration{2 * time.Second, 5 * time.Second, 3 * time.Second} {
 			name := string(rune('a' + index))
-			e.addLiveness(name, func(context.Context) error {
+			e.AddLiveness(name, func(context.Context) error {
 				time.Sleep(delay)
 				return nil
 			})
 		}
 
 		start := time.Now()
-		status, _ := e.checkLiveness(t.Context())
+		status, _ := e.CheckLiveness(t.Context())
 		if elapsed := time.Since(start); elapsed != 5*time.Second {
 			t.Errorf("elapsed = %v, want 5s (maximum check duration)", elapsed)
 		}
@@ -145,16 +143,16 @@ func TestHealthEngine_ConcurrentExecution(t *testing.T) {
 	})
 }
 
-func TestHealthEngine_Timeout(t *testing.T) {
+func TestEngine_Timeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		e := newHealthEngine(time.Second)
-		e.addLiveness("slow", func(ctx context.Context) error {
+		e := NewEngine(time.Second)
+		e.AddLiveness("slow", func(ctx context.Context) error {
 			<-ctx.Done()
 			return ctx.Err()
 		})
 
 		start := time.Now()
-		status, checks := e.checkLiveness(t.Context())
+		status, checks := e.CheckLiveness(t.Context())
 		if elapsed := time.Since(start); elapsed != time.Second {
 			t.Errorf("elapsed = %v, want 1s", elapsed)
 		}
@@ -167,14 +165,14 @@ func TestHealthEngine_Timeout(t *testing.T) {
 	})
 }
 
-func TestHealthEngine_StoreFunc(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
+func TestEngine_StoreFunc(t *testing.T) {
+	e := NewEngine(5 * time.Second)
 	storeFn := staticStoreFunc(
-		internalhealth.StoreResult{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
-		internalhealth.StoreResult{Name: "redis", Status: "up", Latency: time.Millisecond},
+		StoreResult{Name: "postgres", Status: "up", Latency: 2 * time.Millisecond},
+		StoreResult{Name: "redis", Status: "up", Latency: time.Millisecond},
 	)
 
-	status, _, stores := e.checkReadiness(t.Context(), storeFn)
+	status, _, stores := e.CheckReadiness(t.Context(), storeFn)
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -183,24 +181,24 @@ func TestHealthEngine_StoreFunc(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_StoreFunc_Down(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	storeFn := staticStoreFunc(internalhealth.StoreResult{Name: "postgres", Status: "down"})
+func TestEngine_StoreFunc_Down(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	storeFn := staticStoreFunc(StoreResult{Name: "postgres", Status: "down"})
 
-	status, _, _ := e.checkReadiness(t.Context(), storeFn)
+	status, _, _ := e.CheckReadiness(t.Context(), storeFn)
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}
 }
 
-func TestHealthEngine_CheckPanic(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addLiveness("ok", func(context.Context) error { return nil })
-	e.addLiveness("panicker", func(context.Context) error {
+func TestEngine_CheckPanic(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddLiveness("ok", func(context.Context) error { return nil })
+	e.AddLiveness("panicker", func(context.Context) error {
 		panic("segfault simulation")
 	})
 
-	status, checks := e.checkLiveness(t.Context())
+	status, checks := e.CheckLiveness(t.Context())
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}
@@ -219,9 +217,9 @@ func TestHealthEngine_CheckPanic(t *testing.T) {
 	}
 }
 
-func TestHealthEngine_ContextCancellation(t *testing.T) {
-	e := newHealthEngine(5 * time.Second)
-	e.addLiveness("ctx-check", func(ctx context.Context) error {
+func TestEngine_ContextCancellation(t *testing.T) {
+	e := NewEngine(5 * time.Second)
+	e.AddLiveness("ctx-check", func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -233,7 +231,7 @@ func TestHealthEngine_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
-	status, checks := e.checkLiveness(ctx)
+	status, checks := e.CheckLiveness(ctx)
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}

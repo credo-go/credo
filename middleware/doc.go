@@ -58,7 +58,7 @@
 // registered routes.
 //
 // Additional middleware in this package:
-//   - Rewrite(rules ...RewriteRule) — pre-dispatch URL path rewriting
+//   - Rewrite(cfg ...RewriteConfig) — pre-dispatch URL path rewriting
 //   - CORS(cfg ...CORSConfig)
 //   - CSRF(cfg ...CSRFConfig) — Sec-Fetch-Site based, no tokens
 //   - Secure(cfg ...SecureConfig)
@@ -74,4 +74,6 @@
 //	ratelimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
 //	app.GlobalMiddleware(ratelimiter.Middleware())
 //	app.OnShutdown(ratelimiter.Shutdown)
+//
+// Maturity: beta
 package middleware

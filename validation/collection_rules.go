@@ -11,16 +11,12 @@ import (
 //
 //	validation.Field(&o.Items, validation.NotEmptySlice[Item]())
 func NotEmptySlice[E any]() Rule[[]E] {
-	return &notEmptySliceRule[E]{}
-}
-
-type notEmptySliceRule[E any] struct{}
-
-func (r *notEmptySliceRule[E]) Validate(value []E) error {
-	if len(value) == 0 {
-		return newRuleError("not_empty", "must not be empty", nil)
-	}
-	return nil
+	return funcRule[[]E](func(value []E) error {
+		if len(value) == 0 {
+			return newRuleError("not_empty", "must not be empty", nil)
+		}
+		return nil
+	})
 }
 
 // NotEmptyMap creates a [Rule] that fails when the map has no entries
@@ -30,16 +26,12 @@ func (r *notEmptySliceRule[E]) Validate(value []E) error {
 //
 //	validation.Field(&c.Limits, validation.NotEmptyMap[string, int]())
 func NotEmptyMap[K comparable, V any]() Rule[map[K]V] {
-	return &notEmptyMapRule[K, V]{}
-}
-
-type notEmptyMapRule[K comparable, V any] struct{}
-
-func (r *notEmptyMapRule[K, V]) Validate(value map[K]V) error {
-	if len(value) == 0 {
-		return newRuleError("not_empty", "must not be empty", nil)
-	}
-	return nil
+	return funcRule[map[K]V](func(value map[K]V) error {
+		if len(value) == 0 {
+			return newRuleError("not_empty", "must not be empty", nil)
+		}
+		return nil
+	})
 }
 
 // Each creates a [Rule] that validates each element of a slice against the

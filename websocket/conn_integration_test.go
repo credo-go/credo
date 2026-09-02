@@ -27,7 +27,7 @@ func openConnTestPair(
 	dialOptions *coderwebsocket.DialOptions,
 ) connTestPair {
 	t.Helper()
-	resolved, err := resolveConfig(cfg)
+	resolved, err := resolveServerConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

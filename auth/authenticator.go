@@ -1,31 +1,10 @@
 package auth
 
 import (
-	"errors"
 	"net/http"
-	"reflect"
 
 	"github.com/credo-go/credo"
 )
-
-var (
-	// ErrAuthenticatorRequired is returned when auth middleware is built
-	// without an authenticator.
-	ErrAuthenticatorRequired = errors.New("auth: authenticator is required")
-)
-
-func isNilAuthenticator[T any](a Authenticator[T]) bool {
-	if a == nil {
-		return true
-	}
-	v := reflect.ValueOf(a)
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
 
 // Authenticator validates a request and returns the authenticated user.
 // T is the application's user type (e.g., *MyUser, Claims, etc.).
@@ -46,7 +25,14 @@ type ErrorFunc func(err error, ctx *credo.Context) error
 // When authentication fails and onError is nil (or returns nil), the middleware returns
 // credo.ErrUnauthorized with the authenticator's error as Internal.
 // Provide an ErrorFunc to customize the failure response.
+//
+// Panics if a is nil: a missing authenticator is a wiring error, so it fails
+// fast at construction instead of rejecting every request at runtime.
 func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware {
+	if a == nil {
+		panic("auth: Middleware requires a non-nil authenticator")
+	}
+
 	handleAuthError := func(err error, ctx *credo.Context) error {
 		if onError != nil {
 			if handledErr := onError(err, ctx); handledErr != nil {
@@ -54,14 +40,6 @@ func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware {
 			}
 		}
 		return credo.ErrUnauthorized.WithInternal(err)
-	}
-
-	if isNilAuthenticator(a) {
-		return func(credo.Handler) credo.Handler {
-			return func(ctx *credo.Context) error {
-				return handleAuthError(ErrAuthenticatorRequired, ctx)
-			}
-		}
 	}
 
 	return func(next credo.Handler) credo.Handler {

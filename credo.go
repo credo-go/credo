@@ -19,6 +19,7 @@ import (
 
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 	internali18n "github.com/credo-go/credo/internal/i18n"
 	internalobserve "github.com/credo-go/credo/internal/observe"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
@@ -120,7 +121,7 @@ type App struct {
 	messageKeyResolver MessageKeyResolver
 
 	// healthEngine holds the health check engine (nil if UseHealth not called).
-	healthEngine *healthEngine
+	healthEngine *internalhealth.Engine
 
 	// healthExposeErrors includes check error strings in readiness responses.
 	// Set from HealthConfig.ExposeErrors; default false (errors are logged,
@@ -225,104 +226,112 @@ type App struct {
 //	// With explicit RawConfig (server settings read from "server" key):
 //	app, err := credo.New(credo.WithRawConfig(rawCfg))
 func New(opts ...Option) (*App, error) {
-	o := appOptions{}
+	o, err := parseOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	if err = loadRawConfig(&o); err != nil {
+		return nil, err
+	}
+	serverCfg, err := resolveServerConfig(&o)
+	if err != nil {
+		return nil, err
+	}
+	trustedProxies, err := internalproxy.ParsePrefixes(serverCfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("credo: invalid trusted proxies: %w", err)
+	}
+	baseInfra := newInfra(o.logger)
+	c := buildContainer(o.rawConfig, baseInfra)
+	return assembleApp(&o, serverCfg, c, baseInfra.Logger, trustedProxies), nil
+}
+
+// parseOptions applies the functional options and validates the values that
+// can be checked without configuration.
+func parseOptions(opts []Option) (appOptions, error) {
+	var o appOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
 	if internalobserve.IsTypedNilLeveler(o.accessLogMinLevel) {
-		return nil, fmt.Errorf("credo: WithAccessLogMinLevel: typed-nil slog.Leveler")
+		return appOptions{}, fmt.Errorf("credo: WithAccessLogMinLevel: typed-nil slog.Leveler")
 	}
 	if o.accessLogMinLevel == nil {
 		o.accessLogMinLevel = slog.LevelInfo
 	}
+	return o, nil
+}
 
-	// Auto-load: if no RawConfig provided, load with defaults.
-	if o.rawConfig == nil {
-		rc, err := config.Load()
-		if err != nil {
-			return nil, fmt.Errorf("credo: auto-load config: %w", err)
-		}
-		o.rawConfig = rc
+// loadRawConfig auto-loads configuration with defaults when WithRawConfig was
+// not given.
+func loadRawConfig(o *appOptions) error {
+	if o.rawConfig != nil {
+		return nil
 	}
-
-	// If a "server" section exists, decode it.
-	// Missing key is fine (use defaults), but a decode error is surfaced.
-	if o.rawConfig.Exists("server") {
-		if err := o.rawConfig.Unmarshal("server", &o.serverCfg); err != nil {
-			return nil, fmt.Errorf("credo: invalid server config: %w", err)
-		}
-	}
-
-	// Re-apply programmatic server options after Unmarshal so an explicit With*
-	// setting always wins over the "server" config section (which would
-	// otherwise overwrite it — including resetting a field to zero, which
-	// applyServerDefaults then replaces with a framework default, silently
-	// undoing an intentional value such as WithMaxBodyBytes(-1)).
-	if o.addrSet {
-		o.serverCfg.Host = o.addrHost
-		o.serverCfg.Port = o.addrPort
-	}
-	if o.shutdownTimeoutSet {
-		o.serverCfg.ShutdownTimeout = o.shutdownTimeout
-	}
-	if o.reloadTimeoutSet {
-		o.serverCfg.ReloadTimeout = o.reloadTimeout
-	}
-	if o.maxBodyBytesSet {
-		o.serverCfg.MaxBodyBytes = o.maxBodyBytes
-	}
-	if o.redirectTrailingSlashSet {
-		o.serverCfg.RedirectTrailingSlash = &o.redirectTrailingSlash
-	}
-	if o.trustedProxiesSet {
-		o.serverCfg.TrustedProxies = slices.Clone(o.trustedProxies)
-	}
-	// WithTLSFiles overrides the server.tls.* keys as a whole pair (not merged).
-	// It runs after unmarshal so the option wins over config, and fires whenever
-	// the option was set — even with empty paths, which preflight then rejects
-	// rather than letting them silently fall back to the config keys.
-	// WithTLSConfig (o.tlsConfig) outranks both and is resolved later at preflight.
-	if o.tlsFilesSet {
-		o.serverCfg.TLS.CertFile = o.tlsCertFile
-		o.serverCfg.TLS.KeyFile = o.tlsKeyFile
-	}
-	applyServerDefaults(&o.serverCfg)
-
-	if err := validateServerConfig(&o.serverCfg); err != nil {
-		return nil, err
-	}
-	trustedProxies, err := internalproxy.ParsePrefixes(o.serverCfg.TrustedProxies)
+	rc, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("credo: invalid trusted proxies: %w", err)
+		return fmt.Errorf("credo: auto-load config: %w", err)
 	}
+	o.rawConfig = rc
+	return nil
+}
 
+// resolveServerConfig produces the effective server settings: the "server"
+// config section when present, the explicit With* options overlaid on top
+// (see appOptions.overlayServer), then framework defaults and validation. A
+// missing section is fine (defaults apply); a decode error is surfaced.
+func resolveServerConfig(o *appOptions) (serverConfig, error) {
+	var cfg serverConfig
+	if o.rawConfig.Exists("server") {
+		if err := o.rawConfig.Unmarshal("server", &cfg); err != nil {
+			return serverConfig{}, fmt.Errorf("credo: invalid server config: %w", err)
+		}
+	}
+	o.overlayServer(&cfg)
+	applyServerDefaults(&cfg)
+	if err := validateServerConfig(&cfg); err != nil {
+		return serverConfig{}, err
+	}
+	return cfg, nil
+}
+
+// buildContainer creates the DI container with the framework-provided
+// bindings: Infra auto-injection (Model 1) and the always-available RawConfig
+// (auto-loaded or explicit).
+func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 	c := di.New()
-
-	// Configure Infra auto-injection (Model 1).
-	baseInfra := newInfra(o.logger)
-	c.SetInfraProvider(&di.InfraProvider{
-		InfraType: reflect.TypeFor[Infra](),
+	c.SetFrameworkProvider(di.FrameworkProvider{
+		Type: reflect.TypeFor[Infra](),
 		Factory: func(serviceName string) any {
 			return Infra{Logger: baseInfra.Logger.With("service", serviceName)}
 		},
 	})
+	c.MustProvideValue[RawConfig](rawConfig)
+	return c
+}
 
-	// RawConfig is always available (auto-loaded or explicit).
-	c.MustProvideValue[RawConfig](o.rawConfig)
-
+// assembleApp wires the App value from the resolved pieces: router, root
+// group, lifecycle manager, reload participants, and the context pool.
+func assembleApp(
+	o *appOptions,
+	serverCfg serverConfig,
+	c *di.Container,
+	logger *slog.Logger,
+	trustedProxies []netip.Prefix,
+) *App {
 	app := &App{
 		container:             c,
-		logger:                baseInfra.Logger,
+		logger:                logger,
 		mux:                   newMux(),
 		staticHosts:           make(map[string]*hostEntry),
 		namedRoutes:           make(map[string]*Route),
 		rawConfig:             o.rawConfig,
-		serverCfg:             o.serverCfg,
-		tlsConfig:             o.tlsConfig,
-		tlsConfigSet:          o.tlsConfigSet,
-		tlsFilesSet:           o.tlsFilesSet,
+		serverCfg:             serverCfg,
+		tlsConfig:             o.tlsConfig.value,
+		tlsConfigSet:          o.tlsConfig.isSet,
+		tlsFilesSet:           o.tlsFiles.isSet,
 		httpRedirectAddr:      o.httpRedirectAddr,
-		redirectTrailingSlash: o.serverCfg.RedirectTrailingSlash == nil || *o.serverCfg.RedirectTrailingSlash,
+		redirectTrailingSlash: serverCfg.RedirectTrailingSlash == nil || *serverCfg.RedirectTrailingSlash,
 		disableRecover:        o.disableRecover,
 		disableRequestID:      o.disableRequestID,
 		disableAccessLog:      o.disableAccessLog,
@@ -331,14 +340,14 @@ func New(opts ...Option) (*App, error) {
 		accessLogMinLevel:     o.accessLogMinLevel,
 		accessLogSkipper:      o.accessLogSkipper,
 		accessLogFilter:       o.accessLogFilter,
-		debug:                 o.debug || o.serverCfg.Debug,
-		strictBodies:          o.strictBodies || o.serverCfg.StrictBodies,
+		debug:                 o.debug || serverCfg.Debug,
+		strictBodies:          o.strictBodies || serverCfg.StrictBodies,
 		configureServer:       o.configureServer,
 		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
 	}
 	app.addReloadParticipant(app.tlsReloadParticipant())
-	app.root = &Group{app: app}
+	app.root = &Group{registrar: app}
 	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {
 		return &Context{
@@ -353,7 +362,7 @@ func New(opts ...Option) (*App, error) {
 			response: &Response{app: app},
 		}
 	})
-	return app, nil
+	return app
 }
 
 // --- HTTP Method Shortcuts ---
@@ -420,7 +429,7 @@ func (app *App) OPTIONS(pattern string, h Handler) *Route {
 // including 404 and 405 responses. Must be called before the server starts;
 // panics if called after compile.
 func (app *App) GlobalMiddleware(middlewares ...Middleware) {
-	app.checkFrozen("GlobalMiddleware")
+	app.checkFrozen("App.GlobalMiddleware")
 	app.globalMW = append(app.globalMW, middlewares...)
 }
 
@@ -447,7 +456,7 @@ func (app *App) Group(prefix string) *Group {
 // a route parameter name collides with a host parameter name.
 // Must be called before the server starts; panics if called after compile.
 func (app *App) Host(pattern string) *Group {
-	app.checkFrozen("host registration")
+	app.checkFrozen("App.Host")
 
 	normalized := normalizeHostPattern(pattern)
 	if app.hasHostPattern(normalized) {
@@ -473,7 +482,7 @@ func (app *App) Host(pattern string) *Group {
 	}
 
 	return &Group{
-		app:         app,
+		registrar:   app,
 		parent:      app.root, // inherit app-level meta
 		mux:         m,
 		hostPattern: normalized,
@@ -486,7 +495,7 @@ func (app *App) Host(pattern string) *Group {
 // at the root level.
 // Must be called before the server starts; panics if called after compile.
 func (app *App) StatusHandler(code int, h Handler) {
-	app.checkFrozen("StatusHandler")
+	app.checkFrozen("App.StatusHandler")
 	if app.statusHandlers == nil {
 		app.statusHandlers = make(map[int]Handler)
 	}
@@ -504,7 +513,7 @@ func (app *App) StatusHandler(code int, h Handler) {
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetErrorRenderer(r ErrorRenderer) {
-	app.checkFrozen("SetErrorRenderer")
+	app.checkFrozen("App.SetErrorRenderer")
 	app.errorRenderer = r
 }
 
@@ -521,7 +530,7 @@ func (app *App) SetErrorRenderer(r ErrorRenderer) {
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetSuccessRenderer(r SuccessRenderer) {
-	app.checkFrozen("SetSuccessRenderer")
+	app.checkFrozen("App.SetSuccessRenderer")
 	app.successRenderer = r
 }
 
@@ -537,12 +546,6 @@ func (app *App) SetMeta(key string, val any) {
 // Must be called before the server starts; panics if called after compile.
 func (app *App) RemoveMeta(key string) {
 	app.root.RemoveMeta(key)
-}
-
-// Mux returns a route registry view for route introspection (Walk, Routes).
-// The returned view includes routes from the default mux and all host-scoped muxes.
-func (app *App) Mux() Routes {
-	return app
 }
 
 // Routes returns introspection data for every registered route across the

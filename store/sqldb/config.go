@@ -73,6 +73,36 @@ type Config struct {
 	Options map[string]string
 }
 
+// validateLimits rejects out-of-range pool and timeout settings.
+func (c *Config) validateLimits() error {
+	if c.Port < 0 || c.Port > 65535 {
+		return fmt.Errorf("sqldb: port must be between 0 and 65535, got %d", c.Port)
+	}
+	if c.ConnectTimeout < 0 {
+		return fmt.Errorf("sqldb: connect timeout must be >= 0, got %s", c.ConnectTimeout)
+	}
+	if c.MaxOpen < 0 {
+		return fmt.Errorf("sqldb: max open must be >= 0, got %d", c.MaxOpen)
+	}
+	if c.MaxIdle != nil && *c.MaxIdle < 0 {
+		return fmt.Errorf("sqldb: max idle must be >= 0, got %d", *c.MaxIdle)
+	}
+	if c.MaxLifetime < 0 {
+		return fmt.Errorf("sqldb: max lifetime must be >= 0, got %s", c.MaxLifetime)
+	}
+	if c.MaxIdleTime < 0 {
+		return fmt.Errorf("sqldb: max idle time must be >= 0, got %s", c.MaxIdleTime)
+	}
+	if c.MaxOpen > 0 && c.MaxIdle != nil && *c.MaxIdle > c.MaxOpen {
+		return fmt.Errorf(
+			"sqldb: max idle (%d) must be <= max open (%d)",
+			*c.MaxIdle,
+			c.MaxOpen,
+		)
+	}
+	return nil
+}
+
 // buildDSN constructs a DSN string from the config fields.
 // If Config.DSN is set, it is returned as-is.
 func (c *Config) buildDSN(family driverFamily) (string, error) {

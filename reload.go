@@ -72,11 +72,7 @@ func covers(prefix, key string) bool {
 //
 // Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnReload(fn func(ctx context.Context) error) {
-	app.checkFrozen("OnReload")
-	if fn == nil {
-		panic("credo: OnReload hook must not be nil")
-	}
-	app.reload.onReload = append(app.reload.onReload, fn)
+	app.registerHook("App.OnReload", fn, &app.reload.onReload)
 }
 
 // OnConfigChange registers a typed subscriber for one configuration section.
@@ -102,10 +98,7 @@ func (app *App) OnReload(fn func(ctx context.Context) error) {
 // when the App's RawConfig implements neither config.Stager nor
 // config.Reloader — a subscription that can never fire is startup misuse.
 func (app *App) OnConfigChange[T any](key string, fn func(ctx context.Context, next T) error) {
-	app.checkFrozen("OnConfigChange")
-	if fn == nil {
-		panic("credo: OnConfigChange hook must not be nil")
-	}
+	app.checkHookRegistration("App.OnConfigChange", fn == nil)
 	if !app.configReloadable() {
 		panic("credo: OnConfigChange: the App's RawConfig implements neither config.Stager nor config.Reloader, so the subscription could never fire")
 	}

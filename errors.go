@@ -386,7 +386,7 @@ func (app *App) logServerError(err error, status int, ctx *Context) {
 	message := "credo: server error"
 	if _, isHTTPError := errors.AsType[*HTTPError](err); !isHTTPError {
 		_, isFault := fault.ProviderOf(err)
-		_, hasLegacyStatus := asHTTPStatus(err)
+		_, hasLegacyStatus := internalfaultstatus.ProviderOf(err)
 		if !isFault && !hasLegacyStatus {
 			message = "credo: unhandled error"
 		}
@@ -496,7 +496,7 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		return app.codedErrorInfo(ctx, status, "", "")
 	}
 
-	if se, ok := asHTTPStatus(err); ok {
+	if se, ok := internalfaultstatus.ProviderOf(err); ok {
 		status := se.HTTPStatus()
 		if !isValidHTTPStatus(status) {
 			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
@@ -552,7 +552,7 @@ func writeDefaultError(ctx *Context, info *ErrorInfo) error {
 
 func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey string) (string, string) {
 	key, explicit := app.effectiveMessageKey(MessageScopeError, code, explicitKey)
-	if app.i18nBundle != nil && ctx.locale != "" {
+	if ctx.translatable() {
 		if message, ok := app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
 			return key, message
 		}
@@ -586,19 +586,6 @@ func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string
 	return code, false
 }
 
-// httpStatusProvider is implemented by errors that carry an HTTP status code.
-// This interface is detected via errors.As without requiring the error handler
-// to import the package that defines the error.
-type httpStatusProvider interface {
-	error
-	HTTPStatus() int
-}
-
-// asHTTPStatus extracts an httpStatusProvider from err's chain.
-func asHTTPStatus(err error) (httpStatusProvider, bool) {
-	return errors.AsType[httpStatusProvider](err)
-}
-
 // translateValidationErrors resolves each validation error's exact key and
 // translates it when a bundle is active.
 func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) validation.Errors {
@@ -607,7 +594,7 @@ func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) va
 		result[i] = e // copy
 		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
 		result[i].MessageKey = key
-		if app.i18nBundle != nil && ctx.locale != "" {
+		if ctx.translatable() {
 			if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, e.Params, e.Field); ok {
 				result[i].Message = s
 			}
@@ -648,7 +635,7 @@ func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Validat
 		Params:     be.params(),
 	}
 
-	if app.i18nBundle != nil && ctx.locale != "" {
+	if ctx.translatable() {
 		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, ve.Params, be.Field); ok {
 			ve.Message = s
 		}

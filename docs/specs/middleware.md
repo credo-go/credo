@@ -222,7 +222,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `Recover` | Chi | Per-group/route panic recovery with custom config |
 | `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
-| `CORS` | Echo | Cross-Origin Resource Sharing |
+| `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Compress` | Chi | gzip/deflate response compression |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
@@ -233,8 +233,8 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 ### Rewrite
 
 ```go
-func Rewrite(rules ...RewriteRule) credo.Middleware
-func RewriteWithConfig(cfg RewriteConfig) credo.Middleware
+func Rewrite(cfg ...RewriteConfig) credo.Middleware
+func DefaultRewriteConfig() RewriteConfig
 
 type RewriteConfig struct {
     Skipper Skipper
@@ -242,7 +242,7 @@ type RewriteConfig struct {
 }
 ```
 
-`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. `Rewrite(rules...)` is the rule-list shortcut; `RewriteWithConfig` adds a `Skipper` alongside the rules.
+`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. It follows the package-wide config-struct convention (`Middleware(cfg ...Config)`): the single `RewriteConfig` argument carries the `Rules` list and an optional `Skipper`; there is no rule-list variadic form and no `RewriteWithConfig` twin.
 
 ```go
 type RewriteRule struct {
@@ -264,16 +264,16 @@ type RewriteRule struct {
 - `Host` is an optional exact host filter. Matching is case-insensitive, with request ports stripped before comparison.
 - If `To` contains a query string, it replaces the current query string.
 - If `To` does not contain a query string and `PreserveQuery` is true, the original query string is preserved.
-- `Rewrite()`/`RewriteWithConfig()` panic when called with zero rules.
+- `Rewrite()` panics when `Rules` is empty (a rule list is required); `DefaultRewriteConfig()` therefore carries no rules.
 
 **Placement:**
 
 Register rewrite as global middleware when it should affect routing for the whole app:
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/v1/{path...}", To: "/api/v1/{path}"},
+}}))
 ```
 
 Register `Rewrite` as global middleware when routing must see the rewritten path. When attached at group or route scope, it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.

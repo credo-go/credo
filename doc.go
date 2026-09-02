@@ -101,4 +101,6 @@
 // Credo is Beta: shipped packages are usable for real development, with breaking
 // changes possible before v1. See the project README's "Maturity by Area" table
 // for per-area status, including which features are experimental or still planned.
+//
+// Maturity: beta
 package credo

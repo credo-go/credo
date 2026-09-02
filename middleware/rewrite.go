@@ -1,12 +1,13 @@
 package middleware
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/credo-go/credo"
 	internalhost "github.com/credo-go/credo/internal/host"
-	"github.com/credo-go/credo/internal/radix"
+	internalpattern "github.com/credo-go/credo/internal/pattern"
 )
 
 // RewriteRule defines a URL rewrite rule for the [Rewrite] middleware.
@@ -53,39 +54,50 @@ type RewriteConfig struct {
 	Rules []RewriteRule
 }
 
+// DefaultRewriteConfig returns the default Rewrite middleware config: no
+// Skipper and no rules (a rule list is required). Each call returns a fresh
+// value, so callers cannot mutate the package-wide defaults.
+func DefaultRewriteConfig() RewriteConfig {
+	return RewriteConfig{Skipper: DefaultSkipper}
+}
+
 // Rewrite returns middleware that rewrites URL paths before dispatch.
 // Rules are evaluated in order; the first match wins. The rewrite is
 // transparent to the client (no redirect).
 //
-// Rewrite is the rule-list shortcut; use [RewriteWithConfig] to set a
-// Skipper alongside the rules.
+// Rewrite follows the package-wide config-struct convention: pass one
+// [RewriteConfig] carrying the Rules and an optional Skipper.
 //
-// Panics if rules is empty.
-func Rewrite(rules ...RewriteRule) credo.Middleware {
-	return RewriteWithConfig(RewriteConfig{Rules: rules})
-}
-
-// RewriteWithConfig is the config-struct variant of [Rewrite].
+//	middleware.Rewrite(middleware.RewriteConfig{
+//	    Rules: []middleware.RewriteRule{
+//	        {From: "/v1/{path...}", To: "/api/v1/{path}"},
+//	    },
+//	})
 //
-// Panics if cfg.Rules is empty.
-func RewriteWithConfig(cfg RewriteConfig) credo.Middleware {
-	if len(cfg.Rules) == 0 {
-		panic("credo: middleware.Rewrite requires at least one rule")
-	}
-	if cfg.Skipper == nil {
-		cfg.Skipper = DefaultSkipper
-	}
-	compiled := compileRules(cfg.Rules)
+// Panics if cfg.Rules is empty or a From pattern is malformed.
+func Rewrite(cfg ...RewriteConfig) credo.Middleware {
+	config := resolveConfig(cfg, DefaultRewriteConfig(), normalizeRewriteConfig)
+	compiled := compileRules(config.Rules)
 
 	return func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			if cfg.Skipper(ctx) {
+			if config.Skipper(ctx) {
 				return next(ctx)
 			}
 			rewritePath(ctx, compiled)
 			return next(ctx)
 		}
 	}
+}
+
+func normalizeRewriteConfig(cfg RewriteConfig) RewriteConfig {
+	if len(cfg.Rules) == 0 {
+		panic("credo: middleware.Rewrite requires at least one rule")
+	}
+	if cfg.Skipper == nil {
+		cfg.Skipper = DefaultSkipper
+	}
+	return cfg
 }
 
 // compileRules converts user-facing RewriteRules into compiledRules.
@@ -101,61 +113,16 @@ func compileRules(rules []RewriteRule) []compiledRule {
 			cr.regexp = r.Regexp
 			cr.captureNames = r.Regexp.SubexpNames()
 		} else {
-			re, names := patternToRegexp(r.From)
+			re, names, err := internalpattern.ToRegexp(r.From)
+			if err != nil {
+				panic(fmt.Sprintf("credo: middleware.Rewrite rule %d: %v", i, err))
+			}
 			cr.regexp = re
 			cr.captureNames = names
 		}
 		out[i] = cr
 	}
 	return out
-}
-
-// patternToRegexp converts a Credo route pattern to a regexp.
-// Returns the compiled regexp and ordered capture names.
-//
-//	{name}       → ([^/]+)
-//	{name...}    → (.*)
-//	{name:regex} → (regex)
-func patternToRegexp(from string) (*regexp.Regexp, []string) {
-	var b strings.Builder
-	names := []string{""} // index 0 = full match (aligns with FindStringSubmatch)
-	b.WriteString("^")
-
-	i := 0
-	for i < len(from) {
-		if from[i] == '{' {
-			end := radix.FindMatchingBrace(from, i)
-			if end < 0 {
-				// No closing brace — treat as literal.
-				b.WriteString(regexp.QuoteMeta(string(from[i])))
-				i++
-				continue
-			}
-			inner := from[i+1 : end]
-
-			if strings.HasSuffix(inner, "...") {
-				// Catch-all: {name...}
-				name := inner[:len(inner)-3]
-				names = append(names, name)
-				b.WriteString("(.*)")
-			} else if name, reStr, ok := strings.Cut(inner, ":"); ok {
-				// Regex constraint: {name:regex}
-				names = append(names, name)
-				b.WriteString("(" + reStr + ")")
-			} else {
-				// Plain param: {name}
-				names = append(names, inner)
-				b.WriteString("([^/]+)")
-			}
-			i = end + 1
-		} else {
-			b.WriteString(regexp.QuoteMeta(string(from[i])))
-			i++
-		}
-	}
-	b.WriteString("$")
-
-	return regexp.MustCompile(b.String()), names
 }
 
 // rewritePath applies the first matching rule to the context's URL path.

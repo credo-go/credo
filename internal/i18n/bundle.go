@@ -303,14 +303,20 @@ func (b *Bundle) matchTag(lang string) (language.Tag, bool) {
 	return b.tags[idx], true
 }
 
+// resolveTag is matchTag with the default-language fallback applied: the
+// registered tag lang matches, or the bundle's default language.
+func (b *Bundle) resolveTag(lang string) language.Tag {
+	if tag, ok := b.matchTag(lang); ok {
+		return tag
+	}
+	return b.defaultLang
+}
+
 // MatchLangString resolves a language string (BCP 47 tag or Accept-Language header)
 // against the bundle's available tags and returns the matched tag as a string.
 // Returns the default language if no match is found.
 func (b *Bundle) MatchLangString(lang string) string {
-	if tag, ok := b.matchTag(lang); ok {
-		return tag.String()
-	}
-	return b.defaultLang.String()
+	return b.resolveTag(lang).String()
 }
 
 // TranslateForLang looks up a message by key for the given language string.
@@ -319,10 +325,7 @@ func (b *Bundle) MatchLangString(lang string) string {
 // The message's Other plural form is always used; for count-based plural
 // selection use [Bundle.TranslatePluralForLang].
 func (b *Bundle) TranslateForLang(lang, key string, data map[string]any) (string, bool) {
-	tag, ok := b.matchTag(lang)
-	if !ok {
-		tag = b.defaultLang
-	}
+	tag := b.resolveTag(lang)
 	return b.translateForTag(tag, key, data)
 }
 
@@ -332,10 +335,7 @@ func (b *Bundle) TranslateForLang(lang, key string, data map[string]any) (string
 // template as {{.count}}. When count cannot be interpreted as a number,
 // the Other form is rendered.
 func (b *Bundle) TranslatePluralForLang(lang, key string, count any, data map[string]any) (string, bool) {
-	tag, ok := b.matchTag(lang)
-	if !ok {
-		tag = b.defaultLang
-	}
+	tag := b.resolveTag(lang)
 
 	// Merge count into a copy to avoid mutating the caller's map.
 	merged := make(map[string]any, len(data)+1)
@@ -386,10 +386,7 @@ func (b *Bundle) lookupChain(tag language.Tag) []language.Tag {
 // FieldNameForLang returns the translated field display name for the given
 // language string and raw field name. Returns raw if no translation exists.
 func (b *Bundle) FieldNameForLang(lang, raw string) string {
-	tag, ok := b.matchTag(lang)
-	if !ok {
-		tag = b.defaultLang
-	}
+	tag := b.resolveTag(lang)
 	return b.fieldName(tag, raw)
 }
 

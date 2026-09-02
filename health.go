@@ -76,7 +76,7 @@ func (f HealthCheckFunc) Check(ctx context.Context) error { return f(ctx) }
 // than once, if called after compile, or if cfg.Group belongs to a
 // different App.
 func (app *App) UseHealth(cfgs ...HealthConfig) {
-	app.checkFrozen("UseHealth")
+	app.checkFrozen("App.UseHealth")
 	if app.healthEngine != nil {
 		panic("credo: UseHealth already called")
 	}
@@ -100,11 +100,11 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 		cfg.CheckTimeout = 5 * time.Second
 	}
 
-	app.healthEngine = newHealthEngine(cfg.CheckTimeout)
+	app.healthEngine = internalhealth.NewEngine(cfg.CheckTimeout)
 	app.healthExposeErrors = cfg.ExposeErrors
 
 	// Validate Group belongs to this app.
-	if cfg.Group != nil && cfg.Group.app != app {
+	if cfg.Group != nil && cfg.Group.registrar != routeRegistrar(app) {
 		panic("credo: UseHealth: Group belongs to a different App")
 	}
 
@@ -147,7 +147,7 @@ func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
 	if checker == nil {
 		panic("credo: AddLivenessCheck: checker must not be nil")
 	}
-	app.healthEngine.addLiveness(name, checker.Check)
+	app.healthEngine.AddLiveness(name, checker.Check)
 }
 
 // AddReadinessCheck registers a named readiness check.
@@ -161,7 +161,7 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
 	if checker == nil {
 		panic("credo: AddReadinessCheck: checker must not be nil")
 	}
-	app.healthEngine.addReadiness(name, checker.Check)
+	app.healthEngine.AddReadiness(name, checker.Check)
 }
 
 // storeHealthFunc returns the store-health collector contributed by the
@@ -179,7 +179,7 @@ func (app *App) storeHealthFunc() internalhealth.StoreFunc {
 
 // livenessHandler returns 200/503 with a JSON status body.
 func (app *App) livenessHandler(ctx *Context) error {
-	status, checks := app.healthEngine.checkLiveness(ctx.Request().Context())
+	status, checks := app.healthEngine.CheckLiveness(ctx.Request().Context())
 	code := http.StatusOK
 	if status != "up" {
 		code = http.StatusServiceUnavailable
@@ -199,7 +199,7 @@ func (app *App) readinessHandler(ctx *Context) error {
 		return ctx.Response().JSON(http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
 	}
 
-	status, checks, stores := app.healthEngine.checkReadiness(ctx.Request().Context(), app.storeHealthFunc())
+	status, checks, stores := app.healthEngine.CheckReadiness(ctx.Request().Context(), app.storeHealthFunc())
 	code := http.StatusOK
 	if status != "up" {
 		code = http.StatusServiceUnavailable
@@ -235,7 +235,7 @@ func (app *App) readinessHandler(ctx *Context) error {
 
 // logFailedChecks logs failing health checks so operators keep the error
 // detail even when it is masked from the HTTP response.
-func (app *App) logFailedChecks(kind string, checks []healthCheckResult) {
+func (app *App) logFailedChecks(kind string, checks []internalhealth.CheckResult) {
 	for _, c := range checks {
 		if c.Status != "up" {
 			app.logger.Warn("credo: health check failed",

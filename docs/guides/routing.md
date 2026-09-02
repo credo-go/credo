@@ -24,9 +24,9 @@ func main() {
         log.Fatal(err)
     }
 
-    app.GlobalMiddleware(middleware.Rewrite(
-        middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-    ))
+    app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+        {From: "/v1/{path...}", To: "/api/v1/{path}"},
+    }}))
 
     api := app.Host("api.example.com")
     v1 := api.Group("/api/v1")
@@ -285,13 +285,13 @@ tenant.GET("/users/{tenant}", showUser)
 
 ## Pre-Dispatch Rewrite
 
-Use `middleware.Rewrite(...)` when you want to normalize URLs before routing.
+Use `middleware.Rewrite(cfg)` when you want to normalize URLs before routing. The rules live in `RewriteConfig.Rules`; see the [Middleware Guide](middleware.md#rewrite) for the `Skipper` option.
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-    middleware.RewriteRule{From: "/blog/{slug}", To: "/articles/{slug}", PreserveQuery: true},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/v1/{path...}", To: "/api/v1/{path}"},
+    {From: "/blog/{slug}", To: "/articles/{slug}", PreserveQuery: true},
+}}))
 ```
 
 ### When to Use It
@@ -304,24 +304,24 @@ app.GlobalMiddleware(middleware.Rewrite(
 ### Host Filter
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {
         Host: "old.example.com",
         From: "/{path...}",
         To:   "/legacy/{path}",
     },
-))
+}}))
 ```
 
 ### Regex Rules
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {
         Regexp: regexp.MustCompile(`^/blog/(?P<year>\d{4})/(?P<slug>[^/]+)$`),
         To:     "/posts/{year}/{slug}",
     },
-))
+}}))
 ```
 
 ### Query Behavior
@@ -413,12 +413,12 @@ Use app/global middleware when you want one measurement for the whole request.
 `Walk` takes a simple `(method, pattern)` callback and visits real routes only — mounts are skipped because the method/pattern shape cannot represent them. `WalkRoutes` (and the equivalent `app.Routes()`) hands you the full `RouteInfo`: the route `Name`, the resolved `Meta` (route ← group ← app), `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. Reach for `WalkRoutes`/`Routes` whenever you need anything beyond method and pattern, or you need mounts to appear.
 
 ```go
-credo.Walk(app.Mux(), func(method, pattern string) error {
+credo.Walk(app, func(method, pattern string) error {
     fmt.Println(method, pattern) // real routes only; mounts skipped
     return nil
 })
 
-credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
+credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
     fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, ri.Meta)
     return nil
 })

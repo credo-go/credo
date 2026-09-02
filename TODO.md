@@ -636,9 +636,10 @@ should an SSE response API and disconnect/drain contract be designed.
 - [x] **json/v2 output profile** (`Response.JSON`, default error bodies, renderer bodies, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
 - [x] **Typed endpoint / operation model decision** — deferred to v2 or later; v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface.
-- [ ] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Planned-only placeholders (`observability`, `pubsub`, `grpc`) either ship as `experimental` or are removed from the module before the tag.
+- [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
 - [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
+  - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) reviewed on 2026-09-02 and kept as-is, so it is **not** part of the batch: `store.Register`'s atomic reservation needs a non-mutating preflight, a Replace-protected publish, and expected-value compare-and-protect from outside the root package, and no narrower public seam exists without an internal bridge. They stay documented as low-level integration primitives.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
   - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide, and if flipped announce one minor ahead
@@ -652,7 +653,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 - [ ] **Kernel + Modules model**: Kernel = root + router + middleware + internal (must be stable first)
 - [ ] Optional modules (i18n, health, openapi, pubsub) mature independently via capability interfaces
-- [ ] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable`
+- [x] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable` — `// Maturity: <label>` closes every public package doc; `maturity_test.go` enforces the line and its agreement with the README table
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
@@ -693,7 +694,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 ### Documentation
 
-- [ ] `doc.go` for every package (include maturity label)
+- [x] `doc.go` for every package (include maturity label)
 - [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
 - [x] ADRs tracked (20 total):
   - [x] [`001-framework-identity-and-goals.md`](docs/adr/001-framework-identity-and-goals.md) — Framework identity and goals

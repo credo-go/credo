@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/internal/httpheader"
+	internalorigin "github.com/credo-go/credo/internal/origin"
 )
 
 const methodQuery = "QUERY"
@@ -20,7 +22,15 @@ type CORSConfig struct {
 	// Skipper defines a function to skip middleware.
 	Skipper Skipper
 
-	// AllowOrigins defines allowed origins.
+	// AllowOrigins defines allowed origins. Each entry is either "*" (allow
+	// every origin) or an origin in the strict scheme://host[:port] grammar
+	// shared with the websocket adapter's AllowedOrigins: http or https only;
+	// no path, query, fragment, or userinfo; scheme and host compare
+	// case-insensitively; the scheme's default port is implied. One wildcard
+	// may stand for exactly the left-most DNS label: "https://*.example.com"
+	// matches "https://app.example.com" but not "https://example.com" or
+	// "https://a.b.example.com". Any other shape (mid-label "*", several
+	// wildcards, IP wildcards, empty entries) panics at construction.
 	// Default: ["*"].
 	AllowOrigins []string
 
@@ -46,15 +56,12 @@ type CORSConfig struct {
 	MaxAge int
 }
 
+// originMatcher is the compiled AllowOrigins allow-list. Origin grammar and
+// matching live in internal/origin so CORS and the websocket adapter share
+// one definition.
 type originMatcher struct {
 	allowAll bool
-	exact    map[string]string
-	patterns []originPattern
-}
-
-type originPattern struct {
-	prefix string
-	suffix string
+	patterns []internalorigin.Pattern
 }
 
 // DefaultCORSConfig returns the default CORS middleware config.
@@ -179,71 +186,37 @@ func resolveAllowedOrigin(cfg CORSConfig, matcher originMatcher, ctx *credo.Cont
 		return "*", true, nil
 	}
 
-	if allowedOrigin, ok := matcher.exact[strings.ToLower(origin)]; ok {
-		return allowedOrigin, true, nil
-	}
-
-	lowerOrigin := strings.ToLower(origin)
-	for _, pattern := range matcher.patterns {
-		// The length guard prevents the prefix and suffix from matching
-		// overlapping regions of the origin: without it, the pattern
-		// "https://api-*-prod.example.com" would match the origin
-		// "https://api-prod.example.com" (the wildcard covering "negative"
-		// text), allowing origins the pattern author never intended.
-		if len(lowerOrigin) >= len(pattern.prefix)+len(pattern.suffix) &&
-			strings.HasPrefix(lowerOrigin, pattern.prefix) &&
-			strings.HasSuffix(lowerOrigin, pattern.suffix) {
-			return origin, true, nil
+	// A malformed Origin header can never match an allow-list entry; it is
+	// treated as a foreign origin rather than an error.
+	if parsed, err := internalorigin.Parse(origin); err == nil {
+		for _, pattern := range matcher.patterns {
+			if pattern.Matches(parsed) {
+				// Echo the request's own serialization: browsers compare
+				// Access-Control-Allow-Origin byte-for-byte against the
+				// Origin they sent, so the canonical form must not be
+				// substituted.
+				return origin, true, nil
+			}
 		}
 	}
 
 	return "", false, nil
 }
 
+// compileOriginMatcher parses AllowOrigins under the strict shared origin
+// grammar. Invalid entries are configuration errors and panic.
 func compileOriginMatcher(allowOrigins []string) originMatcher {
-	matcher := originMatcher{
-		exact: make(map[string]string, len(allowOrigins)),
-	}
-
-	for _, allowed := range allowOrigins {
-		allowed = strings.TrimSpace(allowed)
-		if allowed == "" {
-			continue
-		}
-
+	var matcher originMatcher
+	for i, allowed := range allowOrigins {
 		if allowed == "*" {
 			matcher.allowAll = true
 			continue
 		}
-
-		if pattern, ok := parseOriginPattern(allowed); ok {
-			matcher.patterns = append(matcher.patterns, pattern)
-			continue
+		pattern, err := internalorigin.ParsePattern(allowed)
+		if err != nil {
+			panic(fmt.Sprintf("credo: middleware.CORS: AllowOrigins[%d] %q: %v", i, allowed, err))
 		}
-
-		matcher.exact[strings.ToLower(allowed)] = allowed
+		matcher.patterns = append(matcher.patterns, pattern)
 	}
-
 	return matcher
-}
-
-func parseOriginPattern(pattern string) (originPattern, bool) {
-	if pattern == "" || !strings.Contains(pattern, "*") {
-		return originPattern{}, false
-	}
-
-	// Normalize to lowercase for case-insensitive matching, consistent
-	// with exact origin matching in compileOriginMatcher.
-	pattern = strings.ToLower(pattern)
-
-	first := strings.IndexByte(pattern, '*')
-	last := strings.LastIndexByte(pattern, '*')
-	if first != last {
-		return originPattern{}, false
-	}
-
-	return originPattern{
-		prefix: pattern[:first],
-		suffix: pattern[first+1:],
-	}, true
 }

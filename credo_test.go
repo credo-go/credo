@@ -1045,7 +1045,7 @@ func TestRouting_Walk(t *testing.T) {
 	app.POST("/users", func(ctx *credo.Context) error { return nil })
 
 	var visited []string
-	err := credo.Walk(app.Mux(), func(method, pattern string) error {
+	err := credo.Walk(app, func(method, pattern string) error {
 		visited = append(visited, method+" "+pattern)
 		return nil
 	})
@@ -1455,7 +1455,7 @@ func TestRouting_Walk_ErrorPropagation(t *testing.T) {
 
 	errStop := io.EOF // any error
 	var count int
-	err := credo.Walk(app.Mux(), func(method, pattern string) error {
+	err := credo.Walk(app, func(method, pattern string) error {
 		count++
 		return errStop // stop immediately
 	})
@@ -1480,7 +1480,7 @@ func TestRouting_WalkRoutes_IncludesHostRoutes(t *testing.T) {
 	}
 
 	var seen []seenRoute
-	err := credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
+	err := credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
 		seen = append(seen, seenRoute{method: ri.Method, pattern: ri.Pattern, host: ri.Host})
 		return nil
 	})
@@ -1709,7 +1709,7 @@ func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
 
 	// Walk: routes only — a mount would surface as a misleading empty method.
 	sawUsers := false
-	_ = credo.Walk(app.Mux(), func(method, pattern string) error {
+	_ = credo.Walk(app, func(method, pattern string) error {
 		if method == "" {
 			t.Errorf("Walk yielded empty method for %q — a mount leaked", pattern)
 		}
@@ -1724,7 +1724,7 @@ func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
 
 	// WalkRoutes: the mount is visible with its forwarded method set.
 	sawMount := false
-	_ = credo.WalkRoutes(app.Mux(), func(ri credo.RouteInfo) error {
+	_ = credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
 		if ri.Kind == credo.RouteKindMount && ri.Pattern == "/admin" {
 			sawMount = true
 			if len(ri.Methods) != 8 {

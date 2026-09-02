@@ -90,7 +90,7 @@ type I18nConfig struct {
 // errors rather than panicking. It still panics if called after compile,
 // like all configuration APIs.
 func (app *App) UseI18n(cfgs ...I18nConfig) error {
-	app.checkFrozen("UseI18n")
+	app.checkFrozen("App.UseI18n")
 	if len(cfgs) > 1 {
 		return fmt.Errorf("credo: UseI18n accepts at most one config")
 	}

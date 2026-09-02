@@ -25,14 +25,8 @@ func (c *Container) Replace[T any](value T) error {
 	}
 
 	targetType := reflect.TypeFor[T]()
-	if existing, exists := c.registrations[targetType]; exists && existing.protected {
+	if _, protected := c.protected[targetType]; protected {
 		return fmt.Errorf("di: Replace[%s]: binding is protected", targetType)
-	}
-
-	reg := &registration{
-		resultType: targetType,
-		isValue:    true,
-		value:      value,
 	}
 
 	// Preserve registration order: only append when this type is new, so
@@ -40,7 +34,7 @@ func (c *Container) Replace[T any](value T) error {
 	if _, exists := c.registrations[targetType]; !exists {
 		c.order = append(c.order, targetType)
 	}
-	c.registrations[targetType] = reg
+	c.registrations[targetType] = valueProvider{value: value}
 
 	// Cache the value immediately, superseding any previously resolved
 	// singleton for this type.

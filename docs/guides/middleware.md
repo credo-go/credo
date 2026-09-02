@@ -421,16 +421,22 @@ The configurable middleware observes at its position inside the centralized erro
 
 ### Rewrite
 
-`middleware.Rewrite(...)` is Credo's pre-dispatch path rewrite middleware.
+`middleware.Rewrite(cfg)` is Credo's pre-dispatch path rewrite middleware. Like every configurable middleware it takes one config struct: `RewriteConfig.Rules` holds the ordered rule list (first match wins) and the optional `Skipper` bypasses rewriting for selected requests.
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-    middleware.RewriteRule{Host: "old.example.com", From: "/{path...}", To: "/legacy/{path}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/v1/{path...}", To: "/api/v1/{path}"},
+    {Host: "old.example.com", From: "/{path...}", To: "/legacy/{path}"},
+}}))
+
+// Skip rewriting for a health probe path:
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{
+    Skipper: func(ctx *credo.Context) bool { return ctx.Request().URL.Path == "/healthz" },
+    Rules:   []middleware.RewriteRule{{From: "/v1/{path...}", To: "/api/v1/{path}"}},
+}))
 ```
 
-Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `ctx.Rewrite()` instead.
+`Rules` must not be empty and every `From` pattern must parse; both are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `ctx.Rewrite()` instead.
 
 See the [Routing Guide](routing.md) for host routing, rewrite patterns, `OriginalPath()`, and rewrite-specific middleware caveats.
 
@@ -453,13 +459,15 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 }))
 ```
 
-Wildcard subdomains are supported:
+`AllowOrigins` uses the same strict origin grammar as the websocket adapter's `AllowedOrigins`: each entry is `"*"` or a `scheme://host[:port]` origin (`http`/`https` only; no path, query, fragment, or userinfo; case-insensitive; default port implied). One wildcard may stand for exactly the left-most DNS label:
 
 ```go
 middleware.CORS(middleware.CORSConfig{
-    AllowOrigins: []string{"https://*.example.com"},
+    AllowOrigins: []string{"https://*.example.com"}, // app.example.com yes; example.com, a.b.example.com no
 })
 ```
+
+Any other shape — a mid-label `*` such as `https://api-*-prod.example.com`, several wildcards, an IP wildcard, or an empty entry — is a configuration error and panics when the middleware is constructed.
 
 For dynamic origin validation:
 
@@ -942,14 +950,14 @@ If auth middleware runs globally before Rewrite, it makes decisions based on the
 ```go
 // Risky: auth runs on original path, rewrite changes target.
 app.GlobalMiddleware(authMiddleware)
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/public/{p...}", To: "/internal/{p}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/public/{p...}", To: "/internal/{p}"},
+}}))
 
 // Safer: rewrite first, then auth sees the final path.
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/public/{p...}", To: "/internal/{p}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/public/{p...}", To: "/internal/{p}"},
+}}))
 app.GlobalMiddleware(authMiddleware)
 ```
 

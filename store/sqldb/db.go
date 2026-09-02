@@ -272,50 +272,15 @@ func optionalModelCountError(operation string, count int) error {
 	return fmt.Errorf("sqldb: %s accepts at most one model, got %d", operation, count)
 }
 
+// validateConfig checks the construction inputs in a fixed order — driver
+// selection options, Config limits, option timeouts, then family resolution —
+// and returns the driver family Open should build for.
 func validateConfig(cfg *Config, o options) (driverFamily, error) {
-	family := resolveDriverFamily(cfg.Driver)
-	if o.dialectSet && isNilDynamicValue(o.dialect) {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: WithDialect requires a non-nil dialect")
+	if err := validateDriverSelection(cfg, o); err != nil {
+		return driverFamilyUnknown, err
 	}
-	if o.connectorSet && isNilDynamicValue(o.connector) {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: WithConnector requires a non-nil connector")
-	}
-	if o.dialectSet {
-		dialectFamily := resolveDialectFamily(o.dialect)
-		if family != driverFamilyUnknown &&
-			dialectFamily != driverFamilyUnknown &&
-			family != dialectFamily {
-			return driverFamilyUnknown, fmt.Errorf(
-				"sqldb: WithDialect is incompatible with driver %q",
-				cfg.Driver,
-			)
-		}
-	}
-
-	if cfg.Port < 0 || cfg.Port > 65535 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: port must be between 0 and 65535, got %d", cfg.Port)
-	}
-	if cfg.ConnectTimeout < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: connect timeout must be >= 0, got %s", cfg.ConnectTimeout)
-	}
-	if cfg.MaxOpen < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: max open must be >= 0, got %d", cfg.MaxOpen)
-	}
-	if cfg.MaxIdle != nil && *cfg.MaxIdle < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: max idle must be >= 0, got %d", *cfg.MaxIdle)
-	}
-	if cfg.MaxLifetime < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: max lifetime must be >= 0, got %s", cfg.MaxLifetime)
-	}
-	if cfg.MaxIdleTime < 0 {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: max idle time must be >= 0, got %s", cfg.MaxIdleTime)
-	}
-	if cfg.MaxOpen > 0 && cfg.MaxIdle != nil && *cfg.MaxIdle > cfg.MaxOpen {
-		return driverFamilyUnknown, fmt.Errorf(
-			"sqldb: max idle (%d) must be <= max open (%d)",
-			*cfg.MaxIdle,
-			cfg.MaxOpen,
-		)
+	if err := cfg.validateLimits(); err != nil {
+		return driverFamilyUnknown, err
 	}
 	if o.txCleanupTimeout <= 0 {
 		return driverFamilyUnknown, fmt.Errorf(
@@ -323,28 +288,5 @@ func validateConfig(cfg *Config, o options) (driverFamily, error) {
 			o.txCleanupTimeout,
 		)
 	}
-
-	if o.connectorSet {
-		return family, nil
-	}
-
-	if cfg.Driver == "" {
-		return driverFamilyUnknown, fmt.Errorf("sqldb: driver must be specified (or use WithConnector)")
-	}
-
-	if cfg.DSN == "" && family == driverFamilyUnknown {
-		return driverFamilyUnknown, fmt.Errorf(
-			"sqldb: cannot build DSN for driver %q; provide Config.DSN or use WithConnector",
-			cfg.Driver,
-		)
-	}
-
-	if o.dialect == nil && family == driverFamilyUnknown {
-		return driverFamilyUnknown, fmt.Errorf(
-			"sqldb: cannot detect dialect for driver %q; use WithDialect option",
-			cfg.Driver,
-		)
-	}
-
-	return family, nil
+	return resolveConfiguredFamily(cfg, o)
 }

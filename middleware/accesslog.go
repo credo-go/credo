@@ -85,22 +85,17 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 
 			// Honour per-route/group silencing (MetaAccessLog) once the
 			// matched route is known. The pre-dispatch Skipper above covers
-			// request-level skips; this mirrors the built-in access logger so
-			// both share the same route-meta opt-out. The key is the single
-			// source of truth; the bool decode is duplicated here only because
-			// internal/observe cannot import the root credo package.
+			// request-level skips; the key and its decode are shared with
+			// the built-in access logger through internal/observe.
 			if r := ctx.Route(); r != nil {
-				if v, ok := r.LookupMeta(credo.MetaAccessLog); ok {
-					if enabled, ok := v.(bool); ok && !enabled {
-						return err
-					}
+				if internalobserve.SilencedByMeta(r.LookupMeta(credo.MetaAccessLog)) {
+					return err
 				}
 			}
 
 			// Use the Response's tracked status and size.
 			status := accessLogStatus(ctx.Response().Status(), err)
-			level := internalobserve.Level(status)
-			if level < config.MinLevel.Level() {
+			if internalobserve.BelowMinLevel(status, config.MinLevel) {
 				return err
 			}
 
@@ -138,19 +133,8 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 				explicitRequestID = entry.RequestID
 			}
 
-			internalobserve.EmitAccessLog(
-				r.Context(),
-				logger,
-				entry.Method,
-				entry.Path,
-				entry.Status,
-				entry.Bytes,
-				entry.Duration,
-				entry.RemoteAddr,
-				entry.UserAgent,
-				entry.OriginalPath,
-				explicitRequestID,
-			)
+			internalobserve.EmitAccessLog(r.Context(), logger,
+				internalobserve.AccessLogRecord(entry), explicitRequestID)
 
 			return err
 		}

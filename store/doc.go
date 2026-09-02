@@ -89,4 +89,6 @@
 // proxy terminals participate automatically; db.Conn(ctx) is the
 // transaction-aware Bun escape hatch. The standalone [WithTx], [GetTx], and
 // [Conn] helpers remain only as deprecated compatibility APIs.
+//
+// Maturity: beta
 package store
