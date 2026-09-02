@@ -469,6 +469,8 @@ middleware.CORS(middleware.CORSConfig{
 
 Any other shape — a mid-label `*` such as `https://api-*-prod.example.com`, several wildcards, an IP wildcard, or an empty entry — is a configuration error and panics when the middleware is constructed.
 
+Behind a reverse proxy, let exactly one layer answer CORS. If the proxy (nginx `add_header`, an ingress annotation, a CDN rule) also appends `Access-Control-*` headers, the browser sees two values for `Access-Control-Allow-Origin` and rejects the response even though each value alone would have been accepted. Either remove the proxy rule or drop this middleware for the proxied routes.
+
 For dynamic origin validation:
 
 ```go

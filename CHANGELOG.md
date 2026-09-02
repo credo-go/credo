@@ -14,6 +14,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- Access-log producers (the built-in tier and `middleware.AccessLog`) return before building the attribute set when the target logger is not enabled for the record's level, so a Warn-only access logger no longer pays per-request attribute cost for 2xx traffic.
+
+### Fixed
+
+- `Request.BindBody` normalizes the Content-Type fallback when `mime.ParseMediaType` rejects malformed parameters: the bare type is trimmed and lowercased (RFC 9110 case-insensitive matching), so `Application/JSON; charset` still decodes as JSON instead of returning 415.
+
 ## [0.16.0] - 2026-09-02
 
 ### Added
