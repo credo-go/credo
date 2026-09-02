@@ -46,6 +46,15 @@ var _ RawConfig = (*Config)(nil)
 // tree atomically, so concurrent readers observe either the previous or the
 // new snapshot, never a mix.
 type Config struct {
+	// The whole state lives behind one pointer so that a Config value is
+	// cheap and safe to copy: a dereferenced copy (*cfg) shares the same
+	// tree and lock, and the redacted formatting methods (declared on the
+	// value type) apply to it as well as to *Config.
+	*configState
+}
+
+// configState is the pointer-backed state shared by every copy of a Config.
+type configState struct {
 	mu   sync.RWMutex // guards data; the tree itself is never mutated after load
 	data map[string]any
 	opts options
@@ -202,10 +211,10 @@ func newConfig(opts ...Option) *Config {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &Config{
+	return &Config{configState: &configState{
 		data: make(map[string]any),
 		opts: o,
-	}
+	}}
 }
 
 // logger returns the configured load-time logger, defaulting to slog.Default.
@@ -308,12 +317,13 @@ func toSnakeCase(s string) string {
 
 // String returns a redacted, metadata-only description of the Config — the
 // number of leaf keys, never any key names or values — so formatting a
-// *Config with %v, %s, or %+v cannot leak secrets into logs or error
-// messages. The methods are declared on *Config; formatting a dereferenced
-// Config copy bypasses them (and copies a mutex, which go vet flags).
-func (c *Config) String() string {
-	if c == nil {
-		return "config.Config(nil)"
+// Config with %v, %s, or %+v cannot leak secrets into logs or error
+// messages. The formatting methods are declared on the value type, so they
+// cover both *Config and a dereferenced copy (*cfg); a nil *Config formats as
+// fmt's usual "<nil>".
+func (c Config) String() string {
+	if c.configState == nil {
+		return "config.Config(uninitialized)"
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -325,16 +335,16 @@ func (c *Config) String() string {
 
 // GoString returns the same redacted description as [Config.String], so the
 // %#v verb cannot dump the config tree either.
-func (c *Config) GoString() string { return c.String() }
+func (c Config) GoString() string { return c.String() }
 
 // LogValue implements [slog.LogValuer] with the same redacted description, so
-// passing a *Config as an slog attribute value logs metadata only.
-func (c *Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
+// passing a Config or *Config as an slog attribute value logs metadata only.
+func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // initialized reports whether the Config holds a tree (built by Load or
 // LoadBytes). Read under the lock so it cannot race a concurrent Reload swap.
 func (c *Config) initialized() bool {
-	if c == nil {
+	if c == nil || c.configState == nil {
 		return false
 	}
 	c.mu.RLock()
@@ -345,7 +355,7 @@ func (c *Config) initialized() bool {
 // Exists reports whether the given key path exists in the merged configuration.
 // Dots in the key always act as path separators.
 func (c *Config) Exists(key string) bool {
-	if c == nil || key == "" {
+	if c == nil || c.configState == nil || key == "" {
 		return false
 	}
 	c.mu.RLock()
