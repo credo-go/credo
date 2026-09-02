@@ -330,7 +330,7 @@ func (app *App) resolveStatusHandler(c *Context, code int) error {
 // already include the group prefix; callers join it. Group middleware is
 // not captured here — compileRoutes collects it from the parent chain.
 func (app *App) addRoute(method, pattern string, h Handler, g *Group) *Route {
-	app.checkFrozen("route registration")
+	app.checkFrozen("App." + method)
 	if h == nil {
 		panic(fmt.Sprintf("credo: nil handler for %s %s", method, pattern))
 	}
@@ -466,7 +466,7 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) Mount(pattern string, handler http.Handler) {
-	app.checkFrozen("Mount")
+	app.checkFrozen("App.Mount")
 	if handler == nil {
 		panic(fmt.Sprintf("credo: nil handler for Mount %s", pattern))
 	}

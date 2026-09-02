@@ -429,7 +429,7 @@ func (app *App) OPTIONS(pattern string, h Handler) *Route {
 // including 404 and 405 responses. Must be called before the server starts;
 // panics if called after compile.
 func (app *App) GlobalMiddleware(middlewares ...Middleware) {
-	app.checkFrozen("GlobalMiddleware")
+	app.checkFrozen("App.GlobalMiddleware")
 	app.globalMW = append(app.globalMW, middlewares...)
 }
 
@@ -456,7 +456,7 @@ func (app *App) Group(prefix string) *Group {
 // a route parameter name collides with a host parameter name.
 // Must be called before the server starts; panics if called after compile.
 func (app *App) Host(pattern string) *Group {
-	app.checkFrozen("host registration")
+	app.checkFrozen("App.Host")
 
 	normalized := normalizeHostPattern(pattern)
 	if app.hasHostPattern(normalized) {
@@ -495,7 +495,7 @@ func (app *App) Host(pattern string) *Group {
 // at the root level.
 // Must be called before the server starts; panics if called after compile.
 func (app *App) StatusHandler(code int, h Handler) {
-	app.checkFrozen("StatusHandler")
+	app.checkFrozen("App.StatusHandler")
 	if app.statusHandlers == nil {
 		app.statusHandlers = make(map[int]Handler)
 	}
@@ -513,7 +513,7 @@ func (app *App) StatusHandler(code int, h Handler) {
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetErrorRenderer(r ErrorRenderer) {
-	app.checkFrozen("SetErrorRenderer")
+	app.checkFrozen("App.SetErrorRenderer")
 	app.errorRenderer = r
 }
 
@@ -530,7 +530,7 @@ func (app *App) SetErrorRenderer(r ErrorRenderer) {
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) SetSuccessRenderer(r SuccessRenderer) {
-	app.checkFrozen("SetSuccessRenderer")
+	app.checkFrozen("App.SetSuccessRenderer")
 	app.successRenderer = r
 }
 

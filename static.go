@@ -260,7 +260,7 @@ func (app *App) File(urlPath string, fsys fs.FS, name string, cfgs ...StaticConf
 // Static registers routes that serve files from fsys under the given URL prefix
 // within this group. See [App.Static] for full documentation.
 func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticRoute {
-	g.registrar.checkFrozen("Static")
+	g.registrar.checkFrozen("App.Static")
 	validateStaticPrefix(prefix)
 
 	cfg := StaticConfig{}
@@ -301,7 +301,7 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 // File registers a single GET route that serves one named file from fsys
 // within this group. See [App.File] for full documentation.
 func (g *Group) File(urlPath string, fsys fs.FS, name string, cfgs ...StaticConfig) *Route {
-	g.registrar.checkFrozen("File")
+	g.registrar.checkFrozen("App.File")
 
 	cfg := StaticConfig{}
 	if len(cfgs) > 0 {

@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- **Lifecycle hook nil-guard** — `App.OnStart` and `App.OnShutdown` now panic at registration when given a nil hook, matching `OnPreDrain`/`OnDrain`/`OnReload`/`OnConfigChange`; previously a nil hook was accepted and crashed the process at startup or teardown. The nil-hook panic text is now uniform (`credo: App.OnStart: hook must not be nil`), and post-compile registration panics name the API as `Type.Method` (for example `credo: App.GET called after app was compiled`, `credo: Group.SetMeta called after app was compiled`).
+
 ## [0.15.0] - 2026-09-01
 
 ### Added

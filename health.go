@@ -76,7 +76,7 @@ func (f HealthCheckFunc) Check(ctx context.Context) error { return f(ctx) }
 // than once, if called after compile, or if cfg.Group belongs to a
 // different App.
 func (app *App) UseHealth(cfgs ...HealthConfig) {
-	app.checkFrozen("UseHealth")
+	app.checkFrozen("App.UseHealth")
 	if app.healthEngine != nil {
 		panic("credo: UseHealth already called")
 	}
