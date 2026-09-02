@@ -101,3 +101,16 @@ func TestEmitAccessLog(t *testing.T) {
 		}
 	}
 }
+
+func TestEmitAccessLog_SkipsDisabledLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	EmitAccessLog(t.Context(), logger, AccessLogRecord{Method: "GET", Path: "/x", Status: 200}, "")
+	if buf.Len() != 0 {
+		t.Fatalf("Info record was emitted through a Warn-only logger: %s", buf.String())
+	}
+	EmitAccessLog(t.Context(), logger, AccessLogRecord{Method: "GET", Path: "/x", Status: 404}, "")
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("Warn record missing: %s", buf.String())
+	}
+}
