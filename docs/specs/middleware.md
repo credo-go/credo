@@ -222,7 +222,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `Recover` | Chi | Per-group/route panic recovery with custom config |
 | `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
-| `CORS` | Echo | Cross-Origin Resource Sharing |
+| `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Compress` | Chi | gzip/deflate response compression |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |

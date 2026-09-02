@@ -46,7 +46,7 @@ var modulePolicies = map[string]importPolicy{
 	"middleware": {
 		credo: []string{
 			"", "validation",
-			"internal/host", "internal/httpheader", "internal/httpwriter",
+			"internal/host", "internal/httpheader", "internal/httpwriter", "internal/origin",
 			"internal/observe", "internal/pattern", "internal/requestid",
 		},
 		external: []string{"github.com/sethvargo/go-limiter"},

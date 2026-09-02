@@ -453,13 +453,15 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 }))
 ```
 
-Wildcard subdomains are supported:
+`AllowOrigins` uses the same strict origin grammar as the websocket adapter's `AllowedOrigins`: each entry is `"*"` or a `scheme://host[:port]` origin (`http`/`https` only; no path, query, fragment, or userinfo; case-insensitive; default port implied). One wildcard may stand for exactly the left-most DNS label:
 
 ```go
 middleware.CORS(middleware.CORSConfig{
-    AllowOrigins: []string{"https://*.example.com"},
+    AllowOrigins: []string{"https://*.example.com"}, // app.example.com yes; example.com, a.b.example.com no
 })
 ```
+
+Any other shape — a mid-label `*` such as `https://api-*-prod.example.com`, several wildcards, an IP wildcard, or an empty entry — is a configuration error and panics when the middleware is constructed.
 
 For dynamic origin validation:
 

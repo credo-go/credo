@@ -232,38 +232,6 @@ func TestCORS_WildcardPattern_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestCORS_WildcardPattern_NoOverlapMatch(t *testing.T) {
-	// The prefix and suffix of a wildcard pattern must match disjoint
-	// regions of the origin. "https://api-*-prod.example.com" must not
-	// match "https://api-prod.example.com" (prefix "https://api-" and
-	// suffix "-prod.example.com" would overlap on the single "-").
-	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
-		AllowOrigins: []string{"https://api-*-prod.example.com"},
-	}))
-	app.GET("/", func(ctx *credo.Context) error {
-		return ctx.Response().NoContent(http.StatusOK)
-	})
-
-	tests := []struct {
-		origin string
-		want   string // expected Access-Control-Allow-Origin
-	}{
-		{"https://api-prod.example.com", ""},                                 // overlap — rejected
-		{"https://api-x-prod.example.com", "https://api-x-prod.example.com"}, // genuine wildcard text
-	}
-	for _, tt := range tests {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.Header.Set("Origin", tt.origin)
-		app.ServeHTTP(w, r)
-
-		if got := w.Header().Get("Access-Control-Allow-Origin"); got != tt.want {
-			t.Errorf("origin %q: Access-Control-Allow-Origin = %q, want %q", tt.origin, got, tt.want)
-		}
-	}
-}
-
 func TestCORS_AllowOriginFuncError(t *testing.T) {
 	app := mustNew(t)
 	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
