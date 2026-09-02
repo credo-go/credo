@@ -19,6 +19,14 @@ type Rule[T any] interface {
 	Validate(value T) error
 }
 
+// funcRule adapts a plain function to [Rule]. Built-in rules whose only state
+// is their constructor arguments are closures over funcRule; composite rules
+// that hold other rules (Each, When, NilSafe) keep explicit types.
+type funcRule[T any] func(value T) error
+
+// Validate implements [Rule].
+func (f funcRule[T]) Validate(value T) error { return f(value) }
+
 // FieldRules is a type-erased container returned by [Field]. The unexported
 // methods prevent external implementation — only [Field] can produce values
 // satisfying this interface.

@@ -14,55 +14,43 @@ var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+
 // Required creates a [Rule] that fails if the value is the zero value for
 // type T. Works with any comparable type: strings, ints, bools, etc.
 func Required[T comparable]() Rule[T] {
-	return &requiredRule[T]{}
-}
-
-type requiredRule[T comparable] struct{}
-
-func (r *requiredRule[T]) Validate(value T) error {
-	var zero T
-	if value == zero {
-		return newRuleError("required", "is required", nil)
-	}
-	return nil
+	return funcRule[T](func(value T) error {
+		var zero T
+		if value == zero {
+			return newRuleError("required", "is required", nil)
+		}
+		return nil
+	})
 }
 
 // Email creates a [Rule] that validates email format.
 // Empty strings pass validation — use [Required] to enforce non-empty.
 func Email() Rule[string] {
-	return &emailRule{}
-}
-
-type emailRule struct{}
-
-func (r *emailRule) Validate(value string) error {
-	if value == "" {
+	return funcRule[string](func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if !emailRegex.MatchString(value) {
+			return newRuleError("email", "must be a valid email address", nil)
+		}
 		return nil
-	}
-	if !emailRegex.MatchString(value) {
-		return newRuleError("email", "must be a valid email address", nil)
-	}
-	return nil
+	})
 }
 
 // URL creates a [Rule] that validates URL format. The URL must have both
 // a scheme and a host.
 // Empty strings pass validation — use [Required] to enforce non-empty.
 func URL() Rule[string] {
-	return &urlRule{}
-}
-
-type urlRule struct{}
-
-func (r *urlRule) Validate(value string) error {
-	if value == "" {
+	return funcRule[string](func(value string) error {
+		if value == "" {
+			return nil
+		}
+		u, err := url.Parse(value)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return newRuleError("url", "must be a valid URL", nil)
+		}
 		return nil
-	}
-	u, err := url.Parse(value)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return newRuleError("url", "must be a valid URL", nil)
-	}
-	return nil
+	})
 }
 
 // UUID creates a [Rule] that validates UUID format.
@@ -70,24 +58,20 @@ func (r *urlRule) Validate(value string) error {
 // plain (xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) formats.
 // Empty strings pass validation — use [Required] to enforce non-empty.
 func UUID() Rule[string] {
-	return &uuidRule{}
-}
-
-type uuidRule struct{}
-
-func (r *uuidRule) Validate(value string) error {
-	if value == "" {
+	return funcRule[string](func(value string) error {
+		if value == "" {
+			return nil
+		}
+		// uuid.Parse also accepts braced and URN forms. Keep UUID's documented
+		// contract limited to the plain and canonical hyphenated forms.
+		if len(value) != 32 && len(value) != 36 {
+			return newRuleError("uuid", "must be a valid UUID", nil)
+		}
+		if _, err := uuid.Parse(value); err != nil {
+			return newRuleError("uuid", "must be a valid UUID", nil)
+		}
 		return nil
-	}
-	// uuid.Parse also accepts braced and URN forms. Keep UUID's documented
-	// contract limited to the plain and canonical hyphenated forms.
-	if len(value) != 32 && len(value) != 36 {
-		return newRuleError("uuid", "must be a valid UUID", nil)
-	}
-	if _, err := uuid.Parse(value); err != nil {
-		return newRuleError("uuid", "must be a valid UUID", nil)
-	}
-	return nil
+	})
 }
 
 // Regex creates a [Rule] that validates the value matches the given pattern.
@@ -99,21 +83,15 @@ func Regex(pattern *regexp.Regexp) Rule[string] {
 	if pattern == nil {
 		panic("validation: Regex requires a non-nil pattern")
 	}
-	return &regexRule{pattern: pattern}
-}
-
-type regexRule struct {
-	pattern *regexp.Regexp
-}
-
-func (r *regexRule) Validate(value string) error {
-	if value == "" {
+	return funcRule[string](func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if !pattern.MatchString(value) {
+			return newRuleError("regex", "must match the required pattern", nil)
+		}
 		return nil
-	}
-	if !r.pattern.MatchString(value) {
-		return newRuleError("regex", "must match the required pattern", nil)
-	}
-	return nil
+	})
 }
 
 // Length creates a [Rule] that validates string length (rune count) is
@@ -121,23 +99,17 @@ func (r *regexRule) Validate(value string) error {
 // correct Unicode handling.
 // Empty strings pass validation — use [Required] to enforce non-empty.
 func Length(min, max int) Rule[string] {
-	return &lengthRule{min: min, max: max}
-}
-
-type lengthRule struct {
-	min, max int
-}
-
-func (r *lengthRule) Validate(value string) error {
-	if value == "" {
+	return funcRule[string](func(value string) error {
+		if value == "" {
+			return nil
+		}
+		l := utf8.RuneCountInString(value)
+		if l < min || l > max {
+			return newRuleError("length",
+				fmt.Sprintf("must be between %d and %d characters", min, max),
+				map[string]any{"min": min, "max": max},
+			)
+		}
 		return nil
-	}
-	l := utf8.RuneCountInString(value)
-	if l < r.min || l > r.max {
-		return newRuleError("length",
-			fmt.Sprintf("must be between %d and %d characters", r.min, r.max),
-			map[string]any{"min": r.min, "max": r.max},
-		)
-	}
-	return nil
+	})
 }

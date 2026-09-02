@@ -34,24 +34,18 @@ import (
 // multipart parser fills in from the request. A nil file header passes — use
 // [Required] to enforce presence.
 func MaxFileSize(maxBytes int64) Rule[*multipart.FileHeader] {
-	return &maxFileSizeRule{max: maxBytes}
-}
-
-type maxFileSizeRule struct {
-	max int64
-}
-
-func (r *maxFileSizeRule) Validate(value *multipart.FileHeader) error {
-	if value == nil {
+	return funcRule[*multipart.FileHeader](func(value *multipart.FileHeader) error {
+		if value == nil {
+			return nil
+		}
+		if value.Size > maxBytes {
+			return newRuleError("max_file_size",
+				fmt.Sprintf("file size must not exceed %d bytes", maxBytes),
+				map[string]any{"max": maxBytes, "size": value.Size},
+			)
+		}
 		return nil
-	}
-	if value.Size > r.max {
-		return newRuleError("max_file_size",
-			fmt.Sprintf("file size must not exceed %d bytes", r.max),
-			map[string]any{"max": r.max, "size": value.Size},
-		)
-	}
-	return nil
+	})
 }
 
 // AllowedMimeTypes creates a [Rule] that restricts the uploaded file's declared
@@ -68,26 +62,19 @@ func AllowedMimeTypes(types ...string) Rule[*multipart.FileHeader] {
 			allowed[n] = struct{}{}
 		}
 	}
-	return &allowedMimeTypesRule{allowed: allowed, types: types}
-}
-
-type allowedMimeTypesRule struct {
-	allowed map[string]struct{}
-	types   []string
-}
-
-func (r *allowedMimeTypesRule) Validate(value *multipart.FileHeader) error {
-	if value == nil {
+	return funcRule[*multipart.FileHeader](func(value *multipart.FileHeader) error {
+		if value == nil {
+			return nil
+		}
+		got := normalizeMime(value.Header.Get("Content-Type"))
+		if _, ok := allowed[got]; !ok {
+			return newRuleError("allowed_mime_types",
+				fmt.Sprintf("file type must be one of: %s", strings.Join(types, ", ")),
+				map[string]any{"allowed": types, "got": got},
+			)
+		}
 		return nil
-	}
-	got := normalizeMime(value.Header.Get("Content-Type"))
-	if _, ok := r.allowed[got]; !ok {
-		return newRuleError("allowed_mime_types",
-			fmt.Sprintf("file type must be one of: %s", strings.Join(r.types, ", ")),
-			map[string]any{"allowed": r.types, "got": got},
-		)
-	}
-	return nil
+	})
 }
 
 // AllowedExtensions creates a [Rule] that restricts the uploaded file's
@@ -101,26 +88,19 @@ func AllowedExtensions(exts ...string) Rule[*multipart.FileHeader] {
 	for _, e := range exts {
 		allowed[normalizeExt(e)] = struct{}{}
 	}
-	return &allowedExtensionsRule{allowed: allowed, exts: exts}
-}
-
-type allowedExtensionsRule struct {
-	allowed map[string]struct{}
-	exts    []string
-}
-
-func (r *allowedExtensionsRule) Validate(value *multipart.FileHeader) error {
-	if value == nil {
+	return funcRule[*multipart.FileHeader](func(value *multipart.FileHeader) error {
+		if value == nil {
+			return nil
+		}
+		got := normalizeExt(filepath.Ext(value.Filename))
+		if _, ok := allowed[got]; !ok {
+			return newRuleError("allowed_extensions",
+				fmt.Sprintf("file extension must be one of: %s", strings.Join(exts, ", ")),
+				map[string]any{"allowed": exts, "got": got},
+			)
+		}
 		return nil
-	}
-	got := normalizeExt(filepath.Ext(value.Filename))
-	if _, ok := r.allowed[got]; !ok {
-		return newRuleError("allowed_extensions",
-			fmt.Sprintf("file extension must be one of: %s", strings.Join(r.exts, ", ")),
-			map[string]any{"allowed": r.exts, "got": got},
-		)
-	}
-	return nil
+	})
 }
 
 // normalizeMime lowercases a MIME type and strips any media-type parameters
