@@ -53,7 +53,7 @@ func Register(app *credo.App, w Worker, opts ...Option) error {
 		return err
 	}
 	if o.hasReadiness {
-		if err := internalhealth.ValidateName(readinessCheckName(name)); err != nil {
+		if err = internalhealth.ValidateName(readinessCheckName(name)); err != nil {
 			return fmt.Errorf("worker: WithReadiness: %w", err)
 		}
 	}
