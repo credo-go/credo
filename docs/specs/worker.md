@@ -46,7 +46,7 @@ Key design properties:
 - Persistent job state / job storage.
 - Cluster-aware scheduling (single-instance only).
 - Worker-specific DI scope (workers use app-level DI like everything else).
-- Health check integration in v1 (snapshot API is sufficient; opt-in readiness binding deferred to v2).
+- Automatic health binding: readiness participation is opt-in per worker through `WithReadiness` (see Health Integration); a worker without a policy never influences readiness.
 
 ---
 
@@ -343,6 +343,7 @@ type Info struct {
 	Status     Status    // snapshot of current status
 	Attempts   int64     // restarts (continuous) or consecutive failures (scheduled)
 	LastRun    time.Time // last execution start (zero if never)
+	LastSuccess time.Time // completion time of the last run that returned nil (zero until then)
 	LastError  string    // last error message (empty if healthy) — string, not error
 }
 ```
@@ -773,21 +774,28 @@ worker cancellation and pool shutdown begin.
 
 ---
 
-## Health Integration (deferred)
+## Health Integration
 
-v1 exposes only `Pool.Workers() []Info` — a snapshot API sufficient for logging, debugging, and admin endpoints.
+`Pool.Workers() []Info` remains the snapshot API for logging, debugging, and admin endpoints (`Info.LastSuccess` records the completion time of the last run that returned nil).
 
-Health check binding is **not** wired automatically. Not every failed worker should degrade readiness — a failed metrics-reporter should not make the entire app unready. If needed in the future:
+Readiness participation is **opt-in per worker** — not every failed worker should degrade readiness; a failed metrics reporter must not take the instance out of rotation:
 
 ```go
-// Future (v2): opt-in readiness binding per worker
-worker.MustRegister(app, critical,
-	worker.WithSchedule("@every 30s"),
-	worker.WithCritical(), // failed → readiness probe fails
+worker.MustRegister(app, recovery,
+	worker.WithSchedule("@every 5m"),
+	worker.WithStartImmediately(),
+	worker.WithReadiness(worker.ReadinessPolicy{
+		RequireFirstSuccess: true,        // startup barrier: unready until the first run succeeds
+		FailWhenFailed:      true,        // unready once the failure threshold is exhausted
+		MaxSuccessAge:       15 * time.Minute, // unready when the last success is older than this
+	}),
 )
 ```
 
-`WithCritical()` is reserved for a future version. Until then, users who need worker health in readiness can add a custom `ReadinessCheck` that inspects `Pool.Workers()`.
+- The zero policy is rejected; `MaxSuccessAge` must be `>= 0`. `RequireFirstSuccess` and `MaxSuccessAge` are scheduled-worker conditions (a continuous worker only "succeeds" when `Run` returns nil, which normally means it is done); `FailWhenFailed` applies to both kinds.
+- `RequireFirstSuccess` stays satisfied once met, even if later runs fail. `MaxSuccessAge` is not applied before the first success; combine it with `RequireFirstSuccess` to close that window.
+- The contribution is reported as a readiness check named `worker:<name>` next to `AddReadinessCheck` entries (same name space; a collision fails closed as a configuration error). It is evaluated in-memory from the runner's last snapshot and never performs I/O; failure text is masked unless `HealthConfig.ExposeErrors` is set.
+- Wiring mirrors the store seam: the pool provides an `internal/health.ReadinessFunc` into DI and the readiness handler resolves it lazily on each request, so `worker.Register` and `UseHealth` may run in either order. Before `Pool.Start` a `RequireFirstSuccess` worker reports "has not started".
 
 ---
 

@@ -26,3 +26,19 @@ type StoreCheck struct {
 // store.Register provides one into DI and root resolves it lazily, so
 // registration order does not matter.
 type StoreFunc func() []StoreCheck
+
+// ReadinessCheck is one named readiness contribution from an infrastructure
+// package (the worker pool today). It is reported exactly like a check added
+// through credo.App.AddReadinessCheck and shares that name space: a name that
+// collides with a named or store check fails closed as a configuration error.
+// Probe must be a stable pointer retained across readiness requests.
+type ReadinessCheck struct {
+	Name  string
+	Probe *Probe
+}
+
+// ReadinessFunc returns an in-memory snapshot of contributed readiness checks.
+// Implementations must not perform I/O or block; only each Probe is executed
+// through the bounded runner. worker.Register provides one into DI and root
+// resolves it lazily, so registration order does not matter.
+type ReadinessFunc func() []ReadinessCheck

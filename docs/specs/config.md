@@ -386,7 +386,7 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Redacted Formatting
 
-`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the `Changes` doctrine (key paths only, never values, safe to log). The methods are on the pointer type; nobody should copy a `Config` (it contains a mutex — `go vet` flags it).
+`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the `Changes` doctrine (key paths only, never values, safe to log). The state lives behind one private pointer and the formatting methods are declared on the value type, so a dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`.
 
 ---
 

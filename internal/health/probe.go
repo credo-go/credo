@@ -145,6 +145,14 @@ func (p *Probe) call(result chan<- Result, ctx context.Context) {
 	completed = true
 }
 
+// SuccessResult is the "up" result a contributed probe returns when its
+// condition holds.
+func SuccessResult() Result { return Result{Status: "up"} }
+
+// FailureResult is the "down" result for cause, with the cause text captured
+// eagerly the way the bounded runner does for named checks.
+func FailureResult(cause error) Result { return failureResult(cause, 0) }
+
 func failureResult(cause error, latency time.Duration) Result {
 	return Result{
 		Status:  "down",

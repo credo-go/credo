@@ -56,7 +56,7 @@ var modulePolicies = map[string]importPolicy{
 	"testutil":   {credo: []string{"", "config"}},
 	"validation": {},
 	"websocket":  {credo: []string{"", "internal/httpwriter", "internal/origin"}, external: []string{"github.com/coder/websocket"}},
-	"worker":     {credo: []string{""}},
+	"worker":     {credo: []string{"", "internal/health"}},
 
 	"internal/di":          {},
 	"internal/faultstatus": {credo: []string{"fault"}},

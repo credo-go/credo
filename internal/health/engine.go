@@ -127,11 +127,14 @@ func (e *Engine) CheckLiveness(ctx context.Context) (string, []CheckResult) {
 	return aggregateStatus(results), results
 }
 
-// CheckReadiness runs named and store checks through the same bounded parallel
-// runner. storeFn returns stable per-store probes and may be nil.
+// CheckReadiness runs named, contributed, and store checks through the same
+// bounded parallel runner. storeFn returns stable per-store probes and
+// contributedFn stable per-contributor probes (reported among the named
+// checks); either may be nil.
 func (e *Engine) CheckReadiness(
 	ctx context.Context,
 	storeFn StoreFunc,
+	contributedFn ReadinessFunc,
 ) (string, []CheckResult, []StoreResult) {
 	named := e.snapshotReadiness()
 	scheduled := scheduleNamedChecks(named)
@@ -177,6 +180,40 @@ func (e *Engine) CheckReadiness(
 			name:   storeCheck.Name,
 			source: sourceStore,
 			probe:  storeCheck.Probe,
+		})
+	}
+
+	contributed, contributedSnapshotErr := snapshotContributedChecks(contributedFn)
+	if contributedSnapshotErr != nil {
+		configFailures = append(configFailures, failedResult(
+			"credo.readiness_contributors",
+			contributedSnapshotErr,
+		))
+	}
+	seenContributed := make(map[string]struct{}, len(contributed))
+	for index, check := range contributed {
+		if err := validateContributedCheck(check); err != nil {
+			configFailures = append(configFailures, failedResult(
+				configurationFailureName("contributed_descriptor", index),
+				err,
+			))
+			continue
+		}
+		_, duplicate := seenContributed[check.Name]
+		_, namedCollision := namedNames[check.Name]
+		_, storeCollision := seenStores[check.Name]
+		if duplicate || namedCollision || storeCollision {
+			configFailures = append(configFailures, failedResult(
+				configurationFailureName("contributed_name_conflict", index),
+				fmt.Errorf("%w: contributed readiness check %q is already registered", ErrCheckNameConflict, check.Name),
+			))
+			continue
+		}
+		seenContributed[check.Name] = struct{}{}
+		scheduled = append(scheduled, scheduledCheck{
+			name:   check.Name,
+			source: sourceNamed,
+			probe:  check.Probe,
 		})
 	}
 
@@ -242,6 +279,29 @@ func snapshotStoreChecks(storeFn StoreFunc) (checks []StoreCheck, err error) {
 		}
 	}()
 	return storeFn(), nil
+}
+
+func snapshotContributedChecks(fn ReadinessFunc) (checks []ReadinessCheck, err error) {
+	if fn == nil {
+		return nil, nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			checks = nil
+			err = fmt.Errorf("credo: contributed readiness checks panic: %v", recovered)
+		}
+	}()
+	return fn(), nil
+}
+
+func validateContributedCheck(check ReadinessCheck) error {
+	if err := ValidateName(check.Name); err != nil {
+		return fmt.Errorf("credo: invalid contributed readiness check: %w", err)
+	}
+	if check.Probe == nil {
+		return fmt.Errorf("credo: contributed readiness check %q has a nil probe", check.Name)
+	}
+	return nil
 }
 
 func validateStoreCheckDescriptor(check StoreCheck) error {

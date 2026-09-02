@@ -25,11 +25,12 @@ const (
 
 // Info is a point-in-time snapshot of a worker's state.
 type Info struct {
-	Name      string
-	Kind      string
-	Schedule  string
-	Status    Status
-	Attempts  int64 // restart count for continuous workers; consecutive failures for scheduled workers.
-	LastRun   time.Time
-	LastError string
+	Name        string
+	Kind        string
+	Schedule    string
+	Status      Status
+	Attempts    int64 // restart count for continuous workers; consecutive failures for scheduled workers.
+	LastRun     time.Time
+	LastSuccess time.Time // completion time of the last run that returned nil; zero until then
+	LastError   string
 }

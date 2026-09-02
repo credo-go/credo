@@ -23,10 +23,17 @@ func TestConfigFormattingIsRedacted(t *testing.T) {
 		"%s":  fmt.Sprintf("%s", c),
 		"%+v": fmt.Sprintf("%+v", c),
 		"%#v": fmt.Sprintf("%#v", c),
+		// A dereferenced copy must be just as redacted as the pointer.
+		"deref %v":  fmt.Sprintf("%v", *c),
+		"deref %+v": fmt.Sprintf("%+v", *c),
+		"deref %#v": fmt.Sprintf("%#v", *c),
 	}
 	var logs bytes.Buffer
 	slog.New(slog.NewTextHandler(&logs, nil)).Info("loaded", "config", c)
 	outputs["slog"] = logs.String()
+	logs.Reset()
+	slog.New(slog.NewTextHandler(&logs, nil)).Info("loaded", "config", *c)
+	outputs["deref slog"] = logs.String()
 
 	for verb, out := range outputs {
 		if strings.Contains(out, "s3cr3t-value") || strings.Contains(out, "password") {
@@ -44,10 +51,16 @@ func TestConfigFormattingIsRedacted(t *testing.T) {
 // TestConfigStringEdgeCases pins the nil and uninitialized forms.
 func TestConfigStringEdgeCases(t *testing.T) {
 	var c *Config
-	if got := c.String(); got != "config.Config(nil)" {
-		t.Errorf("nil String() = %q", got)
+	if got := fmt.Sprintf("%v", c); got != "<nil>" {
+		t.Errorf("nil %%v = %q", got)
 	}
 	if got := (&Config{}).String(); got != "config.Config(uninitialized)" {
 		t.Errorf("uninitialized String() = %q", got)
+	}
+	if got := (Config{}).String(); got != "config.Config(uninitialized)" {
+		t.Errorf("zero-value String() = %q", got)
+	}
+	if (&Config{}).Exists("any") {
+		t.Error("uninitialized Exists() = true, want false")
 	}
 }

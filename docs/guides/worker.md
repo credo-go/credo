@@ -359,8 +359,36 @@ app.GET("/admin/workers", func(ctx *credo.Context) error {
 - last run time
 - attempt counter
 - last error text
+- last successful run time
 
 This is useful for admin endpoints, debugging, and operational visibility.
+
+---
+
+## Readiness Integration
+
+A worker can take part in the readiness probe (`app.UseHealth()`, `/ready`) through an explicit policy. Nothing is bound automatically — a failed metrics reporter should not take the instance out of rotation — so each condition is opt-in:
+
+```go
+app.UseHealth()
+
+worker.MustRegister(app, recovery,
+    worker.WithSchedule("@every 5m"),
+    worker.WithStartImmediately(),
+    worker.WithReadiness(worker.ReadinessPolicy{
+        RequireFirstSuccess: true,             // unready until the first run succeeds
+        FailWhenFailed:      true,             // unready once the failure threshold is exhausted
+        MaxSuccessAge:       15 * time.Minute, // unready when the last success is too old
+    }),
+)
+```
+
+- `RequireFirstSuccess` is a startup barrier: the instance stays unready until the worker's first run returns nil, then stays ready even if later runs fail. Pair it with `WithStartImmediately()` unless waiting for the first cron activation is intended.
+- `FailWhenFailed` reports unready once the worker reaches `StatusFailed` (`WithMaxRestarts` / `WithMaxConsecutiveFailures` exhausted). Use it only for workers the instance cannot serve without: every replica hitting the same persistent failure leaves rotation together.
+- `MaxSuccessAge` reports unready when the last success is older than the limit; it is not applied before the first success.
+- `RequireFirstSuccess` and `MaxSuccessAge` are for scheduled workers; `FailWhenFailed` works for both kinds. The zero policy is rejected at registration.
+
+The contribution appears in the `/ready` body as a check named `worker:<name>`. `worker.Register` and `app.UseHealth()` may run in either order.
 
 ---
 

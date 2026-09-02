@@ -177,6 +177,18 @@ func (app *App) storeHealthFunc() internalhealth.StoreFunc {
 	return fn
 }
 
+// contributedReadinessFunc returns the readiness contributions provided by
+// infrastructure packages (the worker pool's WithReadiness bindings, under the
+// module-internal [internalhealth.ReadinessFunc] type), or nil when none is
+// registered. Resolved lazily on each readiness check, like the store seam.
+func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {
+	fn, err := app.Resolve[internalhealth.ReadinessFunc]()
+	if err != nil {
+		return nil
+	}
+	return fn
+}
+
 // livenessHandler returns 200/503 with a JSON status body.
 func (app *App) livenessHandler(ctx *Context) error {
 	status, checks := app.healthEngine.CheckLiveness(ctx.Request().Context())
@@ -199,7 +211,7 @@ func (app *App) readinessHandler(ctx *Context) error {
 		return ctx.Response().JSON(http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
 	}
 
-	status, checks, stores := app.healthEngine.CheckReadiness(ctx.Request().Context(), app.storeHealthFunc())
+	status, checks, stores := app.healthEngine.CheckReadiness(ctx.Request().Context(), app.storeHealthFunc(), app.contributedReadinessFunc())
 	code := http.StatusOK
 	if status != "up" {
 		code = http.StatusServiceUnavailable

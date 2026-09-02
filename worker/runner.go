@@ -12,11 +12,12 @@ import (
 type runner struct {
 	def *Definition
 
-	mu        sync.Mutex
-	status    Status
-	attempts  int64
-	lastRun   time.Time
-	lastError string
+	mu          sync.Mutex
+	status      Status
+	attempts    int64
+	lastRun     time.Time
+	lastSuccess time.Time
+	lastError   string
 }
 
 func newRunner(def *Definition) *runner {
@@ -52,6 +53,11 @@ func (r *runner) setAttemptOutcome(status Status, attempts int64, err error) {
 	})
 }
 
+// recordSuccess stamps the completion time of a run that returned nil.
+func (r *runner) recordSuccess(at time.Time) {
+	r.update(func(r *runner) { r.lastSuccess = at })
+}
+
 func (r *runner) update(fn func(*runner)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -82,13 +88,14 @@ func (r *runner) snapshot() Info {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Info{
-		Name:      r.def.name,
-		Kind:      r.def.Kind(),
-		Schedule:  r.def.scheduleExpr(),
-		Status:    r.status,
-		Attempts:  r.attempts,
-		LastRun:   r.lastRun,
-		LastError: r.lastError,
+		Name:        r.def.name,
+		Kind:        r.def.Kind(),
+		Schedule:    r.def.scheduleExpr(),
+		Status:      r.status,
+		Attempts:    r.attempts,
+		LastRun:     r.lastRun,
+		LastSuccess: r.lastSuccess,
+		LastError:   r.lastError,
 	}
 }
 
@@ -182,6 +189,7 @@ func (c *continuousPolicy) beforeRun(ctx context.Context) (int, time.Time, bool)
 func (c *continuousPolicy) afterRun(ctx context.Context, err error) (time.Duration, bool) {
 	r, p := c.r, c.p
 	if err == nil {
+		r.recordSuccess(time.Now())
 		r.setOutcome(StatusStopped, nil)
 		return waitNone, true
 	}
@@ -284,6 +292,7 @@ func (s *scheduledPolicy) finishRun(ctx context.Context, intendedTime time.Time,
 		if ctx.Err() != nil {
 			status = StatusStopped
 		}
+		r.recordSuccess(time.Now())
 		r.setAttemptOutcome(status, 0, nil)
 		return false
 	}

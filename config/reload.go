@@ -113,7 +113,7 @@ func (c *Config) Stage() (Staged, error) {
 	if !c.initialized() {
 		return nil, fmt.Errorf("config: instance not initialized")
 	}
-	fresh := &Config{data: make(map[string]any), opts: c.opts, src: c.src}
+	fresh := &Config{configState: &configState{data: make(map[string]any), opts: c.opts, src: c.src}}
 	dotenv, err := fresh.readDotenv()
 	if err != nil {
 		return nil, fmt.Errorf("config: reload: load .env: %w", err)
