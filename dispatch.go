@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	internalpattern "github.com/credo-go/credo/internal/pattern"
 	"github.com/credo-go/credo/internal/radix"
 )
 
@@ -420,41 +421,11 @@ func (app *App) validateParamNamespace(hostPattern, pattern string) {
 		hostSet[key] = struct{}{}
 	}
 
-	for _, key := range routePatternParamKeys(pattern) {
+	for _, key := range internalpattern.ParamNames(pattern) {
 		if _, ok := hostSet[key]; ok {
 			panic(fmt.Sprintf("credo: route parameter %q conflicts with host parameter on host %q for pattern %q", key, hostPattern, pattern))
 		}
 	}
-}
-
-func routePatternParamKeys(pattern string) []string {
-	var keys []string
-	for offset := 0; offset < len(pattern); {
-		start := strings.IndexByte(pattern[offset:], '{')
-		if start < 0 {
-			break
-		}
-		start += offset
-
-		end := radix.FindMatchingBrace(pattern, start)
-		if end < 0 {
-			break
-		}
-
-		inner := pattern[start+1 : end]
-		switch {
-		case strings.HasSuffix(inner, "..."):
-			keys = append(keys, inner[:len(inner)-3])
-		case strings.Contains(inner, ":"):
-			name, _, _ := strings.Cut(inner, ":")
-			keys = append(keys, name)
-		default:
-			keys = append(keys, inner)
-		}
-
-		offset = end + 1
-	}
-	return keys
 }
 
 // discardBodyWriter wraps an http.ResponseWriter and discards Write calls.

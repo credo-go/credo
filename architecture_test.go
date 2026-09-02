@@ -47,11 +47,7 @@ var modulePolicies = map[string]importPolicy{
 		credo: []string{
 			"", "validation",
 			"internal/host", "internal/httpheader", "internal/httpwriter",
-			"internal/observe", "internal/requestid",
-			// Rewrite reuses the route-pattern grammar. Temporary: the
-			// pattern primitive moves to a shared internal package (arch
-			// refactor A4) and this allowance goes with it.
-			"internal/radix",
+			"internal/observe", "internal/pattern", "internal/requestid",
 		},
 		external: []string{"github.com/sethvargo/go-limiter"},
 	},
@@ -70,8 +66,9 @@ var modulePolicies = map[string]importPolicy{
 	"internal/httpwriter":  {},
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
 	"internal/observe":     {credo: []string{"fault", "internal/faultstatus"}},
+	"internal/pattern":     {},
 	"internal/proxy":       {},
-	"internal/radix":       {},
+	"internal/radix":       {credo: []string{"internal/pattern"}},
 	"internal/requestid":   {},
 	"internal/resourceid":  {},
 

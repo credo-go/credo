@@ -7,7 +7,7 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/credo-go/credo/internal/radix"
+	internalpattern "github.com/credo-go/credo/internal/pattern"
 )
 
 // Route represents a registered route with its handler, metadata,
@@ -269,12 +269,12 @@ func replaceParams(s string, params []string) (string, int, error) {
 			continue
 		}
 
-		end := radix.FindMatchingBrace(s, i)
+		end := internalpattern.FindMatchingBrace(s, i)
 		if end < 0 {
 			return "", consumed, fmt.Errorf("missing closing brace at byte %d", i)
 		}
 		if consumed >= len(params) {
-			return "", consumed, fmt.Errorf("missing parameter %q", routeParamName(s[i+1:end]))
+			return "", consumed, fmt.Errorf("missing parameter %q", internalpattern.ParamName(s[i+1:end]))
 		}
 
 		b.WriteString(s[last:i])
@@ -288,11 +288,4 @@ func replaceParams(s string, params []string) (string, int, error) {
 	}
 	b.WriteString(s[last:])
 	return b.String(), consumed, nil
-}
-
-func routeParamName(token string) string {
-	if name, _, ok := strings.Cut(token, ":"); ok {
-		return name
-	}
-	return strings.TrimSuffix(token, "...")
 }

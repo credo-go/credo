@@ -114,15 +114,15 @@ func (n *Node[V]) InsertRoute(method MethodTyp, pattern string, value V, autoGen
 
 			if child == nil {
 				child = &Node[V]{
-					Typ:       seg.Typ,
+					Typ:       seg.Kind,
 					Label:     '{',
 					Prefix:    segmentPattern,
 					Tail:      seg.TailByte,
-					ParamKey:  seg.ParamKey,
+					ParamKey:  seg.Name,
 					Endpoints: make(Endpoints[V]),
 				}
 
-				if seg.Typ == NtRegexp {
+				if seg.Kind == NtRegexp {
 					child.RegexpSeg = &seg
 				}
 
@@ -261,11 +261,11 @@ func (n *Node[V]) FindEndpoint(method MethodTyp, pattern string) (*Endpoint[V], 
 // because an InsertRoute would then create a sibling or reject the pattern,
 // neither of which is an endpoint already present at the matched location.
 func (n *Node[V]) findParamChild(seg PatternSegment) *Node[V] {
-	children := n.Children[seg.Typ]
+	children := n.Children[seg.Kind]
 
-	switch seg.Typ {
+	switch seg.Kind {
 	case NtParam, NtCatchAll:
-		if len(children) == 0 || children[0].ParamKey != seg.ParamKey {
+		if len(children) == 0 || children[0].ParamKey != seg.Name {
 			return nil
 		}
 		return children[0]
@@ -278,7 +278,7 @@ func (n *Node[V]) findParamChild(seg PatternSegment) *Node[V] {
 			if ch.RegexpSeg.Regexp.String() != seg.Regexp.String() {
 				continue
 			}
-			if ch.ParamKey != seg.ParamKey {
+			if ch.ParamKey != seg.Name {
 				return nil
 			}
 			return ch
@@ -293,18 +293,18 @@ func (n *Node[V]) findParamChild(seg PatternSegment) *Node[V] {
 // matching pattern, it may update the existing node's TailByte if previously
 // unset (hence "OrUpdate" in the name).
 func (n *Node[V]) findOrUpdateParamChild(seg PatternSegment, segmentPattern, fullPattern string) (*Node[V], error) {
-	children := n.Children[seg.Typ]
+	children := n.Children[seg.Kind]
 
-	switch seg.Typ {
+	switch seg.Kind {
 	case NtParam, NtCatchAll:
 		if len(children) == 0 {
 			return nil, nil
 		}
 
 		existing := children[0]
-		if existing.ParamKey != seg.ParamKey {
+		if existing.ParamKey != seg.Name {
 			return nil, conflictingParameterError(
-				seg.Typ, seg.ParamKey, existing.ParamKey, existing.firstEndpointPattern(), fullPattern,
+				seg.Kind, seg.Name, existing.ParamKey, existing.firstEndpointPattern(), fullPattern,
 			)
 		}
 		return existing, nil
@@ -320,9 +320,9 @@ func (n *Node[V]) findOrUpdateParamChild(seg PatternSegment, segmentPattern, ful
 				continue
 			}
 
-			if ch.ParamKey != seg.ParamKey {
+			if ch.ParamKey != seg.Name {
 				return nil, conflictingParameterError(
-					seg.Typ, seg.ParamKey, ch.ParamKey, ch.firstEndpointPattern(), fullPattern,
+					seg.Kind, seg.Name, ch.ParamKey, ch.firstEndpointPattern(), fullPattern,
 				)
 			}
 
