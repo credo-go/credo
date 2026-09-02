@@ -62,7 +62,8 @@
 //   - CORS(cfg ...CORSConfig)
 //   - CSRF(cfg ...CSRFConfig) — Sec-Fetch-Site based, no tokens
 //   - Secure(cfg ...SecureConfig)
-//   - Compress(cfg ...CompressConfig)
+//   - Compress(cfg ...CompressConfig) — response compression
+//   - Decompress(cfg ...DecompressConfig) — opt-in request body decompression
 //   - Timeout(cfg ...TimeoutConfig)
 //   - RateLimit(cfg ...RateLimitConfig)
 //

@@ -225,6 +225,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Compress` | Chi | gzip/deflate response compression |
+| `Decompress` | Credo | Opt-in gzip/deflate request-body decompression with a decompressed-size bound (413) |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
 | `RateLimit` | go-limiter | Token bucket rate limiting. Default key uses `Request.RealIP()` |
 | `Timeout` | Echo | Request timeout |
@@ -310,6 +311,19 @@ QUERY being safe and QUERY requiring CORS preflight are separate properties. A b
 **Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 
 CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
+
+### Decompress
+
+```go
+middleware.Decompress(cfg ...DecompressConfig) credo.Middleware
+
+type DecompressConfig struct {
+    Skipper  Skipper
+    MaxBytes int64 // decompressed bound; 0 = DefaultDecompressMaxBytes (4 MiB); negative panics
+}
+```
+
+Credo does not decompress request bodies by default; `BindBody` answers a non-identity `Content-Encoding` with 415 `unsupported_content_encoding`. `Decompress` is the opt-in: it recognizes `gzip` (and `x-gzip`) and `deflate` (zlib-wrapped per RFC 9110, raw DEFLATE accepted) using only the standard library, replaces the body with the decompressed stream wrapped in `http.MaxBytesReader(MaxBytes)`, sets `ContentLength` to -1, and removes the header so binding sees a plain body. The server-wide `max_body_bytes` only bounds compressed wire bytes, which is why the decompressed stream carries its own limit; overruns surface as the framework's regular 413. An unsupported coding or a multi-coding list returns 415 with the same code; a corrupt stream header returns 400 `bind_failed`/`syntax`; a body declared empty passes through with the header dropped. Multiple gzip members are not concatenated.
 
 ### Planned (Not Yet Implemented)
 

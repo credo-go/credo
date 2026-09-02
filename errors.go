@@ -37,6 +37,18 @@ const (
 
 const msgKeyContentTypeRequired = "content_type_required"
 
+// Framework error codes carried on the wire in addition to the status-derived
+// defaults (see errorcode.go).
+const (
+	// CodeUnsupportedContentEncoding is the 415 code for a request body whose
+	// Content-Encoding no middleware.Decompress has unwrapped.
+	CodeUnsupportedContentEncoding = "unsupported_content_encoding"
+
+	// CodeInvalidBindTarget is the 500 code for a nil or non-pointer bind
+	// target — a developer error, reported without client-facing detail.
+	CodeInvalidBindTarget = "invalid_bind_target"
+)
+
 // builtInMessages maps framework error codes to safe default English messages.
 var builtInMessages = map[string]string{
 	MsgKeyBadRequest:          "Bad Request",
