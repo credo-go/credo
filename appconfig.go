@@ -101,10 +101,38 @@ type serverTLS struct {
 // Option configures the App during construction.
 type Option func(*appOptions)
 
+// setting is a construction-time option value that remembers whether it was
+// set explicitly. Server settings from With* options live in settings rather
+// than in the decoded serverConfig, so a "server" config section decoded in
+// New cannot silently overwrite an explicit programmatic value; overlayServer
+// copies every explicitly set value over the decoded config afterwards, giving
+// the option precedence over config. Remembering "set" separately from the
+// value also lets an explicit zero (WithTLSConfig(nil), WithTLSFiles("", ""))
+// fail loud instead of silently falling back.
+type setting[T any] struct {
+	value T
+	isSet bool
+}
+
+// set records an explicit value.
+func (s *setting[T]) set(v T) { s.value, s.isSet = v, true }
+
+// overlay writes the value into dst when it was set explicitly.
+func (s setting[T]) overlay(dst *T) {
+	if s.isSet {
+		*dst = s.value
+	}
+}
+
+// listenAddr is the WithAddr host/port pair, overlaid as one unit.
+type listenAddr struct {
+	host string
+	port int
+}
+
 // appOptions collects all App construction options.
 type appOptions struct {
 	rawConfig            RawConfig
-	serverCfg            serverConfig
 	logger               *slog.Logger
 	disableRecover       bool
 	disableRequestID     bool
@@ -115,34 +143,50 @@ type appOptions struct {
 	accessLogSkipper     func(*Context) bool
 	accessLogFilter      AccessLogResultFilter
 	debug                bool
-	trustedProxies       []string
-	trustedProxiesSet    bool
-	tlsConfig            *tls.Config
-	tlsConfigSet         bool
-	tlsCertFile          string
-	tlsKeyFile           string
-	tlsFilesSet          bool
+	strictBodies         bool
+	jsonOptions          []jsonv2.Options
 	httpRedirectAddr     string
 	configureServer      func(*http.Server)
 
-	// Server settings from With* options live in these shadow fields, not in
-	// serverCfg, so a "server" config section decoded in New does not silently
-	// overwrite an explicit programmatic setting. Each is copied into serverCfg
-	// after Unmarshal (guarded by its …Set flag), giving the option precedence
-	// over config — the same pattern as trustedProxies and the TLS file paths.
-	addrHost                 string
-	addrPort                 int
-	addrSet                  bool
-	shutdownTimeout          time.Duration
-	shutdownTimeoutSet       bool
-	reloadTimeout            time.Duration
-	reloadTimeoutSet         bool
-	strictBodies             bool
-	jsonOptions              []jsonv2.Options
-	maxBodyBytes             int64
-	maxBodyBytesSet          bool
-	redirectTrailingSlash    bool
-	redirectTrailingSlashSet bool
+	// tlsConfig has the highest TLS precedence and is resolved at preflight,
+	// not overlaid onto serverConfig. isSet is remembered even for nil.
+	tlsConfig setting[*tls.Config]
+
+	// Server settings that also have a "server" config key. See setting.
+	addr                  setting[listenAddr]
+	shutdownTimeout       setting[time.Duration]
+	reloadTimeout         setting[time.Duration]
+	maxBodyBytes          setting[int64]
+	redirectTrailingSlash setting[bool]
+	trustedProxies        setting[[]string]
+	tlsFiles              setting[serverTLS]
+}
+
+// overlayServer re-applies the explicitly set programmatic server options over
+// cfg after the "server" config section was decoded into it, so an explicit
+// With* setting always wins over config (which would otherwise overwrite it —
+// including resetting a field to zero, which applyServerDefaults then replaces
+// with a framework default, silently undoing an intentional value such as
+// WithMaxBodyBytes(-1)).
+//
+// WithTLSFiles overrides the server.tls.* keys as a whole pair (not merged) and
+// fires whenever the option was set — even with empty paths, which preflight
+// then rejects rather than letting them silently fall back to the config keys.
+// WithTLSConfig outranks both and is resolved later at preflight.
+func (o *appOptions) overlayServer(cfg *serverConfig) {
+	if o.addr.isSet {
+		cfg.Host, cfg.Port = o.addr.value.host, o.addr.value.port
+	}
+	o.shutdownTimeout.overlay(&cfg.ShutdownTimeout)
+	o.reloadTimeout.overlay(&cfg.ReloadTimeout)
+	o.maxBodyBytes.overlay(&cfg.MaxBodyBytes)
+	if o.redirectTrailingSlash.isSet {
+		cfg.RedirectTrailingSlash = new(o.redirectTrailingSlash.value)
+	}
+	if o.trustedProxies.isSet {
+		cfg.TrustedProxies = slices.Clone(o.trustedProxies.value)
+	}
+	o.tlsFiles.overlay(&cfg.TLS)
 }
 
 // WithRawConfig sets the RawConfig for the application. When provided,
@@ -201,10 +245,7 @@ func WithLogger(l *slog.Logger) Option {
 // requests receive 301; other methods receive 308 (preserving the method).
 // Defaults to true when not set.
 func WithRedirectTrailingSlash(enabled bool) Option {
-	return func(o *appOptions) {
-		o.redirectTrailingSlash = enabled
-		o.redirectTrailingSlashSet = true
-	}
+	return func(o *appOptions) { o.redirectTrailingSlash.set(enabled) }
 }
 
 // WithTrustedProxies configures the CIDR ranges from which forwarded headers
@@ -214,10 +255,7 @@ func WithRedirectTrailingSlash(enabled bool) Option {
 // Pass no entries (the default) to disable proxy-header trust entirely.
 // Invalid CIDR entries cause [New] to return an error.
 func WithTrustedProxies(cidrs ...string) Option {
-	return func(o *appOptions) {
-		o.trustedProxies = slices.Clone(cidrs)
-		o.trustedProxiesSet = true
-	}
+	return func(o *appOptions) { o.trustedProxies.set(slices.Clone(cidrs)) }
 }
 
 // WithoutRecover disables the built-in panic recovery that wraps the entire
@@ -366,11 +404,7 @@ func WithJSONOptions(opts ...jsonv2.Options) Option {
 
 // WithAddr sets the listen address directly (for testing or programmatic use).
 func WithAddr(host string, port int) Option {
-	return func(o *appOptions) {
-		o.addrHost = host
-		o.addrPort = port
-		o.addrSet = true
-	}
+	return func(o *appOptions) { o.addr.set(listenAddr{host: host, port: port}) }
 }
 
 // WithTLSFiles configures HTTPS by loading the certificate and private key from
@@ -392,11 +426,7 @@ func WithAddr(host string, port int) Option {
 //
 // This option performs no I/O; the files are read when the server starts.
 func WithTLSFiles(certFile, keyFile string) Option {
-	return func(o *appOptions) {
-		o.tlsCertFile = certFile
-		o.tlsKeyFile = keyFile
-		o.tlsFilesSet = true
-	}
+	return func(o *appOptions) { o.tlsFiles.set(serverTLS{CertFile: certFile, KeyFile: keyFile}) }
 }
 
 // WithTLSConfig configures HTTPS from a fully-formed *tls.Config, exposing the
@@ -412,10 +442,7 @@ func WithTLSFiles(certFile, keyFile string) Option {
 // caught at startup: an explicit WithTLSConfig(nil) does not silently fall back
 // to WithTLSFiles, the config keys, or plaintext.
 func WithTLSConfig(cfg *tls.Config) Option {
-	return func(o *appOptions) {
-		o.tlsConfig = cfg
-		o.tlsConfigSet = true
-	}
+	return func(o *appOptions) { o.tlsConfig.set(cfg) }
 }
 
 // WithHTTPRedirect runs a second, plaintext listener on addr (for example
@@ -470,10 +497,7 @@ func WithHTTPServer(fn func(*http.Server)) Option {
 // Requests whose body exceeds the limit receive 413 Request Entity Too Large.
 // A negative value disables the limit; zero (the default) applies a 4 MiB cap.
 func WithMaxBodyBytes(n int64) Option {
-	return func(o *appOptions) {
-		o.maxBodyBytes = n
-		o.maxBodyBytesSet = true
-	}
+	return func(o *appOptions) { o.maxBodyBytes.set(n) }
 }
 
 // WithShutdownTimeout sets the graceful-shutdown drain budget used by the
@@ -484,10 +508,7 @@ func WithMaxBodyBytes(n int64) Option {
 // caller's context deadline instead. Can also be set via the
 // server.shutdown_timeout config key.
 func WithShutdownTimeout(d time.Duration) Option {
-	return func(o *appOptions) {
-		o.shutdownTimeout = d
-		o.shutdownTimeoutSet = true
-	}
+	return func(o *appOptions) { o.shutdownTimeout.set(d) }
 }
 
 // WithoutReloadSignals disables signal-triggered reloads under [App.Run]:
@@ -510,10 +531,7 @@ func WithoutReloadSignals() Option {
 // this and honours the caller's context instead. Can also be set via the
 // server.reload_timeout config key.
 func WithReloadTimeout(d time.Duration) Option {
-	return func(o *appOptions) {
-		o.reloadTimeout = d
-		o.reloadTimeoutSet = true
-	}
+	return func(o *appOptions) { o.reloadTimeout.set(d) }
 }
 
 // buildServer creates an *http.Server from serverConfig. logger receives the
