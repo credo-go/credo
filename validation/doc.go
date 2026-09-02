@@ -48,5 +48,5 @@
 // inspired by govy (design only, no code adapted). See NOTICES file for
 // full attribution.
 //
-// Maturity: experimental
+// Maturity: beta
 package validation

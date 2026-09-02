@@ -346,4 +346,6 @@
 //
 // Beta, versioned independently from the root module (see the project README's
 // "Maturity by Area" table). Breaking changes are possible before v1.
+//
+// Maturity: beta
 package sqldb

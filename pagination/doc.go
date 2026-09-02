@@ -52,4 +52,6 @@
 // preventing SQL injection through ORDER BY clauses:
 //
 //	col, ord := filter.SortRequest.ValidateSort(sortCfg)
+//
+// Maturity: beta
 package pagination

@@ -62,4 +62,6 @@
 //		Message: "request completed",
 //		Attrs:   map[string]any{"method": "GET", "status": 200},
 //	})
+//
+// Maturity: beta
 package testutil

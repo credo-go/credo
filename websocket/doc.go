@@ -18,4 +18,6 @@
 // of the HTTP request context. Neither the pooled *credo.Context nor Conn may
 // be retained after the Handler returns. Every connection needs an active Read
 // or CloseRead so control frames are processed.
+//
+// Maturity: beta
 package websocket

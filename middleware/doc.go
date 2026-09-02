@@ -74,4 +74,6 @@
 //	ratelimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
 //	app.GlobalMiddleware(ratelimiter.Middleware())
 //	app.OnShutdown(ratelimiter.Shutdown)
+//
+// Maturity: beta
 package middleware

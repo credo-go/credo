@@ -652,7 +652,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 - [ ] **Kernel + Modules model**: Kernel = root + router + middleware + internal (must be stable first)
 - [ ] Optional modules (i18n, health, openapi, pubsub) mature independently via capability interfaces
-- [ ] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable`
+- [x] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable` — `// Maturity: <label>` closes every public package doc; `maturity_test.go` enforces the line and its agreement with the README table
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
@@ -693,7 +693,7 @@ should an SSE response API and disconnect/drain contract be designed.
 
 ### Documentation
 
-- [ ] `doc.go` for every package (include maturity label)
+- [x] `doc.go` for every package (include maturity label)
 - [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
 - [x] ADRs tracked (20 total):
   - [x] [`001-framework-identity-and-goals.md`](docs/adr/001-framework-identity-and-goals.md) — Framework identity and goals

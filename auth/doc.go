@@ -59,4 +59,6 @@
 // structs), ParseToken (raw *jwt.Token access), ParserOptions — for setups
 // the simple tier cannot express. Configuration placed there is coupled to
 // the golang-jwt API by design; see [JWTAdvanced].
+//
+// Maturity: beta
 package auth

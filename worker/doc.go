@@ -21,5 +21,5 @@
 // Cron expression parsing and next-fire calculation are adapted from
 // robfig/cron v3 (MIT). See NOTICES for full attribution.
 //
-// Maturity: experimental
+// Maturity: beta
 package worker

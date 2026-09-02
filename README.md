@@ -23,7 +23,7 @@ The project is early but actively maintained, with a focus on clear APIs, docume
 
 ## Maturity by Area
 
-Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what has shipped and what is still on the roadmap. Planned areas hold a placeholder directory and a roadmap entry, nothing importable yet.
+Credo is **Beta** overall. Shipped packages are usable for real development; the table below is explicit about what has shipped and what is still on the roadmap. Planned areas hold a placeholder directory and a roadmap entry, nothing importable yet. Every importable package repeats its label as a machine-readable `Maturity: <label>` line at the end of its package documentation (`go doc <pkg>`), and `architecture_test.go` checks that those lines agree with this table.
 
 | Area | Status |
 | --- | --- |
