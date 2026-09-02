@@ -236,12 +236,19 @@ func (r *Request) BindBody(target any) error {
 	// Developer-error guard, checked before any decoding so it cannot be
 	// misreported as a client payload problem.
 	if rv := reflect.ValueOf(target); rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return NewHTTPError(http.StatusBadRequest, "invalid_bind_target").
-			WithMessageKey("bind target must be a non-nil pointer")
+		return invalidBindTarget("bind target must be a non-nil pointer")
 	}
 
 	if r.Body == nil {
 		return &BindError{Reason: BindReasonEmptyBody}
+	}
+
+	// Credo never decompresses implicitly: a transformed body that no
+	// middleware.Decompress has unwrapped would otherwise reach the decoder as
+	// opaque bytes and be misreported as a syntax error.
+	if coding := r.Header.Get("Content-Encoding"); !isIdentityContentCoding(coding) {
+		return NewHTTPError(http.StatusUnsupportedMediaType, CodeUnsupportedContentEncoding).
+			WithMessageKey("unsupported content encoding: " + coding)
 	}
 
 	ct := r.Header.Get("Content-Type")
@@ -315,6 +322,25 @@ func (r *Request) BindBody(target any) error {
 	}
 
 	return r.validateBoundTarget("BindBody", target)
+}
+
+// isIdentityContentCoding reports whether every token of a Content-Encoding
+// value is "identity" (or the value is empty), meaning the body carries no
+// transformation.
+func isIdentityContentCoding(value string) bool {
+	for token := range strings.SplitSeq(value, ",") {
+		if t := strings.ToLower(strings.TrimSpace(token)); t != "" && t != "identity" {
+			return false
+		}
+	}
+	return true
+}
+
+// invalidBindTarget reports a developer error (nil or non-pointer bind
+// target) as 500 with the reason logged, never as a client-facing 400.
+func invalidBindTarget(reason string) error {
+	return NewHTTPError(http.StatusInternalServerError, CodeInvalidBindTarget).
+		WithInternal(errors.New(reason))
 }
 
 // maxBytesHTTPError detects a body-size-limit overrun (http.MaxBytesReader)

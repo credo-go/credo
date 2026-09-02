@@ -325,8 +325,8 @@ func TestContext_BindQuery_NilTarget(t *testing.T) {
 	r := httptest.NewRequest("GET", "/test?page=1", nil)
 	app.ServeHTTP(w, r)
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400", w.Code)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), credo.CodeInvalidBindTarget) {
+		t.Errorf("status = %d body = %s, want 500 invalid_bind_target (developer error)", w.Code, w.Body.String())
 	}
 }
 
@@ -1737,5 +1737,63 @@ func TestBindBody_ContentTypeFallbackNormalized(t *testing.T) {
 	}
 	if w.Body.String() != "Bob" {
 		t.Errorf("body = %q, want %q", w.Body.String(), "Bob")
+	}
+}
+
+func TestBindBody_ContentEncodingWithoutDecompress(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/test", func(ctx *credo.Context) error {
+		var v struct {
+			Name string `json:"name"`
+		}
+		return ctx.Request().BindBody(&v)
+	})
+
+	for _, coding := range []string{"gzip", "br", "gzip, identity"} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/test", strings.NewReader(`{"name":"Bob"}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Content-Encoding", coding)
+		app.ServeHTTP(w, r)
+		if w.Code != 415 || !strings.Contains(w.Body.String(), credo.CodeUnsupportedContentEncoding) {
+			t.Fatalf("coding %q: status = %d body = %s, want 415 %s", coding, w.Code, w.Body.String(), credo.CodeUnsupportedContentEncoding)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", strings.NewReader(`{"name":"Bob"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "identity")
+	app.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("identity: status = %d body = %s, want 200", w.Code, w.Body.String())
+	}
+}
+
+func TestBindBody_InvalidTargetIsServerError(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/body", func(ctx *credo.Context) error {
+		var v struct{}
+		return ctx.Request().BindBody(v) // not a pointer: developer error
+	})
+	app.GET("/query", func(ctx *credo.Context) error {
+		var n int
+		return ctx.Request().BindQuery(&n) // pointer, but not to a struct
+	})
+
+	for _, tt := range []struct{ method, path, body string }{
+		{"POST", "/body", `{}`},
+		{"GET", "/query?n=1", ""},
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+		r.Header.Set("Content-Type", "application/json")
+		app.ServeHTTP(w, r)
+		if w.Code != 500 || !strings.Contains(w.Body.String(), credo.CodeInvalidBindTarget) {
+			t.Fatalf("%s %s: status = %d body = %s, want 500 %s", tt.method, tt.path, w.Code, w.Body.String(), credo.CodeInvalidBindTarget)
+		}
+		if strings.Contains(w.Body.String(), "non-nil pointer") {
+			t.Fatalf("%s %s: developer reason leaked to the client: %s", tt.method, tt.path, w.Body.String())
+		}
 	}
 }

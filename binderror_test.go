@@ -324,8 +324,8 @@ func TestBindBody_NilTarget(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	app.ServeHTTP(w, r)
 
-	if w.Code != 400 {
-		t.Fatalf("status = %d, want 400", w.Code)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), credo.CodeInvalidBindTarget) {
+		t.Fatalf("status = %d body = %s, want 500 invalid_bind_target (developer error)", w.Code, w.Body.String())
 	}
 }
 
