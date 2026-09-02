@@ -238,6 +238,10 @@ Reads request body. Content-Type determines decoder:
 
 For ordinary methods, a missing `Content-Type` retains the JSON convenience default. A matched RFC 10008 QUERY route is stricter: routing requires a non-blank `Content-Type` before the handler, even for an empty body. Once present, `BindBody` uses the same decoder, validation, strict-body, and error contracts shown below; unsupported media types return 415.
 
+`BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `middleware.Decompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before binding (see the [middleware spec](middleware.md#decompress)).
+
+A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
+
 | Content-Type                        | Decoder           | Status          |
 | ----------------------------------- | ----------------- | --------------- |
 | `application/json`                  | `encoding/json/v2` | **Implemented** |

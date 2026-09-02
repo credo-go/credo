@@ -96,7 +96,7 @@ func createUser(ctx *credo.Context) error {
 }
 ```
 
-Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, multipart (including file upload binding).
+Content-Type dispatch for `BindBody`: JSON (default), XML, form-urlencoded, multipart (including file upload binding). Request bodies are never decompressed implicitly: a non-identity `Content-Encoding` is rejected with 415 `unsupported_content_encoding` unless the application opted into `middleware.Decompress`, whose decompressed-size bound is what makes accepting compressed uploads safe.
 
 JSON bodies are decoded with `encoding/json/v2` under strict semantics: exactly one JSON value is accepted (trailing content rejected) and duplicate object members are rejected — including case-variant repeats, since member matching keeps v1's case-insensitive behavior via `MatchCaseInsensitiveNames` for client compatibility. Decode failures return a typed `*credo.BindError` (reason, field path, expected type, byte offset) that the error pipeline renders as a 400 default envelope with top-level `bind_failed` and a validation-shaped nested reason — parse errors are as structured as validation errors, completing the "parse, don't validate" contract. See the [Context spec](../specs/context.md) for the reason catalog.
 

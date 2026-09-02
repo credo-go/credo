@@ -14,7 +14,15 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- `middleware.Decompress(cfg ...DecompressConfig)`: opt-in request-body decompression for `gzip`/`x-gzip` and `deflate` (zlib-wrapped per RFC 9110, raw DEFLATE tolerated), standard library only. The decompressed stream is bounded by `DecompressConfig.MaxBytes` (default `DefaultDecompressMaxBytes`, 4 MiB) and overruns surface as the framework's regular 413; the middleware removes `Content-Encoding` and sets `ContentLength` to -1 before the handler runs. Unsupported codings return 415, corrupt streams 400 `bind_failed`.
+- Error codes `credo.CodeUnsupportedContentEncoding` (`unsupported_content_encoding`) and `credo.CodeInvalidBindTarget` (`invalid_bind_target`) are exported constants.
+
 ### Changed
+
+- **BREAKING (wire):** `Request.BindBody` rejects a request whose `Content-Encoding` is not `identity` with 415 `unsupported_content_encoding` before any decoder runs. Previously the compressed bytes reached the decoder and were misreported as a 400 `bind_failed` syntax error. Applications that accept compressed bodies add `middleware.Decompress`.
+- **BREAKING (wire):** a nil or non-pointer bind target (and a non-struct target for query/form binding) now returns 500 with the code `invalid_bind_target` and the reason as the logged internal cause, instead of a 400 that exposed the developer-error text to the client.
 
 - Access-log producers (the built-in tier and `middleware.AccessLog`) return before building the attribute set when the target logger is not enabled for the record's level, so a Warn-only access logger no longer pays per-request attribute cost for 2xx traffic.
 

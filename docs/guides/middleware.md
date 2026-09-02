@@ -543,6 +543,18 @@ app.GlobalMiddleware(middleware.Compress(middleware.CompressConfig{
 }))
 ```
 
+### Decompress
+
+Credo never decompresses request bodies on its own: a body sent with `Content-Encoding: gzip` reaches `BindBody`, which answers 415 `unsupported_content_encoding` rather than mis-reporting the compressed bytes as malformed JSON. Accepting compressed uploads is an opt-in, because decompression turns a small wire body into a potentially huge one:
+
+```go
+app.Group("/ingest").Middleware(middleware.Decompress(middleware.DecompressConfig{
+    MaxBytes: 16 << 20, // bound on the *decompressed* body; default 4 MiB
+}))
+```
+
+The middleware understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tolerated), unwraps the body, removes the header, and sets `ContentLength` to -1 so handlers and `BindBody` see a plain stream. The server-wide `max_body_bytes` still applies to the compressed bytes on the wire; reading past `MaxBytes` after decompression fails with the same 413 as any oversized body. Unsupported codings (`br`, `zstd`, or a list such as `gzip, br`) return 415; a corrupt stream returns 400 `bind_failed`.
+
 ### Secure
 
 Sets common security headers: `X-XSS-Protection`, `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, `Content-Security-Policy`, and `Referrer-Policy`.
