@@ -95,7 +95,7 @@ func TestEngine_ReadinessPass(t *testing.T) {
 	e := NewEngine(5 * time.Second)
 	e.AddReadiness("dep1", func(context.Context) error { return nil })
 
-	status, checks, stores := e.CheckReadiness(t.Context(), nil)
+	status, checks, stores := e.CheckReadiness(t.Context(), nil, nil)
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -115,7 +115,7 @@ func TestEngine_ReadinessFail(t *testing.T) {
 	e.AddReadiness("ok", func(context.Context) error { return nil })
 	e.AddReadiness("bad", func(context.Context) error { return errors.New("not ready") })
 
-	status, _, _ := e.CheckReadiness(t.Context(), nil)
+	status, _, _ := e.CheckReadiness(t.Context(), nil, nil)
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}
@@ -172,7 +172,7 @@ func TestEngine_StoreFunc(t *testing.T) {
 		StoreResult{Name: "redis", Status: "up", Latency: time.Millisecond},
 	)
 
-	status, _, stores := e.CheckReadiness(t.Context(), storeFn)
+	status, _, stores := e.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "up" {
 		t.Errorf("status = %q, want %q", status, "up")
 	}
@@ -185,7 +185,7 @@ func TestEngine_StoreFunc_Down(t *testing.T) {
 	e := NewEngine(5 * time.Second)
 	storeFn := staticStoreFunc(StoreResult{Name: "postgres", Status: "down"})
 
-	status, _, _ := e.CheckReadiness(t.Context(), storeFn)
+	status, _, _ := e.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "down" {
 		t.Errorf("status = %q, want %q", status, "down")
 	}

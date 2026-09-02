@@ -37,7 +37,7 @@ func TestEngine_ReadinessRunsNamedAndStoresInParallel(t *testing.T) {
 		})
 
 		start := time.Now()
-		status, checks, stores := engine.CheckReadiness(t.Context(), storeFn)
+		status, checks, stores := engine.CheckReadiness(t.Context(), storeFn, nil)
 		if elapsed := time.Since(start); elapsed != 5*time.Second {
 			t.Fatalf("elapsed = %v, want 5s (named and store checks must share one parallel runner)", elapsed)
 		}
@@ -67,7 +67,7 @@ func TestEngine_StorePanicIsIsolated(t *testing.T) {
 		}
 	})
 
-	status, _, stores := engine.CheckReadiness(t.Context(), storeFn)
+	status, _, stores := engine.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "down" {
 		t.Fatalf("status = %q, want down", status)
 	}
@@ -97,7 +97,7 @@ func TestEngine_InvalidStoreStatusFailsClosed(t *testing.T) {
 		}}
 	})
 
-	status, _, stores := engine.CheckReadiness(t.Context(), storeFn)
+	status, _, stores := engine.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "down" || len(stores) != 1 || stores[0].Status != "down" {
 		t.Fatalf("result = (%q, %#v), want fail-closed down", status, stores)
 	}
@@ -117,7 +117,7 @@ func TestEngine_DegradedStoreIsReadinessBlocking(t *testing.T) {
 		}}
 	})
 
-	status, _, stores := engine.CheckReadiness(t.Context(), storeFn)
+	status, _, stores := engine.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "down" || len(stores) != 1 || stores[0].Status != "degraded" {
 		t.Fatalf("result = (%q, %#v), want top-level down with visible degraded store", status, stores)
 	}
@@ -135,7 +135,7 @@ func TestEngine_CustomStoreNameCollisionFailsClosed(t *testing.T) {
 		}}
 	})
 
-	status, checks, stores := engine.CheckReadiness(t.Context(), storeFn)
+	status, checks, stores := engine.CheckReadiness(t.Context(), storeFn, nil)
 	if status != "down" {
 		t.Fatalf("status = %q, want down", status)
 	}

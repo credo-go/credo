@@ -18,6 +18,8 @@ type options struct {
 	hasMaxConsecutiveFailures bool
 	maxConsecutiveFailures    int
 	startImmediately          bool
+	hasReadiness              bool
+	readiness                 ReadinessPolicy
 }
 
 type restartPolicy struct {
@@ -37,6 +39,7 @@ type Definition struct {
 	restartPolicy    restartPolicy
 	failurePolicy    failurePolicy
 	startImmediately bool
+	readiness        *ReadinessPolicy // nil: the worker does not take part in readiness
 }
 
 // Kind reports whether the worker is continuous or scheduled.

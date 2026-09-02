@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
+	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
 type poolConfig struct {
@@ -26,6 +27,7 @@ type Pool struct {
 	wg                  sync.WaitGroup
 	started             bool
 	defaultRestartDelay time.Duration
+	readiness           []internalhealth.ReadinessCheck // one stable probe per WithReadiness worker
 }
 
 // Register adds w to the application's worker pool.
@@ -49,6 +51,11 @@ func Register(app *credo.App, w Worker, opts ...Option) error {
 	o, schedule, err := validateOptions(opts)
 	if err != nil {
 		return err
+	}
+	if o.hasReadiness {
+		if err := internalhealth.ValidateName(readinessCheckName(name)); err != nil {
+			return fmt.Errorf("worker: WithReadiness: %w", err)
+		}
 	}
 
 	p, err := ensurePool(app)
@@ -78,6 +85,11 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 	}
 	if o.hasMaxConsecutiveFailures && o.maxConsecutiveFailures < 0 {
 		return options{}, nil, fmt.Errorf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures)
+	}
+	if o.hasReadiness {
+		if err := o.readiness.validate(o.hasSchedule); err != nil {
+			return options{}, nil, err
+		}
 	}
 
 	var schedule *Schedule
@@ -115,6 +127,10 @@ func buildDefinition(name string, w Worker, o options, schedule *Schedule, defau
 		worker:           w,
 		schedule:         schedule,
 		startImmediately: o.startImmediately,
+	}
+	if o.hasReadiness {
+		policy := o.readiness
+		def.readiness = &policy
 	}
 	if schedule != nil {
 		def.failurePolicy = failurePolicy{
@@ -167,6 +183,13 @@ func ensurePool(app *credo.App) (*Pool, error) {
 			return resolved, nil
 		}
 		return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
+	}
+
+	// Readiness contributions reach the health engine through the
+	// module-internal DI seam, resolved lazily on each /ready request, so
+	// worker.Register and UseHealth may run in either order.
+	if err := app.Replace[internalhealth.ReadinessFunc](p.readinessChecks); err != nil {
+		return nil, fmt.Errorf("worker: register readiness seam: %w", err)
 	}
 
 	app.OnStart(func(lifecycleCtx context.Context) error {
@@ -226,6 +249,12 @@ func (p *Pool) addDefinition(def *Definition) error {
 	}
 
 	p.definitions = append(p.definitions, def)
+	if def.readiness != nil {
+		p.readiness = append(p.readiness, internalhealth.ReadinessCheck{
+			Name:  readinessCheckName(def.name),
+			Probe: p.newReadinessProbe(def),
+		})
+	}
 	return nil
 }
 

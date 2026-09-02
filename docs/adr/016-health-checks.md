@@ -36,6 +36,7 @@ Write the health check engine from scratch. The engine is unexported in the root
   readiness handler.
 - No checks registered = "up" for liveness (server responding proves alive).
 - Store health flows in through a module-internal DI seam (`internal/health.StoreFunc`), resolved lazily on each readiness check so the store package never imports the engine and store/`UseHealth` registration order does not matter.
+- Worker readiness (`worker.WithReadiness`) uses the sibling seam `internal/health.ReadinessFunc`: contributed checks are reported among the named checks (`worker:<name>`), share their name space (collisions fail closed), and are resolved lazily the same way.
 
 ### Public API (root package)
 
