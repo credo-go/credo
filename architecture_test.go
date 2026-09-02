@@ -55,7 +55,7 @@ var modulePolicies = map[string]importPolicy{
 	"store":      {credo: []string{"", "fault", "internal/health", "internal/resourceid"}},
 	"testutil":   {credo: []string{"", "config"}},
 	"validation": {},
-	"websocket":  {credo: []string{"", "internal/httpwriter"}, external: []string{"github.com/coder/websocket"}},
+	"websocket":  {credo: []string{"", "internal/httpwriter", "internal/origin"}, external: []string{"github.com/coder/websocket"}},
 	"worker":     {credo: []string{""}},
 
 	"internal/di":          {},
@@ -66,6 +66,7 @@ var modulePolicies = map[string]importPolicy{
 	"internal/httpwriter":  {},
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
 	"internal/observe":     {credo: []string{"fault", "internal/faultstatus"}},
+	"internal/origin":      {},
 	"internal/pattern":     {},
 	"internal/proxy":       {},
 	"internal/radix":       {credo: []string{"internal/pattern"}},

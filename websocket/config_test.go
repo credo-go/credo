@@ -111,7 +111,7 @@ func TestResolveConfigValidationAndDefensiveOwnership(t *testing.T) {
 	server := Use(app, Config{AllowedOrigins: origins, Subprotocols: protocols})
 	origins[0] = "https://evil.example"
 	protocols[0] = "mutated"
-	if server.config.origins.allowed[0].origin.host != "app.example.com" {
+	if server.config.origins.allowed[0].Origin.Host != "app.example.com" {
 		t.Errorf("resolved origin changed after caller mutation: %+v", server.config.origins.allowed)
 	}
 	if server.config.subprotocols[0] != "events.v1" {
