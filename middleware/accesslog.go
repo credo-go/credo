@@ -113,6 +113,7 @@ func AccessLog(cfg ...AccessLogConfig) credo.Middleware {
 				RequestID:    GetRequestID(ctx),
 			}
 			if route := ctx.Route(); route != nil {
+				entry.Route = route.GetPattern()
 				entry.RouteName = route.GetName()
 			}
 			if config.ResultFilter != nil && !config.ResultFilter(ctx, entry) {

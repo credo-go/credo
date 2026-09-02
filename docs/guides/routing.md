@@ -379,6 +379,7 @@ When the final served path differs, Credo logs both:
 
 - `path` — final served path
 - `path_original` — client-sent path
+- `route` — the matched route's registered pattern (absent for 404/405)
 
 This works in the built-in access log and in `middleware.AccessLog`.
 

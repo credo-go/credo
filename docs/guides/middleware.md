@@ -415,7 +415,7 @@ admin.Middleware(middleware.AccessLog(middleware.AccessLogConfig{
 
 The `credo.MetaAccessLog` route meta (`SetMeta(credo.MetaAccessLog, false)`) also silences logging here, exactly as it does for the built-in logger — useful for muting a route or group without a path check.
 
-When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, Credo includes `path_original` in the log entry.
+When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, Credo includes `path_original` in the log entry. When a route matched, the entry also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the logger passed to `WithAccessLogLogger`, using `slog.HandlerOptions.ReplaceAttr`.
 
 The configurable middleware observes at its position inside the centralized error handler. On a returned-error path its status is the best pre-render classification, bytes are those written so far, and duration excludes later error rendering. Prefer the built-in options when final response values matter.
 

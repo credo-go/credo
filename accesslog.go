@@ -34,6 +34,11 @@ const MetaAccessLog = internalobserve.MetaAccessLogKey
 // position; on an error path Status is its best pre-render classification,
 // Bytes is the amount written so far, and Duration excludes later rendering.
 //
+// Route is the matched route's registered pattern (for example
+// "/v1/jobs/{job_id}"), empty when no route matched (404/405). It is emitted as
+// the "route" attribute, so a deployment that must not persist concrete path
+// values can drop "path"/"path_original" in its slog handler (for example via
+// slog.HandlerOptions.ReplaceAttr) and keep the low-cardinality route instead.
 // RouteName is available to [AccessLogResultFilter] but is not added to the
 // emitted structured-log attributes. RemoteAddr is the result of
 // [Request.RealIP]. RequestID is populated independently of whether the target
@@ -42,6 +47,7 @@ type AccessLogEntry struct {
 	Method       string
 	Path         string
 	OriginalPath string
+	Route        string
 	Status       int
 	Bytes        int64
 	Duration     time.Duration
@@ -150,6 +156,7 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 				RequestID:    ctx.RequestID(),
 			}
 			if route := ctx.Route(); route != nil {
+				entry.Route = route.GetPattern()
 				entry.RouteName = route.GetName()
 			}
 			if filter != nil && !filter(ctx, entry) {
