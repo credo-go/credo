@@ -14,6 +14,11 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **Worker readiness policy** — `worker.WithReadiness(worker.ReadinessPolicy{...})` binds a worker to the readiness probe with explicit, opt-in conditions: `RequireFirstSuccess` (startup barrier: unready until the first run returns nil, then stays satisfied), `FailWhenFailed` (unready once `StatusFailed` is reached), and `MaxSuccessAge` (unready when the last success is older than the limit; not applied before the first success). `RequireFirstSuccess`/`MaxSuccessAge` are scheduled-worker conditions, the zero policy is rejected, and the contribution is reported as a readiness check named `worker:<name>` in the same name space as `AddReadinessCheck` (collisions fail closed). Wiring uses a lazily resolved `internal/health.ReadinessFunc` seam, so `worker.Register` and `UseHealth` may run in either order. `worker.Info` gains `LastSuccess`.
+- **Access-log route pattern** — `AccessLogEntry.Route` carries the matched route's registered pattern (`/v1/jobs/{job_id}`), emitted as the `route` attribute by the built-in access logger and `middleware.AccessLog` whenever a route matched. Deployments that must not persist identifiers from concrete paths can keep this value-free attribute and drop `path`/`path_original` in their slog handler; Credo adds no field transformer of its own.
+
 ### Changed
 
 - **BREAKING (Go API): `middleware.Rewrite` takes a single `RewriteConfig`** — `Rewrite(rules ...RewriteRule)` and `RewriteWithConfig(cfg)` are replaced by `Rewrite(cfg ...RewriteConfig)`, following the package-wide config-struct convention: the rule list lives in `RewriteConfig.Rules` next to the optional `Skipper`, and `DefaultRewriteConfig()` carries no rules. Migrate `middleware.Rewrite(a, b)` to `middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{a, b}})`. A malformed `From` pattern now panics at construction instead of being matched literally.
@@ -23,6 +28,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **Lifecycle hook nil-guard** — `App.OnStart` and `App.OnShutdown` now panic at registration when given a nil hook, matching `OnPreDrain`/`OnDrain`/`OnReload`/`OnConfigChange`; previously a nil hook was accepted and crashed the process at startup or teardown. The nil-hook panic text is now uniform (`credo: App.OnStart: hook must not be nil`), and post-compile registration panics name the API as `Type.Method` (for example `credo: App.GET called after app was compiled`, `credo: Group.SetMeta called after app was compiled`).
 - **Uniform maturity labels** — every public package now closes its package documentation with a machine-readable `// Maturity: <label>` line aligned with README's "Maturity by Area" table (all shipped areas are Beta; `config`, `validation`, and `worker` previously said `experimental` in their doc while the README said Beta). `maturity_test.go` enforces the line and its agreement with the README table.
 - **Internal architecture refactor (no public API change)** — the kernel and feature packages were reorganized behind clearer seams: shared fault status mapping (`internal/faultstatus`), access-log emission (`internal/observe`), route-pattern parsing (`internal/pattern`), origin grammar (`internal/origin`), static file serving (`internal/static`), the health engine (`internal/health`), a `routeRegistrar` interface between routes/groups and the app, typed option overlays for server settings, phase-split `New`/`serve`/hook registration, a `provider` model plus a generic framework-provider seam in the DI container, a single pending-reservation ledger in `store.Registry`, per-driver `sqldb` error classifiers, a policy-driven worker loop, closure-based built-in validation rules, and a split websocket handshake. Behavior, error texts, and wire output are unchanged; `architecture_test.go` pins the allowed in-module import matrix.
+
+### Fixed
+
+- **Config redaction for dereferenced copies** — `config.Config` now keeps its state behind one private pointer and declares `String`, `GoString`, and `LogValue` on the value type, so formatting or logging a dereferenced copy (`*cfg`) is redacted exactly like the pointer instead of dumping the tree; copying a `Config` no longer copies a mutex. A nil `*Config` formats as fmt's usual `<nil>`.
 
 ### Removed
 
