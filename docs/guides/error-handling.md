@@ -92,6 +92,14 @@ code is the exact reason (`syntax`, `type_mismatch`, `empty_body`,
 lets clients switch on the broad class in `error.code` and the actionable cause
 in `error.violations[0].code`.
 
+Two neighbouring cases deliberately do not use `bind_failed`. A body whose
+`Content-Encoding` is not `identity` and that no `middleware.Decompress` has
+unwrapped returns 415 with the code `unsupported_content_encoding`
+(`credo.CodeUnsupportedContentEncoding`) before any decoder runs. A nil or
+non-pointer bind target is a developer error: it returns 500 with the code
+`invalid_bind_target` (`credo.CodeInvalidBindTarget`), the reason is logged as
+the internal cause, and nothing about it reaches the client.
+
 The array is named `violations` because it carries two kinds of entries:
 field-scoped validation failures and document-scoped bind failures. A bind
 entry's `field` may be empty when the violation concerns the whole body — a
