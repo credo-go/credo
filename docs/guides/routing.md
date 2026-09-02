@@ -285,7 +285,7 @@ tenant.GET("/users/{tenant}", showUser)
 
 ## Pre-Dispatch Rewrite
 
-Use `middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{...}})` when you want to normalize URLs before routing.
+Use `middleware.Rewrite(cfg)` when you want to normalize URLs before routing. The rules live in `RewriteConfig.Rules`; see the [Middleware Guide](middleware.md#rewrite) for the `Skipper` option.
 
 ```go
 app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
