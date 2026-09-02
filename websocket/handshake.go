@@ -41,29 +41,9 @@ func (s *Server) Handler(h Handler) credo.Handler {
 }
 
 func (s *Server) handle(ctx *credo.Context, handler Handler) error {
-	if err := validateMechanicalHandshake(ctx); err != nil {
+	selectedProtocol, err := s.negotiate(ctx)
+	if err != nil {
 		return err
-	}
-	if err := s.config.origins.authorize(
-		ctx.Request().Header.Values("Origin"),
-		ctx.Request().Scheme(),
-		ctx.Request().Host,
-	); err != nil {
-		return credo.NewHTTPError(http.StatusForbidden).WithInternal(err)
-	}
-	clientProtocols, err := parseClientSubprotocols(
-		ctx.Request().Header.Values("Sec-WebSocket-Protocol"),
-	)
-	if err != nil {
-		return credo.NewHTTPError(http.StatusBadRequest).WithInternal(err)
-	}
-	selectedProtocol, err := selectSubprotocol(
-		clientProtocols,
-		s.config.subprotocols,
-		s.config.requireSubprotocol,
-	)
-	if err != nil {
-		return credo.NewHTTPError(http.StatusBadRequest).WithInternal(err)
 	}
 	if !s.acquireToken() {
 		return credo.NewHTTPError(http.StatusServiceUnavailable)
@@ -75,8 +55,63 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 		}
 	}()
 
+	record, err := s.acceptConn(ctx, selectedProtocol)
+	if err != nil || record == nil {
+		return err
+	}
+	tokenAttached = true
+	if !s.attach(record) {
+		s.finish(record)
+		logConnectionTerminal(record, nil, nil)
+		return nil
+	}
+	logConnectionOpen(record)
+
+	handlerErr, panicInfo := invokeHandler(handler, ctx, record.conn)
+	code, reason, cause, classification := classifyTerminal(handlerErr, panicInfo)
+	s.startTerminal(record, code, reason, cause, false, classification)
+	s.finish(record)
+	logConnectionTerminal(record, handlerErr, panicInfo)
+	return nil
+}
+
+// negotiate validates the mechanical handshake, authorizes the Origin, and
+// selects the subprotocol. It returns the selected subprotocol ("" for none)
+// or the HTTP error to render.
+func (s *Server) negotiate(ctx *credo.Context) (string, error) {
+	if err := validateMechanicalHandshake(ctx); err != nil {
+		return "", err
+	}
+	if err := s.config.origins.authorize(
+		ctx.Request().Header.Values("Origin"),
+		ctx.Request().Scheme(),
+		ctx.Request().Host,
+	); err != nil {
+		return "", credo.NewHTTPError(http.StatusForbidden).WithInternal(err)
+	}
+	clientProtocols, err := parseClientSubprotocols(
+		ctx.Request().Header.Values("Sec-WebSocket-Protocol"),
+	)
+	if err != nil {
+		return "", credo.NewHTTPError(http.StatusBadRequest).WithInternal(err)
+	}
+	selectedProtocol, err := selectSubprotocol(
+		clientProtocols,
+		s.config.subprotocols,
+		s.config.requireSubprotocol,
+	)
+	if err != nil {
+		return "", credo.NewHTTPError(http.StatusBadRequest).WithInternal(err)
+	}
+	return selectedProtocol, nil
+}
+
+// acceptConn performs the upgrade and builds the connection record. A nil
+// record with a nil error means the handshake failed after the response was
+// committed: the failure was logged and nothing more can be rendered.
+func (s *Server) acceptConn(ctx *credo.Context, selectedProtocol string) (*connectionRecord, error) {
 	if _, resolveErr := httpwriter.ResolveHijacker(ctx.Response()); resolveErr != nil {
-		return credo.NewHTTPError(http.StatusNotImplemented).WithInternal(resolveErr)
+		return nil, credo.NewHTTPError(http.StatusNotImplemented).WithInternal(resolveErr)
 	}
 	connectionID := rand.Text()
 	route := ""
@@ -119,54 +154,41 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 				"websocket: handshake transport failure",
 				attrs...,
 			)
-			return nil
+			return nil, nil
 		}
 		capture.publishErrorHeaders()
 		status := capture.status
 		if status == 0 {
 			status = http.StatusInternalServerError
 		}
-		return credo.NewHTTPError(status).WithInternal(err)
+		return nil, credo.NewHTTPError(status).WithInternal(err)
 	}
 
 	connectionCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx.Context()))
 	conn := newConn(raw, connectionCtx, s.config.readLimit)
-	record := &connectionRecord{
+	return &connectionRecord{
 		conn: conn, close: conn.Close, closeNow: raw.CloseNow,
 		cancel: cancel, logger: logger,
 		connectionID: connectionID, requestID: ctx.RequestID(), route: route,
 		subprotocol: conn.Subprotocol(), startedAt: time.Now(), closeDone: make(chan struct{}),
-	}
-	tokenAttached = true
-	if !s.attach(record) {
-		s.finish(record)
-		logConnectionTerminal(record, nil, nil)
-		return nil
-	}
-	logConnectionOpen(record)
+	}, nil
+}
 
-	handlerErr, panicInfo := invokeHandler(handler, ctx, conn)
+// classifyTerminal maps the handler outcome to the close code, reason,
+// terminal cause, and log classification passed to startTerminal.
+func classifyTerminal(handlerErr error, panicInfo *handlerPanic) (StatusCode, string, error, string) {
 	switch {
 	case panicInfo != nil:
-		s.startTerminal(
-			record, StatusInternalError, "internal error", context.Canceled, false, "panic",
-		)
+		return StatusInternalError, "internal error", context.Canceled, "panic"
 	case handlerErr == nil:
-		s.startTerminal(record, StatusNormalClosure, "", context.Canceled, false, "normal")
+		return StatusNormalClosure, "", context.Canceled, "normal"
 	case CloseStatus(handlerErr) >= 0:
-		s.startTerminal(record, -1, "", handlerErr, false, classifyPeerClose(CloseStatus(handlerErr)))
+		return -1, "", handlerErr, classifyPeerClose(CloseStatus(handlerErr))
 	case isOperationError(handlerErr):
-		s.startTerminal(
-			record, StatusInternalError, "internal error", handlerErr, false, "transport_error",
-		)
+		return StatusInternalError, "internal error", handlerErr, "transport_error"
 	default:
-		s.startTerminal(
-			record, StatusInternalError, "internal error", handlerErr, false, "application_error",
-		)
+		return StatusInternalError, "internal error", handlerErr, "application_error"
 	}
-	s.finish(record)
-	logConnectionTerminal(record, handlerErr, panicInfo)
-	return nil
 }
 
 type handlerPanic struct {
