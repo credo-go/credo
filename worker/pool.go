@@ -46,6 +46,23 @@ func Register(app *credo.App, w Worker, opts ...Option) error {
 		return fmt.Errorf("worker: worker name must not be empty")
 	}
 
+	o, schedule, err := validateOptions(opts)
+	if err != nil {
+		return err
+	}
+
+	p, err := ensurePool(app)
+	if err != nil {
+		return err
+	}
+
+	return p.addDefinition(buildDefinition(name, w, o, schedule, p.defaultRestartDelay))
+}
+
+// validateOptions applies the registration options, checks their values, and
+// parses the schedule; it also rejects options that belong to the other
+// worker kind.
+func validateOptions(opts []Option) (options, *Schedule, error) {
 	o := options{}
 	for _, opt := range opts {
 		if opt != nil {
@@ -54,75 +71,72 @@ func Register(app *credo.App, w Worker, opts ...Option) error {
 	}
 
 	if o.hasMaxRestarts && o.maxRestarts < 0 {
-		return fmt.Errorf("worker: max restarts must be >= 0, got %d", o.maxRestarts)
+		return options{}, nil, fmt.Errorf("worker: max restarts must be >= 0, got %d", o.maxRestarts)
 	}
 	if o.hasRestartDelay && o.restartDelay < 0 {
-		return fmt.Errorf("worker: restart delay must be >= 0, got %s", o.restartDelay)
+		return options{}, nil, fmt.Errorf("worker: restart delay must be >= 0, got %s", o.restartDelay)
 	}
 	if o.hasMaxConsecutiveFailures && o.maxConsecutiveFailures < 0 {
-		return fmt.Errorf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures)
+		return options{}, nil, fmt.Errorf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures)
 	}
 
 	var schedule *Schedule
 	if o.hasSchedule {
 		parsed, err := ParseSchedule(o.scheduleExpr)
 		if err != nil {
-			return err
+			return options{}, nil, err
 		}
 		schedule = parsed
 	}
 
 	if schedule != nil {
 		if o.hasMaxRestarts {
-			return fmt.Errorf("worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures")
+			return options{}, nil, fmt.Errorf("worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures")
 		}
 		if o.hasRestartDelay {
-			return fmt.Errorf("worker: WithRestartDelay is for continuous workers")
+			return options{}, nil, fmt.Errorf("worker: WithRestartDelay is for continuous workers")
 		}
 	} else {
 		if o.hasMaxConsecutiveFailures {
-			return fmt.Errorf("worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts")
+			return options{}, nil, fmt.Errorf("worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts")
 		}
 		if o.startImmediately {
-			return fmt.Errorf("worker: WithStartImmediately is for scheduled workers")
+			return options{}, nil, fmt.Errorf("worker: WithStartImmediately is for scheduled workers")
 		}
 	}
+	return o, schedule, nil
+}
 
-	p, err := ensurePool(app)
-	if err != nil {
-		return err
-	}
-
+// buildDefinition turns validated options into the immutable Definition,
+// resolving the kind-specific restart or failure policy.
+func buildDefinition(name string, w Worker, o options, schedule *Schedule, defaultRestartDelay time.Duration) *Definition {
 	def := &Definition{
 		name:             name,
 		worker:           w,
 		schedule:         schedule,
 		startImmediately: o.startImmediately,
 	}
-	if schedule == nil {
-		restartDelay := p.defaultRestartDelay
-		if o.hasRestartDelay {
-			restartDelay = o.restartDelay
-		}
-		// A zero delay would busy-loop a worker that fails immediately. Treat 0
-		// as "use the default", matching how restart_delay is read from config.
-		if restartDelay == 0 {
-			restartDelay = DefaultRestartDelay
-		}
-		def.restartPolicy = restartPolicy{
-			maxRestarts:  o.maxRestarts,
-			restartDelay: restartDelay,
-		}
-	} else {
+	if schedule != nil {
 		def.failurePolicy = failurePolicy{
 			maxConsecutiveFailures: o.maxConsecutiveFailures,
 		}
+		return def
 	}
 
-	if err := p.addDefinition(def); err != nil {
-		return err
+	restartDelay := defaultRestartDelay
+	if o.hasRestartDelay {
+		restartDelay = o.restartDelay
 	}
-	return nil
+	// A zero delay would busy-loop a worker that fails immediately. Treat 0
+	// as "use the default", matching how restart_delay is read from config.
+	if restartDelay == 0 {
+		restartDelay = DefaultRestartDelay
+	}
+	def.restartPolicy = restartPolicy{
+		maxRestarts:  o.maxRestarts,
+		restartDelay: restartDelay,
+	}
+	return def
 }
 
 // MustRegister is like [Register] but panics on error.
