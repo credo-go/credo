@@ -188,16 +188,15 @@ func resolveAllowedOrigin(cfg CORSConfig, matcher originMatcher, ctx *credo.Cont
 
 	// A malformed Origin header can never match an allow-list entry; it is
 	// treated as a foreign origin rather than an error.
-	parsed, err := internalorigin.Parse(origin)
-	if err != nil {
-		return "", false, nil
-	}
-	for _, pattern := range matcher.patterns {
-		if pattern.Matches(parsed) {
-			// Echo the request's own serialization: browsers compare
-			// Access-Control-Allow-Origin byte-for-byte against the Origin
-			// they sent, so the canonical form must not be substituted.
-			return origin, true, nil
+	if parsed, err := internalorigin.Parse(origin); err == nil {
+		for _, pattern := range matcher.patterns {
+			if pattern.Matches(parsed) {
+				// Echo the request's own serialization: browsers compare
+				// Access-Control-Allow-Origin byte-for-byte against the
+				// Origin they sent, so the canonical form must not be
+				// substituted.
+				return origin, true, nil
+			}
 		}
 	}
 

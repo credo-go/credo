@@ -6,17 +6,17 @@ import (
 	"testing"
 )
 
-type statusErr struct{ code int }
+type statusError struct{ code int }
 
-func (e statusErr) Error() string   { return "status" }
-func (e statusErr) HTTPStatus() int { return e.code }
+func (e statusError) Error() string   { return "status" }
+func (e statusError) HTTPStatus() int { return e.code }
 
 func TestProviderOf(t *testing.T) {
-	direct := statusErr{code: 418}
+	direct := statusError{code: 418}
 	if p, ok := ProviderOf(direct); !ok || p.HTTPStatus() != 418 {
 		t.Fatalf("ProviderOf(direct) = (%v, %v), want (418, true)", p, ok)
 	}
-	wrapped := fmt.Errorf("outer: %w", statusErr{code: 409})
+	wrapped := fmt.Errorf("outer: %w", statusError{code: 409})
 	if p, ok := ProviderOf(wrapped); !ok || p.HTTPStatus() != 409 {
 		t.Fatalf("ProviderOf(wrapped) = (%v, %v), want (409, true)", p, ok)
 	}

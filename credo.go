@@ -230,7 +230,7 @@ func New(opts ...Option) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := loadRawConfig(&o); err != nil {
+	if err = loadRawConfig(&o); err != nil {
 		return nil, err
 	}
 	serverCfg, err := resolveServerConfig(&o)
