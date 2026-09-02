@@ -27,11 +27,12 @@ func (db *DB) mapError(ctx context.Context, err error) error {
 }
 
 // mapError classifies a driver error without discarding its original cause.
-// SQLSTATE is the primary cross-driver path. A MySQL number wins when both are
-// present because it is more specific than broad classes such as 23 or 40001.
-// MySQL's strict envelope and SQLite's numeric Code are inspected only for the
-// DB's configured family, so arbitrary domain/hook messages are never
-// classified by loose substrings.
+// The family-independent checks run first (fault-typed errors, context
+// cancellation, database/sql sentinels); the configured family's
+// driverClassifier then applies its own code inspection order. SQLSTATE is the
+// primary cross-driver path. MySQL's strict envelope and SQLite's numeric Code
+// are inspected only for the DB's configured family, so arbitrary domain/hook
+// messages are never classified by loose substrings.
 //
 // context.Canceled remains an application cancellation, not a store timeout.
 // PostgreSQL query_canceled and SQLite interrupt consult ctx because their
@@ -68,38 +69,92 @@ func mapError(ctx context.Context, family driverFamily, err error) error {
 		)
 	}
 
-	// A MySQL number is more specific than its broad SQLSTATE class (for
-	// example 1062 vs class 23, or 1213 vs 40001), so inspect it first for a
-	// configured MySQL family.
-	if family == driverFamilyMySQL {
-		if number := extractMySQLErrNum(err); number > 0 {
-			if classification, ok := mapMySQLErrNum(number); ok {
-				return wrapMappedError(classification, strconv.FormatUint(uint64(number), 10), err)
-			}
-		}
+	if mapped, ok := family.classifier().classify(ctx, err); ok {
+		return mapped
 	}
-
-	if code := extractSQLState(err); code != "" {
-		if code == "57014" {
-			return mapPostgresQueryCanceled(ctx, code, err)
-		}
-		if classification, ok := mapSQLState(code); ok {
-			return wrapMappedError(classification, code, err)
-		}
-	}
-
-	if family == driverFamilySQLite {
-		if code, ok := extractSQLiteCode(err); ok {
-			if primarySQLiteCode(code) == sqliteInterrupt {
-				return mapSQLiteInterrupt(ctx, code, err)
-			}
-			if classification, ok := mapSQLiteCode(code); ok {
-				return wrapMappedError(classification, strconv.Itoa(code), err)
-			}
-		}
-	}
-
 	return err
+}
+
+// driverClassifier maps a driver error to a store classification for one
+// driver family, after mapError's family-independent checks. It returns
+// (nil, false) when the error carries no code it recognizes; a (err, true)
+// result may also be the original error when a recognized code is terminal
+// but not a store failure (query_canceled without a timeout, SQLite interrupt
+// without a context cause).
+type driverClassifier interface {
+	classify(ctx context.Context, err error) (error, bool)
+}
+
+// driverClassifiers is the family → classifier table. Families without an
+// entry (including driverFamilyUnknown) use the SQLSTATE-only classifier.
+var driverClassifiers = map[driverFamily]driverClassifier{
+	driverFamilyPostgres: sqlStateClassifier{},
+	driverFamilyMySQL:    mysqlClassifier{},
+	driverFamilySQLite:   sqliteClassifier{},
+}
+
+func (f driverFamily) classifier() driverClassifier {
+	if classifier, ok := driverClassifiers[f]; ok {
+		return classifier
+	}
+	return sqlStateClassifier{}
+}
+
+// sqlStateClassifier classifies by SQLSTATE only (pgx, lib/pq, and any
+// driver exposing SQLState()/Code()).
+type sqlStateClassifier struct{}
+
+func (sqlStateClassifier) classify(ctx context.Context, err error) (error, bool) {
+	return classifySQLState(ctx, err)
+}
+
+// mysqlClassifier inspects the MySQL error number before SQLSTATE: a number
+// is more specific than its broad SQLSTATE class (for example 1062 vs class
+// 23, or 1213 vs 40001).
+type mysqlClassifier struct{}
+
+func (mysqlClassifier) classify(ctx context.Context, err error) (error, bool) {
+	if number := extractMySQLErrNum(err); number > 0 {
+		if classification, ok := mapMySQLErrNum(number); ok {
+			return wrapMappedError(classification, strconv.FormatUint(uint64(number), 10), err), true
+		}
+	}
+	return classifySQLState(ctx, err)
+}
+
+// sqliteClassifier tries SQLSTATE first (some SQLite drivers expose it) and
+// then the SQLite primary/extended result code.
+type sqliteClassifier struct{}
+
+func (sqliteClassifier) classify(ctx context.Context, err error) (error, bool) {
+	if mapped, ok := classifySQLState(ctx, err); ok {
+		return mapped, true
+	}
+	if code, ok := extractSQLiteCode(err); ok {
+		if primarySQLiteCode(code) == sqliteInterrupt {
+			return mapSQLiteInterrupt(ctx, code, err), true
+		}
+		if classification, ok := mapSQLiteCode(code); ok {
+			return wrapMappedError(classification, strconv.Itoa(code), err), true
+		}
+	}
+	return nil, false
+}
+
+// classifySQLState is the shared SQLSTATE step. 57014 (query_canceled) is
+// terminal even when it does not map to a timeout.
+func classifySQLState(ctx context.Context, err error) (error, bool) {
+	code := extractSQLState(err)
+	if code == "" {
+		return nil, false
+	}
+	if code == "57014" {
+		return mapPostgresQueryCanceled(ctx, code, err), true
+	}
+	if classification, ok := mapSQLState(code); ok {
+		return wrapMappedError(classification, code, err), true
+	}
+	return nil, false
 }
 
 // sqlStateError is satisfied by pgx and other drivers exposing SQLSTATE.
