@@ -19,6 +19,7 @@ import (
 
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 	internali18n "github.com/credo-go/credo/internal/i18n"
 	internalobserve "github.com/credo-go/credo/internal/observe"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
@@ -120,7 +121,7 @@ type App struct {
 	messageKeyResolver MessageKeyResolver
 
 	// healthEngine holds the health check engine (nil if UseHealth not called).
-	healthEngine *healthEngine
+	healthEngine *internalhealth.Engine
 
 	// healthExposeErrors includes check error strings in readiness responses.
 	// Set from HealthConfig.ExposeErrors; default false (errors are logged,

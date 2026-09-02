@@ -1,4 +1,4 @@
-package credo
+package health
 
 import (
 	"context"
@@ -8,84 +8,90 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
 var (
-	errInvalidStoreHealthStatus = errors.New("credo: invalid store health status")
-	errHealthCheckNameConflict  = errors.New("credo: readiness check name conflict")
+	// ErrInvalidStoreStatus marks a store probe that reported a status outside
+	// the allowlist (or "up" together with a failure cause). Such results fail
+	// closed as "down".
+	ErrInvalidStoreStatus = errors.New("credo: invalid store health status")
+
+	// ErrCheckNameConflict marks a store check whose name duplicates another
+	// store check or a named readiness check.
+	ErrCheckNameConflict = errors.New("credo: readiness check name conflict")
 )
 
-// healthCheckResult holds the outcome of a named application health check.
+// CheckResult holds the outcome of a named application health check.
 // Cause is retained for structured operator logging; Error is the safe,
-// explicitly selected text used only when ExposeErrors is enabled.
-type healthCheckResult struct {
+// explicitly selected text used only when the root opts into exposing errors.
+type CheckResult struct {
 	Name   string
 	Status string
 	Error  string
 	Cause  error
 }
 
-type namedHealthCheck struct {
+type namedCheck struct {
 	name  string
-	probe *internalhealth.Probe
+	probe *Probe
 }
 
-type healthCheckSource uint8
+type checkSource uint8
 
 const (
-	healthCheckSourceNamed healthCheckSource = iota
-	healthCheckSourceStore
+	sourceNamed checkSource = iota
+	sourceStore
 )
 
-type scheduledHealthCheck struct {
+type scheduledCheck struct {
 	name   string
-	source healthCheckSource
-	probe  *internalhealth.Probe
+	source checkSource
+	probe  *Probe
 }
 
-type scheduledHealthResult struct {
+type scheduledResult struct {
 	name   string
-	source healthCheckSource
-	result internalhealth.Result
+	source checkSource
+	result Result
 }
 
-// healthEngine manages liveness and readiness health checks.
-// It is safe for concurrent use.
-type healthEngine struct {
+// Engine manages liveness and readiness health checks and runs them through
+// one bounded parallel runner. It is safe for concurrent use.
+type Engine struct {
 	mu        sync.RWMutex
-	liveness  []namedHealthCheck
-	readiness []namedHealthCheck
+	liveness  []namedCheck
+	readiness []namedCheck
 	timeout   time.Duration
 }
 
-// newHealthEngine creates a new healthEngine with the given per-check timeout.
-func newHealthEngine(timeout time.Duration) *healthEngine {
-	return &healthEngine{timeout: timeout}
+// NewEngine creates an Engine with the given per-check timeout.
+func NewEngine(timeout time.Duration) *Engine {
+	return &Engine{timeout: timeout}
 }
 
-// addLiveness registers a named liveness check.
-func (e *healthEngine) addLiveness(name string, fn func(context.Context) error) {
+// AddLiveness registers a named liveness check. It panics on an invalid or
+// duplicate name; the root registration API documents these panics.
+func (e *Engine) AddLiveness(name string, fn func(context.Context) error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.liveness = appendNamedHealthCheck(e.liveness, "liveness", name, fn)
+	e.liveness = appendNamedCheck(e.liveness, "liveness", name, fn)
 }
 
-// addReadiness registers a named readiness check.
-func (e *healthEngine) addReadiness(name string, fn func(context.Context) error) {
+// AddReadiness registers a named readiness check. It panics on an invalid or
+// duplicate name; the root registration API documents these panics.
+func (e *Engine) AddReadiness(name string, fn func(context.Context) error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.readiness = appendNamedHealthCheck(e.readiness, "readiness", name, fn)
+	e.readiness = appendNamedCheck(e.readiness, "readiness", name, fn)
 }
 
-func appendNamedHealthCheck(
-	checks []namedHealthCheck,
+func appendNamedCheck(
+	checks []namedCheck,
 	kind string,
 	name string,
 	fn func(context.Context) error,
-) []namedHealthCheck {
-	if err := validateHealthCheckName(name); err != nil {
+) []namedCheck {
+	if err := ValidateName(name); err != nil {
 		panic(fmt.Sprintf("credo: Add%sCheck: %v", titleWord(kind), err))
 	}
 	for _, check := range checks {
@@ -94,13 +100,13 @@ func appendNamedHealthCheck(
 		}
 	}
 
-	probe := internalhealth.NewProbe(func(ctx context.Context) internalhealth.Result {
+	probe := NewProbe(func(ctx context.Context) Result {
 		if err := fn(ctx); err != nil {
-			return internalhealth.Result{Status: "down", Cause: err}
+			return Result{Status: "down", Cause: err}
 		}
-		return internalhealth.Result{Status: "up"}
+		return Result{Status: "up"}
 	})
-	return append(checks, namedHealthCheck{name: name, probe: probe})
+	return append(checks, namedCheck{name: name, probe: probe})
 }
 
 func titleWord(value string) string {
@@ -110,27 +116,23 @@ func titleWord(value string) string {
 	return strings.ToUpper(value[:1]) + value[1:]
 }
 
-func validateHealthCheckName(name string) error {
-	return internalhealth.ValidateName(name)
-}
-
-// checkLiveness runs all liveness checks concurrently and returns the
+// CheckLiveness runs all liveness checks concurrently and returns the
 // aggregate status ("up" or "down") and individual results.
 // No checks registered = "up" (the server responding proves it is alive).
-func (e *healthEngine) checkLiveness(ctx context.Context) (string, []healthCheckResult) {
+func (e *Engine) CheckLiveness(ctx context.Context) (string, []CheckResult) {
 	named := e.snapshotLiveness()
 	scheduled := scheduleNamedChecks(named)
-	runResults := runHealthChecks(ctx, scheduled, e.timeout)
+	runResults := runChecks(ctx, scheduled, e.timeout)
 	results := namedResults(runResults)
-	return aggregateHealthStatus(results), results
+	return aggregateStatus(results), results
 }
 
-// checkReadiness runs named and store checks through the same bounded parallel
+// CheckReadiness runs named and store checks through the same bounded parallel
 // runner. storeFn returns stable per-store probes and may be nil.
-func (e *healthEngine) checkReadiness(
+func (e *Engine) CheckReadiness(
 	ctx context.Context,
-	storeFn internalhealth.StoreFunc,
-) (string, []healthCheckResult, []internalhealth.StoreResult) {
+	storeFn StoreFunc,
+) (string, []CheckResult, []StoreResult) {
 	named := e.snapshotReadiness()
 	scheduled := scheduleNamedChecks(named)
 	namedNames := make(map[string]struct{}, len(named))
@@ -139,9 +141,9 @@ func (e *healthEngine) checkReadiness(
 	}
 
 	storeChecks, storeSnapshotErr := snapshotStoreChecks(storeFn)
-	configFailures := make([]healthCheckResult, 0)
+	configFailures := make([]CheckResult, 0)
 	if storeSnapshotErr != nil {
-		configFailures = append(configFailures, failedHealthCheckResult(
+		configFailures = append(configFailures, failedResult(
 			"credo.store_registry",
 			storeSnapshotErr,
 		))
@@ -150,40 +152,40 @@ func (e *healthEngine) checkReadiness(
 	seenStores := make(map[string]struct{}, len(storeChecks))
 	for index, storeCheck := range storeChecks {
 		if err := validateStoreCheckDescriptor(storeCheck); err != nil {
-			configFailures = append(configFailures, failedHealthCheckResult(
+			configFailures = append(configFailures, failedResult(
 				configurationFailureName("store_descriptor", index),
 				err,
 			))
 			continue
 		}
 		if _, duplicate := seenStores[storeCheck.Name]; duplicate {
-			configFailures = append(configFailures, failedHealthCheckResult(
+			configFailures = append(configFailures, failedResult(
 				configurationFailureName("store_name_conflict", index),
-				fmt.Errorf("%w: duplicate store check %q", errHealthCheckNameConflict, storeCheck.Name),
+				fmt.Errorf("%w: duplicate store check %q", ErrCheckNameConflict, storeCheck.Name),
 			))
 			continue
 		}
 		seenStores[storeCheck.Name] = struct{}{}
 		if _, collision := namedNames[storeCheck.Name]; collision {
-			configFailures = append(configFailures, failedHealthCheckResult(
+			configFailures = append(configFailures, failedResult(
 				configurationFailureName("store_name_conflict", index),
-				fmt.Errorf("%w: named and store checks both use %q", errHealthCheckNameConflict, storeCheck.Name),
+				fmt.Errorf("%w: named and store checks both use %q", ErrCheckNameConflict, storeCheck.Name),
 			))
 			continue
 		}
-		scheduled = append(scheduled, scheduledHealthCheck{
+		scheduled = append(scheduled, scheduledCheck{
 			name:   storeCheck.Name,
-			source: healthCheckSourceStore,
+			source: sourceStore,
 			probe:  storeCheck.Probe,
 		})
 	}
 
-	runResults := runHealthChecks(ctx, scheduled, e.timeout)
-	checks := make([]healthCheckResult, 0, len(named)+len(configFailures))
-	stores := make([]internalhealth.StoreResult, 0, len(storeChecks))
+	runResults := runChecks(ctx, scheduled, e.timeout)
+	checks := make([]CheckResult, 0, len(named)+len(configFailures))
+	stores := make([]StoreResult, 0, len(storeChecks))
 	for _, runResult := range runResults {
 		switch runResult.source {
-		case healthCheckSourceStore:
+		case sourceStore:
 			stores = append(stores, normalizeStoreResult(runResult.name, runResult.result))
 		default:
 			checks = append(checks, namedResult(runResult))
@@ -191,10 +193,10 @@ func (e *healthEngine) checkReadiness(
 	}
 	checks = append(checks, configFailures...)
 
-	status := aggregateHealthStatus(checks)
+	status := aggregateStatus(checks)
 	if status == "up" {
 		for _, storeResult := range stores {
-			// All stores remain critical in this delivery. StatusDegraded is
+			// All stores remain critical in this delivery. "degraded" is
 			// explicitly readiness-blocking until optional-store policy lands.
 			if storeResult.Status != "up" {
 				status = "down"
@@ -205,31 +207,31 @@ func (e *healthEngine) checkReadiness(
 	return status, checks, stores
 }
 
-func (e *healthEngine) snapshotLiveness() []namedHealthCheck {
+func (e *Engine) snapshotLiveness() []namedCheck {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return slices.Clone(e.liveness)
 }
 
-func (e *healthEngine) snapshotReadiness() []namedHealthCheck {
+func (e *Engine) snapshotReadiness() []namedCheck {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return slices.Clone(e.readiness)
 }
 
-func scheduleNamedChecks(checks []namedHealthCheck) []scheduledHealthCheck {
-	scheduled := make([]scheduledHealthCheck, 0, len(checks))
+func scheduleNamedChecks(checks []namedCheck) []scheduledCheck {
+	scheduled := make([]scheduledCheck, 0, len(checks))
 	for _, check := range checks {
-		scheduled = append(scheduled, scheduledHealthCheck{
+		scheduled = append(scheduled, scheduledCheck{
 			name:   check.name,
-			source: healthCheckSourceNamed,
+			source: sourceNamed,
 			probe:  check.probe,
 		})
 	}
 	return scheduled
 }
 
-func snapshotStoreChecks(storeFn internalhealth.StoreFunc) (checks []internalhealth.StoreCheck, err error) {
+func snapshotStoreChecks(storeFn StoreFunc) (checks []StoreCheck, err error) {
 	if storeFn == nil {
 		return nil, nil
 	}
@@ -242,8 +244,8 @@ func snapshotStoreChecks(storeFn internalhealth.StoreFunc) (checks []internalhea
 	return storeFn(), nil
 }
 
-func validateStoreCheckDescriptor(check internalhealth.StoreCheck) error {
-	if err := validateHealthCheckName(check.Name); err != nil {
+func validateStoreCheckDescriptor(check StoreCheck) error {
+	if err := ValidateName(check.Name); err != nil {
 		return fmt.Errorf("credo: invalid store check: %w", err)
 	}
 	if check.Probe == nil {
@@ -256,15 +258,15 @@ func configurationFailureName(kind string, index int) string {
 	return fmt.Sprintf("credo.%s.%d", kind, index)
 }
 
-// runHealthChecks executes every named and store probe concurrently. Workers
-// publish immutable Probe results; only these bounded collector goroutines
-// write their dedicated result indexes, so a late callback cannot race with or
-// mutate a response that already timed out.
-func runHealthChecks(
+// runChecks executes every named and store probe concurrently. Workers publish
+// immutable Probe results; only these bounded collector goroutines write their
+// dedicated result indexes, so a late callback cannot race with or mutate a
+// response that already timed out.
+func runChecks(
 	ctx context.Context,
-	checks []scheduledHealthCheck,
+	checks []scheduledCheck,
 	timeout time.Duration,
-) []scheduledHealthResult {
+) []scheduledResult {
 	if len(checks) == 0 {
 		return nil
 	}
@@ -272,11 +274,11 @@ func runHealthChecks(
 		ctx = context.Background()
 	}
 
-	results := make([]scheduledHealthResult, len(checks))
+	results := make([]scheduledResult, len(checks))
 	var wait sync.WaitGroup
 	for index, check := range checks {
 		wait.Go(func() {
-			results[index] = scheduledHealthResult{
+			results[index] = scheduledResult{
 				name:   check.name,
 				source: check.source,
 				result: check.probe.Run(ctx, timeout),
@@ -287,20 +289,20 @@ func runHealthChecks(
 	return results
 }
 
-func namedResults(runResults []scheduledHealthResult) []healthCheckResult {
-	results := make([]healthCheckResult, 0, len(runResults))
+func namedResults(runResults []scheduledResult) []CheckResult {
+	results := make([]CheckResult, 0, len(runResults))
 	for _, result := range runResults {
 		results = append(results, namedResult(result))
 	}
 	return results
 }
 
-func namedResult(result scheduledHealthResult) healthCheckResult {
+func namedResult(result scheduledResult) CheckResult {
 	status := result.result.Status
 	if status != "up" {
 		status = "down"
 	}
-	return healthCheckResult{
+	return CheckResult{
 		Name:   result.name,
 		Status: status,
 		Error:  result.result.Error,
@@ -308,8 +310,8 @@ func namedResult(result scheduledHealthResult) healthCheckResult {
 	}
 }
 
-func failedHealthCheckResult(name string, cause error) healthCheckResult {
-	return healthCheckResult{
+func failedResult(name string, cause error) CheckResult {
+	return CheckResult{
 		Name:   name,
 		Status: "down",
 		Error:  cause.Error(),
@@ -317,7 +319,7 @@ func failedHealthCheckResult(name string, cause error) healthCheckResult {
 	}
 }
 
-func normalizeStoreResult(name string, result internalhealth.Result) internalhealth.StoreResult {
+func normalizeStoreResult(name string, result Result) StoreResult {
 	status := strings.ToLower(result.Status)
 	cause := result.Cause
 	causeText := result.Error
@@ -327,7 +329,7 @@ func normalizeStoreResult(name string, result internalhealth.Result) internalhea
 	case "up":
 		if cause != nil || causeText != "" {
 			status = "down"
-			cause = errors.Join(errInvalidStoreHealthStatus, cause)
+			cause = errors.Join(ErrInvalidStoreStatus, cause)
 			causeText = appendSafeCauseText(
 				fmt.Sprintf("store %q reported up with a failure cause", name),
 				causeText,
@@ -344,14 +346,14 @@ func normalizeStoreResult(name string, result internalhealth.Result) internalhea
 		}
 	default:
 		status = "down"
-		cause = errors.Join(errInvalidStoreHealthStatus, cause)
+		cause = errors.Join(ErrInvalidStoreStatus, cause)
 		causeText = appendSafeCauseText(
 			fmt.Sprintf("store %q reported unsupported status %q", name, result.Status),
 			causeText,
 		)
 	}
 
-	return internalhealth.StoreResult{
+	return StoreResult{
 		Name:    name,
 		Status:  status,
 		Latency: latency,
@@ -367,9 +369,9 @@ func appendSafeCauseText(prefix string, causeText string) string {
 	return prefix + ": " + causeText
 }
 
-// aggregateHealthStatus returns "up" if every check passed (or none were
+// aggregateStatus returns "up" if every check passed (or none were
 // registered), and "down" if any check failed.
-func aggregateHealthStatus(results []healthCheckResult) string {
+func aggregateStatus(results []CheckResult) string {
 	for _, result := range results {
 		if result.Status != "up" {
 			return "down"
