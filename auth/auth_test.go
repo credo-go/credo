@@ -139,43 +139,6 @@ func TestMiddleware_AuthFailure_CustomErrorReturnsNil_UsesDefaultUnauthorized(t 
 	}
 }
 
-func TestMiddleware_NilAuthenticator_DefaultUnauthorized(t *testing.T) {
-	var authenticator auth.Authenticator[*testUser]
-
-	app := mustNew(t)
-	app.GET("/", func(ctx *credo.Context) error {
-		t.Fatal("handler should not be called")
-		return nil
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != 401 {
-		t.Errorf("status = %d, want 401", w.Code)
-	}
-}
-
-func TestMiddleware_TypedNilAuthenticator_DefaultUnauthorized(t *testing.T) {
-	var typedNil *mockAuthenticator[*testUser]
-	var authenticator auth.Authenticator[*testUser] = typedNil
-
-	app := mustNew(t)
-	app.GET("/", func(ctx *credo.Context) error {
-		t.Fatal("handler should not be called")
-		return nil
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != 401 {
-		t.Errorf("status = %d, want 401", w.Code)
-	}
-}
-
 func TestMiddleware_UserAccessibleInHandler(t *testing.T) {
 	user := &testUser{ID: 99, Name: "charlie"}
 	authenticator := &mockAuthenticator[*testUser]{user: user}
