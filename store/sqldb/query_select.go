@@ -257,36 +257,9 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 	// does not, so bypassing them here could make Total and Records represent
 	// different predicates or projections. Run the same hook lifecycle around
 	// the logical source on its private snapshot.
-	tableModel, err := bunSelectQueryTableModel(source)
+	afterSelect, err := runBunSelectHooksBefore(ctx, source)
 	if err != nil {
 		return 0, err
-	}
-	if tableModel != nil {
-		zeroModel := tableModel.Table().ZeroIface
-		if beforeSelect, ok := zeroModel.(bun.BeforeSelectHook); ok {
-			if hookErr := beforeSelect.BeforeSelect(ctx, source); hookErr != nil {
-				return 0, hookErr
-			}
-		}
-	}
-	// BeforeSelect may replace the model. Bun resolves BeforeAppendModel and
-	// AfterSelect from the post-hook query state, so mirror that ordering.
-	tableModel, err = bunSelectQueryTableModel(source)
-	if err != nil {
-		return 0, err
-	}
-	var afterSelect bun.AfterSelectHook
-	if tableModel != nil {
-		if appendErr := tableModel.BeforeAppendModel(ctx, source); appendErr != nil {
-			return 0, appendErr
-		}
-	}
-	tableModel, err = bunSelectQueryTableModel(source)
-	if err != nil {
-		return 0, err
-	}
-	if tableModel != nil {
-		afterSelect, _ = tableModel.Table().ZeroIface.(bun.AfterSelectHook)
 	}
 	if queryErr := bunSelectQueryError(source); queryErr != nil {
 		return 0, queryErr
@@ -334,6 +307,48 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 		}
 	}
 	return total, nil
+}
+
+// runBunSelectHooksBefore mirrors the pre-execution half of Bun's SELECT hook
+// lifecycle on a private query snapshot and returns the AfterSelect hook the
+// caller must invoke after execution (nil when the model has none). The table
+// model is re-read after each step because BeforeSelect may replace the model
+// and Bun resolves BeforeAppendModel and AfterSelect from the post-hook state.
+//
+// Bun pin: this order is Bun v1.2.18's (SelectQuery.Scan → beforeSelectHook →
+// BeforeAppendModel → afterSelectHook). It is not a public contract; re-verify
+// it against the pinned release when bumping Bun, following the upgrade
+// protocol documented in bun_select_clone.go.
+func runBunSelectHooksBefore(ctx context.Context, source *bun.SelectQuery) (bun.AfterSelectHook, error) {
+	tableModel, err := bunSelectQueryTableModel(source)
+	if err != nil {
+		return nil, err
+	}
+	if tableModel != nil {
+		if beforeSelect, ok := tableModel.Table().ZeroIface.(bun.BeforeSelectHook); ok {
+			if hookErr := beforeSelect.BeforeSelect(ctx, source); hookErr != nil {
+				return nil, hookErr
+			}
+		}
+	}
+	tableModel, err = bunSelectQueryTableModel(source)
+	if err != nil {
+		return nil, err
+	}
+	if tableModel != nil {
+		if appendErr := tableModel.BeforeAppendModel(ctx, source); appendErr != nil {
+			return nil, appendErr
+		}
+	}
+	tableModel, err = bunSelectQueryTableModel(source)
+	if err != nil {
+		return nil, err
+	}
+	if tableModel == nil {
+		return nil, nil
+	}
+	afterSelect, _ := tableModel.Table().ZeroIface.(bun.AfterSelectHook)
+	return afterSelect, nil
 }
 
 func (q *SelectQuery) validateTypedTerminal(terminal string) error {
