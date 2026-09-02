@@ -96,7 +96,8 @@ func WithCallerOwnedLifecycle() RegisterOption {
 // Steps:
 //  1. Validate name, lifecycle ownership, and predictable DI conflicts
 //  2. Resolve or create Registry and wire the internal readiness seam
-//  3. Privately reserve the unique store name, DI type, and lifecycle identity
+//  3. Privately reserve the unique store name, DI type, and lifecycle identity,
+//     re-running the DI preflight inside the same reservation step
 //  4. Ping the connection with a finite timeout
 //  5. Publish the DI value and Registry health entry together
 //  6. Emit validated, secret-free registration warning codes after publication
@@ -139,22 +140,28 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 		return err
 	}
 
+	// The reservation and the DI re-check form one atomic step under the
+	// Registry lock: finalization or a concurrent value registration that won
+	// during Registry/seam setup is still caught before Ping, and no other
+	// Register call can slip between the conflict checks and the preflight.
+	var preflightErr error
 	reservation, err := reg.reserveIdentified(
 		plan.name,
 		reflect.TypeFor[R](),
 		plan.lifecycle,
 		plan.lifecycleIdentity,
+		func() error {
+			preflightErr = app.CanProvideValue[R]()
+			return preflightErr
+		},
 	)
 	if err != nil {
+		if preflightErr != nil {
+			return fmt.Errorf("store: register %q: %w", plan.name, preflightErr)
+		}
 		return fmt.Errorf("store: reserve %q: %w", plan.name, err)
 	}
 	defer reservation.release()
-
-	// Re-check after Registry/seam setup so finalization or a concurrent value
-	// registration that won during setup is still caught before Ping.
-	if err := app.CanProvideValue[R](); err != nil {
-		return fmt.Errorf("store: register %q: %w", plan.name, err)
-	}
 
 	if pingErr := pingLifecycle(plan); pingErr != nil {
 		return pingErr

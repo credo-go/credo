@@ -21,11 +21,15 @@ import (
 // deadline reaches its entry. Explicitly caller-owned lifecycle handles remain
 // the caller's responsibility.
 type Registry struct {
-	mu                 sync.RWMutex
-	entries            []registryEntry
-	reservedNames      map[string]*registryReservation
-	reservedTypes      map[reflect.Type]*registryReservation
-	reservedLifecycles map[lifecycleIdentity]*registryReservation
+	mu      sync.RWMutex
+	entries []registryEntry
+
+	// pending holds reservations that have not been committed or released.
+	// Each reservation uniquely owns its name, DI value type, and lifecycle
+	// identity against both entries and other pending reservations, so one
+	// ledger replaces per-key maps; the slice is registration-time only and
+	// stays tiny.
+	pending []*registryReservation
 }
 
 type registryEntry struct {
@@ -37,12 +41,9 @@ type registryEntry struct {
 }
 
 type registryReservation struct {
-	registry          *Registry
-	name              string
-	valueType         reflect.Type
-	lifecycleIdentity lifecycleIdentity
-	entry             registryEntry
-	active            bool
+	registry *Registry
+	entry    registryEntry
+	active   bool
 }
 
 type lifecycleIdentity = resourceid.Identity
@@ -64,14 +65,22 @@ func (r *Registry) reserve(name string, valueType reflect.Type, lc Lifecycle) (*
 	if err != nil {
 		return nil, fmt.Errorf("store: lifecycle identity for %q: %w", name, err)
 	}
-	return r.reserveIdentified(name, valueType, lc, identity)
+	return r.reserveIdentified(name, valueType, lc, identity, nil)
 }
 
+// reserveIdentified performs the reservation as one atomic step under the
+// registry lock: conflict checks against committed entries and pending
+// reservations, then the optional preflight, then recording the reservation.
+// preflight lets the caller fold a point-in-time check that must hold at the
+// moment of reservation (Register's DI publication preflight) into the same
+// critical section instead of re-checking after the fact; its error is
+// returned unwrapped.
 func (r *Registry) reserveIdentified(
 	name string,
 	valueType reflect.Type,
 	lc Lifecycle,
 	identity lifecycleIdentity,
+	preflight func() error,
 ) (*registryReservation, error) {
 	if r == nil {
 		return nil, fmt.Errorf("store: registry must not be nil")
@@ -100,43 +109,56 @@ func (r *Registry) reserveIdentified(
 			return nil, fmt.Errorf("store: lifecycle for %q is already registered as %q", name, e.name)
 		}
 	}
-	if _, exists := r.reservedNames[name]; exists {
+	if r.findPending(func(p *registryEntry) bool { return p.name == name }) != nil {
 		return nil, fmt.Errorf("store: duplicate store name %q", name)
 	}
-	if _, exists := r.reservedTypes[valueType]; exists {
+	if r.findPending(func(p *registryEntry) bool { return p.valueType == valueType }) != nil {
 		return nil, fmt.Errorf("store: duplicate store type %s", valueType)
 	}
-	if existing, exists := r.reservedLifecycles[identity]; exists {
-		return nil, fmt.Errorf("store: lifecycle for %q is already pending as %q", name, existing.name)
+	if existing := r.findPending(func(p *registryEntry) bool { return p.lifecycleIdentity == identity }); existing != nil {
+		return nil, fmt.Errorf("store: lifecycle for %q is already pending as %q", name, existing.entry.name)
+	}
+	if preflight != nil {
+		if err := preflight(); err != nil {
+			return nil, err
+		}
 	}
 
 	reservation := &registryReservation{
-		registry:          r,
-		name:              name,
-		valueType:         valueType,
-		lifecycleIdentity: identity,
-		active:            true,
+		registry: r,
+		active:   true,
+		entry: registryEntry{
+			name:              name,
+			valueType:         valueType,
+			lifecycleIdentity: identity,
+			lifecycle:         lc,
+			probe:             newLifecycleProbe(lc),
+		},
 	}
-	reservation.entry = registryEntry{
-		name:              name,
-		valueType:         valueType,
-		lifecycleIdentity: identity,
-		lifecycle:         lc,
-		probe:             newLifecycleProbe(lc),
-	}
-	if r.reservedNames == nil {
-		r.reservedNames = make(map[string]*registryReservation)
-	}
-	if r.reservedTypes == nil {
-		r.reservedTypes = make(map[reflect.Type]*registryReservation)
-	}
-	if r.reservedLifecycles == nil {
-		r.reservedLifecycles = make(map[lifecycleIdentity]*registryReservation)
-	}
-	r.reservedNames[name] = reservation
-	r.reservedTypes[valueType] = reservation
-	r.reservedLifecycles[identity] = reservation
+	r.pending = append(r.pending, reservation)
 	return reservation, nil
+}
+
+// findPending returns the first pending reservation whose entry satisfies
+// match. The caller must hold r.mu.
+func (r *Registry) findPending(match func(*registryEntry) bool) *registryReservation {
+	for _, p := range r.pending {
+		if match(&p.entry) {
+			return p
+		}
+	}
+	return nil
+}
+
+// isPending reports whether reservation is currently recorded in the ledger.
+// The caller must hold r.mu.
+func (r *Registry) isPending(reservation *registryReservation) bool {
+	return slices.Contains(r.pending, reservation)
+}
+
+// dropPending removes reservation from the ledger. The caller must hold r.mu.
+func (r *Registry) dropPending(reservation *registryReservation) {
+	r.pending = slices.DeleteFunc(r.pending, func(p *registryReservation) bool { return p == reservation })
 }
 
 func identifyLifecycle(lc Lifecycle) (lifecycleIdentity, error) {
@@ -162,24 +184,21 @@ func (reservation *registryReservation) commit(publish func() error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !reservation.active || r.reservedNames[reservation.name] != reservation ||
-		r.reservedTypes[reservation.valueType] != reservation ||
-		r.reservedLifecycles[reservation.lifecycleIdentity] != reservation {
+	if !reservation.active || !r.isPending(reservation) {
 		panic("store: commit inactive registry reservation")
 	}
 	if err := publish(); err != nil {
 		return err
 	}
-	delete(r.reservedNames, reservation.name)
-	delete(r.reservedTypes, reservation.valueType)
-	delete(r.reservedLifecycles, reservation.lifecycleIdentity)
+	r.dropPending(reservation)
 	r.entries = append(r.entries, reservation.entry)
 	reservation.active = false
 	return nil
 }
 
-// release idempotently discards a failed registration. Token identity checks
-// prevent a stale release from deleting a later reservation for the same key.
+// release idempotently discards a failed registration. Pointer identity in the
+// ledger prevents a stale release from deleting a later reservation for the
+// same key.
 func (reservation *registryReservation) release() {
 	if reservation == nil || reservation.registry == nil {
 		return
@@ -191,15 +210,7 @@ func (reservation *registryReservation) release() {
 	if !reservation.active {
 		return
 	}
-	if r.reservedNames[reservation.name] == reservation {
-		delete(r.reservedNames, reservation.name)
-	}
-	if r.reservedTypes[reservation.valueType] == reservation {
-		delete(r.reservedTypes, reservation.valueType)
-	}
-	if r.reservedLifecycles[reservation.lifecycleIdentity] == reservation {
-		delete(r.reservedLifecycles, reservation.lifecycleIdentity)
-	}
+	r.dropPending(reservation)
 	reservation.active = false
 }
 
