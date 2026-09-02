@@ -52,14 +52,22 @@ func BelowMinLevel(status int, minLevel slog.Leveler) bool {
 }
 
 // EmitAccessLog writes the single "request completed" entry for rec at the
-// status-derived level. requestID is attached explicitly only when the logger
+// status-derived level, or returns without building attributes when logger
+// is not enabled for that level. requestID is attached explicitly only when the logger
 // does not already carry it; callers pass "" otherwise. It is the one source
 // for the attribute set, message, and level shared by the built-in access
 // logger and middleware.AccessLog (this package cannot import the root
 // package, so callers collect the per-request primitives).
 func EmitAccessLog(ctx context.Context, logger *slog.Logger, rec AccessLogRecord, requestID string) {
+	level := Level(rec.Status)
+	// A handler that would discard the record (a Warn-only access logger, say)
+	// must not pay for the attribute set; slog itself checks Enabled only
+	// after the attrs are built.
+	if !logger.Enabled(ctx, level) {
+		return
+	}
 	attrs, n := AccessLogAttrs(rec, requestID)
-	logger.LogAttrs(ctx, Level(rec.Status), "request completed", attrs[:n]...)
+	logger.LogAttrs(ctx, level, "request completed", attrs[:n]...)
 }
 
 // AccessLogAttrs builds the common structured attributes for rec. path_original

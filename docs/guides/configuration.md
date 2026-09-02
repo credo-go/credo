@@ -105,6 +105,10 @@ rawCfg, err := config.Load(
 
 Strict mode applies to every decode from that store: `Unmarshal`/`Get`, reload validation, and the framework's own `server` section read in `credo.New` — a typo under `server.*` then fails startup instead of silently using a default. Two things to design for: string env/.env overrides on typed fields no longer decode (strict mode is meant for typed, file-only sources like the setup above), and every struct that decodes a section must cover all of that section's keys — including narrow `OnConfigChange` subscribers and full-tree decodes (a config with a `server` section needs a `Server` field on a full-tree target).
 
+### Logging the Config
+
+`*config.Config` and its dereferenced copies format as metadata only (`config.Config(N keys, values redacted)`) through `%v`, `%+v`, `%#v`, and as an slog attribute, so passing the store to a log line, a panic message, or a debug dump can never leak a secret or a key name. To inspect values, decode the section into a typed struct and log the fields you mean to expose.
+
 ---
 
 ## Environment-Based Config
