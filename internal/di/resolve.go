@@ -165,9 +165,8 @@ func (c *Container) construct(reg provider, stack []reflect.Type) (any, error) {
 }
 
 func (c *Container) resolveParamValue(paramType reflect.Type, serviceName string, stack []reflect.Type) (reflect.Value, error) {
-	if c.isInfraType(paramType) {
-		infra := c.infraProvider.Factory(serviceName)
-		return reflect.ValueOf(infra), nil
+	if fp, ok := c.frameworkProvider(paramType); ok {
+		return reflect.ValueOf(fp.Factory(serviceName)), nil
 	}
 
 	if isInterfaceSlice(paramType) && !c.hasDirectRegistration(paramType) {

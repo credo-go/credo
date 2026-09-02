@@ -40,8 +40,8 @@ func (c *Container) validate() error {
 				continue
 			}
 
-			// Infra type is framework-produced, not registered.
-			if c.isInfraType(pt) {
+			// Framework-produced parameters (credo.Infra) are not registered.
+			if c.isFrameworkType(pt) {
 				continue
 			}
 
@@ -142,7 +142,7 @@ func (c *Container) detectCycles() error {
 				if pt == contextType {
 					continue
 				}
-				if c.isInfraType(pt) {
+				if c.isFrameworkType(pt) {
 					continue
 				}
 

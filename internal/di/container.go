@@ -21,10 +21,12 @@ type Container struct {
 	manyBindings   map[reflect.Type][]reflect.Type
 	manyBindingSet map[reflect.Type]map[reflect.Type]struct{}
 	order          []reflect.Type // registration order (for shutdown)
-	infraProvider  *InfraProvider // optional: auto-injects Infra for Model 1
-	frozen         bool           // set after Seal(); prevents new bindings/registrations
-	sealOnce       sync.Once
-	sealErr        error
+	// frameworkProviders produces constructor parameters the framework injects
+	// without a registration (credo.Infra, Model 1). Written at setup only.
+	frameworkProviders map[reflect.Type]FrameworkProvider
+	frozen             bool // set after Seal(); prevents new bindings/registrations
+	sealOnce           sync.Once
+	sealErr            error
 }
 
 // singletonEntry provides per-type synchronization for concurrent singleton
@@ -46,6 +48,8 @@ func New() *Container {
 		aliases:        make(map[reflect.Type]reflect.Type),
 		manyBindings:   make(map[reflect.Type][]reflect.Type),
 		manyBindingSet: make(map[reflect.Type]map[reflect.Type]struct{}),
+
+		frameworkProviders: make(map[reflect.Type]FrameworkProvider),
 	}
 }
 

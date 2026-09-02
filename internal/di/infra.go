@@ -2,27 +2,38 @@ package di
 
 import "reflect"
 
-// InfraProvider configures automatic Infra injection for constructors.
-// The root package sets this on the container so the DI system can produce
-// infrastructure infra without importing the root package (avoiding cycles).
-type InfraProvider struct {
-	// InfraType is the reflect.Type of the Infra struct (e.g., credo.Infra).
-	InfraType reflect.Type
-
-	// Factory creates an Infra value with the logger scoped to serviceName.
-	// Returns the Infra struct value (not a pointer).
+// FrameworkProvider produces a value for constructor parameters of Type that
+// have no registration of their own: the framework injects them. The root
+// package registers credo.Infra this way so the container can produce it
+// without importing the root package (avoiding an import cycle). Factory
+// receives the short service name of the constructor being built (see
+// deriveServiceName) and returns the value to pass.
+type FrameworkProvider struct {
+	Type    reflect.Type
 	Factory func(serviceName string) any
 }
 
-// SetInfraProvider configures infra auto-injection for constructors.
-// Must be called before any Resolve calls (typically in credo.New).
-func (c *Container) SetInfraProvider(p *InfraProvider) {
-	c.infraProvider = p
+// SetFrameworkProvider registers (or replaces) the framework provider for
+// p.Type. Must be called before any Resolve or Seal (typically in credo.New);
+// the resolve path reads the provider map without locking.
+func (c *Container) SetFrameworkProvider(p FrameworkProvider) {
+	if p.Type == nil || p.Factory == nil {
+		panic("di: SetFrameworkProvider: Type and Factory must not be nil")
+	}
+	c.frameworkProviders[p.Type] = p
 }
 
-// isInfraType reports whether the given type is the configured Infra type.
-func (c *Container) isInfraType(t reflect.Type) bool {
-	return c.infraProvider != nil && t == c.infraProvider.InfraType
+// frameworkProvider returns the provider for t when the framework produces it.
+func (c *Container) frameworkProvider(t reflect.Type) (FrameworkProvider, bool) {
+	p, ok := c.frameworkProviders[t]
+	return p, ok
+}
+
+// isFrameworkType reports whether t is produced by a framework provider
+// rather than satisfied by a registration.
+func (c *Container) isFrameworkType(t reflect.Type) bool {
+	_, ok := c.frameworkProviders[t]
+	return ok
 }
 
 // deriveServiceName extracts a short service name from a reflect.Type.

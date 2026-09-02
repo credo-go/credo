@@ -532,13 +532,14 @@ The container inspects the constructor's parameter types via reflection at regis
 internal/di/
 +-- doc.go            <- package documentation (samber/do attribution)
 +-- container.go      <- Container struct, New(), findRegistration (alias-aware)
-+-- provide.go        <- constructors, normal/protected values, protection + preflight
++-- provide.go        <- Provide/ProvideFactory/ProvideValue registration, protection + preflight
 +-- resolve.go        <- Resolve[T], ResolveAll[I], dependency graph walk
 +-- bind.go           <- Alias[I,T], BindMany[I,T], binding management
 +-- build.go          <- Seal(), freeze + validate via sync.Once
 +-- option.go         <- Singleton option
 +-- lifecycle.go      <- Shutdown, validate (unexported), cycle detection
-+-- infra.go          <- InfraProvider, isInfraType, deriveServiceName
++-- provider.go       <- provider strategies (constructor/value/factory)
++-- infra.go          <- FrameworkProvider map (credo.Infra), deriveServiceName
 +-- export_test.go    <- test-only helpers
 +-- *_test.go
 

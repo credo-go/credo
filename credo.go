@@ -300,8 +300,8 @@ func resolveServerConfig(o *appOptions) (serverConfig, error) {
 // (auto-loaded or explicit).
 func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 	c := di.New()
-	c.SetInfraProvider(&di.InfraProvider{
-		InfraType: reflect.TypeFor[Infra](),
+	c.SetFrameworkProvider(di.FrameworkProvider{
+		Type: reflect.TypeFor[Infra](),
 		Factory: func(serviceName string) any {
 			return Infra{Logger: baseInfra.Logger.With("service", serviceName)}
 		},
