@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-02
+
 ### Added
 
 - **Worker readiness policy** — `worker.WithReadiness(worker.ReadinessPolicy{...})` binds a worker to the readiness probe with explicit, opt-in conditions: `RequireFirstSuccess` (startup barrier: unready until the first run returns nil, then stays satisfied), `FailWhenFailed` (unready once `StatusFailed` is reached), and `MaxSuccessAge` (unready when the last success is older than the limit; not applied before the first success). `RequireFirstSuccess`/`MaxSuccessAge` are scheduled-worker conditions, the zero policy is rejected, and the contribution is reported as a readiness check named `worker:<name>` in the same name space as `AddReadinessCheck` (collisions fail closed). Wiring uses a lazily resolved `internal/health.ReadinessFunc` seam, so `worker.Register` and `UseHealth` may run in either order. `worker.Info` gains `LastSuccess`.
@@ -464,7 +466,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/credo-go/credo/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/credo-go/credo/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/credo-go/credo/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/credo-go/credo/compare/v0.13.0...v0.13.1
