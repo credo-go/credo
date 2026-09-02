@@ -1712,3 +1712,30 @@ func TestBindBody_NoValidatable_ServerDebugConfig_Warning(t *testing.T) {
 		t.Errorf("expected debug warning from server.debug config, got: %s", output)
 	}
 }
+
+func TestBindBody_ContentTypeFallbackNormalized(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/test", func(ctx *credo.Context) error {
+		var v struct {
+			Name string `json:"name"`
+		}
+		if err := ctx.Request().BindBody(&v); err != nil {
+			return err
+		}
+		return ctx.Response().Text(200, v.Name)
+	})
+
+	// "charset" without a value makes mime.ParseMediaType fail; the bare
+	// type must still be recognized case-insensitively.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", strings.NewReader(`{"name":"Bob"}`))
+	r.Header.Set("Content-Type", "  Application/JSON; charset")
+	app.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "Bob" {
+		t.Errorf("body = %q, want %q", w.Body.String(), "Bob")
+	}
+}

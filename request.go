@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"strings"
 
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 	"github.com/credo-go/credo/validation"
@@ -250,8 +251,11 @@ func (r *Request) BindBody(target any) error {
 
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil {
-		// If parsing fails, use the raw Content-Type as-is
-		mediaType = ct
+		// Malformed parameters must not hide a recognizable media type: fall
+		// back to the bare type, trimmed and lowercased as RFC 9110 requires
+		// for case-insensitive type/subtype matching.
+		base, _, _ := strings.Cut(ct, ";")
+		mediaType = strings.ToLower(strings.TrimSpace(base))
 	}
 
 	switch mediaType {
