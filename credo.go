@@ -548,12 +548,6 @@ func (app *App) RemoveMeta(key string) {
 	app.root.RemoveMeta(key)
 }
 
-// Mux returns a route registry view for route introspection (Walk, Routes).
-// The returned view includes routes from the default mux and all host-scoped muxes.
-func (app *App) Mux() Routes {
-	return app
-}
-
 // Routes returns introspection data for every registered route across the
 // default mux and all host-scoped muxes, plus one entry per [App.Mount] prefix.
 // See [RouteInfo] for the per-entry fields, including the route Name, the
