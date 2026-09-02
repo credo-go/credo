@@ -65,19 +65,18 @@ func DefaultRewriteConfig() RewriteConfig {
 // Rules are evaluated in order; the first match wins. The rewrite is
 // transparent to the client (no redirect).
 //
-// Rewrite is the rule-list shortcut; use [RewriteWithConfig] to set a
-// Skipper alongside the rules.
+// Rewrite follows the package-wide config-struct convention: pass one
+// [RewriteConfig] carrying the Rules and an optional Skipper.
 //
-// Panics if rules is empty or a From pattern is malformed.
-func Rewrite(rules ...RewriteRule) credo.Middleware {
-	return RewriteWithConfig(RewriteConfig{Rules: rules})
-}
-
-// RewriteWithConfig is the config-struct variant of [Rewrite].
+//	middleware.Rewrite(middleware.RewriteConfig{
+//	    Rules: []middleware.RewriteRule{
+//	        {From: "/v1/{path...}", To: "/api/v1/{path}"},
+//	    },
+//	})
 //
 // Panics if cfg.Rules is empty or a From pattern is malformed.
-func RewriteWithConfig(cfg RewriteConfig) credo.Middleware {
-	config := resolveConfig([]RewriteConfig{cfg}, DefaultRewriteConfig(), normalizeRewriteConfig)
+func Rewrite(cfg ...RewriteConfig) credo.Middleware {
+	config := resolveConfig(cfg, DefaultRewriteConfig(), normalizeRewriteConfig)
 	compiled := compileRules(config.Rules)
 
 	return func(next credo.Handler) credo.Handler {

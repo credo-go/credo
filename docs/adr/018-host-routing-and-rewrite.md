@@ -18,7 +18,7 @@ These are related but not the same concern.
 Credo adds host routing as a first-class routing dimension and keeps rewrite as two separate features:
 
 1. `app.Host(pattern)` creates a host-scoped `*Group` backed by its own mux.
-2. `middleware.Rewrite(rules...)` performs pre-dispatch path rewriting.
+2. `middleware.Rewrite(cfg)` performs pre-dispatch path rewriting (`RewriteConfig{Rules, Skipper}`).
 3. `ctx.Rewrite(path)` performs post-match internal re-dispatch.
 4. `ctx.OriginalPath()` preserves the client-sent path across both rewrite forms.
 
@@ -64,7 +64,7 @@ Wildcard host labels are not host params. They do not appear in `RouteParams()` 
 
 ### Introspection
 
-Route introspection includes host information through `RouteInfo.Host` and `WalkRoutes`. `app.Mux()` returns a route registry view across the default mux and all host-scoped muxes.
+Route introspection includes host information through `RouteInfo.Host` and `WalkRoutes`. `*App` itself satisfies the `Routes` introspection interface (`credo.Walk(app, …)`, `credo.WalkRoutes(app, …)`), covering the default mux and all host-scoped muxes; the former `app.Mux()` accessor only returned the app and was removed.
 
 ## Pre-Dispatch Rewrite
 

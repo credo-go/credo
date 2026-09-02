@@ -133,7 +133,7 @@ func TestServerHandlerRouterMiddlewareAndAuthIntegration(t *testing.T) {
 
 	app.GlobalMiddleware(
 		mark("global"),
-		middleware.Rewrite(middleware.RewriteRule{From: "/legacy/events", To: "/api/events"}),
+		middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/legacy/events", To: "/api/events"}}}),
 	)
 	group := app.Group("/api").Middleware(mark("group"))
 	group.GET("/events", server.Handler(func(ctx *credo.Context, _ *Conn) error {

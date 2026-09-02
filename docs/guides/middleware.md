@@ -421,13 +421,13 @@ The configurable middleware observes at its position inside the centralized erro
 
 ### Rewrite
 
-`middleware.Rewrite(...)` is Credo's pre-dispatch path rewrite middleware.
+`middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{...}})` is Credo's pre-dispatch path rewrite middleware.
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/v1/{path...}", To: "/api/v1/{path}"},
-    middleware.RewriteRule{Host: "old.example.com", From: "/{path...}", To: "/legacy/{path}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/v1/{path...}", To: "/api/v1/{path}"},
+    {Host: "old.example.com", From: "/{path...}", To: "/legacy/{path}"},
+}}))
 ```
 
 Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `ctx.Rewrite()` instead.
@@ -942,14 +942,14 @@ If auth middleware runs globally before Rewrite, it makes decisions based on the
 ```go
 // Risky: auth runs on original path, rewrite changes target.
 app.GlobalMiddleware(authMiddleware)
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/public/{p...}", To: "/internal/{p}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/public/{p...}", To: "/internal/{p}"},
+}}))
 
 // Safer: rewrite first, then auth sees the final path.
-app.GlobalMiddleware(middleware.Rewrite(
-    middleware.RewriteRule{From: "/public/{p...}", To: "/internal/{p}"},
-))
+app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    {From: "/public/{p...}", To: "/internal/{p}"},
+}}))
 app.GlobalMiddleware(authMiddleware)
 ```
 
