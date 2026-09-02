@@ -386,7 +386,7 @@ func (app *App) logServerError(err error, status int, ctx *Context) {
 	message := "credo: server error"
 	if _, isHTTPError := errors.AsType[*HTTPError](err); !isHTTPError {
 		_, isFault := fault.ProviderOf(err)
-		_, hasLegacyStatus := asHTTPStatus(err)
+		_, hasLegacyStatus := internalfaultstatus.ProviderOf(err)
 		if !isFault && !hasLegacyStatus {
 			message = "credo: unhandled error"
 		}
@@ -496,7 +496,7 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		return app.codedErrorInfo(ctx, status, "", "")
 	}
 
-	if se, ok := asHTTPStatus(err); ok {
+	if se, ok := internalfaultstatus.ProviderOf(err); ok {
 		status := se.HTTPStatus()
 		if !isValidHTTPStatus(status) {
 			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
@@ -584,19 +584,6 @@ func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string
 		return key, false
 	}
 	return code, false
-}
-
-// httpStatusProvider is implemented by errors that carry an HTTP status code.
-// This interface is detected via errors.As without requiring the error handler
-// to import the package that defines the error.
-type httpStatusProvider interface {
-	error
-	HTTPStatus() int
-}
-
-// asHTTPStatus extracts an httpStatusProvider from err's chain.
-func asHTTPStatus(err error) (httpStatusProvider, bool) {
-	return errors.AsType[httpStatusProvider](err)
 }
 
 // translateValidationErrors resolves each validation error's exact key and

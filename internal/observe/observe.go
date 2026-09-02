@@ -2,7 +2,6 @@ package observe
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,11 +13,6 @@ import (
 	"github.com/credo-go/credo/fault"
 	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
 )
-
-type httpStatusProvider interface {
-	error
-	HTTPStatus() int
-}
 
 // Status resolves the final HTTP status from a tracked response status and an
 // optional returned error.
@@ -35,7 +29,7 @@ func Status(status int, err error) int {
 		}
 		return http.StatusInternalServerError
 	}
-	if provider, ok := errors.AsType[httpStatusProvider](err); ok {
+	if provider, ok := internalfaultstatus.ProviderOf(err); ok {
 		return provider.HTTPStatus()
 	}
 	return http.StatusInternalServerError
