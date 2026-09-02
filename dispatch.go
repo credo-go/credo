@@ -340,7 +340,7 @@ func (app *App) addRoute(method, pattern string, h Handler, g *Group) *Route {
 		pattern:     pattern,
 		handler:     h,
 		parent:      g,
-		app:         app,
+		registrar:   app,
 		hostPattern: g.hostPattern,
 	}
 
@@ -390,7 +390,7 @@ func (app *App) addHeadRoute(pattern string, h Handler, g *Group) *Route {
 		pattern:     pattern,
 		handler:     headHandler,
 		parent:      g,
-		app:         app,
+		registrar:   app,
 		hostPattern: g.hostPattern,
 		autoHead:    true,
 	}

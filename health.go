@@ -104,7 +104,7 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.healthExposeErrors = cfg.ExposeErrors
 
 	// Validate Group belongs to this app.
-	if cfg.Group != nil && cfg.Group.app != app {
+	if cfg.Group != nil && cfg.Group.registrar != routeRegistrar(app) {
 		panic("credo: UseHealth: Group belongs to a different App")
 	}
 

@@ -35,8 +35,9 @@ type Route struct {
 	// group-middleware collection at compile time.
 	parent *Group
 
-	// app is the owning App (for name registration).
-	app *App
+	// registrar is the owning App's registration seam (freeze guard and
+	// named-route index). Nil for routes built outside an App.
+	registrar routeRegistrar
 
 	// hostPattern is the normalized host pattern for host-scoped routes.
 	// Empty for routes registered on the default mux.
@@ -60,8 +61,8 @@ type Route struct {
 // Must be called before the server starts; panics if called after compile.
 // Returns the Route for fluent chaining.
 func (r *Route) Name(name string) *Route {
-	if r.app != nil {
-		r.app.checkFrozen("Route.Name")
+	if r.registrar != nil {
+		r.registrar.checkFrozen("Route.Name")
 		if r.name == name {
 			return r
 		}
@@ -70,11 +71,11 @@ func (r *Route) Name(name string) *Route {
 		// name mapping intact. Skip registration for empty names — Name("")
 		// is treated as "clear the name" rather than "register empty key".
 		if name != "" {
-			r.app.registerName(name, r)
+			r.registrar.registerName(name, r)
 		}
 
 		if r.name != "" {
-			r.app.deregisterName(r.name)
+			r.registrar.deregisterName(r.name)
 		}
 	}
 	r.name = name
@@ -89,8 +90,8 @@ func (r *Route) Name(name string) *Route {
 // on the twin so middleware reading meta sees identical values regardless
 // of which method was used.
 func (r *Route) SetMeta(key string, val any) *Route {
-	if r.app != nil {
-		r.app.checkFrozen("Route.SetMeta")
+	if r.registrar != nil {
+		r.registrar.checkFrozen("Route.SetMeta")
 	}
 	if r.meta == nil {
 		r.meta = make(map[string]any)
@@ -114,8 +115,8 @@ func (r *Route) SetMeta(key string, val any) *Route {
 // otherwise auth, rate limiting, and other middleware could be silently
 // bypassed via HEAD.
 func (r *Route) Middleware(m ...Middleware) *Route {
-	if r.app != nil {
-		r.app.checkFrozen("Route.Middleware")
+	if r.registrar != nil {
+		r.registrar.checkFrozen("Route.Middleware")
 	}
 	r.middlewares = append(r.middlewares, m...)
 	if r.headTwin != nil {

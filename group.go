@@ -2,13 +2,26 @@
 
 package credo
 
+// routeRegistrar is the cold-path registration seam that Group and Route use
+// instead of a raw *App back-reference: route insertion, the compile-freeze
+// guard, and the named-route index. *App is the only production
+// implementation; the seam keeps the request-time dispatch path on App while
+// letting Group and Route be exercised without one.
+type routeRegistrar interface {
+	addRoute(method, pattern string, h Handler, g *Group) *Route
+	addGetRoute(pattern string, h Handler, g *Group) *Route
+	checkFrozen(what string)
+	registerName(name string, route *Route)
+	deregisterName(name string)
+}
+
 // Group is the user-facing route group for configuring routes with a
 // shared prefix, middleware, and metadata. It is also the node of the
 // group parent chain: route metadata (LookupMeta) and group middleware
 // are both resolved by walking this chain — metadata dynamically at
 // request time, middleware once at compile time.
 type Group struct {
-	app         *App
+	registrar   routeRegistrar
 	prefix      string
 	parent      *Group // nil for the root group
 	meta        map[string]any
@@ -38,31 +51,31 @@ func (g *Group) lookupMeta(key string) (any, bool) {
 // middleware.
 // Panics under the same conditions as [App.GET].
 func (g *Group) GET(pattern string, h Handler) *Route {
-	return g.app.addGetRoute(joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addGetRoute(joinPath(g.prefix, pattern), h, g)
 }
 
 // POST registers a POST route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) POST(pattern string, h Handler) *Route {
-	return g.app.addRoute("POST", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("POST", joinPath(g.prefix, pattern), h, g)
 }
 
 // PUT registers a PUT route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) PUT(pattern string, h Handler) *Route {
-	return g.app.addRoute("PUT", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("PUT", joinPath(g.prefix, pattern), h, g)
 }
 
 // DELETE registers a DELETE route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) DELETE(pattern string, h Handler) *Route {
-	return g.app.addRoute("DELETE", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("DELETE", joinPath(g.prefix, pattern), h, g)
 }
 
 // PATCH registers a PATCH route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) PATCH(pattern string, h Handler) *Route {
-	return g.app.addRoute("PATCH", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("PATCH", joinPath(g.prefix, pattern), h, g)
 }
 
 // QUERY registers an RFC 10008 safe, idempotent query route whose query
@@ -70,19 +83,19 @@ func (g *Group) PATCH(pattern string, h Handler) *Route {
 // standard decode-and-validate path. QUERY requests must include Content-Type.
 // Panics under the same conditions as [App.GET].
 func (g *Group) QUERY(pattern string, h Handler) *Route {
-	return g.app.addRoute(methodQuery, joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute(methodQuery, joinPath(g.prefix, pattern), h, g)
 }
 
 // HEAD registers a HEAD route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) HEAD(pattern string, h Handler) *Route {
-	return g.app.addRoute("HEAD", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("HEAD", joinPath(g.prefix, pattern), h, g)
 }
 
 // OPTIONS registers an OPTIONS route in this group.
 // Panics under the same conditions as [App.GET].
 func (g *Group) OPTIONS(pattern string, h Handler) *Route {
-	return g.app.addRoute("OPTIONS", joinPath(g.prefix, pattern), h, g)
+	return g.registrar.addRoute("OPTIONS", joinPath(g.prefix, pattern), h, g)
 }
 
 // Middleware appends group-level middlewares. They apply to every route
@@ -93,7 +106,7 @@ func (g *Group) OPTIONS(pattern string, h Handler) *Route {
 // Must be called before the server starts; panics if called after
 // compile. Returns *Group for chaining.
 func (g *Group) Middleware(middlewares ...Middleware) *Group {
-	g.app.checkFrozen("Group.Middleware")
+	g.registrar.checkFrozen("Group.Middleware")
 	g.mws = append(g.mws, middlewares...)
 	return g
 }
@@ -102,7 +115,7 @@ func (g *Group) Middleware(middlewares ...Middleware) *Group {
 // All routes within the group inherit this metadata.
 // Must be called before the server starts; panics if called after compile.
 func (g *Group) SetMeta(key string, val any) {
-	g.app.checkFrozen("Group.SetMeta")
+	g.registrar.checkFrozen("Group.SetMeta")
 	if g.meta == nil {
 		g.meta = make(map[string]any)
 	}
@@ -112,7 +125,7 @@ func (g *Group) SetMeta(key string, val any) {
 // RemoveMeta removes a metadata key from this group.
 // Must be called before the server starts; panics if called after compile.
 func (g *Group) RemoveMeta(key string) {
-	g.app.checkFrozen("Group.RemoveMeta")
+	g.registrar.checkFrozen("Group.RemoveMeta")
 	if g.meta != nil {
 		delete(g.meta, key)
 	}
@@ -122,7 +135,7 @@ func (g *Group) RemoveMeta(key string) {
 // inherits this group's metadata and middleware through the parent chain.
 func (g *Group) Group(prefix string) *Group {
 	return &Group{
-		app:         g.app,
+		registrar:   g.registrar,
 		prefix:      joinPath(g.prefix, prefix),
 		parent:      g,
 		mux:         g.mux,

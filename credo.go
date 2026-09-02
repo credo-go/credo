@@ -339,7 +339,7 @@ func New(opts ...Option) (*App, error) {
 		trustedProxies:        trustedProxies,
 	}
 	app.addReloadParticipant(app.tlsReloadParticipant())
-	app.root = &Group{app: app}
+	app.root = &Group{registrar: app}
 	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {
 		return &Context{
@@ -474,7 +474,7 @@ func (app *App) Host(pattern string) *Group {
 	}
 
 	return &Group{
-		app:         app,
+		registrar:   app,
 		parent:      app.root, // inherit app-level meta
 		mux:         m,
 		hostPattern: normalized,

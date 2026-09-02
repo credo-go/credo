@@ -260,7 +260,7 @@ func (app *App) File(urlPath string, fsys fs.FS, name string, cfgs ...StaticConf
 // Static registers routes that serve files from fsys under the given URL prefix
 // within this group. See [App.Static] for full documentation.
 func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticRoute {
-	g.app.checkFrozen("Static")
+	g.registrar.checkFrozen("Static")
 	validateStaticPrefix(prefix)
 
 	cfg := StaticConfig{}
@@ -285,11 +285,11 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 	} else {
 		catchAllPattern = cleanPrefix + "/{_static...}"
 	}
-	primary := g.app.addGetRoute(catchAllPattern, h, g)
+	primary := g.registrar.addGetRoute(catchAllPattern, h, g)
 
 	// Exact match route: /prefix (serves index)
 	indexHandler := newStaticIndexHandler(fsys, cfg)
-	index := g.app.addGetRoute(cleanPrefix, indexHandler, g)
+	index := g.registrar.addGetRoute(cleanPrefix, indexHandler, g)
 
 	return &StaticRoute{
 		primary: primary,
@@ -301,7 +301,7 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 // File registers a single GET route that serves one named file from fsys
 // within this group. See [App.File] for full documentation.
 func (g *Group) File(urlPath string, fsys fs.FS, name string, cfgs ...StaticConfig) *Route {
-	g.app.checkFrozen("File")
+	g.registrar.checkFrozen("File")
 
 	cfg := StaticConfig{}
 	if len(cfgs) > 0 {
@@ -311,7 +311,7 @@ func (g *Group) File(urlPath string, fsys fs.FS, name string, cfgs ...StaticConf
 
 	fullPath := joinPath(g.prefix, urlPath)
 	h := newFileHandler(fsys, name, cfg)
-	return g.app.addGetRoute(fullPath, h, g)
+	return g.registrar.addGetRoute(fullPath, h, g)
 }
 
 // validateStaticPrefix panics if the prefix contains route parameter characters.
