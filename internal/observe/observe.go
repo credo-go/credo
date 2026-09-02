@@ -1,13 +1,11 @@
 package observe
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"runtime/debug"
-	"time"
 	"unicode/utf8"
 
 	"github.com/credo-go/credo/fault"
@@ -64,69 +62,12 @@ func IsTypedNilLeveler(level slog.Leveler) bool {
 	}
 }
 
-// EmitAccessLog assembles the standard access-log attributes and writes a
-// single "request completed" entry at the status-derived level. It is the one
-// source for the attribute set, message, and level shared by the built-in
-// access logger and middleware.AccessLog; callers collect the per-request
-// primitives (this package cannot import the root credo package).
-func EmitAccessLog(
-	ctx context.Context,
-	logger *slog.Logger,
-	method string,
-	path string,
-	status int,
-	bytes int64,
-	duration time.Duration,
-	remoteAddr string,
-	userAgent string,
-	originalPath string,
-	requestID string,
-) {
-	attrs, n := AccessLogAttrs(method, path, status, bytes, duration, remoteAddr, userAgent, originalPath, requestID)
-	logger.LogAttrs(ctx, Level(status), "request completed", attrs[:n]...)
-}
-
 // PanicError converts a recovered panic value into an error.
 func PanicError(v any) error {
 	if err, ok := v.(error); ok {
 		return err
 	}
 	return fmt.Errorf("panic: %v", v)
-}
-
-// AccessLogAttrs builds the common structured attributes used by Credo's
-// built-in access logger and the configurable middleware.AccessLog.
-func AccessLogAttrs(
-	method string,
-	path string,
-	status int,
-	bytes int64,
-	duration time.Duration,
-	remoteAddr string,
-	userAgent string,
-	originalPath string,
-	requestID string,
-) ([9]slog.Attr, int) {
-	const baseAccessLogAttrCount = 7
-
-	var attrs [9]slog.Attr
-	attrs[0] = slog.String("method", method)
-	attrs[1] = slog.String("path", path)
-	attrs[2] = slog.Int("status", status)
-	attrs[3] = slog.Int64("bytes", bytes)
-	attrs[4] = slog.Duration("duration", duration)
-	attrs[5] = slog.String("remote_addr", remoteAddr)
-	attrs[6] = slog.String("user_agent", userAgent)
-	n := baseAccessLogAttrCount
-	if originalPath != "" && originalPath != path {
-		attrs[n] = slog.String("path_original", originalPath)
-		n++
-	}
-	if requestID != "" {
-		attrs[n] = slog.String("request_id", requestID)
-		n++
-	}
-	return attrs, n
 }
 
 // PanicAttrs builds the common structured attributes used by Credo's built-in

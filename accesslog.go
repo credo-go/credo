@@ -23,7 +23,7 @@ import (
 // This key is honoured by both the built-in access logger and
 // [middleware.AccessLog]. Health probes use it internally; see
 // [HealthConfig.LogRequests].
-const MetaAccessLog = "credo.accesslog"
+const MetaAccessLog = internalobserve.MetaAccessLogKey
 
 // AccessLogEntry is an immutable value snapshot captured at an access-log
 // producer's observation boundary. The built-in producer runs outside recovery
@@ -62,18 +62,14 @@ type AccessLogEntry struct {
 type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
 
 // accessLogSilenced reports whether the matched route (or an ancestor group)
-// set MetaAccessLog to false. A non-bool meta value fails open (not silenced),
-// and an unmatched request (404/405, ctx.route == nil) is never silenced.
+// set MetaAccessLog to false. The decode (bool false silences, anything else
+// fails open) is shared with middleware.AccessLog through internal/observe;
+// an unmatched request (404/405, ctx.route == nil) is never silenced.
 func accessLogSilenced(ctx *Context) bool {
 	if ctx.route == nil {
 		return false
 	}
-	v, ok := ctx.route.LookupMeta(MetaAccessLog)
-	if !ok {
-		return false
-	}
-	enabled, ok := v.(bool) // non-bool value → ok=false → not silenced (fail-open)
-	return ok && !enabled
+	return internalobserve.SilencedByMeta(ctx.route.LookupMeta(MetaAccessLog))
 }
 
 // builtinAccessLog logs each HTTP request with structured attributes. It is
@@ -136,8 +132,7 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 			} else {
 				status = internalobserve.Status(status, err)
 			}
-			level := internalobserve.Level(status)
-			if level < minLevel.Level() {
+			if internalobserve.BelowMinLevel(status, minLevel) {
 				return
 			}
 
@@ -179,19 +174,8 @@ func (app *App) builtinAccessLog(next Handler) Handler {
 				logger = ctx.baseLogger()
 				explicitRequestID = entry.RequestID
 			}
-			internalobserve.EmitAccessLog(
-				r.Context(),
-				logger,
-				entry.Method,
-				entry.Path,
-				entry.Status,
-				entry.Bytes,
-				entry.Duration,
-				entry.RemoteAddr,
-				entry.UserAgent,
-				entry.OriginalPath,
-				explicitRequestID,
-			)
+			internalobserve.EmitAccessLog(r.Context(), logger,
+				internalobserve.AccessLogRecord(entry), explicitRequestID)
 		}()
 
 		err = next(ctx)
