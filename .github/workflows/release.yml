@@ -16,6 +16,7 @@ jobs:
   release:
     name: Validate, tag, and publish both modules
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Require the main branch
@@ -24,7 +25,7 @@ jobs:
           echo "release must be dispatched from refs/heads/main, got $GITHUB_REF" >&2
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -117,7 +118,7 @@ jobs:
           require_workflow_success codeql.yml CodeQL
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
