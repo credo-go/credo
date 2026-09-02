@@ -13,7 +13,7 @@ import (
 )
 
 func TestResolveConfigDefaultsAndCompressionMapping(t *testing.T) {
-	zero, err := resolveConfig(Config{})
+	zero, err := resolveServerConfig(Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestResolveConfigDefaultsAndCompressionMapping(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveConfig(tc.cfg)
+			got, err := resolveServerConfig(tc.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,8 +99,8 @@ func TestResolveConfigValidationAndDefensiveOwnership(t *testing.T) {
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := resolveConfig(tc.cfg); err == nil {
-				t.Fatal("resolveConfig() accepted invalid config")
+			if _, err := resolveServerConfig(tc.cfg); err == nil {
+				t.Fatal("resolveServerConfig() accepted invalid config")
 			}
 		})
 	}
@@ -264,7 +264,7 @@ func FuzzResolveConfig(f *testing.F) {
 			cfg.Subprotocols = []string{subprotocol}
 		}
 
-		resolved, err := resolveConfig(cfg)
+		resolved, err := resolveServerConfig(cfg)
 		if err != nil {
 			return
 		}

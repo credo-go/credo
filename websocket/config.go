@@ -47,7 +47,10 @@ type resolvedConfig struct {
 	compressionThreshold int
 }
 
-func resolveConfig(cfg Config) (resolvedConfig, error) {
+// resolveServerConfig validates a Config and fills in defaults. It is the
+// websocket counterpart of the middleware package's generic resolveConfig but
+// has a different shape (it can fail), hence the distinct name.
+func resolveServerConfig(cfg Config) (resolvedConfig, error) {
 	if cfg.ReadLimit < 0 {
 		return resolvedConfig{}, fmt.Errorf("ReadLimit must not be negative: %d", cfg.ReadLimit)
 	}

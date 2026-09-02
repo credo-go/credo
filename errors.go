@@ -552,7 +552,7 @@ func writeDefaultError(ctx *Context, info *ErrorInfo) error {
 
 func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey string) (string, string) {
 	key, explicit := app.effectiveMessageKey(MessageScopeError, code, explicitKey)
-	if app.i18nBundle != nil && ctx.locale != "" {
+	if ctx.translatable() {
 		if message, ok := app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
 			return key, message
 		}
@@ -594,7 +594,7 @@ func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) va
 		result[i] = e // copy
 		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
 		result[i].MessageKey = key
-		if app.i18nBundle != nil && ctx.locale != "" {
+		if ctx.translatable() {
 			if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, e.Params, e.Field); ok {
 				result[i].Message = s
 			}
@@ -635,7 +635,7 @@ func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Validat
 		Params:     be.params(),
 	}
 
-	if app.i18nBundle != nil && ctx.locale != "" {
+	if ctx.translatable() {
 		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, ve.Params, be.Field); ok {
 			ve.Message = s
 		}

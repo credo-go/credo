@@ -74,7 +74,7 @@ func Use(app *credo.App, cfg ...Config) *Server {
 	if len(cfg) == 1 {
 		value = cfg[0]
 	}
-	resolved, err := resolveConfig(value)
+	resolved, err := resolveServerConfig(value)
 	if err != nil {
 		panic(fmt.Sprintf("credo/websocket: invalid Config: %v", err))
 	}

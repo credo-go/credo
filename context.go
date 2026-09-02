@@ -178,6 +178,15 @@ func (c *Context) Locale() string {
 	return c.locale
 }
 
+// translatable reports whether the error pipeline may translate for this
+// request: an i18n bundle is mounted and the locale middleware detected a
+// locale. [Context.T] deliberately does not use it — with a bundle mounted but
+// no detected locale, T still renders the bundle's default language, whereas
+// error and validation messages stay untranslated.
+func (c *Context) translatable() bool {
+	return c.app != nil && c.app.i18nBundle != nil && c.locale != ""
+}
+
 // T translates a message key using the detected locale. If i18n is not
 // configured or the key is not found, the key itself is returned.
 // Optional data map provides template variables for the message.
