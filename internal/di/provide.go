@@ -8,18 +8,6 @@ import (
 	"reflect"
 )
 
-// registration holds the metadata for a registered service.
-type registration struct {
-	constructor  reflect.Value       // the constructor function (Provide)
-	paramTypes   []reflect.Type      // cached constructor parameter types
-	resultType   reflect.Type        // the T being registered
-	returnsError bool                // true if constructor returns (T, error)
-	isValue      bool                // true for ProvideValue (no constructor)
-	value        any                 // pre-built value for ProvideValue
-	funcCtor     func() (any, error) // typed factory adapter (ProvideFactory)
-	protected    bool                // true when Replace must not overwrite this binding
-}
-
 // Provide registers a constructor for type T. The constructor can accept
 // any number of parameters that are themselves registered in the container,
 // and must return T or (T, error).
@@ -85,9 +73,9 @@ func (c *Container) ProvideFactory[T any](fn func() (T, error)) error {
 		return fmt.Errorf("di: ProvideFactory[%s]: already registered", targetType)
 	}
 
-	c.registrations[targetType] = &registration{
+	c.registrations[targetType] = factoryProvider{
 		resultType: targetType,
-		funcCtor:   func() (any, error) { return fn() },
+		fn:         func() (any, error) { return fn() },
 	}
 	c.order = append(c.order, targetType)
 
@@ -138,14 +126,10 @@ func (c *Container) provideValue[T any](value T, protected bool) error {
 		return err
 	}
 
-	reg := &registration{
-		resultType: targetType,
-		isValue:    true,
-		value:      value,
-		protected:  protected,
+	c.registrations[targetType] = valueProvider{value: value}
+	if protected {
+		c.protected[targetType] = struct{}{}
 	}
-
-	c.registrations[targetType] = reg
 	c.order = append(c.order, targetType)
 
 	// Cache in singletons immediately.
@@ -169,8 +153,7 @@ func (c *Container) ProtectBinding[T any](expected ...T) error {
 	if c.frozen {
 		return fmt.Errorf("di: ProtectBinding[%s]: container is frozen (container is sealed)", targetType)
 	}
-	reg, exists := c.registrations[targetType]
-	if !exists {
+	if _, exists := c.registrations[targetType]; !exists {
 		return fmt.Errorf("di: ProtectBinding[%s]: type is not registered", targetType)
 	}
 	if len(expected) > 1 {
@@ -189,7 +172,7 @@ func (c *Container) ProtectBinding[T any](expected ...T) error {
 			return fmt.Errorf("di: ProtectBinding[%s]: resolved value changed", targetType)
 		}
 	}
-	reg.protected = true
+	c.protected[targetType] = struct{}{}
 	return nil
 }
 
@@ -229,7 +212,7 @@ var errorType = reflect.TypeFor[error]()
 
 // inspectConstructor validates the constructor function signature and
 // extracts parameter/return type information.
-func inspectConstructor(constructor any, targetType reflect.Type) (*registration, error) {
+func inspectConstructor(constructor any, targetType reflect.Type) (*constructorProvider, error) {
 	if constructor == nil {
 		return nil, errors.New("constructor must not be nil")
 	}
@@ -265,7 +248,7 @@ func inspectConstructor(constructor any, targetType reflect.Type) (*registration
 		paramTypes[i] = ct.In(i)
 	}
 
-	return &registration{
+	return &constructorProvider{
 		constructor:  cv,
 		paramTypes:   paramTypes,
 		resultType:   targetType,

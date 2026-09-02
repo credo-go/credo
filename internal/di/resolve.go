@@ -127,7 +127,7 @@ func (c *Container) resolveMany(targetType reflect.Type, stack []reflect.Type) (
 
 // resolveSingleton resolves a Singleton service. Per-type mutex ensures
 // concurrent resolution of different singletons without contention.
-func (c *Container) resolveSingleton(reg *registration, targetType reflect.Type, stack []reflect.Type) (any, error) {
+func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stack []reflect.Type) (any, error) {
 	// Fast path: check if already resolved without locking the map.
 	c.mu.RLock()
 	entry, ok := c.singletons[targetType]
@@ -159,48 +159,9 @@ func (c *Container) resolveSingleton(reg *registration, targetType reflect.Type,
 	return entry.value, entry.err
 }
 
-// construct builds a new instance from a registration.
-func (c *Container) construct(reg *registration, stack []reflect.Type) (any, error) {
-	if reg.isValue {
-		return reg.value, nil
-	}
-
-	// ProvideFactory constructors are opaque: no parameter injection, and any
-	// Resolve calls inside fn start a fresh cycle-detection stack.
-	if reg.funcCtor != nil {
-		instance, err := reg.funcCtor()
-		if err != nil {
-			return nil, fmt.Errorf("di: constructing %s: %w", reg.resultType, err)
-		}
-		return instance, nil
-	}
-
-	serviceName := deriveServiceName(reg.resultType)
-
-	// Build parameters.
-	params := make([]reflect.Value, len(reg.paramTypes))
-	for i, pt := range reg.paramTypes {
-		param, err := c.resolveParamValue(pt, serviceName, stack)
-		if err != nil {
-			return nil, fmt.Errorf("di: constructing %s: param %d (%s): %w", reg.resultType, i, pt, err)
-		}
-		params[i] = param
-	}
-
-	// Call constructor.
-	results := reg.constructor.Call(params)
-
-	// Extract result.
-	instance := results[0].Interface()
-
-	// Check error return.
-	if reg.returnsError {
-		if errVal := results[1].Interface(); errVal != nil {
-			return nil, fmt.Errorf("di: constructing %s: %w", reg.resultType, errVal.(error))
-		}
-	}
-
-	return instance, nil
+// construct builds a new instance through the registration's provider.
+func (c *Container) construct(reg provider, stack []reflect.Type) (any, error) {
+	return reg.build(c, stack)
 }
 
 func (c *Container) resolveParamValue(paramType reflect.Type, serviceName string, stack []reflect.Type) (reflect.Value, error) {

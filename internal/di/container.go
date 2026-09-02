@@ -14,7 +14,8 @@ import (
 // All services use the Singleton lifecycle.
 type Container struct {
 	mu             sync.RWMutex
-	registrations  map[reflect.Type]*registration
+	registrations  map[reflect.Type]provider
+	protected      map[reflect.Type]struct{} // bindings Replace must not overwrite
 	singletons     map[reflect.Type]*singletonEntry
 	aliases        map[reflect.Type]reflect.Type // interface → concrete type (Bind)
 	manyBindings   map[reflect.Type][]reflect.Type
@@ -39,7 +40,8 @@ type singletonEntry struct {
 // New creates a new Container.
 func New() *Container {
 	return &Container{
-		registrations:  make(map[reflect.Type]*registration),
+		registrations:  make(map[reflect.Type]provider),
+		protected:      make(map[reflect.Type]struct{}),
 		singletons:     make(map[reflect.Type]*singletonEntry),
 		aliases:        make(map[reflect.Type]reflect.Type),
 		manyBindings:   make(map[reflect.Type][]reflect.Type),
@@ -50,7 +52,7 @@ func New() *Container {
 // findRegistration searches for a registration by type, following aliases.
 // It returns the registration, the canonical (concrete) type under which the
 // singleton is cached, and whether the lookup succeeded.
-func (c *Container) findRegistration(t reflect.Type) (*registration, reflect.Type, bool) {
+func (c *Container) findRegistration(t reflect.Type) (provider, reflect.Type, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

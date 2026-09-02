@@ -30,11 +30,7 @@ func (c *Container) validate() error {
 	var errs []error
 
 	for t, reg := range c.registrations {
-		if reg.isValue {
-			continue // pre-built values have no constructor params
-		}
-
-		for i, pt := range reg.paramTypes {
+		for i, pt := range reg.deps() {
 			// context.Context is not allowed as a constructor parameter.
 			if pt == contextType {
 				errs = append(errs, fmt.Errorf(
@@ -141,9 +137,8 @@ func (c *Container) detectCycles() error {
 		colors[t] = gray
 		path = append(path, t)
 
-		reg, ok := c.registrations[t]
-		if ok && !reg.isValue {
-			for _, pt := range reg.paramTypes {
+		if reg, ok := c.registrations[t]; ok {
+			for _, pt := range reg.deps() {
 				if pt == contextType {
 					continue
 				}
