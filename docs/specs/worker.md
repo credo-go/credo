@@ -506,8 +506,11 @@ func (p *Pool) Start(ctx context.Context) error
 // Shutdown stops all workers gracefully. The first call cancels the pool
 // context and starts the wait; every call — concurrent, repeated, from the
 // OnDrain hook or from the container's Shutdowner pass — returns nil once all
-// worker goroutines have returned and ctx.Err() if ctx ends first. Start is
-// refused after Shutdown.
+// worker goroutines have returned (completion takes precedence over an
+// already-ended ctx) and ctx.Err() only while workers are still running when
+// ctx ends. Start is refused after Shutdown, and a Start racing a Shutdown is
+// ordered under the pool mutex: either every worker joined the wait group
+// before the wait began, or Start is refused.
 func (p *Pool) Shutdown(ctx context.Context) error
 
 // Workers returns a snapshot of all worker states.

@@ -331,8 +331,10 @@ func (p *Pool) Start(ctx context.Context) error {
 		p.runners = append(p.runners, r)
 		runners = append(runners, r)
 	}
-	p.mu.Unlock()
-
+	// Launch under mu: Shutdown sets stopping under the same lock before it
+	// starts waiting on wg, so either every worker has joined wg before the
+	// wait begins or Start is refused — a goroutine can never be added to a
+	// WaitGroup that a concurrent Shutdown is already waiting on.
 	for _, r := range runners {
 		if r.def.schedule != nil {
 			p.wg.Go(func() { p.runScheduled(poolCtx, r) })
@@ -340,15 +342,17 @@ func (p *Pool) Start(ctx context.Context) error {
 		}
 		p.wg.Go(func() { p.runContinuous(poolCtx, r) })
 	}
+	p.mu.Unlock()
 
 	return nil
 }
 
 // Shutdown stops all workers and waits for them to exit. The first call
 // cancels the pool context and starts the wait; every call, including a
-// concurrent or later one, returns nil once all workers have returned and
-// ctx.Err() if ctx ends first. A pool that was never started shuts down
-// immediately, and Start is refused afterwards.
+// concurrent or later one, returns nil once all workers have returned —
+// completion takes precedence over an already-ended ctx — and ctx.Err() only
+// while workers are still running when ctx ends. A pool that was never
+// started shuts down immediately, and Start is refused afterwards.
 func (p *Pool) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -377,6 +381,13 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	stopped := p.stopped
 	p.mu.Unlock()
 
+	// Completion first: a select with both cases ready picks at random, which
+	// would make the result of a finished shutdown depend on the caller's ctx.
+	select {
+	case <-stopped:
+		return nil
+	default:
+	}
 	select {
 	case <-stopped:
 		return nil
