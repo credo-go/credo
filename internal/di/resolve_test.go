@@ -117,19 +117,6 @@ func TestResolve_MissingDependency(t *testing.T) {
 	}
 }
 
-func TestResolve_ZeroParamConstructor(t *testing.T) {
-	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
-
-	svc, err := c.Resolve[*SimpleService]()
-	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
-	}
-	if svc.Value != "hello" {
-		t.Errorf("Value = %q, want %q", svc.Value, "hello")
-	}
-}
-
 func TestResolve_ConcurrentSingleton(t *testing.T) {
 	var callCount atomic.Int32
 

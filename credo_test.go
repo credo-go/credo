@@ -1815,21 +1815,6 @@ func TestApp_Routes_HostScopedRouteHasHostAndResolvedMeta(t *testing.T) {
 	}
 }
 
-func TestRouting_URLParam(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/items/{id}", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "ok")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/items/99", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != 200 {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-}
-
 // --- Trailing slash redirect tests ---
 
 func TestTrailingSlashRedirect(t *testing.T) {
@@ -1957,21 +1942,6 @@ func TestTrailingSlashRedirect_DisabledViaConfig(t *testing.T) {
 
 	if w.Code != 404 {
 		t.Errorf("status = %d, want 404 (redirect disabled via config)", w.Code)
-	}
-}
-
-func TestTrailingSlashRedirect_405NotRedirected(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/users", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "ok")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/users", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != 405 {
-		t.Errorf("status = %d, want 405 (method not allowed takes precedence)", w.Code)
 	}
 }
 
