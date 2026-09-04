@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/internal/httpheader"
 )
 
 // DefaultDecompressMaxBytes bounds the decompressed request body when
@@ -74,7 +75,7 @@ func Decompress(cfg ...DecompressConfig) credo.Middleware {
 
 			open, ok := contentDecoder(coding)
 			if !ok {
-				if isIdentityContentCoding(coding) {
+				if httpheader.IsIdentityContentCoding(coding) {
 					return next(ctx)
 				}
 				return unsupportedContentEncoding(coding)
@@ -126,17 +127,6 @@ func contentDecoder(coding string) (func(io.ReadCloser) (io.ReadCloser, error), 
 		return openDeflate, true
 	}
 	return nil, false
-}
-
-// isIdentityContentCoding reports whether every token in a Content-Encoding
-// value is "identity" (or the value is empty), meaning no transformation.
-func isIdentityContentCoding(value string) bool {
-	for token := range strings.SplitSeq(value, ",") {
-		if t := strings.ToLower(strings.TrimSpace(token)); t != "" && t != "identity" {
-			return false
-		}
-	}
-	return true
 }
 
 func unsupportedContentEncoding(coding string) error {

@@ -21,6 +21,18 @@ func HasToken(h http.Header, key, token string) bool {
 	return false
 }
 
+// IsIdentityContentCoding reports whether every token of a Content-Encoding
+// value is "identity" (or the value is empty), meaning the body carries no
+// transformation.
+func IsIdentityContentCoding(value string) bool {
+	for token := range strings.SplitSeq(value, ",") {
+		if t := strings.ToLower(strings.TrimSpace(token)); t != "" && t != "identity" {
+			return false
+		}
+	}
+	return true
+}
+
 // AddToken appends token to the comma-separated header unless it is
 // already present.
 func AddToken(h http.Header, key, token string) {
