@@ -42,11 +42,6 @@ func NewBundle(defaultLang language.Tag) *Bundle {
 	}
 }
 
-// DefaultLanguage returns the bundle's default language tag.
-func (b *Bundle) DefaultLanguage() language.Tag {
-	return b.defaultLang
-}
-
 // AddMessages registers messages for the given language tag.
 // If a message with the same ID already exists, it is overwritten.
 func (b *Bundle) AddMessages(tag language.Tag, msgs ...*Message) error {
@@ -130,33 +125,16 @@ func (b *Bundle) AddFields(tag string, fields map[string]string) error {
 	return nil
 }
 
-// LanguageTags returns all language tags that have messages loaded.
-func (b *Bundle) LanguageTags() []language.Tag {
-	return slices.Clone(b.tags)
-}
-
-// LoadDir loads locale files from a filesystem directory.
+// LoadDirSource loads locale files from a filesystem directory and returns
+// the number of message entries read. The count lets setup distinguish a
+// valid overriding source from an empty explicit source even when every key
+// overrides a programmatic key.
 // Expected structure: {dir}/{lang}/messages.json [+ fields.json]
-func (b *Bundle) LoadDir(dir string) error {
-	_, err := b.LoadDirSource(dir)
-	return err
-}
-
-// LoadDirSource is LoadDir plus the number of message entries read from the
-// source. The count lets setup distinguish a valid overriding source from an
-// empty explicit source even when every key overrides a programmatic key.
 func (b *Bundle) LoadDirSource(dir string) (int, error) {
 	return b.LoadDirFSSource(os.DirFS(dir), ".")
 }
 
-// LoadDirFS loads locale files from an fs.FS.
-// Expected structure: {dir}/{lang}/messages.json [+ fields.json]
-func (b *Bundle) LoadDirFS(fsys fs.FS, dir string) error {
-	_, err := b.LoadDirFSSource(fsys, dir)
-	return err
-}
-
-// LoadDirFSSource is LoadDirFS plus the number of message entries read.
+// LoadDirFSSource is LoadDirSource over an fs.FS.
 func (b *Bundle) LoadDirFSSource(fsys fs.FS, dir string) (int, error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
@@ -398,11 +376,6 @@ func (b *Bundle) HasMessages() bool {
 		}
 	}
 	return false
-}
-
-// DefaultLang returns the default language as a string.
-func (b *Bundle) DefaultLang() string {
-	return b.defaultLang.String()
 }
 
 // ParseTag parses a BCP 47 language tag string into a language.Tag.

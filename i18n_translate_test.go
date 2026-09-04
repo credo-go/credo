@@ -25,8 +25,8 @@ func newTranslateTestBundle(t *testing.T) *internali18n.Bundle {
 	if err != nil {
 		t.Fatalf("NewBundleFromString: %v", err)
 	}
-	if err := b.LoadDirFS(fsys, "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(fsys, "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 	return b
 }
@@ -64,7 +64,7 @@ func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 		},
 	}
 	b, _ := internali18n.NewBundleFromString("en")
-	_ = b.LoadDirFS(fsys, ".")
+	_, _ = b.LoadDirFSSource(fsys, ".")
 
 	ve := validation.Errors{
 		{Field: "email", Code: "required", Message: "is required"},
@@ -84,7 +84,7 @@ func TestTranslateValidationErrors_WithParams(t *testing.T) {
 		},
 	}
 	b, _ := internali18n.NewBundleFromString("en")
-	_ = b.LoadDirFS(fsys, ".")
+	_, _ = b.LoadDirFSSource(fsys, ".")
 
 	ve := validation.Errors{
 		{
@@ -175,7 +175,7 @@ func TestResolveMessage_I18nMiss_BuiltInHit(t *testing.T) {
 		},
 	}
 	b, _ := internali18n.NewBundleFromString("en")
-	_ = b.LoadDirFS(fsys, ".")
+	_, _ = b.LoadDirFSSource(fsys, ".")
 
 	app := &App{i18nBundle: b}
 	ctx := &Context{app: app, locale: "en"}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -44,6 +45,19 @@ type registryCompositeLifecycle struct {
 func (*registryCompositeLifecycle) Ping(context.Context) error     { return nil }
 func (*registryCompositeLifecycle) Shutdown(context.Context) error { return nil }
 func (*registryCompositeLifecycle) Health(context.Context) Health  { return Health{Status: StatusUp} }
+
+// reserve is the test-side shorthand for reserveIdentified: it derives the
+// lifecycle identity the way Register does and skips the DI preflight.
+func (r *Registry) reserve(name string, valueType reflect.Type, lc Lifecycle) (*registryReservation, error) {
+	if isNilDynamicValue(lc) {
+		return nil, fmt.Errorf("store: lifecycle must not be nil for %q", name)
+	}
+	identity, err := identifyLifecycle(lc)
+	if err != nil {
+		return nil, fmt.Errorf("store: lifecycle identity for %q: %w", name, err)
+	}
+	return r.reserveIdentified(name, valueType, lc, identity, nil)
+}
 
 func TestRegistryReservation_IsPrivateUntilCommit(t *testing.T) {
 	registry := &Registry{}
