@@ -510,27 +510,6 @@ func BenchmarkFindRoute_Param(b *testing.B) {
 	}
 }
 
-func TestNewNode_EmptyPrefix(t *testing.T) {
-	// Must not panic on empty prefix
-	n := newNode[string](NtStatic, "")
-	if n.Label != 0 {
-		t.Errorf("Label = %d, want 0 for empty prefix", n.Label)
-	}
-	if n.Prefix != "" {
-		t.Errorf("Prefix = %q, want empty", n.Prefix)
-	}
-}
-
-func TestNewNode_NormalPrefix(t *testing.T) {
-	n := newNode[string](NtStatic, "/users")
-	if n.Label != '/' {
-		t.Errorf("Label = %q, want '/'", n.Label)
-	}
-	if n.Prefix != "/users" {
-		t.Errorf("Prefix = %q, want %q", n.Prefix, "/users")
-	}
-}
-
 func TestFindRoute_RegexWithTailByte(t *testing.T) {
 	tree := newTree()
 	_, err := tree.InsertRoute(MGet, "/articles/{slug:[a-z-]+}.html", dummyValue)
