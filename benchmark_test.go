@@ -27,7 +27,10 @@ func newNoopResponseWriter() *noopResponseWriter {
 
 func (w *noopResponseWriter) Header() http.Header         { return w.h }
 func (w *noopResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (w *noopResponseWriter) WriteHeader(int)             {}
+func (w *noopResponseWriter) WriteString(s string) (int, error) {
+	return len(s), nil
+}
+func (w *noopResponseWriter) WriteHeader(int) {}
 
 // benchMiddleware creates a minimal passthrough middleware that sets one header.
 func benchMiddleware(name string) credo.Middleware {
