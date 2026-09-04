@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-05
+
 ### Fixed
 
 - **Workers drain before DI teardown.** `worker.Register` now attaches the pool to `App.OnDrain`, so workers' bounded cleanup after cancellation completes concurrently with the HTTP drain and before any DI singleton's `Shutdown` runs. Previously the pool was stopped only by the container's reverse-registration `Shutdowner` pass, so a resource registered after the pool could be closed while a worker was still flushing. `Pool.Shutdown` is now idempotent with a stable result — nil once every worker has returned, whatever the caller's context state; `ctx.Err()` only while workers are still running — so the later `Shutdowner` pass returns immediately. `Start` is refused after `Shutdown`, and a `Start` racing a direct `Shutdown` is ordered under the pool mutex so no worker goroutine can be launched past a wait that already began.
@@ -491,7 +493,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/credo-go/credo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/credo-go/credo/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/credo-go/credo/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/credo-go/credo/compare/v0.14.0...v0.15.0
