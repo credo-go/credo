@@ -46,13 +46,6 @@ func normalizeHostPattern(pattern string) string {
 	return strings.TrimSuffix(strings.ToLower(pattern), ".")
 }
 
-// normalizeRequestHost lowercases the host, strips the port, and trims a
-// trailing dot. Port stripping happens before dot trimming so that
-// "example.com.:8080" becomes "example.com".
-func normalizeRequestHost(host string) string {
-	return internalhost.NormalizeRequest(host)
-}
-
 // parseHostPattern splits a normalized host pattern by dots, reverses the
 // labels (TLD first), and classifies each as static, param, regexp, or wildcard.
 // Returns the segments and parameter names in segment order.
@@ -202,7 +195,7 @@ func (app *App) matchHost(host string) (*hostEntry, map[string]string) {
 	if host == "" || (len(app.staticHosts) == 0 && len(app.hosts) == 0) {
 		return nil, nil
 	}
-	host = normalizeRequestHost(host)
+	host = internalhost.NormalizeRequest(host)
 	if entry := app.staticHosts[host]; entry != nil {
 		return entry, nil
 	}

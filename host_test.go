@@ -58,29 +58,6 @@ func TestHostPatternHasPort(t *testing.T) {
 	}
 }
 
-func TestNormalizeRequestHost(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"simple", "example.com", "example.com"},
-		{"port strip", "example.com:8080", "example.com"},
-		{"lowercase", "Example.COM", "example.com"},
-		{"trailing dot", "example.com.", "example.com"},
-		{"FQDN with port", "Example.COM.:443", "example.com"},
-		{"empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeRequestHost(tt.input)
-			if got != tt.want {
-				t.Errorf("normalizeRequestHost(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseHostPattern(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -307,7 +284,7 @@ func TestHostEntryMatch(t *testing.T) {
 			segs, _ := parseHostPattern(normalizeHostPattern(tt.pattern))
 			entry := &hostEntry{segments: segs}
 
-			host := normalizeRequestHost(tt.host)
+			host := internalhost.NormalizeRequest(tt.host)
 			labels := reverseLabels(host)
 
 			params, ok := entry.match(labels)

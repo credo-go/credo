@@ -119,7 +119,7 @@ func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 	if app == nil {
 		return fmt.Errorf("store: app must not be nil")
 	}
-	if isNilValue(value) {
+	if isNilDynamicValue(value) {
 		return fmt.Errorf("store: value must not be nil")
 	}
 
@@ -405,11 +405,8 @@ func resolveAndWireRegistry(app *credo.App) (*Registry, error) {
 	return reg, nil
 }
 
-// isNilValue reports whether value is a nil pointer, interface, or other nilable type.
-func isNilValue[R any](value R) bool {
-	return isNilDynamicValue(any(value))
-}
-
+// isNilDynamicValue reports whether value is a nil pointer, interface, or
+// other nilable type.
 func isNilDynamicValue(value any) bool {
 	if value == nil {
 		return true

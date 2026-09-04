@@ -88,7 +88,7 @@ func Use(app *credo.App, cfg ...Config) *Server {
 	// Register only after every mechanical validation succeeds so an invalid
 	// configuration cannot leave a partial lifecycle mutation behind.
 	app.OnStart(server.onStart)
-	app.OnDrain(server.onDrain)
+	app.OnDrain(server.Shutdown)
 	return server
 }
 
@@ -97,10 +97,6 @@ func (s *Server) onStart(ctx context.Context) error {
 	s.managedCtx = ctx
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *Server) onDrain(ctx context.Context) error {
-	return s.Shutdown(ctx)
 }
 
 // Shutdown stops admitting connections, sends active peers a Going Away close,
