@@ -28,6 +28,21 @@ type Pool struct {
 	started             bool
 	defaultRestartDelay time.Duration
 	readiness           []internalhealth.ReadinessCheck // one stable probe per WithReadiness worker
+
+	// managed marks a pool built by ensurePool. Only such a pool carries the
+	// OnStart/OnDrain wiring and the protected DI binding; a *Pool published
+	// into the container by other means is rejected by Register.
+	managed bool
+
+	// stopOnce starts the single stop sequence (cancel + wait). Shutdown is
+	// reached twice on every teardown — from the OnDrain hook and again from
+	// the container's Shutdowner pass — and both callers observe one result.
+	stopOnce sync.Once
+	// stopping is set under mu by the first Shutdown; Start refuses afterwards
+	// so no goroutine can be added to wg once the wait has begun.
+	stopping bool
+	// stopped is closed once every worker goroutine has returned.
+	stopped chan struct{}
 }
 
 // Register adds w to the application's worker pool.
@@ -162,10 +177,19 @@ func MustRegister(app *credo.App, w Worker, opts ...Option) {
 	}
 }
 
+// registrationProbe is never registered in the container. Asking whether it
+// could be registered answers exactly one question — is the container still
+// open — which is the registration window every Register call must respect,
+// not only the first one that creates the pool.
+type registrationProbe struct{}
+
 func ensurePool(app *credo.App) (*Pool, error) {
-	p, err := app.Resolve[*Pool]()
-	if err == nil {
-		return p, nil
+	if err := app.CanProvideValue[registrationProbe](); err != nil {
+		return nil, fmt.Errorf("worker: Register after app.Finalize: %w", err)
+	}
+
+	if p, err := app.Resolve[*Pool](); err == nil {
+		return adoptPool(p)
 	}
 
 	cfg, err := loadPoolConfig(app)
@@ -173,16 +197,18 @@ func ensurePool(app *credo.App) (*Pool, error) {
 		return nil, err
 	}
 
-	p = newPool(app.Logger().With("module", "worker"), cfg.RestartDelay)
-	// ProvideValue also hands the pool's shutdown to the container: Pool
-	// implements credo.Shutdowner, so app.Shutdown stops all workers without
-	// an explicit OnShutdown hook.
-	if err := app.ProvideValue[*Pool](p); err != nil {
+	p := newPool(app.Logger().With("module", "worker"), cfg.RestartDelay)
+	p.managed = true
+	// The binding is protected: the pool wired into OnStart/OnDrain and the
+	// readiness seam must stay the pool the container hands out, so a later
+	// Replace[*Pool] is rejected rather than silently splitting the two.
+	if err := app.ProvideProtectedValue[*Pool](p); err != nil {
+		// Lost a registration race: the winner published (and wired) its pool.
 		resolved, resolveErr := app.Resolve[*Pool]()
-		if resolveErr == nil {
-			return resolved, nil
+		if resolveErr != nil {
+			return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
 		}
-		return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
+		return adoptPool(resolved)
 	}
 
 	// Readiness contributions reach the health engine through the
@@ -195,7 +221,22 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	app.OnStart(func(lifecycleCtx context.Context) error {
 		return p.Start(lifecycleCtx)
 	})
+	// Workers finish in the OnDrain phase — after lifecycle cancellation,
+	// concurrently with the HTTP drain, and before DI singletons are torn
+	// down — so a worker's final batch never races the resources it uses.
+	// Pool also implements credo.Shutdowner; that later container pass finds
+	// the stop sequence already complete and returns its result.
+	app.OnDrain(p.Shutdown)
 
+	return p, nil
+}
+
+// adoptPool accepts an already-registered pool only when ensurePool built it,
+// because only that pool carries the lifecycle and readiness wiring.
+func adoptPool(p *Pool) (*Pool, error) {
+	if p == nil || !p.managed {
+		return nil, errors.New("worker: a *worker.Pool provided outside worker.Register is not supported")
+	}
 	return p, nil
 }
 
@@ -228,6 +269,7 @@ func newPool(logger *slog.Logger, defaultRestartDelay time.Duration) *Pool {
 	return &Pool{
 		logger:              logger,
 		defaultRestartDelay: defaultRestartDelay,
+		stopped:             make(chan struct{}),
 	}
 }
 
@@ -265,6 +307,10 @@ func (p *Pool) Start(ctx context.Context) error {
 	}
 
 	p.mu.Lock()
+	if p.stopping {
+		p.mu.Unlock()
+		return fmt.Errorf("worker: pool already shut down")
+	}
 	if p.started {
 		p.mu.Unlock()
 		return fmt.Errorf("worker: pool already started")
@@ -298,28 +344,41 @@ func (p *Pool) Start(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown stops all workers and waits for them to exit.
+// Shutdown stops all workers and waits for them to exit. The first call
+// cancels the pool context and starts the wait; every call, including a
+// concurrent or later one, returns nil once all workers have returned and
+// ctx.Err() if ctx ends first. A pool that was never started shuts down
+// immediately, and Start is refused afterwards.
 func (p *Pool) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	p.stopOnce.Do(func() {
+		p.mu.Lock()
+		p.stopping = true
+		cancel := p.cancel
+		if p.stopped == nil { // zero-value Pool
+			p.stopped = make(chan struct{})
+		}
+		stopped := p.stopped
+		p.mu.Unlock()
+
+		if cancel != nil {
+			cancel()
+		}
+		go func() {
+			p.wg.Wait()
+			close(stopped)
+		}()
+	})
+
 	p.mu.Lock()
-	cancel := p.cancel
+	stopped := p.stopped
 	p.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-stopped:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

@@ -478,8 +478,8 @@
 - [x] Adapt cron expression parser from robfig/cron v3
 - [x] `worker.Register(app, w, opts...) error` + `worker.MustRegister(app, w, opts...)` API
 - [x] Continuous + scheduled worker execution modes
-- [x] Graceful shutdown (wait for active workers)
-- [x] Integration with app lifecycle
+- [x] Graceful shutdown (wait for active workers) — drains in `OnDrain`, before DI teardown, regardless of registration order
+- [x] Integration with app lifecycle — uniform post-Finalize rejection, protected `*Pool` binding
 - [x] Tests
 - [x] Update NOTICES
 - [ ] Observability hooks (metrics/tracing)

@@ -14,6 +14,12 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workers drain before DI teardown.** `worker.Register` now attaches the pool to `App.OnDrain`, so workers' bounded cleanup after cancellation completes concurrently with the HTTP drain and before any DI singleton's `Shutdown` runs. Previously the pool was stopped only by the container's reverse-registration `Shutdowner` pass, so a resource registered after the pool could be closed while a worker was still flushing. `Pool.Shutdown` is now idempotent with a shared result (the later `Shutdowner` pass returns immediately), and `Start` is refused after `Shutdown`.
+- **Worker registration window is uniform.** Every `worker.Register` call after `App.Finalize` returns `worker: Register after app.Finalize`; previously only the first registration (the one creating the pool) was rejected and later ones were silently accepted.
+- **Worker pool binding is protected.** The pool is published with `ProvideProtectedValue`, so `Replace[*worker.Pool]` is rejected and the pool wired into the lifecycle and readiness seam cannot diverge from the one DI hands out. A `*worker.Pool` provided outside `worker.Register` is refused with an error.
+
 ## [0.17.0] - 2026-09-02
 
 ### Added

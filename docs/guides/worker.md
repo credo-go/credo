@@ -204,18 +204,20 @@ if err := worker.Register(app,
 1. validates worker options
 2. parses schedules immediately
 3. creates the worker pool on first registration
-4. registers the pool in DI
+4. registers the pool in DI as a protected binding (`Replace[*Pool]` is rejected)
 5. attaches pool startup to `app.OnStart`
-6. lets the DI shutdown chain stop workers automatically
+6. attaches pool drain to `app.OnDrain`, so workers finish before any DI resource is shut down
 
 This means the normal lifecycle is:
 
 ```text
 worker.Register(...) -> app.Run() -> workers start
-app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit
+app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit -> DI resources close
 ```
 
-Register workers before `app.Finalize()` or before `Run()`/`RunContext()`. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
+A worker's bounded cleanup after cancellation — flushing a last batch, acknowledging in-flight messages — therefore always runs against still-open resources, whatever order the worker and the resource were registered in. A worker that ignores cancellation past the shutdown deadline is reported as an incomplete drain task and teardown proceeds.
+
+Register workers before `app.Finalize()` or before `Run()`/`RunContext()`; every `Register` call after `Finalize` returns an error, including registrations made after the pool already exists. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
 
 ---
 

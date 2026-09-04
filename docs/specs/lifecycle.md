@@ -168,9 +168,13 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 #### Background services and shutdown ordering
 
 Background work is wired through the existing primitives: a component starts
-in an `OnStart` hook (receiving the lifecycle context) and normally stops by
-implementing `Shutdowner`, so the DI container drains it during the
-container-shutdown step. The `worker.Pool` follows exactly this pattern.
+in an `OnStart` hook (receiving the lifecycle context) and stops in an
+`OnDrain` hook, before DI infrastructure is torn down. A component that only
+implements `Shutdowner` is instead drained during the container-shutdown step,
+in reverse registration order relative to everything else — fine for a
+resource, wrong for a consumer of resources. The `worker.Pool` does both: it
+drains in `OnDrain` so workers' bounded cleanup always precedes resource
+teardown, and its `Shutdowner` pass then finds the stop sequence complete.
 
 `OnPreDrain` is the narrow exception for coordination that must complete while
 lifecycle-bound workers and DI are still live. It runs after readiness is
@@ -186,9 +190,8 @@ also use it. It has no startup, name, restart, or ordering semantics.
 
 A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with
 a restartable/start-once taxonomy — remains deliberately **deferred** until
-multiple in-tree consumers require it. `OnDrain` does not migrate
-`worker.Pool`; workers retain lifecycle cancellation plus DI shutdown and
-reverse registration ordering.
+multiple in-tree consumers require it. `worker.Pool` and `websocket.Server`
+both participate through `OnStart` + `OnDrain` without such a taxonomy.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
