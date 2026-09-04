@@ -243,6 +243,12 @@ func (app *App) Reload(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(lifecycleCtx, cancel)()
+	// The slot's fast path does not consult ctx: a caller that arrives with an
+	// already-cancelled context, or whose context ended while it waited, must
+	// not load a candidate or run a single callback.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("credo: Reload: %w", err)
+	}
 
 	start := time.Now()
 	var (

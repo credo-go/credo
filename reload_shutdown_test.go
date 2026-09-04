@@ -182,3 +182,25 @@ func TestReload_WaitingCallerHonoursItsContext(t *testing.T) {
 		t.Fatalf("first Reload = %v", err)
 	}
 }
+
+// TestReload_CancelledContextRunsNothing: a caller whose context is already
+// cancelled must not load a candidate or run a single callback.
+func TestReload_CancelledContextRunsNothing(t *testing.T) {
+	f := newReloadFixture(t, "a: 1\n")
+	var runs atomic.Int32
+	f.app.OnReload(func(context.Context) error {
+		runs.Add(1)
+		return nil
+	})
+	f.start(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := f.app.Reload(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reload with a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("hook ran %d times, want 0", got)
+	}
+}
