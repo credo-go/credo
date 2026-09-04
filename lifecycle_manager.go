@@ -253,24 +253,56 @@ func (lm *lifecycleManager) runSignal(run func(context.Context) error) error {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// runCtx drives the run function's shutdown; we cancel it ourselves so the
-	// drain context derives from Background (no signal cancellation leaks in).
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	defer cancelRun()
-
-	// Reload signals are delivered on a capacity-one channel and handled
-	// synchronously on this goroutine, so reloads never overlap and signals
-	// that arrive mid-reload coalesce into at most one follow-up. The channel
-	// stays subscribed through the drain: a SIGHUP during shutdown is ignored
-	// rather than falling through to its default action (terminate).
+	// Reload signals are delivered on a capacity-one channel. It stays
+	// subscribed through the drain: a SIGHUP during shutdown is ignored rather
+	// than falling through to its default action (terminate).
 	hupCh := make(chan os.Signal, 1)
 	if sigs := reloadSignals(); len(sigs) > 0 {
 		signal.Notify(hupCh, sigs...)
 		defer signal.Stop(hupCh)
 	}
 
+	return lm.signalLoop(sigCtx.Done(), stop, hupCh, run)
+}
+
+// signalLoop is runSignal's event loop, split out so it can be driven with
+// plain channels in tests on every platform. termination is the SIGINT/SIGTERM
+// signal, resetSignals the NotifyContext stop function, reloads the SIGHUP
+// channel.
+//
+// Reloads run on their own goroutine so this loop always stays responsive to
+// termination: a SIGTERM during a long reload starts the drain immediately —
+// which cancels the reload's context and then waits for it to return before
+// tearing down infrastructure — and the signal reset happens at once, so a
+// second signal force-kills as usual. At most one reload runs at a time;
+// signals that land while one is in flight coalesce into a single follow-up.
+func (lm *lifecycleManager) signalLoop(
+	termination <-chan struct{},
+	resetSignals func(),
+	reloads <-chan os.Signal,
+	run func(context.Context) error,
+) error {
+	// runCtx drives the run function's shutdown; we cancel it ourselves so the
+	// drain context derives from Background (no signal cancellation leaks in).
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(runCtx) }()
+
+	reloadDone := make(chan struct{}, 1)
+	var (
+		reloadInFlight bool
+		reloadPending  bool
+		pendingSignal  os.Signal
+	)
+	startReload := func(sig os.Signal) {
+		reloadInFlight = true
+		go func() {
+			lm.handleReloadSignal(sig)
+			reloadDone <- struct{}{}
+		}()
+	}
 
 	for {
 		select {
@@ -278,13 +310,56 @@ func (lm *lifecycleManager) runSignal(run func(context.Context) error) error {
 			// Server returned on its own: a serve error, a startup failure, or a
 			// programmatic Shutdown from another goroutine. Nothing to drain here.
 			return err
-		case <-sigCtx.Done():
-			stop()      // reset first: a second signal now force-kills the process
-			cancelRun() // trigger the run function's graceful-drain path
+		case <-termination:
+			resetSignals() // reset first: a second signal now force-kills the process
+			cancelRun()    // trigger the run function's graceful-drain path
 			return <-errCh
-		case sig := <-hupCh:
-			lm.handleReloadSignal(sig)
+		case sig := <-reloads:
+			if reloadInFlight {
+				reloadPending, pendingSignal = true, sig
+				continue
+			}
+			startReload(sig)
+		case <-reloadDone:
+			reloadInFlight = false
+			if reloadPending {
+				reloadPending = false
+				startReload(pendingSignal)
+			}
 		}
+	}
+}
+
+// lifecycleContext returns the current session's lifecycle context, or nil
+// outside a session.
+func (lm *lifecycleManager) lifecycleContext() context.Context {
+	lm.serverMu.Lock()
+	defer lm.serverMu.Unlock()
+	return lm.ctx
+}
+
+// awaitReloadQuiescence takes the reload slot and keeps it: a reload that was
+// in flight when shutdown began has already seen its context cancelled (drain
+// step 2), and its participants, subscribers, and hooks may still be using DI
+// infrastructure, so teardown waits for it to return. Holding the slot
+// afterwards means no later reload can start. If ctx ends first, the reload is
+// reported as incomplete and teardown proceeds with the expired context, the
+// same contract as an over-deadline OnDrain hook.
+func (lm *lifecycleManager) awaitReloadQuiescence(ctx context.Context) error {
+	token := lm.app.reload.token()
+	select {
+	case token <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case token <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		lm.app.logger.LogAttrs(context.Background(), slog.LevelError,
+			"credo: reload still in flight at the shutdown deadline; proceeding with teardown",
+			slog.Any("error", ctx.Err()))
+		return fmt.Errorf("credo: shutdown: reload still in flight: %w", ctx.Err())
 	}
 }
 
@@ -646,6 +721,13 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 	// 3. Drain HTTP and subsystem handlers in parallel under the same absolute
 	// deadline. The HTTP branch preserves redirect-before-main ordering.
 	if err := lm.drainBeforeInfrastructure(ctx, redirectSrv, srv); err != nil {
+		errs = append(errs, err)
+	}
+
+	// 3b. Wait for a reload that overlapped the shutdown: its callbacks were
+	// cancelled in step 2 and may still be using DI infrastructure. The slot
+	// stays held so no later reload can start.
+	if err := lm.awaitReloadQuiescence(ctx); err != nil {
 		errs = append(errs, err)
 	}
 

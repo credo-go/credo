@@ -14,12 +14,18 @@ import (
 
 // reloadState holds everything the App-level reload (ADR-020) needs: the
 // registered hooks and subscribers, the framework-internal participants, and
-// the mutex that serializes Reload calls.
+// the slot that serializes Reload calls against each other and against
+// shutdown.
 type reloadState struct {
-	// mu serializes Reload. A caller that waits on it then performs its own
-	// full reload, so after Reload returns the snapshot is at least as new as
-	// when it was called.
-	mu sync.Mutex
+	// slot is a capacity-one channel: holding its token is the right to run a
+	// reload. A channel rather than a mutex so that waiting is context-aware —
+	// a queued caller gives up when its own ctx or the lifecycle ctx ends —
+	// and so that the drain can take the token and keep it, which blocks every
+	// later reload before it touches infrastructure. A caller that waits and
+	// then acquires performs its own full reload, so after Reload returns the
+	// snapshot is at least as new as when it was called.
+	slot     chan struct{}
+	slotOnce sync.Once
 
 	// onReload holds the generic hooks, run FIFO at the end of every reload.
 	onReload []func(ctx context.Context) error
@@ -53,6 +59,39 @@ type reloadParticipant struct {
 	active func() bool
 	run    func(ctx context.Context, changes config.Changes) error
 }
+
+// token returns the slot channel, allocating it on first use so a zero-value
+// App still works.
+func (r *reloadState) token() chan struct{} {
+	r.slotOnce.Do(func() { r.slot = make(chan struct{}, 1) })
+	return r.slot
+}
+
+// acquire takes the reload slot. It returns ctx's error if the caller's context
+// ends first and errReloadNotRunning if the lifecycle context ends first (the
+// session is shutting down, so a queued reload must not start).
+func (r *reloadState) acquire(ctx context.Context, lifecycleDone <-chan struct{}) error {
+	select {
+	case r.token() <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case r.token() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("credo: Reload: waiting for the in-flight reload: %w", ctx.Err())
+	case <-lifecycleDone:
+		return errReloadNotRunning
+	}
+}
+
+// release returns the reload slot.
+func (r *reloadState) release() { <-r.token() }
+
+// errReloadNotRunning is returned when Reload is called (or a queued Reload
+// wakes up) outside the running state.
+var errReloadNotRunning = errors.New("credo: Reload: server not running")
 
 // covers reports whether key equals prefix or lies under it, segment-wise.
 func covers(prefix, key string) bool {
@@ -157,22 +196,59 @@ func (app *App) addReloadParticipant(p reloadParticipant) {
 // step-3 errors. A RawConfig that implements neither leaves the configuration
 // untouched and runs only the participants and OnReload hooks.
 //
-// Concurrent calls are serialized. Under [App.Run] a SIGHUP (Unix) calls
-// Reload with a context bounded by [WithReloadTimeout]; [App.RunContext] and
-// [App.ServeContext] install no signal handler, so their callers invoke Reload
-// directly. A reload never stops the process, whatever it reports.
+// Concurrent calls are serialized: a caller waits for the in-flight reload
+// unless its ctx ends first, and a caller still queued when shutdown begins
+// returns the not-running error instead of reloading a stopping server. Every
+// participant, subscriber, and hook receives a context that is cancelled when
+// either ctx or the application lifecycle ends, so a reload overlapping a
+// shutdown is told to stop; shutdown then waits for it to return before
+// tearing down DI infrastructure (see [App.Shutdown]).
+//
+// Under [App.Run] a SIGHUP (Unix) calls Reload with a context bounded by
+// [WithReloadTimeout]; [App.RunContext] and [App.ServeContext] install no
+// signal handler, so their callers invoke Reload directly. A reload never
+// stops the process, whatever it reports.
 func (app *App) Reload(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("credo: Reload: nil context")
 	}
 	lm := app.lifecycle
-	if st := lm.currentState(); st != stateRunning {
-		return fmt.Errorf("credo: Reload: server in state %q, expected %q", st, stateRunning)
+	notRunning := func() error {
+		return fmt.Errorf("credo: Reload: server in state %q, expected %q", lm.currentState(), stateRunning)
+	}
+	if lm.currentState() != stateRunning {
+		return notRunning()
+	}
+	lifecycleCtx := lm.lifecycleContext()
+	if lifecycleCtx == nil { // lost a race with the session teardown
+		return notRunning()
 	}
 
 	r := &app.reload
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if err := r.acquire(ctx, lifecycleCtx.Done()); err != nil {
+		if errors.Is(err, errReloadNotRunning) {
+			return notRunning()
+		}
+		return err
+	}
+	defer r.release()
+	// Re-check under the slot: a caller queued behind a long reload may have
+	// outlived the session.
+	if lm.currentState() != stateRunning {
+		return notRunning()
+	}
+
+	// Callbacks observe the caller's budget and the lifecycle: shutdown cancels
+	// this context (drain step 2) before waiting for the reload to return.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(lifecycleCtx, cancel)()
+	// The slot's fast path does not consult ctx: a caller that arrives with an
+	// already-cancelled context, or whose context ended while it waited, must
+	// not load a candidate or run a single callback.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("credo: Reload: %w", err)
+	}
 
 	start := time.Now()
 	var (

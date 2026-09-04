@@ -484,8 +484,11 @@ func ensurePool(app *credo.App) (*Pool, error) {
 // monitors their lifecycle, and stops them during shutdown.
 //
 // Pool is not exported for direct construction. Use Register to add
-// workers — the pool is created automatically on first registration.
-// Pool implements credo.Shutdowner for automatic container shutdown.
+// workers — the pool is created automatically on first registration and
+// published as a protected DI binding (Replace[*Pool] is rejected; a *Pool
+// provided outside Register is refused). Workers drain in the OnDrain phase;
+// Pool also implements credo.Shutdowner, and that later container pass finds
+// the stop sequence already complete.
 type Pool struct {
 	mu          sync.Mutex
 	definitions []*Definition  // immutable after Start
@@ -500,10 +503,14 @@ type Pool struct {
 // Called via OnStart hook. The ctx is the lifecycle context — cancelled on Shutdown.
 func (p *Pool) Start(ctx context.Context) error
 
-// Shutdown stops all workers gracefully. Cancels the pool context and
-// waits for all scheduler and in-flight execution goroutines to finish
-// (respects ctx deadline).
-// Implements credo.Shutdowner for automatic container shutdown.
+// Shutdown stops all workers gracefully. The first call cancels the pool
+// context and starts the wait; every call — concurrent, repeated, from the
+// OnDrain hook or from the container's Shutdowner pass — returns nil once all
+// worker goroutines have returned (completion takes precedence over an
+// already-ended ctx) and ctx.Err() only while workers are still running when
+// ctx ends. Start is refused after Shutdown, and a Start racing a Shutdown is
+// ordered under the pool mutex: either every worker joined the wait group
+// before the wait began, or Start is refused.
 func (p *Pool) Shutdown(ctx context.Context) error
 
 // Workers returns a snapshot of all worker states.
@@ -758,19 +765,31 @@ app.Shutdown(ctx)
   ├─ cancel app ctx              ← workers receive ctx.Done()
   ├─ parallel drain phase
   │   ├─ srv.Shutdown() — HTTP drain
-  │   └─ OnDrain subsystem hooks
-  ├─ container.Shutdown()        ← pool.Shutdown(ctx) called here
-  │   └─ cancel pool ctx
-  │   └─ wg.Wait() — wait for the per-worker goroutines (continuous and scheduled loops)
+  │   └─ OnDrain subsystem hooks ← pool.Shutdown(ctx) runs here
+  │       └─ cancel pool ctx
+  │       └─ wg.Wait() — wait for the per-worker goroutines (continuous and scheduled loops)
+  ├─ container.Shutdown()        ← Pool's Shutdowner pass: stop sequence already complete
   └─ OnShutdown hooks (LIFO)
 ```
 
-Workers receive shutdown signal via context cancellation. The pool does not use
-`OnDrain`; its `Shutdown` is called automatically during the following DI phase
-because `Pool` implements `credo.Shutdowner` and is registered in the container.
-OnPreDrain, HTTP/OnDrain, pool shutdown, and `OnShutdown` all receive the same
-absolute shutdown deadline. An over-deadline OnPreDrain still finishes before
-worker cancellation and pool shutdown begin.
+Workers receive the shutdown signal via context cancellation and finish in the
+`OnDrain` phase — concurrently with the HTTP drain and **before** any DI
+singleton is torn down. This is the guarantee that a worker's bounded cleanup
+(flushing a last batch to the database) never observes a closed resource,
+whatever the relative registration order of the worker and the resource. The
+container's reverse-order `Shutdowner` pass reaches the pool afterwards and
+returns the already-known result. OnPreDrain, HTTP/OnDrain, and `OnShutdown`
+all receive the same absolute shutdown deadline; a worker that outlives it is
+reported as an incomplete OnDrain task and teardown proceeds with the expired
+context. An over-deadline OnPreDrain still finishes before worker cancellation
+begins.
+
+### Registration Window
+
+Every `Register` call — not only the one that creates the pool — is rejected
+after `app.Finalize()` (`worker: Register after app.Finalize`). Before this
+rule, a second registration slipped past Finalize because the pool already
+existed; now the first and later registrations obey the same window.
 
 ---
 

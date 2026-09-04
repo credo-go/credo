@@ -430,7 +430,7 @@
 
 - [x] ADR-020 + spec updates (`lifecycle.md`, `config.md`), ADR-005/006 cross-references
 - [x] `config`: `Reloader` + two-phase `Stager`/`Staged` interfaces, `Changes` (sorted leaf-key symmetric difference), `(*Config).Stage()`/`Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
-- [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys
+- [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys; context-aware reload slot (queued callers abort on ctx/shutdown), callback ctx bound to the lifecycle, `Shutdown` waits for an in-flight reload before DI teardown, signal-triggered reloads off the signal loop (SIGTERM mid-reload drains immediately)
 - [x] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
 - [x] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
 - [x] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
@@ -478,8 +478,8 @@
 - [x] Adapt cron expression parser from robfig/cron v3
 - [x] `worker.Register(app, w, opts...) error` + `worker.MustRegister(app, w, opts...)` API
 - [x] Continuous + scheduled worker execution modes
-- [x] Graceful shutdown (wait for active workers)
-- [x] Integration with app lifecycle
+- [x] Graceful shutdown (wait for active workers) — drains in `OnDrain`, before DI teardown, regardless of registration order
+- [x] Integration with app lifecycle — uniform post-Finalize rejection, protected `*Pool` binding
 - [x] Tests
 - [x] Update NOTICES
 - [ ] Observability hooks (metrics/tracing)

@@ -60,7 +60,7 @@ Reports whether the server is in the `running` state.
 
 Compiles the handler chain, transitions to `running`, and serves HTTP — or HTTPS when TLS is configured (see [TLS](#tls)) — until an interrupt (Ctrl+C) or `SIGTERM` arrives, then performs graceful shutdown with the deadline set by `WithShutdownTimeout`. An `OnPreDrain` hook that ignores that deadline remains a hard teardown barrier and can delay return; a second signal force-kills the process — signal handling is reset the moment the first signal arrives. Server address is derived from framework-internal server config (host + port). Returns `nil` on graceful shutdown, or an error if the server fails to start or the app has already run.
 
-On Unix, `Run` also handles `SIGHUP`: each signal triggers [`app.Reload`](#appreloadctx-contextcontext-error) with the `WithReloadTimeout` budget, signals arriving during a reload coalesce into at most one follow-up, and a reload failure never stops the server. There is no SIGHUP on Windows; the programmatic `Reload` is the only trigger there.
+On Unix, `Run` also handles `SIGHUP`: each signal triggers [`app.Reload`](#appreloadctx-contextcontext-error) with the `WithReloadTimeout` budget on its own goroutine, signals arriving during a reload coalesce into at most one follow-up, and a reload failure never stops the server. Because reloads run off the signal loop, a `SIGINT`/`SIGTERM` during a long reload is serviced immediately: the drain starts (cancelling the reload's context and waiting for it before DI teardown) and signal delivery is reset, so a second signal force-kills as usual. There is no SIGHUP on Windows; the programmatic `Reload` is the only trigger there.
 
 `credo.WithoutReloadSignals()` disables the reload trigger without changing the rest of `Run`'s signal policy: SIGHUP is still captured — so a stray signal can never fall through to its default action and terminate the process — but is ignored with an Info log line (`credo: reload signal ignored (reload signals disabled)`). SIGINT/SIGTERM handling and programmatic `Reload` are unaffected; the option is a no-op on Windows. Raw Unix signal disposition (an unhandled SIGHUP terminates) remains available via `RunContext`/`ServeContext`, which install no signal handlers.
 
@@ -128,13 +128,14 @@ Gracefully shuts down the server:
 1. Transitions from `running` → `stopping` (CAS; error if not running).
 2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so load balancers stop routing here before the drain. Liveness stays up.
 3. Runs every `OnPreDrain` hook concurrently while lifecycle workers and DI remain live.
-4. Cancels lifecycle context — signals background services to shut down.
+4. Cancels lifecycle context — signals background services, and any in-flight `Reload`, to shut down.
 5. Drains HTTP servers and every `OnDrain` subsystem hook in parallel.
-6. Shuts down DI container singletons via `container.Shutdown(ctx)`.
-7. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
-8. Collects all errors via `errors.Join`.
-9. Clears bound address (`Addr()` returns nil).
-10. Transitions to `stopped`.
+6. Waits for an in-flight `Reload` to return (its callbacks may use DI infrastructure) and keeps the reload slot so no later reload can start; at the deadline the reload is reported as still in flight and teardown proceeds.
+7. Shuts down DI container singletons via `container.Shutdown(ctx)`.
+8. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
+9. Collects all errors via `errors.Join`.
+10. Clears bound address (`Addr()` returns nil).
+11. Transitions to `stopped`.
 
 OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hooks are
 unordered within each phase. OnPreDrain is the narrow pre-cancellation phase and
@@ -168,9 +169,13 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 #### Background services and shutdown ordering
 
 Background work is wired through the existing primitives: a component starts
-in an `OnStart` hook (receiving the lifecycle context) and normally stops by
-implementing `Shutdowner`, so the DI container drains it during the
-container-shutdown step. The `worker.Pool` follows exactly this pattern.
+in an `OnStart` hook (receiving the lifecycle context) and stops in an
+`OnDrain` hook, before DI infrastructure is torn down. A component that only
+implements `Shutdowner` is instead drained during the container-shutdown step,
+in reverse registration order relative to everything else — fine for a
+resource, wrong for a consumer of resources. The `worker.Pool` does both: it
+drains in `OnDrain` so workers' bounded cleanup always precedes resource
+teardown, and its `Shutdowner` pass then finds the stop sequence complete.
 
 `OnPreDrain` is the narrow exception for coordination that must complete while
 lifecycle-bound workers and DI are still live. It runs after readiness is
@@ -186,9 +191,8 @@ also use it. It has no startup, name, restart, or ordering semantics.
 
 A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with
 a restartable/start-once taxonomy — remains deliberately **deferred** until
-multiple in-tree consumers require it. `OnDrain` does not migrate
-`worker.Pool`; workers retain lifecycle cancellation plus DI shutdown and
-reverse registration ordering.
+multiple in-tree consumers require it. `worker.Pool` and `websocket.Server`
+both participate through `OnStart` + `OnDrain` without such a taxonomy.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
@@ -254,7 +258,7 @@ makes it routine.
 
 ### `app.Reload(ctx context.Context) error`
 
-Triggers a partial reload. Succeeds only in the `running` state: before `running` it returns an error (there is nothing to reload), and in `stopping`/`stopped` it returns an error that the signal path treats as a no-op. Concurrent calls are serialized; a caller that waits on the mutex then performs its own full reload, so after `Reload` returns the snapshot is at least as new as when it was called.
+Triggers a partial reload. Succeeds only in the `running` state: before `running` it returns an error (there is nothing to reload), and in `stopping`/`stopped` it returns an error that the signal path treats as a no-op. Concurrent calls are serialized through a context-aware slot: a caller that waits then performs its own full reload, so after `Reload` returns the snapshot is at least as new as when it was called; a waiting caller returns its own `ctx.Err()` if its context ends first, and returns the not-running error without reloading if shutdown begins while it waits. Every participant, subscriber, and hook receives a context cancelled by either the caller's context or the application lifecycle, and `Shutdown` waits for an in-flight reload before DI teardown (see [`app.Shutdown`](#appshutdownctx-contextcontext-error)).
 
 The sequence is: (1) if the registered `RawConfig` implements `config.Stager`, stage a candidate snapshot (`Stage()`) and take its `config.Changes` — a load error aborts with the old snapshot untouched; (2) for every `OnConfigChange[T]` subscription affected by the diff, decode `T` from the candidate and, when `T` has a `Validate() error` method, validate it — any failure aborts before anything is published (logged as `reload aborted before publish`); (3) `Commit()` the snapshot atomically, run framework reload participants (file-based TLS rotation), then affected `OnConfigChange` subscribers in registration order with the values decoded in step 2, then all `OnReload` hooks FIFO — errors and recovered panics are collected and the sequence continues (no rollback); (4) return `errors.Join` of the step-3 errors, log one Info summary (duration, whether config was reloaded, changed-key count, subscribers notified, error count) and one Warn naming every changed key that no subscription or participant covers (`restart required`; key paths only, never values). A reload never stops the process.
 
@@ -326,7 +330,7 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 - `server`, `ctx`, `cancel`, and `boundAddr` fields protected by `serverMu` mutex.
 - `compile()` guarded by `sync.Once`.
 - State transitions use `CompareAndSwap` — exactly one goroutine wins.
-- `Reload` is serialized by `reloadMu`; the SIGHUP channel has capacity one so signals during a reload coalesce. The config snapshot swap is atomic (see the [Config Spec](config.md)).
+- `Reload` is serialized by a capacity-one slot channel that the drain also takes (and keeps) before DI teardown; signal-triggered reloads run on their own goroutine and signals during a reload coalesce into one follow-up. The config snapshot swap is atomic (see the [Config Spec](config.md)).
 
 ## Container Integration
 

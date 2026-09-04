@@ -14,6 +14,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workers drain before DI teardown.** `worker.Register` now attaches the pool to `App.OnDrain`, so workers' bounded cleanup after cancellation completes concurrently with the HTTP drain and before any DI singleton's `Shutdown` runs. Previously the pool was stopped only by the container's reverse-registration `Shutdowner` pass, so a resource registered after the pool could be closed while a worker was still flushing. `Pool.Shutdown` is now idempotent with a stable result — nil once every worker has returned, whatever the caller's context state; `ctx.Err()` only while workers are still running — so the later `Shutdowner` pass returns immediately. `Start` is refused after `Shutdown`, and a `Start` racing a direct `Shutdown` is ordered under the pool mutex so no worker goroutine can be launched past a wait that already began.
+- **Worker registration window is uniform.** Every `worker.Register` call after `App.Finalize` returns `worker: Register after app.Finalize`; previously only the first registration (the one creating the pool) was rejected and later ones were silently accepted.
+- **Reload and shutdown are coordinated.** A `Reload` in flight when `Shutdown` begins now has its participants, subscribers, and `OnReload` hooks cancelled (their context is bound to the caller's context and the application lifecycle), and `Shutdown` waits for the reload to return after the HTTP/`OnDrain` phase and before DI teardown; at the shutdown deadline it reports `credo: shutdown: reload still in flight` and proceeds. Previously a reload callback could keep running against already-closed DI infrastructure and the reload completed without error. A `Reload` whose context is already cancelled (on arrival, or by the time it acquires the slot) returns `ctx.Err()` before loading a candidate or running any callback. A `Reload` queued behind an in-flight one now returns its own `ctx.Err()` if its context ends first and the not-running error (without reloading) if shutdown begins while it waits.
+- **`SIGINT`/`SIGTERM` are serviced during a signal-triggered reload.** Under `Run`, reloads now run off the signal loop's goroutine. Previously a long or cancellation-ignoring `OnReload` hook blocked the loop, so a termination signal was neither acted on nor reset until the reload returned — leaving `SIGKILL` as the only way to stop the process. Coalescing is unchanged: at most one reload runs at a time and signals arriving mid-reload produce one follow-up.
+- **Worker pool binding is protected.** The pool is published with `ProvideProtectedValue`, so `Replace[*worker.Pool]` is rejected and the pool wired into the lifecycle and readiness seam cannot diverge from the one DI hands out. A `*worker.Pool` provided outside `worker.Register` is refused with an error.
+
 ## [0.17.0] - 2026-09-02
 
 ### Added
