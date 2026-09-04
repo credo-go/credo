@@ -484,3 +484,57 @@ func TestBundle_DefaultLang(t *testing.T) {
 		t.Errorf("DefaultLang = %q, want %q", b.DefaultLang(), "tr")
 	}
 }
+
+// TestBundle_MatchTag_ExtensionTagMatchesBase locks in that a requested tag
+// carrying a Unicode (-u-) extension resolves to the registered base tag.
+// x/text folds the requested extensions into the tag its Match returns, so
+// keying messages by that tag would miss the registered entry and fall back
+// to the default language.
+func TestBundle_MatchTag_ExtensionTagMatchesBase(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.AddMessages(language.English, &Message{ID: "greeting", Other: "Hello"}); err != nil {
+		t.Fatalf("AddMessages(en): %v", err)
+	}
+	if err := b.AddMessages(language.Turkish, &Message{ID: "greeting", Other: "Merhaba"}); err != nil {
+		t.Fatalf("AddMessages(tr): %v", err)
+	}
+
+	s, ok := b.TranslateForLang("tr-u-nu-latn", "greeting", nil)
+	if !ok {
+		t.Fatal("TranslateForLang returned false")
+	}
+	if s != "Merhaba" {
+		t.Errorf("got %q, want %q (extension tag must match base tr, not fall back to en)", s, "Merhaba")
+	}
+}
+
+// TestBundle_MatchTag_AcceptLanguageOrder verifies that an Accept-Language
+// value listing an unavailable language first still reaches the next
+// available preference instead of the default language.
+func TestBundle_MatchTag_AcceptLanguageOrder(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.LoadDirFS(testFS(), "."); err != nil {
+		t.Fatalf("LoadDirFS: %v", err)
+	}
+
+	s, ok := b.TranslateForLang("de, tr;q=0.8", "v.required", nil)
+	if !ok {
+		t.Fatal("TranslateForLang returned false")
+	}
+	if s != "zorunludur" {
+		t.Errorf("got %q, want %q (German unavailable, Turkish is the next preference)", s, "zorunludur")
+	}
+}
+
+// TestBundle_EmptyBundleNoPanic verifies that matching against a bundle with
+// no messages, and therefore a nil matcher, does not panic and reports the
+// message as missing.
+func TestBundle_EmptyBundleNoPanic(t *testing.T) {
+	b := NewBundle(language.English)
+	if _, ok := b.TranslateForLang("tr", "greeting", nil); ok {
+		t.Fatal("TranslateForLang on an empty bundle reported a hit")
+	}
+	if got := b.MatchLangString("tr"); got != "en" {
+		t.Errorf("MatchLangString on an empty bundle = %q, want default %q", got, "en")
+	}
+}

@@ -4,7 +4,7 @@
 // Adapted for the Credo framework (github.com/credo-go/credo).
 
 // Package i18n is the internal message lookup engine for the Credo framework.
-// It provides Bundle-based message loading, Localizer for per-request lookup,
+// It provides Bundle-based message loading, language matching and lookup,
 // and CLDR plural form selection (delegated to golang.org/x/text/feature/plural).
 //
 // This package is internal — the public API is exposed via the root credo package:
