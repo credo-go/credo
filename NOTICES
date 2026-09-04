@@ -135,11 +135,10 @@ Copyright (c) 2014 Nick Snyder
 License: MIT (https://github.com/nicksnyder/go-i18n/blob/main/LICENSE)
 
 Adapted in:
-  - internal/i18n/       — Bundle, Localizer, Message types
-    Files adapted from go-i18n v2 (bundle.go, localizer.go, message.go,
+  - internal/i18n/       — Bundle, Message types
+    Files adapted from go-i18n v2 (bundle.go, message.go,
     internal/template.go, plural operand decomposition):
       internal/i18n/bundle.go                     — Message container (simplified: JSON-only, dir-per-locale)
-      internal/i18n/localizer.go                  — Per-request message lookup (simplified: no Must* variants)
       internal/i18n/message.go                    — Message struct (simplified: no Hash, Description, delimiters)
       internal/i18n/message_template.go           — Message + template pairing
       internal/i18n/template.go                   — text/template wrapper (simplified: no custom delimiters)

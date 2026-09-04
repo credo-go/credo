@@ -152,16 +152,11 @@ func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stac
 	// concurrent access. No data race on entry.value/err because Once
 	// provides a happens-before guarantee.
 	entry.once.Do(func() {
-		entry.value, entry.err = c.construct(reg, append(stack, targetType))
+		entry.value, entry.err = reg.build(c, append(stack, targetType))
 		entry.done.Store(true)
 	})
 
 	return entry.value, entry.err
-}
-
-// construct builds a new instance through the registration's provider.
-func (c *Container) construct(reg provider, stack []reflect.Type) (any, error) {
-	return reg.build(c, stack)
 }
 
 func (c *Container) resolveParamValue(paramType reflect.Type, serviceName string, stack []reflect.Type) (reflect.Value, error) {

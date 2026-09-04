@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/credo-go/credo/internal/httpheader"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 	"github.com/credo-go/credo/validation"
 )
@@ -246,7 +247,7 @@ func (r *Request) BindBody(target any) error {
 	// Credo never decompresses implicitly: a transformed body that no
 	// middleware.Decompress has unwrapped would otherwise reach the decoder as
 	// opaque bytes and be misreported as a syntax error.
-	if coding := r.Header.Get("Content-Encoding"); !isIdentityContentCoding(coding) {
+	if coding := r.Header.Get("Content-Encoding"); !httpheader.IsIdentityContentCoding(coding) {
 		return NewHTTPError(http.StatusUnsupportedMediaType, CodeUnsupportedContentEncoding).
 			WithMessageKey("unsupported content encoding: " + coding)
 	}
@@ -322,18 +323,6 @@ func (r *Request) BindBody(target any) error {
 	}
 
 	return r.validateBoundTarget("BindBody", target)
-}
-
-// isIdentityContentCoding reports whether every token of a Content-Encoding
-// value is "identity" (or the value is empty), meaning the body carries no
-// transformation.
-func isIdentityContentCoding(value string) bool {
-	for token := range strings.SplitSeq(value, ",") {
-		if t := strings.ToLower(strings.TrimSpace(token)); t != "" && t != "identity" {
-			return false
-		}
-	}
-	return true
 }
 
 // invalidBindTarget reports a developer error (nil or non-pointer bind

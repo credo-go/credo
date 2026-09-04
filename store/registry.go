@@ -48,28 +48,11 @@ type registryReservation struct {
 
 type lifecycleIdentity = resourceid.Identity
 
-// reserve keeps a store name, DI value type, and physical lifecycle identity
-// private until registration has passed Ping and DI publication. Pending
-// reservations never appear in HealthAll or the readiness seam.
-func (r *Registry) reserve(name string, valueType reflect.Type, lc Lifecycle) (*registryReservation, error) {
-	if r == nil {
-		return nil, fmt.Errorf("store: registry must not be nil")
-	}
-	if isNilDynamicValue(lc) {
-		return nil, fmt.Errorf("store: lifecycle must not be nil for %q", name)
-	}
-	if valueType == nil {
-		return nil, fmt.Errorf("store: value type must not be nil for %q", name)
-	}
-	identity, err := identifyLifecycle(lc)
-	if err != nil {
-		return nil, fmt.Errorf("store: lifecycle identity for %q: %w", name, err)
-	}
-	return r.reserveIdentified(name, valueType, lc, identity, nil)
-}
-
-// reserveIdentified performs the reservation as one atomic step under the
-// registry lock: conflict checks against committed entries and pending
+// reserveIdentified keeps a store name, DI value type, and physical lifecycle
+// identity private until registration has passed Ping and DI publication.
+// Pending reservations never appear in HealthAll or the readiness seam.
+//
+// The reservation is one atomic step under the registry lock: conflict checks against committed entries and pending
 // reservations, then the optional preflight, then recording the reservation.
 // preflight lets the caller fold a point-in-time check that must hold at the
 // moment of reservation (Register's DI publication preflight) into the same

@@ -7,7 +7,6 @@ import (
 	"maps"
 	"net/http"
 	"slices"
-	"sync"
 )
 
 // MethodTyp is a bitmask representing one or more HTTP methods.
@@ -46,33 +45,24 @@ var standardMethodNames = map[MethodTyp]string{
 	MQuery:   methodQuery,
 }
 
-var (
-	mu sync.RWMutex
-
-	methodMap = map[string]MethodTyp{
-		http.MethodConnect: MConnect,
-		http.MethodDelete:  MDelete,
-		http.MethodGet:     MGet,
-		http.MethodHead:    MHead,
-		http.MethodOptions: MOptions,
-		http.MethodPatch:   MPatch,
-		http.MethodPost:    MPost,
-		http.MethodPut:     MPut,
-		http.MethodTrace:   MTrace,
-		methodQuery:        MQuery,
-	}
-
-	// nextMethodBit is the next unused bit position for custom methods.
-	// MQuery occupies bit 10 (1<<10 = 1024), so the next available is bit 11.
-	nextMethodBit = uint(11)
-)
+// methodMap is the immutable method string-to-MethodTyp table. The method
+// set is fixed at compile time; there is no runtime registration.
+var methodMap = map[string]MethodTyp{
+	http.MethodConnect: MConnect,
+	http.MethodDelete:  MDelete,
+	http.MethodGet:     MGet,
+	http.MethodHead:    MHead,
+	http.MethodOptions: MOptions,
+	http.MethodPatch:   MPatch,
+	http.MethodPost:    MPost,
+	http.MethodPut:     MPut,
+	http.MethodTrace:   MTrace,
+	methodQuery:        MQuery,
+}
 
 // LookupMethod returns the MethodTyp for the given HTTP method string
-// and a boolean indicating whether it was found. Standard HTTP methods
-// are resolved via a lock-free switch for hot-path performance; only
-// custom methods fall through to the locked map.
+// and a boolean indicating whether it is a known method.
 func LookupMethod(method string) (MethodTyp, bool) {
-	// Fast path: standard methods (no lock needed).
 	switch method {
 	case http.MethodConnect:
 		return MConnect, true
@@ -95,51 +85,21 @@ func LookupMethod(method string) (MethodTyp, bool) {
 	case methodQuery:
 		return MQuery, true
 	}
-
-	// Slow path: custom methods (locked map lookup).
-	mu.RLock()
-	defer mu.RUnlock()
-	mtyp, ok := methodMap[method]
-	return mtyp, ok
+	return 0, false
 }
 
-// AllMethods returns a copy of all registered method string-to-MethodTyp pairs.
+// AllMethods returns a copy of all known method string-to-MethodTyp pairs.
 func AllMethods() map[string]MethodTyp {
-	mu.RLock()
-	defer mu.RUnlock()
 	return maps.Clone(methodMap)
 }
 
-// registerMethod adds a custom HTTP method to the method map.
-// Returns the assigned MethodTyp. Safe for concurrent use.
-// Must be called before any routes using this method are registered.
-func registerMethod(method string) MethodTyp {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if mtyp, ok := methodMap[method]; ok {
-		return mtyp
-	}
-	if nextMethodBit >= 32 {
-		panic("radix: too many custom HTTP methods registered (max 32)")
-	}
-	mtyp := MethodTyp(1 << nextMethodBit)
-	nextMethodBit++
-	methodMap[method] = mtyp
-	return mtyp
-}
-
 // MethodTypToString converts a MethodTyp bitmask to a sorted slice
-// of HTTP method strings. Only known (registered) methods are included.
+// of HTTP method strings. Only known methods are included.
 func MethodTypToString(mtyp MethodTyp) []string {
-	// Fast path: single standard method (no lock, no allocation)
+	// Fast path: single method (no allocation beyond the result)
 	if name, ok := standardMethodNames[mtyp]; ok {
 		return []string{name}
 	}
-
-	// Slow path: multi-bit or custom methods
-	mu.RLock()
-	defer mu.RUnlock()
 
 	var methods []string
 	for name, bit := range methodMap {

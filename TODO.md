@@ -251,7 +251,7 @@
 
 **Source**: go-i18n (MIT) **ADR**: [`docs/adr/013-internationalization.md`](docs/adr/013-internationalization.md)
 
-- [x] Adapt go-i18n core to `internal/i18n/`: Bundle, Localizer, Message types
+- [x] Adapt go-i18n core to `internal/i18n/`: Bundle, Message types (the per-request Localizer was dropped once the root package translated through `Bundle` directly)
 - [x] CLDR plural rule support (`internal/i18n/internal/plural/` — 200+ languages)
 - [x] String-based public APIs: `TranslateForLang()`, `FieldNameForLang()`, `HasMessages()`
 - [x] Key-based HTTP translation through `HTTPError.MessageKey`, semantic `fault.Provider` root policy, and legacy `HTTPStatus()`→MsgKey mapping (no `TranslationKeyer` interface)

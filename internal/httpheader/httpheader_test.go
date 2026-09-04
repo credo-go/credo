@@ -55,6 +55,30 @@ func TestAddToken_AppendsDistinct(t *testing.T) {
 	}
 }
 
+func TestIsIdentityContentCoding(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"", true},
+		{"identity", true},
+		{"Identity", true},
+		{" identity , identity ", true},
+		{",", true},
+		{"gzip", false},
+		{"identity, gzip", false},
+		{"gzip, identity", false},
+		{"br", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			if got := IsIdentityContentCoding(tt.value); got != tt.want {
+				t.Errorf("IsIdentityContentCoding(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 // BenchmarkHasToken measures the strings.Cut loop for comma-separated
 // header token search (used by the compress middleware for Accept-Encoding).
 func BenchmarkHasToken(b *testing.B) {

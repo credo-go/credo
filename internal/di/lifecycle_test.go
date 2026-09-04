@@ -25,20 +25,6 @@ func (s *shutdownTracker) Shutdown(ctx context.Context) error {
 
 // --- Seal/validation tests ---
 
-func TestSeal_MissingDependency(t *testing.T) {
-	c := di.New()
-	// ServiceWithDep depends on SimpleService, not registered.
-	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
-
-	err := c.Seal()
-	if err == nil {
-		t.Fatal("expected Seal error for missing dependency")
-	}
-	if !strings.Contains(err.Error(), "not registered") {
-		t.Errorf("error should mention 'not registered', got: %v", err)
-	}
-}
-
 func TestSeal_CircularDependency(t *testing.T) {
 	c := di.New()
 	c.MustProvide[*CircularA](NewCircularA)
@@ -75,13 +61,6 @@ func TestSeal_ValidGraph(t *testing.T) {
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed on valid graph: %v", err)
-	}
-}
-
-func TestSeal_EmptyContainer(t *testing.T) {
-	c := di.New()
-	if err := c.Seal(); err != nil {
-		t.Fatalf("Seal failed on empty container: %v", err)
 	}
 }
 

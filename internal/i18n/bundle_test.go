@@ -168,7 +168,7 @@ func TestBundle_FieldName_Fallback(t *testing.T) {
 	}
 }
 
-func TestBundle_LoadDirFS(t *testing.T) {
+func TestBundle_LoadDirFSSource(t *testing.T) {
 	fsys := fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
 			Data: []byte(`{"v.required": "is required", "http.not_found": "Not found"}`),
@@ -182,8 +182,8 @@ func TestBundle_LoadDirFS(t *testing.T) {
 	}
 
 	b := NewBundle(language.English)
-	if err := b.LoadDirFS(fsys, "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(fsys, "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 
 	// Check English messages loaded
@@ -204,17 +204,16 @@ func TestBundle_LoadDirFS(t *testing.T) {
 		t.Errorf("Turkish field email = %q, want %q", name, "e-posta adresi")
 	}
 
-	// Check language tags
-	tags := b.LanguageTags()
-	if len(tags) != 2 {
-		t.Fatalf("tags count = %d, want 2", len(tags))
+	// Check matcher tags
+	if len(b.tags) != 2 {
+		t.Fatalf("tags count = %d, want 2", len(b.tags))
 	}
 }
 
 func TestBundle_LoadDirFS_InvalidDir(t *testing.T) {
 	fsys := fstest.MapFS{}
 	b := NewBundle(language.English)
-	err := b.LoadDirFS(fsys, "nonexistent")
+	_, err := b.LoadDirFSSource(fsys, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent dir")
 	}
@@ -231,17 +230,16 @@ func TestBundle_LoadDirFS_SkipsNonLangDirs(t *testing.T) {
 	}
 
 	b := NewBundle(language.English)
-	if err := b.LoadDirFS(fsys, "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(fsys, "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 
-	tags := b.LanguageTags()
-	if len(tags) != 1 {
-		t.Errorf("tags count = %d, want 1 (should skip non-language dirs)", len(tags))
+	if len(b.tags) != 1 {
+		t.Errorf("tags count = %d, want 1 (should skip non-language dirs)", len(b.tags))
 	}
 }
 
-func TestBundle_LoadDir(t *testing.T) {
+func TestBundle_LoadDirSource(t *testing.T) {
 	dir := t.TempDir()
 	langDir := filepath.Join(dir, "en")
 	if err := os.MkdirAll(langDir, 0o755); err != nil {
@@ -255,8 +253,8 @@ func TestBundle_LoadDir(t *testing.T) {
 	}
 
 	b := NewBundle(language.English)
-	if err := b.LoadDir(dir); err != nil {
-		t.Fatalf("LoadDir: %v", err)
+	if _, err := b.LoadDirSource(dir); err != nil {
+		t.Fatalf("LoadDirSource: %v", err)
 	}
 
 	enMsgs := b.messageTemplates(language.English)
@@ -281,8 +279,8 @@ func TestBundle_LoadDirFS_PluralMessages(t *testing.T) {
 	}
 
 	b := NewBundle(language.English)
-	if err := b.LoadDirFS(fsys, "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(fsys, "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 
 	msgs := b.messageTemplates(language.English)
@@ -298,13 +296,6 @@ func TestBundle_LoadDirFS_PluralMessages(t *testing.T) {
 	}
 }
 
-func TestBundle_DefaultLanguage(t *testing.T) {
-	b := NewBundle(language.Turkish)
-	if b.DefaultLanguage() != language.Turkish {
-		t.Errorf("DefaultLanguage = %v, want Turkish", b.DefaultLanguage())
-	}
-}
-
 func TestBundle_LoadDirFS_InvalidFieldsJSON(t *testing.T) {
 	fsys := fstest.MapFS{
 		"en/messages.json": &fstest.MapFile{
@@ -316,7 +307,7 @@ func TestBundle_LoadDirFS_InvalidFieldsJSON(t *testing.T) {
 	}
 
 	b := NewBundle(language.English)
-	err := b.LoadDirFS(fsys, ".")
+	_, err := b.LoadDirFSSource(fsys, ".")
 	if err == nil {
 		t.Fatal("expected error for invalid fields.json, got nil")
 	}
@@ -339,8 +330,8 @@ func testFS() fs.FS {
 
 func TestBundle_TranslateForLang(t *testing.T) {
 	b := NewBundle(language.English)
-	if err := b.LoadDirFS(testFS(), "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(testFS(), "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 
 	s, ok := b.TranslateForLang("tr", "v.required", nil)
@@ -451,8 +442,8 @@ func TestBundle_TranslatePluralForLang_DoesNotMutateData(t *testing.T) {
 
 func TestBundle_FieldNameForLang(t *testing.T) {
 	b := NewBundle(language.English)
-	if err := b.LoadDirFS(testFS(), "."); err != nil {
-		t.Fatalf("LoadDirFS: %v", err)
+	if _, err := b.LoadDirFSSource(testFS(), "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
 	}
 
 	name := b.FieldNameForLang("tr", "email")
@@ -478,9 +469,56 @@ func TestBundle_HasMessages(t *testing.T) {
 	}
 }
 
-func TestBundle_DefaultLang(t *testing.T) {
-	b := NewBundle(language.Turkish)
-	if b.DefaultLang() != "tr" {
-		t.Errorf("DefaultLang = %q, want %q", b.DefaultLang(), "tr")
+// TestBundle_MatchTag_ExtensionTagMatchesBase locks in that a requested tag
+// carrying a Unicode (-u-) extension resolves to the registered base tag.
+// x/text folds the requested extensions into the tag its Match returns, so
+// keying messages by that tag would miss the registered entry and fall back
+// to the default language.
+func TestBundle_MatchTag_ExtensionTagMatchesBase(t *testing.T) {
+	b := NewBundle(language.English)
+	if err := b.AddMessages(language.English, &Message{ID: "greeting", Other: "Hello"}); err != nil {
+		t.Fatalf("AddMessages(en): %v", err)
+	}
+	if err := b.AddMessages(language.Turkish, &Message{ID: "greeting", Other: "Merhaba"}); err != nil {
+		t.Fatalf("AddMessages(tr): %v", err)
+	}
+
+	s, ok := b.TranslateForLang("tr-u-nu-latn", "greeting", nil)
+	if !ok {
+		t.Fatal("TranslateForLang returned false")
+	}
+	if s != "Merhaba" {
+		t.Errorf("got %q, want %q (extension tag must match base tr, not fall back to en)", s, "Merhaba")
+	}
+}
+
+// TestBundle_MatchTag_AcceptLanguageOrder verifies that an Accept-Language
+// value listing an unavailable language first still reaches the next
+// available preference instead of the default language.
+func TestBundle_MatchTag_AcceptLanguageOrder(t *testing.T) {
+	b := NewBundle(language.English)
+	if _, err := b.LoadDirFSSource(testFS(), "."); err != nil {
+		t.Fatalf("LoadDirFSSource: %v", err)
+	}
+
+	s, ok := b.TranslateForLang("de, tr;q=0.8", "v.required", nil)
+	if !ok {
+		t.Fatal("TranslateForLang returned false")
+	}
+	if s != "zorunludur" {
+		t.Errorf("got %q, want %q (German unavailable, Turkish is the next preference)", s, "zorunludur")
+	}
+}
+
+// TestBundle_EmptyBundleNoPanic verifies that matching against a bundle with
+// no messages, and therefore a nil matcher, does not panic and reports the
+// message as missing.
+func TestBundle_EmptyBundleNoPanic(t *testing.T) {
+	b := NewBundle(language.English)
+	if _, ok := b.TranslateForLang("tr", "greeting", nil); ok {
+		t.Fatal("TranslateForLang on an empty bundle reported a hit")
+	}
+	if got := b.MatchLangString("tr"); got != "en" {
+		t.Errorf("MatchLangString on an empty bundle = %q, want default %q", got, "en")
 	}
 }
