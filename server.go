@@ -146,16 +146,28 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 // http.Server; that server's admission and drain remain its owner's job and
 // must complete before Shutdown. The App is single-use: the terminal state is
 // stopped even when cleanup was incomplete. Shutdown returns an error when the
-// App is starting, or has already stopped.
+// App is starting, or has already stopped; a managed start that reaches
+// running (or rolls back to building) while Shutdown is deciding is claimed by
+// the same call rather than refused with a stale state.
 func (app *App) Shutdown(ctx context.Context) error {
 	lm := app.lifecycle
-	err := lm.initiateShutdown(ctx)
-	if !errors.Is(err, errShutdownNotRunning) {
-		return err
+	for {
+		err := lm.initiateShutdown(ctx)
+		if !errors.Is(err, errShutdownNotRunning) {
+			return err
+		}
+		if claimed, bootstrapErr := lm.initiateBootstrapShutdown(ctx); claimed {
+			return bootstrapErr
+		}
+		// Both claims lost. The state read here decides the outcome: a live
+		// state means a transition landed between the two attempts (starting
+		// became running, or a start rolled back to building), so claim
+		// again; anything else is a genuine refusal.
+		state := lm.currentState()
+		if state == stateRunning || state == stateBuilding {
+			continue
+		}
+		return fmt.Errorf("credo: Shutdown: server in state %q, expected %q or %q",
+			state, stateBuilding, stateRunning)
 	}
-	if claimed, bootstrapErr := lm.initiateBootstrapShutdown(ctx); claimed {
-		return bootstrapErr
-	}
-	return fmt.Errorf("credo: Shutdown: server in state %q, expected %q or %q",
-		lm.currentState(), stateBuilding, stateRunning)
 }
