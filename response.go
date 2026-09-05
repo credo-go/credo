@@ -170,29 +170,44 @@ func (r *Response) WriteString(s string) (int, error) {
 // buffer allocation per response.
 //
 // The bytes the writer accepted count toward [Response.Size]; a hijacked
-// response returns [http.ErrHijacked]. Nothing is committed before the first
-// byte: a source that fails before producing any output leaves the response
-// uncommitted, so the handler's error still renders as an error response,
-// exactly as with [Response.Write]; the first byte written commits 200 when
-// no status was written.
+// response returns [http.ErrHijacked]. The commit follows [Response.Write]:
+// nothing is committed before the first byte, so a source that fails before
+// producing any output leaves the response uncommitted and the handler's
+// error still renders as an error response; the first byte commits 200 when
+// no status was written. On an uncommitted response the first buffer's worth
+// of src therefore always goes through [Response.Write] before the copy is
+// delegated (as net/http itself does before switching to sendfile): the
+// commit is recorded here, ahead of any later failure in src, so a source
+// that panics after its first bytes leaves a committed response whose status
+// and access record are the 200 already on the wire.
 func (r *Response) ReadFrom(src io.Reader) (int64, error) {
 	if r.hijacked {
 		return 0, http.ErrHijacked
 	}
-	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
-		n, err := rf.ReadFrom(src)
-		if n > 0 && !r.committed {
-			// The writer committed its implicit 200 on the first byte it
-			// accepted; mirror that in the tracking state.
-			r.status, r.committed = http.StatusOK, true
-		}
-		r.size += n
-		return n, err
+	rf, ok := r.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return r.copyPooled(src)
 	}
-	// The destination is r itself (with ReadFrom hidden) rather than the
-	// bare writer: a src implementing io.WriterTo writes straight into the
-	// destination, and every path must pass through Response.Write so the
-	// byte count stays exact.
+	var n int64
+	if !r.committed {
+		n0, err := r.copyPooled(io.LimitReader(src, copyBufferSize))
+		n += n0
+		if err != nil || n0 < copyBufferSize {
+			// Failed, or src ended within the first buffer.
+			return n, err
+		}
+	}
+	n1, err := rf.ReadFrom(src)
+	r.size += n1
+	return n + n1, err
+}
+
+// copyPooled copies src into the response through a pooled buffer. The
+// destination is r itself (with ReadFrom hidden) rather than the bare writer:
+// a src implementing io.WriterTo writes straight into the destination, and
+// every path must pass through Response.Write so the commit and the byte
+// count stay exact.
+func (r *Response) copyPooled(src io.Reader) (int64, error) {
 	bufp := copyBufferPool.Get().(*[]byte)
 	n, err := io.CopyBuffer(writerOnly{r}, src, *bufp)
 	copyBufferPool.Put(bufp)
@@ -414,8 +429,9 @@ func (r *Response) Blob(code int, contentType string, b []byte) error {
 
 // Stream sends a streaming response from the given reader. A reader that
 // implements [io.WriterTo] writes itself; any other reader is copied through
-// [Response.ReadFrom], which delegates to the underlying writer or a pooled
-// buffer instead of allocating one per call.
+// [Response.ReadFrom], which copies through a pooled buffer and delegates the
+// remainder of a large source to the underlying writer instead of allocating
+// a buffer per call.
 // Body-forbidding status codes (1xx, 204, 304) write the status only and
 // never read from rd; see [Response.JSON].
 func (r *Response) Stream(code int, contentType string, rd io.Reader) error {
