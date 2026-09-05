@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	internalpattern "github.com/credo-go/credo/internal/pattern"
+	"github.com/credo-go/credo/internal/wirepath"
 )
 
 // pathTemplate is a route pattern parsed once for URL generation. The last
@@ -37,12 +39,17 @@ func parsePathTemplate(pattern string) (*pathTemplate, error) {
 // routes back to the same values: a single-segment parameter never gains a
 // slash ("a/b" becomes "a%2Fb"), a catch-all keeps its slashes as separators
 // and escapes each segment, "+" stays "+" and valid Unicode is encoded as
-// UTF-8 octets. An empty value cannot match any parameter and is rejected.
+// UTF-8 octets; static pattern text is written in its wire spelling. A value
+// that cannot round-trip is rejected: an empty value matches no parameter,
+// invalid UTF-8 is refused by the router (400), and a value containing the
+// byte that delimits its parameter in the pattern ("." for "{name}.json")
+// would be cut at that byte when matched, since a percent-encoded delimiter
+// is equivalent to the literal one.
 func (t *pathTemplate) build(values []string) (string, int, error) {
 	var b strings.Builder
 	consumed := 0
 	for _, seg := range t.segments {
-		b.WriteString(seg.Prefix)
+		b.WriteString(wirepath.Escape(wirepath.Static(seg.Prefix)))
 		if seg.Kind == internalpattern.Static {
 			break
 		}
@@ -53,6 +60,12 @@ func (t *pathTemplate) build(values []string) (string, int, error) {
 		consumed++
 		if value == "" {
 			return "", consumed, fmt.Errorf("empty value for parameter %q", seg.Name)
+		}
+		if !utf8.ValidString(value) {
+			return "", consumed, fmt.Errorf("value for parameter %q is not valid UTF-8", seg.Name)
+		}
+		if tail := seg.TailByte; tail != 0 && tail != '/' && strings.IndexByte(value, tail) >= 0 {
+			return "", consumed, fmt.Errorf("value %q for parameter %q contains its delimiter %q", value, seg.Name, string(tail))
 		}
 		switch seg.Kind {
 		case internalpattern.Regexp:

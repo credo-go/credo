@@ -11,6 +11,7 @@ import (
 
 	internalpattern "github.com/credo-go/credo/internal/pattern"
 	"github.com/credo-go/credo/internal/radix"
+	"github.com/credo-go/credo/internal/wirepath"
 )
 
 const methodQuery = "QUERY"
@@ -169,13 +170,21 @@ func (app *App) dispatchOnce(c *Context) error {
 
 	rctx.RouteMethod = r.Method
 
-	// Use RoutePath if set (by mounted sub-routers), otherwise the wire-form
-	// path. Matching runs on the still-encoded path so that segment
-	// boundaries come from the client's spelling; the tree decodes each
-	// captured value exactly once (see internal/radix).
+	// Use RoutePath if set (by mounted sub-routers), otherwise the canonical
+	// form of the wire path: segment boundaries come from the client's
+	// spelling ("%2F" stays an escape), every other escape is decoded so that
+	// "/caf%C3%A9", "/caf%c3%a9" and "/%63af%C3%A9" all meet the registered
+	// static text "/café", and the tree decodes each captured value exactly
+	// once (see internal/wirepath and internal/radix). A path without escapes
+	// is used as is.
 	path := rctx.RoutePath
 	if path == "" {
 		path = r.URL.EscapedPath()
+		if canonical := wirepath.Canonical(path); canonical != path {
+			path = canonical
+			rctx.RoutePath = canonical
+			rctx.Canonical = true
+		}
 	}
 
 	// Look up the method's bit flag. An unknown method (not registered
@@ -284,9 +293,11 @@ func (app *App) redirectTrailingSlash301or308(c *Context, r *http.Request, altPa
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		code = http.StatusPermanentRedirect // 308
 	}
-	loc := altPath
+	// altPath is canonical (see dispatchOnce); the Location header carries
+	// the wire spelling.
+	loc := wirepath.Escape(altPath)
 	if r.URL.RawQuery != "" {
-		loc = altPath + "?" + r.URL.RawQuery
+		loc += "?" + r.URL.RawQuery
 	}
 	return c.response.Redirect(code, loc)
 }
@@ -517,16 +528,17 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 	return r2.WithContext(context.WithValue(r2.Context(), routeCtxKey, (*RouteContext)(nil)))
 }
 
-// mountRemainder returns the wire-form (still percent-encoded) path below the
-// mount prefix, so the child keeps the client's segment boundaries: "/admin/a%2Fb"
-// mounted at "/admin" hands the child "/a%2Fb", never "/a/b". The tree matched
-// the static prefix on the same raw path, so the prefix is present verbatim.
+// mountRemainder returns the canonical wire path below the mount prefix, so
+// the child keeps the client's segment boundaries: "/admin/a%2Fb" mounted at
+// "/admin" hands the child "/a%2Fb", never "/a/b". The tree matched the
+// canonical prefix on the same canonical path, so the prefix is present
+// verbatim.
 func mountRemainder(r *http.Request, prefix string) string {
-	raw := r.URL.EscapedPath()
+	raw := wirepath.Canonical(r.URL.EscapedPath())
 	if rctx := getRouteContext(r); rctx != nil && rctx.RoutePath != "" {
 		raw = rctx.RoutePath
 	}
-	rest, ok := strings.CutPrefix(raw, prefix)
+	rest, ok := strings.CutPrefix(raw, wirepath.Static(prefix))
 	if !ok {
 		return "/"
 	}
@@ -549,9 +561,12 @@ func rewriteRequest(r *http.Request, rawPath string) *http.Request {
 // setWirePath stores a wire-form (percent-encoded) path on u the way net/url
 // does when it parses a request target: Path holds the decoded form and
 // RawPath the original spelling only when the two differ, so
-// [url.URL.EscapedPath] returns raw again. A malformed escape is an error and
-// leaves u unchanged.
+// [url.URL.EscapedPath] returns raw again. raw may be canonical (a mount
+// remainder) — bytes that cannot appear literally in a request path are
+// escaped first, so the spelling survives net/url's validation. A malformed
+// escape is an error and leaves u unchanged.
 func setWirePath(u *url.URL, raw string) error {
+	raw = wirepath.Escape(raw)
 	decoded, err := url.PathUnescape(raw)
 	if err != nil {
 		return err
