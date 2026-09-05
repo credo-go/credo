@@ -158,22 +158,20 @@ func (c *Container) teardownGraphLocked() *teardownGraph {
 // pending (a graph inconsistency the report describes as blocked).
 //
 // A build may complete at any moment — typically while a shutdown attempt is
-// running and releases the constructor it was waiting on. Completions are
-// therefore absorbed under the same lock as the "still constructing" check:
-// a failed build retires and frees its dependencies before the queue is
-// declared empty, and a build still pending when the snapshot is taken wakes
-// the loop through buildDone (the completion signals after its state change).
+// running and releases the constructor it was waiting on. The choice of the
+// next vertex, the retirement of failed builds and the "still constructing"
+// decision are therefore one snapshot under the container lock (next): a
+// build that completed before the snapshot is picked or retired, and one
+// still pending in it wakes the loop through buildDone, which the completion
+// signals after its state change.
 func (g *teardownGraph) run(ctx context.Context, logger *slog.Logger) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if v := g.pickReady(); v != nil {
+		v, pending := g.next()
+		if v != nil {
 			g.attempt(ctx, v, logger)
-			continue
-		}
-		retired, pending := g.settle()
-		if retired {
 			continue
 		}
 		if !pending {
@@ -187,50 +185,37 @@ func (g *teardownGraph) run(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-// pickReady returns the most recently registered active vertex that is built,
-// unattempted, not claimed by late cleanup, and has no live dependents.
-func (g *teardownGraph) pickReady() *vertex {
+// next takes one consistent snapshot of the instance states. It retires every
+// active vertex whose build has failed (releasing its dependencies), then
+// returns the most recently registered active vertex that is built,
+// unattempted, not claimed by late cleanup and has no live dependents, and
+// whether an active unattempted vertex is still constructing. Graph state is
+// owned by the shutdown pass; only the instance states need the lock.
+func (g *teardownGraph) next() (ready *vertex, pending bool) {
 	g.c.mu.RLock()
 	defer g.c.mu.RUnlock()
+	for _, v := range g.vertices {
+		if v.active && !v.attempted && v.entry.state == entryFailed {
+			v.attempted = true
+			v.state = ShutdownConstructionFailed
+			v.err = v.entry.err
+			g.retire(v)
+		}
+	}
 	for i := len(g.vertices) - 1; i >= 0; i-- {
 		v := g.vertices[i]
-		if !v.active || v.attempted || v.liveDependents != 0 {
-			continue
-		}
-		if v.entry.state != entryBuilt || v.entry.late {
-			continue
-		}
-		return v
-	}
-	return nil
-}
-
-// settle takes one consistent snapshot of the pending builds: it retires
-// every active vertex whose build has failed (releasing its dependencies)
-// and reports whether it retired any and whether an active vertex is still
-// constructing. Builds that succeeded simply become eligible for pickReady.
-func (g *teardownGraph) settle() (retired, pending bool) {
-	g.c.mu.RLock()
-	var failed []*vertex
-	for _, v := range g.vertices {
 		if !v.active || v.attempted {
 			continue
 		}
-		switch v.entry.state {
-		case entryFailed:
-			failed = append(failed, v)
-		case entryBuilding:
+		if v.entry.state == entryBuilding {
 			pending = true
+			continue
+		}
+		if ready == nil && v.liveDependents == 0 && v.entry.state == entryBuilt && !v.entry.late {
+			ready = v
 		}
 	}
-	g.c.mu.RUnlock()
-	for _, v := range failed {
-		v.attempted = true
-		v.state = ShutdownConstructionFailed
-		v.err = v.entry.err
-		g.retire(v)
-	}
-	return len(failed) > 0, pending
+	return ready, pending
 }
 
 // retire releases a vertex's dependencies.
