@@ -75,21 +75,21 @@ func getUser(ctx *credo.Context) error {
 
 `ctx.Request().RouteParams()` returns all params as a `map[string]string`. The map is owned by the framework and recycled after the request completes, so prefer `RouteParam` for single values.
 
-Keep dynamic segment names consistent at the same path level. These routes are valid because the dynamic segment under `/customers/` is named `{id}` in both patterns:
+Parameter names belong to the route that declares them. Routes that share a dynamic segment may name it differently, and each handler reads its own names:
+
+```go
+app.GET("/v1/crm/customers/{id}", showCustomer)                        // RouteParam("id")
+app.GET("/v1/crm/customers/{customer_id}/timeline", customerTimeline)  // RouteParam("customer_id")
+```
+
+What the router compares is the method and the shape of the pattern with names stripped, so two registrations of the same method on the same shape are a duplicate whatever they call the parameter:
 
 ```go
 app.GET("/v1/crm/customers/{id}", showCustomer)
-app.GET("/v1/crm/customers/{id}/timeline", customerTimeline)
+app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already registered as "/v1/crm/customers/{id}"
 ```
 
-These routes conflict because `{id}` and `{customer_id}` occupy the same path level:
-
-```go
-app.GET("/v1/crm/customers/{id}", showCustomer)
-app.GET("/v1/crm/customers/{customer_id}/timeline", customerTimeline) // panics
-```
-
-Prefer keeping the route parameter as `{id}` and mapping it to a domain-specific variable name inside the handler.
+Regex constraints are structural: two different constraints at the same position (`{id:[0-9]+}` next to `{slug:[a-z]+}`) still conflict at registration, while the same constraint under different names is shared.
 
 ---
 
