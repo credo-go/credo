@@ -134,3 +134,65 @@ func TestResponse_ReadFrom_PanicAfterFirstByteKeepsCommit(t *testing.T) {
 		t.Fatalf("access record must observe the committed 200, got:\n%s", got)
 	}
 }
+
+// zeroThenPanicReader yields n zero bytes and then panics.
+type zeroThenPanicReader struct{ remaining int }
+
+func (r *zeroThenPanicReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		panic("source panicked after its data")
+	}
+	c := min(len(p), r.remaining)
+	clear(p[:c])
+	r.remaining -= c
+	return c, nil
+}
+
+// A source that panics after more than the first buffer's worth has been
+// delegated must still be counted: everything the writer read before the
+// panic it also wrote, so Size and the access record report what the client
+// received.
+func TestResponse_ReadFrom_PanicAfterDelegationCountsBytes(t *testing.T) {
+	const size = 64 << 10
+	for _, delegate := range []bool{false, true} {
+		var w http.ResponseWriter = httptest.NewRecorder()
+		if delegate {
+			w = &readerFromRecorder{ResponseRecorder: w.(*httptest.ResponseRecorder)}
+		}
+		resp := credo.NewResponse(w)
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("delegate=%v: the source panic must propagate", delegate)
+				}
+			}()
+			_, _ = io.Copy(resp, &zeroThenPanicReader{remaining: size})
+		}()
+		if resp.Size() != size || resp.Status() != http.StatusOK {
+			t.Fatalf("delegate=%v: size=%d status=%d after a panic past the delegated part, want %d and 200",
+				delegate, resp.Size(), resp.Status(), size)
+		}
+	}
+
+	var logs syncBuffer
+	app := mustNew(t)
+	app.UseAccessLog(credo.AccessLogConfig{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	app.GET("/", func(ctx *credo.Context) error {
+		_, err := io.Copy(ctx.Response(), &zeroThenPanicReader{remaining: size})
+		return err
+	})
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	res, err := srv.Client().Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || len(body) != size {
+		t.Fatalf("live server: %d with %d bytes, want 200 with %d", res.StatusCode, len(body), size)
+	}
+	if got := logs.String(); !strings.Contains(got, "bytes=65536") {
+		t.Fatalf("access record must count the delegated bytes, got:\n%s", got)
+	}
+}

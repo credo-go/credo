@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -70,6 +71,11 @@ type Response struct {
 	// envelopeBypassed is true after a body-carrying JSON write outside
 	// Context.Render; read by the debug-mode envelope-bypass diagnostic.
 	envelopeBypassed bool
+
+	// delegated wraps the source of a delegated ReadFrom (see
+	// Response.delegate); it lives on the pooled Response so delegation
+	// allocates nothing. R is cleared as soon as the delegation returns.
+	delegated io.LimitedReader
 
 	// app supplies the JSON encoding profile. Nil for a Response built with
 	// NewResponse, which then uses the framework default profile.
@@ -179,7 +185,9 @@ func (r *Response) WriteString(s string) (int, error) {
 // delegated (as net/http itself does before switching to sendfile): the
 // commit is recorded here, ahead of any later failure in src, so a source
 // that panics after its first bytes leaves a committed response whose status
-// and access record are the 200 already on the wire.
+// and access record are the 200 already on the wire. The delegated part is
+// counted the same way: the bytes the writer read from src before a panic it
+// also wrote, so [Response.Size] still reports what the client received.
 func (r *Response) ReadFrom(src io.Reader) (int64, error) {
 	if r.hijacked {
 		return 0, http.ErrHijacked
@@ -197,9 +205,31 @@ func (r *Response) ReadFrom(src io.Reader) (int64, error) {
 			return n, err
 		}
 	}
-	n1, err := rf.ReadFrom(src)
-	r.size += n1
+	n1, err := r.delegate(rf, src)
 	return n + n1, err
+}
+
+// delegate hands src to the writer's own ReadFrom and counts what it
+// accepted. The source is wrapped in an io.LimitedReader rather than a private
+// type: net's sendfile and splice paths unwrap exactly that type and keep the
+// zero-copy path for a file or socket source, and its N records how much the
+// writer consumed — a Read that panics returns nothing, so what was consumed
+// was also written and is counted even when the panic skips the return. Kept
+// out of ReadFrom so the deferred accounting costs nothing on the pooled path.
+func (r *Response) delegate(rf io.ReaderFrom, src io.Reader) (n int64, err error) {
+	lr := &r.delegated
+	lr.R, lr.N = src, math.MaxInt64
+	returned := false
+	defer func() {
+		if !returned {
+			r.size += math.MaxInt64 - lr.N
+		}
+		lr.R = nil
+	}()
+	n, err = rf.ReadFrom(lr)
+	returned = true
+	r.size += n
+	return n, err
 }
 
 // copyPooled copies src into the response through a pooled buffer. The
@@ -249,6 +279,7 @@ func (r *Response) Reset(w http.ResponseWriter) {
 	r.hijacked = false
 	r.exemptJSON = false
 	r.envelopeBypassed = false
+	r.delegated = io.LimitedReader{}
 }
 
 // String implements fmt.Stringer for debugging.
