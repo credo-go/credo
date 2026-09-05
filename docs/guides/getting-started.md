@@ -561,12 +561,12 @@ Shutdown sequence:
 2. Run all `OnPreDrain` hooks while lifecycle workers and DI remain live
 3. Cancel lifecycle context (signals background services)
 4. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
-5. DI Container shutdown (reverse-order singleton cleanup)
+5. DI Container shutdown (dependency-ordered singleton cleanup: consumers before the singletons they were built from)
 6. OnShutdown hooks (LIFO)
 
 These phases receive one absolute shutdown budget. A slow `OnPreDrain` hook emits a waiting diagnostic when the budget ends, but remains a hard barrier so live workers and DI cannot be torn down underneath it. Once every pre-drain hook returns, its completion timestamp determines the final incomplete error and later phases advance with the same possibly-expired context. HTTP and `OnDrain` work keep the ordinary deadline-incomplete behavior.
 
-Services that implement `credo.Shutdowner` participate automatically in reverse-order DI cleanup while the shared deadline remains live; an entry not reached before deadline exhaustion may receive no attempt. Use `app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after infrastructure teardown. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
+Services that implement `credo.Shutdowner` participate automatically in dependency-ordered DI cleanup while the shared deadline remains live; an entry not reached before deadline exhaustion, or blocked behind a consumer that ignores it, receives no attempt and is reported. Use `app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after infrastructure teardown. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
 
 If you need managed background tasks, use `worker.Register(...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
 

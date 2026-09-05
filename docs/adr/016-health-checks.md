@@ -119,8 +119,8 @@ through a module-internal DI seam, with no user-facing bridge API:
   `store.Register` ledger; wrappers around another resource forward identity
   explicitly through `LifecycleIdentityProvider`, and interface access uses
   `Alias` rather than another registration. Publishing the same lifecycle
-  again through raw `Provide`, `ProvideFactory`, `ProvideValue`,
-  `ProvideProtectedValue`, or `Replace` is outside this guarantee and
+  again through raw `Provide`, `ProvideValue`, `ProvideProtectedValue`, or
+  `Replace` is outside this guarantee and
   unsupported.
 - The readiness handler resolves the `StoreFunc` lazily on each check, so a store registered after `UseHealth` is reflected automatically and a missing seam (no stores) simply yields no store entries.
 - Store status is allowlisted to `up`, `down`, or `degraded`. Unknown adapter

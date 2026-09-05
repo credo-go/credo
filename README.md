@@ -47,7 +47,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 
 ## Accepted Pre-v1 Changes
 
-**Implementation pending.** Accepted bootstrap/DI, router and built-in HTTP feature contracts are recorded in the [migration preview](docs/guides/pre-v1-migration.md) and the [implementation plan](docs/plans/pre-v1-implementation.md); progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). They are future contracts, not APIs available in this checkout: the quick start and examples below use the current implementation, and the [example migration notes](examples/README.md) explain when their code will change.
+**Bootstrap/DI changes implemented (DI minor, 2026-09-05); router and built-in HTTP feature changes pending.** All three contracts are recorded in the [migration guide](docs/guides/pre-v1-migration.md) and the [implementation plan](docs/plans/pre-v1-implementation.md); progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). The router and HTTP feature contracts are future contracts, not APIs available in this checkout: the quick start and examples below use callable APIs, and the [example migration notes](examples/README.md) explain when their code changes.
 
 ## Installation
 

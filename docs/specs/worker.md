@@ -430,45 +430,75 @@ Internal flow:
    • continuous + WithStartImmediately → "WithStartImmediately is for scheduled workers"
 6. Build restartPolicy / failurePolicy from validated options
 7. Build Definition (immutable)
-8. ensurePool(app) → resolve-or-create *Pool singleton in DI
+8. ensurePool(app) → adopt-or-create *Pool singleton in DI
 9. pool.addDefinition(def) — check name uniqueness, error on duplicate
 ```
 
 ### ensurePool (internal)
 
 ```go
-// ensurePool resolves or creates the worker Pool in the DI container.
-// On first call, a new Pool is created, registered in DI, and lifecycle
-// hooks are installed.
+// ensurePool adopts or creates the worker Pool in the DI container during
+// registration, before Finalize. On first call, a new Pool is created,
+// published as a protected DI binding, and the lifecycle hooks and readiness
+// seam are installed.
 //
-// The pool receives the app-level logger via app.Logger(). This requires
-// a minimal root package addition: App.Logger() *slog.Logger (returns
-// the same logger used by the framework's error handler, server lifecycle,
-// and i18n setup). Worker execution logs are tagged with "module"="worker"
-// to distinguish them from framework-internal logs.
+// The pool receives the app-level logger via app.Logger(). Worker execution
+// logs are tagged with "module"="worker" to distinguish them from
+// framework-internal logs.
 func ensurePool(app *credo.App) (*Pool, error) {
-	p, err := app.Resolve[*Pool]()
-	if err == nil {
-		return p, nil
+	if err := app.CanProvideValue[registrationProbe](); err != nil {
+		return nil, fmt.Errorf("worker: Register after app.Finalize: %w", err)
 	}
 
-	// First worker registration — create pool and wire lifecycle.
-	logger := app.Logger().With("module", "worker")
-	p = newPool(logger, cfg.RestartDelay)
-	if err := app.ProvideValue[*Pool](p); err != nil {
-		// Race: another goroutine may have registered between Resolve and ProvideValue.
-		resolved, resolveErr := app.Resolve[*Pool]()
-		if resolveErr == nil {
-			return resolved, nil
+	if app.Has[*Pool]() {
+		return adoptPool(app)
+	}
+
+	cfg, err := loadPoolConfig(app) // app.ConfigExists / app.GetConfig — no Resolve before Finalize
+	if err != nil {
+		return nil, err
+	}
+
+	p := newPool(app.Logger().With("module", "worker"), cfg.RestartDelay)
+	p.managed = true
+	if err := app.ProvideProtectedValue[*Pool](p); err != nil {
+		// Lost a registration race: the winner published (and wired) its pool.
+		adopted, adoptErr := adoptPool(app)
+		if adoptErr != nil {
+			return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, adoptErr))
 		}
-		return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
+		return adopted, nil
 	}
 
-	// Start workers after port is bound (after store connections, before accepting).
+	// Readiness contributions reach the health engine through the
+	// module-internal DI seam, resolved lazily on each /ready request.
+	if _, _, err := app.Replace[internalhealth.ReadinessFunc](p.readinessChecks); err != nil {
+		return nil, fmt.Errorf("worker: register readiness seam: %w", err)
+	}
+
+	// Start workers after port is bound; drain them before DI teardown.
 	app.OnStart(func(lifecycleCtx context.Context) error {
 		return p.Start(lifecycleCtx)
 	})
+	app.OnDrain(p.Shutdown)
 
+	return p, nil
+}
+
+// adoptPool accepts the already-registered pool only when ensurePool built
+// it. AdoptValue validates the value and protects its binding atomically and
+// never constructs — a *Pool registered through Provide is rejected without
+// running its constructor.
+func adoptPool(app *credo.App) (*Pool, error) {
+	p, err := app.AdoptValue[*Pool](func(p *Pool) error {
+		if p == nil || !p.managed {
+			return errors.New("a *worker.Pool provided outside worker.Register is not supported")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("worker: %w", err)
+	}
 	return p, nil
 }
 ```
@@ -777,8 +807,8 @@ Workers receive the shutdown signal via context cancellation and finish in the
 singleton is torn down. This is the guarantee that a worker's bounded cleanup
 (flushing a last batch to the database) never observes a closed resource,
 whatever the relative registration order of the worker and the resource. The
-container's reverse-order `Shutdowner` pass reaches the pool afterwards and
-returns the already-known result. OnPreDrain, HTTP/OnDrain, and `OnShutdown`
+container's dependency-ordered `Shutdowner` pass reaches the pool afterwards
+and returns the already-known result. OnPreDrain, HTTP/OnDrain, and `OnShutdown`
 all receive the same absolute shutdown deadline; a worker that outlives it is
 reported as an incomplete OnDrain task and teardown proceeds with the expired
 context. An over-deadline OnPreDrain still finishes before worker cancellation
@@ -1054,7 +1084,7 @@ worker/ ──imports──→ credo (root)   ✓  (same as store/)
 credo (root) ──does NOT import──→ worker/  ✓  (no cycle)
 ```
 
-Worker package calls `app.Resolve`, `app.ProvideValue`, `app.OnStart`. Root package has zero awareness of worker package.
+Worker package calls `app.Has`, `app.AdoptValue`, `app.ProvideProtectedValue`, `app.Replace`, `app.ConfigExists`/`app.GetConfig`, `app.OnStart`, `app.OnDrain`. Root package has zero awareness of worker package.
 
 ---
 

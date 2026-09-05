@@ -43,19 +43,20 @@ Provide / ProvideValue / Alias / BindMany
 ```
 
 - `Provide[T]`: register a constructor
-- `ProvideFactory[T]`: register a compiler-checked factory closure
 - `ProvideValue[T]`: register a pre-built singleton
+- `Has[T]`: check whether `T` is registered, without constructing anything
 - `CanProvideValue[T]`: point-in-time frozen/direct-duplicate preflight
 - `ProvideProtectedValue[T]`: low-level pre-built binding that rejects later `Replace[T]`
 - `ProtectBinding[T](expected ...T)`: low-level blind or CAS-style protection for an existing direct binding
-- `Replace[T]`: overwrite an ordinary pre-built binding; protected bindings reject it
+- `AdoptValue[T](validate)`: low-level registration-time read that validates a pre-built value and protects its binding
+- `Replace[T]`: overwrite an ordinary pre-built binding and receive the superseded instance; protected bindings reject it
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
 - `app.Finalize()`: freeze registrations and validate the dependency graph
-- `Resolve[T]`: retrieve a fully wired singleton
+- `Resolve[T]`: retrieve a fully wired singleton (available after `Finalize`)
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
 
-`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit `app.Finalize()` is recommended so dependency errors fail fast during startup.
+Constructors never run before `Finalize`, and `Resolve` is rejected until then. `Run()` and `RunContext()` call `Finalize()` implicitly as a safeguard, but a composition root that resolves services before running must call it explicitly, and explicit `app.Finalize()` is recommended in any case so dependency errors fail fast during startup.
 
 ---
 
@@ -226,7 +227,7 @@ Tracing and metrics carriers are planned for the observability release. They are
 
 ---
 
-## `Provide` vs `ProvideValue` vs `ProvideFactory`
+## `Provide` vs `ProvideValue`
 
 Use `Provide` when Credo should create the singleton for you:
 
@@ -266,23 +267,29 @@ if err := app.ProtectBinding[Client](client); err != nil {
 }
 ```
 
-After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register shutdown hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-resolved singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize. `store.Register` uses the expected-value form so replacing the Registry between validation and adoption cannot detach DI from readiness state.
+After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register shutdown hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-created singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize.
 
-### `ProvideFactory`: compiler-checked factory registration
+An integration that must read a value the composition root registered ahead of it uses `app.AdoptValue[T](validate)`. It reads the pre-built binding, runs `validate`, and atomically protects that same binding only when validation passes, so an invalid value (a typed-nil Registry) stays repairable with `Replace`. It never runs a constructor: a `T` registered through `Provide` is rejected with an explanatory error. `store.Register` and `worker.Register` adopt their Registry and Pool this way, which is why a Registry constructor is refused at registration time. For a plain "is it registered?" question use `app.Has[T]()`; it constructs, adopts and protects nothing.
 
-`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake is reported as an error at registration time, not at compile time. When you want the whole registration checked by the compiler, use `ProvideFactory`: `fn`'s signature is enforced (and `T` inferred), and it resolves its own dependencies:
+### Replacing a binding
+
+`Replace` overwrites an ordinary pre-built binding and hands the superseded instance back to you:
 
 ```go
-app.MustProvideFactory(func(app *credo.App) (*UserService, error) {
-    repo, err := app.Resolve[*UserRepository]()
-    if err != nil {
-        return nil, err
-    }
-    return NewUserService(app.NewInfra("UserService"), repo), nil
-})
+old, existed, err := app.Replace[*sql.DB](newDB)
+if err != nil {
+    return err // protected binding, or container already finalized
+}
+if existed {
+    defer old.Close() // the container no longer tracks or closes old
+}
 ```
 
-The trade-off: `fn` is opaque to the container. Dependencies resolved inside it are invisible to `Finalize`'s graph validation (a missing one surfaces at first resolution instead), and `credo.Infra` is not auto-injected — use `app.NewInfra` as shown. Prefer plain `Provide` with a named constructor as the default; reach for `ProvideFactory` when you want compiler-checked wiring or inline construction logic.
+`existed` means an already-created instance was superseded — a value registered with `ProvideValue`. Replacing a constructor registration that never ran yields the zero value and `false`; Replace never runs the old constructor just to return its result. On success the container owns the new value and stops tracking the old one, so its cleanup is yours; if the old instance implements `credo.Shutdowner`, Credo logs a warning naming the type as a reminder. A rejected replacement changes nothing. `MustReplace` returns the same `(old, existed)` pair and panics on error.
+
+### No factory closures
+
+`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake is reported as an error at registration time, not at compile time. Credo does not offer a closure factory that resolves its own dependencies, and a constructor that captures `app` and calls `Resolve` inside its body is unsupported: those dependencies are invisible to `Finalize` validation, cycle detection and dependency-ordered shutdown, and constructors run only after `Finalize`, so the call cannot be scheduled against the graph. Declare dependencies as constructor parameters and let the container inject them.
 
 Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
 
@@ -401,10 +408,12 @@ After `Finalize`:
 
 - `Provide` fails
 - `ProvideValue` fails
+- `Replace` and `AdoptValue` fail
 - `Alias` fails
 - `BindMany` fails
-- `Resolve` still works
-- `ResolveAll` still works
+- `Resolve` and `ResolveAll` become available (before `Finalize` they return a "not finalized" error and run no constructor)
+
+`Finalize` is DI-only. Routes, middleware, hooks and renderers stay open until the App prepares to serve (the first request or `Run`), so you can resolve a controller after `Finalize` and still bind its routes.
 
 Validation catches startup problems early:
 
@@ -412,7 +421,7 @@ Validation catches startup problems early:
 - dependency cycles
 - invalid constructor signatures
 
-`Run()` and `RunContext()` call `Finalize()` implicitly, but explicit finalize is the recommended pattern:
+`Run()` and `RunContext()` call `Finalize()` implicitly, but that safeguard cannot precede a `Resolve` your composition root has already executed. Explicit, error-checked finalize between the last registration and the first `Resolve` is the recommended pattern:
 
 ```go
 if err := app.Finalize(); err != nil {
@@ -439,7 +448,9 @@ Credo's **recommended** use of `Resolve` is bootstrap/composition-root code:
 - resolving a controller before route registration
 - resolving a top-level service in `main()`
 
-Runtime `Resolve` is technically allowed because the API is public, but it is not Credo's primary application pattern.
+Runtime `Resolve` is technically allowed because the API is public, but it is not Credo's primary application pattern. Shutdown hooks (`OnPreDrain`, `OnDrain`, `OnShutdown`) must not resolve at all: capture the dependency in the hook closure at registration time.
+
+A constructor runs exactly once, at first resolution, and its outcome is final. If it panics, every caller receives the same `*credo.DIPanicError` (constructor type, original panic value, stack), and `MustResolve` panics with that error as its payload — do not recover and retry. Once shutdown has reached DI teardown, `Resolve` returns an error matching `credo.ErrDIClosed`.
 
 `ResolveAll[I]` follows the same guidance: use it mainly in bootstrap/setup code when you explicitly need the whole ordered collection. Inside normal application code, prefer constructor injection of `[]I`.
 
@@ -544,7 +555,7 @@ func (c *Cache) Shutdown(ctx context.Context) error {
 }
 ```
 
-Credo traverses DI-managed Shutdowners in reverse registration order. If the live shutdown deadline reaches an entry, that registration receives at most one `Shutdown(ctx)` attempt for the teardown. If the deadline expires before the traversal reaches it, that registration receives no attempt and the container reports the skipped remainder.
+Credo closes DI singletons in dependency order: a consumer is shut down before the singletons it received as constructor parameters, whatever the registration order, and registration order (reversed) decides only where the graph does not. Dependencies hidden inside a pre-built value are invisible, so a value that wraps another registered resource gets no ordering guarantee relative to it. Each `Shutdowner` receives at most one `Shutdown(ctx)` attempt bounded by the shared shutdown deadline. A callback that ignores the deadline keeps the singletons it depends on blocked — the container never closes a dependency underneath a live consumer — and the returned `*credo.DIShutdownError` reports every entry's state, blockers and failure so you can see what did not finish.
 
 This is useful for:
 
@@ -559,7 +570,7 @@ Credo offers four shutdown mechanisms. Choose based on ownership and when the co
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
-| `credo.Shutdowner` interface | DI-managed singletons registered through `Provide`, `ProvideFactory`, `ProvideValue`, or the protected variant | Reverse registration order while the deadline remains live; an unreached entry may receive no attempt |
+| `credo.Shutdowner` interface | DI-managed singletons registered through `Provide`, `ProvideValue`, or the protected variant | Dependency order (consumers first, reverse registration as tie-break) while the deadline remains live; blocked or unreached entries are reported |
 | `app.OnPreDrain(fn)` | Narrow coordination that must finish while lifecycle-bound workers and DI remain live | Concurrent with other `OnPreDrain` hooks; before lifecycle cancellation; remains a hard teardown barrier |
 | `app.OnDrain(fn)` | Subsystems that must stop admission and finish DI-dependent handlers before infrastructure closes | Concurrent with HTTP and other `OnDrain` hooks; after lifecycle cancellation and before container shutdown |
 | `app.OnShutdown(fn)` | Components created outside DI and safe to close after infrastructure teardown | LIFO after container shutdown |
@@ -569,10 +580,12 @@ During graceful shutdown the full sequence is:
 1. Withdraw readiness and run every `OnPreDrain` hook concurrently.
 2. Cancel the lifecycle context.
 3. Drain HTTP and every `OnDrain` subsystem in parallel.
-4. Traverse DI singletons in reverse registration order, attempting each reached `Shutdowner` while the deadline remains live.
+4. Shut down DI singletons in dependency order, attempting each ready `Shutdowner` once while the deadline remains live.
 5. Run `OnShutdown` hooks in LIFO order.
 
-All phases receive the same absolute shutdown deadline. An over-deadline `OnPreDrain` hook is reported but remains a hard barrier until it returns; later phases then receive the same, possibly expired context. HTTP or `OnDrain` work that remains incomplete at the deadline is reported and teardown proceeds. Deadline exhaustion may prevent later DI registrations from receiving any shutdown attempt, so DI ownership guarantees one framework owner and at most one attempt when reached — not successful closure of every resource.
+All phases receive the same absolute shutdown deadline. An over-deadline `OnPreDrain` hook is reported but remains a hard barrier until it returns; later phases then receive the same, possibly expired context. HTTP or `OnDrain` work that remains incomplete at the deadline is reported and teardown proceeds. Deadline exhaustion may leave DI entries unattempted or blocked behind a hung consumer, so DI ownership guarantees one framework owner and at most one bounded attempt when reached — not successful closure of every resource. Teardown failures are inspectable with `errors.AsType[*credo.DIShutdownError]` through the joined `Shutdown` error.
+
+`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown chain without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure, and a test that only used `ServeHTTP` can release them.
 
 Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use `OnPreDrain` only when lifecycle cancellation would stop a dependency before required coordination can finish. Use `OnDrain` when a subsystem must quiesce DI-dependent work before container cleanup. Use `OnShutdown` for non-DI resources safe to close last.
 
@@ -652,9 +665,13 @@ Do not try to inject request ID, auth user, or transactions through DI. Use `*cr
 
 RawConfig should be unmarshaled into typed structs and registered with `ProvideValue`.
 
-### Skipping `Finalize`
+### Resolving before `Finalize`
 
-`Run()` will finalize implicitly, but explicit `app.Finalize()` gives earlier feedback and clearer startup failures.
+`Resolve` returns a "not finalized" error until `app.Finalize()` has run; a composition root that resolves controllers before `Run` must finalize first. `Run()` finalizes implicitly only as a safeguard, and explicit `app.Finalize()` gives earlier feedback and clearer startup failures.
+
+### Resolving inside shutdown hooks
+
+Hooks run during teardown, when construction is the last thing you want. Resolve during bootstrap and capture the value in the hook closure.
 
 ### Overusing `Resolve`
 

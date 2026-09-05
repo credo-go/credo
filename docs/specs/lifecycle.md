@@ -2,10 +2,6 @@
 
 > Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
-## Accepted pre-v1 target
-
-**Implementation pending, 2026-09-05.** The [bootstrap/DI lifecycle contract](bootstrap-and-di-lifecycle.md) adds shared preparation/result publication, a separate HTTP write gate, building-state Shutdown and terminal callback-free 503. It replaces reverse-registration DI teardown with the canonical dependency scheduler and bounded completion/report rules. HTTP/OnDrain/reload precede DI closing; OnPreDrain keeps its hard barrier and external servers keep owner-managed drain. See [ADR-022](../adr/022-bootstrap-and-di-ownership.md) and the [implementation plan](../plans/pre-v1-implementation.md). The state/error tables below remain descriptions of the current implementation until migration.
-
 ## Overview
 
 Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining.
@@ -13,42 +9,55 @@ Credo uses a state machine to govern the application lifecycle. This prevents un
 ## State Machine
 
 ```
-             compile()          Run()                                  Shutdown()
-  building ----[frozen]----> starting ---[OnStart]---> running ---> stopping ---> stopped
-      |                         |             |           |                         ^
-      | ServeHTTP()             |             |           | serve error             |
-      | (compile only,          |             |           |  (non-graceful)         |
-      |  state unchanged)       |             |           └────────── drain ────────┤
-      v                         |             |                                     |
-  [frozen=true]                 |             └─────────── OnStart error ── drain ──┘
-                                |                                            → stopped
-                                └─ preflight / listen error → building (retryable)
+              Run()          prepare()                                    Shutdown()
+  building ---[claim]---> starting ---[prepare, OnStart]---> running ---> stopping ---> stopped
+      |                      |               |                  |                         ^
+      | ServeHTTP()          |               |                  | serve error             |
+      | (prepare only,       |               |                  |  (non-graceful)         |
+      |  state unchanged)    |               |                  └────────── drain ────────┤
+      v                      |               |                                            |
+  [frozen=true]              |               └──────────── OnStart error ──── drain ──────┤
+      |                      |                                                    → stopped
+      |                      └─ prepare / preflight / listen error → building (retryable*)
+      |
+      └── Shutdown() in building ──[frozen=true, DI frozen]── drain (no servers) ─────────┘
+                                                                  (bootstrap teardown)
 ```
 
-Failures split by how far startup got. A **pre-session** failure (TLS preflight or listener bind) starts nothing, so it rolls back to `building` and the App may run again. A **session** failure — an OnStart hook returning an error, or a non-`ErrServerClosed` error from `Serve` after `running` — runs the full teardown chain (the drain shared with graceful shutdown) and ends in the terminal `stopped` state. A second `Run` after shutdown and a second `Shutdown` both return an error (state unchanged).
+Failures split by how far startup got. A **pre-session** failure (preparation, TLS preflight or listener bind) starts nothing, so it rolls back to `building` and the App may run again — except that a failed preparation is terminal: it is stored, every later serve attempt returns the same error, and the frozen DI plan cannot be repaired. Returning to `building` permits bootstrap cleanup through `Shutdown`, not a retry of a failed plan. A **session** failure — an OnStart hook returning an error, or a non-`ErrServerClosed` error from `Serve` after `running` — runs the full teardown chain (the drain shared with graceful shutdown) and ends in the terminal `stopped` state. A second `Run` after shutdown and a second `Shutdown` both return an error (state unchanged).
 
 ### States
 
 | State | Value | Description |
 | --- | --- | --- |
-| `building` | 0 | Initial state. Route/MW/hook registration allowed. |
-| `starting` | 1 | Transient startup state. Run claimed; server/ctx being written; OnStart hooks executing. |
+| `building` | 0 | Initial state. Route/MW/hook registration allowed until preparation. `Shutdown` is accepted here as bootstrap teardown. |
+| `starting` | 1 | Transient startup state. Run claimed; preparation, server/ctx writes and OnStart hooks executing. `Shutdown` is refused. |
 | `running` | 2 | Server is listening. Registration frozen. |
-| `stopping` | 3 | Readiness withdrawn; running OnPreDrain, lifecycle cancellation, HTTP/OnDrain, then DI/hooks. |
-| `stopped` | 4 | Fully stopped. Terminal state — reached by graceful shutdown or by a session-failure teardown (OnStart hook error / post-running serve error). |
+| `stopping` | 3 | Readiness withdrawn; running OnPreDrain, lifecycle cancellation, HTTP/OnDrain, then DI/hooks. Entered from `running` (drain) or `building` (bootstrap teardown). |
+| `stopped` | 4 | Fully stopped. Terminal state — reached by graceful shutdown, bootstrap teardown, or a session-failure teardown (OnStart hook error / post-running serve error). New requests receive 503. |
 
 ## `frozen` vs `state`
 
 Two separate flags exist because `ServeHTTP` and `Run` serve different purposes:
 
-- **`frozen` (atomic.Bool)**: Set by `compile()`. Prevents route/middleware registration after the handler chain is built. Triggered by both `ServeHTTP` (for standalone `httptest` usage) and `Run`.
+- **`frozen` (atomic.Bool)**: The HTTP write gate. Set at preparation admission — the first direct `ServeHTTP` request or a managed serve entry point — and at bootstrap-shutdown admission. Prevents route/middleware/hook/feature registration after the handler chain is (about to be) built or the App is being torn down. An explicit DI-only `Finalize` does **not** set it.
 
-- **`state` (atomic.Uint32)**: Tracks server lifecycle. Only `Run()` transitions to `running`. A user who calls `ServeHTTP` directly (with their own `*http.Server`) stays in `building` state — they manage their own lifecycle.
+- **`state` (atomic.Uint32)**: Tracks server lifecycle. Only the managed serve entry points transition to `running`. A user who calls `ServeHTTP` directly (with their own `*http.Server` or `httptest`) stays in `building` state — they manage their own server's lifecycle, and use `Shutdown` in `building` to release DI resources.
 
 This separation allows:
 
-1. `httptest.NewServer(app)` — compiles (freezes) but doesn't change state.
-2. `app.Run()` — compiles, freezes, AND enters running state.
+1. `httptest.NewServer(app)` — prepares (freezes HTTP writes) but doesn't change state.
+2. `app.Run()` — claims the start slot, prepares, freezes, AND enters running state.
+3. `app.Finalize()` followed by controller resolution and route binding — DI frozen, HTTP writes still open.
+
+## Preparation
+
+Every serve path reaches the same validated runtime model through one shared preparation step — `Finalize` → `compile` → publish — whose result (handler or error) is stored exactly once in `app.prep` (an atomic pointer with a fast path; `prepMu` serializes the slow path):
+
+- **Admission.** Preparation is admitted only while the state is below `stopping`; admission sets `frozen`. A preparation that loses to shutdown before publishing discards its result. Once stored, the result is final: a DI finalize error or a compile panic (middleware construction included) is recorded as a terminal preparation failure, logged with its stack (`credo: preparation failed`), and never retried.
+- **Managed serving** (`Run`, `RunContext`, `ServeContext`) claims `building → starting` first, then prepares. A preparation failure rolls the state back to `building` and returns the error (`credo: Run: prepare: …`); a later serve attempt returns the same stored error without executing a partly compiled handler.
+- **Direct `ServeHTTP`** prepares on the first request without claiming the start slot. While lifecycle admission is open it panics with the stored preparation error on every request — a graph or compile error is developer misuse under the package's panic-vs-error policy, and the stored result is what makes the panic repeatable rather than a `sync.Once` that would count a panicking call as done.
+- **Lifecycle rejection.** `ServeHTTP` checks the state on every call, before the cached result: in `stopped`, and in `stopping` when no handler was ever prepared, the request receives the callback-free 503 below without preparing, resolving or dispatching, and the stored result is untouched. A handler prepared before the drain keeps serving during `stopping`, which is what the managed HTTP drain, readiness (`/ready` → 503 `shutting_down`) and liveness rely on.
 
 ## API
 
@@ -129,13 +138,13 @@ Returns the actual network address the server is listening on. Particularly usef
 
 Gracefully shuts down the server:
 
-1. Transitions from `running` → `stopping` (CAS; error if not running).
+1. Transitions from `running` → `stopping` (CAS). In `building` the same call is [bootstrap teardown](#bootstrap-teardown) (`building` → `stopping`); in `starting`, `stopping` or `stopped` it returns `credo: Shutdown: server in state "…", expected "building" or "running"`.
 2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so load balancers stop routing here before the drain. Liveness stays up.
 3. Runs every `OnPreDrain` hook concurrently while lifecycle workers and DI remain live.
 4. Cancels lifecycle context — signals background services, and any in-flight `Reload`, to shut down.
 5. Drains HTTP servers and every `OnDrain` subsystem hook in parallel.
 6. Waits for an in-flight `Reload` to return (its callbacks may use DI infrastructure) and keeps the reload slot so no later reload can start; at the deadline the reload is reported as still in flight and teardown proceeds.
-7. Shuts down DI container singletons via `container.Shutdown(ctx)`.
+7. Shuts down DI container singletons via `container.Shutdown(ctx)` in dependency order (see [Container Integration](#container-integration)).
 8. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
 9. Collects all errors via `errors.Join`.
 10. Clears bound address (`Addr()` returns nil).
@@ -160,9 +169,17 @@ An explicit `Shutdown(ctx)` uses the caller's `ctx` deadline as-is. Signal- and 
 
 An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `stopping`/`stopped`, any further `Run`/`RunContext`/`ServeContext` call returns an error (`app cannot be run after shutdown; create a new App`). Tests that need a fresh server create a new `App` with `New()`. Re-run is intentionally unsupported: background components (e.g. `worker.Pool`) latch a started flag and would not reset cleanly on a second run.
 
+#### Bootstrap teardown
+
+`Shutdown` on an App that was never run cleans up whatever bootstrap registered. It claims `building → stopping` — the counterpart of the managed start's `building → starting` claim, so a concurrent `Run` and `Shutdown` pick exactly one owner — then, under the preparation lock so no in-flight direct preparation can publish afterwards, sets `frozen` and freezes the DI container without validating it (no `Finalize`, no closing yet), and runs the ordinary drain with no managed servers: OnPreDrain hooks, lifecycle cancellation, OnDrain hooks, DI teardown, OnShutdown hooks, `stopped`. DI teardown works even when `Finalize` was never called or failed: the cleanup graph is derived from the frozen registrations and the instances actually built, so an invalid unused registration cannot prevent cleanup of independent live resources. This is the cleanup path for a composition root that fails after registering resources and for tests that only used `ServeHTTP`. An external `http.Server` or `httptest.Server` is still its owner's responsibility: stop its admission and drain its active requests before calling `Shutdown`; the 503 below is not a substitute for that drain.
+
+#### Lifecycle rejection (503)
+
+A request that `ServeHTTP` rejects for lifecycle reasons — the App is `stopped`, or `stopping` without a prepared handler, including a preparation that lost publication to shutdown — receives HTTP 503 with the framework's default error envelope, `{"success":false,"error":{"code":"service_unavailable","message":"Service Unavailable"}}` (`Content-Type: application/json`, precomputed body, status and headers only for HEAD), and a Debug log `credo: request rejected: app is not serving`. The branch is shutdown-safe and callback-free by construction: it does not prepare, resolve, dispatch, run user middleware or status handlers, or invoke a custom error renderer, message-key resolver, locale detector, access-log filter or JSON options — any of which may capture a singleton that has already been shut down. This is a runtime availability outcome, independent of `WithoutRecover`, and it does not reopen the single-use App; preparation and configuration failures keep the stored developer-error contract above.
+
 #### Background services and shutdown ordering
 
-Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the lifecycle context) and stops in an `OnDrain` hook, before DI infrastructure is torn down. A component that only implements `Shutdowner` is instead drained during the container-shutdown step, in reverse registration order relative to everything else — fine for a resource, wrong for a consumer of resources. The `worker.Pool` does both: it drains in `OnDrain` so workers' bounded cleanup always precedes resource teardown, and its `Shutdowner` pass then finds the stop sequence complete.
+Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the lifecycle context) and stops in an `OnDrain` hook, before DI infrastructure is torn down. A component that only implements `Shutdowner` is instead drained during the container-shutdown step, in dependency order: before the singletons it received as constructor parameters, but with no ordering relative to resources it merely captured (a worker holding a client that is not a visible dependency). The `worker.Pool` does both: it drains in `OnDrain` so workers' bounded cleanup always precedes resource teardown, and its `Shutdowner` pass then finds the stop sequence complete.
 
 `OnPreDrain` is the narrow exception for coordination that must complete while lifecycle-bound workers and DI are still live. It runs after readiness is withdrawn but before lifecycle cancellation. Most subsystems should not use it: if their work remains valid after cancellation, `OnDrain` is the later and safer barrier.
 
@@ -246,7 +263,7 @@ Construction option registering a callback that receives the built `*http.Server
 
 ## Registration Guards
 
-The following methods panic if called after `compile()`:
+The following methods panic with `credo: <what> called after app was compiled or shut down` once `frozen` is set — at preparation admission (first `ServeHTTP` request or managed serve) or at bootstrap-shutdown admission. An explicit `Finalize` does not set it, so DI-backed controllers can still be resolved and bound afterwards:
 
 | Method | Guard |
 | --- | --- |
@@ -276,10 +293,10 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 
 - `state` and `frozen` use `sync/atomic` — safe for concurrent reads.
 - `server`, `ctx`, `cancel`, and `boundAddr` fields protected by `serverMu` mutex.
-- `compile()` guarded by `sync.Once`.
+- Preparation is published once through the `prep` atomic pointer; the slow path and bootstrap-shutdown admission serialize on `prepMu`, so shutdown either sees a stored result or prevents an unfinished preparation from publishing.
 - State transitions use `CompareAndSwap` — exactly one goroutine wins.
 - `Reload` is serialized by a capacity-one slot channel that the drain also takes (and keeps) before DI teardown; signal-triggered reloads run on their own goroutine and signals during a reload coalesce into one follow-up. The config snapshot swap is atomic (see the [Config Spec](config.md)).
 
 ## Container Integration
 
-Resolved DI singletons that implement `credo.Shutdowner` participate automatically in the container phase; do not register a second `OnShutdown` bridge for the same resource. The container traverses registrations in reverse order while the shared deadline remains live. A reached registration gets at most one shutdown attempt, while entries not reached before deadline exhaustion may receive no attempt.
+Resolved DI singletons that implement `credo.Shutdowner` participate automatically in the container phase; do not register a second `OnShutdown` bridge for the same resource. DI enters closing only at this step — after the HTTP/`OnDrain` and reload barriers — so hooks in the earlier phases still see a live container (they must nonetheless capture their dependencies rather than resolve; a resolve while `stopping` is logged at Debug). The container closes consumers before the singletons they were constructed from, with reverse registration order as the tie-break, and bounds every attempt by the shared deadline: a reached registration gets at most one attempt, a hung callback keeps its dependencies blocked and is reported, and the failure is a `*credo.DIShutdownError` snapshot joined into the `Shutdown` result. Only construction that completes after the deadline ended gets a separate fixed five-second best-effort cleanup attempt. The [container spec](container.md#shutdown) has the full rules.

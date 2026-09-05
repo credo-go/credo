@@ -1,24 +1,24 @@
 # Pre-v1 Migration Preview
 
-**Status:** Accepted changes awaiting implementation, 2026-09-05. This is a migration preview; new APIs named here are not yet callable. Current guides and runnable examples use the current implementation. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
+**Status:** The bootstrap/DI changes are implemented (DI minor, 2026-09-05) and the [Bootstrap and DI](#bootstrap-and-di) section below is a migration guide for callable APIs. The built-in HTTP feature and router changes are accepted but not yet implemented; the names in those sections are not yet callable. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
 
 ## Bootstrap and DI
 
 Complete dependency registrations, store/worker setup and overrides before an explicit, error-checked `app.Finalize()`. Then resolve controllers/services, capture hook dependencies and bind routes or DI-backed renderers. HTTP setup remains open until shared preparation or shutdown admission. Run's implicit Finalize remains an idempotent safeguard; it cannot precede a Resolve that the composition root has already executed.
 
-| Current pattern | Migration in the DI minor |
+| Before the DI minor | Now |
 | --- | --- |
-| Resolve before Run, relying on Run to Finalize | Add Finalize after all DI writes and before constructor-backed resolution |
-| Resolve just to test optional registration | Use the planned non-resolving `Has[T]`; it is a snapshot, not a reservation or health check |
+| Resolve before Run, relying on Run to Finalize | Add an error-checked Finalize after all DI writes and before the first Resolve; Resolve before Finalize returns a "not finalized" error |
+| Resolve just to test optional registration | Use the non-resolving `Has[T]`; it is a snapshot, not a reservation or health check |
 | ProvideFactory/MustProvideFactory | Use typed constructors with explicit dependency parameters |
 | Preprovided Registry constructor adopted during registration | Provide a ready Registry value; store registration uses AdoptValue and never executes a constructor |
 | Replace returning only error | Receive previous instance, existence boolean and error; clean up the old instance only after success |
 | MustReplace | Receive the same previous-instance information; replacement error still panics |
 | Resolve from a drain hook | Resolve during bootstrap and capture the dependency in the hook closure |
 
-The Replace boolean means an already-created instance existed. An unbuilt constructor yields zero/false; a rejected replacement transfers nothing. A validated adopted binding is protected. Do not recover a constructor panic to retry resolution: the new contract stores a typed terminal failure. MustResolve still panics on error, with `*credo.DIPanicError` as its payload. Closing/closed resolution matches `credo.ErrDIClosed`; teardown failure is inspectable as `*credo.DIShutdownError` through App-level error joins. Only construction finishing after the shutdown context ends gets the separate five-second cleanup wait; normal Shutdowner calls retain the shared budget.
+The Replace boolean means an already-created instance existed. An unbuilt constructor yields zero/false; a rejected replacement transfers nothing. A validated adopted binding is protected. Do not recover a constructor panic to retry resolution: the container stores a typed terminal failure. MustResolve still panics on error, with `*credo.DIPanicError` as its payload. Closing/closed resolution matches `credo.ErrDIClosed`; teardown failure is inspectable as `*credo.DIShutdownError` through App-level error joins. Only construction finishing after the shutdown context ends gets the separate five-second cleanup wait; normal Shutdowner calls retain the shared budget.
 
-Building-state Shutdown will provide cleanup even after failed Finalize. It does not drain an externally owned http.Server. Owners of such servers must stop admission and coordinate active HTTP drain before DI teardown. Stopped ServeHTTP returns the framework's default 503 envelope without custom renderers, i18n callbacks or DI access; it does not restart App.
+Building-state Shutdown provides cleanup even after a failed Finalize. It does not drain an externally owned http.Server. Owners of such servers must stop admission and coordinate active HTTP drain before DI teardown. Stopped ServeHTTP returns the framework's default 503 envelope without custom renderers, i18n callbacks or DI access; it does not restart App.
 
 ## Built-in HTTP features
 
@@ -52,6 +52,6 @@ P4 allows shared path-tree segments to use endpoint-specific names: `/customers/
 
 ## Examples and downstream impact
 
-The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS moves Finalize before service resolution, enables RequestID/AccessLog explicitly and moves Compress out of GlobalMiddleware. Hello remains a minimal default-profile example.
+The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS already finalizes before resolving TenantService (DI minor); in the HTTP minor it enables RequestID/AccessLog explicitly and moves Compress out of GlobalMiddleware. Hello remains a minimal default-profile example.
 
 DI evidence comes from a 2026-09-05 scan of the maintainer's downstream applications: no factory/Replace calls, pre-Run resolution, and a worker-pool existence probe. The same applications install renderers once at bootstrap and use no scoped Recover. Internal framework integrations and recovery contract tests still require migration, regardless of downstream counts.
