@@ -190,8 +190,11 @@ func (w *compressResponseWriter) WriteHeader(code int) {
 	}
 	w.wroteHeader = true
 
+	// A body-forbidding status (1xx, 204, 304) never gets a compressor: even
+	// an empty compressed stream carries a header and trailer, and net/http
+	// rejects that body at finalization, which would abort the connection.
 	headers := w.Header()
-	if headers.Get("Content-Encoding") == "" && w.isCompressible(headers.Get("Content-Type")) {
+	if !bodilessStatus(code) && headers.Get("Content-Encoding") == "" && w.isCompressible(headers.Get("Content-Type")) {
 		if compressor, err := newCompressor(w.encoding, w.level, &w.out); err == nil {
 			w.compressor = compressor
 			w.enabled = true

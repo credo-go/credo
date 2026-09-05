@@ -69,10 +69,11 @@ var modulePolicies = map[string]importPolicy{
 	"internal/origin":      {},
 	"internal/pattern":     {},
 	"internal/proxy":       {},
-	"internal/radix":       {credo: []string{"internal/pattern"}},
+	"internal/radix":       {credo: []string{"internal/pattern", "internal/wirepath"}},
 	"internal/requestid":   {},
 	"internal/resourceid":  {},
 	"internal/static":      {},
+	"internal/wirepath":    {},
 
 	"scripts/releasegate": {}, // release tooling, stdlib-only
 }

@@ -35,6 +35,12 @@ type RouteContext struct {
 	// MethodNotAllowed indicates that the path matched but not the method.
 	MethodNotAllowed bool
 
+	// Canonical reports that the path being matched was canonicalized from a
+	// spelling with percent-escapes (see wirepath.Canonical) and may carry
+	// raw non-ASCII octets, so captures without escapes still need the UTF-8
+	// check.
+	Canonical bool
+
 	// InvalidCapture reports that a candidate parameter value could not be
 	// percent-decoded to valid UTF-8 during matching. The tree skips such a
 	// candidate; when no route matches, the caller answers 400 rather than
@@ -58,6 +64,7 @@ func (rc *RouteContext) Reset() {
 	clear(rc.Params.Values)
 	rc.Params.Values = rc.Params.Values[:0]
 	rc.MethodNotAllowed = false
+	rc.Canonical = false
 	rc.InvalidCapture = false
 	rc.methodsAllowed = 0
 }

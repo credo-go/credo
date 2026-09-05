@@ -156,6 +156,13 @@ func (c *Container) teardownGraphLocked() *teardownGraph {
 // run is the ready-queue traversal. It returns when the context ends, when
 // every active vertex has retired, or when nothing is ready and nothing is
 // pending (a graph inconsistency the report describes as blocked).
+//
+// A build may complete at any moment — typically while a shutdown attempt is
+// running and releases the constructor it was waiting on. Completions are
+// therefore absorbed under the same lock as the "still constructing" check:
+// a failed build retires and frees its dependencies before the queue is
+// declared empty, and a build still pending when the snapshot is taken wakes
+// the loop through buildDone (the completion signals after its state change).
 func (g *teardownGraph) run(ctx context.Context, logger *slog.Logger) {
 	for {
 		if ctx.Err() != nil {
@@ -165,7 +172,11 @@ func (g *teardownGraph) run(ctx context.Context, logger *slog.Logger) {
 			g.attempt(ctx, v, logger)
 			continue
 		}
-		if !g.hasPending() {
+		retired, pending := g.settle()
+		if retired {
+			continue
+		}
+		if !pending {
 			return
 		}
 		select {
@@ -173,7 +184,6 @@ func (g *teardownGraph) run(ctx context.Context, logger *slog.Logger) {
 		case <-ctx.Done():
 			return
 		}
-		g.absorbCompletions()
 	}
 }
 
@@ -195,26 +205,22 @@ func (g *teardownGraph) pickReady() *vertex {
 	return nil
 }
 
-// hasPending reports whether an active vertex is still constructing.
-func (g *teardownGraph) hasPending() bool {
-	g.c.mu.RLock()
-	defer g.c.mu.RUnlock()
-	for _, v := range g.vertices {
-		if v.active && !v.attempted && v.entry.state == entryBuilding {
-			return true
-		}
-	}
-	return false
-}
-
-// absorbCompletions retires pending builds that failed; builds that succeeded
-// simply become eligible for pickReady.
-func (g *teardownGraph) absorbCompletions() {
+// settle takes one consistent snapshot of the pending builds: it retires
+// every active vertex whose build has failed (releasing its dependencies)
+// and reports whether it retired any and whether an active vertex is still
+// constructing. Builds that succeeded simply become eligible for pickReady.
+func (g *teardownGraph) settle() (retired, pending bool) {
 	g.c.mu.RLock()
 	var failed []*vertex
 	for _, v := range g.vertices {
-		if v.active && !v.attempted && v.entry.state == entryFailed {
+		if !v.active || v.attempted {
+			continue
+		}
+		switch v.entry.state {
+		case entryFailed:
 			failed = append(failed, v)
+		case entryBuilding:
+			pending = true
 		}
 	}
 	g.c.mu.RUnlock()
@@ -224,6 +230,7 @@ func (g *teardownGraph) absorbCompletions() {
 		v.err = v.entry.err
 		g.retire(v)
 	}
+	return len(failed) > 0, pending
 }
 
 // retire releases a vertex's dependencies.

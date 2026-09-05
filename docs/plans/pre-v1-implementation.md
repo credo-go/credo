@@ -1,6 +1,6 @@
 # Pre-v1 Contract Implementation Plan
 
-**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor), P4 (the router minor), P8 (the HTTP minor) and P5 (the wire minor) implemented 2026-09-05; only the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
+**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor), P4 (the router minor), P8 (the HTTP minor) and P5 (the wire minor) implemented 2026-09-05, the performance follow-ups 2026-09-05/06, and the review findings on that tree fixed 2026-09-06; nothing scheduled remains. The plan stays only until the P6/P7 backlog disposition is decided, then folds into TODO and is deleted. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
 
 ## Contract map
 
@@ -31,7 +31,7 @@ AdoptValue, the DI diagnostic types and the HTTP feature APIs are callable. Lazy
 
 ## Delivery sequence
 
-P1–P3 shipped together in one DI minor and P4 in its own router minor (2026-09-05); steps 2–5 stay as the acceptance record until the plan is deleted with the last pending phase. P8 follows the DI minor; the shared P1 HTTP gate it builds on (`app.frozen` set at preparation/shutdown admission, `checkFrozen`) is implemented and tested, and P8 must use it rather than swap guards later. P6/P7 never block P8.
+P1–P3 shipped together in one DI minor and P4 in its own router minor (2026-09-05); steps 2–5 stay as the acceptance record until the plan is deleted with the last pending phase. P8 follows the DI minor; the shared P1 HTTP gate it builds on (`app.frozen` set at preparation/shutdown admission, `checkFrozen`) is implemented and tested, and P8 must use it rather than swap guards later.
 
 ### 1. Baseline and contract tests
 
@@ -112,8 +112,6 @@ When a minor lands, fold its accepted target amendment into the current docs, up
 
 Documents under `docs/plans/` are delivery aids, not permanent references. When a minor lands, fold anything still relevant into ADR/spec and delete the plan; a plan never outlives the work it schedules.
 
-## Backlog and exclusions
+## Exclusions
 
-- P6: a compiled route model/read-only runtime view requires maintenance evidence. The candidate compiles GET/HEAD relations, effective middleware and meta from one definition; dispatch and introspection share it, and atomic tree publication replaces Mount's multi-insert preflight. Context.Route would expose a read-only view. A smaller alternative lets the HEAD twin delegate middleware/meta to its primary at compile time, preserving RouteInfo.AutoHead. Neither is required by P4/P8; do not turn this maintenance candidate into an unmeasured router rewrite.
-- P7: read-only DI explanation may expose registered type, deps/dependents, state, captured source locations and first-build duration as detached snapshots. It must not resolve/adopt/probe services. Capture the registration call site once and the constructor location with runtime.FuncForPC; duration belongs to the first build, not cached resolves. This borrows do v2.1.0's ExplainService idea without its invocation frame bookkeeping. A String rendering is diagnostic, not stable output; no per-invocation frame map or web UI.
 - OTel/Prometheus remain Phase 3.5, with no technical dependency on these changes. No new scope, transient lifetime, generic lifecycle-service taxonomy or public request-stage/plugin API.
