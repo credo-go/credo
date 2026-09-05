@@ -156,7 +156,7 @@ There is no per-call variant: one posture per application. `Context.Render` inhe
 
 ### OriginalPath
 
-`OriginalPath()` returns the path captured in `reset()` before any middleware, pre-dispatch rewrite, or handler-level re-dispatch runs.
+`OriginalPath()` returns the wire-form path (`URL.EscapedPath()`, percent-encoding preserved) captured in `reset()` before any middleware, pre-dispatch rewrite, or handler-level re-dispatch runs.
 
 ```go
 func (c *Context) OriginalPath() string
@@ -175,6 +175,7 @@ func (c *Context) Rewrite(path string) error
 Rules:
 
 - Call it as the last statement in a handler: `return ctx.Rewrite("/new")`.
+- The target is a wire-form path: percent-encoded values decode once during matching (`/files/a%2Fb` reaches `RouteParam` as `a/b`), and a malformed escape makes `Rewrite` return an error.
 - The matched host scope does not change. Re-dispatch stays within the host mux selected for the original request.
 - Route params are cleared between dispatch rounds and rebuilt from the target route.
 - If the response is already committed, `Rewrite` returns an error.

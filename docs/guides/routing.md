@@ -91,6 +91,37 @@ app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already regi
 
 Regex constraints are structural: two different constraints at the same position (`{id:[0-9]+}` next to `{slug:[a-z]+}`) still conflict at registration, while the same constraint under different names is shared.
 
+### Encoded Values
+
+Routing matches the path as the client spelled it and decodes each captured value once, so a percent-encoded slash is data inside one segment and a constraint is evaluated on the decoded value:
+
+```go
+app.GET("/files/{name}", func(ctx *credo.Context) error {
+    // GET /files/a%2Fb      -> "a/b"  (one segment; the encoded slash is data)
+    // GET /files/%31        -> "1"
+    // GET /files/caf%C3%A9  -> "café"
+    // GET /files/a/b        -> 404    (a raw slash ends the segment)
+    return ctx.Response().Text(200, ctx.Request().RouteParam("name"))
+})
+
+app.GET("/orders/{id:[0-9]+}", getOrder) // GET /orders/%31 matches with id "1"
+app.GET("/docs/{path...}", serveDoc)      // GET /docs/a%2Fb/c -> "a/b/c"
+```
+
+Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `ctx.Rewrite` takes a wire-form target, so `ctx.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
+
+URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment.
+
+```go
+route := app.GET("/files/{name}", h).Name("file.show")
+uri, _ := route.BuildURI("a/b")   // "/files/a%2Fb"
+uri, _ = route.BuildURI("café")   // "/files/caf%C3%A9"
+_, err := route.BuildURI("")      // error: empty value for parameter "name"
+
+order := app.GET("/orders/{id:[0-9]+}", getOrder)
+_, err = order.BuildURI("x1")     // error: does not match constraint "[0-9]+"
+```
+
 ---
 
 ## QUERY Requests (RFC 10008)
@@ -250,7 +281,7 @@ The wildcard must be the leftmost complete label and may appear only once. Patte
 
 `*` and `*.io` are allowed, but they are broad patterns and are usually best reserved for local development or carefully controlled environments.
 
-Wildcard host patterns are matching-only. `BuildURL` cannot turn `*.acme.io` into a concrete host; use `{tenant}.acme.io` when URL generation needs a subdomain value.
+Wildcard host patterns are matching-only. `BuildURL` cannot turn `*.acme.io` into a concrete host; use `{tenant}.acme.io` when URL generation needs a subdomain value. Host values fill one label each and are validated (letters, digits, hyphens and underscores, plus the label's constraint) rather than percent-encoded; path values are escaped per segment as described under [Encoded Values](#encoded-values).
 
 ### Matching Rules
 

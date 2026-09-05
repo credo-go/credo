@@ -1,6 +1,6 @@
 # Pre-v1 Contract Implementation Plan
 
-**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor), P4 (the router minor) and P8 (the HTTP minor) implemented 2026-09-05; P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
+**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor), P4 (the router minor), P8 (the HTTP minor) and P5 (the wire minor) implemented 2026-09-05; only the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
 
 ## Contract map
 
@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | P1–P3: bootstrap, DI ownership and teardown | [ADR-022](../adr/022-bootstrap-and-di-ownership.md) | [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) |
 | P4: endpoint-owned path parameter names (implemented) | [ADR-007 radix tree](../adr/007-router-and-routing.md#radix-tree) | [Router URL parameters](../specs/router.md#url-parameters) |
-| P5: escaped URL round trips | [ADR-007 URL amendment](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) | [Router URL contract](../specs/router.md#pre-v1-url-round-trip-contract) |
+| P5: escaped URL round trips (implemented) | [ADR-007 URL amendment](../adr/007-router-and-routing.md#url-round-trip-amendment) | [Router encoded values](../specs/router.md#encoded-parameter-values) |
 | P8: built-in HTTP features (implemented) | [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) | [HTTP features](../specs/http-features.md) |
 | A/B: measured performance changes | Evidence required per change | [Wire hot-path plan](wire-hot-paths.md) |
 
@@ -89,7 +89,7 @@ Areas: radix endpoint keys and positional captures, root dispatch/mux tests, rou
 
 ### 7. P5 and performance follow-ups
 
-P5 implements the accepted G3/ADR-007 amendment in a separate wire-contract minor. Escape generation by segment, decode captures once and test regex against decoded values without changing raw route boundaries. Verify the published %2F/%252F/%31/+/Unicode table, malformed encoding/UTF-8 400, regex mismatch/no-match behavior and generation errors. P4 shipped separately; P5 builds on its endpoint-owned names without reopening them.
+**P5 implemented 2026-09-05 (wire minor).** Matching runs on the wire-form path, captures decode once, constraints apply to the whole decoded value, parameters are single-segment, generation validates and escapes per segment with host-label validation, invalid UTF-8 captures answer 400, and rewrite targets and mount handoffs are wire-form. The [router spec](../specs/router.md#encoded-parameter-values) is the current contract; the round-trip table, backtracking, invalid input and generation error cases are covered by the root test package.
 
 Performance A1 → A2 → A3 and B follow the [measurement plan](wire-hot-paths.md). They do not require the DI minor. A2's Bundle cache can precede lazy locale; comparisons must use equivalent feature sets and distinguish unused, first-use and cached translations. B needs real HTTP/1.1, TLS and HTTP/2 validation. Removing wrappers or default features is not a demonstrated hot-path gain.
 

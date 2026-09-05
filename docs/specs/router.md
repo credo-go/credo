@@ -4,28 +4,6 @@
 
 ---
 
-## Pre-v1 URL round-trip contract
-
-**Accepted, implementation pending (P5, 2026-09-05).** [ADR-007](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) defines a separate wire-contract minor. Preserve raw URL segment boundaries, decode captured values exactly once and apply regex constraints to those decoded values during route matching. Regex and RouteParam must observe the same value; a raw `%31` candidate can satisfy `[0-9]+`.
-
-BuildURI/BuildURL take decoded parameter values, validate constraints and escape each path segment with PathEscape. Catch-all generation escapes each segment while preserving slash separators. Keep host-label validation separate from path escaping. The round-trip guarantee preserves parameter values, not the original choice or spelling of percent-encoded octets.
-
-| Incoming parameter text | RouteParam value | Generation from that value | Contract |
-| --- | --- | --- | --- |
-| `%2F` | `/` | `%2F` for a single segment parameter | Captured data; does not create a routing segment |
-| `%252F` | `%2F` | `%252F` | No second decoding |
-| `%31` | `1` | `1` | Matches a decoded numeric constraint |
-| `+` | `+` | `+` | No query-style conversion to space |
-| `%C3%A7` | `ç` | `%C3%A7` | Valid Unicode value preserved |
-
-Malformed percent encoding and invalid UTF-8 yield HTTP 400; malformed requests rejected earlier by net/http do not require a second framework response. A well-formed value failing a regex is a route non-match, yielding 404 if no alternative matches. Invalid generation values return an error and no generated URI. Never decode the complete path before identifying its segment boundaries.
-
-The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https://www.rfc-editor.org/rfc/rfc3986#section-2.4). Path parameter `+` behavior matches [Go PathUnescape](https://pkg.go.dev/net/url#PathUnescape).
-
-Acceptance includes the table in matching and generation, decoded-regex candidate selection and backtracking, single-segment escaped slashes, catch-all slash separators, invalid escapes/UTF-8, generation constraint failures, plus and Unicode values. Verify BuildURL host validation alongside the path round trip. P5 ships on its own; the endpoint-owned parameter names of the router minor (2026-09-05) are already the current behavior described under [URL Parameters](#url-parameters).
-
-The remaining sections document the current router until this amendment is implemented.
-
 ## Overview
 
 Credo's router combines Chi's radix tree and stdlib-compatible `http.Handler` design with Goyave's route metadata, named routes, status handlers, and fluent API. Host-based routing extends the path router with a host selector that chooses between the default mux and host-scoped muxes before the radix lookup runs.
@@ -109,7 +87,7 @@ route.GetHost() // → "" for default routes, host pattern for host-scoped route
 url, err = route.BuildURL("acme", "42") // → "acme.myapp.com/products/42"
 ```
 
-Names are unique per router tree. Duplicate names panic at startup. `BuildURL` auto-fills the host from the route's host pattern. Host parameters are consumed first, then path parameters. For default (non-host-scoped) routes, `BuildURL` is equivalent to `BuildURI`. Both methods return an error when parameters are missing, extra parameters are provided, or the stored pattern is malformed. Wildcard host patterns such as `*.example.com` cannot generate concrete URLs; use `{tenant}.example.com` when URL generation needs a subdomain value.
+Names are unique per router tree. Duplicate names panic at startup. `BuildURL` auto-fills the host from the route's host pattern. Host parameters are consumed first, then path parameters. For default (non-host-scoped) routes, `BuildURL` is equivalent to `BuildURI`. Values are decoded parameter values, exactly what `RouteParam` reports for the generated URI: each path value is checked against its regex constraint and percent-encoded for one segment with `url.PathEscape` (`a/b` becomes `a%2Fb`, `ç` becomes `%C3%A7`, `+` stays `+`), a catch-all value keeps its slashes as separators and escapes each segment, and static pattern text is written verbatim. Host values fill one label each: they must be non-empty, consist of letters, digits, hyphens and underscores, satisfy the label's constraint, and are never percent-encoded. Both methods return an error when a value is missing, empty, fails its constraint or is not a valid host label, when extra parameters are provided, or when the stored pattern is malformed. Round trips preserve values, not the client's spelling of percent-encoded octets (see [Encoded Parameter Values](#encoded-parameter-values)). Wildcard host patterns such as `*.example.com` cannot generate concrete URLs; use `{tenant}.example.com` when URL generation needs a subdomain value.
 
 ### StatusHandler System (Goyave-inspired)
 
@@ -208,6 +186,8 @@ app.Mount("/admin", adminMux)
 
 **Middleware scope:** mounted handlers receive only global middleware (plus the framework features that wrap every request). Group and route middleware do not apply because mounted handlers are plain `http.Handler` instances dispatched outside the per-route compiled chain. If the mounted sub-application requires authentication or other protections, it must enforce them internally or the protections must be registered as global middleware.
 
+**Path handoff:** the child receives the wire-form remainder below the prefix — `URL.Path` decoded and `URL.RawPath` set when the two spellings differ — so `/admin/a%2Fb` reaches the child as `/a%2Fb` (`EscapedPath`), never as `/a/b`, and a nested Credo app decodes its own captures once.
+
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
 **Atomic registration:** a single `Mount` makes sixteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a second regexp matcher or a mismatched regexp tail in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state. Parameter names never conflict: they belong to endpoints.
@@ -269,6 +249,22 @@ app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already regi
 ```
 
 The duplicate policy stays strict: registering the same method on the same shape panics with `credo: duplicate route: GET "/…/{customer_id}" is already registered as "/…/{id}" (parameter names do not distinguish routes)` plus both call sites, exactly like a literal re-registration, and automatic HEAD twins follow the existing overwrite rules. Structural conflicts are unchanged and still panic at registration: two different regex matchers at one path level, or one matcher followed by different tail bytes. The same model applies to regex-constrained and catch-all segments; `BuildURI`/`BuildURL` read the names from the selected route's own pattern, and path trees under `app.Host(...)` behave identically while host-label captures are unaffected.
+
+### Encoded Parameter Values
+
+Matching runs on the wire-form path (`URL.EscapedPath()`), so segment boundaries come from the client's spelling, and each captured value is percent-decoded exactly once. A parameter candidate is the raw text up to its tail byte (the pattern byte after the closing brace, as in `{name}.json`) or the next slash, whichever comes first, so `{name}` and `{name:regex}` never span a raw slash; a catch-all takes the rest of the path, keeps its slashes as separators and decodes each segment. A regex constraint applies to the whole decoded value, never to a prefix of it, and `RouteParam` reports that same value.
+
+| Incoming parameter text | RouteParam value | Generation from that value | Contract |
+| --- | --- | --- | --- |
+| `%2F` | `/` | `%2F` for a single-segment parameter | Captured data; does not create a routing segment |
+| `%252F` | `%2F` | `%252F` | No second decoding |
+| `%31` | `1` | `1` | Matches a decoded numeric constraint |
+| `+` | `+` | `+` | No query-style conversion to space |
+| `%C3%A7` | `ç` | `%C3%A7` | Valid Unicode value preserved |
+
+A well-formed value that fails its constraint is a route non-match: the tree backtracks to the sibling parameter or catch-all node and answers 404 when nothing else matches. A candidate that decodes to invalid UTF-8 (`%FF`) is skipped, and when no route matches the request receives 400 with the code `invalid_path_encoding` instead of 404; malformed percent-encoding (`%zz`) never reaches the router because net/http rejects the request line first. Static routes are unaffected by either rule. `Context.OriginalPath` reports the wire-form path, a `Context.Rewrite` target is a wire-form path (a malformed escape makes `Rewrite` return an error) and a mounted handler receives the raw remainder below its prefix (see [Sub-router Mounting](#sub-router-mounting)).
+
+The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https://www.rfc-editor.org/rfc/rfc3986#section-2.4). Path parameter `+` behavior matches [Go PathUnescape](https://pkg.go.dev/net/url#PathUnescape). The root test package covers the table in matching and generation, decoded-value constraints with backtracking, encoded delimiters, tail-bounded and catch-all captures, invalid UTF-8, net/http rejection of malformed escapes, trailing-slash redirects, rewrite targets, mount handoff and host-label validation.
 
 ### Router Interface
 

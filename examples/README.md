@@ -10,7 +10,7 @@ Each runnable example is a separate Go module that replaces Credo with the repos
 
 ## Accepted pre-v1 migration
 
-**DI minor and HTTP minor applied 2026-09-05.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) and [implementation plan](../docs/plans/pre-v1-implementation.md) define the remaining URL round-trip work, which does not change the examples.
+**DI, router, HTTP and wire minors applied 2026-09-05.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) and [implementation plan](../docs/plans/pre-v1-implementation.md) record the shipped contracts; the URL round-trip change did not alter the examples.
 
 | Delivery | Hello | SaaS |
 | --- | --- | --- |
