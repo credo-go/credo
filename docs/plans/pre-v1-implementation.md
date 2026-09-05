@@ -1,13 +1,13 @@
 # Pre-v1 Contract Implementation Plan
 
-**Status:** G1–G4 decisions accepted and P1–P3 (the DI minor) implemented 2026-09-05; P4, P8, P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
+**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor) and P4 (the router minor) implemented 2026-09-05; P8, P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
 
 ## Contract map
 
 | Work | Canonical decision | Detailed contract |
 | --- | --- | --- |
 | P1–P3: bootstrap, DI ownership and teardown | [ADR-022](../adr/022-bootstrap-and-di-ownership.md) | [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) |
-| P4: endpoint-owned path parameter names | [ADR-007 amendment](../adr/007-router-and-routing.md#pre-v1-endpoint-parameter-amendment) | [Router amendment](../specs/router.md#pre-v1-endpoint-parameter-contract) |
+| P4: endpoint-owned path parameter names (implemented) | [ADR-007 radix tree](../adr/007-router-and-routing.md#radix-tree) | [Router URL parameters](../specs/router.md#url-parameters) |
 | P5: escaped URL round trips | [ADR-007 URL amendment](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) | [Router URL contract](../specs/router.md#pre-v1-url-round-trip-contract) |
 | P8: built-in HTTP features | [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) | [HTTP features](../specs/http-features.md) |
 | A/B: measured performance changes | Evidence required per change | [Wire hot-path plan](wire-hot-paths.md) |
@@ -31,7 +31,7 @@ AdoptValue and the DI diagnostic types are callable; the new HTTP names remain t
 
 ## Delivery sequence
 
-P1–P3 shipped together in one DI minor (2026-09-05); steps 2–4 stay as the acceptance record until the plan is deleted with the last pending phase. P4 has its own independent minor. P8 follows the DI minor; the shared P1 HTTP gate it builds on (`app.frozen` set at preparation/shutdown admission, `checkFrozen`) is implemented and tested, and P8 must use it rather than swap guards later. P6/P7 never block P8.
+P1–P3 shipped together in one DI minor and P4 in its own router minor (2026-09-05); steps 2–5 stay as the acceptance record until the plan is deleted with the last pending phase. P8 follows the DI minor; the shared P1 HTTP gate it builds on (`app.frozen` set at preparation/shutdown admission, `checkFrozen`) is implemented and tested, and P8 must use it rather than swap guards later. P6/P7 never block P8.
 
 ### 1. Baseline and contract tests
 
@@ -75,7 +75,7 @@ Acceptance: Has never constructs/protects; Registry constructors are rejected wi
 
 Acceptance: consumers before dependencies independent of registration order; aliases close once; non-Shutdowner intermediate edges; pending success/failure and independent cleanup; failed Seal bootstrap; constructor panic shared by all callers; cached-delivery/closing race; hung Shutdowner and blocked dependencies; no retry or second budget; late cleanup success/error/panic/timeout; report determinism, elapsed-versus-completed timing, error traversal and snapshot race safety.
 
-### 5. P4: endpoint-owned path parameters
+### 5. P4: endpoint-owned path parameters (implemented 2026-09-05)
 
 Areas: radix endpoint keys and positional captures, root dispatch/mux tests, router spec/guide.
 
@@ -96,7 +96,7 @@ Acceptance: default App enables recovery alone; independent RequestID/AccessLog;
 
 ### 7. P5 and performance follow-ups
 
-P5 implements the accepted G3/ADR-007 amendment in a separate wire-contract minor. Escape generation by segment, decode captures once and test regex against decoded values without changing raw route boundaries. Verify the published %2F/%252F/%31/+/Unicode table, malformed encoding/UTF-8 400, regex mismatch/no-match behavior and generation errors. Do not combine this change with P4.
+P5 implements the accepted G3/ADR-007 amendment in a separate wire-contract minor. Escape generation by segment, decode captures once and test regex against decoded values without changing raw route boundaries. Verify the published %2F/%252F/%31/+/Unicode table, malformed encoding/UTF-8 400, regex mismatch/no-match behavior and generation errors. P4 shipped separately; P5 builds on its endpoint-owned names without reopening them.
 
 Performance A1 → A2 → A3 and B follow the [measurement plan](wire-hot-paths.md). They do not require the DI minor. A2's Bundle cache can precede lazy locale; comparisons must use equivalent feature sets and distinguish unused, first-use and cached translations. B needs real HTTP/1.1, TLS and HTTP/2 validation. Removing wrappers or default features is not a demonstrated hot-path gain.
 
