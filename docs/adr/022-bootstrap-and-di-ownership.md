@@ -1,6 +1,6 @@
 # ADR-022: Bootstrap Phases and DI Ownership
 
-**Status:** Accepted, implemented 2026-09-05 (DI minor) **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** [Pre-v1 implementation plan](../plans/pre-v1-implementation.md)
+**Status:** Accepted, implemented 2026-09-05 (DI minor) **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** shipped in the DI minor of 2026-09-05; progress in [TODO](../../TODO.md#pre-v1-contract-migration)
 
 ## Context
 

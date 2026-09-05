@@ -66,7 +66,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ### Documentation
 
-- Promote accepted pre-v1 bootstrap/DI, router parameter and built-in HTTP feature contracts to ADR/spec, with a [delivery plan](docs/plans/pre-v1-implementation.md), migration guide and example migration notes; the remaining design decisions are closed there. Every promoted contract ships in this release (see above); the performance follow-ups landed as the two performance entries above, with the benchmark evidence rule in [CONTRIBUTING](CONTRIBUTING.md#performance-changes).
+- Promote accepted pre-v1 bootstrap/DI, router parameter and built-in HTTP feature contracts to ADR/spec, with a [migration guide](docs/guides/pre-v1-migration.md) and example migration notes; the accepted design decisions are recorded in [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-007](docs/adr/007-router-and-routing.md) and [ADR-010](docs/adr/010-middleware-architecture.md), and the delivery plan that scheduled the work was deleted once it landed. Every promoted contract ships in this release (see above); the performance follow-ups landed as the two performance entries above, with the benchmark evidence rule in [CONTRIBUTING](CONTRIBUTING.md#performance-changes).
 
 ## [0.18.0] - 2026-09-05
 

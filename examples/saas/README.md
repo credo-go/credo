@@ -11,4 +11,4 @@ Run `go run .` from this directory to use its bundled configuration. The example
 3. `UseI18n` and the current catalogs are kept. A custom detector would take `Detect(*Context)`, resolve on first use and handle absent auth data; call `Locale` after auth when the authenticated language must survive later request restoration (earlier reads still win). Successful inactive discovery consumes the registration, so it is never followed by another `UseI18n` call.
 4. Source comments describe the explicit request features. Successful and error responses are compressed, health probes stay silent, and auth, startup and graceful shutdown are covered by the CI smoke run.
 
-The [migration guide](../../docs/guides/pre-v1-migration.md) maps removed APIs, and the [implementation plan](../../docs/plans/pre-v1-implementation.md) defines dependencies and gates.
+The [migration guide](../../docs/guides/pre-v1-migration.md) maps removed APIs and links the ADRs that define the shipped contracts.
