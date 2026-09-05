@@ -5,7 +5,9 @@ package radix
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // Endpoint holds the payload value for a specific HTTP method on a node.
@@ -417,27 +419,18 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 			continue
 		}
 
-		remaining := path
-
-		// If TailByte is set, limit the search to end at the tail boundary.
-		// This prevents greedy regexes from consuming past the delimiter.
-		searchStr := remaining
-		if child.Tail != 0 {
-			if tailIdx := strings.IndexByte(remaining, child.Tail); tailIdx >= 0 {
-				searchStr = remaining[:tailIdx]
-			}
+		// The raw candidate ends at the tail byte or the next slash; the
+		// constraint then applies to the whole decoded value, so an encoded
+		// delimiter (%2F, %2D) is data and "%31" satisfies "[0-9]+".
+		end := captureEnd(path, child.Tail)
+		if end == 0 {
+			continue // empty parameter value: skip
 		}
-
-		loc := child.RegexpSeg.Regexp.FindStringIndex(searchStr)
-		if loc == nil || loc[0] != 0 {
+		value, ok := decodeCapture(rctx, path[:end])
+		if !ok || !child.RegexpSeg.Regexp.MatchString(value) {
 			continue
 		}
-
-		value := searchStr[loc[0]:loc[1]]
-		if len(value) == 0 {
-			continue // empty match — skip
-		}
-		rest := remaining[loc[1]:]
+		rest := path[end:]
 
 		rctx.Params.Values = append(rctx.Params.Values, value)
 		h, ok, mna := child.findRoute(rctx, method, rest)
@@ -450,27 +443,14 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 
 	// Search param children
 	for _, child := range n.Children[NtParam] {
-		// Find the end of the parameter value
-		var paramEnd int
-		if child.Tail != 0 {
-			paramEnd = strings.IndexByte(path, child.Tail)
-			if paramEnd < 0 {
-				// Tail byte not found — try consuming entire path
-				paramEnd = len(path)
-			}
-		} else {
-			// No tail byte — try next slash or end of path
-			paramEnd = strings.IndexByte(path, '/')
-			if paramEnd < 0 {
-				paramEnd = len(path)
-			}
-		}
-
+		paramEnd := captureEnd(path, child.Tail)
 		if paramEnd == 0 {
-			continue // Empty parameter value — skip
+			continue // empty parameter value: skip
 		}
-
-		value := path[:paramEnd]
+		value, ok := decodeCapture(rctx, path[:paramEnd])
+		if !ok {
+			continue
+		}
 		rest := path[paramEnd:]
 
 		rctx.Params.Values = append(rctx.Params.Values, value)
@@ -488,8 +468,13 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 	// directly rather than looping. Mirrors the upstream chi nds[0] form.
 	if cc := n.Children[NtCatchAll]; len(cc) > 0 {
 		child := cc[0]
-		// Catch-all consumes the rest of the path
-		rctx.Params.Values = append(rctx.Params.Values, path)
+		// Catch-all consumes the rest of the path; slashes stay separators and
+		// each encoded segment decodes once.
+		value, ok := decodeCapture(rctx, path)
+		if !ok {
+			return v, false, false
+		}
+		rctx.Params.Values = append(rctx.Params.Values, value)
 		if h, ok := child.resolveEndpoint(rctx, method); ok {
 			return h, true, false
 		}
@@ -500,6 +485,40 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 	}
 
 	return v, false, false
+}
+
+// captureEnd returns the length of the raw parameter candidate at the start
+// of path: the text before the tail byte (the pattern byte after the closing
+// brace) or before the next slash, whichever comes first. Segment boundaries
+// are found on the raw path, so a percent-encoded slash or delimiter inside
+// the candidate is data (RFC 3986 section 2.4).
+func captureEnd(path string, tail byte) int {
+	end := strings.IndexByte(path, '/')
+	if end < 0 {
+		end = len(path)
+	}
+	if tail != 0 && tail != '/' {
+		if i := strings.IndexByte(path[:end], tail); i >= 0 {
+			end = i
+		}
+	}
+	return end
+}
+
+// decodeCapture percent-decodes one raw parameter candidate exactly once. A
+// candidate without escapes is returned as is. A malformed escape or a decoded
+// value that is not valid UTF-8 marks rctx.InvalidCapture and reports false so
+// the caller skips the candidate.
+func decodeCapture(rctx *RouteContext, raw string) (string, bool) {
+	if strings.IndexByte(raw, '%') < 0 {
+		return raw, true
+	}
+	value, err := url.PathUnescape(raw)
+	if err != nil || !utf8.ValidString(value) {
+		rctx.InvalidCapture = true
+		return "", false
+	}
+	return value, true
 }
 
 // isLeaf returns true if this node has at least one endpoint registered.

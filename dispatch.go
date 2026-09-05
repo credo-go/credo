@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -131,8 +132,9 @@ func (app *App) dispatch(c *Context) error {
 		} else {
 			c.request.URL.RawQuery = ""
 		}
-		c.request.URL.Path = target
-		c.request.URL.RawPath = ""
+		if err := setWirePath(c.request.URL, target); err != nil {
+			return fmt.Errorf("credo: rewrite target %q: %w", target, err)
+		}
 		c.route = nil
 		c.request.resetRouteParams()
 		c.request.cachedQuery = nil // RawQuery changed above; drop stale query cache
@@ -167,14 +169,13 @@ func (app *App) dispatchOnce(c *Context) error {
 
 	rctx.RouteMethod = r.Method
 
-	// Use RoutePath if set (by mounted sub-routers), otherwise use URL path.
+	// Use RoutePath if set (by mounted sub-routers), otherwise the wire-form
+	// path. Matching runs on the still-encoded path so that segment
+	// boundaries come from the client's spelling; the tree decodes each
+	// captured value exactly once (see internal/radix).
 	path := rctx.RoutePath
 	if path == "" {
-		if r.URL.RawPath != "" {
-			path = r.URL.RawPath
-		} else {
-			path = r.URL.Path
-		}
+		path = r.URL.EscapedPath()
 	}
 
 	// Look up the method's bit flag. An unknown method (not registered
@@ -231,6 +232,12 @@ func (app *App) dispatchOnce(c *Context) error {
 			c.response.Header().Set("Allow", strings.Join(methods, ", "))
 		}
 		return app.resolveStatusHandler(c, http.StatusMethodNotAllowed)
+	}
+
+	// A parameter candidate that is not valid percent-encoded UTF-8 is a
+	// malformed request, not a missing route: 400 before the redirect probe.
+	if rctx.InvalidCapture {
+		return NewHTTPError(http.StatusBadRequest, msgKeyInvalidPathEncoding)
 	}
 
 	// Trailing slash redirect: probe the alternate path (slash toggled).
@@ -483,12 +490,7 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	}
 
 	mountHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rctx := getRouteContext(r)
-		remaining := "/"
-		if rctx != nil {
-			remaining = "/" + rctx.URLParam("_mount")
-		}
-		handler.ServeHTTP(w, mountChildRequest(r, remaining))
+		handler.ServeHTTP(w, mountChildRequest(r, mountRemainder(r, exact)))
 	})
 
 	app.mountRoutes(catchAll, mountHandler)
@@ -515,14 +517,51 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 	return r2.WithContext(context.WithValue(r2.Context(), routeCtxKey, (*RouteContext)(nil)))
 }
 
-// rewriteRequest returns a shallow copy of r with URL.Path set to newPath
-// and URL.RawPath cleared. Used by Mount to adjust the path for sub-routers.
-func rewriteRequest(r *http.Request, newPath string) *http.Request {
+// mountRemainder returns the wire-form (still percent-encoded) path below the
+// mount prefix, so the child keeps the client's segment boundaries: "/admin/a%2Fb"
+// mounted at "/admin" hands the child "/a%2Fb", never "/a/b". The tree matched
+// the static prefix on the same raw path, so the prefix is present verbatim.
+func mountRemainder(r *http.Request, prefix string) string {
+	raw := r.URL.EscapedPath()
+	if rctx := getRouteContext(r); rctx != nil && rctx.RoutePath != "" {
+		raw = rctx.RoutePath
+	}
+	rest, ok := strings.CutPrefix(raw, prefix)
+	if !ok {
+		return "/"
+	}
+	return "/" + strings.TrimPrefix(rest, "/")
+}
+
+// rewriteRequest returns a shallow copy of r whose URL carries rawPath as its
+// wire-form path (decoded Path plus RawPath when the spellings differ). Used by
+// Mount to adjust the path for sub-routers.
+func rewriteRequest(r *http.Request, rawPath string) *http.Request {
 	r2 := new(*r)
 	r2.URL = r.URL.Clone()
-	r2.URL.Path = newPath
-	r2.URL.RawPath = ""
+	if err := setWirePath(r2.URL, rawPath); err != nil {
+		r2.URL.Path = rawPath
+		r2.URL.RawPath = ""
+	}
 	return r2
+}
+
+// setWirePath stores a wire-form (percent-encoded) path on u the way net/url
+// does when it parses a request target: Path holds the decoded form and
+// RawPath the original spelling only when the two differ, so
+// [url.URL.EscapedPath] returns raw again. A malformed escape is an error and
+// leaves u unchanged.
+func setWirePath(u *url.URL, raw string) error {
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		return err
+	}
+	u.Path = decoded
+	u.RawPath = ""
+	if u.EscapedPath() != raw {
+		u.RawPath = raw
+	}
+	return nil
 }
 
 // mountInfo records a mounted prefix for route introspection. [App.Mount] adds

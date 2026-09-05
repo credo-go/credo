@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change is accepted but not yet implemented. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
 
 ## Bootstrap and DI
 
@@ -50,7 +50,20 @@ AccessLog bytes are post-compression accepted body bytes; headers/framing/TLS ar
 
 ## Router
 
-**Implemented (router minor, 2026-09-05).** Path parameter names belong to the endpoint: `/customers/{id}` and `/customers/{customer_id}/timeline` coexist, and each handler reads its own names. Nothing needs to change in existing applications — every registration that was valid stays valid with the same captures — and routes that were previously split or renamed to satisfy the shared-name rule may now use their natural names. The `conflicting … parameter` registration panic no longer exists; the same method on the same name-stripped shape is a duplicate (`GET "/users/{name}" is already registered as "/users/{id}"`), and structural regex conflicts remain errors. `BuildURI` reads the selected route's names; host pattern semantics stay unchanged. P5 escaping/decoding is accepted separately and is not delivered by the router minor. It keeps raw segment boundaries, decodes captures once and evaluates regex on the decoded value: %31 becomes numeric 1, %2F is captured slash data, %252F stays literal %2F, and plus stays plus. BuildURI takes decoded values and escapes them per segment. Malformed encoding/UTF-8 is 400; regex mismatch is no match; generation rejects invalid values. See the [round-trip table](../specs/router.md#pre-v1-url-round-trip-contract).
+**Implemented (router minor, 2026-09-05).** Path parameter names belong to the endpoint: `/customers/{id}` and `/customers/{customer_id}/timeline` coexist, and each handler reads its own names. Nothing needs to change in existing applications — every registration that was valid stays valid with the same captures — and routes that were previously split or renamed to satisfy the shared-name rule may now use their natural names. The `conflicting … parameter` registration panic no longer exists; the same method on the same name-stripped shape is a duplicate (`GET "/users/{name}" is already registered as "/users/{id}"`), and structural regex conflicts remain errors. `BuildURI` reads the selected route's names; host pattern semantics stay unchanged.
+
+**Implemented (wire minor, 2026-09-05).** Route parameters are decoded once and reported in decoded form; constraints apply to the decoded value; parameters are single-segment; generation validates and escapes; malformed input has defined outcomes.
+
+| Before the wire minor | Now |
+| --- | --- |
+| `RouteParam` returned the raw, still-encoded text: `%2F` stayed `%2F`, `%31` did not satisfy `[0-9]+` | Values are decoded once: `%2F` is `/` inside one segment, `%31` is `1` and satisfies numeric constraints, `%252F` is `%2F`, `+` stays `+` |
+| A regex could match a prefix of a segment, and a tail-bounded parameter could span a raw slash (`/{name}.json` matched `/a/b.json`) | Constraints apply to the whole decoded value and `{name}`/`{name:regex}` are single-segment; `{name...}` captures several segments |
+| `BuildURI`/`BuildURL` pasted values verbatim | Values are validated against their constraints and percent-encoded per segment (`a/b` becomes `a%2Fb`); host labels are validated, never encoded; empty values are errors |
+| Invalid UTF-8 in a parameter was captured as bytes | 400 with the code `invalid_path_encoding` when no route matches |
+| `ctx.Rewrite` took a decoded path | The target is a wire-form path; a malformed escape is an error |
+| Mounted handlers received a decoded remainder with `RawPath` cleared | Mounted handlers receive `URL.Path` decoded plus `URL.RawPath` when the spellings differ |
+
+Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw values to `BuildURI`/`BuildURL` instead of pre-escaped ones, replace `{name:.+}` with `{name...}` where several segments were intended, and expect 400 rather than a captured byte sequence for invalid UTF-8. `OriginalPath` now reports the wire-form path. See [Encoded Parameter Values](../specs/router.md#encoded-parameter-values).
 
 ## Examples and downstream impact
 

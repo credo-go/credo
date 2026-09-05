@@ -74,6 +74,9 @@ func NewRequest(r *http.Request) *Request {
 //
 //	id := ctx.Request().RouteParam("id")
 //
+// The value is percent-decoded exactly once by the router ("a%2Fb" arrives as
+// "a/b" inside one segment); do not unescape it again.
+//
 // Unlike the map returned by [Request.RouteParams], the returned string is
 // safe to retain after the request completes.
 func (r *Request) RouteParam(name string) string {

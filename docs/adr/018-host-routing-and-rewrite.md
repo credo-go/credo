@@ -102,13 +102,13 @@ func (ctx *Context) Rewrite(path string) error
 `ctx.Rewrite()` is a handler-level internal forward. The handler returns a sentinel error (`errRewrite`), and the leaf wrapper in the compiled route chain swallows it before it reaches user middleware. Dispatch then:
 
 1. reads the rewrite target from Context,
-2. updates `req.URL.Path` / `req.URL.RawQuery`,
+2. stores the wire-form target on the request (`URL.Path` decoded, `URL.RawPath` when the spellings differ) and `URL.RawQuery`,
 3. clears the previous route params,
 4. re-runs route matching.
 
 Rules:
 
-- The rewrite target must begin with `/`.
+- The rewrite target must begin with `/` and is a wire-form path; `ctx.Rewrite()` rejects a malformed percent-escape.
 - Re-dispatch stays within the same matched host scope.
 - Group and route middleware run again for the newly matched route.
 - Framework features and global middleware do not run again.

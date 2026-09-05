@@ -37,6 +37,11 @@ const (
 
 const msgKeyContentTypeRequired = "content_type_required"
 
+// msgKeyInvalidPathEncoding is the 400 code for a request path whose parameter
+// candidate is not valid percent-encoded UTF-8 (for example "%FF"). Malformed
+// escapes such as "%zz" never reach the router: net/http rejects them first.
+const msgKeyInvalidPathEncoding = "invalid_path_encoding"
+
 // Framework error codes carried on the wire in addition to the status-derived
 // defaults (see errorcode.go).
 const (
@@ -68,6 +73,7 @@ var builtInMessages = map[string]string{
 	MsgKeyValidationFailed:    "Validation Failed",
 	MsgKeyBindFailed:          "Malformed Request",
 	msgKeyContentTypeRequired: "Content-Type is required for QUERY requests.",
+	msgKeyInvalidPathEncoding: "Request path contains an invalid percent-encoded value.",
 }
 
 // HTTPError represents an HTTP error carrying a status and a stable

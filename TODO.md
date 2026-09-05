@@ -17,7 +17,7 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
 - [x] P8 HTTP minor (2026-09-05): optional Use features, default recovery, single renderers, executor, cleanup and example/test migration
 - [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
-- [ ] P5 wire minor: implement the accepted URL generation/decoding round-trip contract separately
+- [x] P5 wire minor (2026-09-05): one-time capture decoding on the wire-form path, decoded-value constraints, single-segment parameters, validated and escaped generation, 400 `invalid_path_encoding`
 - [ ] Performance A1–A3: [measured hot-path plan](docs/plans/wire-hot-paths.md), equivalent inputs and benchstat
 - [ ] Performance B: Response.ReadFrom, live HTTP/1.1/TLS/HTTP2 verification
 - [ ] P6 backlog: compiled route model only with demonstrated maintenance benefit
