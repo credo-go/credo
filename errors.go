@@ -41,7 +41,8 @@ const msgKeyContentTypeRequired = "content_type_required"
 // defaults (see errorcode.go).
 const (
 	// CodeUnsupportedContentEncoding is the 415 code for a request body whose
-	// Content-Encoding no middleware.Decompress has unwrapped.
+	// Content-Encoding the decompression feature ([App.UseDecompress]) has
+	// not unwrapped.
 	CodeUnsupportedContentEncoding = "unsupported_content_encoding"
 
 	// CodeInvalidBindTarget is the 500 code for a nil or non-pointer bind
@@ -335,22 +336,6 @@ func RFC9457ErrorRenderer(cfgs ...RFC9457Config) ErrorRenderer {
 	}
 }
 
-// builtinErrorHandler is a middleware that catches errors returned by the
-// handler chain and writes the error response inline via [App.handleError].
-// It sits between builtinAccessLog and the global middleware chain in
-// compile(), ensuring that the access log's deferred read of
-// [Response.Status], [Response.Size], and duration reflects the final
-// committed response — including error responses.
-func (app *App) builtinErrorHandler(next Handler) Handler {
-	return func(ctx *Context) error {
-		if err := next(ctx); err != nil {
-			app.handleError(err, ctx)
-		}
-		app.warnEnvelopeBypass(ctx)
-		return nil
-	}
-}
-
 // handleError is the internal error handling pipeline. It performs:
 //  1. Panic recovery (if ErrorRenderer panics, logs and sends 500)
 //  2. Hijacked/committed guard (logs warning if the HTTP response is no longer writable)
@@ -565,7 +550,7 @@ func writeDefaultError(ctx *Context, info *ErrorInfo) error {
 func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey string) (string, string) {
 	key, explicit := app.effectiveMessageKey(MessageScopeError, code, explicitKey)
 	if ctx.translatable() {
-		if message, ok := app.i18nBundle.TranslateForLang(ctx.locale, key, nil); ok {
+		if message, ok := app.i18n.bundle.TranslateForLang(ctx.resolveLocale(), key, nil); ok {
 			return key, message
 		}
 	}
@@ -588,8 +573,8 @@ func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string
 	if explicitKey != "" {
 		return explicitKey, true
 	}
-	if app != nil && app.messageKeyResolver != nil {
-		key := app.messageKeyResolver(MessageRef{Scope: scope, Code: code})
+	if app != nil && app.i18n != nil && app.i18n.resolver != nil {
+		key := app.i18n.resolver(MessageRef{Scope: scope, Code: code})
 		if key == "" {
 			panic(fmt.Sprintf("credo: MessageKeyResolver returned an empty key for scope %d code %q", scope, code))
 		}
@@ -607,7 +592,7 @@ func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) va
 		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
 		result[i].MessageKey = key
 		if ctx.translatable() {
-			if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, e.Params, e.Field); ok {
+			if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), key, e.Params, e.Field); ok {
 				result[i].Message = s
 			}
 		}
@@ -648,7 +633,7 @@ func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Validat
 	}
 
 	if ctx.translatable() {
-		if s, ok := translateFieldMessage(app.i18nBundle, ctx.locale, key, ve.Params, be.Field); ok {
+		if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), key, ve.Params, be.Field); ok {
 			ve.Message = s
 		}
 	}

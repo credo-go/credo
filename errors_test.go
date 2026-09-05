@@ -227,7 +227,7 @@ func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 
 	app := mustNew(t)
 	var renderedErr error
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		renderedErr = info.Err
 		return credo.ErrorResponse{Error: credo.ErrorBody{Code: info.Code, Message: info.Message, Details: info.Details, Violations: info.Violations}}
 	})
@@ -363,7 +363,7 @@ func TestNewProblemDetails(t *testing.T) {
 
 func TestRFC9457ErrorRenderer_Instance(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
+	app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
 	app.GET("/api/users/{id}", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(http.StatusNotFound)
 	})
@@ -383,7 +383,7 @@ func TestRFC9457ErrorRenderer_Instance(t *testing.T) {
 
 func TestRFC9457ErrorRenderer_ShapeAndTypeResolver(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
+	app.UseErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
 		ResolveType: func(info *credo.ErrorInfo) string {
 			return "https://errors.example/" + info.Code
 		},
@@ -513,7 +513,7 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
 		receivedInfo = *info
 		return map[string]string{"error": info.Message}
@@ -558,7 +558,7 @@ func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 
 	// A nil body is the documented "keep the default error body" signal;
 	// headers set by the renderer decorate that default response.
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
 		return nil
 	})
@@ -592,7 +592,7 @@ func TestHandleError_ErrorRendererBody(t *testing.T) {
 
 	// The common case: the renderer returns the body and the framework owns
 	// status, Content-Type, and the write.
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		return map[string]any{"code": info.MessageKey, "message": info.Message}
 	})
 
@@ -624,7 +624,7 @@ func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
 
 	// info.Status is the renderer's status seam: mutating it before
 	// returning changes the written status for both body shapes.
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		if info.MessageKey == "not_found" {
 			info.Status = http.StatusGone
 		}
@@ -642,7 +642,7 @@ func TestHandleError_ErrorRendererMutatesStatus(t *testing.T) {
 
 func TestHandleError_ErrorRendererInvalidStatusFailsClosed(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
 		info.Status = 0
 		return map[string]string{"must": "not leak"}
 	})
@@ -665,7 +665,7 @@ func TestHandleError_ErrorRendererInvalidStatusFailsClosed(t *testing.T) {
 func TestHandleError_HEADDiscardsRendererBody(t *testing.T) {
 	app := mustNew(t)
 
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		return map[string]any{"code": info.MessageKey}
 	})
 	app.GET("/test", func(ctx *credo.Context) error { return credo.ErrForbidden })
@@ -686,7 +686,7 @@ func TestHandleError_CommittedRendererIgnoresBody(t *testing.T) {
 
 	// Full-control escape hatch: once the renderer commits the response
 	// itself, the returned body must not be appended on top.
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		_ = ctx.Response().Text(info.Status, "plain error")
 		return map[string]any{"must": "be ignored"}
 	})
@@ -711,7 +711,7 @@ func TestHandleError_ErrorRendererPanics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		panic("renderer exploded")
 	})
 
@@ -837,7 +837,7 @@ func TestHandleError_HEADRemovesImmutableCacheControl(t *testing.T) {
 
 func TestHandleError_CustomRendererRemovesImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		ctx.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		ctx.Response().Header().Set("Content-Type", "application/problem+json")
 		ctx.Response().WriteHeader(info.Status)
@@ -864,7 +864,7 @@ func TestHandleError_CommittedBeforeRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		rendererCalled = true
 		return nil
 	})
@@ -890,7 +890,7 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	app := mustNew(t)
 
 	rendererCalled := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		rendererCalled = true
 		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
 		// nil body — the framework sends the status-only HEAD response.
@@ -924,7 +924,7 @@ func TestHandleError_RendererCanReadRequestPath(t *testing.T) {
 
 	var receivedPath string
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
 		receivedPath = ctx.Request().URL.Path
 		return map[string]any{"code": info.Code, "message": info.Message}
@@ -951,7 +951,7 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 
 	var receivedInfo credo.ErrorInfo
 	called := false
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		called = true
 		receivedInfo = *info
 		return map[string]any{"code": info.Code, "message": info.Message, "violations": info.Violations}
@@ -988,7 +988,7 @@ func TestHandleError_ErrorInfoErrForSentry(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		receivedInfo = *info
 		return nil
 	})
@@ -1013,7 +1013,7 @@ func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		receivedInfo = *info
 		return nil
 	})
@@ -1038,7 +1038,7 @@ func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		receivedInfo = *info
 		return nil
 	})
@@ -1098,7 +1098,7 @@ func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
 	app := mustNew(t)
 
 	var receivedInfo credo.ErrorInfo
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		receivedInfo = *info
 		return nil
 	})
@@ -1137,7 +1137,7 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_returns",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
+				app.UseErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
 					return nil
 				})
@@ -1147,7 +1147,7 @@ func TestErrorPipeline_DoesNotWriteAfterActualHijack(t *testing.T) {
 		{
 			name: "renderer_hijacks_then_panics",
 			configure: func(app *credo.App) {
-				app.SetErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
+				app.UseErrorRenderer(func(ctx *credo.Context, _ *credo.ErrorInfo) any {
 					_, _, _ = ctx.Response().Hijack()
 					panic("renderer panic after hijack")
 				})

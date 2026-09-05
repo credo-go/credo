@@ -127,7 +127,6 @@ func TestResponse_NoContentOverRealServerProducesNoSpuriousWarn(t *testing.T) {
 	logs := &syncBuffer{}
 	app := mustNew(t,
 		credo.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
-		credo.WithoutAccessLog(),
 	)
 	app.DELETE("/things/{id}", func(ctx *credo.Context) error {
 		return ctx.Response().JSON(http.StatusNoContent, map[string]string{"deleted": "true"})

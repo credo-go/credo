@@ -8,9 +8,8 @@ import (
 
 // MetaAccessLogKey is the route-meta key that toggles access logging for a
 // route or, through LookupMeta inheritance, a whole group. The root package
-// re-exports it as credo.MetaAccessLog; every access-log producer (the
-// built-in tier and middleware.AccessLog) decodes it through SilencedByMeta so
-// the opt-out semantics cannot drift between them.
+// re-exports it as credo.MetaAccessLog; the access-log feature decodes it
+// through SilencedByMeta so the opt-out semantics live in one place.
 const MetaAccessLogKey = "credo.accesslog"
 
 // AccessLogRecord is the transport-neutral snapshot an access-log producer
@@ -55,9 +54,9 @@ func BelowMinLevel(status int, minLevel slog.Leveler) bool {
 // status-derived level, or returns without building attributes when logger
 // is not enabled for that level. requestID is attached explicitly only when the logger
 // does not already carry it; callers pass "" otherwise. It is the one source
-// for the attribute set, message, and level shared by the built-in access
-// logger and middleware.AccessLog (this package cannot import the root
-// package, so callers collect the per-request primitives).
+// for the attribute set, message, and level of the access-log feature (this
+// package cannot import the root package, so callers collect the per-request
+// primitives).
 func EmitAccessLog(ctx context.Context, logger *slog.Logger, rec AccessLogRecord, requestID string) {
 	level := Level(rec.Status)
 	// A handler that would discard the record (a Warn-only access logger, say)

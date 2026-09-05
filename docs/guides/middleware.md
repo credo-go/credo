@@ -1,7 +1,5 @@
 # Middleware Guide
 
-> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
-
 This guide explains how to use, configure, and write middleware in Credo. For internal design rationale, see the [Middleware Spec](../specs/middleware.md) and [ADR-010](../adr/010-middleware-architecture.md).
 
 ---
@@ -23,8 +21,10 @@ func main() {
         log.Fatal(err)
     }
 
-    // Built-in: panic recovery, request ID, and access logging are
-    // auto-enabled — no middleware registration needed for these.
+    // Panic recovery is on by default. Request IDs, access logging and
+    // compression are framework features, enabled explicitly:
+    app.UseRequestID()
+    app.UseAccessLog()
 
     app.GET("/", func(ctx *credo.Context) error {
         return ctx.Response().Text(200, "ok")
@@ -77,15 +77,13 @@ Credo provides three tiers for middleware registration. Each tier controls a dif
 Global middleware runs on **every** request, including unmatched routes (404) and method-not-allowed (405). Use it for cross-cutting concerns that must always execute.
 
 ```go
-// Built-in: recover, requestID, access log — already active.
-// Add extra global middleware:
 app.GlobalMiddleware(
     middleware.CORS(),
     middleware.Secure(),
 )
 ```
 
-Without a global tier, a 404 response would bypass CORS headers and compression. The global tier closes that gap. (Request ID, access logging, and panic recovery are built-in and always active unless opted out via `WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`.)
+Without a global tier, a 404 response would bypass CORS and security headers. The global tier closes that gap. (Panic recovery, request IDs, access logging and compression are framework features rather than middleware — see [Framework Features](#framework-features-not-middleware) below — and they cover 404/405 responses as well.)
 
 ### Group Middleware
 
@@ -128,17 +126,19 @@ app.GET("/admin/dashboard", adminDashboard).
 
 ```
 Request
-  -> Global middleware (outer to inner)
-    -> Group middleware (outer to inner, parent to child)
-      -> Route middleware (outer to inner)
-        -> Handler
-      <- Route middleware
-    <- Group middleware
-  <- Global middleware
+  -> Framework features (request ID, request decompression, compression writer)
+    -> Global middleware (outer to inner)
+      -> Group middleware (outer to inner, parent to child)
+        -> Route middleware (outer to inner)
+          -> Handler
+        <- Route middleware
+      <- Group middleware
+    <- Global middleware
+  <- Framework error rendering, panic recovery, finalization, access log
 Response
 ```
 
-All middleware chains are precompiled at startup. There is no per-request allocation for middleware dispatch.
+All middleware chains are precompiled at startup. There is no per-request allocation for middleware dispatch. The framework features around the chain run in that fixed order whatever order their `Use*` calls were made in.
 
 ---
 
@@ -260,35 +260,80 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 
 ---
 
-## Built-in Middleware (Auto-Enabled)
+## Framework Features (Not Middleware)
 
-Credo auto-enables three built-in middleware with zero configuration. They form the outermost layer of every request:
+Panic recovery, request IDs, access logging, response compression and request decompression are framework-owned HTTP features of the root package. They run outside the middleware chain — before Global middleware on the way in and after error rendering on the way out — so they see the final response, error envelopes and panic responses included, and cannot be scoped to a group or route. Each has exactly one public path:
 
-```
-builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch
-```
-
-| Built-in | What it does | Opt-out |
+| Feature | Default | Enable / configure |
 | --- | --- | --- |
-| **Recover** | Catches panics, logs stack trace, returns 500 | `WithoutRecover()` |
-| **RequestID** | Sets `X-Request-Id` header, enriches `ctx.Logger()` | `WithoutRequestID()` |
-| **AccessLog** | Logs method, path, status, bytes, duration | `WithoutAccessLog()` |
+| **Recovery** | On | `credo.WithRecoverConfig(cfg)` customizes; `credo.WithoutRecover()` disables (wins regardless of option order) |
+| **RequestID** | Off | `app.UseRequestID(cfg...)` |
+| **AccessLog** | Off | `app.UseAccessLog(cfg...)` |
+| **Compress** | Off | `app.UseCompress(cfg...)` |
+| **Decompress** | Off | `app.UseDecompress(cfg...)` |
 
-The built-in RequestID enriches `ctx.Logger()` with a `request_id` attribute. All downstream logging (including the access log and panic recovery) automatically includes the request ID.
-
-### Configuring the Built-in Access Log
-
-The built-in logger is the primary AccessLog configuration surface because it observes the final response outside recovery and error rendering. You rarely need to disable it merely to quiet noisy traffic.
-
-- **A skipper predicate.** `credo.WithAccessLogSkipper(func(*credo.Context) bool)` runs before routing, so decide from request-level data (path, headers). Return `true` to skip:
+A `Use*` call takes zero configs for the defaults or one config; it panics for more than one config, when called twice, or after the app has prepared to serve (`Run`, the first `ServeHTTP`) or shut down. The window stays open after `app.Finalize()`, so a feature or renderer can be configured from a DI-resolved service. Leaving a call out leaves the feature off. The full contract, including failure handling, is in the [HTTP features spec](../specs/http-features.md).
 
 ```go
-app, _ := credo.New(credo.WithAccessLogSkipper(func(ctx *credo.Context) bool {
-    return ctx.Request().URL.Path == "/metrics"
+app, _ := credo.New(credo.WithRecoverConfig(credo.RecoverConfig{
+    StackSize: 16 << 10, // bytes of stack captured in the panic record
+}))
+app.UseRequestID()
+app.UseAccessLog()
+app.UseCompress()
+```
+
+### Recovery
+
+Recovery is the outermost layer and covers everything: user middleware, handlers, renderers, locale detectors and access-log filters. A panic is logged as `panic recovered` with a stack trace and rendered as a generic 500 through the error pipeline, unless the response was already committed or hijacked. `http.ErrAbortHandler` is re-panicked so the server aborts the connection.
+
+```go
+app, _ := credo.New(credo.WithRecoverConfig(credo.RecoverConfig{
+    Logger:            panicLogger, // nil: the request-scoped logger (carries request_id)
+    DisableStackTrace: false,
+    StackSize:         8192,        // maximum bytes of stack trace; 0 selects 8192
 }))
 ```
 
-- **Route or group meta.** Set `credo.MetaAccessLog` to `false` on a route, or on a whole group through inheritance:
+`credo.WithoutRecover()` turns recovery off — for tests that want panics to propagate, or for an application-owned recovery layer. Request cleanup (compressor finalization, access-log observation, Context release) still runs while the panic propagates. There is no per-group recovery; a group that needs its own policy writes ordinary middleware that recovers and returns an error.
+
+### RequestID
+
+`app.UseRequestID()` gives every request an ID: the incoming `X-Request-Id` value when it is present, within the length limit and made of safe characters, otherwise a freshly generated 128-bit cryptographic ID. The ID is echoed on the response header, readable through `ctx.RequestID()` and attached as `request_id` to the request-scoped logger the first time `ctx.Logger()` is used, so handler logs, the access log and panic records carry it automatically.
+
+```go
+app.UseRequestID(credo.RequestIDConfig{
+    Header:    "X-Correlation-Id",
+    Limit:     128,
+    Generator: func() string { return uuid.NewString() },
+})
+
+func myHandler(ctx *credo.Context) error {
+    reqID := ctx.RequestID() // "" when UseRequestID is not installed
+    ctx.Logger().Info("processing")
+    return ctx.Response().JSON(200, map[string]string{"id": reqID})
+}
+```
+
+RequestID and AccessLog are independent: access records carry an empty `request_id` when only access logging is installed.
+
+### AccessLog
+
+`app.UseAccessLog()` logs each completed request with structured attributes: method, path, status, bytes, duration, real client address, user agent, request ID and the matched route pattern. It observes the final response after error rendering, recovery and compressor finalization, so status, bytes (post-compression, as accepted by the transport) and duration are final. Log level follows the status: 1xx/2xx/3xx = Info, 4xx = Warn, 5xx+ = Error.
+
+```go
+app.UseAccessLog(credo.AccessLogConfig{
+    Logger:   accessLogger,    // nil: the request-scoped logger
+    MinLevel: slog.LevelInfo,  // nil: Info
+    Skipper:  func(ctx *credo.Context) bool { return ctx.Request().URL.Path == "/metrics" },
+    ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+        return entry.Status >= 400 || entry.Duration >= time.Second
+    },
+})
+```
+
+- **Skipper** runs before routing, so decide from request-level data (path, headers). Return `true` to skip.
+- **Route or group meta.** Set `credo.MetaAccessLog` to `false` on a route, or on a whole group through inheritance; a route-level value overrides its group's, so you can silence a group and keep one route loud. Only a bool `false` silences; any other value is ignored. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
 
 ```go
 app.GET("/metrics", metricsHandler).SetMeta(credo.MetaAccessLog, false)
@@ -298,128 +343,57 @@ internal.SetMeta(credo.MetaAccessLog, false)                          // silence
 internal.GET("/audit", auditHandler).SetMeta(credo.MetaAccessLog, true) // ...except this one
 ```
 
-A route-level value overrides its group's, so you can silence a group and keep one route loud. Only a bool `false` silences; any other value is ignored (the request is logged). The same meta is honoured by `middleware.AccessLog`. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
-
-#### Minimum level
-
-Status always determines the record's actual level: `1xx/2xx/3xx` are Info, `4xx` are Warn, and `5xx+` are Error. `WithAccessLogMinLevel` controls which of those records are admitted without changing their actual level:
+- **MinLevel** admits records at or above a level without changing their actual level: `slog.LevelWarn` keeps 4xx and 5xx, `slog.LevelError` keeps 5xx only. Pass a concurrency-safe `*slog.LevelVar` to change the threshold at runtime; it is read once per eligible request.
+- **ResultFilter** runs after the final response, after meta silencing and the MinLevel check. Return `true` to emit. MinLevel and ResultFilter intersect: `Warn` would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `ctx.Response()`, for status, bytes and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state. A filter that panics is logged as a framework error and the record is skipped; the response is unaffected. Request/result combinations work as expected:
 
 ```go
-// Log only 4xx and 5xx.
-app, _ := credo.New(credo.WithAccessLogMinLevel(slog.LevelWarn))
-
-// Log only 5xx.
-app, _ := credo.New(credo.WithAccessLogMinLevel(slog.LevelError))
+ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+    user, ok := ctx.GetUser[User]()
+    return (ok && user.TenantID == "audit-all") || entry.Status >= 400
+},
 ```
 
-The default is Info. You can pass a concurrency-safe `*slog.LevelVar` to change the threshold at runtime. MinLevel is read once per eligible request.
+- **Logger** routes access records to a dedicated sink, for example a JSON logger on its own file. It receives the standard fields and an explicit request ID, but it is not derived from `ctx.Logger()` and therefore does not inherit attributes added with `ctx.AddLogAttrs` or `ctx.SetLogger`.
 
-#### Result filtering
+When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
 
-`WithAccessLogResultFilter` runs after the handler, route-meta silencing, and MinLevel check. Return `true` to emit. For example, retain every error and any successful request slower than one second:
+Turning access logging off does not silence anything else: panic records, server errors, lifecycle, health and application logs keep flowing through their normal loggers and levels.
+
+### Compress
+
+`app.UseCompress()` compresses responses with gzip or deflate according to the client's `Accept-Encoding` header. Only textual content types are compressed by default; responses that already carry a `Content-Encoding`, HEAD and bodiless responses, streaming (`Flush`), committed responses and hijacked connections keep their behavior. Because the writer stays installed through error rendering, error envelopes and panic responses are compressed too, and the access log counts the compressed bytes.
 
 ```go
-app, _ := credo.New(
-	credo.WithAccessLogMinLevel(slog.LevelInfo), // default; successes must reach the filter
-	credo.WithAccessLogResultFilter(func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
-		return entry.Status >= 400 || entry.Duration >= time.Second
-	}),
-)
+app.UseCompress(credo.CompressConfig{
+    Level: 9, // 1–9; 0 selects 5
+    Types: []string{
+        "application/json",
+        "text/*", // wildcard supported
+    },
+    Skipper: func(ctx *credo.Context) bool { // evaluated once on the original request
+        return strings.HasPrefix(ctx.Request().URL.Path, "/stream/")
+    },
+})
 ```
 
-MinLevel and ResultFilter intersect. `Warn` in the preceding example would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `ctx.Response()`, for status, bytes, and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state.
+### Decompress
 
-The Context parameter supports request/result combinations:
+Credo never decompresses request bodies on its own: a body sent with `Content-Encoding: gzip` reaches `BindBody`, which answers 415 `unsupported_content_encoding` rather than mis-reporting the compressed bytes as malformed JSON. Accepting compressed uploads is an opt-in, because decompression turns a small wire body into a potentially huge one:
 
 ```go
-app, _ := credo.New(credo.WithAccessLogResultFilter(
-	func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
-		user, ok := ctx.GetUser[User]()
-		return (ok && user.TenantID == "audit-all") || entry.Status >= 400
-	},
-))
+app.UseDecompress(credo.DecompressConfig{
+    MaxBytes: 16 << 20, // bound on the *decompressed* body; default 4 MiB
+    Skipper: func(ctx *credo.Context) bool { // keep raw bodies for signed webhooks
+        return strings.HasPrefix(ctx.Request().URL.Path, "/webhooks/")
+    },
+})
 ```
 
-#### Dedicated AccessLog sink
-
-Keep the authoritative built-in boundary while routing access records to a separate JSON logger:
-
-```go
-accessLogger := slog.New(slog.NewJSONHandler(accessFile, nil))
-app, _ := credo.New(credo.WithAccessLogLogger(accessLogger))
-```
-
-The dedicated logger receives the standard AccessLog fields and an explicit request ID, but it is not derived from `ctx.Logger()` and therefore does not inherit arbitrary attributes added with `ctx.AddLogAttrs` or `ctx.SetLogger`.
+The feature understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tolerated), unwraps the body as a stream, removes the header and sets `ContentLength` to -1 so Global middleware, handlers and `BindBody` all see the same plain stream. The server-wide `max_body_bytes` still applies to the compressed bytes on the wire; reading past `MaxBytes` after decompression fails with the same 413 as any oversized body. Unsupported codings (`br`, `zstd`, or a list such as `gzip, br`) return 415 and a corrupt stream returns 400 `bind_failed`, both before any user middleware runs. The Skipper sees the original request only (method, path, headers): no route, no user, and a later rewrite does not re-evaluate it.
 
 ---
 
 ## Configurable Middleware (middleware package)
-
-### Recover
-
-> **Note:** Panic recovery is built into the framework by default. The `middleware.Recover()` middleware is only needed when you want per-group or per-route recovery with custom configuration (e.g., a custom logger, stack size control, or disabled stack traces). To disable built-in recovery entirely, use `credo.WithoutRecover()`.
-
-Recovers from panics, logs the panic with a stack trace, and returns a 500 error through the error pipeline.
-
-```go
-// Per-group recovery with custom config
-api.Middleware(middleware.Recover(middleware.RecoverConfig{
-    Logger:            myLogger,
-    DisableStackTrace: false,
-    StackSize:         8192,  // max bytes for stack trace
-}))
-```
-
-`http.ErrAbortHandler` is re-panicked to allow the HTTP server to abort the connection.
-
-### RequestID
-
-> **Note:** Request ID injection is built into the framework by default. The `middleware.RequestID()` middleware is only needed when you want custom configuration (e.g., different header name, custom generator, different length limit). Disable the built-in first with `credo.WithoutRequestID()`.
-
-Injects a unique request ID into each request and response. If the client sends an `X-Request-Id` header (within the length limit), that value is reused. Otherwise, a new 128-bit cryptographic ID is generated.
-
-Read the request ID downstream (works with both built-in and middleware):
-
-```go
-func myHandler(ctx *credo.Context) error {
-    reqID := ctx.RequestID()
-    slog.Info("processing", "request_id", reqID)
-    return ctx.Response().JSON(200, map[string]string{"id": reqID})
-}
-```
-
-If you prefer the helper function, `middleware.GetRequestID(ctx)` returns the same value.
-
-With custom config:
-
-```go
-app.GlobalMiddleware(middleware.RequestID(middleware.RequestIDConfig{
-    Header:    "X-Correlation-Id",
-    Limit:     128,
-    Generator: func() string { return uuid.NewString() },
-}))
-```
-
-### AccessLog
-
-> **Note:** Access logging is built into the framework by default, and the built-in supports a dedicated logger, MinLevel, Skipper, and ResultFilter. Use `middleware.AccessLog()` for route/group-specific policies or a deliberate second sink. Disable the built-in with `credo.WithoutAccessLog()` when duplicate records are not wanted.
-
-Logs each request with structured attributes: method, path, status, bytes, duration, real client address, user agent, and request ID (when RequestID middleware is active). Log level varies by status: 1xx/2xx/3xx = Info, 4xx = Warn, 5xx+ = Error.
-
-For example, add a separate audit sink only to an admin group while keeping the normal built-in record:
-
-```go
-admin.Middleware(middleware.AccessLog(middleware.AccessLogConfig{
-	Logger:   auditLogger,
-	MinLevel: slog.LevelWarn,
-}))
-```
-
-The `credo.MetaAccessLog` route meta (`SetMeta(credo.MetaAccessLog, false)`) also silences logging here, exactly as it does for the built-in logger — useful for muting a route or group without a path check.
-
-When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, Credo includes `path_original` in the log entry. When a route matched, the entry also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the logger passed to `WithAccessLogLogger`, using `slog.HandlerOptions.ReplaceAttr`.
-
-The configurable middleware observes at its position inside the centralized error handler. On a returned-error path its status is the best pre-render classification, bytes are those written so far, and duration excludes later error rendering. Prefer the built-in options when final response values matter.
 
 ### Rewrite
 
@@ -524,38 +498,6 @@ middleware.CSRF(middleware.CSRFConfig{
 CSRF and CORS are complementary: CORS controls whether a browser may _read_ a cross-origin response; CSRF stops cross-origin state changes from being _processed_. A browser frontend on another origin typically needs its origin in both `CORSConfig.AllowOrigins` and `CSRFConfig.TrustedOrigins`.
 
 QUERY is safe under RFC 10008, but it is not a CORS-safelisted method. Cross-origin fetch/XHR therefore needs a successful preflight; the default CORS configuration includes QUERY. HTML forms and navigation cannot produce QUERY, so Credo lets QUERY bypass Go 1.27's older GET/HEAD/OPTIONS-only CSRF safe list. A handler must never mutate state from QUERY.
-
-### Compress
-
-Compresses responses using gzip or deflate based on the client's `Accept-Encoding` header. Only compresses textual content types by default.
-
-```go
-app.GlobalMiddleware(middleware.Compress())
-```
-
-Custom compression level and content types:
-
-```go
-app.GlobalMiddleware(middleware.Compress(middleware.CompressConfig{
-    Level: 9,  // max compression
-    Types: []string{
-        "application/json",
-        "text/*",  // wildcard supported
-    },
-}))
-```
-
-### Decompress
-
-Credo never decompresses request bodies on its own: a body sent with `Content-Encoding: gzip` reaches `BindBody`, which answers 415 `unsupported_content_encoding` rather than mis-reporting the compressed bytes as malformed JSON. Accepting compressed uploads is an opt-in, because decompression turns a small wire body into a potentially huge one:
-
-```go
-app.Group("/ingest").Middleware(middleware.Decompress(middleware.DecompressConfig{
-    MaxBytes: 16 << 20, // bound on the *decompressed* body; default 4 MiB
-}))
-```
-
-The middleware understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tolerated), unwraps the body, removes the header, and sets `ContentLength` to -1 so handlers and `BindBody` see a plain stream. The server-wide `max_body_bytes` still applies to the compressed bytes on the wire; reading past `MaxBytes` after decompression fails with the same 413 as any oversized body. Unsupported codings (`br`, `zstd`, or a list such as `gzip, br`) return 415; a corrupt stream returns 400 `bind_failed`.
 
 ### Secure
 
@@ -688,7 +630,7 @@ app.OnShutdown(rl.Shutdown)
 
 ## Skipper
 
-Every built-in middleware accepts a `Skipper` function. When the skipper returns `true`, the middleware is bypassed for that request.
+Every configurable middleware in the `middleware` package accepts a `Skipper` function. When the skipper returns `true`, the middleware is bypassed for that request. (The framework features use the same shape: `AccessLogConfig`, `CompressConfig` and `DecompressConfig` each carry a `Skipper func(*credo.Context) bool`.)
 
 ```go
 type Skipper func(ctx *credo.Context) bool
@@ -698,10 +640,11 @@ Common patterns:
 
 ```go
 // Skip middleware for health checks
-middleware.AccessLog(middleware.AccessLogConfig{
+middleware.Timeout(middleware.TimeoutConfig{
     Skipper: func(ctx *credo.Context) bool {
         return ctx.Request().URL.Path == "/health"
     },
+    Timeout: 5 * time.Second,
 })
 
 // Skip middleware for internal IPs
@@ -879,7 +822,10 @@ Adapted middleware is second-class by design: it receives only `*http.Request` a
 A typical production application:
 
 ```go
-// Built-in: recover, requestID, access log — automatically active.
+// Framework features: recovery is on by default; the rest are explicit.
+app.UseRequestID()
+app.UseAccessLog()
+app.UseCompress()
 
 // Global: always runs, even on 404/405
 app.GlobalMiddleware(
@@ -893,7 +839,6 @@ api := app.Group("/api")
 api.Middleware(
     middleware.RateLimit(),             // rate limiting
     middleware.Timeout(middleware.TimeoutConfig{Timeout: 10 * time.Second}),
-    middleware.Compress(),              // response compression
     authMiddleware,                     // authentication
 )
 
@@ -904,7 +849,7 @@ admin.Middleware(requireAdmin)
 
 Order matters:
 
-- Built-in recover/requestID/accessLog are automatically the outermost layers in `compile()` — no registration needed
+- Framework features (recovery, request ID, access log, compression) are always the outermost layers; their `Use*` call order does not matter
 - `CORS` must run globally so preflight and 404 responses include CORS headers
 - Group-level middleware runs only on matched routes
 
@@ -916,7 +861,7 @@ Credo's middleware chains are precompiled at startup into immutable function clo
 
 ### Mounted Handlers Bypass Group/Route Middleware
 
-`app.Mount()` registers a plain `http.Handler`. Mounted handlers receive only **built-in and global** middleware. Group and route middleware do not apply because the mounted handler is called directly after dispatch, outside the per-route compiled chain.
+`app.Mount()` registers a plain `http.Handler`. Mounted handlers receive only **global** middleware (and the framework features, which wrap every request). Group and route middleware do not apply because the mounted handler is called directly after dispatch, outside the per-route compiled chain.
 
 If the mounted sub-application requires authentication or authorization, the sub-application must enforce it internally:
 
@@ -936,7 +881,7 @@ Custom status handlers registered via `app.StatusHandler()` execute when no rout
 
 - `ctx.Route()` is **nil** — there is no matched route.
 - Group and route middleware have not run (no route to attach them to).
-- Only built-in and global middleware are active.
+- Only framework features and global middleware are active.
 
 Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers. Use `ctx.HasRoute()` to guard against nil before calling `ctx.Route()` methods — this prevents nil pointer panics in middleware that may run on both matched and unmatched request paths:
 
@@ -1036,8 +981,12 @@ func main() {
         log.Fatal(err)
     }
 
-    // Built-in: recover, requestID, access log — automatically active.
-    // Add global middleware for additional cross-cutting concerns:
+    // Framework features: recovery is on by default; enable the rest.
+    app.UseRequestID()
+    app.UseAccessLog()
+    app.UseCompress()
+
+    // Global middleware for additional cross-cutting concerns:
     app.GlobalMiddleware(
         middleware.Secure(middleware.SecureConfig{
             HSTSMaxAge:    31536000,
@@ -1052,7 +1001,7 @@ func main() {
     // Health (no auth needed)
     app.UseHealth()
 
-    // API group with auth, rate limit, timeout, and compression
+    // API group with auth, rate limit and timeout
     api := app.Group("/api")
     api.Middleware(
         APIKeyAuth("secret-key"),
@@ -1061,7 +1010,6 @@ func main() {
             Interval: time.Minute,
         }),
         middleware.Timeout(middleware.TimeoutConfig{Timeout: 5 * time.Second}),
-        middleware.Compress(),
     )
 
     // Public route: no API key required (Meta override)

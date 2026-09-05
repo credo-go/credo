@@ -45,12 +45,13 @@ Adapted in:
       walk.go          — WalkFunc, Walk
       credo.go          — App struct, ServeHTTP, dispatch, Handle, Group, Mount
 
-  - middleware/         — Logger, Recover, RequestID, Compress
-    Files (derived from chi middleware/):
-      requestid.go     — X-Request-Id injection + context storage
+  - (root package)     — Recover, RequestID, AccessLog, Compress HTTP features
+    Files (derived from chi middleware/, moved from middleware/ into the root
+    package as framework features 2026-09-05):
+      requestid.go     — X-Request-Id validation/generation + context storage
       recover.go       — Panic recovery with slog structured logging
       accesslog.go     — Structured request logging via slog (co-derived with Echo)
-      compress.go      — gzip/deflate response compression
+      compress.go      — gzip/deflate response compression writer
 
 ----------------------------------------------------------------------
 
@@ -67,10 +68,13 @@ Adapted in:
       response.go      — Response struct (wraps http.ResponseWriter,
                          tracks Status/Size/Committed), JSON/XML/HTML/Text helpers
 
-  - middleware/         — Config struct pattern, Skipper pattern,
-                          AccessLog, CORS, Secure, Timeout
-    Files (derived from echo middleware/):
+  - (root package)     — AccessLogConfig struct, Skipper function pattern
+    Files (derived from echo middleware/, moved from middleware/ 2026-09-05):
       accesslog.go     — AccessLogConfig struct, Skipper function pattern (co-derived with Chi)
+
+  - middleware/         — Config struct pattern, Skipper pattern,
+                          CORS, Secure, Timeout
+    Files (derived from echo middleware/):
       cors.go          — CORS config + preflight handling
       secure.go        — Security headers middleware
       timeout.go       — Context timeout middleware

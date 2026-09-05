@@ -4,7 +4,7 @@ This directory contains versioned, copyable reference files. Unlike the `example
 
 ## Pre-v1 migration status
 
-The [accepted migration preview](../../docs/guides/pre-v1-migration.md) does not change these files' current format. UseI18n remains explicit; the HTTP migration preserves exact message/field keys, plural catalogs and explicit-source validation. The accepted detector is Detect(*Context), memoized on first use. Successful inactive discovery consumes registration; real setup errors do not. Do not add framework-read `middleware.*.enabled` switches to the reference files: optional feature activation belongs in application bootstrap through Use calls. Function-valued configs remain code. See the [example migration map](../README.md) for the runnable applications.
+The [migration guide](../../docs/guides/pre-v1-migration.md) does not change these files' format. `UseI18n` remains explicit; the HTTP minor preserved exact message/field keys, plural catalogs and explicit-source validation. The detector is `Detect(*Context)`, memoized on first use. Successful inactive discovery consumes the registration; real setup errors do not. Do not add framework-read `middleware.*.enabled` switches to the reference files: optional feature activation belongs in application bootstrap through Use calls. Function-valued configs remain code. See the [example migration map](../README.md) for the runnable applications.
 
 ## Configuration
 

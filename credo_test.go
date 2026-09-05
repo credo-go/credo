@@ -643,7 +643,7 @@ func TestApp_DefaultErrorHandling(t *testing.T) {
 
 func TestApp_CustomErrorRenderer(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		_ = ctx.Response().Text(info.Status, "custom: "+info.Message)
 		return nil
 	})
@@ -1295,7 +1295,7 @@ func TestRouting_Mount_HostScopeInteraction(t *testing.T) {
 	app.Mount("/admin", sub)
 
 	// Default-scope request reaches the mounted handler; mounted handlers
-	// receive built-in and global middleware but never group middleware.
+	// receive framework features and global middleware but never group middleware.
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest("GET", "http://other.test/admin", nil))
 	if w.Code != 200 || w.Body.String() != "mounted" {

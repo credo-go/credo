@@ -43,7 +43,7 @@ Framework middleware uses the same helpers:
 
 - `middleware.Secure` uses `Request.Scheme()` for HSTS.
 - `middleware.RateLimit` uses `Request.RealIP()` as its default key.
-- Built-in and configurable access logs use `Request.RealIP()` for `remote_addr`.
+- The access log uses `Request.RealIP()` for `remote_addr`.
 
 ## TLS Termination
 

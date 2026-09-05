@@ -17,7 +17,7 @@ Moving the encode side is not a like-for-like swap. Unlike the decode sites (con
 | Trailing newline | `Encoder.Encode` appends `\n` | `MarshalWrite` writes none |
 | `time.Duration` | integer nanoseconds | no default representation — an error |
 
-The Duration row is the hard constraint. Go issue 71631 was closed deliberately: json/v2 has *no* default Duration representation. The `format:` struct tag that the experimental module used to provide was **removed before the standard-library release** (go.dev/issue/79071), pending the typed-struct-tags proposal (go.dev/issue/74472). In Go 1.27 there is therefore no tag an application can write to make a Duration field encode; without an explicit option, any response carrying a Duration fails to encode.
+The Duration row is the hard constraint. Go issue 71631 was closed deliberately: json/v2 has _no_ default Duration representation. The `format:` struct tag that the experimental module used to provide was **removed before the standard-library release** (go.dev/issue/79071), pending the typed-struct-tags proposal (go.dev/issue/74472). In Go 1.27 there is therefore no tag an application can write to make a Duration field encode; without an explicit option, any response carrying a Duration fails to encode.
 
 ## Decision
 
@@ -50,15 +50,11 @@ credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
 
 Options are appended after the framework profile, so each one overrides that axis (later options win) and leaves the rest intact. The option is construction-time only and has no config-file key, because options are Go values rather than strings.
 
-There is no per-call `JSONWith(...)` variant, mirroring the strict-bodies decision ([ADR-008](008-context-design.md)): one posture per application. An application that needs a different envelope has `SetSuccessRenderer`; a handler that needs different bytes entirely can marshal them itself and write through `Response.Blob`.
+There is no per-call `JSONWith(...)` variant, mirroring the strict-bodies decision ([ADR-008](008-context-design.md)): one posture per application. An application that needs a different envelope has `UseSuccessRenderer`; a handler that needs different bytes entirely can marshal them itself and write through `Response.Blob`.
 
 ### Default error bodies always sort map keys
 
-Credo's default error envelope is a framework contract consumed by clients,
-translators, and tests, so `Deterministic(true)` is re-applied after the
-application profile even when the application turned it off. Custom renderer
-bodies, including the opt-in RFC 9457 renderer, use the application profile
-because the application selected that representation.
+Credo's default error envelope is a framework contract consumed by clients, translators, and tests, so `Deterministic(true)` is re-applied after the application profile even when the application turned it off. Custom renderer bodies, including the opt-in RFC 9457 renderer, use the application profile because the application selected that representation.
 
 ### Decoding policy stays separate
 

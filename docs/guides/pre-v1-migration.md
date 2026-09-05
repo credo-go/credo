@@ -1,6 +1,6 @@
-# Pre-v1 Migration Preview
+# Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor) and the router parameter-name change (router minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di) and [Router](#router) sections below describe shipped behavior. The built-in HTTP feature changes and the URL round-trip change are accepted but not yet implemented; the names in those sections are not yet callable. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change is accepted but not yet implemented. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
 
 ## Bootstrap and DI
 
@@ -22,15 +22,17 @@ Building-state Shutdown provides cleanup even after a failed Finalize. It does n
 
 ## Built-in HTTP features
 
-| Current surface/default | Migration in the HTTP minor |
+**Implemented (HTTP minor, 2026-09-05).** The [HTTP features spec](../specs/http-features.md) is the contract; the [middleware guide](middleware.md#framework-features-not-middleware) shows the new calls.
+
+| Before the HTTP minor | Now |
 | --- | --- |
-| Recovery on; optional middleware.Recover configuration | `WithRecoverConfig(cfg)` configures default-on root recovery; `WithoutRecover()` wins |
-| Default RequestID and WithoutRequestID | Explicit `app.UseRequestID(cfg...)`; omit it to disable |
-| Default AccessLog, WithoutAccessLog and WithAccessLog field helpers | Explicit `app.UseAccessLog(cfg...)` with one config |
-| middleware.RequestID / middleware.AccessLog | Root Use registration; access policy through metadata/config filters |
-| middleware.Compress / middleware.Decompress | `app.UseCompress(cfg...)` / `app.UseDecompress(cfg...)` |
-| SetErrorRenderer / SetSuccessRenderer | `app.UseErrorRenderer(renderer)` / `app.UseSuccessRenderer(renderer)`, one successful installation |
-| UseI18n adding Global middleware | Keep UseI18n; switch custom Detect from *http.Request to *Context and resolve lazily on first use |
+| Recovery on; optional `middleware.Recover` configuration | `WithRecoverConfig(cfg)` configures default-on root recovery; `WithoutRecover()` wins |
+| Default RequestID and `WithoutRequestID` | Explicit `app.UseRequestID(cfg...)`; omit it to disable |
+| Default AccessLog, `WithoutAccessLog` and the `WithAccessLog*` field helpers | Explicit `app.UseAccessLog(cfg...)` with one `AccessLogConfig{Logger, MinLevel, Skipper, ResultFilter}` |
+| `middleware.RequestID` / `middleware.AccessLog` / `middleware.GetRequestID` | Root `Use` registration and `ctx.RequestID()`; access policy through `MetaAccessLog` and config filters |
+| `middleware.Compress` / `middleware.Decompress` | `app.UseCompress(cfg...)` / `app.UseDecompress(cfg...)` with root `CompressConfig` / `DecompressConfig` |
+| `SetErrorRenderer` / `SetSuccessRenderer` | `app.UseErrorRenderer(renderer)` / `app.UseSuccessRenderer(renderer)`, one successful installation |
+| `UseI18n` adding Global middleware | Keep `UseI18n`; custom `Detect` takes `*Context` instead of `*http.Request` and resolves lazily on first use |
 
 Optional features have no parallel constructor/setter/Enabled route. Evaluate external enable flags in application bootstrap. Use-call order does not choose execution order. `WithoutRecover` wins over recovery configuration regardless of option order. Foundational logger, raw config, server, TLS and timeouts stay constructor settings.
 
@@ -38,13 +40,13 @@ AccessLog off does not disable framework or application diagnostics. Logger filt
 
 Scoped recovery is removed. Applications needing their own route policy can author ordinary middleware; Credo does not keep duplicate compatibility wrappers. CORS, CSRF, Secure, Timeout, RateLimit, Rewrite and ContractGuard retain their middleware APIs and ordering responsibilities.
 
-Lazy locale is accepted: first Locale/translation access fixes the language and all translation paths share it. Custom Detect receives *Context and can access the request or GetUser. It must handle missing auth data; Timeout/stdlib wrappers may restore a request without downstream auth data. To retain the authenticated language in later errors, call Locale after setting the user, before unwinding; an earlier read still wins. Empty/unresolvable detection uses the configured default. Recursive detection is misuse; panic/re-entry stores the fallback and never retries the detector. Recovery enabled uses the 500 path; disabled recovery propagates panic after cleanup.
+Lazy locale: first Locale/translation access fixes the language and all translation paths share it. Custom Detect receives *Context and can access the request or GetUser. It must handle missing auth data; Timeout/stdlib wrappers may restore a request without downstream auth data. To retain the authenticated language in later errors, call Locale after setting the user, before unwinding; an earlier read still wins. Empty/unresolvable detection uses the configured default. Recursive detection is misuse; panic/re-entry stores the fallback and never retries the detector. Recovery enabled uses the 500 path; disabled recovery propagates panic after cleanup.
 
 A successful UseI18n that finds no conventional catalogs now consumes registration as configured-but-inactive. Do not call it again as a fallback strategy. Explicit-source failures still return errors and permit correction before HTTP preparation.
 
 Decompress runs before Global middleware. Its Skipper uses the original request's method/path/ headers once, so raw-body webhook paths must be selected there, without route/auth dependencies. Rewrite does not repeat selection. Global body readers and binders see the same decoded stream under separate wire/decoded limits.
 
-AccessLog bytes become post-compression accepted body bytes; headers/framing/TLS are excluded. Duration includes finalization and excludes the access filter/log write. Preserve actual committed status when transfer fails. With recovery enabled, an error-rendering failure falls back without callbacks; a post-response ResultFilter panic logs a diagnostic and skips that record. No failure after commitment appends a second JSON body; incomplete compressed output is aborted as required. These failure paths follow WithoutRecover for panics and always release request state.
+AccessLog bytes are post-compression accepted body bytes; headers/framing/TLS are excluded. Duration includes finalization and excludes the access filter/log write. Preserve actual committed status when transfer fails. With recovery enabled, an error-rendering failure falls back without callbacks; a post-response ResultFilter panic logs a diagnostic and skips that record. No failure after commitment appends a second JSON body; incomplete compressed output is aborted as required. These failure paths follow WithoutRecover for panics and always release request state.
 
 ## Router
 
@@ -52,6 +54,6 @@ AccessLog bytes become post-compression accepted body bytes; headers/framing/TLS
 
 ## Examples and downstream impact
 
-The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS already finalizes before resolving TenantService (DI minor); in the HTTP minor it enables RequestID/AccessLog explicitly and moves Compress out of GlobalMiddleware. Hello remains a minimal default-profile example.
+The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS finalizes before resolving TenantService (DI minor), enables RequestID/AccessLog explicitly and installs compression with `UseCompress` instead of global middleware (HTTP minor). Hello remains a minimal default-profile example.
 
-DI evidence comes from a 2026-09-05 scan of the maintainer's downstream applications: no factory/Replace calls, pre-Run resolution, and a worker-pool existence probe. The same applications install renderers once at bootstrap and use no scoped Recover. Internal framework integrations and recovery contract tests still require migration, regardless of downstream counts.
+DI evidence comes from a 2026-09-05 scan of the maintainer's downstream applications: no factory/Replace calls, pre-Run resolution, and a worker-pool existence probe. The same applications install renderers once at bootstrap and use no scoped Recover, so their HTTP-minor migration is a rename of the renderer setters plus explicit `UseRequestID`/`UseAccessLog` calls.

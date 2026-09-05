@@ -46,12 +46,13 @@
 //
 // # Asserting on logs
 //
-// Wire a [LogBuffer] with [WithLogBuffer] to capture structured output,
-// including the built-in request ID and access log records, then match records
-// with [LogBuffer.AssertHas]:
+// Wire a [LogBuffer] with [WithLogBuffer] to capture structured output —
+// the access log records included once the feature is installed — then match
+// records with [LogBuffer.AssertHas]:
 //
 //	buf := testutil.NewLogBuffer()
 //	app := testutil.NewApp(t, testutil.WithLogBuffer(buf))
+//	app.UseAccessLog()
 //	app.GET("/ping", pingHandler)
 //
 //	rec := httptest.NewRecorder()

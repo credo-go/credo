@@ -1,17 +1,18 @@
-package middleware_test
+package credo_test
 
 import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/middleware"
 )
 
 func gzipBytes(t *testing.T, payload string) []byte {
@@ -57,9 +58,10 @@ func rawDeflateBytes(t *testing.T, payload string) []byte {
 }
 
 // newDecompressApp binds {"name": ...} from the body and echoes the name.
-func newDecompressApp(t *testing.T, cfg ...middleware.DecompressConfig) *credo.App {
+func newDecompressApp(t *testing.T, cfg ...credo.DecompressConfig) *credo.App {
 	t.Helper()
 	app := mustNew(t)
+	app.UseDecompress(cfg...)
 	app.POST("/items", func(ctx *credo.Context) error {
 		var in struct {
 			Name string `json:"name"`
@@ -68,7 +70,7 @@ func newDecompressApp(t *testing.T, cfg ...middleware.DecompressConfig) *credo.A
 			return err
 		}
 		return ctx.Response().Text(http.StatusOK, in.Name)
-	}).Middleware(middleware.Decompress(cfg...))
+	})
 	return app
 }
 
@@ -79,10 +81,6 @@ func postEncoded(app *credo.App, body []byte, coding string) *httptest.ResponseR
 	if coding != "" {
 		r.Header.Set("Content-Encoding", coding)
 	}
-	return runServe(app, w, r)
-}
-
-func runServe(app *credo.App, w *httptest.ResponseRecorder, r *http.Request) *httptest.ResponseRecorder {
 	app.ServeHTTP(w, r)
 	return w
 }
@@ -121,6 +119,20 @@ func TestDecompress_PassThrough(t *testing.T) {
 	}
 }
 
+func TestDecompress_OffByDefault(t *testing.T) {
+	app := mustNew(t)
+	app.POST("/items", func(ctx *credo.Context) error {
+		var in struct {
+			Name string `json:"name"`
+		}
+		return ctx.Request().BindBody(&in)
+	})
+	w := postEncoded(app, gzipBytes(t, `{"name":"Bob"}`), "gzip")
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d body = %s, want 415 without UseDecompress", w.Code, w.Body.String())
+	}
+}
+
 func TestDecompress_UnsupportedCoding(t *testing.T) {
 	app := newDecompressApp(t)
 	for _, coding := range []string{"br", "zstd", "gzip, br"} {
@@ -128,6 +140,54 @@ func TestDecompress_UnsupportedCoding(t *testing.T) {
 		if w.Code != http.StatusUnsupportedMediaType || !strings.Contains(w.Body.String(), credo.CodeUnsupportedContentEncoding) {
 			t.Fatalf("coding %q: status = %d body = %s, want 415 %s", coding, w.Code, w.Body.String(), credo.CodeUnsupportedContentEncoding)
 		}
+	}
+}
+
+func TestDecompress_RejectsBeforeUserMiddleware(t *testing.T) {
+	var middlewareRan bool
+	app := newDecompressApp(t)
+	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+		return func(ctx *credo.Context) error {
+			middlewareRan = true
+			return next(ctx)
+		}
+	})
+	w := postEncoded(app, []byte("zzz"), "br")
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", w.Code)
+	}
+	if middlewareRan {
+		t.Fatal("global middleware ran for a request rejected by decompression")
+	}
+}
+
+func TestDecompress_GlobalMiddlewareSeesDecodedBody(t *testing.T) {
+	var seen string
+	app := newDecompressApp(t)
+	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+		return func(ctx *credo.Context) error {
+			req := ctx.Request()
+			if got := req.Header.Get("Content-Encoding"); got != "" {
+				t.Errorf("Content-Encoding reached global middleware: %q", got)
+			}
+			if req.ContentLength != -1 {
+				t.Errorf("ContentLength = %d, want -1 (unknown) after decompression", req.ContentLength)
+			}
+			b, err := io.ReadAll(req.Body)
+			if err != nil {
+				return err
+			}
+			seen = string(b)
+			req.Body = io.NopCloser(bytes.NewReader(b))
+			return next(ctx)
+		}
+	})
+	w := postEncoded(app, gzipBytes(t, `{"name":"Bob"}`), "gzip")
+	if w.Code != http.StatusOK || w.Body.String() != "Bob" {
+		t.Fatalf("status = %d body = %q, want 200 Bob", w.Code, w.Body.String())
+	}
+	if seen != `{"name":"Bob"}` {
+		t.Fatalf("global middleware read %q, want the decoded body", seen)
 	}
 }
 
@@ -152,7 +212,7 @@ func TestDecompress_BombBoundedByMaxBytes(t *testing.T) {
 	// 1 MiB of zeros compresses to about a kilobyte; the decompressed limit
 	// must stop it, not the wire size.
 	inflated := `{"name":"` + strings.Repeat("0", 1<<20) + `"}`
-	app := newDecompressApp(t, middleware.DecompressConfig{MaxBytes: 1024})
+	app := newDecompressApp(t, credo.DecompressConfig{MaxBytes: 1024})
 	w := postEncoded(app, gzipBytes(t, inflated), "gzip")
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d body = %s, want 413", w.Code, w.Body.String())
@@ -161,12 +221,13 @@ func TestDecompress_BombBoundedByMaxBytes(t *testing.T) {
 
 func TestDecompress_EmptyBodyPassesThrough(t *testing.T) {
 	app := mustNew(t)
+	app.UseDecompress()
 	app.POST("/ping", func(ctx *credo.Context) error {
 		if got := ctx.Request().Header.Get("Content-Encoding"); got != "" {
 			t.Errorf("Content-Encoding reached the handler: %q", got)
 		}
 		return ctx.Response().NoContent(http.StatusNoContent)
-	}).Middleware(middleware.Decompress())
+	})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/ping", http.NoBody)
@@ -178,7 +239,7 @@ func TestDecompress_EmptyBodyPassesThrough(t *testing.T) {
 }
 
 func TestDecompress_Skipper(t *testing.T) {
-	app := newDecompressApp(t, middleware.DecompressConfig{
+	app := newDecompressApp(t, credo.DecompressConfig{
 		Skipper: func(*credo.Context) bool { return true },
 	})
 	// Skipped: the compressed body reaches BindBody, which rejects the coding.
@@ -188,11 +249,34 @@ func TestDecompress_Skipper(t *testing.T) {
 	}
 }
 
-func TestDecompress_NegativeMaxBytesPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic for negative MaxBytes")
+func TestUseDecompress_Misuse(t *testing.T) {
+	expectPanic := func(t *testing.T, want string, fn func()) {
+		t.Helper()
+		defer func() {
+			r := recover()
+			if r == nil || !strings.Contains(fmt.Sprint(r), want) {
+				t.Fatalf("panic = %v, want containing %q", r, want)
+			}
+		}()
+		fn()
+	}
+
+	t.Run("negative MaxBytes", func(t *testing.T) {
+		app := mustNew(t)
+		expectPanic(t, "MaxBytes must be >= 0", func() {
+			app.UseDecompress(credo.DecompressConfig{MaxBytes: -1})
+		})
+	})
+	t.Run("twice", func(t *testing.T) {
+		app := mustNew(t)
+		app.UseDecompress()
+		expectPanic(t, "called twice", func() { app.UseDecompress() })
+	})
+	t.Run("after shutdown", func(t *testing.T) {
+		app := mustNew(t)
+		if err := app.Shutdown(t.Context()); err != nil {
+			t.Fatalf("Shutdown: %v", err)
 		}
-	}()
-	middleware.Decompress(middleware.DecompressConfig{MaxBytes: -1})
+		expectPanic(t, "App.UseDecompress", func() { app.UseDecompress() })
+	})
 }

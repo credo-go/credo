@@ -1,7 +1,5 @@
 # Internationalization Guide
 
-> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
-
 This guide explains how to use Credo's built-in internationalization support in application code. For low-level design details, see the [i18n Spec](../specs/i18n.md) and [ADR-013](../adr/013-internationalization.md).
 
 All locale examples in this guide use JSON.
@@ -394,7 +392,8 @@ You can override detection completely:
 if err := app.UseI18n(credo.I18nConfig{
     Dir:     "locales/",
     Default: "en",
-    Detect: func(r *http.Request) string {
+    Detect: func(ctx *credo.Context) string {
+        r := ctx.Request()
         if lang := r.URL.Query().Get("lang"); lang != "" {
             return lang
         }
@@ -410,8 +409,11 @@ Your detector may return:
 - a simple BCP 47 tag such as `en` or `tr`
 - a more specific tag such as `en-US`
 - a raw `Accept-Language` header value
+- `""` to fall back to the configured default
 
 Credo resolves that input against the locales you actually loaded.
+
+Detection is lazy: the detector runs on the first `ctx.Locale()`, `ctx.T()` or automatic error translation of a request, its result is remembered for that request, and requests that never translate anything do not call it. It sees the request as it is at that moment — the authenticated user is available through `ctx.GetUser[T]()` only if authentication already ran, so a detector that reads the user must handle its absence. To pin the authenticated user's language for errors rendered later, call `ctx.Locale()` right after `ctx.SetUser(...)`; an earlier read wins. Do not call `ctx.Locale()` or a translation from inside the detector (that panics).
 
 ---
 
@@ -593,7 +595,7 @@ That is not an error.
 Inactive behavior is intentionally cheap:
 
 - `UseI18n(...)` returns `nil`
-- no locale-detection middleware is added
+- the detector is never called
 - `ctx.Locale()` returns `""`
 - `ctx.T("messages.welcome")` returns `"messages.welcome"`
 - automatic error translation does not run

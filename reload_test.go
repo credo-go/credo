@@ -41,7 +41,6 @@ func newReloadFixture(t *testing.T, content string, opts ...credo.Option) *reloa
 		credo.WithRawConfig(cfg),
 		credo.WithAddr(host, port),
 		credo.WithLogger(logger),
-		credo.WithoutAccessLog(),
 	}, opts...)
 	return &reloadFixture{app: mustNew(t, all...), path: path, logs: logs, errC: make(chan error, 1)}
 }
@@ -321,7 +320,7 @@ func (s staticConfig) Exists(key string) bool { _, ok := s.data[key]; return ok 
 
 func TestReload_NonReloadableStore(t *testing.T) {
 	host, port, _ := freePort(t)
-	app := mustNew(t, credo.WithRawConfig(staticConfig{data: map[string]any{"a": 1}}), credo.WithAddr(host, port), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithRawConfig(staticConfig{data: map[string]any{"a": 1}}), credo.WithAddr(host, port))
 
 	func() {
 		defer func() {
@@ -428,7 +427,7 @@ func changesOf(keys ...string) config.Changes {
 func TestReload_ReloaderOnlyStoreValidatesAfterPublish(t *testing.T) {
 	store := &reloadOnlyStore{cur: map[string]any{"a": 1, "b": 1}, next: map[string]any{"a": 2, "b": "bad"}}
 	host, port, _ := freePort(t)
-	app := mustNew(t, credo.WithRawConfig(store), credo.WithAddr(host, port), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithRawConfig(store), credo.WithAddr(host, port))
 	var gotA int
 	app.OnConfigChange[int]("a", func(_ context.Context, v int) error { gotA = v; return nil })
 	app.OnConfigChange[int]("b", func(context.Context, int) error { t.Error("b must not be applied"); return nil })

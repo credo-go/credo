@@ -4,9 +4,9 @@
 
 ---
 
-## Pre-v1 HTTP integration target
+## HTTP feature integration
 
-**Accepted, implementation pending.** The [HTTP features contract](http-features.md) keeps Context pooled and synchronous. First-use locale detection uses one Detect(*Context) callback and separate memo state shared by Locale and every translation/error/field path. Reset it between requests; empty locale is not an initialized/inactive test. First access fixes language, including after early auth failure or request restoration. Detector panic/re-entry caches the default fallback without repeated detection; it follows the configured recovery policy. RequestID returns empty when its optional feature has installed no ID. Terminal lifecycle 503 bypasses extension callbacks and still releases acquired request state. Current Context behavior below remains applicable until the corresponding migration.
+The [HTTP features contract](http-features.md) keeps Context pooled and synchronous. First-use locale detection uses one `Detect(*Context)` callback and request-owned memo state shared by `Locale` and every translation/error/field path; the state is reset with the pooled Context, and an empty locale string is never used as an initialized/inactive test. First access fixes the language, including after early auth failure or request restoration. Detector panic/re-entry caches the default fallback without repeated detection and follows the configured recovery policy. `RequestID` returns empty when the optional request ID feature has installed no ID. The terminal lifecycle 503 bypasses extension callbacks and still releases acquired request state.
 
 ## Overview
 
@@ -43,7 +43,7 @@ func (c *Context) Logger() *slog.Logger    // c.logger → app.logger → framew
 func (c *Context) SetLogger(*slog.Logger)  // replace logger wholesale; derive from Logger() or enrichment (request_id) is silently lost
 func (c *Context) AddLogAttrs(args ...any) // add attrs, deriving from Logger() — preferred over SetLogger for enrichment
 func (c *Context) HasRequestLogger() bool  // true once a request-scoped logger was set; does not inspect its attributes
-func (c *Context) RequestID() string       // request ID set by built-in or middleware RequestID
+func (c *Context) RequestID() string       // request ID installed by App.UseRequestID; "" without it
 func (c *Context) OriginalPath() string    // client path before any rewriting
 func (c *Context) Rewrite(path string) error
 func (c *Context) IsRewriting() bool
@@ -115,7 +115,7 @@ Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) trea
 #### Render and the envelope seam
 
 ```go
-// Method on *Context — the single call site that consults App.SetSuccessRenderer
+// Method on *Context — the single call site that consults App.UseSuccessRenderer
 func (c *Context) Render(status int, data any, opts ...RenderOption) error
 
 // Side channels for the renderer's envelope; silently dropped with no renderer
@@ -123,7 +123,7 @@ func RenderMessageKey(key string) RenderOption
 func RenderMeta(v any) RenderOption
 ```
 
-`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` (`func(ctx, RenderInfo) any`) installed via `app.SetSuccessRenderer`, the renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract; the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
+`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` (`func(ctx, RenderInfo) any`) installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract; the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
 
 In debug mode, a handler that writes body-carrying JSON through the raw `Response.JSON` helper while a `SuccessRenderer` is installed triggers a `WARN` (envelope-bypass diagnostic); intentional raw routes silence it with the `credo.MetaRawResponse` route meta. Non-JSON writers are exempt by design.
 
@@ -162,7 +162,7 @@ There is no per-call variant: one posture per application. `Context.Render` inhe
 func (c *Context) OriginalPath() string
 ```
 
-The value is immutable for the lifetime of the request. When the final served path differs, built-in and configurable access logging include a `path_original` attribute.
+The value is immutable for the lifetime of the request. When the final served path differs, the access log includes a `path_original` attribute.
 
 ### Rewrite
 
@@ -242,7 +242,7 @@ Reads request body. Content-Type determines decoder:
 
 For ordinary methods, a missing `Content-Type` retains the JSON convenience default. A matched RFC 10008 QUERY route is stricter: routing requires a non-blank `Content-Type` before the handler, even for an empty body. Once present, `BindBody` uses the same decoder, validation, strict-body, and error contracts shown below; unsupported media types return 415.
 
-`BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `middleware.Decompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before binding (see the [middleware spec](middleware.md#decompress)).
+`BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `app.UseDecompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before Global middleware runs (see the [HTTP features spec](http-features.md#locale-and-transport-features)).
 
 A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
 
@@ -376,7 +376,7 @@ app.GET("/users", func(ctx *credo.Context) error {
 
 12. **Original path belongs on Context, not Request** — The original client path is framework lifecycle state, not raw HTTP state. Storing it on Context keeps it tied to dispatch/rewrite behavior and avoids mutating the wrapped `*http.Request`.
 
-13. **Internal rewrite is a handler-level forward** — `ctx.Rewrite()` keeps the ergonomic `return ctx.Rewrite("/new")` API while dispatch owns the actual re-dispatch loop. Built-in/global middleware run once; group/route middleware re-run for the target route.
+13. **Internal rewrite is a handler-level forward** — `ctx.Rewrite()` keeps the ergonomic `return ctx.Rewrite("/new")` API while dispatch owns the actual re-dispatch loop. Framework features and global middleware run once; group/route middleware re-run for the target route.
 
 ---
 

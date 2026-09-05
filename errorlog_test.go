@@ -20,7 +20,6 @@ func newLoggingApp(t *testing.T, logs *syncBuffer, opts ...credo.Option) (*credo
 	all := append([]credo.Option{
 		credo.WithAddr(host, port),
 		credo.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
-		credo.WithoutAccessLog(),
 	}, opts...)
 	return mustNew(t, all...), addr
 }

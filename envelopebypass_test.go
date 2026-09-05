@@ -20,10 +20,9 @@ func newBypassApp(t *testing.T, logs *syncBuffer, opts ...credo.Option) *credo.A
 	all := append([]credo.Option{
 		credo.WithDebug(),
 		credo.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
-		credo.WithoutAccessLog(),
 	}, opts...)
 	app := mustNew(t, all...)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		return map[string]any{"data": info.Data}
 	})
 	return app
@@ -92,9 +91,8 @@ func TestEnvelopeBypass_SilentWithoutDebug(t *testing.T) {
 	logs := &syncBuffer{}
 	app := mustNew(t,
 		credo.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
-		credo.WithoutAccessLog(),
 	)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		return map[string]any{"data": info.Data}
 	})
 	app.GET("/leak", func(c *credo.Context) error {
@@ -112,7 +110,6 @@ func TestEnvelopeBypass_SilentWithoutRenderer(t *testing.T) {
 	app := mustNew(t,
 		credo.WithDebug(),
 		credo.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
-		credo.WithoutAccessLog(),
 	)
 	app.GET("/raw", func(c *credo.Context) error {
 		return c.Response().JSON(http.StatusOK, map[string]string{"a": "b"})
@@ -141,7 +138,7 @@ func TestEnvelopeBypass_ErrorPipelineDoesNotWarn(t *testing.T) {
 	logs := &syncBuffer{}
 	app := newBypassApp(t, logs)
 	// An ErrorRenderer body makes the pipeline itself write JSON.
-	app.SetErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
 		return map[string]any{"error": info.Message}
 	})
 	app.GET("/fail", func(c *credo.Context) error {

@@ -1,27 +1,26 @@
 // Copyright (c) 2015-present Peter Kieltyka (https://github.com/pkieltyka), Google Inc.
 // Originally derived from github.com/go-chi/chi/middleware (MIT License).
 
-package middleware
+package credo
 
 import (
 	"bufio"
 	"compress/flate"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/internal/httpheader"
 	"github.com/credo-go/credo/internal/httpwriter"
 )
 
-// Writer pools keyed by compression level. Default level pools are pre-created.
+// Writer pools keyed by compression level.
 var (
 	gzipWriterPools  = sync.Map{} // map[int]*sync.Pool
 	flateWriterPools = sync.Map{} // map[int]*sync.Pool
@@ -42,84 +41,106 @@ var defaultCompressibleContentTypes = []string{
 	"image/svg+xml",
 }
 
-// CompressConfig defines configuration for Compress middleware.
+// CompressConfig configures the response compression feature installed by
+// [App.UseCompress]. The zero value selects every default.
 type CompressConfig struct {
-	// Skipper defines a function to skip middleware.
-	Skipper Skipper
+	// Skipper excludes a request from compression. It is evaluated once, on
+	// the original request as received (method, path and headers), before
+	// routing and before any user middleware; route data and the response
+	// are not available to it. A rewrite does not re-evaluate it. nil
+	// compresses every eligible request.
+	Skipper func(ctx *Context) bool
 
-	// Level is the gzip/deflate compression level (1–9). The zero value
-	// selects the default (5); level 0 (NoCompression) cannot be requested
-	// through this middleware — omit the middleware or use Skipper to skip
-	// compression entirely.
+	// Level is the gzip/deflate compression level, 1–9. Zero selects 5.
+	// Level 0 (no compression) cannot be requested: leave the feature out or
+	// use Skipper.
 	Level int
 
-	// Types limits compression to specific content types.
-	// Supports exact values ("application/json") and wildcards ("text/*").
+	// Types limits compression to specific response content types. Exact
+	// values ("application/json") and wildcards ("text/*") are supported.
 	// Default: common textual MIME types.
 	Types []string
 }
 
-// DefaultCompressConfig returns the default Compress middleware config.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultCompressConfig() CompressConfig {
-	return CompressConfig{
-		Skipper: DefaultSkipper,
-		Level:   5,
-	}
+// compressFeature is the normalized compression configuration.
+type compressFeature struct {
+	skipper       func(*Context) bool
+	level         int
+	exactTypes    map[string]struct{}
+	wildcardTypes map[string]struct{}
 }
 
-// Compress returns response compression middleware.
-func Compress(cfg ...CompressConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultCompressConfig(), normalizeCompressConfig)
-
-	contentTypes := config.Types
-	if len(contentTypes) == 0 {
-		contentTypes = defaultCompressibleContentTypes
+// UseCompress installs response compression. For a request whose
+// Accept-Encoding negotiates gzip or deflate, the response writer is wrapped
+// before any user middleware runs and the wrapper stays in place through
+// centralized error rendering, so error envelopes are compressed like handler
+// output. Compression is applied only to responses whose Content-Type is in
+// Types and that carry no Content-Encoding of their own; HEAD and bodiless
+// responses, streaming (Flush), committed responses and hijacked connections
+// keep their behavior. The compressor is finalized at the framework's
+// response-completion boundary, before the access record observes the
+// response, so access-log bytes count the compressed output the transport
+// accepted.
+//
+// The feature is off by default. UseCompress accepts zero configs for the
+// defaults or one config; it panics for more than one config, for a Level
+// outside 1–9, when called twice, or after the App was prepared or shut down.
+func (app *App) UseCompress(cfgs ...CompressConfig) {
+	cfg := oneConfig("App.UseCompress", cfgs)
+	f := &compressFeature{skipper: cfg.Skipper, level: cfg.Level}
+	if f.level == 0 {
+		f.level = 5
 	}
-
-	exactTypes, wildcardTypes := buildCompressibleTypes(contentTypes)
-
-	return func(next credo.Handler) credo.Handler {
-		return func(ctx *credo.Context) error {
-			if config.Skipper(ctx) {
-				return next(ctx)
-			}
-
-			encoding := selectCompressionEncoding(ctx.Request().Header.Get("Accept-Encoding"))
-			if encoding == "" {
-				return next(ctx)
-			}
-
-			origWriter := ctx.Response().ResponseWriter
-			cw := acquireCompressResponseWriter(origWriter, encoding, config.Level, exactTypes, wildcardTypes)
-			ctx.Response().ResponseWriter = cw
-			defer func() {
-				_ = cw.Close()
-				ctx.Response().ResponseWriter = origWriter
-				releaseCompressResponseWriter(cw)
-			}()
-
-			return next(ctx)
+	if f.level < gzip.BestSpeed || f.level > gzip.BestCompression {
+		panic(fmt.Sprintf("credo: App.UseCompress: Level %d outside 1–9", cfg.Level))
+	}
+	types := cfg.Types
+	if len(types) == 0 {
+		types = defaultCompressibleContentTypes
+	}
+	f.exactTypes, f.wildcardTypes = buildCompressibleTypes(types)
+	app.installFeature("App.UseCompress", func() {
+		if app.compress != nil {
+			panic("credo: App.UseCompress called twice")
 		}
-	}
+		app.compress = f
+	})
 }
 
-func normalizeCompressConfig(config CompressConfig) CompressConfig {
-	defaults := DefaultCompressConfig()
-	if config.Skipper == nil {
-		config.Skipper = defaults.Skipper
+// apply selects compression for the request and installs the writer. The
+// selection happens once, on the original request.
+func (f *compressFeature) apply(c *Context) {
+	if f.skipper != nil && f.skipper(c) {
+		return
 	}
-	if config.Level == 0 {
-		config.Level = defaults.Level
+	encoding := selectCompressionEncoding(c.request.Header.Get("Accept-Encoding"))
+	if encoding == "" {
+		return
 	}
-	config.Types = slices.Clone(config.Types)
-	return config
+	cw := acquireCompressResponseWriter(c.response.ResponseWriter, encoding, f.level, f.exactTypes, f.wildcardTypes)
+	c.response.ResponseWriter = cw
+	c.exec.compress = cw
+}
+
+// outputCounter is the compressor's destination: it forwards to the
+// underlying writer and counts the bytes that writer accepted. Every byte
+// leaving compressResponseWriter passes through it, compressed or not, so
+// out.n is the output-boundary byte count the access record reports.
+type outputCounter struct {
+	w http.ResponseWriter
+	n int64
+}
+
+func (o *outputCounter) Write(p []byte) (int, error) {
+	n, err := o.w.Write(p)
+	o.n += int64(n)
+	return n, err
 }
 
 type compressResponseWriter struct {
 	http.ResponseWriter
 
+	out        outputCounter
 	compressor io.WriteCloser
 	encoding   string
 	level      int
@@ -143,6 +164,7 @@ func acquireCompressResponseWriter(
 		cw = &compressResponseWriter{}
 	}
 	cw.ResponseWriter = w
+	cw.out = outputCounter{w: w}
 	cw.encoding = encoding
 	cw.level = level
 	cw.exactTypes = exactTypes
@@ -155,6 +177,7 @@ func acquireCompressResponseWriter(
 
 func releaseCompressResponseWriter(cw *compressResponseWriter) {
 	cw.ResponseWriter = nil
+	cw.out = outputCounter{}
 	cw.compressor = nil
 	cw.exactTypes = nil
 	cw.wildcardTypes = nil
@@ -169,7 +192,7 @@ func (w *compressResponseWriter) WriteHeader(code int) {
 
 	headers := w.Header()
 	if headers.Get("Content-Encoding") == "" && w.isCompressible(headers.Get("Content-Type")) {
-		if compressor, err := newCompressor(w.encoding, w.level, w.ResponseWriter); err == nil {
+		if compressor, err := newCompressor(w.encoding, w.level, &w.out); err == nil {
 			w.compressor = compressor
 			w.enabled = true
 			headers.Set("Content-Encoding", w.encoding)
@@ -190,7 +213,7 @@ func (w *compressResponseWriter) Write(p []byte) (int, error) {
 		return w.compressor.Write(p)
 	}
 
-	return w.ResponseWriter.Write(p)
+	return w.out.Write(p)
 }
 
 func (w *compressResponseWriter) Flush() {
@@ -213,27 +236,44 @@ func (w *compressResponseWriter) Push(target string, opts *http.PushOptions) err
 	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
 		return pusher.Push(target, opts)
 	}
-	return errors.New("credo/middleware: http.Pusher is unavailable")
+	return errors.New("credo: http.Pusher is unavailable")
 }
 
 func (w *compressResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// Close finalizes the compressed stream, writing the trailer, and returns
+// the compressor to its pool. It reports the finalization error: the caller
+// decides whether the transfer must be aborted.
 func (w *compressResponseWriter) Close() error {
 	if !w.enabled || w.compressor == nil {
 		return nil
 	}
 	err := w.compressor.Close()
-	// Return the compressor to its pool.
+	w.recycleCompressor()
+	return err
+}
+
+// abandon discards the compressor without writing anything further — used
+// once the connection was hijacked and no longer belongs to the response.
+func (w *compressResponseWriter) abandon() {
+	if w.compressor == nil {
+		return
+	}
+	w.recycleCompressor()
+}
+
+func (w *compressResponseWriter) recycleCompressor() {
 	switch c := w.compressor.(type) {
 	case *gzip.Writer:
+		c.Reset(io.Discard)
 		getGzipPool(w.level).Put(c)
 	case *flate.Writer:
+		c.Reset(io.Discard)
 		getFlatePool(w.level).Put(c)
 	}
 	w.compressor = nil
-	return err
 }
 
 func (w *compressResponseWriter) isCompressible(contentType string) bool {

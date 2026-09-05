@@ -113,7 +113,7 @@ func TestUseHealth_ReadinessOnly(t *testing.T) {
 func TestUseHealth_DefaultSilencesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
 	app.UseHealth()
 
 	for _, path := range []string{"/health", "/ready"} {
@@ -133,7 +133,7 @@ func TestUseHealth_DefaultSilencesHeadProbes(t *testing.T) {
 
 	// SetMeta on the GET route propagates to its auto-generated HEAD twin, so
 	// HEAD probes must be silenced too.
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
 	app.UseHealth()
 
 	for _, path := range []string{"/health", "/ready"} {
@@ -151,7 +151,8 @@ func TestUseHealth_DefaultSilencesHeadProbes(t *testing.T) {
 func TestUseHealth_LogRequestsEnablesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.UseHealth(credo.HealthConfig{LogRequests: true})
 
 	w := httptest.NewRecorder()
@@ -171,7 +172,7 @@ func TestUseHealth_LogRequestsEnablesAccessLog(t *testing.T) {
 func TestUseHealth_GroupDefaultSilencesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
 	g := app.Group("/sys")
 	app.UseHealth(credo.HealthConfig{Group: g})
 
@@ -191,7 +192,8 @@ func TestUseHealth_LogRequestsOverridesSilencedGroup(t *testing.T) {
 	// Health routes under a group that silenced access logging, but
 	// LogRequests:true sets the meta at the route level, which overrides the
 	// group's false (LookupMeta reads the route before its parents).
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	g := app.Group("/sys")
 	g.SetMeta(credo.MetaAccessLog, false)
 	app.UseHealth(credo.HealthConfig{Group: g, LogRequests: true})
@@ -303,7 +305,7 @@ func TestReadiness_CheckFails(t *testing.T) {
 
 func TestReadiness_ErrorsMaskedByDefault(t *testing.T) {
 	logger, logs := newTestLogger(t)
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
 	app.UseHealth()
 	app.AddReadinessCheck("db", credo.HealthCheckFunc(func(context.Context) error {
 		return errors.New("dial tcp 10.0.1.5:5432: connection refused")
@@ -408,7 +410,7 @@ func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, logs := newTestLogger(t)
-			app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+			app := mustNew(t, credo.WithLogger(logger))
 			probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 				return internalhealth.Result{
 					Status:  "down",
@@ -442,7 +444,7 @@ func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
 func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
 	const invalidStatus = "dial tcp 10.0.1.5:5432"
 	logger, logs := newTestLogger(t)
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
 	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 		return internalhealth.Result{Status: invalidStatus}
 	})

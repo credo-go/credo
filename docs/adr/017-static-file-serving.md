@@ -211,7 +211,7 @@ Errors return `NewHTTPError(status, key)`, flowing through Credo's standard erro
 
 - `*StaticRoute` is a new type distinct from `*Route`, adding API surface. Mitigated by keeping only 4 methods, all with familiar semantics.
 - Dot heuristic for SPA has a theoretical false negative for paths like `/users/john.doe`. This is an uncommon URL pattern in SPAs, and users who need it can write a custom handler.
-- No built-in compression or ETag generation. These are cross-cutting concerns handled by middleware (`middleware.Compress`) or `http.ServeContent` (Last-Modified).
+- No static-specific compression or ETag generation. These are cross-cutting concerns handled by the compression feature (`app.UseCompress`) or `http.ServeContent` (Last-Modified).
 
 **Risks:**
 

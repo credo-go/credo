@@ -2,6 +2,7 @@ package credo_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"testing/fstest"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/middleware"
 )
 
 type countingAccessLogLeveler struct {
@@ -23,10 +23,11 @@ func (l *countingAccessLogLeveler) Level() slog.Level {
 	return l.level
 }
 
-func TestBuiltinAccessLog_Logs200(t *testing.T) {
+func TestAccessLog_Logs200(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "hello")
 	})
@@ -60,10 +61,11 @@ func TestBuiltinAccessLog_Logs200(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_UsesRealIP(t *testing.T) {
+func TestAccessLog_UsesRealIP(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID(), credo.WithTrustedProxies("10.0.0.0/8"))
+	app := mustNew(t, credo.WithLogger(logger), credo.WithTrustedProxies("10.0.0.0/8"))
+	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "hello")
 	})
@@ -83,7 +85,7 @@ func TestBuiltinAccessLog_UsesRealIP(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_LogLevel(t *testing.T) {
+func TestAccessLog_LogLevel(t *testing.T) {
 	tests := []struct {
 		name   string
 		status int
@@ -99,7 +101,8 @@ func TestBuiltinAccessLog_LogLevel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, buf := newTestLogger(t)
 
-			app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+			app := mustNew(t, credo.WithLogger(logger))
+			app.UseAccessLog()
 			status := tt.status
 			app.GET("/", func(ctx *credo.Context) error {
 				return ctx.Response().NoContent(status)
@@ -124,10 +127,11 @@ func TestBuiltinAccessLog_LogLevel(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_404(t *testing.T) {
+func TestAccessLog_404(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/exists", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -149,10 +153,11 @@ func TestBuiltinAccessLog_404(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_405(t *testing.T) {
+func TestAccessLog_405(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -174,10 +179,11 @@ func TestBuiltinAccessLog_405(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_PanicLogged(t *testing.T) {
+func TestAccessLog_PanicLogged(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/", func(ctx *credo.Context) error {
 		panic("boom")
 	})
@@ -213,8 +219,8 @@ func TestBuiltinAccessLog_PanicLogged(t *testing.T) {
 	if accessEntry["level"] != "ERROR" {
 		t.Errorf("access log level = %v, want ERROR", accessEntry["level"])
 	}
-	// bytes must be > 0: builtinRecover writes the 500 response body
-	// before builtinAccessLog's defer fires (recover is an inner frame).
+	// bytes must be > 0: recovery writes the 500 response body before the
+	// access record is observed.
 	if b, ok := accessEntry["bytes"].(float64); !ok || int(b) == 0 {
 		t.Errorf("access log bytes = %v, want > 0 (panic response body)", accessEntry["bytes"])
 	}
@@ -232,10 +238,11 @@ func TestBuiltinAccessLog_PanicLogged(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_ErrorResponse_BytesAndStatus(t *testing.T) {
+func TestAccessLog_ErrorResponse_BytesAndStatus(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/fail", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(404)
 	})
@@ -273,10 +280,11 @@ func TestBuiltinAccessLog_ErrorResponse_BytesAndStatus(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_ErrorResponse_DurationIncludesRenderer(t *testing.T) {
+func TestAccessLog_ErrorResponse_DurationIncludesRenderer(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/fail", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(500).WithMessageKey("test.error")
 	})
@@ -303,11 +311,13 @@ func TestBuiltinAccessLog_ErrorResponse_DurationIncludesRenderer(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_IncludesRequestID(t *testing.T) {
+func TestAccessLog_IncludesRequestID(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	// Both built-in RequestID and AccessLog active.
+	// Both RequestID and AccessLog installed.
 	app := mustNew(t, credo.WithLogger(logger))
+	app.UseRequestID()
+	app.UseAccessLog()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -330,10 +340,10 @@ func TestBuiltinAccessLog_IncludesRequestID(t *testing.T) {
 	}
 }
 
-func TestWithoutAccessLog_Disables(t *testing.T) {
+func TestAccessLog_OffByDefault(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithLogger(logger))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})
@@ -343,14 +353,14 @@ func TestWithoutAccessLog_Disables(t *testing.T) {
 	app.ServeHTTP(w, r)
 
 	if buf.Len() != 0 {
-		t.Errorf("expected no log with WithoutAccessLog, got: %s", buf.String())
+		t.Errorf("expected no log without UseAccessLog, got: %s", buf.String())
 	}
 }
 
-func TestBuiltinAccessLog_BothDisabled(t *testing.T) {
+func TestAccessLog_NothingInstalled(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID(), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithLogger(logger))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})
@@ -363,20 +373,20 @@ func TestBuiltinAccessLog_BothDisabled(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 	if buf.Len() != 0 {
-		t.Errorf("expected no log with both disabled, got: %s", buf.String())
+		t.Errorf("expected no log with no feature installed, got: %s", buf.String())
 	}
 	if got := w.Header().Get("X-Request-Id"); got != "" {
 		t.Errorf("X-Request-Id = %q, want empty", got)
 	}
 }
 
-func TestBuiltinAccessLog_FallbackRequestID(t *testing.T) {
-	// When built-in RequestID is disabled but middleware.RequestID() is used,
-	// the access log should still include request_id via the context store fallback.
+func TestAccessLog_WithoutRequestIDFeature(t *testing.T) {
+	// AccessLog is independent of RequestID: with only the access log
+	// installed the record carries no request_id and no header is echoed.
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
-	app.GlobalMiddleware(middleware.RequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -389,13 +399,11 @@ func TestBuiltinAccessLog_FallbackRequestID(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
 		t.Fatalf("failed to parse log: %v\nraw: %s", err, buf.String())
 	}
-
-	reqID, ok := entry["request_id"].(string)
-	if !ok || reqID == "" {
-		t.Error("expected request_id in access log via context store fallback")
+	if _, ok := entry["request_id"]; ok {
+		t.Errorf("request_id = %v, want absent without UseRequestID", entry["request_id"])
 	}
-	if got := w.Header().Get("X-Request-Id"); got != reqID {
-		t.Errorf("header = %q, log request_id = %q", got, reqID)
+	if got := w.Header().Get("X-Request-Id"); got != "" {
+		t.Errorf("X-Request-Id = %q, want empty", got)
 	}
 }
 
@@ -407,10 +415,11 @@ func TestMetaAccessLog_ConstantValue(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_MetaSilencesRoute(t *testing.T) {
+func TestAccessLog_MetaSilencesRoute(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/silent", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	}).SetMeta(credo.MetaAccessLog, false)
@@ -436,10 +445,11 @@ func TestBuiltinAccessLog_MetaSilencesRoute(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_MetaSilencesGroup(t *testing.T) {
+func TestAccessLog_MetaSilencesGroup(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	g := app.Group("/internal")
 	g.SetMeta(credo.MetaAccessLog, false)
 	g.GET("/metrics", func(ctx *credo.Context) error {
@@ -456,13 +466,14 @@ func TestBuiltinAccessLog_MetaSilencesGroup(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_RouteMetaOverridesGroup(t *testing.T) {
+func TestAccessLog_RouteMetaOverridesGroup(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	// A silenced group with one route that re-enables logging at the route
 	// level. LookupMeta reads the route before its parents, so the route's
 	// true overrides the group's false.
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	g := app.Group("/internal")
 	g.SetMeta(credo.MetaAccessLog, false)
 	g.GET("/audit", func(ctx *credo.Context) error {
@@ -476,11 +487,12 @@ func TestBuiltinAccessLog_RouteMetaOverridesGroup(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_NonBoolMetaFailsOpen(t *testing.T) {
+func TestAccessLog_NonBoolMetaFailsOpen(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	// A non-bool meta value is ignored (fail-open): the request is logged.
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/x", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	}).SetMeta(credo.MetaAccessLog, "false") // string, not bool
@@ -492,10 +504,11 @@ func TestBuiltinAccessLog_NonBoolMetaFailsOpen(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_StaticRouteMetaSilences(t *testing.T) {
+func TestAccessLog_StaticRouteMetaSilences(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	fsys := fstest.MapFS{
 		"app.js": {Data: []byte("console.log('x')")},
 	}
@@ -511,16 +524,15 @@ func TestBuiltinAccessLog_StaticRouteMetaSilences(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_SkipperOption(t *testing.T) {
+func TestAccessLog_SkipperOption(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t,
-		credo.WithLogger(logger),
-		credo.WithoutRequestID(),
-		credo.WithAccessLogSkipper(func(ctx *credo.Context) bool {
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog(credo.AccessLogConfig{
+		Skipper: func(ctx *credo.Context) bool {
 			return ctx.Request().URL.Path == "/skip"
-		}),
-	)
+		},
+	})
 	app.GET("/skip", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -543,12 +555,13 @@ func TestBuiltinAccessLog_SkipperOption(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_SilencedRoutePanicStillRecovers(t *testing.T) {
+func TestAccessLog_SilencedRoutePanicStillRecovers(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	// builtinRecover is on by default. A silenced route that panics must not
-	// emit an access-log line, but the recover layer still logs the panic.
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	// Recovery is on by default. A silenced route that panics must not emit
+	// an access-log line, but the recover layer still logs the panic.
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog()
 	app.GET("/boom", func(ctx *credo.Context) error {
 		panic("boom")
 	}).SetMeta(credo.MetaAccessLog, false)
@@ -576,7 +589,7 @@ func TestBuiltinAccessLog_SilencedRoutePanicStillRecovers(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_MinLevel(t *testing.T) {
+func TestAccessLog_MinLevel(t *testing.T) {
 	tests := []struct {
 		name    string
 		level   slog.Level
@@ -594,11 +607,10 @@ func TestBuiltinAccessLog_MinLevel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, buf := newTestLogger(t)
-			app := mustNew(t,
-				credo.WithLogger(logger),
-				credo.WithoutRequestID(),
-				credo.WithAccessLogMinLevel(tt.level),
-			)
+			app := mustNew(t, credo.WithLogger(logger))
+			app.UseAccessLog(credo.AccessLogConfig{
+				MinLevel: tt.level,
+			})
 			app.GET("/", func(ctx *credo.Context) error {
 				return ctx.Response().NoContent(tt.status)
 			})
@@ -611,16 +623,15 @@ func TestBuiltinAccessLog_MinLevel(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_LevelVarRuntimeUpdate(t *testing.T) {
+func TestAccessLog_LevelVarRuntimeUpdate(t *testing.T) {
 	logger, buf := newTestLogger(t)
 	var level slog.LevelVar
 	level.Set(slog.LevelWarn)
 
-	app := mustNew(t,
-		credo.WithLogger(logger),
-		credo.WithoutRequestID(),
-		credo.WithAccessLogMinLevel(&level),
-	)
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog(credo.AccessLogConfig{
+		MinLevel: &level,
+	})
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -637,14 +648,13 @@ func TestBuiltinAccessLog_LevelVarRuntimeUpdate(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_LevelerReadOncePerRequest(t *testing.T) {
+func TestAccessLog_LevelerReadOncePerRequest(t *testing.T) {
 	logger, _ := newTestLogger(t)
 	level := &countingAccessLogLeveler{level: slog.LevelInfo}
-	app := mustNew(t,
-		credo.WithLogger(logger),
-		credo.WithoutRequestID(),
-		credo.WithAccessLogMinLevel(level),
-	)
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog(credo.AccessLogConfig{
+		MinLevel: level,
+	})
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -655,27 +665,32 @@ func TestBuiltinAccessLog_LevelerReadOncePerRequest(t *testing.T) {
 	}
 }
 
-func TestWithAccessLogMinLevel_TypedNilRejected(t *testing.T) {
+func TestUseAccessLog_TypedNilMinLevelPanics(t *testing.T) {
 	var level *slog.LevelVar
-	_, err := credo.New(credo.WithAccessLogMinLevel(level))
-	if err == nil || !strings.Contains(err.Error(), "typed-nil slog.Leveler") {
-		t.Fatalf("New error = %v, want typed-nil Leveler error", err)
-	}
+	app := mustNew(t)
+	defer func() {
+		r := recover()
+		if r == nil || !strings.Contains(fmt.Sprint(r), "typed-nil slog.Leveler") {
+			t.Fatalf("panic = %v, want typed-nil Leveler panic", r)
+		}
+	}()
+	app.UseAccessLog(credo.AccessLogConfig{MinLevel: level})
 }
 
-func TestBuiltinAccessLog_ResultFilterSnapshot(t *testing.T) {
+func TestAccessLog_ResultFilterSnapshot(t *testing.T) {
 	logger, buf := newTestLogger(t)
 	var captured credo.AccessLogEntry
 	var calls atomic.Int32
 
-	app := mustNew(t,
-		credo.WithLogger(logger),
-		credo.WithAccessLogResultFilter(func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseRequestID()
+	app.UseAccessLog(credo.AccessLogConfig{
+		ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
 			calls.Add(1)
 			captured = entry
 			return true
-		}),
-	)
+		},
+	})
 	app.POST("/users", func(ctx *credo.Context) error {
 		return ctx.Response().Text(201, "created")
 	}).Name("users.create")
@@ -705,17 +720,16 @@ func TestBuiltinAccessLog_ResultFilterSnapshot(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_ResultFilterOrdering(t *testing.T) {
+func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 	t.Run("false skips log but not handler", func(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var handled atomic.Bool
-		app := mustNew(t,
-			credo.WithLogger(logger),
-			credo.WithoutRequestID(),
-			credo.WithAccessLogResultFilter(func(*credo.Context, credo.AccessLogEntry) bool {
+		app := mustNew(t, credo.WithLogger(logger))
+		app.UseAccessLog(credo.AccessLogConfig{
+			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
 				return false
-			}),
-		)
+			},
+		})
 		app.GET("/", func(ctx *credo.Context) error {
 			handled.Store(true)
 			return ctx.Response().NoContent(200)
@@ -733,15 +747,14 @@ func TestBuiltinAccessLog_ResultFilterOrdering(t *testing.T) {
 	t.Run("MinLevel runs before filter", func(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var calls atomic.Int32
-		app := mustNew(t,
-			credo.WithLogger(logger),
-			credo.WithoutRequestID(),
-			credo.WithAccessLogMinLevel(slog.LevelWarn),
-			credo.WithAccessLogResultFilter(func(*credo.Context, credo.AccessLogEntry) bool {
+		app := mustNew(t, credo.WithLogger(logger))
+		app.UseAccessLog(credo.AccessLogConfig{
+			MinLevel: slog.LevelWarn,
+			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
 				calls.Add(1)
 				return true
-			}),
-		)
+			},
+		})
 		app.GET("/", func(ctx *credo.Context) error {
 			return ctx.Response().NoContent(200)
 		})
@@ -758,14 +771,13 @@ func TestBuiltinAccessLog_ResultFilterOrdering(t *testing.T) {
 	t.Run("MetaAccessLog runs before filter", func(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var calls atomic.Int32
-		app := mustNew(t,
-			credo.WithLogger(logger),
-			credo.WithoutRequestID(),
-			credo.WithAccessLogResultFilter(func(*credo.Context, credo.AccessLogEntry) bool {
+		app := mustNew(t, credo.WithLogger(logger))
+		app.UseAccessLog(credo.AccessLogConfig{
+			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
 				calls.Add(1)
 				return true
-			}),
-		)
+			},
+		})
 		app.GET("/", func(ctx *credo.Context) error {
 			return ctx.Response().NoContent(404)
 		}).SetMeta(credo.MetaAccessLog, false)
@@ -780,14 +792,15 @@ func TestBuiltinAccessLog_ResultFilterOrdering(t *testing.T) {
 	})
 }
 
-func TestBuiltinAccessLog_CustomLogger(t *testing.T) {
+func TestAccessLog_CustomLogger(t *testing.T) {
 	appLogger, appBuf := newTestLogger(t)
 	accessLogger, accessBuf := newTestLogger(t)
 
-	app := mustNew(t,
-		credo.WithLogger(appLogger),
-		credo.WithAccessLogLogger(accessLogger),
-	)
+	app := mustNew(t, credo.WithLogger(appLogger))
+	app.UseRequestID()
+	app.UseAccessLog(credo.AccessLogConfig{
+		Logger: accessLogger,
+	})
 	app.GET("/", func(ctx *credo.Context) error {
 		ctx.AddLogAttrs("tenant_id", "acme")
 		ctx.Logger().Info("handler log")
@@ -812,7 +825,7 @@ func TestBuiltinAccessLog_CustomLogger(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
+func TestAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
 	tests := []struct {
 		name    string
 		handler credo.Handler
@@ -834,14 +847,13 @@ func TestBuiltinAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, _ := newTestLogger(t)
 			var captured credo.AccessLogEntry
-			app := mustNew(t,
-				credo.WithLogger(logger),
-				credo.WithoutRequestID(),
-				credo.WithAccessLogResultFilter(func(_ *credo.Context, entry credo.AccessLogEntry) bool {
+			app := mustNew(t, credo.WithLogger(logger))
+			app.UseAccessLog(credo.AccessLogConfig{
+				ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
 					captured = entry
 					return true
-				}),
-			)
+				},
+			})
 			app.GET("/", tt.handler)
 
 			w := httptest.NewRecorder()
@@ -856,47 +868,20 @@ func TestBuiltinAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
 	}
 }
 
-func TestBuiltinAccessLog_NilOptionsKeepDefaults(t *testing.T) {
+func TestAccessLog_ZeroConfigKeepsDefaults(t *testing.T) {
 	logger, buf := newTestLogger(t)
-	app := mustNew(t,
-		credo.WithLogger(logger),
-		credo.WithoutRequestID(),
-		credo.WithAccessLogLogger(nil),
-		credo.WithAccessLogMinLevel(nil),
-		credo.WithAccessLogResultFilter(nil),
-	)
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog(credo.AccessLogConfig{
+		Logger:       nil,
+		MinLevel:     nil,
+		ResultFilter: nil,
+	})
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
 
 	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	if buf.Len() == 0 {
-		t.Fatal("nil access-log options did not preserve default logging")
-	}
-}
-
-func TestBuiltinAccessLog_OptionsHaveNoEffectWhenDisabled(t *testing.T) {
-	appLogger, appBuf := newTestLogger(t)
-	accessLogger, accessBuf := newTestLogger(t)
-	var filterCalls atomic.Int32
-	app := mustNew(t,
-		credo.WithLogger(appLogger),
-		credo.WithoutAccessLog(),
-		credo.WithAccessLogLogger(accessLogger),
-		credo.WithAccessLogMinLevel(slog.LevelDebug),
-		credo.WithAccessLogSkipper(func(*credo.Context) bool { return false }),
-		credo.WithAccessLogResultFilter(func(*credo.Context, credo.AccessLogEntry) bool {
-			filterCalls.Add(1)
-			return true
-		}),
-	)
-	app.GET("/", func(ctx *credo.Context) error {
-		return ctx.Response().NoContent(200)
-	})
-
-	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
-	if appBuf.Len() != 0 || accessBuf.Len() != 0 || filterCalls.Load() != 0 {
-		t.Fatalf("disabled access log produced work: app=%q access=%q calls=%d",
-			appBuf.String(), accessBuf.String(), filterCalls.Load())
+		t.Fatal("zero-value access-log config did not preserve default logging")
 	}
 }

@@ -44,11 +44,9 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	c := app.ctxPool.get()
 	c.reset(w, r)
-	// Errors are handled inside the compiled handler chain by
-	// builtinErrorHandler (non-panic) and builtinRecover (panic).
-	// The chain always returns nil.
-	_ = p.handler(c)
-	app.ctxPool.put(c)
+	// The executor owns everything from here: feature stages, the chain,
+	// error and panic handling, finalization and the Context's release.
+	app.execute(c, p.handler)
 }
 
 // Run starts the HTTP server and blocks until an interrupt (Ctrl+C) or

@@ -19,7 +19,7 @@ import (
 func TestContext_SetLogger(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID(), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithLogger(logger))
 
 	var hasBefore, hasAfter []bool
 	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
@@ -62,9 +62,10 @@ func TestContext_SetLogger(t *testing.T) {
 func TestContext_AddLogAttrs(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	// Built-in request ID tier stays on: AddLogAttrs derives from the
+	// With the request ID feature installed, AddLogAttrs derives from the
 	// already-enriched logger, so request_id must survive.
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseRequestID()
 
 	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
@@ -93,7 +94,7 @@ func TestContext_AddLogAttrs(t *testing.T) {
 }
 
 func TestContext_AddLogAttrs_NoArgsIsNoop(t *testing.T) {
-	app := mustNew(t, credo.WithoutRequestID())
+	app := mustNew(t)
 
 	app.GET("/", func(ctx *credo.Context) error {
 		ctx.AddLogAttrs()

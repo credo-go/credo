@@ -152,7 +152,7 @@ func TestNew_InvalidTrustedProxiesConfig(t *testing.T) {
 
 func TestNew_TrustedProxiesConfig(t *testing.T) {
 	rc := newServerConfigRC(map[string]any{"trusted_proxies": []string{"10.0.0.0/8"}})
-	app := mustNew(t, credo.WithRawConfig(rc), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithRawConfig(rc))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, ctx.Request().RealIP())
 	})
@@ -170,7 +170,7 @@ func TestNew_TrustedProxiesConfig(t *testing.T) {
 
 func TestNew_TrustedProxiesOptionOverridesConfig(t *testing.T) {
 	rc := newServerConfigRC(map[string]any{"trusted_proxies": []string{"192.0.2.0/24"}})
-	app := mustNew(t, credo.WithRawConfig(rc), credo.WithTrustedProxies("10.0.0.0/8"), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithRawConfig(rc), credo.WithTrustedProxies("10.0.0.0/8"))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, ctx.Request().RealIP())
 	})

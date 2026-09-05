@@ -397,7 +397,7 @@ No `internal/` package needed — the implementation is small and lives in the r
 
 4. **SPA dot heuristic** — Accept-header detection is unreliable (`*/*` includes `text/html`). File extension check is deterministic, debug-friendly, and used by industry-standard tools (Vite, CRA).
 
-5. **No built-in compression** — `middleware.Compress()` handles this as a cross-cutting concern. Static-specific compression would duplicate functionality.
+5. **No static-specific compression** — `app.UseCompress()` handles this as a cross-cutting concern. Static-specific compression would duplicate functionality.
 
 6. **No config file integration** — Static config is per-route. Multiple `Static()` calls may have different configs. Global config file keys don't map to this pattern.
 

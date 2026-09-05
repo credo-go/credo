@@ -200,7 +200,7 @@ app.Mount("/", legacyApp) // every path, "/" included, goes to legacyApp
 
 Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405.
 
-Mounted handlers run outside the per-route compiled chain, so only built-in and global middleware apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).
+Mounted handlers run outside the per-route compiled chain, so only global middleware (and the framework features) apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).
 
 In introspection, a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix, never its internal routes.
 
@@ -358,7 +358,7 @@ app.GET("/checkout", func(ctx *credo.Context) error {
 - A request can rewrite at most 10 times
 - Re-dispatch stays in the same host scope
 - Group and route middleware run again for the rewritten route
-- Built-in and global middleware do not run again
+- Framework features and global middleware do not run again
 
 ---
 
@@ -381,7 +381,7 @@ When the final served path differs, Credo logs both:
 - `path_original` — client-sent path
 - `route` — the matched route's registered pattern (absent for 404/405)
 
-This works in the built-in access log and in `middleware.AccessLog`.
+The access log (`app.UseAccessLog`) records both.
 
 ---
 

@@ -2,11 +2,11 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-008, ADR-013
 
-## Accepted pre-v1 amendments
+## Pre-v1 amendments
 
-**2026-09-05; implementation pending.** The [bootstrap contract](../specs/bootstrap-and-di-lifecycle.md) adds a lifecycle-admission rejection path: HTTP 503, machine code `service_unavailable`, default message/envelope/encoder and HEAD/body rules, with no preparation, DI or application callbacks. Custom renderers, message-key resolvers, JSON callbacks, middleware and HTTP feature callbacks may depend on closed resources, so this terminal response bypasses them. Stopped admission takes precedence over a cached handler or preparation failure; an admitted preparation failure retains the repeatable developer-error behavior. Prepared stopping requests still use ordinary drain.
+**Implemented 2026-09-05 (DI minor and HTTP minor).** The [bootstrap contract](../specs/bootstrap-and-di-lifecycle.md) adds a lifecycle-admission rejection path: HTTP 503, machine code `service_unavailable`, default message/envelope/encoder and HEAD/body rules, with no preparation, DI or application callbacks. Custom renderers, message-key resolvers, JSON callbacks, middleware and HTTP feature callbacks may depend on closed resources, so this terminal response bypasses them. Stopped admission takes precedence over a cached handler or preparation failure; an admitted preparation failure retains the repeatable developer-error behavior. Prepared stopping requests still use ordinary drain.
 
-The [HTTP contract](../specs/http-features.md) moves request recovery and final error rendering into framework-owned execution. Error and success renderer registration become single-install UseErrorRenderer/UseSuccessRenderer; body-shaping/nil-result and committed-response semantics stay intact. Recovery is default-on with WithRecoverConfig and WithoutRecover; error classification/rendering remain active independently. Preparation failures and other goroutines remain outside request recovery.
+The [HTTP contract](../specs/http-features.md) places request recovery and final error rendering in the framework-owned request executor. Error and success renderers are single-install `UseErrorRenderer`/`UseSuccessRenderer` registrations; body-shaping/nil-result and committed-response semantics are intact. Recovery is default-on with `WithRecoverConfig` and `WithoutRecover`; error classification/rendering remain active independently. Preparation failures and other goroutines remain outside request recovery.
 
 G4c is accepted: with recovery enabled, pre-commit callback panics use 500; failure in error rendering falls back to the callback-free default encoder/body. Detector failures retain the cached default language and are never retried. A post-response ResultFilter panic preserves the response, emits a framework diagnostic and drops that access record. With recovery disabled, callback panics propagate after cleanup. ErrAbortHandler always propagates.
 
@@ -111,7 +111,7 @@ For HTTP/domain errors, an explicit key miss falls back to the literal key so ha
 RFC Problem Details remains first-party but is not the core model or default:
 
 ```go
-app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
+app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
 ```
 
 The renderer writes `application/problem+json` and maps normalized information to `type`, `title`, `status`, `detail`, and `instance`, with `code`, `details`, and `violations` as extension members (the extension vocabulary matches the default envelope). `about:blank` is the default type; `RFC9457Config.ResolveType` can supply application problem-type URIs. The public `ProblemDetails` helper type is retained for this adapter.
@@ -122,7 +122,7 @@ The pipeline starts only after `net/http` invokes the app. Standard-library reje
 
 ### Panic recovery
 
-Built-in recovery is the outermost application layer and converts panics to a generic 500. `http.ErrAbortHandler` is re-panicked. `WithoutRecover` disables the built-in; `middleware.Recover` remains available for group/route policy.
+Built-in recovery is the outermost application layer and converts panics to a generic 500. `http.ErrAbortHandler` is re-panicked. `WithRecoverConfig` customizes its logger and stack capture; `WithoutRecover` disables it. There is no group/route recovery; scoped policy is ordinary middleware ([ADR-010](010-middleware-architecture.md)).
 
 ## Consequences
 

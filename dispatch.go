@@ -33,9 +33,12 @@ type routeHandler struct {
 	srcLoc sourceLocation
 }
 
-// compile builds the handler chain: globalMW[0] → ... → globalMW[n] → dispatch
+// compile builds the user chain: globalMW[0] → ... → globalMW[n] → dispatch
 // and precompiles per-route middleware chains. It runs exactly once, under
-// prepare, after registration was frozen.
+// prepare, after registration was frozen. The framework stages around the
+// chain — request ID, access log, decompression, compression, error and
+// panic handling — belong to the request executor (see App.execute), not to
+// the chain.
 func (app *App) compile() Handler {
 	// Sort host entries by specificity (most specific first).
 	slices.SortStableFunc(app.hosts, compareHostEntries)
@@ -53,34 +56,6 @@ func (app *App) compile() Handler {
 	for i := len(app.globalMW) - 1; i >= 0; i-- {
 		handler = app.globalMW[i](handler)
 	}
-
-	// Built-in error handler: catches handler errors, writes the error
-	// response inline so that outer layers (access log) observe the final
-	// response state (status, bytes, duration).
-	handler = app.builtinErrorHandler(handler)
-
-	// Built-in recovery: catches panics from handlers/middleware, writes
-	// the 500 response via handleError. Placed inside builtinAccessLog so
-	// the access log's defer fires AFTER the panic response is committed,
-	// giving correct bytes/status/duration even on the panic path.
-	if !app.disableRecover {
-		handler = builtinRecover(handler)
-	}
-
-	// Built-in access logger (defer-based). Outermost observability layer
-	// so its defer fires after both builtinErrorHandler and builtinRecover
-	// have written the final response.
-	if !app.disableAccessLog {
-		handler = app.builtinAccessLog(handler)
-	}
-
-	// Built-in request ID (enriches ctx.Logger with request_id).
-	// Outermost layer so that all inner layers (access log, recover)
-	// benefit from the enriched logger.
-	if !app.disableRequestID {
-		handler = builtinRequestID(handler)
-	}
-
 	return handler
 }
 
@@ -454,7 +429,8 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // (CONNECT is a proxy mechanism; TRACE enables cross-site tracing).
 // Requests using them receive 405 Method Not Allowed.
 //
-// Middleware scope: mounted handlers receive only built-in and global middleware.
+// Middleware scope: mounted handlers receive only global middleware (and the
+// framework features that wrap every request).
 // Group-level and route-level middleware do not apply because mounted handlers
 // are plain [http.Handler] instances dispatched outside the per-route compiled
 // chain. If the mounted sub-application requires authentication or other

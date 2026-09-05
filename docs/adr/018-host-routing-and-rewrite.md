@@ -111,7 +111,7 @@ Rules:
 - The rewrite target must begin with `/`.
 - Re-dispatch stays within the same matched host scope.
 - Group and route middleware run again for the newly matched route.
-- Built-in and global middleware do not run again.
+- Framework features and global middleware do not run again.
 - A hard limit of 10 rewrites prevents loops.
 - If the limit is exceeded, dispatch returns an error and the normal error pipeline produces a 500 response.
 - If the response is already committed, `ctx.Rewrite()` returns an error.
@@ -124,7 +124,7 @@ func (ctx *Context) OriginalPath() string
 
 Context captures the original path once in `reset()`, before any middleware or dispatch runs. The value is immutable for the lifetime of the request.
 
-Both built-in access logging and `middleware.AccessLog` include a `path_original` attribute when the final served path differs from the original path.
+The access log includes a `path_original` attribute when the final served path differs from the original path.
 
 ## Consequences
 

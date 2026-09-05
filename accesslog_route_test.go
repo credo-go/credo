@@ -9,15 +9,15 @@ import (
 	"testing"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/middleware"
 )
 
-func TestBuiltinAccessLog_EmitsRoutePattern(t *testing.T) {
+func TestAccessLog_EmitsRoutePattern(t *testing.T) {
 	var buf bytes.Buffer
-	app, err := credo.New(credo.WithAccessLogLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	app, err := credo.New()
 	if err != nil {
 		t.Fatalf("credo.New: %v", err)
 	}
+	app.UseAccessLog(credo.AccessLogConfig{Logger: slog.New(slog.NewJSONHandler(&buf, nil))})
 	app.GET("/items/{id}", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusNoContent)
 	})
@@ -36,20 +36,20 @@ func TestBuiltinAccessLog_EmitsRoutePattern(t *testing.T) {
 	}
 }
 
-func TestAccessLogMiddleware_EmitsRoutePattern(t *testing.T) {
+func TestAccessLog_ResultFilterSeesRoutePattern(t *testing.T) {
 	var buf bytes.Buffer
-	app, err := credo.New(credo.WithoutAccessLog())
+	app, err := credo.New()
 	if err != nil {
 		t.Fatalf("credo.New: %v", err)
 	}
 	var seen credo.AccessLogEntry
-	app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{
+	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.NewJSONHandler(&buf, nil)),
 		ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
 			seen = entry
 			return true
 		},
-	}))
+	})
 	app.GET("/items/{id}", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusNoContent)
 	})
@@ -60,6 +60,6 @@ func TestAccessLogMiddleware_EmitsRoutePattern(t *testing.T) {
 		t.Fatalf("AccessLogEntry.Route = %q, want /items/{id}", seen.Route)
 	}
 	if got := buf.String(); !strings.Contains(got, `"route":"/items/{id}"`) {
-		t.Fatalf("middleware log = %s, want route attribute", got)
+		t.Fatalf("access log = %s, want route attribute", got)
 	}
 }

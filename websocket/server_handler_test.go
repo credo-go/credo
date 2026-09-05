@@ -24,7 +24,7 @@ import (
 
 func newHandlerTestApp(t *testing.T, cfg ...Config) (*credo.App, *Server) {
 	t.Helper()
-	app, err := credo.New(credo.WithoutAccessLog())
+	app, err := credo.New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +692,6 @@ func (r *handlerTestResource) Shutdown(context.Context) error {
 func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
 	app, err := credo.New(
 		credo.WithAddr("127.0.0.1", 0),
-		credo.WithoutAccessLog(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -792,10 +791,10 @@ func TestServerHandlerWSSAndHTTP2Negative(t *testing.T) {
 	}
 }
 
-func TestServerHandlerThroughCompressionMiddleware(t *testing.T) {
+func TestServerHandlerThroughCompressionFeature(t *testing.T) {
 	app, server := newHandlerTestApp(t)
-	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil })).
-		Middleware(middleware.Compress())
+	app.UseCompress()
+	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(
@@ -807,7 +806,7 @@ func TestServerHandlerThroughCompressionMiddleware(t *testing.T) {
 	defer client.CloseNow()
 	_, _, err = client.Read(t.Context())
 	if got := coderwebsocket.CloseStatus(err); got != coderwebsocket.StatusNormalClosure {
-		t.Fatalf("close through compression middleware = %d, want 1000; error=%v", got, err)
+		t.Fatalf("close through compression feature = %d, want 1000; error=%v", got, err)
 	}
 }
 

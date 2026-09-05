@@ -2,18 +2,18 @@
 
 **Status:** Draft (logging baseline accepted; tracing/metrics pending) **Date:** 2026-03-01 **Depends on:** ADR-004
 
-## Accepted pre-v1 logging amendment
+## Pre-v1 logging amendment
 
-**2026-09-05; implementation pending.** The [HTTP feature contract](../specs/http-features.md) supersedes the default-on request logging/correlation policy below. Logging infrastructure and scoped Infra loggers remain available automatically; request IDs and access records each require their own UseRequestID/UseAccessLog registration. Neither implicitly enables the other. AccessLog observes the finalized response and keeps metadata/level/filter selection. Its byte count is post-compression body bytes accepted by the underlying HTTP writer, excluding headers, framing and TLS. Duration ends after response/compressor finalization, excluding the filter and log emission. A transfer failure is an independent framework Error diagnostic; a committed 200 remains 200 in the access snapshot. With recovery enabled, a ResultFilter panic leaves the completed response untouched and skips that record after a diagnostic; disabled recovery propagates it.
+**Implemented 2026-09-05 (HTTP minor).** The [HTTP feature contract](../specs/http-features.md) replaced the original default-on request logging/correlation policy. Logging infrastructure and scoped Infra loggers remain available automatically; request IDs and access records each require their own `UseRequestID`/`UseAccessLog` registration. Neither implicitly enables the other. AccessLog observes the finalized response and keeps metadata/level/filter selection. Its byte count is post-compression body bytes accepted by the underlying HTTP writer, excluding headers, framing and TLS. Duration ends after response/compressor finalization, excluding the filter and log emission. A transfer failure is an independent framework Error diagnostic; a committed 200 remains 200 in the access snapshot. With recovery enabled, a ResultFilter panic leaves the completed response untouched and skips that record after a diagnostic; disabled recovery propagates it.
 
-Disabling AccessLog does not silence framework or application diagnostics. WithDebug remains a development-diagnostic switch, not a slog-level setter. Scaffolds may explicitly enable request features; plain New has no implicit scaffold behavior. OTel/Prometheus stay Phase 3.5 and do not block this change. The remaining default-on wording describes the current implementation.
+Leaving AccessLog out does not silence framework or application diagnostics. `WithDebug` remains a development-diagnostic switch, not a slog-level setter. Scaffolds may explicitly enable request features; plain `New` has no implicit scaffold behavior. OTel/Prometheus stay Phase 3.5 and do not block this change.
 
 ## Context
 
 Credo targets enterprise applications where request correlation and structured logs are baseline production needs. The framework already provides this baseline in the root package:
 
-- built-in request IDs
-- default-on access logs
+- request IDs (`app.UseRequestID`)
+- access logs (`app.UseAccessLog`)
 - `slog`-based framework logging
 - `credo.Infra.Logger`, scoped per service by the DI container
 
@@ -25,7 +25,7 @@ The `observability/` directory therefore remains a planned package marker for no
 
 Credo treats observability in two layers:
 
-1. **Implemented logging baseline.** Request ID propagation, access logging, error logging, and service-scoped `Infra.Logger` are part of the root framework and are enabled by default, with explicit opt-out where appropriate. Access logs keep successful requests at Info by default so traffic and latency retain a denominator until request metrics exist; `WithAccessLogMinLevel` and `WithAccessLogResultFilter` provide access-log-specific, opt-in cost control without changing other framework log levels.
+1. **Implemented logging baseline.** Structured `slog` logging, panic recovery diagnostics, `http.Server` error bridging and service-scoped `Infra.Logger` are part of the root framework and ready by default. Request ID propagation and access logging are explicit features (`app.UseRequestID`, `app.UseAccessLog`; [ADR-010](010-middleware-architecture.md#built-in-http-feature-configuration-criterion)). An installed access log keeps successful requests at Info so traffic and latency retain a denominator until request metrics exist; `AccessLogConfig.MinLevel` and `ResultFilter` provide access-log-specific cost control without changing other framework log levels.
 2. **Planned telemetry adapters.** OpenTelemetry tracing and Prometheus metrics will be designed in Phase 3.5 against real adapters. Until that work is implemented, Credo does not expose public metrics/tracing carrier interfaces, no-op providers, or `Infra` fields for them.
 
 When tracing and metrics land, they should follow the wrap + pin strategy: OpenTelemetry and Prometheus remain external, version-pinned infrastructure libraries behind Credo-owned integration APIs. The root package should avoid importing adapter packages directly; any root-level surface must be a small, Credo-owned contract validated against the adapter implementation.

@@ -1,7 +1,5 @@
 # Error Handling
 
-> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
-
 Credo handlers return errors and one framework pipeline classifies, logs, localizes, and renders them:
 
 ```go
@@ -105,10 +103,10 @@ The resolver-produced key is never leaked after a miss. HTTP errors fall back to
 
 ## Custom ErrorRenderer
 
-Install a shape-only renderer before the app is finalized:
+Install a shape-only renderer once, before the app prepares to serve. The window stays open after `app.Finalize()`, so the renderer may be a method of a DI-resolved service; a second `UseErrorRenderer` call panics.
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     return map[string]any{
         "ok":         false,
         "error":      info.Code,
@@ -124,7 +122,7 @@ app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 Returning nil keeps the default body, which is useful for side effects:
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     telemetry.Capture(info.Err)
     ctx.Response().Header().Set("X-Error-Code", info.Code)
     return nil
@@ -138,13 +136,13 @@ Change the outgoing status by mutating `info.Status` before return. An invalid s
 Problem Details is a first-party opt-in:
 
 ```go
-app.SetErrorRenderer(credo.RFC9457ErrorRenderer())
+app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
 ```
 
 It writes `application/problem+json`, uses `about:blank` by default, and carries Credo's `code`, `details`, and `violations` as extension members. To map codes to problem-type URIs:
 
 ```go
-app.SetErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
+app.UseErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
     ResolveType: func(info *credo.ErrorInfo) string {
         return "https://api.example.com/problems/" + info.Code
     },
@@ -156,10 +154,10 @@ app.SetErrorRenderer(credo.RFC9457ErrorRenderer(credo.RFC9457Config{
 `ErrorRenderer` covers every error produced after a request reaches the app, including 404/405, bind failures, body-limit failures, and panics. `SuccessRenderer` is consulted only by `Context.Render`; raw Response helpers remain escape hatches.
 
 ```go
-app.SetSuccessRenderer(func(_ *credo.Context, info credo.RenderInfo) any {
+app.UseSuccessRenderer(func(_ *credo.Context, info credo.RenderInfo) any {
     return map[string]any{"success": true, "data": info.Data, "meta": info.Meta}
 })
-app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
     return map[string]any{"success": false, "error": map[string]any{"code": info.Code, "message": info.Message}}
 })
 
@@ -176,4 +174,4 @@ return ctx.Response().JSON(http.StatusOK, webhookPayload)
 
 ## Panics and committed responses
 
-Built-in recovery catches application panics and emits a safe generic 500. `WithoutRecover` disables it; `middleware.Recover` provides scoped policy. Errors returned after a response is committed or hijacked are logged and never written over the in-flight response.
+Built-in recovery catches application panics and emits a safe generic 500. `WithRecoverConfig` customizes its logger and stack capture; `WithoutRecover` disables it. It covers renderers, locale detectors and access-log filters as well as handlers. Errors returned after a response is committed or hijacked are logged and never written over the in-flight response.

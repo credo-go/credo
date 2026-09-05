@@ -5,8 +5,9 @@
 //   - Typed config at the module boundary, injected via DI
 //   - Configuration reload: OnConfigChange re-reads one section on SIGHUP
 //     (systemctl reload) or app.Reload, here swapping the log level in place
-//   - Global middleware (built-in recover/request ID/access log, plus CORS,
-//     secure headers, compression)
+//   - Framework HTTP features (recovery on by default; request ID, access
+//     log and compression enabled explicitly) plus global CORS and secure
+//     headers middleware
 //   - Authentication (JWT bearer tokens)
 //   - Route groups (public, authenticated, admin)
 //   - Dependency injection (Provide/Resolve with typed constructors)
@@ -323,24 +324,30 @@ func run() error {
 	// 8. Resolve services for handler wiring
 	tenantSvc := app.MustResolve[*TenantService]()
 
-	// 9. Global middleware you add yourself (applied to all requests,
-	// including 404/405). Recover, request ID, and access log are built in.
+	// 9. Framework HTTP features. Panic recovery is on by default; request
+	// correlation, access logging and response compression are installed
+	// once per app and run around every request, including 404/405.
+	app.UseRequestID()
+	app.UseAccessLog()
+	app.UseCompress()
+
+	// 10. Global middleware you add yourself (applied to all requests,
+	// including 404/405).
 	app.GlobalMiddleware(
 		middleware.Secure(),
 		middleware.CORS(middleware.CORSConfig{
 			AllowOrigins:     []string{"https://app.example.com", "https://*.example.com"},
 			AllowCredentials: true,
 		}),
-		middleware.Compress(),
 	)
 
-	// 10. Health endpoints (K8s liveness + readiness probes)
+	// 11. Health endpoints (K8s liveness + readiness probes)
 	app.UseHealth()
 
-	// 11. Public routes (no auth required)
+	// 12. Public routes (no auth required)
 	app.POST("/auth/login", loginHandler).Name("auth.login")
 
-	// 12. Authenticated routes (JWT required)
+	// 13. Authenticated routes (JWT required)
 	jwtAuth := newJWTAuthenticator()
 	authenticated := app.Group("/api/v1")
 	authenticated.Middleware(
@@ -351,13 +358,13 @@ func run() error {
 	authenticated.GET("/tenants", listTenantsHandler(tenantSvc)).Name("tenants.list")
 	authenticated.POST("/tenants", createTenantHandler(tenantSvc)).Name("tenants.create")
 
-	// 13. Admin routes (JWT + admin role required)
+	// 14. Admin routes (JWT + admin role required)
 	admin := authenticated.Group("/admin")
 	admin.Middleware(requireRole("admin"))
 
 	admin.GET("/dashboard", adminDashboardHandler).Name("admin.dashboard")
 
-	// 14. Custom 404 handler
+	// 15. Custom 404 handler
 	app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
 		return ctx.Response().JSON(http.StatusNotFound, map[string]string{
 			"error":   "not_found",
@@ -365,7 +372,7 @@ func run() error {
 		})
 	})
 
-	// 15. Lifecycle hooks. OnConfigChange makes the "app" section reloadable:
+	// 16. Lifecycle hooks. OnConfigChange makes the "app" section reloadable:
 	// flip app.debug in the config file and `systemctl reload` (SIGHUP) or
 	// app.Reload switches the log level in place. The new value is decoded and
 	// published atomically before this runs; nothing else in "app" is live.
@@ -387,7 +394,7 @@ func run() error {
 		return nil
 	})
 
-	// 16. Start the server. Run blocks until SIGINT/SIGTERM, then drains
+	// 17. Start the server. Run blocks until SIGINT/SIGTERM, then drains
 	// gracefully within the configured 15s shutdown timeout. A second signal
 	// during shutdown force-kills the process.
 	logger.Info("starting application",

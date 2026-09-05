@@ -49,7 +49,7 @@ func TestApp_FrozenPanic_OnDrain(t *testing.T) {
 }
 
 func TestApp_OnDrain_OverlapsHTTPAndOtherHooks(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	handlerStarted := make(chan struct{})
 	hookAStarted := make(chan struct{})
 	hookBStarted := make(chan struct{})
@@ -126,7 +126,6 @@ func TestApp_OnDrain_PanicIsIsolatedAndIdentified(t *testing.T) {
 	app := mustNew(t,
 		credo.WithAddr("127.0.0.1", 0),
 		credo.WithLogger(logger),
-		credo.WithoutAccessLog(),
 	)
 	panicCause := errors.New("drain panic")
 	var healthyHookCalled atomic.Bool
@@ -184,7 +183,6 @@ func TestApp_OnDrain_IgnoredCancellationIsReportedAndAbandoned(t *testing.T) {
 	app := mustNew(t,
 		credo.WithAddr("127.0.0.1", 0),
 		credo.WithLogger(logger),
-		credo.WithoutAccessLog(),
 	)
 	hookStarted := make(chan struct{})
 	hookReturned := make(chan struct{})
@@ -258,7 +256,7 @@ func TestApp_OnDrain_IgnoredCancellationIsReportedAndAbandoned(t *testing.T) {
 }
 
 func TestApp_OnDrain_CompletesBeforeDIShutdown(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
 	app.MustProvideValue[*drainTestResource](resource)
@@ -336,7 +334,7 @@ func TestApp_OnDrain_RunsAfterFailedStartup(t *testing.T) {
 		{name: "after subsystem start", failBeforeSubsystem: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+			app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 			startupErr := errors.New("startup failed")
 			var subsystemStarted atomic.Bool
 			var drainCalls atomic.Int32
@@ -385,7 +383,7 @@ func TestApp_OnDrain_RunsAfterFailedStartup(t *testing.T) {
 }
 
 func TestApp_OnDrain_ConcurrentShutdownRunsExactlyOnce(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	drainStarted := make(chan struct{})
 	releaseDrain := make(chan struct{})
 	var releaseOnce sync.Once
