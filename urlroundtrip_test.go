@@ -183,7 +183,7 @@ func TestURLRoundTrip_MalformedEscapeRejectedByNetHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if _, err := conn.Write([]byte("GET /one/%zz HTTP/1.1\r\nHost: example.test\r\n\r\n")); err != nil {
+	if _, err = conn.Write([]byte("GET /one/%zz HTTP/1.1\r\nHost: example.test\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
