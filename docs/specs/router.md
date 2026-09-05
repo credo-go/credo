@@ -4,6 +4,45 @@
 
 ---
 
+## Pre-v1 endpoint parameter contract
+
+**Accepted, implementation pending (P4, 2026-09-05).** [ADR-007](../adr/007-router-and-routing.md#pre-v1-endpoint-parameter-amendment) moves path names to endpoints. The tree captures values positionally; the matched endpoint maps them to its keys. Remove Node.ParamKey and name-mismatch diagnostics. The current shared-name restriction below is superseded when this minor lands.
+
+| Registration or lookup | Target result |
+| --- | --- |
+| GET `/customers/{id}` and GET `/customers/{customer_id}/timeline` | Both valid; each handler sees its endpoint's key |
+| GET `/{id}` and GET `/{name}` | DuplicateRouteError: same method and name-stripped shape |
+| Same shape in different methods | Endpoint-specific names; existing method/automatic-HEAD conflict rules still apply |
+| Structural kind or regex conflict | Existing registration panic |
+| BuildURI/BuildURL | Read parameter names from the selected route pattern |
+| Path tree under a host | Same endpoint-key change; host-pattern engine and host captures unchanged |
+
+Acceptance covers branch backtracking, parameter/regex/catch-all capture order, shared prefixes, duplicate diagnostics, automatic HEAD, mounts and host-scoped dispatch. Preserve route metadata and introspection and verify existing allocation-sensitive path benchmarks.
+
+P5's URL changes are defined separately below; P4 changes only endpoint naming. P6's builder/compiled-view redesign remains backlog.
+
+## Pre-v1 URL round-trip contract
+
+**Accepted, implementation pending (P5, 2026-09-05).** [ADR-007](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) defines a separate wire-contract minor. Preserve raw URL segment boundaries, decode captured values exactly once and apply regex constraints to those decoded values during route matching. Regex and RouteParam must observe the same value; a raw `%31` candidate can satisfy `[0-9]+`.
+
+BuildURI/BuildURL take decoded parameter values, validate constraints and escape each path segment with PathEscape. Catch-all generation escapes each segment while preserving slash separators. Keep host-label validation separate from path escaping. The round-trip guarantee preserves parameter values, not the original choice or spelling of percent-encoded octets.
+
+| Incoming parameter text | RouteParam value | Generation from that value | Contract |
+| --- | --- | --- | --- |
+| `%2F` | `/` | `%2F` for a single segment parameter | Captured data; does not create a routing segment |
+| `%252F` | `%2F` | `%252F` | No second decoding |
+| `%31` | `1` | `1` | Matches a decoded numeric constraint |
+| `+` | `+` | `+` | No query-style conversion to space |
+| `%C3%A7` | `ç` | `%C3%A7` | Valid Unicode value preserved |
+
+Malformed percent encoding and invalid UTF-8 yield HTTP 400; malformed requests rejected earlier by net/http do not require a second framework response. A well-formed value failing a regex is a route non-match, yielding 404 if no alternative matches. Invalid generation values return an error and no generated URI. Never decode the complete path before identifying its segment boundaries.
+
+The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https://www.rfc-editor.org/rfc/rfc3986#section-2.4). Path parameter `+` behavior matches [Go PathUnescape](https://pkg.go.dev/net/url#PathUnescape).
+
+Acceptance includes the table in matching and generation, decoded-regex candidate selection and backtracking, single-segment escaped slashes, catch-all slash separators, invalid escapes/UTF-8, generation constraint failures, plus and Unicode values. Verify BuildURL host validation alongside the path round trip. P5 must not be folded into P4's endpoint-name migration.
+
+The remaining sections document the current router until each amendment is implemented.
+
 ## Overview
 
 Credo's router combines Chi's radix tree and stdlib-compatible `http.Handler` design with Goyave's route metadata, named routes, status handlers, and fluent API. Host-based routing extends the path router with a host selector that chooses between the default mux and host-scoped muxes before the radix lookup runs.

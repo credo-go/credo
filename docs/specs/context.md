@@ -4,6 +4,10 @@
 
 ---
 
+## Pre-v1 HTTP integration target
+
+**Accepted, implementation pending.** The [HTTP features contract](http-features.md) keeps Context pooled and synchronous. First-use locale detection uses one Detect(*Context) callback and separate memo state shared by Locale and every translation/error/field path. Reset it between requests; empty locale is not an initialized/inactive test. First access fixes language, including after early auth failure or request restoration. Detector panic/re-entry caches the default fallback without repeated detection; it follows the configured recovery policy. RequestID returns empty when its optional feature has installed no ID. Terminal lifecycle 503 bypasses extension callbacks and still releases acquired request state. Current Context behavior below remains applicable until the corresponding migration.
+
 ## Overview
 
 `credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and a key-value store. It exposes the underlying `http.Request`'s `context.Context` via `Context()`; it deliberately does **not** itself implement `context.Context`, because the struct is pooled and reused across requests.

@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Documentation
+
+- Promote accepted pre-v1 bootstrap/DI, router parameter and built-in HTTP feature contracts to ADR/spec, with a [delivery plan](docs/plans/pre-v1-implementation.md), migration preview and example migration notes; the remaining design decisions are closed there. Implementation is pending; this entry does not announce new callable APIs, changed defaults or completed performance improvements.
+
 ## [0.18.0] - 2026-09-05
 
 ### Fixed

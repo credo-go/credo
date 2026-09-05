@@ -45,6 +45,10 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Observability — metrics (Prometheus) | Planned |
 | pubsub (incl. in-process events) · grpc · openapi · admin server · CLI | Planned |
 
+## Accepted Pre-v1 Changes
+
+**Implementation pending.** Accepted bootstrap/DI, router and built-in HTTP feature contracts are recorded in the [migration preview](docs/guides/pre-v1-migration.md) and the [implementation plan](docs/plans/pre-v1-implementation.md); progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). They are future contracts, not APIs available in this checkout: the quick start and examples below use the current implementation, and the [example migration notes](examples/README.md) explain when their code will change.
+
 ## Installation
 
 ```bash

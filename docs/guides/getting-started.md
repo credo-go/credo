@@ -1,5 +1,7 @@
 # Getting Started
 
+> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
+
 This guide walks through building a Credo application from scratch. By the end, you will have a working HTTP server with routing, middleware, dependency injection, validation, health checks, error handling, graceful shutdown, and clear extension points for background work.
 
 For deeper coverage of individual topics, see the linked guides and specs.

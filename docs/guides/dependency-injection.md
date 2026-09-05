@@ -1,5 +1,7 @@
 # Dependency Injection Guide
 
+> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
+
 This guide explains how to use Credo's DI container in real applications. For low-level contracts and internal rationale, see the [DI Container Spec](../specs/container.md) and [ADR-004](../adr/004-dependency-injection-and-infra.md).
 
 ---

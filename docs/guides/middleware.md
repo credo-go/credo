@@ -1,5 +1,7 @@
 # Middleware Guide
 
+> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
+
 This guide explains how to use, configure, and write middleware in Credo. For internal design rationale, see the [Middleware Spec](../specs/middleware.md) and [ADR-010](../adr/010-middleware-architecture.md).
 
 ---

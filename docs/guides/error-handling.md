@@ -1,5 +1,7 @@
 # Error Handling
 
+> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
+
 Credo handlers return errors and one framework pipeline classifies, logs, localizes, and renders them:
 
 ```go

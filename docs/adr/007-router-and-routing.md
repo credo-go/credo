@@ -2,6 +2,20 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
 
+## Pre-v1 endpoint parameter amendment
+
+**Accepted 2026-09-05; implementation pending (P4).** Store path parameter names on endpoints; collect captures positionally in the radix tree. Shared segments may have different names across endpoints. Remove Node.ParamKey/name-mismatch rejection, retaining strict duplicate method plus name-stripped shape detection and structural kind/regex conflicts. BuildURI uses route-pattern names; host-pattern matching is unchanged. This adapts Chi's endpoint-key model while keeping Credo's strict duplicate policy. The [router target contract](../specs/router.md#pre-v1-endpoint-parameter-contract) defines regression coverage. This is an independent behavioral minor.
+
+P5's generation/decoding decision is accepted separately below; P6's compiled route model remains backlog. The remaining current-router sections are migrated when their respective minor lands.
+
+## Pre-v1 URL round-trip amendment
+
+**Accepted 2026-09-05; implementation pending (P5/G3).** Match raw segment boundaries, decode each captured value once, then evaluate regex constraints on the decoded value supplied to RouteParam. A captured `%2F` is data within its segment; `%252F` becomes literal `%2F`, not a slash. `%31` matches a numeric constraint as `1`; `+` stays plus and valid Unicode is preserved.
+
+Generation accepts decoded values, validates regex constraints and uses PathEscape per segment; catch-all slash separators are retained and host labels are validated independently. Round trips preserve parameter values rather than identical percent-encoded spelling. Malformed percent encoding or invalid UTF-8 is 400; a valid value failing a regex is a route non-match. Generation rejects invalid inputs with an error. Decoding the entire path before routing is rejected.
+
+The [router contract and table](../specs/router.md#pre-v1-url-round-trip-contract) define positive and negative cases. This closes G3; it still ships in its own wire-contract minor, independently from P4's parameter-name change.
+
 ## Context
 
 An all-in-one framework (ADR-001) needs a fast, feature-rich router. Go's stdlib `http.ServeMux` (even with Go 1.22 enhancements) lacks regex constraints, named routes, route metadata, and URL generation.

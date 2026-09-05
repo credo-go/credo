@@ -2,6 +2,12 @@
 
 **Status:** Draft (logging baseline accepted; tracing/metrics pending) **Date:** 2026-03-01 **Depends on:** ADR-004
 
+## Accepted pre-v1 logging amendment
+
+**2026-09-05; implementation pending.** The [HTTP feature contract](../specs/http-features.md) supersedes the default-on request logging/correlation policy below. Logging infrastructure and scoped Infra loggers remain available automatically; request IDs and access records each require their own UseRequestID/UseAccessLog registration. Neither implicitly enables the other. AccessLog observes the finalized response and keeps metadata/level/filter selection. Its byte count is post-compression body bytes accepted by the underlying HTTP writer, excluding headers, framing and TLS. Duration ends after response/compressor finalization, excluding the filter and log emission. A transfer failure is an independent framework Error diagnostic; a committed 200 remains 200 in the access snapshot. With recovery enabled, a ResultFilter panic leaves the completed response untouched and skips that record after a diagnostic; disabled recovery propagates it.
+
+Disabling AccessLog does not silence framework or application diagnostics. WithDebug remains a development-diagnostic switch, not a slog-level setter. Scaffolds may explicitly enable request features; plain New has no implicit scaffold behavior. OTel/Prometheus stay Phase 3.5 and do not block this change. The remaining default-on wording describes the current implementation.
+
 ## Context
 
 Credo targets enterprise applications where request correlation and structured logs are baseline production needs. The framework already provides this baseline in the root package:

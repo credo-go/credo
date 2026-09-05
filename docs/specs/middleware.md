@@ -4,6 +4,10 @@
 
 ---
 
+## Accepted pre-v1 target
+
+**Implementation pending, 2026-09-05.** The [HTTP features contract](http-features.md) is the canonical replacement for the built-in tier and the converted middleware APIs below. Recovery stays default-on; RequestID, AccessLog, i18n, Compress and Decompress are optional Use registrations. Single-install renderers also use Use APIs. User middleware retains Global/Group/Route scope; the framework owns error rendering, feature lifetimes and final-response observation around it. See [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) and the [migration preview](../guides/pre-v1-migration.md#built-in-http-features). Current APIs below stay callable until the HTTP minor lands. G4 decisions are accepted: WithRecoverConfig, one-time inactive-i18n registration, lazy Detect(*Context), Decompress before Global, post-compression access measurements and recovery-aware failure handling. The P1 runtime gate must pass before this work.
+
 ## Overview
 
 Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model (Global / Group / Route) provides fine-grained control over which middleware runs where. URL rewriting is implemented as middleware at the global/group layer when path normalization must happen before route matching.

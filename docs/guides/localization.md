@@ -1,5 +1,7 @@
 # Internationalization Guide
 
+> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
+
 This guide explains how to use Credo's built-in internationalization support in application code. For low-level design details, see the [i18n Spec](../specs/i18n.md) and [ADR-013](../adr/013-internationalization.md).
 
 All locale examples in this guide use JSON.

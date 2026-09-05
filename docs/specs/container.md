@@ -4,6 +4,10 @@
 
 ---
 
+## Accepted pre-v1 target
+
+**Implementation pending, 2026-09-05.** [ADR-022](../adr/022-bootstrap-and-di-ownership.md) and the [bootstrap/DI lifecycle contract](bootstrap-and-di-lifecycle.md) define the next DI minor: post-Finalize Resolve, ownership-transferring Replace/MustReplace, non-resolving Has, factory removal, AdoptValue validation/protection, canonical dependency shutdown, closing admission, terminal panic completion and immutable unwrapping reports. Registry constructors are rejected at registration without execution. Diagnostics are ErrDIClosed, DIShutdownError and DIPanicError; late construction gets one five-second cleanup wait. P1–P3 ship together; G1/G2 decisions are closed. The APIs and reverse-registration behavior documented below are the current implementation, not the target. [Migration preview](../guides/pre-v1-migration.md#bootstrap-and-di) describes callers.
+
 ## Canonical Source
 
 Implementation-level details for Credo's dependency injection system are defined in this file. Other documents should keep only high-level references and link here.

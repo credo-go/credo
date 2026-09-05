@@ -2,6 +2,10 @@
 
 > Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
+## Accepted pre-v1 target
+
+**Implementation pending, 2026-09-05.** The [bootstrap/DI lifecycle contract](bootstrap-and-di-lifecycle.md) adds shared preparation/result publication, a separate HTTP write gate, building-state Shutdown and terminal callback-free 503. It replaces reverse-registration DI teardown with the canonical dependency scheduler and bounded completion/report rules. HTTP/OnDrain/reload precede DI closing; OnPreDrain keeps its hard barrier and external servers keep owner-managed drain. See [ADR-022](../adr/022-bootstrap-and-di-ownership.md) and the [implementation plan](../plans/pre-v1-implementation.md). The state/error tables below remain descriptions of the current implementation until migration.
+
 ## Overview
 
 Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining.

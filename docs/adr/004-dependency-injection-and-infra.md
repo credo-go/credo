@@ -2,6 +2,10 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-003
 
+## Accepted pre-v1 amendment
+
+**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) supersedes this ADR's phase, factory, replacement and teardown rules when the DI minor lands. Keep typed constructors, Infra, singleton scope, aliases and ordered collections. Add explicit post-Finalize resolution, ownership-transferring Replace, non-resolving Has, terminal completion and dependency ordering; remove ProvideFactory. AdoptValue validates and atomically protects a prebuilt binding; a mere read does not. Registry constructors cannot be adopted before Finalize. The public diagnostics are ErrDIClosed, DIShutdownError and DIPanicError; late construction has one five-second cleanup wait. The [target contract](../specs/bootstrap-and-di-lifecycle.md) defines closing, pending construction, bounded cleanup and error/report semantics. The sections below describe the current implementation.
+
 ## Context
 
 Dependency injection is a fundamental need for enterprise applications (ADR-001, ADR-003). Credo's DI mechanism must address two distinct needs:

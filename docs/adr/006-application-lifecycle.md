@@ -2,6 +2,12 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
 
+## Accepted pre-v1 amendment
+
+**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) separates DI Finalize from HTTP preparation and coordinates preparation, start and bootstrap Shutdown. Building-state Shutdown becomes valid; direct ServeHTTP also prepares DI, then uses the same cached preparation result and HTTP write gate. Stopped rejection returns the callback-free default 503; an already-prepared stopping App retains normal drain behavior. DI enters closing only at its teardown stage, with dependency-ordered cleanup and a stable failure report.
+
+The [target lifecycle contract](../specs/bootstrap-and-di-lifecycle.md) governs the migration. The current state machine, preparation order and reverse-registration teardown below remain descriptions of shipped behavior until that work lands. External server drain stays owner-managed.
+
 ## Context
 
 An enterprise framework (ADR-001) must provide a well-defined application lifecycle: startup, runtime, and graceful shutdown. Background services (workers, pub/sub subscribers, gRPC servers) need a signal to stop accepting work. In-flight HTTP requests need time to complete. Shutdown hooks must release resources (DB connections, caches, file handles) in a deterministic order.
