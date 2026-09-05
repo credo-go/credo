@@ -171,12 +171,12 @@ func (app *App) dispatchOnce(c *Context) error {
 	rctx.RouteMethod = r.Method
 
 	// Use RoutePath if set (by mounted sub-routers), otherwise the canonical
-	// form of the wire path: segment boundaries come from the client's
-	// spelling ("%2F" stays an escape), every other escape is decoded so that
-	// "/caf%C3%A9", "/caf%c3%a9" and "/%63af%C3%A9" all meet the registered
-	// static text "/café", and the tree decodes each captured value exactly
-	// once (see internal/wirepath and internal/radix). A path without escapes
-	// is used as is.
+	// form of the wire path: escapes of reserved characters stay ("%2F" is
+	// not a segment boundary, "%3B" is not ";"), every other escape is decoded
+	// so that "/caf%C3%A9", "/caf%c3%a9" and "/%63af%C3%A9" all meet the
+	// registered static text "/café", and the tree decodes each captured value
+	// exactly once (see internal/wirepath and internal/radix). A path without
+	// escapes is used as is.
 	path := rctx.RoutePath
 	if path == "" {
 		path = r.URL.EscapedPath()

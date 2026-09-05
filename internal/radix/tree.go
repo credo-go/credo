@@ -427,7 +427,7 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 		// The raw candidate ends at the tail byte or the next slash; the
 		// constraint then applies to the whole decoded value, so an encoded
 		// delimiter (%2F, %2D) is data and "%31" satisfies "[0-9]+".
-		end := captureEnd(path, child.Tail)
+		end := wirepath.CandidateEnd(path, child.Tail)
 		if end == 0 {
 			continue // empty parameter value: skip
 		}
@@ -448,7 +448,7 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 
 	// Search param children
 	for _, child := range n.Children[NtParam] {
-		paramEnd := captureEnd(path, child.Tail)
+		paramEnd := wirepath.CandidateEnd(path, child.Tail)
 		if paramEnd == 0 {
 			continue // empty parameter value: skip
 		}
@@ -492,24 +492,6 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 	return v, false, false
 }
 
-// captureEnd returns the length of the raw parameter candidate at the start
-// of path: the text before the tail byte (the pattern byte after the closing
-// brace) or before the next slash, whichever comes first. Segment boundaries
-// are found on the raw path, so a percent-encoded slash or delimiter inside
-// the candidate is data (RFC 3986 section 2.4).
-func captureEnd(path string, tail byte) int {
-	end := strings.IndexByte(path, '/')
-	if end < 0 {
-		end = len(path)
-	}
-	if tail != 0 && tail != '/' {
-		if i := strings.IndexByte(path[:end], tail); i >= 0 {
-			end = i
-		}
-	}
-	return end
-}
-
 // canonicalPattern brings the literal text of a pattern to the canonical wire
 // form the tree matches against (see [wirepath.Static]); parameter
 // definitions are copied verbatim. A pattern without a percent sign is
@@ -537,9 +519,9 @@ func canonicalPattern(pattern string) (string, error) {
 
 // decodeCapture percent-decodes one canonical parameter candidate exactly
 // once. The candidate comes from the canonical wire path (see
-// [wirepath.Canonical]): only "%2F" and "%25" remain escaped, so a candidate
-// without a percent sign only needs the UTF-8 check when the path was
-// canonicalized (rctx.Canonical) and may carry raw octets. A malformed escape
+// [wirepath.Canonical]): only reserved characters and "%" remain escaped, so
+// a candidate without a percent sign only needs the UTF-8 check when the path
+// was canonicalized (rctx.Canonical) and may carry raw octets. A malformed escape
 // or a value that is not valid UTF-8 marks rctx.InvalidCapture and reports
 // false so the caller skips the candidate.
 func decodeCapture(rctx *RouteContext, raw string) (string, bool) {

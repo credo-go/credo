@@ -96,9 +96,10 @@ func TestURLRoundTrip_RegexOnDecodedValue(t *testing.T) {
 
 	t.Run("encoded delimiter is the delimiter", func(t *testing.T) {
 		// RFC 3986 section 2.3: "%2D" and "-" spell the same URI, so an
-		// encoded delimiter cannot smuggle the delimiter byte into a value;
-		// only an encoded slash keeps its escape meaning (data, not a
-		// segment boundary).
+		// encoded unreserved delimiter cannot smuggle the delimiter byte
+		// into a value; only reserved characters keep their escape meaning
+		// (section 2.2: an encoded slash is data, not a segment boundary,
+		// and "%3B" is not ";" — see urlroundtrip_reserved_test.go).
 		app := mustNew(t)
 		app.GET("/rel/{year:[0-9]{4}}-{month:[0-9]{2}}", func(ctx *credo.Context) error {
 			r := ctx.Request()

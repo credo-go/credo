@@ -41,10 +41,13 @@ func parsePathTemplate(pattern string) (*pathTemplate, error) {
 // and escapes each segment, "+" stays "+" and valid Unicode is encoded as
 // UTF-8 octets; static pattern text is written in its wire spelling. A value
 // that cannot round-trip is rejected: an empty value matches no parameter,
-// invalid UTF-8 is refused by the router (400), and a value containing the
-// byte that delimits its parameter in the pattern ("." for "{name}.json")
-// would be cut at that byte when matched, since a percent-encoded delimiter
-// is equivalent to the literal one.
+// invalid UTF-8 is refused by the router (400), and a value whose wire
+// spelling shows the byte that delimits its parameter in the pattern ("." for
+// "{name}.json") would be cut at that byte when matched. The check runs on
+// the canonical form of the escaped value, exactly where matching cuts: an
+// escaped unreserved byte is the delimiter ("%2E" is "."), an escaped
+// reserved one is not (url.PathEscape spells ";" as "%3B", which routes
+// back), and a "%" delimiter is its "%25" unit.
 func (t *pathTemplate) build(values []string) (string, int, error) {
 	var b strings.Builder
 	consumed := 0
@@ -64,20 +67,24 @@ func (t *pathTemplate) build(values []string) (string, int, error) {
 		if !utf8.ValidString(value) {
 			return "", consumed, fmt.Errorf("value for parameter %q is not valid UTF-8", seg.Name)
 		}
-		if tail := seg.TailByte; tail != 0 && tail != '/' && strings.IndexByte(value, tail) >= 0 {
-			return "", consumed, fmt.Errorf("value %q for parameter %q contains its delimiter %q", value, seg.Name, string(tail))
-		}
+		var wire string
 		switch seg.Kind {
 		case internalpattern.Regexp:
 			if !seg.Regexp.MatchString(value) {
 				return "", consumed, fmt.Errorf("value %q for parameter %q does not match constraint %q", value, seg.Name, seg.RegexpSource)
 			}
-			b.WriteString(url.PathEscape(value))
+			wire = url.PathEscape(value)
 		case internalpattern.CatchAll:
-			b.WriteString(escapeCatchAll(value))
+			wire = escapeCatchAll(value)
 		default:
-			b.WriteString(url.PathEscape(value))
+			wire = url.PathEscape(value)
 		}
+		if tail := seg.TailByte; tail != 0 && tail != '/' {
+			if c := wirepath.Canonical(wire); wirepath.CandidateEnd(c, tail) != len(c) {
+				return "", consumed, fmt.Errorf("value %q for parameter %q contains its delimiter %q", value, seg.Name, string(tail))
+			}
+		}
+		b.WriteString(wire)
 	}
 	return b.String(), consumed, nil
 }
