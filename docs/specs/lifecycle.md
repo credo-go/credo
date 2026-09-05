@@ -138,7 +138,7 @@ Returns the actual network address the server is listening on. Particularly usef
 
 Gracefully shuts down the server:
 
-1. Transitions from `running` → `stopping` (CAS). In `building` the same call is [bootstrap teardown](#bootstrap-teardown) (`building` → `stopping`); in `starting`, `stopping` or `stopped` it returns `credo: Shutdown: server in state "…", expected "building" or "running"`.
+1. Transitions from `running` → `stopping` (CAS). In `building` the same call is [bootstrap teardown](#bootstrap-teardown) (`building` → `stopping`); in `starting`, `stopping` or `stopped` it returns `credo: Shutdown: server in state "…", expected "building" or "running"`. The refusal is decided on the state read after both claims failed: when that read shows `running` or `building` (a start completed or rolled back between the claims), the call claims again instead of refusing with a stale state.
 2. Marks the instance **unready** — `/ready` returns 503 (`shutting_down`) so load balancers stop routing here before the drain. Liveness stays up.
 3. Runs every `OnPreDrain` hook concurrently while lifecycle workers and DI remain live.
 4. Cancels lifecycle context — signals background services, and any in-flight `Reload`, to shut down.
