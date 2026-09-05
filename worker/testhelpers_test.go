@@ -65,3 +65,12 @@ func shutdownPool(t *testing.T, p *Pool) {
 		t.Fatalf("Shutdown() = %v", err)
 	}
 }
+
+// finalize closes DI registration so Resolve becomes available. Register
+// calls must precede it.
+func finalize(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
+}

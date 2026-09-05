@@ -1,6 +1,7 @@
 package di
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -13,43 +14,66 @@ type replaceDep struct {
 	id string
 }
 
+func mustSeal(t *testing.T, c *Container) {
+	t.Helper()
+	if err := c.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+}
+
 func TestReplace_NewBinding(t *testing.T) {
 	c := New()
-	if err := c.Replace[*replaceSvc](&replaceSvc{id: "a"}); err != nil {
+	old, existed, err := c.Replace[*replaceSvc](&replaceSvc{id: "a"})
+	if err != nil {
 		t.Fatalf("Replace: %v", err)
+	}
+	if existed || old != nil {
+		t.Fatalf("Replace of a new binding returned (%v, %v), want (nil, false)", old, existed)
 	}
 	if c.RegistrationCount() != 1 {
 		t.Errorf("RegistrationCount = %d, want 1", c.RegistrationCount())
 	}
+	mustSeal(t, c)
 	if got := c.MustResolve[*replaceSvc](); got.id != "a" {
 		t.Errorf("id = %q, want a", got.id)
 	}
 }
 
-func TestReplace_OverwritesProvideValue(t *testing.T) {
+func TestReplace_OverwritesProvideValue_ReturnsOld(t *testing.T) {
 	c := New()
-	c.MustProvideValue[*replaceSvc](&replaceSvc{id: "real"})
-	if err := c.Replace[*replaceSvc](&replaceSvc{id: "mock"}); err != nil {
+	real := &replaceSvc{id: "real"}
+	c.MustProvideValue[*replaceSvc](real)
+	old, existed, err := c.Replace[*replaceSvc](&replaceSvc{id: "mock"})
+	if err != nil {
 		t.Fatalf("Replace: %v", err)
+	}
+	// The superseded instance is handed back with its cleanup responsibility.
+	if !existed || old != real {
+		t.Fatalf("Replace returned (%p, %v), want (real %p, true)", old, existed, real)
 	}
 	// Overwriting an existing registration must not create a duplicate.
 	if c.RegistrationCount() != 1 {
 		t.Errorf("RegistrationCount = %d, want 1 (no duplicate)", c.RegistrationCount())
 	}
+	mustSeal(t, c)
 	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("id = %q, want mock", got.id)
 	}
 }
 
-func TestReplace_OverwritesConstructor(t *testing.T) {
+func TestReplace_OverwritesConstructor_NeverRunsIt(t *testing.T) {
 	c := New()
 	called := false
 	c.MustProvide[*replaceSvc](func() *replaceSvc {
 		called = true
 		return &replaceSvc{id: "real"}
 	})
-	c.MustReplace[*replaceSvc](&replaceSvc{id: "mock"})
+	old, existed := c.MustReplace[*replaceSvc](&replaceSvc{id: "mock"})
+	if existed || old != nil {
+		t.Fatalf("Replace over an unbuilt constructor returned (%v, %v), want (nil, false)", old, existed)
+	}
 
+	mustSeal(t, c)
 	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
 		t.Errorf("id = %q, want mock", got.id)
 	}
@@ -58,16 +82,32 @@ func TestReplace_OverwritesConstructor(t *testing.T) {
 	}
 }
 
-func TestReplace_SupersedesResolvedSingleton(t *testing.T) {
+type replaceCloser struct {
+	order *[]string
+	name  string
+}
+
+func (r *replaceCloser) Shutdown(context.Context) error {
+	*r.order = append(*r.order, r.name)
+	return nil
+}
+
+func TestReplace_SupersededInstanceIsNotShutDown(t *testing.T) {
 	c := New()
-	c.MustProvideValue[*replaceSvc](&replaceSvc{id: "real"})
-	// Resolve once so the singleton is cached.
-	if got := c.MustResolve[*replaceSvc](); got.id != "real" {
-		t.Fatalf("pre-replace id = %q, want real", got.id)
+	var order []string
+	first := &replaceCloser{order: &order, name: "first"}
+	c.MustProvideValue[*replaceCloser](first)
+	old, existed, err := c.Replace[*replaceCloser](&replaceCloser{order: &order, name: "second"})
+	if err != nil || !existed || old != first {
+		t.Fatalf("Replace = (%p, %v, %v), want (first %p, true, nil)", old, existed, err, first)
 	}
-	c.MustReplace[*replaceSvc](&replaceSvc{id: "mock"})
-	if got := c.MustResolve[*replaceSvc](); got.id != "mock" {
-		t.Errorf("post-replace id = %q, want mock (cached singleton not superseded)", got.id)
+	if err := c.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// Ownership of the old instance moved to the caller: only the replacement
+	// is closed by the container.
+	if len(order) != 1 || order[0] != "second" {
+		t.Fatalf("shutdown order = %v, want [second]", order)
 	}
 }
 
@@ -76,7 +116,7 @@ func TestReplace_Frozen(t *testing.T) {
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	err := c.Replace[*replaceSvc](&replaceSvc{id: "x"})
+	_, _, err := c.Replace[*replaceSvc](&replaceSvc{id: "x"})
 	if err == nil {
 		t.Fatal("expected error replacing on a sealed container")
 	}

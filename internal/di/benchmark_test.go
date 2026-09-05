@@ -11,6 +11,7 @@ import (
 func BenchmarkResolve_Singleton_Cached(b *testing.B) {
 	c := di.New()
 	c.MustProvide[*SimpleService](NewSimpleService)
+	seal(b, c)
 	c.MustResolve[*SimpleService]() // prime the singleton
 
 	b.ReportAllocs()
@@ -25,6 +26,7 @@ func BenchmarkResolve_ProvideValue(b *testing.B) {
 	c := di.New()
 	svc := &SimpleService{Value: "bench"}
 	c.MustProvideValue[*SimpleService](svc)
+	seal(b, c)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -37,6 +39,7 @@ func BenchmarkResolve_ProvideValue(b *testing.B) {
 func BenchmarkResolve_Parallel(b *testing.B) {
 	c := di.New()
 	c.MustProvide[*SimpleService](NewSimpleService)
+	seal(b, c)
 	c.MustResolve[*SimpleService]() // prime
 
 	b.ReportAllocs()
@@ -54,6 +57,7 @@ func BenchmarkResolveAll_Cached(b *testing.B) {
 	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
 	c.MustBindMany[Greeter, *englishGreeter]()
 	c.MustBindMany[Greeter, *frenchGreeter]()
+	seal(b, c)
 	c.MustResolveAll[Greeter]() // prime member singletons
 
 	b.ReportAllocs()

@@ -9,13 +9,13 @@ import (
 
 // provider is one registered type's construction strategy. The container
 // holds exactly one provider per type; the strategy decides how the singleton
-// is built and which dependencies the graph validator and cycle detector see.
-// Replace protection is not part of the provider: it lives in
-// Container.protected, keyed by type.
+// is built and which dependencies the graph validator, cycle detector and
+// teardown scheduler see. Replace protection is not part of the provider: it
+// lives in Container.protected, keyed by type.
 type provider interface {
 	// deps returns the constructor parameter types the container must satisfy
-	// (validated at Seal, walked for cycles). Pre-built values and opaque
-	// factories have none.
+	// (validated at Seal, walked for cycles, ordered at teardown). Pre-built
+	// values have none.
 	deps() []reflect.Type
 
 	// build produces the instance. stack is the resolution stack that
@@ -34,6 +34,8 @@ type constructorProvider struct {
 
 func (p *constructorProvider) deps() []reflect.Type { return p.paramTypes }
 
+// build resolves every parameter before invoking the constructor, so a
+// closing container rejects the dependent constructor without running it.
 func (p *constructorProvider) build(c *Container, stack []reflect.Type) (any, error) {
 	serviceName := deriveServiceName(p.resultType)
 
@@ -65,21 +67,3 @@ type valueProvider struct {
 func (valueProvider) deps() []reflect.Type { return nil }
 
 func (p valueProvider) build(*Container, []reflect.Type) (any, error) { return p.value, nil }
-
-// factoryProvider runs a compile-time-checked factory (ProvideFactory). It is
-// opaque to the container: no parameter injection, and any Resolve calls
-// inside fn start a fresh cycle-detection stack.
-type factoryProvider struct {
-	resultType reflect.Type
-	fn         func() (any, error)
-}
-
-func (factoryProvider) deps() []reflect.Type { return nil }
-
-func (p factoryProvider) build(*Container, []reflect.Type) (any, error) {
-	instance, err := p.fn()
-	if err != nil {
-		return nil, fmt.Errorf("di: constructing %s: %w", p.resultType, err)
-	}
-	return instance, nil
-}

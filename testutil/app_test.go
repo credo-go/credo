@@ -20,6 +20,7 @@ func TestNewApp_Defaults(t *testing.T) {
 
 	// Hermetic: the injected RawConfig is empty, so nothing was auto-loaded
 	// from the working directory.
+	finalize(t, app)
 	rc := app.MustResolve[credo.RawConfig]()
 	if rc.Exists("server") {
 		t.Error("expected hermetic config: the server key should not exist")
@@ -48,6 +49,7 @@ func TestWithOverride_ReplacesWiredDep(t *testing.T) {
 		testutil.WithOverride[*greeter](&greeter{msg: "fake"}),
 	)
 
+	finalize(t, app)
 	got := app.MustResolve[*greeter]()
 	if got.msg != "fake" {
 		t.Errorf("greeter.msg = %q, want %q (override should win over wiring)", got.msg, "fake")
@@ -59,6 +61,7 @@ func TestWithOverride_AddsWhenAbsent(t *testing.T) {
 	// binding when it is absent.
 	app := testutil.NewApp(t, testutil.WithOverride[*greeter](&greeter{msg: "only"}))
 
+	finalize(t, app)
 	if got := app.MustResolve[*greeter](); got.msg != "only" {
 		t.Errorf("greeter.msg = %q, want %q", got.msg, "only")
 	}
@@ -76,6 +79,7 @@ func TestWithConfig_Injection(t *testing.T) {
 		testutil.WithConfig("app.env", "testing"),
 	)
 
+	finalize(t, app)
 	rc := app.MustResolve[credo.RawConfig]()
 
 	var cfg appCfg
@@ -174,4 +178,11 @@ func TestAssertHelpers_FailurePaths(t *testing.T) {
 func newRecord(t *testing.T) slog.Record {
 	t.Helper()
 	return slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
+}
+
+func finalize(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
 }

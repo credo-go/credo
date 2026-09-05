@@ -28,6 +28,7 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 	c.MustProvide[*pgUserRepo](NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
+	seal(t, c)
 	repo, err := c.Resolve[UserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[UserRepo]: %v", err)
@@ -42,6 +43,7 @@ func TestAlias_SameInstance(t *testing.T) {
 	c.MustProvide[*pgUserRepo](NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
+	seal(t, c)
 	concrete, err := c.Resolve[*pgUserRepo]()
 	if err != nil {
 		t.Fatalf("Resolve[*pgUserRepo]: %v", err)
@@ -153,6 +155,7 @@ func TestBindMany_ResolveAllByInterface(t *testing.T) {
 	c.MustBindMany[Greeter, *englishGreeter]()
 	c.MustBindMany[Greeter, *frenchGreeter]()
 
+	seal(t, c)
 	greeters, err := c.ResolveAll[Greeter]()
 	if err != nil {
 		t.Fatalf("ResolveAll[Greeter]: %v", err)

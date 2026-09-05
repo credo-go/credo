@@ -7,9 +7,16 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/credo-go/credo/internal/observe"
 )
 
-// Resolve retrieves an instance of type T from the container.
+// panicStackSize bounds the stack captured into a PanicError.
+const panicStackSize = 8192
+
+// Resolve retrieves an instance of type T from the container. It is admitted
+// only after Seal; during shutdown it returns an error wrapping [ErrClosed].
 //
 //	svc, err := c.Resolve[MyService]()
 func (c *Container) Resolve[T any]() (T, error) {
@@ -28,7 +35,9 @@ func (c *Container) Resolve[T any]() (T, error) {
 	return v, nil
 }
 
-// MustResolve is like Resolve but panics on error.
+// MustResolve is like Resolve but panics on error. A constructor panic is
+// reported as a *PanicError, so the panic payload here is that error rather
+// than the original value.
 func (c *Container) MustResolve[T any]() T {
 	v, err := c.Resolve[T]()
 	if err != nil {
@@ -67,16 +76,28 @@ func (c *Container) MustResolveAll[T any]() []T {
 	return v
 }
 
+// admitResolve applies the phase rules shared by every resolution entry:
+// closing wins over everything, then Seal must have run, then a failed Seal
+// rejects. op names the API for the error text.
+func (c *Container) admitResolve(op string, targetType reflect.Type) error {
+	c.mu.RLock()
+	closing, sealed, sealErr := c.closing, c.sealed, c.sealErr
+	c.mu.RUnlock()
+	switch {
+	case closing:
+		return fmt.Errorf("di: %s[%s]: %w", op, targetType, ErrClosed)
+	case !sealed:
+		return fmt.Errorf("di: %s[%s]: container is not finalized (call Finalize before resolving)", op, targetType)
+	case sealErr != nil:
+		return fmt.Errorf("di: %s[%s]: container seal failed: %w", op, targetType, sealErr)
+	}
+	return nil
+}
+
 // resolve is the internal resolution engine.
 func (c *Container) resolve(targetType reflect.Type, stack []reflect.Type) (any, error) {
-	// If Seal was called and failed, reject all resolves. sealErr is read
-	// under the lock because doSeal may write it concurrently (Resolve is
-	// permitted before and after Seal, and Run seals implicitly).
-	c.mu.RLock()
-	sealErr := c.sealErr
-	c.mu.RUnlock()
-	if sealErr != nil {
-		return nil, fmt.Errorf("di: Resolve[%s]: container seal failed: %w", targetType, sealErr)
+	if err := c.admitResolve("Resolve", targetType); err != nil {
+		return nil, err
 	}
 
 	reg, canonical, ok := c.findRegistration(targetType)
@@ -94,11 +115,8 @@ func (c *Container) resolve(targetType reflect.Type, stack []reflect.Type) (any,
 }
 
 func (c *Container) resolveMany(targetType reflect.Type, stack []reflect.Type) (reflect.Value, error) {
-	c.mu.RLock()
-	sealErr := c.sealErr
-	c.mu.RUnlock()
-	if sealErr != nil {
-		return reflect.Value{}, fmt.Errorf("di: ResolveAll[%s]: container seal failed: %w", targetType, sealErr)
+	if err := c.admitResolve("ResolveAll", targetType); err != nil {
+		return reflect.Value{}, err
 	}
 
 	if targetType.Kind() != reflect.Interface {
@@ -125,38 +143,106 @@ func (c *Container) resolveMany(targetType reflect.Type, stack []reflect.Type) (
 	return result, nil
 }
 
-// resolveSingleton resolves a Singleton service. Per-type mutex ensures
-// concurrent resolution of different singletons without contention.
+// resolveSingleton resolves a Singleton service. Each type has one entry whose
+// state moves unbuilt → building → built|failed exactly once; concurrent
+// callers of a building entry wait for that single completion. State changes
+// happen under c.mu, the constructor runs outside it.
 func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stack []reflect.Type) (any, error) {
-	// Fast path: check if already resolved without locking the map.
-	c.mu.RLock()
+	c.mu.Lock()
 	entry, ok := c.singletons[targetType]
-	c.mu.RUnlock()
-
-	if ok && entry.done.Load() {
-		return entry.value, entry.err
-	}
-
 	if !ok {
 		// Lazy-create entry (shouldn't happen if Provide was called correctly).
-		c.mu.Lock()
-		entry, ok = c.singletons[targetType]
-		if !ok {
-			entry = &singletonEntry{}
-			c.singletons[targetType] = entry
-		}
+		entry = &singletonEntry{}
+		c.singletons[targetType] = entry
+	}
+	switch entry.state {
+	case entryBuilt, entryFailed:
+		v, err := c.deliverLocked(targetType, entry)
 		c.mu.Unlock()
+		return v, err
+	case entryBuilding:
+		done := entry.done
+		c.mu.Unlock()
+		<-done
+		c.mu.Lock()
+		v, err := c.deliverLocked(targetType, entry)
+		c.mu.Unlock()
+		return v, err
 	}
 
-	// sync.Once ensures the constructor runs exactly once, even under
-	// concurrent access. No data race on entry.value/err because Once
-	// provides a happens-before guarantee.
-	entry.once.Do(func() {
-		entry.value, entry.err = reg.build(c, append(stack, targetType))
-		entry.done.Store(true)
-	})
+	// entryUnbuilt: admit a build, unless the container is closing.
+	if c.closing {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("di: Resolve[%s]: %w", targetType, ErrClosed)
+	}
+	entry.state = entryBuilding
+	entry.done = make(chan struct{})
+	entry.buildStart = time.Now()
+	c.mu.Unlock()
 
+	value, err := c.build(reg, targetType, stack)
+
+	c.mu.Lock()
+	entry.buildDuration = time.Since(entry.buildStart)
+	if err != nil {
+		entry.state = entryFailed
+		entry.err = err
+	} else {
+		entry.state = entryBuilt
+		entry.value = value
+	}
+	// A completion after the shutdown context ended is no longer the shutdown
+	// pass's to own: route it to the separate best-effort cleanup.
+	late := c.closing && (c.teardownDone || c.shutdownCtx.Err() != nil)
+	if late {
+		entry.late = true
+	}
+	close(entry.done)
+	c.notifyBuildDone()
+	v, derr := c.deliverLocked(targetType, entry)
+	c.mu.Unlock()
+
+	if late {
+		go c.lateCleanup(targetType, entry.state, value, err)
+	}
+	return v, derr
+}
+
+// deliverLocked returns an entry's terminal result to a caller, or the closing
+// sentinel once shutdown has begun. A withheld instance is still tracked for
+// cleanup; a withheld construction failure stays recorded for diagnostics.
+func (c *Container) deliverLocked(targetType reflect.Type, entry *singletonEntry) (any, error) {
+	if c.closing {
+		return nil, fmt.Errorf("di: Resolve[%s]: %w", targetType, ErrClosed)
+	}
 	return entry.value, entry.err
+}
+
+// build runs the provider with panic recovery. A constructor panic becomes a
+// terminal *PanicError carrying the original value and the stack of this
+// goroutine; it is never retried.
+func (c *Container) build(reg provider, targetType reflect.Type, stack []reflect.Type) (value any, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			value = nil
+			err = &PanicError{
+				Type:  targetType,
+				Phase: PhaseConstruction,
+				Value: recovered,
+				Stack: observe.StackTrace(panicStackSize),
+			}
+		}
+	}()
+	return reg.build(c, append(stack, targetType))
+}
+
+// notifyBuildDone wakes the shutdown pass without blocking the completing
+// goroutine; a pending wake-up is coalesced.
+func (c *Container) notifyBuildDone() {
+	select {
+	case c.buildDone <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Container) resolveParamValue(paramType reflect.Type, serviceName string, stack []reflect.Type) (reflect.Value, error) {

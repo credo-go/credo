@@ -99,6 +99,7 @@ func registeredRegistry(t *testing.T, primary, replica *mockLifecycle) *store.Re
 			t.Fatalf("Register(replica) = %v", err)
 		}
 	}
+	finalize(t, app)
 	registry, err := app.Resolve[*store.Registry]()
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)

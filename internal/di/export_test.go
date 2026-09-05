@@ -10,14 +10,14 @@ func (c *Container) RegistrationCount() int {
 	return len(c.registrations)
 }
 
-// SingletonCount returns the number of resolved singletons.
+// SingletonCount returns the number of built singletons.
 // Exported for testing only.
 func (c *Container) SingletonCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	count := 0
 	for _, entry := range c.singletons {
-		if entry.done.Load() {
+		if entry.state == entryBuilt {
 			count++
 		}
 	}
@@ -31,5 +31,15 @@ func (c *Container) HasRegistration[T any]() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	_, ok := c.registrations[t]
+	return ok
+}
+
+// IsProtected reports whether T's binding rejects Replace.
+// Exported for testing only.
+func (c *Container) IsProtected[T any]() bool {
+	t := reflect.TypeFor[T]()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.protected[t]
 	return ok
 }

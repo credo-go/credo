@@ -221,6 +221,15 @@ func (app *App) GetConfig[T any](key string) (T, error) {
 	return dst, nil
 }
 
+// ConfigExists reports whether key is present in the application's
+// [RawConfig], mirroring [RawConfig.Exists]. Like [App.GetConfig] it is a
+// bootstrap helper that reads configuration directly, so framework modules
+// and composition roots can consult optional sections during registration,
+// before [App.Finalize] makes [App.Resolve] available.
+func (app *App) ConfigExists(key string) bool {
+	return app.rawConfig.Exists(key)
+}
+
 // MustGetConfig is like [App.GetConfig] but panics on error. It suits
 // composition-root code where a missing or invalid required key should abort
 // startup.

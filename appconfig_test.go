@@ -45,6 +45,7 @@ func TestNew_WithRawConfig_BypassesAutoLoad(t *testing.T) {
 		t.Fatalf("New(WithRawConfig) should bypass auto-load, got: %v", err)
 	}
 
+	mustFinalize(t, app)
 	resolved, err := app.Resolve[credo.RawConfig]()
 	if err != nil {
 		t.Fatalf("Resolve[RawConfig]: %v", err)

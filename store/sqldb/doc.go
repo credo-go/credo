@@ -74,7 +74,7 @@
 //
 // The duplicate-resource guarantee is scoped to one store.Registry and its
 // store.Register calls. Do not publish the same *DB again under another DI type
-// with raw Provide/ProvideFactory/ProvideValue/ProvideProtectedValue/Replace;
+// with raw Provide/ProvideValue/ProvideProtectedValue/Replace;
 // use App.Alias for an interface view.
 //
 // # Query Builder Proxies

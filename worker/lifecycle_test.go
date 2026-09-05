@@ -132,6 +132,7 @@ func TestLifecycle_ShutdownReportsWorkerThatOutlivesTheDeadline(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	finalize(t, app)
 	pool, err := app.Resolve[*Pool]()
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +202,7 @@ func TestRegister_PoolBindingIsProtected(t *testing.T) {
 	if err := Register(app, Func("w", func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := app.Replace[*Pool](newTestPool()); err == nil {
+	if _, _, err := app.Replace[*Pool](newTestPool()); err == nil {
 		t.Fatal("Replace[*Pool] succeeded; the wired pool and the DI binding may now diverge")
 	}
 }

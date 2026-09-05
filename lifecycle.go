@@ -148,12 +148,12 @@ func (app *App) IsDebug() bool {
 	return app != nil && app.debug
 }
 
-// checkFrozen panics if the app has been compiled (frozen). Used to guard
-// against late registration of routes, middleware, hooks, and renderers. what
-// names the API as Type.Method (for example "App.GET", "Group.SetMeta") so the
-// panic text reads uniformly.
+// checkFrozen panics if the app has been frozen — prepared for serving or
+// shut down during bootstrap. Used to guard against late registration of
+// routes, middleware, hooks, and renderers. what names the API as Type.Method
+// (for example "App.GET", "Group.SetMeta") so the panic text reads uniformly.
 func (app *App) checkFrozen(what string) {
 	if app.frozen.Load() {
-		panic("credo: " + what + " called after app was compiled")
+		panic("credo: " + what + " called after app was compiled or shut down")
 	}
 }

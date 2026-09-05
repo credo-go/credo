@@ -66,7 +66,9 @@ func TestMount_IntrospectionMethodsMatchRegistration(t *testing.T) {
 // the centralized error renderer, so sentinel returns stay observable.
 func dispatchOnceForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	app.handlerOnce.Do(app.compile)
+	if p := app.prepare(); p == nil || p.err != nil {
+		t.Fatalf("prepare: %v", p)
+	}
 	rec := httptest.NewRecorder()
 	c := app.ctxPool.get()
 	c.reset(rec, httptest.NewRequest(method, target, nil))

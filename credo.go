@@ -60,15 +60,18 @@ type App struct {
 	// globalMW holds global middleware (applied to all requests, including 404/405).
 	globalMW []Middleware
 
-	// compiledHandler is the global MW chain ending in dispatch.
-	compiledHandler Handler
+	// prep is the stored Finalize → compile → publish result shared by every
+	// serve path (see prepare). nil until the first preparation publishes.
+	prep atomic.Pointer[preparation]
 
-	// handlerOnce ensures compile is called exactly once.
-	handlerOnce sync.Once
+	// prepMu serialises preparation and bootstrap-shutdown admission so an
+	// unfinished preparation can never publish a handler after Shutdown won.
+	prepMu sync.Mutex
 
-	// frozen is set after compile(); prevents late route/middleware additions.
-	// Separate from state because ServeHTTP triggers compile (frozen) without
-	// entering the Running state — the user may manage their own *http.Server.
+	// frozen closes route/middleware/hook/renderer registration. It is set at
+	// preparation admission and at bootstrap-shutdown admission. Separate from
+	// state because ServeHTTP prepares (frozen) without entering the Running
+	// state — the user may manage their own *http.Server.
 	frozen atomic.Bool
 
 	// lifecycle owns the server-session state machine, the bound server and app
@@ -306,6 +309,7 @@ func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 			return Infra{Logger: baseInfra.Logger.With("service", serviceName)}
 		},
 	})
+	c.SetLogger(baseInfra.Logger)
 	c.MustProvideValue[RawConfig](rawConfig)
 	return c
 }

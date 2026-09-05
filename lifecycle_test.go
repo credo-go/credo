@@ -212,12 +212,18 @@ func TestApp_Shutdown_TransitionsToStopped(t *testing.T) {
 	<-errCh
 }
 
-func TestApp_Shutdown_NotRunning(t *testing.T) {
+func TestApp_Shutdown_Building_IsBootstrapTeardown(t *testing.T) {
 	app := mustNew(t)
 	ctx := t.Context()
+	if err := app.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() on a building app = %v, want bootstrap teardown", err)
+	}
+	if got := app.State(); got != "stopped" {
+		t.Fatalf("State() after bootstrap Shutdown = %q, want stopped", got)
+	}
 	err := app.Shutdown(ctx)
-	if err == nil {
-		t.Fatal("Shutdown() on building app should return error")
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("second Shutdown() = %v, want a state error naming stopped", err)
 	}
 }
 

@@ -150,16 +150,55 @@ func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 	}
 }
 
-func TestSeal_ResolveBeforeBuild(t *testing.T) {
+func TestSeal_ResolveBeforeSeal_Rejected(t *testing.T) {
+	c := di.New()
+	calls := 0
+	c.MustProvide[*SimpleService](func() *SimpleService {
+		calls++
+		return NewSimpleService()
+	})
+	c.MustProvideValue[*ServiceWithConfig](&ServiceWithConfig{Value: "prebuilt"})
+
+	// Constructor execution starts only after Seal: neither a constructor nor
+	// a prebuilt value is resolvable during registration.
+	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "not finalized") {
+		t.Fatalf("Resolve before Seal = %v, want not-finalized error", err)
+	}
+	if _, err := c.Resolve[*ServiceWithConfig](); err == nil || !strings.Contains(err.Error(), "not finalized") {
+		t.Fatalf("Resolve of prebuilt value before Seal = %v, want not-finalized error", err)
+	}
+	if _, err := c.ResolveAll[Greeter](); err == nil || !strings.Contains(err.Error(), "not finalized") {
+		t.Fatalf("ResolveAll before Seal = %v, want not-finalized error", err)
+	}
+	if calls != 0 {
+		t.Fatalf("constructor ran %d times before Seal, want 0", calls)
+	}
+
+	seal(t, c)
+	if svc := c.MustResolve[*SimpleService](); svc.Value != "hello" || calls != 1 {
+		t.Fatalf("after Seal: Value = %q, calls = %d", svc.Value, calls)
+	}
+}
+
+func TestFreeze_ClosesRegistrationWithoutSeal(t *testing.T) {
 	c := di.New()
 	c.MustProvide[*SimpleService](NewSimpleService)
 
-	// Resolve before Seal should work (bootstrap phase).
-	svc, err := c.Resolve[*SimpleService]()
-	if err != nil {
-		t.Fatalf("Resolve before Seal should work: %v", err)
+	c.Freeze()
+
+	if err := c.Provide[*ServiceWithDep](NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("Provide after Freeze = %v, want frozen error", err)
 	}
-	if svc.Value != "hello" {
-		t.Errorf("Value = %q, want %q", svc.Value, "hello")
+	if _, _, err := c.Replace[*SimpleService](&SimpleService{}); err == nil {
+		t.Fatal("Replace after Freeze should be rejected")
+	}
+	// Freeze neither validates nor admits resolution.
+	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "not finalized") {
+		t.Fatalf("Resolve after Freeze = %v, want not-finalized error", err)
+	}
+	// Seal still runs its own validation afterwards and admits resolution.
+	seal(t, c)
+	if svc := c.MustResolve[*SimpleService](); svc.Value != "hello" {
+		t.Fatalf("Resolve after Freeze+Seal: Value = %q", svc.Value)
 	}
 }

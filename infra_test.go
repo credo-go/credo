@@ -23,6 +23,7 @@ func TestInfra_Model1_Injection(t *testing.T) {
 	app := mustNew(t)
 	app.MustProvide[*model1Service](newModel1Service)
 
+	mustFinalize(t, app)
 	svc, err := app.Resolve[*model1Service]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -45,6 +46,7 @@ func TestInfra_Model1_LoggerScoping(t *testing.T) {
 	}
 
 	app.MustProvide[*model1Service](newModel1Service)
+	mustFinalize(t, app)
 	svc := app.MustResolve[*model1Service]()
 
 	svc.Infra.Logger.Info("test message")
@@ -70,6 +72,7 @@ func TestInfra_Model1_WithOtherDeps(t *testing.T) {
 	app.MustProvide[*diSimpleService](newDISimpleService)
 	app.MustProvide[*model1WithDep](newModel1WithDep)
 
+	mustFinalize(t, app)
 	svc, err := app.Resolve[*model1WithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -92,6 +95,7 @@ func TestInfra_PureConstructor_StillWorks(t *testing.T) {
 	app.MustProvide[*diSimpleService](newDISimpleService)
 	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
 
+	mustFinalize(t, app)
 	svc, err := app.Resolve[*diServiceWithDep]()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -107,6 +111,7 @@ func TestInfra_DefaultLoggerFallback(t *testing.T) {
 	app := mustNew(t) // no WithLogger
 	app.MustProvide[*model1Service](newModel1Service)
 
+	mustFinalize(t, app)
 	svc := app.MustResolve[*model1Service]()
 
 	// Logger should fall back to the framework default logger (non-nil).
