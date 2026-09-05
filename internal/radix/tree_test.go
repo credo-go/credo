@@ -2,6 +2,7 @@ package radix
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -299,46 +300,213 @@ func TestInsertRoute_DuplicateMethodPattern(t *testing.T) {
 	}
 }
 
-func TestInsertRoute_ConflictingParamNames(t *testing.T) {
+// Parameter names are endpoint-owned: the tree identifies a route by its
+// method and name-stripped shape, so "/users/{id}" and "/users/{name}" are one
+// route (a duplicate for the same method) while "/users/{id}" and
+// "/users/{name}/timeline" are two routes that share a dynamic node and each
+// name its capture independently.
+func TestInsertRoute_SameShapeDifferentNamesIsDuplicate(t *testing.T) {
 	tree := newTree()
 
-	if _, err := tree.InsertRoute(MGet, "/users/{id}", dummyValue); err != nil {
+	if _, err := tree.InsertRoute(MGet, "/users/{id}", "first"); err != nil {
 		t.Fatalf("InsertRoute first: %v", err)
 	}
-	_, err := tree.InsertRoute(MGet, "/users/{name}", dummyValue)
+	_, err := tree.InsertRoute(MGet, "/users/{name}", "second")
 	if err == nil {
-		t.Fatal("expected conflict error for different param names")
+		t.Fatal("expected duplicate route error for the same method and shape")
 	}
 
-	for _, want := range []string{
-		`conflicting path parameter "name" with existing "id"`,
-		`existing route "/users/{id}"`,
-		`new route "/users/{name}"`,
-		"dynamic segments at the same path level must use the same parameter name",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want substring %q", err.Error(), want)
-		}
+	dup, ok := errors.AsType[*DuplicateRouteError[string]](err)
+	if !ok {
+		t.Fatalf("error = %T (%v), want *DuplicateRouteError[string]", err, err)
+	}
+	if dup.Pattern != "/users/{name}" {
+		t.Errorf("Pattern = %q, want %q", dup.Pattern, "/users/{name}")
+	}
+	if dup.ExistingPattern != "/users/{id}" {
+		t.Errorf("ExistingPattern = %q, want %q", dup.ExistingPattern, "/users/{id}")
+	}
+	if dup.Existing != "first" {
+		t.Errorf("Existing = %q, want %q", dup.Existing, "first")
+	}
+	if !strings.Contains(err.Error(), `already registered as "/users/{id}"`) {
+		t.Errorf("error = %q, want it to name the existing spelling", err.Error())
+	}
+
+	// The failed registration must not have disturbed the existing endpoint.
+	rctx := &RouteContext{}
+	v, found := tree.FindRoute(rctx, MGet, "/users/7")
+	if !found || v != "first" {
+		t.Fatalf("FindRoute after duplicate = %q (found=%v), want \"first\"", v, found)
+	}
+	if got := rctx.URLParam("id"); got != "7" {
+		t.Errorf("param id = %q, want %q", got, "7")
 	}
 }
 
-func TestInsertRoute_ConflictingParamNamesIncludesDescendantRoute(t *testing.T) {
+func TestInsertRoute_SharedSegmentEndpointOwnedNames(t *testing.T) {
 	tree := newTree()
 
-	if _, err := tree.InsertRoute(MGet, "/users/{id}/timeline", dummyValue); err != nil {
-		t.Fatalf("InsertRoute first: %v", err)
+	inserts := []struct {
+		method  MethodTyp
+		pattern string
+		value   string
+	}{
+		{MGet, "/users/{id}/timeline", "timeline"},
+		{MGet, "/users/{name}", "show"},
+		{MDelete, "/users/{user_id}", "delete"}, // same shape as show, other method
+		{MGet, "/users/{uid}/posts/{post}", "post"},
 	}
-	_, err := tree.InsertRoute(MGet, "/users/{name}", dummyValue)
-	if err == nil {
-		t.Fatal("expected conflict error for different param names")
+	for _, in := range inserts {
+		if _, err := tree.InsertRoute(in.method, in.pattern, in.value); err != nil {
+			t.Fatalf("InsertRoute(%v, %q): %v", in.method, in.pattern, err)
+		}
 	}
 
-	for _, want := range []string{
-		`existing route "/users/{id}/timeline"`,
-		`new route "/users/{name}"`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want substring %q", err.Error(), want)
+	tests := []struct {
+		method     MethodTyp
+		path       string
+		wantValue  string
+		wantKeys   []string
+		wantValues []string
+	}{
+		{MGet, "/users/7/timeline", "timeline", []string{"id"}, []string{"7"}},
+		{MGet, "/users/7", "show", []string{"name"}, []string{"7"}},
+		{MDelete, "/users/7", "delete", []string{"user_id"}, []string{"7"}},
+		{MGet, "/users/7/posts/9", "post", []string{"uid", "post"}, []string{"7", "9"}},
+	}
+	for _, tt := range tests {
+		t.Run(methodName(tt.method)+" "+tt.path, func(t *testing.T) {
+			rctx := &RouteContext{}
+			v, found := tree.FindRoute(rctx, tt.method, tt.path)
+			if !found || v != tt.wantValue {
+				t.Fatalf("FindRoute = %q (found=%v), want %q", v, found, tt.wantValue)
+			}
+			if !slices.Equal(rctx.Params.Keys, tt.wantKeys) {
+				t.Errorf("Keys = %q, want %q", rctx.Params.Keys, tt.wantKeys)
+			}
+			if !slices.Equal(rctx.Params.Values, tt.wantValues) {
+				t.Errorf("Values = %q, want %q", rctx.Params.Values, tt.wantValues)
+			}
+		})
+	}
+
+	// A sibling endpoint's name is never visible to a handler.
+	rctx := &RouteContext{}
+	if _, found := tree.FindRoute(rctx, MGet, "/users/7"); !found {
+		t.Fatal("expected /users/7 to match")
+	}
+	if got := rctx.URLParam("id"); got != "" {
+		t.Errorf("param id = %q on the show endpoint, want empty (owned by the timeline endpoint)", got)
+	}
+}
+
+func TestInsertRoute_EndpointParamKeysInCaptureOrder(t *testing.T) {
+	tree := newTree()
+
+	inserts := []struct {
+		pattern  string
+		wantKeys []string
+	}{
+		{"/static", nil},
+		{"/a/{x}/b/{y:[0-9]+}/c/{rest...}", []string{"x", "y", "rest"}},
+		{"/a/{one}/b/{two:[0-9]+}", []string{"one", "two"}},
+	}
+	for _, in := range inserts {
+		if _, err := tree.InsertRoute(MGet, in.pattern, in.pattern); err != nil {
+			t.Fatalf("InsertRoute(%q): %v", in.pattern, err)
+		}
+	}
+	for _, in := range inserts {
+		ep, ok := tree.FindEndpoint(MGet, in.pattern)
+		if !ok {
+			t.Fatalf("FindEndpoint(%q) not found", in.pattern)
+		}
+		if !slices.Equal(ep.ParamKeys, in.wantKeys) {
+			t.Errorf("ParamKeys(%q) = %q, want %q", in.pattern, ep.ParamKeys, in.wantKeys)
+		}
+	}
+
+	rctx := &RouteContext{}
+	v, found := tree.FindRoute(rctx, MGet, "/a/1/b/22/c/x/y/z")
+	if !found || v != "/a/{x}/b/{y:[0-9]+}/c/{rest...}" {
+		t.Fatalf("FindRoute = %q (found=%v)", v, found)
+	}
+	if !slices.Equal(rctx.Params.Keys, []string{"x", "y", "rest"}) {
+		t.Errorf("Keys = %q", rctx.Params.Keys)
+	}
+	if !slices.Equal(rctx.Params.Values, []string{"1", "22", "x/y/z"}) {
+		t.Errorf("Values = %q", rctx.Params.Values)
+	}
+
+	rctx = &RouteContext{}
+	if _, found := tree.FindRoute(rctx, MGet, "/a/1/b/22"); !found {
+		t.Fatal("expected /a/1/b/22 to match")
+	}
+	if !slices.Equal(rctx.Params.Keys, []string{"one", "two"}) {
+		t.Errorf("Keys = %q, want the shorter endpoint's names", rctx.Params.Keys)
+	}
+	if !slices.Equal(rctx.Params.Values, []string{"1", "22"}) {
+		t.Errorf("Values = %q", rctx.Params.Values)
+	}
+}
+
+// Backtracking must leave no stray capture behind: when a regexp branch
+// captures a value but fails deeper, the eventual param-branch match names
+// exactly its own captures.
+func TestFindRoute_BacktrackingKeepsCapturesAligned(t *testing.T) {
+	tree := newTree()
+
+	if _, err := tree.InsertRoute(MGet, "/x/{num:[0-9]+}/only-num", "num"); err != nil {
+		t.Fatalf("InsertRoute regexp: %v", err)
+	}
+	if _, err := tree.InsertRoute(MGet, "/x/{any}/{tail}", "any"); err != nil {
+		t.Fatalf("InsertRoute param: %v", err)
+	}
+
+	rctx := &RouteContext{}
+	v, found := tree.FindRoute(rctx, MGet, "/x/42/other")
+	if !found || v != "any" {
+		t.Fatalf("FindRoute = %q (found=%v), want \"any\"", v, found)
+	}
+	if !slices.Equal(rctx.Params.Keys, []string{"any", "tail"}) {
+		t.Errorf("Keys = %q, want [any tail]", rctx.Params.Keys)
+	}
+	if !slices.Equal(rctx.Params.Values, []string{"42", "other"}) {
+		t.Errorf("Values = %q, want [42 other]", rctx.Params.Values)
+	}
+
+	rctx = &RouteContext{}
+	v, found = tree.FindRoute(rctx, MGet, "/x/42/only-num")
+	if !found || v != "num" {
+		t.Fatalf("FindRoute = %q (found=%v), want \"num\"", v, found)
+	}
+	if !slices.Equal(rctx.Params.Keys, []string{"num"}) || !slices.Equal(rctx.Params.Values, []string{"42"}) {
+		t.Errorf("Keys/Values = %q/%q, want [num]/[42]", rctx.Params.Keys, rctx.Params.Values)
+	}
+}
+
+// A 405 names nothing: no endpoint matched, so no keys are appended and the
+// caller's key-driven copy sees no parameters.
+func TestFindRoute_MethodNotAllowedAppendsNoKeys(t *testing.T) {
+	tree := newTree()
+	if _, err := tree.InsertRoute(MGet, "/users/{id}", dummyValue); err != nil {
+		t.Fatalf("InsertRoute: %v", err)
+	}
+	if _, err := tree.InsertRoute(MGet, "/files/{path...}", dummyValue); err != nil {
+		t.Fatalf("InsertRoute: %v", err)
+	}
+
+	for _, path := range []string{"/users/7", "/files/a/b"} {
+		rctx := &RouteContext{}
+		if _, found := tree.FindRoute(rctx, MPost, path); found {
+			t.Fatalf("FindRoute(POST %s) matched, want 405", path)
+		}
+		if !rctx.MethodNotAllowed {
+			t.Errorf("MethodNotAllowed = false for %s", path)
+		}
+		if len(rctx.Params.Keys) != 0 {
+			t.Errorf("Keys = %q for %s, want none", rctx.Params.Keys, path)
 		}
 	}
 }
@@ -360,8 +528,33 @@ func TestInsertRoute_RegexSameMatcherDifferentParamName(t *testing.T) {
 	if _, err := tree.InsertRoute(MGet, "/users/{id:[0-9]+}", dummyValue); err != nil {
 		t.Fatalf("InsertRoute first: %v", err)
 	}
-	if _, err := tree.InsertRoute(MGet, "/users/{name:[0-9]+}", dummyValue); err == nil {
-		t.Fatal("expected conflict error for different regexp param names")
+	// Same method and shape: a duplicate, not a name conflict.
+	_, err := tree.InsertRoute(MGet, "/users/{name:[0-9]+}", dummyValue)
+	if _, ok := errors.AsType[*DuplicateRouteError[string]](err); !ok {
+		t.Fatalf("error = %T (%v), want *DuplicateRouteError[string]", err, err)
+	}
+	// A different method or a longer shape shares the regexp node under its
+	// own name.
+	if _, err := tree.InsertRoute(MPost, "/users/{name:[0-9]+}", "post"); err != nil {
+		t.Fatalf("InsertRoute other method: %v", err)
+	}
+	if _, err := tree.InsertRoute(MGet, "/users/{uid:[0-9]+}/ext", "ext"); err != nil {
+		t.Fatalf("InsertRoute longer: %v", err)
+	}
+
+	rctx := &RouteContext{}
+	if v, found := tree.FindRoute(rctx, MPost, "/users/42"); !found || v != "post" {
+		t.Fatalf("FindRoute POST = %q (found=%v), want \"post\"", v, found)
+	}
+	if got := rctx.URLParam("name"); got != "42" {
+		t.Errorf("param name = %q, want %q", got, "42")
+	}
+	rctx = &RouteContext{}
+	if v, found := tree.FindRoute(rctx, MGet, "/users/42/ext"); !found || v != "ext" {
+		t.Fatalf("FindRoute /ext = %q (found=%v), want \"ext\"", v, found)
+	}
+	if got := rctx.URLParam("uid"); got != "42" {
+		t.Errorf("param uid = %q, want %q", got, "42")
 	}
 }
 
@@ -395,10 +588,11 @@ func TestFindEndpoint(t *testing.T) {
 		}
 	}
 
-	// FindEndpoint reaches an endpoint only when the exact pattern already
+	// FindEndpoint reaches an endpoint only when the pattern's shape already
 	// resolves to an existing node; any pattern that an InsertRoute would build
-	// by splitting a node, extending a prefix, or adding a sibling param/regexp
-	// child reports no endpoint, because none can pre-exist at that location.
+	// by splitting a node, extending a prefix, or adding a sibling regexp child
+	// reports no endpoint, because none can pre-exist at that location.
+	// Parameter names do not take part: they belong to endpoints.
 	tests := []struct {
 		name      string
 		method    MethodTyp
@@ -413,10 +607,11 @@ func TestFindEndpoint(t *testing.T) {
 		{"shorter prefix would split", MGet, "/use", false, ""},
 		{"longer pattern would extend", MGet, "/usersx", false, ""},
 		{"param child hit", MGet, "/users/{id}", true, "user-by-id"},
-		{"param key mismatch", MGet, "/users/{slug}", false, ""},
+		{"param other name, same shape", MGet, "/users/{slug}", true, "user-by-id"},
 		{"catch-all hit", MGet, "/files/{path...}", true, "files"},
-		{"catch-all key mismatch", MGet, "/files/{other...}", false, ""},
+		{"catch-all other name, same shape", MGet, "/files/{other...}", true, "files"},
 		{"regexp hit", MGet, "/n/{id:[0-9]+}", true, "num"},
+		{"regexp other name, same matcher", MGet, "/n/{num:[0-9]+}", true, "num"},
 		{"regexp matcher mismatch", MGet, "/n/{id:[a-z]+}", false, ""},
 	}
 	for _, tt := range tests {

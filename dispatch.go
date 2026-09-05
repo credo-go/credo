@@ -217,7 +217,9 @@ func (app *App) dispatchOnce(c *Context) error {
 			// Clear params for re-dispatch safety.
 			c.request.resetRouteParams()
 
-			// Copy params from radix RouteContext into credo Context.
+			// Copy params from radix RouteContext into credo Context. The
+			// matched endpoint named the positional captures, so Keys and
+			// Values line up here.
 			for i, key := range rctx.Params.Keys {
 				if i < len(rctx.Params.Values) {
 					c.request.addRouteParam(key, rctx.Params.Values[i])
@@ -490,15 +492,16 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// before touching the tree if any explicit endpoint is already registered.
 	//
 	// Only duplicate endpoints need this guard. A structural conflict (a
-	// mismatched parameter key or regexp matcher in the prefix) always fires on
-	// the very first insert: catchAll is registered before exact and shares its
-	// entire prefix, so any such conflict is hit by catchAll's first method —
-	// before any registration commits — and so cannot leave a partial state.
+	// second regexp matcher or a mismatched regexp tail in the prefix) always
+	// fires on the very first insert: catchAll is registered before exact and
+	// shares its entire prefix, so any such conflict is hit by catchAll's first
+	// method — before any registration commits — and so cannot leave a partial
+	// state. Parameter names never conflict: they belong to endpoints.
 	for _, pat := range [...]string{catchAll, exact} {
 		for _, method := range mountForwardedMethods() {
-			if existing, ok := app.mux.wouldConflict(method, pat); ok {
+			if existing, existingPattern, ok := app.mux.wouldConflict(method, pat); ok {
 				incoming := &routeHandler{srcLoc: callerLocation()}
-				panic(duplicateRoutePanic(method, pat, incoming, existing))
+				panic(duplicateRoutePanic(method, pat, existingPattern, incoming, existing))
 			}
 		}
 	}

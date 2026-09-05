@@ -1,6 +1,6 @@
 # Pre-v1 Migration Preview
 
-**Status:** The bootstrap/DI changes are implemented (DI minor, 2026-09-05) and the [Bootstrap and DI](#bootstrap-and-di) section below is a migration guide for callable APIs. The built-in HTTP feature and router changes are accepted but not yet implemented; the names in those sections are not yet callable. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
+**Status:** The bootstrap/DI changes (DI minor) and the router parameter-name change (router minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di) and [Router](#router) sections below describe shipped behavior. The built-in HTTP feature changes and the URL round-trip change are accepted but not yet implemented; the names in those sections are not yet callable. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
 
 ## Bootstrap and DI
 
@@ -48,7 +48,7 @@ AccessLog bytes become post-compression accepted body bytes; headers/framing/TLS
 
 ## Router
 
-P4 allows shared path-tree segments to use endpoint-specific names: `/customers/{id}` and `/customers/{customer_id}/timeline` coexist. Same-method duplicate shapes and structural conflicts remain errors. BuildURI reads the selected route's names; host pattern semantics stay unchanged. P5 escaping/decoding is accepted separately and is not delivered by P4. It keeps raw segment boundaries, decodes captures once and evaluates regex on the decoded value: %31 becomes numeric 1, %2F is captured slash data, %252F stays literal %2F, and plus stays plus. BuildURI takes decoded values and escapes them per segment. Malformed encoding/UTF-8 is 400; regex mismatch is no match; generation rejects invalid values. See the [round-trip table](../specs/router.md#pre-v1-url-round-trip-contract).
+**Implemented (router minor, 2026-09-05).** Path parameter names belong to the endpoint: `/customers/{id}` and `/customers/{customer_id}/timeline` coexist, and each handler reads its own names. Nothing needs to change in existing applications — every registration that was valid stays valid with the same captures — and routes that were previously split or renamed to satisfy the shared-name rule may now use their natural names. The `conflicting … parameter` registration panic no longer exists; the same method on the same name-stripped shape is a duplicate (`GET "/users/{name}" is already registered as "/users/{id}"`), and structural regex conflicts remain errors. `BuildURI` reads the selected route's names; host pattern semantics stay unchanged. P5 escaping/decoding is accepted separately and is not delivered by the router minor. It keeps raw segment boundaries, decodes captures once and evaluates regex on the decoded value: %31 becomes numeric 1, %2F is captured slash data, %252F stays literal %2F, and plus stays plus. BuildURI takes decoded values and escapes them per segment. Malformed encoding/UTF-8 is 400; regex mismatch is no match; generation rejects invalid values. See the [round-trip table](../specs/router.md#pre-v1-url-round-trip-contract).
 
 ## Examples and downstream impact
 

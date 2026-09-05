@@ -2,6 +2,7 @@ package credo_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1376,7 +1377,66 @@ func TestRouting_DuplicateRoutePanics(t *testing.T) {
 	app.GET("/dup", func(ctx *credo.Context) error { return nil }) // panic
 }
 
-func TestRouting_ConflictingParamNamesPanicIncludesRoutes(t *testing.T) {
+// Path parameter names belong to the endpoint: routes that share a dynamic
+// segment may name it differently, and each handler sees its own names.
+func TestRouting_EndpointOwnedParamNames(t *testing.T) {
+	app := mustNew(t)
+	params := func(keys ...string) credo.Handler {
+		return func(ctx *credo.Context) error {
+			parts := make([]string, 0, len(keys)+1)
+			for _, k := range keys {
+				parts = append(parts, k+"="+ctx.Request().RouteParam(k))
+			}
+			parts = append(parts, fmt.Sprintf("n=%d", len(ctx.Request().RouteParams())))
+			return ctx.Response().Text(200, strings.Join(parts, ";"))
+		}
+	}
+	app.GET("/v1/crm/customers/{id}", params("id", "customer_id"))
+	app.GET("/v1/crm/customers/{customer_id}/timeline", params("customer_id", "id")).Name("customer-timeline")
+	app.DELETE("/v1/crm/customers/{cid}", params("cid", "id"))
+	app.GET("/v1/crm/customers/{c:[0-9]+}/orders/{order}", params("c", "order"))
+	app.GET("/v1/crm/customers/{customer:[0-9]+}/orders/{order}/{rest...}", params("customer", "order", "rest"))
+
+	tests := []struct {
+		method, path string
+		code         int
+		body         string
+	}{
+		{"GET", "/v1/crm/customers/7", 200, "id=7;customer_id=;n=1"},
+		{"GET", "/v1/crm/customers/7/timeline", 200, "customer_id=7;id=;n=1"},
+		{"HEAD", "/v1/crm/customers/7/timeline", 200, ""}, // automatic HEAD twin
+		{"DELETE", "/v1/crm/customers/7", 200, "cid=7;id=;n=1"},
+		{"GET", "/v1/crm/customers/7/orders/o1", 200, "c=7;order=o1;n=2"},
+		{"GET", "/v1/crm/customers/7/orders/o1/a/b", 200, "customer=7;order=o1;rest=a/b;n=3"},
+		{"POST", "/v1/crm/customers/7", 405, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(tt.method, tt.path, nil))
+			if w.Code != tt.code {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.code, w.Body.String())
+			}
+			if tt.code == 200 && w.Body.String() != tt.body {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.body)
+			}
+		})
+	}
+
+	// BuildURI reads names from the selected route's own pattern.
+	timeline := app.GetRoute("customer-timeline")
+	if timeline == nil {
+		t.Fatal("named route customer-timeline not found")
+	}
+	if uri, err := timeline.BuildURI("7"); err != nil || uri != "/v1/crm/customers/7/timeline" {
+		t.Errorf("BuildURI = %q, %v", uri, err)
+	}
+}
+
+// The same method and name-stripped shape is one route: registering it twice
+// under different parameter names is a duplicate, and the panic spells out
+// the existing registration so the collision is visible.
+func TestRouting_SameShapeDifferentParamNamesPanics(t *testing.T) {
 	app := mustNew(t)
 	h := func(ctx *credo.Context) error { return nil }
 	app.GET("/v1/crm/customers/{id}", h)
@@ -1384,7 +1444,7 @@ func TestRouting_ConflictingParamNamesPanicIncludesRoutes(t *testing.T) {
 	defer func() {
 		v := recover()
 		if v == nil {
-			t.Fatal("expected panic for conflicting route parameter names")
+			t.Fatal("expected panic for a duplicate route shape")
 		}
 
 		got, ok := v.(string)
@@ -1393,10 +1453,10 @@ func TestRouting_ConflictingParamNamesPanicIncludesRoutes(t *testing.T) {
 		}
 
 		for _, want := range []string{
-			`conflicting path parameter "customer_id" with existing "id"`,
-			`existing route "/v1/crm/customers/{id}"`,
-			`new route "/v1/crm/customers/{customer_id}/timeline"`,
-			"dynamic segments at the same path level must use the same parameter name",
+			`credo: duplicate route: GET "/v1/crm/customers/{customer_id}" is already registered as "/v1/crm/customers/{id}"`,
+			"parameter names do not distinguish routes",
+			"first registered at",
+			"now registered at",
 		} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("panic = %q, want substring %q", got, want)
@@ -1404,7 +1464,75 @@ func TestRouting_ConflictingParamNamesPanicIncludesRoutes(t *testing.T) {
 		}
 	}()
 
-	app.GET("/v1/crm/customers/{customer_id}/timeline", h)
+	app.GET("/v1/crm/customers/{customer_id}", h)
+}
+
+// Host-scoped path trees carry the same endpoint-owned names, independently
+// of the default mux and of the host captures.
+func TestRouting_EndpointOwnedParamNames_HostScoped(t *testing.T) {
+	app := mustNew(t)
+	show := func(key string) credo.Handler {
+		return func(ctx *credo.Context) error {
+			return ctx.Response().Text(200, key+"="+ctx.Request().RouteParam(key)+";tenant="+ctx.Request().RouteParam("tenant"))
+		}
+	}
+	tenant := app.Host("{tenant}.example.com")
+	tenant.GET("/items/{sku}", show("sku"))
+	tenant.GET("/items/{item_id}/history", show("item_id"))
+	app.GET("/items/{id}", show("id"))
+
+	tests := []struct {
+		host, path, body string
+	}{
+		{"acme.example.com", "/items/x1", "sku=x1;tenant=acme"},
+		{"acme.example.com", "/items/x1/history", "item_id=x1;tenant=acme"},
+		{"other.test", "/items/x1", "id=x1;tenant="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host+tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("GET", tt.path, nil)
+			r.Host = tt.host
+			app.ServeHTTP(w, r)
+			if w.Code != 200 || w.Body.String() != tt.body {
+				t.Errorf("status/body = %d %q, want 200 %q", w.Code, w.Body.String(), tt.body)
+			}
+		})
+	}
+}
+
+// A mounted sub-application names its own captures; the parent's internal
+// _mount capture is named by the parent's endpoint and never leaks.
+func TestRouting_EndpointOwnedParamNames_Mount(t *testing.T) {
+	child := mustNew(t)
+	child.GET("/items/{sku}", func(ctx *credo.Context) error {
+		p := ctx.Request().RouteParams()
+		if _, ok := p["_mount"]; ok {
+			return ctx.Response().Text(200, "FAIL:_mount_leaked")
+		}
+		return ctx.Response().Text(200, "sku="+p["sku"])
+	})
+	child.GET("/items/{item}/history", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "item="+ctx.Request().RouteParam("item"))
+	})
+
+	parent := mustNew(t)
+	parent.Mount("/api", child)
+	parent.GET("/api-direct/{id}", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "id="+ctx.Request().RouteParam("id"))
+	})
+
+	for path, want := range map[string]string{
+		"/api/items/x1":         "sku=x1",
+		"/api/items/x1/history": "item=x1",
+		"/api-direct/9":         "id=9",
+	} {
+		w := httptest.NewRecorder()
+		parent.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 || w.Body.String() != want {
+			t.Errorf("%s: status/body = %d %q, want 200 %q", path, w.Code, w.Body.String(), want)
+		}
+	}
 }
 
 func TestRouting_MethodNotAllowed_AllowHeader(t *testing.T) {

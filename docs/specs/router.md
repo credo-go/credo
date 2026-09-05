@@ -4,23 +4,6 @@
 
 ---
 
-## Pre-v1 endpoint parameter contract
-
-**Accepted, implementation pending (P4, 2026-09-05).** [ADR-007](../adr/007-router-and-routing.md#pre-v1-endpoint-parameter-amendment) moves path names to endpoints. The tree captures values positionally; the matched endpoint maps them to its keys. Remove Node.ParamKey and name-mismatch diagnostics. The current shared-name restriction below is superseded when this minor lands.
-
-| Registration or lookup | Target result |
-| --- | --- |
-| GET `/customers/{id}` and GET `/customers/{customer_id}/timeline` | Both valid; each handler sees its endpoint's key |
-| GET `/{id}` and GET `/{name}` | DuplicateRouteError: same method and name-stripped shape |
-| Same shape in different methods | Endpoint-specific names; existing method/automatic-HEAD conflict rules still apply |
-| Structural kind or regex conflict | Existing registration panic |
-| BuildURI/BuildURL | Read parameter names from the selected route pattern |
-| Path tree under a host | Same endpoint-key change; host-pattern engine and host captures unchanged |
-
-Acceptance covers branch backtracking, parameter/regex/catch-all capture order, shared prefixes, duplicate diagnostics, automatic HEAD, mounts and host-scoped dispatch. Preserve route metadata and introspection and verify existing allocation-sensitive path benchmarks.
-
-P5's URL changes are defined separately below; P4 changes only endpoint naming. P6's builder/compiled-view redesign remains backlog.
-
 ## Pre-v1 URL round-trip contract
 
 **Accepted, implementation pending (P5, 2026-09-05).** [ADR-007](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) defines a separate wire-contract minor. Preserve raw URL segment boundaries, decode captured values exactly once and apply regex constraints to those decoded values during route matching. Regex and RouteParam must observe the same value; a raw `%31` candidate can satisfy `[0-9]+`.
@@ -39,9 +22,9 @@ Malformed percent encoding and invalid UTF-8 yield HTTP 400; malformed requests 
 
 The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https://www.rfc-editor.org/rfc/rfc3986#section-2.4). Path parameter `+` behavior matches [Go PathUnescape](https://pkg.go.dev/net/url#PathUnescape).
 
-Acceptance includes the table in matching and generation, decoded-regex candidate selection and backtracking, single-segment escaped slashes, catch-all slash separators, invalid escapes/UTF-8, generation constraint failures, plus and Unicode values. Verify BuildURL host validation alongside the path round trip. P5 must not be folded into P4's endpoint-name migration.
+Acceptance includes the table in matching and generation, decoded-regex candidate selection and backtracking, single-segment escaped slashes, catch-all slash separators, invalid escapes/UTF-8, generation constraint failures, plus and Unicode values. Verify BuildURL host validation alongside the path round trip. P5 ships on its own; the endpoint-owned parameter names of the router minor (2026-09-05) are already the current behavior described under [URL Parameters](#url-parameters).
 
-The remaining sections document the current router until each amendment is implemented.
+The remaining sections document the current router until this amendment is implemented.
 
 ## Overview
 
@@ -227,7 +210,7 @@ app.Mount("/admin", adminMux)
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
-**Atomic registration:** a single `Mount` makes sixteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a mismatched parameter key or regexp matcher in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state.
+**Atomic registration:** a single `Mount` makes sixteen radix registrations — every forwarded method on both the exact prefix (`/admin`) and the catch-all (`/admin/{_mount...}`). Because the radix tree has no delete, a conflict discovered partway through would strand the registrations that already succeeded as orphan routes — reachable by dispatch yet hidden from introspection (they carry no `*Route`). `Mount` therefore preflights: it probes every method/pattern pair against the tree and panics before mutating anything if an explicit route already occupies one of them, so a conflicting `Mount` registers nothing and leaves the router exactly as it was. Only duplicate endpoints need the preflight; a structural conflict (a second regexp matcher or a mismatched regexp tail in the prefix) always surfaces on the very first registration, since the catch-all is registered before the exact prefix and shares its entire path, so it can never leave a partial state. Parameter names never conflict: they belong to endpoints.
 
 ### HEAD Auto-handling
 
@@ -272,19 +255,20 @@ credo.New(credo.WithRedirectTrailingSlash(false))
 
 The same `{name}` / `{name:regex}` syntax is reused for host labels in `app.Host(...)`.
 
-Dynamic segment names are part of the radix tree shape. Routes that share the same static parent and dynamic segment position must use the same parameter name, even when one route continues with additional path segments.
+**Parameter names belong to the endpoint, not to the tree.** The radix tree identifies a route by its HTTP method and its name-stripped shape (`/users/{}`, `/users/{:[0-9]+}`, `/files/{...}`): dynamic nodes carry no name, matching captures values positionally, and the matched endpoint maps those captures to the names spelled in its own pattern (adapted from Chi's endpoint-key model). Routes that share a dynamic segment may therefore name it differently, and each handler sees only its own names — a sibling endpoint's name is never visible, and `RouteParams()` holds exactly the matched route's parameters.
 
 ```go
-// Valid: same dynamic segment position, same param name.
-app.GET("/v1/crm/customers/{id}", showCustomer)
-app.GET("/v1/crm/customers/{id}/timeline", customerTimeline)
+// Valid: shared dynamic segment, endpoint-specific names.
+app.GET("/v1/crm/customers/{id}", showCustomer)                        // RouteParam("id")
+app.GET("/v1/crm/customers/{customer_id}/timeline", customerTimeline)  // RouteParam("customer_id")
+app.DELETE("/v1/crm/customers/{cid}", deleteCustomer)                  // RouteParam("cid")
 
-// Invalid: same dynamic segment position, different param names.
+// Duplicate: same method and same shape — names do not distinguish routes.
 app.GET("/v1/crm/customers/{id}", showCustomer)
-app.GET("/v1/crm/customers/{customer_id}/timeline", customerTimeline) // panics
+app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already registered as "/v1/crm/customers/{id}"
 ```
 
-Use the route-level name consistently and map it to domain-specific variable names in handlers when needed. The same rule applies to regex-constrained and catch-all dynamic segments.
+The duplicate policy stays strict: registering the same method on the same shape panics with `credo: duplicate route: GET "/…/{customer_id}" is already registered as "/…/{id}" (parameter names do not distinguish routes)` plus both call sites, exactly like a literal re-registration, and automatic HEAD twins follow the existing overwrite rules. Structural conflicts are unchanged and still panic at registration: two different regex matchers at one path level, or one matcher followed by different tail bytes. The same model applies to regex-constrained and catch-all segments; `BuildURI`/`BuildURL` read the names from the selected route's own pattern, and path trees under `app.Host(...)` behave identically while host-label captures are unaffected.
 
 ### Router Interface
 

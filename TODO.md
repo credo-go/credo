@@ -13,7 +13,7 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
 - [x] Close G1/G2 (2026-09-05): AdoptValue, Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
 - [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
-- [ ] P4 router minor: endpoint-owned path parameter names; strict duplicate/structural conflicts retained
+- [x] P4 router minor (2026-09-05): endpoint-owned path parameter names; strict duplicate/structural conflicts retained
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
 - [ ] P8 HTTP minor: optional Use features, default recovery, single renderers, executor, cleanup and example/test migration; only after the P1 gate is implemented and verified
 - [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
@@ -661,7 +661,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
   - [ ] Routes with `Accept` meta must have ContractGuard middleware
   - [ ] Detect duplicate route patterns / conflicting registrations
   - [ ] Warn on routes without any middleware (optional strict mode)
-  - **Param conflict policy superseded by P4**: endpoint-specific names are allowed; duplicate method+shape and structural regex/kind conflicts remain errors. Progress is tracked under [Pre-v1 Contract Migration](#pre-v1-contract-migration).
+  - **Param conflict policy (router minor, 2026-09-05)**: endpoint-specific names are allowed; duplicate method+shape and structural regex conflicts remain registration errors.
   - [ ] **Duplicate route diagnostics** (decision closed — strict stays): radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. A lenient/debug warning mode is rejected — it would legitimize silent route shadowing, which breaks named-route, route-meta, and middleware resolution. Only diagnostic _quality_ may still improve (clearer message, both conflicting locations, source position); the fail-loud behavior never changes.
 
 ### Performance Budgets

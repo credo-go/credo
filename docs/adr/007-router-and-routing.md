@@ -2,19 +2,13 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
 
-## Pre-v1 endpoint parameter amendment
-
-**Accepted 2026-09-05; implementation pending (P4).** Store path parameter names on endpoints; collect captures positionally in the radix tree. Shared segments may have different names across endpoints. Remove Node.ParamKey/name-mismatch rejection, retaining strict duplicate method plus name-stripped shape detection and structural kind/regex conflicts. BuildURI uses route-pattern names; host-pattern matching is unchanged. This adapts Chi's endpoint-key model while keeping Credo's strict duplicate policy. The [router target contract](../specs/router.md#pre-v1-endpoint-parameter-contract) defines regression coverage. This is an independent behavioral minor.
-
-P5's generation/decoding decision is accepted separately below; P6's compiled route model remains backlog. The remaining current-router sections are migrated when their respective minor lands.
-
 ## Pre-v1 URL round-trip amendment
 
 **Accepted 2026-09-05; implementation pending (P5/G3).** Match raw segment boundaries, decode each captured value once, then evaluate regex constraints on the decoded value supplied to RouteParam. A captured `%2F` is data within its segment; `%252F` becomes literal `%2F`, not a slash. `%31` matches a numeric constraint as `1`; `+` stays plus and valid Unicode is preserved.
 
 Generation accepts decoded values, validates regex constraints and uses PathEscape per segment; catch-all slash separators are retained and host labels are validated independently. Round trips preserve parameter values rather than identical percent-encoded spelling. Malformed percent encoding or invalid UTF-8 is 400; a valid value failing a regex is a route non-match. Generation rejects invalid inputs with an error. Decoding the entire path before routing is rejected.
 
-The [router contract and table](../specs/router.md#pre-v1-url-round-trip-contract) define positive and negative cases. This closes G3; it still ships in its own wire-contract minor, independently from P4's parameter-name change.
+The [router contract and table](../specs/router.md#pre-v1-url-round-trip-contract) define positive and negative cases. This closes G3; it still ships in its own wire-contract minor, independently from the endpoint-owned parameter names delivered by the router minor (2026-09-05). P6's compiled route model remains backlog.
 
 ## Context
 
@@ -36,6 +30,8 @@ The router is built on a radix tree adapted from Chi, living in `internal/radix/
 - **Catch-all (wildcard)**: `{path...}` — matches remainder of path
 
 The tree uses HTTP method bitmasks for efficient method-based lookup.
+
+**Endpoint-owned parameter names (router minor, 2026-09-05).** Path parameter names are stored on endpoints, not on tree nodes: a dynamic node is identified by its name-stripped shape (`{}`, `{:regex}`, `{...}`), matching captures values positionally, and the matched endpoint maps them to its own keys. Routes that share a dynamic segment may name it differently (`/customers/{id}` and `/customers/{customer_id}/timeline`), and each handler sees only its endpoint's names. This adapts Chi's endpoint-key model while keeping Credo's strict duplicate policy: the same method on the same shape is a duplicate whatever the names (`/{id}` and `/{name}` panic as a re-registration that names the existing spelling), and structural conflicts — a second regex matcher at one level or mismatched regex tails — still fail at registration. `BuildURI` reads names from the route's own pattern; host-pattern matching is unchanged. The earlier node-owned names forced every route under a shared prefix to agree on one name and produced a "conflicting parameter" diagnostic for what is really a naming preference, at no gain in matching speed; the positional model removes that rule without adding a per-request allocation. See [URL Parameters](../specs/router.md#url-parameters).
 
 ### Router Lives in Root Package
 
