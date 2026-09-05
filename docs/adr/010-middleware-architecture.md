@@ -2,6 +2,8 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007, ADR-008
 
+**2026-09-05 amendment:** The built-in HTTP feature configuration criterion below is accepted for the upcoming API migration; implementation is pending. The remaining sections describe the current implementation, including default-on RequestID/AccessLog and their existing middleware APIs.
+
 ## Context
 
 Middleware is the primary extension mechanism for a web framework. It intercepts requests before/after handlers for cross-cutting concerns: logging, authentication, rate limiting, CORS, compression, etc.
@@ -11,6 +13,31 @@ Credo needs a middleware model that supports three scopes (global, group, route)
 Pre-dispatch rewrite middleware and its interaction with handler-level re-dispatch are documented in ADR-018.
 
 ## Decision
+
+### Built-in HTTP Feature Configuration Criterion
+
+**Accepted, pending implementation (2026-09-05).** The default activation policy determines the public configuration path for selectable built-in HTTP features:
+
+| Default | Sole public path | Application to the planned API |
+| --- | --- | --- |
+| On | Constructor configuration plus a `Without*` opt-out | `WithRecoverConfig(cfg)` configures recovery; `WithoutRecover()` disables it |
+| Off | A `Use*(config)` registration that activates and configures the feature | RequestID, AccessLog, Compress, Decompress and i18n; custom error/success renderers use their own `Use*` registrations |
+
+Recovery's constructor config does not re-enable it: `WithoutRecover()` takes precedence regardless of option order. No separate positive recovery activation helper is needed. Optional features have one successful registration, including a configured-but-inactive UseI18n result; they do not also expose constructor fields/options, configuration setters, or an `Enabled` switch for the same decision. Applications evaluate external enable flags in bootstrap code before calling `Use*`. Required feature config travels as one typed value rather than a family of per-field helpers.
+
+The criterion concerns feature activation, not every zero-valued setting. Foundational App inputs such as logger, raw configuration, server/TLS and network timeouts remain constructor settings. Mandatory protocol/error handling is not made optional by this rule. Request-state and route-meta mutators keep their separate purpose.
+
+Custom renderer installation is optional even though core error rendering always exists. A renderer may be bound from a DI-resolved object during bootstrap, so `UseErrorRenderer` and `UseSuccessRenderer` provide their sole registration path; constructor duplicates and the old renderer setters are removed during migration. The core pipeline retains its default rendering when no extension is registered.
+
+`Use*` registers a feature once during HTTP setup. Invocation order does not determine execution order, and registration ends at the shared HTTP preparation/shutdown gate. Implement that gate before migrating the features; DI Finalize alone does not freeze HTTP setup. AccessLog activation does not govern framework/application diagnostic logs, which continue through their normal levels and logger filtering.
+
+### Accepted HTTP ownership migration
+
+**Pending implementation.** Recovery, RequestID, AccessLog, i18n, Compress and Decompress become framework-owned HTTP processing around the three Global/Group/Route user middleware tiers. The [HTTP feature contract](../specs/http-features.md) defines defaults, one-install setup, immutable config publication, request execution, transport lifetimes, callback boundaries and required tests. P8 starts only after the [shared preparation/shutdown gate](../specs/bootstrap-and-di-lifecycle.md) is implemented and verified. Configuring features in a different Use-call order does not change their execution order.
+
+One executor retains centralized error handling and cleanup, observes final responses after applicable compression finalization, and keeps diagnostics independent from access logging. Remove the converted middleware APIs, renderer setters, obsolete opt-outs/field helpers and duplicate wrappers/tests in the same HTTP minor. Preserve real behavior tests and attribution. Timeout, CORS, CSRF, Secure, RateLimit, Rewrite and ContractGuard remain user middleware.
+
+The [migration preview](../guides/pre-v1-migration.md) maps every removed surface. G4 is closed: lazy Detect(*Context) memoizes once; Decompress precedes Global with original-request selection; AccessLog counts post-compression body bytes and duration through finalization. Callback failures follow recovery configuration, with a callback-free error-render fallback, post-response filter failure isolation and no second body after commitment. Genuine setup errors leave registration retryable; successful inactive i18n configuration consumes its slot. The HTTP spec defines the complete rules. The rest of this ADR describes the current implementation.
 
 ### Single Middleware Type
 
@@ -116,7 +143,7 @@ Health probes use `MetaAccessLog` internally: `UseHealth` registers `/health` an
 
 #### Alternatives considered
 
-A **default-off** access logger was considered and rejected. The framework's nearest philosophical peer, GoFr (all-in-one), logs requests by default; the frameworks that default off — Goyave, Hertz, Echo, Chi — are all composable toolkits, the model Credo positions against (philosophy #1). Keeping the log on but easy to scope preserves "observable by default" without the volume cost.
+**Historical decision, superseded for the upcoming API by the 2026-09-05 amendment:** a default-off access logger was considered and rejected. The framework's nearest philosophical peer, GoFr (all-in-one), logs requests by default; the frameworks that default off — Goyave, Hertz, Echo, Chi — are all composable toolkits, the model Credo positions against (philosophy #1). Keeping the log on but easy to scope preserved "observable by default" without the volume cost. The current implementation still uses that default until migration.
 
 A **status-code skip list** was rejected. Across the ecosystem request-level skipping is a predicate — Hertz `WithLogConditionFunc(func(ctx, c) bool)`, Echo `Skipper`, Gin `Skip`/`SkipPaths`. Credo keeps the package-wide `Skipper` convention and adds the more general post-response `MinLevel` + `ResultFilter` composition instead of a fixed list.
 
@@ -144,11 +171,11 @@ The adapter handles request/response writer updates that stdlib middleware may a
 
 ### Configurable Middleware (middleware package)
 
-| Middleware  | Purpose                                           |
-| ----------- | ------------------------------------------------- |
-| `Recover`   | Per-group/route panic recovery with custom config |
+| Middleware | Purpose |
+| --- | --- |
+| `Recover` | Per-group/route panic recovery with custom config |
 | `AccessLog` | Route/group-scoped request logging with Skipper, MinLevel, ResultFilter, `MetaAccessLog`, and custom logger |
-| `RequestID` | X-Request-Id with custom header/generator/limit   |
+| `RequestID` | X-Request-Id with custom header/generator/limit |
 
 ### Frozen Guard
 

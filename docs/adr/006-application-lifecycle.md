@@ -2,6 +2,12 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
 
+## Accepted pre-v1 amendment
+
+**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) separates DI Finalize from HTTP preparation and coordinates preparation, start and bootstrap Shutdown. Building-state Shutdown becomes valid; direct ServeHTTP also prepares DI, then uses the same cached preparation result and HTTP write gate. Stopped rejection returns the callback-free default 503; an already-prepared stopping App retains normal drain behavior. DI enters closing only at its teardown stage, with dependency-ordered cleanup and a stable failure report.
+
+The [target lifecycle contract](../specs/bootstrap-and-di-lifecycle.md) governs the migration. The current state machine, preparation order and reverse-registration teardown below remain descriptions of shipped behavior until that work lands. External server drain stays owner-managed.
+
 ## Context
 
 An enterprise framework (ADR-001) must provide a well-defined application lifecycle: startup, runtime, and graceful shutdown. Background services (workers, pub/sub subscribers, gRPC servers) need a signal to stop accepting work. In-flight HTTP requests need time to complete. Shutdown hooks must release resources (DB connections, caches, file handles) in a deterministic order.
@@ -152,18 +158,7 @@ If any OnStart hook returns an error, startup aborts and the App runs the full t
 9. Store state = stopped
 ```
 
-OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hook
-execution order within each hook phase is intentionally unspecified. An
-OnPreDrain hook returns successfully only after work requiring live lifecycle
-workers or DI has finished; an OnDrain hook must guarantee its subsystem can no
-longer execute handlers that depend on DI infrastructure. At deadline expiry,
-Credo immediately logs that OnPreDrain work is still pending but does not
-abandon it: the lifecycle context and DI stay live until every OnPreDrain hook
-actually returns. The hook's completion timestamp then determines its final
-identified incomplete error. Later phases continue with the same, possibly
-ended context. HTTP or OnDrain work still follows the ordinary
-deadline-incomplete contract and is not a hard barrier. All errors are
-collected via `errors.Join` — no false graceful-success result.
+OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hook execution order within each hook phase is intentionally unspecified. An OnPreDrain hook returns successfully only after work requiring live lifecycle workers or DI has finished; an OnDrain hook must guarantee its subsystem can no longer execute handlers that depend on DI infrastructure. At deadline expiry, Credo immediately logs that OnPreDrain work is still pending but does not abandon it: the lifecycle context and DI stay live until every OnPreDrain hook actually returns. The hook's completion timestamp then determines its final identified incomplete error. Later phases continue with the same, possibly ended context. HTTP or OnDrain work still follows the ordinary deadline-incomplete contract and is not a hard barrier. All errors are collected via `errors.Join` — no false graceful-success result.
 
 ### Lifecycle Hooks
 
@@ -181,8 +176,7 @@ app.OnStart(func(lifecycleCtx context.Context) error {
 - Fail-fast: the first error aborts startup, remaining hooks are skipped, the full teardown chain runs, and the App ends terminally `stopped` (a session that began tears down rather than rolling back)
 - Must be called before `Run()`; panics after compile (frozen guard)
 
-**OnPreDrain** — called after state enters stopping and readiness is withdrawn,
-but before lifecycle cancellation:
+**OnPreDrain** — called after state enters stopping and readiness is withdrawn, but before lifecycle cancellation:
 
 ```go
 app.OnPreDrain(func(ctx context.Context) error {
@@ -198,12 +192,9 @@ app.OnPreDrain(func(ctx context.Context) error {
 - Deadline-ignoring work emits a waiting diagnostic at the deadline; after it returns, its completion timestamp produces the final identified incomplete error, while lifecycle cancellation and teardown wait throughout
 - Must be registered before compile; nil or late registration panics
 
-Most subsystems should use OnDrain. OnPreDrain is deliberately narrower: it is
-only for cases where lifecycle cancellation itself would tear down a dependency
-before the subsystem can finish its drain.
+Most subsystems should use OnDrain. OnPreDrain is deliberately narrower: it is only for cases where lifecycle cancellation itself would tear down a dependency before the subsystem can finish its drain.
 
-**OnDrain** — called after lifecycle cancellation, concurrently with HTTP drain
-and with every other OnDrain hook, before DI teardown:
+**OnDrain** — called after lifecycle cancellation, concurrently with HTTP drain and with every other OnDrain hook, before DI teardown:
 
 ```go
 app.OnDrain(func(ctx context.Context) error {
@@ -219,11 +210,7 @@ app.OnDrain(func(ctx context.Context) error {
 - Deadline-ignoring work is reported as incomplete and may return later, while teardown proceeds
 - Must be registered before compile; nil or late registration panics
 
-WebSocket is the first in-tree consumer: `websocket.Use` registers its
-connection registry drain here. A completed drain proves that handlers finish
-before their DI repositories are closed; an incomplete drain is identified and
-teardown continues. Future gRPC or pubsub servers may use the same narrow seam,
-but OnDrain is not a general startup/restartable Service abstraction.
+WebSocket is the first in-tree consumer: `websocket.Use` registers its connection registry drain here. A completed drain proves that handlers finish before their DI repositories are closed; an incomplete drain is identified and teardown continues. Future gRPC or pubsub servers may use the same narrow seam, but OnDrain is not a general startup/restartable Service abstraction.
 
 **OnShutdown** — called after DI teardown during every teardown:
 

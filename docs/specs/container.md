@@ -4,6 +4,10 @@
 
 ---
 
+## Accepted pre-v1 target
+
+**Implementation pending, 2026-09-05.** [ADR-022](../adr/022-bootstrap-and-di-ownership.md) and the [bootstrap/DI lifecycle contract](bootstrap-and-di-lifecycle.md) define the next DI minor: post-Finalize Resolve, ownership-transferring Replace/MustReplace, non-resolving Has, factory removal, AdoptValue validation/protection, canonical dependency shutdown, closing admission, terminal panic completion and immutable unwrapping reports. Registry constructors are rejected at registration without execution. Diagnostics are ErrDIClosed, DIShutdownError and DIPanicError; late construction gets one five-second cleanup wait. P1–P3 ship together; G1/G2 decisions are closed. The APIs and reverse-registration behavior documented below are the current implementation, not the target. [Migration preview](../guides/pre-v1-migration.md#bootstrap-and-di) describes callers.
+
 ## Canonical Source
 
 Implementation-level details for Credo's dependency injection system are defined in this file. Other documents should keep only high-level references and link here.
@@ -201,25 +205,11 @@ func (app *App) Replace[T any](value T) error
 func (app *App) MustReplace[T any](value T)
 ```
 
-`CanProvideValue` is a preflight, not a success guarantee: another goroutine
-can register T or finalize the container before the real publication. The final
-`ProvideValue` or `ProvideProtectedValue` call remains authoritative.
+`CanProvideValue` is a preflight, not a success guarantee: another goroutine can register T or finalize the container before the real publication. The final `ProvideValue` or `ProvideProtectedValue` call remains authoritative.
 
-Protected bindings are a low-level integration facility for a DI value coupled
-to external lifecycle, health, or registration state. `Replace` rejecting such
-a binding prevents DI from resolving a different value than the integration
-continues to monitor or shut down. Protection does not itself create lifecycle
-ownership, aliases, health checks, or collection membership. Ordinary
-application/test bindings should remain override-friendly with `ProvideValue`.
+Protected bindings are a low-level integration facility for a DI value coupled to external lifecycle, health, or registration state. `Replace` rejecting such a binding prevents DI from resolving a different value than the integration continues to monitor or shut down. Protection does not itself create lifecycle ownership, aliases, health checks, or collection membership. Ordinary application/test bindings should remain override-friendly with `ProvideValue`.
 
-`ProtectBinding[T]()` protects an existing direct binding without resolving T;
-this no-argument form is idempotent. `ProtectBinding[T](expected)` is the
-CAS-style compare-and-protect form used after a caller has resolved and
-validated a singleton. Comparison and protection are atomic with respect to
-`Replace`: the expected value must already be resolved, comparable, and equal
-to the current singleton. An unresolved, non-comparable, or changed value
-returns an error without adding protection. More than one expected value is
-rejected, and both forms must run before Finalize.
+`ProtectBinding[T]()` protects an existing direct binding without resolving T; this no-argument form is idempotent. `ProtectBinding[T](expected)` is the CAS-style compare-and-protect form used after a caller has resolved and validated a singleton. Comparison and protection are atomic with respect to `Replace`: the expected value must already be resolved, comparable, and equal to the current singleton. An unresolved, non-comparable, or changed value returns an error without adding protection. More than one expected value is rejected, and both forms must run before Finalize.
 
 The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
 
@@ -314,22 +304,11 @@ Contract rules enforced by `BindMany`:
 
 The container has three phases:
 
-1. **Bootstrap** --- `Provide`, `ProvideFactory`, `ProvideValue`,
-   `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, `BindMany`,
-   `Resolve`, and `ResolveAll` are allowed. `CanProvideValue` may check
-   predictable value-publication conflicts without mutating or reserving a
-   binding.
-2. **Finalize** --- `app.Finalize()` freezes the container (internally calling
-   `Seal()`) and validates the dependency graph. After Finalize, `Provide`,
-   `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`,
-   `Replace`, `Alias`, and `BindMany` return errors. If validation fails,
-   subsequent `Resolve` and `ResolveAll` calls return the finalize error.
+1. **Bootstrap** --- `Provide`, `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, `BindMany`, `Resolve`, and `ResolveAll` are allowed. `CanProvideValue` may check predictable value-publication conflicts without mutating or reserving a binding.
+2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, and `BindMany` return errors. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error.
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()` and `app.RunContext()` call Finalize implicitly.
 
-**Concurrency**: During bootstrap, mutation and bootstrap resolution are
-normally performed sequentially in `main()` or setup functions before `Run()`.
-`CanProvideValue` is deliberately point-in-time; its result does not reserve T
-against a concurrent publication or Finalize.
+**Concurrency**: During bootstrap, mutation and bootstrap resolution are normally performed sequentially in `main()` or setup functions before `Run()`. `CanProvideValue` is deliberately point-in-time; its result does not reserve T against a concurrent publication or Finalize.
 
 ```go
 // Finalize freezes the container and validates the dependency graph.
@@ -435,16 +414,11 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 ### Concurrency and Lifecycle
 
-- **Registration mutation** (`Provide`, `ProvideFactory`, value publication,
-  protection, `Replace`, `Alias`, `BindMany`): intended for sequential startup
-  composition before `app.Finalize()` or `app.Run()`.
-- **`CanProvideValue`**: non-mutating point-in-time preflight; does not reserve T
-  against another registration or Finalize.
+- **Registration mutation** (`Provide`, `ProvideFactory`, value publication, protection, `Replace`, `Alias`, `BindMany`): intended for sequential startup composition before `app.Finalize()` or `app.Run()`.
+- **`CanProvideValue`**: non-mutating point-in-time preflight; does not reserve T against another registration or Finalize.
 - **`Finalize`**: Idempotent via `sync.Once`. Safe to call from multiple goroutines but typically called once at startup.
 - **`Resolve` / `MustResolve` / `ResolveAll` / `MustResolveAll`**: Safe for concurrent use after Finalize. Per-singleton `sync.Once` ensures each constructor runs exactly once, even under concurrent access. Different singletons resolve concurrently without blocking each other.
-- **`Shutdown(ctx)`**: Traverses reverse registration order until the deadline
-  expires. If the live deadline reaches a registration, it gets at most one
-  attempt per teardown; an entry after deadline exhaustion may get zero.
+- **`Shutdown(ctx)`**: Traverses reverse registration order until the deadline expires. If the live deadline reaches a registration, it gets at most one attempt per teardown; an entry after deadline exhaustion may get zero.
 
 ---
 
@@ -472,10 +446,7 @@ func (c *Container) Shutdown(ctx context.Context) error
 
 11. **Ordered collections via BindMany** --- `BindMany[I, T]()` and `ResolveAll[I]` support plugin-style composition while keeping single resolution explicit. Credo intentionally does not introduce named/keyed bindings for this use case.
 
-12. **Protected bindings are opt-in integration state** --- ordinary bindings
-    stay replaceable for composition overrides and tests. Integrations that
-    publish matching lifecycle/health state may protect the direct binding so
-    `Replace` cannot make DI diverge from that external state.
+12. **Protected bindings are opt-in integration state** --- ordinary bindings stay replaceable for composition overrides and tests. Integrations that publish matching lifecycle/health state may protect the direct binding so `Replace` cannot make DI diverge from that external state.
 
 ---
 
@@ -698,15 +669,10 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 - `MustProvide[T]` panics on invalid constructor
 - Duplicate `Provide[T]` for same type returns error
 - `ProvideValue[T]` registers value as Singleton
-- `CanProvideValue[T]` reports frozen/direct-duplicate conflicts without
-  mutating or reserving T; final publication remains authoritative
+- `CanProvideValue[T]` reports frozen/direct-duplicate conflicts without mutating or reserving T; final publication remains authoritative
 - `ProvideProtectedValue[T]` registers a Singleton that `Replace[T]` cannot overwrite
-- `ProtectBinding[T]()` is idempotent for an existing direct registration,
-  rejects missing/frozen bindings, does not resolve T, and makes Replace fail
-- `ProtectBinding[T](expected)` atomically compare-and-protects only an
-  already-resolved, comparable, matching singleton; unresolved,
-  non-comparable, changed, or multiple expected values fail without adding
-  protection
+- `ProtectBinding[T]()` is idempotent for an existing direct registration, rejects missing/frozen bindings, does not resolve T, and makes Replace fail
+- `ProtectBinding[T](expected)` atomically compare-and-protects only an already-resolved, comparable, matching singleton; unresolved, non-comparable, changed, or multiple expected values fail without adding protection
 - Ordinary `ProvideValue[T]` bindings remain replaceable
 - `Provide[T]` after `Finalize()` returns error (container frozen)
 - `ProvideProtectedValue[T]` and `ProtectBinding[T]` after Finalize return errors
@@ -782,8 +748,7 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 ### Lifecycle
 
 - `Shutdown(ctx)` traverses services in reverse registration order while ctx is live
-- If the live deadline reaches a Shutdowner entry, it gets at most one attempt
-  per teardown
+- If the live deadline reaches a Shutdowner entry, it gets at most one attempt per teardown
 - An already-expired deadline skips the remaining registrations and reports them
 - `Shutdown(ctx)` skips services not implementing `Shutdowner`
 

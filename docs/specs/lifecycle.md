@@ -2,6 +2,10 @@
 
 > Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md)
 
+## Accepted pre-v1 target
+
+**Implementation pending, 2026-09-05.** The [bootstrap/DI lifecycle contract](bootstrap-and-di-lifecycle.md) adds shared preparation/result publication, a separate HTTP write gate, building-state Shutdown and terminal callback-free 503. It replaces reverse-registration DI teardown with the canonical dependency scheduler and bounded completion/report rules. HTTP/OnDrain/reload precede DI closing; OnPreDrain keeps its hard barrier and external servers keep owner-managed drain. See [ADR-022](../adr/022-bootstrap-and-di-ownership.md) and the [implementation plan](../plans/pre-v1-implementation.md). The state/error tables below remain descriptions of the current implementation until migration.
+
 ## Overview
 
 Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining.
@@ -72,7 +76,7 @@ Like `Run` but installs **no** signal handler — cancellation is entirely the c
 
 ### `app.ServeContext(ctx context.Context, l net.Listener) error`
 
-Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, or an externally managed listener. It supplies the *listener* only; the server is still the one the framework builds, so protocol-level settings such as H2C come from [`WithHTTPServer`](#credowithhttpserverfn-funchttpserver-option). `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
+Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The escape hatch for listeners the framework does not create itself — Unix sockets, a preconfigured test listener, or an externally managed listener. It supplies the _listener_ only; the server is still the one the framework builds, so protocol-level settings such as H2C come from [`WithHTTPServer`](#credowithhttpserverfn-funchttpserver-option). `ServeContext` takes ownership of `l` and closes it when the server stops (matching `net/http.Server.Serve` semantics). A nil listener returns an error. It serves `l` exactly as given and is **TLS-exempt** — TLS configured via `WithTLSFiles`/`WithTLSConfig` does not apply; wrap `l` with `tls.NewListener` for HTTPS.
 
 The lifecycle context (created at `Run`/`RunContext` time, cancelled during shutdown after `OnPreDrain`) is no longer exposed by a public accessor. Background services receive it through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect graceful shutdown.
 
@@ -137,17 +141,7 @@ Gracefully shuts down the server:
 10. Clears bound address (`Addr()` returns nil).
 11. Transitions to `stopped`.
 
-OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hooks are
-unordered within each phase. OnPreDrain is the narrow pre-cancellation phase and
-a hard teardown barrier: if the context ends while hooks are pending, Credo logs
-one structured waiting diagnostic but waits for every hook to return before
-lifecycle cancellation or infrastructure teardown. Each hook's completion
-timestamp then determines its final identified incomplete error. Later phases
-receive the same, possibly ended context. OnDrain follows lifecycle cancellation
-and a nil result means the subsystem can no longer run handlers that depend on
-DI infrastructure; HTTP and OnDrain work retain the ordinary behavior of being
-reported incomplete at the deadline. The framework stops waiting and proceeds
-while late work may continue.
+OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hooks are unordered within each phase. OnPreDrain is the narrow pre-cancellation phase and a hard teardown barrier: if the context ends while hooks are pending, Credo logs one structured waiting diagnostic but waits for every hook to return before lifecycle cancellation or infrastructure teardown. Each hook's completion timestamp then determines its final identified incomplete error. Later phases receive the same, possibly ended context. OnDrain follows lifecycle cancellation and a nil result means the subsystem can no longer run handlers that depend on DI infrastructure; HTTP and OnDrain work retain the ordinary behavior of being reported incomplete at the deadline. The framework stops waiting and proceeds while late work may continue.
 
 `Shutdown` is the single drain mechanism shared by every entry point. The signal-triggered drain of `Run` and the cancellation-triggered drain of `RunContext`/`ServeContext` run this exact sequence, made idempotent by the `running` → `stopping` CAS — a cancelled context racing a programmatic `Shutdown` cannot run the sequence twice (the loser is a no-op). Idempotency comes from that one CAS, not a parallel `sync.Once`.
 
@@ -168,31 +162,13 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 
 #### Background services and shutdown ordering
 
-Background work is wired through the existing primitives: a component starts
-in an `OnStart` hook (receiving the lifecycle context) and stops in an
-`OnDrain` hook, before DI infrastructure is torn down. A component that only
-implements `Shutdowner` is instead drained during the container-shutdown step,
-in reverse registration order relative to everything else — fine for a
-resource, wrong for a consumer of resources. The `worker.Pool` does both: it
-drains in `OnDrain` so workers' bounded cleanup always precedes resource
-teardown, and its `Shutdowner` pass then finds the stop sequence complete.
+Background work is wired through the existing primitives: a component starts in an `OnStart` hook (receiving the lifecycle context) and stops in an `OnDrain` hook, before DI infrastructure is torn down. A component that only implements `Shutdowner` is instead drained during the container-shutdown step, in reverse registration order relative to everything else — fine for a resource, wrong for a consumer of resources. The `worker.Pool` does both: it drains in `OnDrain` so workers' bounded cleanup always precedes resource teardown, and its `Shutdowner` pass then finds the stop sequence complete.
 
-`OnPreDrain` is the narrow exception for coordination that must complete while
-lifecycle-bound workers and DI are still live. It runs after readiness is
-withdrawn but before lifecycle cancellation. Most subsystems should not use it:
-if their work remains valid after cancellation, `OnDrain` is the later and safer
-barrier.
+`OnPreDrain` is the narrow exception for coordination that must complete while lifecycle-bound workers and DI are still live. It runs after readiness is withdrawn but before lifecycle cancellation. Most subsystems should not use it: if their work remains valid after cancellation, `OnDrain` is the later and safer barrier.
 
-`OnDrain` is a separate narrow seam: a successful hook proves that its
-subsystem stopped admission and active DI-dependent handlers before
-infrastructure teardown.
-`websocket.Use` is the first concrete consumer. Future gRPC/pubsub servers may
-also use it. It has no startup, name, restart, or ordering semantics.
+`OnDrain` is a separate narrow seam: a successful hook proves that its subsystem stopped admission and active DI-dependent handlers before infrastructure teardown. `websocket.Use` is the first concrete consumer. Future gRPC/pubsub servers may also use it. It has no startup, name, restart, or ordering semantics.
 
-A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with
-a restartable/start-once taxonomy — remains deliberately **deferred** until
-multiple in-tree consumers require it. `worker.Pool` and `websocket.Server`
-both participate through `OnStart` + `OnDrain` without such a taxonomy.
+A dedicated lifecycle-`Service` abstraction — a `Run(ctx)`/`Name()` seam with a restartable/start-once taxonomy — remains deliberately **deferred** until multiple in-tree consumers require it. `worker.Pool` and `websocket.Server` both participate through `OnStart` + `OnDrain` without such a taxonomy.
 
 ### `app.OnStart(fn func(ctx context.Context) error)`
 
@@ -210,51 +186,23 @@ Must be called before `compile()` (panics if frozen).
 
 ### `app.OnPreDrain(fn func(ctx context.Context) error)`
 
-Registers an early drain hook. After state becomes `stopping` and readiness is
-withdrawn, all OnPreDrain hooks run concurrently with one another but before
-the lifecycle context is cancelled. Registration order is diagnostic identity
-only and does not control execution.
+Registers an early drain hook. After state becomes `stopping` and readiness is withdrawn, all OnPreDrain hooks run concurrently with one another but before the lifecycle context is cancelled. Registration order is diagnostic identity only and does not control execution.
 
-A successful hook must finish the work that specifically requires live
-lifecycle-bound workers or DI infrastructure. Hooks receive the shared absolute
-shutdown deadline, run during every teardown (including OnStart failure), and
-must be idempotent and tolerate partial startup. A panic is recovered and joined
-with its hook index/source while other hooks continue. If a hook ignores
-cancellation, Credo logs a structured waiting diagnostic when the deadline ends
-but does not cancel the lifecycle context or begin later teardown until that
-hook returns. Its completion timestamp then produces the final identified
-incomplete error. A nil hook or registration after compile panics.
+A successful hook must finish the work that specifically requires live lifecycle-bound workers or DI infrastructure. Hooks receive the shared absolute shutdown deadline, run during every teardown (including OnStart failure), and must be idempotent and tolerate partial startup. A panic is recovered and joined with its hook index/source while other hooks continue. If a hook ignores cancellation, Credo logs a structured waiting diagnostic when the deadline ends but does not cancel the lifecycle context or begin later teardown until that hook returns. Its completion timestamp then produces the final identified incomplete error. A nil hook or registration after compile panics.
 
 ### `app.OnDrain(fn func(ctx context.Context) error)`
 
-Registers a pre-infrastructure subsystem drain hook. After lifecycle context
-cancellation, all OnDrain hooks run concurrently with one another and with HTTP
-server shutdown. Registration order is diagnostic identity only and does not
-control execution.
+Registers a pre-infrastructure subsystem drain hook. After lifecycle context cancellation, all OnDrain hooks run concurrently with one another and with HTTP server shutdown. Registration order is diagnostic identity only and does not control execution.
 
-A successful hook must close admission and wait until no handler or cleanup
-that uses DI infrastructure can run. Hooks receive the shared absolute shutdown
-deadline, run during every teardown (including OnStart failure), and must be
-idempotent and tolerate partial startup. A panic is recovered and joined with
-its hook index/source while other drain work continues. If a hook ignores
-cancellation, Credo reports it as pending at the deadline and proceeds; a late
-return cannot turn the recorded incomplete result into success.
+A successful hook must close admission and wait until no handler or cleanup that uses DI infrastructure can run. Hooks receive the shared absolute shutdown deadline, run during every teardown (including OnStart failure), and must be idempotent and tolerate partial startup. A panic is recovered and joined with its hook index/source while other drain work continues. If a hook ignores cancellation, Credo reports it as pending at the deadline and proceeds; a late return cannot turn the recorded incomplete result into success.
 
 Must be called before compile. A nil hook or late registration panics.
 
 ### `app.OnShutdown(fn func(ctx context.Context) error)`
 
-Registers a final shutdown hook. Hooks run in LIFO order after DI teardown. The
-`ctx` parameter carries the shared shutdown deadline from `Shutdown(ctx)`. Must
-be called before `compile()` (panics if frozen).
+Registers a final shutdown hook. Hooks run in LIFO order after DI teardown. The `ctx` parameter carries the shared shutdown deadline from `Shutdown(ctx)`. Must be called before `compile()` (panics if frozen).
 
-OnShutdown hooks run on **every** teardown, including a failed startup (an
-OnStart hook erroring after an earlier one ran). OnShutdown is therefore the
-session teardown point, not an OnStart mirror: hooks must be idempotent and must
-not assume any particular OnStart hook completed. Because `onStart` and
-`onShutdown` are independent lists — not pairs by index — a hook running without
-its conceptual counterpart was always possible; session-failure teardown only
-makes it routine.
+OnShutdown hooks run on **every** teardown, including a failed startup (an OnStart hook erroring after an earlier one ran). OnShutdown is therefore the session teardown point, not an OnStart mirror: hooks must be idempotent and must not assume any particular OnStart hook completed. Because `onStart` and `onShutdown` are independent lists — not pairs by index — a hook running without its conceptual counterpart was always possible; session-failure teardown only makes it routine.
 
 ### `app.Reload(ctx context.Context) error`
 
@@ -334,9 +282,4 @@ The same fail-fast policy governs all registration APIs: misconfiguration (nil h
 
 ## Container Integration
 
-Resolved DI singletons that implement `credo.Shutdowner` participate
-automatically in the container phase; do not register a second `OnShutdown`
-bridge for the same resource. The container traverses registrations in reverse
-order while the shared deadline remains live. A reached registration gets at
-most one shutdown attempt, while entries not reached before deadline exhaustion
-may receive no attempt.
+Resolved DI singletons that implement `credo.Shutdowner` participate automatically in the container phase; do not register a second `OnShutdown` bridge for the same resource. The container traverses registrations in reverse order while the shared deadline remains live. A reached registration gets at most one shutdown attempt, while entries not reached before deadline exhaustion may receive no attempt.

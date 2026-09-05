@@ -45,6 +45,10 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Observability — metrics (Prometheus) | Planned |
 | pubsub (incl. in-process events) · grpc · openapi · admin server · CLI | Planned |
 
+## Accepted Pre-v1 Changes
+
+**Implementation pending.** Accepted bootstrap/DI, router and built-in HTTP feature contracts are recorded in the [migration preview](docs/guides/pre-v1-migration.md) and the [implementation plan](docs/plans/pre-v1-implementation.md); progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). They are future contracts, not APIs available in this checkout: the quick start and examples below use the current implementation, and the [example migration notes](examples/README.md) explain when their code will change.
+
 ## Installation
 
 ```bash
@@ -111,9 +115,7 @@ func main() {
 
 For explicit config control, load it first with `config.Load(...)` and pass it to `credo.New(credo.WithRawConfig(raw))`; this bypasses the default auto-load.
 
-Copyable YAML/JSON configuration and English/Turkish locale catalogs live in
-[`examples/references`](examples/references/README.md). Runnable applications
-remain separate under `examples/hello` and `examples/saas`.
+Copyable YAML/JSON configuration and English/Turkish locale catalogs live in [`examples/references`](examples/references/README.md). Runnable applications remain separate under `examples/hello` and `examples/saas`.
 
 ## Config: Typed Snapshot (Anti-Pattern-Free)
 

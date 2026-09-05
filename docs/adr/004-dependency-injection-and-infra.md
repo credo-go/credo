@@ -2,6 +2,10 @@
 
 **Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-003
 
+## Accepted pre-v1 amendment
+
+**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) supersedes this ADR's phase, factory, replacement and teardown rules when the DI minor lands. Keep typed constructors, Infra, singleton scope, aliases and ordered collections. Add explicit post-Finalize resolution, ownership-transferring Replace, non-resolving Has, terminal completion and dependency ordering; remove ProvideFactory. AdoptValue validates and atomically protects a prebuilt binding; a mere read does not. Registry constructors cannot be adopted before Finalize. The public diagnostics are ErrDIClosed, DIShutdownError and DIPanicError; late construction has one five-second cleanup wait. The [target contract](../specs/bootstrap-and-di-lifecycle.md) defines closing, pending construction, bounded cleanup and error/report semantics. The sections below describe the current implementation.
+
 ## Context
 
 Dependency injection is a fundamental need for enterprise applications (ADR-001, ADR-003). Credo's DI mechanism must address two distinct needs:
@@ -80,51 +84,20 @@ Rules:
 
 ### ProvideValue Preflight and Protected Bindings
 
-`app.CanProvideValue[T]() error` performs the same local frozen-container and
-direct duplicate-`T` checks that `ProvideValue[T]` applies, without registering
-or reserving anything. It exists for composition helpers such as
-`store.Register`, which should reject predictable local conflicts before doing
-network I/O.
+`app.CanProvideValue[T]() error` performs the same local frozen-container and direct duplicate-`T` checks that `ProvideValue[T]` applies, without registering or reserving anything. It exists for composition helpers such as `store.Register`, which should reject predictable local conflicts before doing network I/O.
 
-The result is only a point-in-time observation. Another goroutine may register
-`T` or finalize the container immediately afterward, so a nil result is not a
-promise that a later regular or protected value publication will succeed. The
-final `ProvideValue` or `ProvideProtectedValue` call remains authoritative and
-callers must handle its error.
+The result is only a point-in-time observation. Another goroutine may register `T` or finalize the container immediately afterward, so a nil result is not a promise that a later regular or protected value publication will succeed. The final `ProvideValue` or `ProvideProtectedValue` call remains authoritative and callers must handle its error.
 
-Two low-level methods support integrations whose DI binding is coupled to
-external lifecycle, health, or registration state:
+Two low-level methods support integrations whose DI binding is coupled to external lifecycle, health, or registration state:
 
-- `app.ProvideProtectedValue[T](value)` registers a pre-built singleton and
-  marks its direct binding as protected from `app.Replace[T]`.
-- `app.ProtectBinding[T](expected ...T)` protects an existing direct binding.
-  With no expected value it is idempotent and does not resolve T. With one
-  expected value it performs a CAS-style compare-and-protect: under the same
-  lock used by `Replace`, it verifies that the already-resolved singleton is
-  comparable and still equal to expected before protecting the binding. An
-  unresolved, non-comparable, or changed value returns an error without adding
-  protection. More than one expected value is rejected. Both forms
-  require T to be registered and must run before Finalize.
+- `app.ProvideProtectedValue[T](value)` registers a pre-built singleton and marks its direct binding as protected from `app.Replace[T]`.
+- `app.ProtectBinding[T](expected ...T)` protects an existing direct binding. With no expected value it is idempotent and does not resolve T. With one expected value it performs a CAS-style compare-and-protect: under the same lock used by `Replace`, it verifies that the already-resolved singleton is comparable and still equal to expected before protecting the binding. An unresolved, non-comparable, or changed value returns an error without adding protection. More than one expected value is rejected. Both forms require T to be registered and must run before Finalize.
 
-`Replace[T]` returns an error for a protected binding. This prevents an
-integration from continuing to monitor or shut down one value while DI starts
-resolving another. Protection affects binding replacement only; it does not by
-itself create lifecycle ownership, health wiring, aliases, or collection
-bindings. Normal application and test bindings should continue to use
-override-friendly `ProvideValue`; the protected variants are intended for
-framework/integration registration paths such as `store.Register`.
+`Replace[T]` returns an error for a protected binding. This prevents an integration from continuing to monitor or shut down one value while DI starts resolving another. Protection affects binding replacement only; it does not by itself create lifecycle ownership, health wiring, aliases, or collection bindings. Normal application and test bindings should continue to use override-friendly `ProvideValue`; the protected variants are intended for framework/integration registration paths such as `store.Register`.
 
 ### Finalize Phase
 
-`app.Finalize()` freezes the container and validates the dependency graph.
-After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`,
-`ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, and `BindMany`
-calls are rejected. `Run()` and `RunContext()` call Finalize implicitly.
-`Resolve` is allowed both before and after Finalize (bootstrap phase supports
-`Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps
-`Resolve` in bootstrap/composition-root code; runtime `Resolve` remains
-available but is not the preferred application pattern. After a failed
-Finalize, `Resolve` returns the error.
+`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunContext()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
 
 ### credo.Infra: Explicit Infrastructure Carrier
 

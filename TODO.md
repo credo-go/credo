@@ -6,6 +6,23 @@
 
 ---
 
+## Pre-v1 Contract Migration
+
+Implementation details and acceptance live in the [delivery plan](docs/plans/pre-v1-implementation.md). These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.
+
+- [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
+- [x] Close G1/G2 (2026-09-05): AdoptValue, Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
+- [ ] P1–P3 DI minor: shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
+- [ ] P4 router minor: endpoint-owned path parameter names; strict duplicate/structural conflicts retained
+- [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
+- [ ] P8 HTTP minor: optional Use features, default recovery, single renderers, executor, cleanup and example/test migration; only after the P1 gate is implemented and verified
+- [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
+- [ ] P5 wire minor: implement the accepted URL generation/decoding round-trip contract separately
+- [ ] Performance A1–A3: [measured hot-path plan](docs/plans/wire-hot-paths.md), equivalent inputs and benchstat
+- [ ] Performance B: Response.ReadFrom, live HTTP/1.1/TLS/HTTP2 verification
+- [ ] P6 backlog: compiled route model only with demonstrated maintenance benefit
+- [ ] P7 backlog: read-only DI explanation after the core DI work; no runtime invocation accounting
+
 ## Phase 1 — Foundation
 
 ### 1.1 Project Skeleton
@@ -316,13 +333,7 @@
 **Phase 3.3b — Bun Wrapper** (`store/sqldb/`, submodule: `github.com/credo-go/credo/store/sqldb`):
 
 - [x] `DB` type wrapping `*bun.DB` with lifecycle methods
-- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN,
-  ConnectTimeout, MaxOpen, pointer-valued MaxIdle, MaxLifetime, MaxIdleTime,
-  SSLMode, Options) + fail-loud pool validation, `DB.Stats`, cumulative health
-  diagnostics, successful-registration unlimited-pool warning, exact driver
-  aliases, IPv6-safe generated DSNs, non-zero network ports, rounded-up
-  PostgreSQL sub-second timeouts, secret-safe option-conflict rejection, and
-  explicit-nil plus known-family-mismatch dialect/connector rejection
+- [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN, ConnectTimeout, MaxOpen, pointer-valued MaxIdle, MaxLifetime, MaxIdleTime, SSLMode, Options) + fail-loud pool validation, `DB.Stats`, cumulative health diagnostics, successful-registration unlimited-pool warning, exact driver aliases, IPv6-safe generated DSNs, non-zero network ports, rounded-up PostgreSQL sub-second timeouts, secret-safe option-conflict rejection, and explicit-nil plus known-family-mismatch dialect/connector rejection
 - [x] `Open(cfg, opts...)` — factory with functional options
 - [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
 - [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure
@@ -369,12 +380,9 @@
 > **2026-06-11 / 2026-07-10 — engine folded into root, bounded execution added.** The engine lives unexported in the root package (`health_engine.go`); `internal/health/` holds the stable bounded `Probe` primitive plus the module-internal per-store DI seam (`StoreFunc`). `SetHealthStoreFunc`/`HealthStoreResult` remain removed from the public API (see ADR-016).
 
 - [x] Engine with concurrent check execution (root, unexported; was `internal/health/`)
-- [x] Bounded common runner for named + store checks: immutable results,
-  enforced per-check deadlines, panic isolation, and parallel execution
-- [x] Stable per-check singleflight: overlapping probes reuse one execution;
-  non-cooperative callbacks cannot accumulate one goroutine per request
-- [x] Typed store health cause (`Health.Cause`, JSON-excluded), operator logging,
-  default response masking, and explicit `ExposeErrors` opt-in
+- [x] Bounded common runner for named + store checks: immutable results, enforced per-check deadlines, panic isolation, and parallel execution
+- [x] Stable per-check singleflight: overlapping probes reuse one execution; non-cooperative callbacks cannot accumulate one goroutine per request
+- [x] Typed store health cause (`Health.Cause`, JSON-excluded), operator logging, default response masking, and explicit `ExposeErrors` opt-in
 - [x] Store status allowlist and fail-closed custom/store name-collision handling
 - [x] Store registration/Registry typed-nil hardening
 - [ ] Optional/critical stores and bounded low-cardinality tags (separate API decision)
@@ -395,7 +403,7 @@
 
 > ⚠️ **v0.1.0 reframe.** Logging (slog) is real and featured; tracing (OTel) ships as _experimental_; a stable Prometheus metrics adapter is optional. Do **not** rush the full OTel wrapper before v1. **2026-06-11:** the speculative root-package `MeterProvider`/`TracerProvider` interfaces and `Infra.Metrics`/`Infra.Tracer` fields were removed (see §2.2 note). This phase starts from a clean slate: design the metrics/tracing carriers from real OTel/Prometheus adapters, aligned with the v1 / Go 1.27 window.
 >
-> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) when tracing is *not configured*, install a `NeverSample()` TracerProvider so the unconfigured hot path costs ~nothing — GoFr retrofitted this for a 528 B → 144 B/req win; design it in from the start. (2) Offer OTLP *push* metrics export alongside the Prometheus pull endpoint (serverless/scale-to-zero misses scrape intervals; one MeterProvider with two readers, no double counting, pull stays the default). (3) Choose histogram bucket boundaries per metric's native unit — GoFr's µs-scale datasource latencies all landed in `+Inf` under default buckets. (4) One span per request, named `<METHOD> <route-template>` per OTel HTTP semconv.
+> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) when tracing is _not configured_, install a `NeverSample()` TracerProvider so the unconfigured hot path costs ~nothing — GoFr retrofitted this for a 528 B → 144 B/req win; design it in from the start. (2) Offer OTLP _push_ metrics export alongside the Prometheus pull endpoint (serverless/scale-to-zero misses scrape intervals; one MeterProvider with two readers, no double counting, pull stays the default). (3) Choose histogram bucket boundaries per metric's native unit — GoFr's µs-scale datasource latencies all landed in `+Inf` under default buckets. (4) One span per request, named `<METHOD> <route-template>` per OTel HTTP semconv.
 
 - [ ] Structured logging setup (slog handlers)
 - [ ] OpenTelemetry trace provider wiring
@@ -460,7 +468,7 @@
 
 > A typed in-process event API is pubsub's channel backend plus generics sugar, not a second eventing system.
 >
-> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) a panicking subscriber handler must leave the message *uncommitted* so it is redelivered — GoFr's recovery path swallowed the panic and acked, silently losing messages (v1.56.6). (2) A failing handler must engage backoff, not tight-loop on consecutive failures (v1.58.0). (3) Consumer spans must be *children* of the producer's trace (context propagated through message headers), with a span link kept for fan-out semantics (v1.56.2). (4) Backend adapters need explicit answers for: buffer-full backoff (no busy-spin), cancellable subscription goroutines that `Close` actually waits for, and reconnect/resubscribe that preserves consumer identity (GoFr's Redis Streams shipped all three bugs, v1.56.1).
+> **Design inputs from the GoFr v1.56–v1.59 review (2026-08-24):** (1) a panicking subscriber handler must leave the message _uncommitted_ so it is redelivered — GoFr's recovery path swallowed the panic and acked, silently losing messages (v1.56.6). (2) A failing handler must engage backoff, not tight-loop on consecutive failures (v1.58.0). (3) Consumer spans must be _children_ of the producer's trace (context propagated through message headers), with a span link kept for fan-out semantics (v1.56.2). (4) Backend adapters need explicit answers for: buffer-full backoff (no busy-spin), cancellable subscription goroutines that `Close` actually waits for, and reconnect/resubscribe that preserves consumer identity (GoFr's Redis Streams shipped all three bugs, v1.56.1).
 
 - [ ] Copy Publisher/Subscriber interfaces, Message type
 - [ ] Go channel in-process implementation
@@ -501,12 +509,7 @@
 
 **Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-WebSocket server support is implemented as an adapter rather than copied
-protocol code. The canonical API stays on the existing router:
-`ws := websocket.Use(app, cfg)` and
-`app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect,
-heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain
-demand-gated follow-ups rather than MVP promises.
+WebSocket server support is implemented as an adapter rather than copied protocol code. The canonical API stays on the existing router: `ws := websocket.Use(app, cfg)` and `app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect, heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain demand-gated follow-ups rather than MVP promises.
 
 - [x] Credo-owned message/close/config/connection façade over coder/websocket
 - [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
@@ -515,11 +518,7 @@ demand-gated follow-ups rather than MVP promises.
 - [x] Real TCP/WSS/HTTP2-negative, race/conformance, fuzz, and observability coverage
 - [x] ADR/spec/guide/example and NOTICES attribution
 
-SSE is a separate deferred transport; it is not folded into the WebSocket
-package or lifecycle. Before shipping, `Response` and every supported wrapper
-chain must provide fail-loud `http.Flusher` capability/error semantics—silent
-buffering or a claimed-but-nonfunctional Flush is unacceptable. Only then
-should an SSE response API and disconnect/drain contract be designed.
+SSE is a separate deferred transport; it is not folded into the WebSocket package or lifecycle. Before shipping, `Response` and every supported wrapper chain must provide fail-loud `http.Flusher` capability/error semantics—silent buffering or a claimed-but-nonfunctional Flush is unacceptable. Only then should an SSE response API and disconnect/drain contract be designed.
 
 - [ ] Design and prove the Flush capability boundary across middleware
 - [ ] Specify SSE framing, heartbeat, disconnect, and drain semantics
@@ -661,7 +660,7 @@ should an SSE response API and disconnect/drain contract be designed.
   - [ ] Routes with `Accept` meta must have ContractGuard middleware
   - [ ] Detect duplicate route patterns / conflicting registrations
   - [ ] Warn on routes without any middleware (optional strict mode)
-  - [ ] **Param conflict detection**: same segment with different param names or regexes (e.g., `/{id:[0-9]+}` vs `/{name:[a-z]+}`) — warn or error at registration time
+  - **Param conflict policy superseded by P4**: endpoint-specific names are allowed; duplicate method+shape and structural regex/kind conflicts remain errors. Progress is tracked under [Pre-v1 Contract Migration](#pre-v1-contract-migration).
   - [ ] **Duplicate route diagnostics** (decision closed — strict stays): radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. A lenient/debug warning mode is rejected — it would legitimize silent route shadowing, which breaks named-route, route-meta, and middleware resolution. Only diagnostic _quality_ may still improve (clearer message, both conflicting locations, source position); the fail-loud behavior never changes.
 
 ### Performance Budgets
