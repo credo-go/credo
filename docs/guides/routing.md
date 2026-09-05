@@ -93,7 +93,7 @@ Regex constraints are structural: two different constraints at the same position
 
 ### Encoded Values
 
-Routing matches the path as the client spelled it and decodes each captured value once, so a percent-encoded slash is data inside one segment and a constraint is evaluated on the decoded value:
+Routing decodes every escape except the encoded slash before matching, so any spelling of the same bytes reaches the same route (`/caf%C3%A9` and `/caf%c3%a9` both meet `/café`), a percent-encoded slash is data inside one segment, each captured value is decoded once and a constraint is evaluated on the decoded value:
 
 ```go
 app.GET("/files/{name}", func(ctx *credo.Context) error {
@@ -108,9 +108,9 @@ app.GET("/orders/{id:[0-9]+}", getOrder) // GET /orders/%31 matches with id "1"
 app.GET("/docs/{path...}", serveDoc)      // GET /docs/a%2Fb/c -> "a/b/c"
 ```
 
-Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `ctx.Rewrite` takes a wire-form target, so `ctx.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
+Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain the byte that follows its parameter in the pattern. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `ctx.Rewrite` takes a wire-form target, so `ctx.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
 
-URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment.
+URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment; static text comes out in its wire spelling. A value that could not route back — invalid UTF-8, or one containing its parameter's delimiter (`a.b` for `{name}.json`) — is an error.
 
 ```go
 route := app.GET("/files/{name}", h).Name("file.show")
