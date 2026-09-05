@@ -12,17 +12,16 @@ import (
 
 func newI18nBenchApp(b *testing.B) *credo.App {
 	b.Helper()
-	app, err := credo.New()
-	if err != nil {
-		b.Fatal(err)
-	}
+	app := mustNewBench(b)
 
 	fsys := fstest.MapFS{
+		// Keys are exact: validation violations resolve their bare Code
+		// ("required") and HTTP errors their bare default code ("not_found").
 		"en/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "is required", "http.not_found": "Not found"}`),
+			Data: []byte(`{"required": "is required", "not_found": "Not found"}`),
 		},
 		"tr/messages.json": &fstest.MapFile{
-			Data: []byte(`{"v.required": "zorunludur", "http.not_found": "Bulunamadı"}`),
+			Data: []byte(`{"required": "zorunludur", "not_found": "Bulunamadı"}`),
 		},
 	}
 
@@ -39,15 +38,17 @@ func newI18nBenchApp(b *testing.B) *credo.App {
 func BenchmarkUseI18n_T(b *testing.B) {
 	app := newI18nBenchApp(b)
 	app.GET("/bench", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, ctx.T("v.required"))
+		return ctx.Response().Text(200, ctx.T("required"))
 	})
 
 	r := httptest.NewRequest("GET", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
+	w := newNoopResponseWriter()
+	benchExpect(b, app, r, http.StatusOK, "zorunludur")
 
 	b.ReportAllocs()
 	for b.Loop() {
-		w := httptest.NewRecorder()
+		clear(w.h)
 		app.ServeHTTP(w, r)
 	}
 }
@@ -65,10 +66,12 @@ func BenchmarkUseI18n_ValidationError(b *testing.B) {
 
 	r := httptest.NewRequest("POST", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
+	w := newNoopResponseWriter()
+	benchExpect(b, app, r, http.StatusUnprocessableEntity, "zorunludur")
 
 	b.ReportAllocs()
 	for b.Loop() {
-		w := httptest.NewRecorder()
+		clear(w.h)
 		app.ServeHTTP(w, r)
 	}
 }
@@ -81,10 +84,12 @@ func BenchmarkUseI18n_HTTPError(b *testing.B) {
 
 	r := httptest.NewRequest("GET", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
+	w := newNoopResponseWriter()
+	benchExpect(b, app, r, http.StatusNotFound, "Bulunamadı")
 
 	b.ReportAllocs()
 	for b.Loop() {
-		w := httptest.NewRecorder()
+		clear(w.h)
 		app.ServeHTTP(w, r)
 	}
 }

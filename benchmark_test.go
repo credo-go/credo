@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
@@ -27,7 +28,26 @@ func newNoopResponseWriter() *noopResponseWriter {
 
 func (w *noopResponseWriter) Header() http.Header         { return w.h }
 func (w *noopResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (w *noopResponseWriter) WriteHeader(int)             {}
+func (w *noopResponseWriter) WriteString(s string) (int, error) {
+	return len(s), nil
+}
+func (w *noopResponseWriter) WriteHeader(int) {}
+
+// benchExpect serves r once through a recorder, outside the measured loop,
+// and fails the benchmark unless the response carries wantStatus and wantBody.
+// It catches a benchmark that silently measures the wrong path (a 404 instead
+// of the handler, a missing translation instead of the translated message).
+func benchExpect(b *testing.B, app *credo.App, r *http.Request, wantStatus int, wantBody string) {
+	b.Helper()
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, r)
+	if rec.Code != wantStatus {
+		b.Fatalf("benchmark request %s %s: status = %d, want %d (body %q)", r.Method, r.URL, rec.Code, wantStatus, rec.Body.String())
+	}
+	if wantBody != "" && !strings.Contains(rec.Body.String(), wantBody) {
+		b.Fatalf("benchmark request %s %s: body %q does not contain %q", r.Method, r.URL, rec.Body.String(), wantBody)
+	}
+}
 
 // benchMiddleware creates a minimal passthrough middleware that sets one header.
 func benchMiddleware(name string) credo.Middleware {
@@ -255,7 +275,8 @@ func BenchmarkServeHTTP_QueryParam(b *testing.B) {
 	})
 
 	w := newNoopResponseWriter()
-	r := httptest.NewRequest(http.MethodGet, "/?page=1&sort=name&order=asc", nil)
+	r := httptest.NewRequest(http.MethodGet, "/q?page=1&sort=name&order=asc", nil)
+	benchExpect(b, app, r, http.StatusOK, "ok")
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -277,7 +298,8 @@ func BenchmarkServeHTTP_QueryParamMulti(b *testing.B) {
 	})
 
 	w := newNoopResponseWriter()
-	r := httptest.NewRequest(http.MethodGet, "/?page=1&sort=name&order=asc", nil)
+	r := httptest.NewRequest(http.MethodGet, "/q?page=1&sort=name&order=asc", nil)
+	benchExpect(b, app, r, http.StatusOK, "ok")
 
 	b.ReportAllocs()
 	for b.Loop() {
