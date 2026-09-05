@@ -5,9 +5,7 @@ package credo
 import (
 	"fmt"
 	"maps"
-	"strings"
-
-	internalpattern "github.com/credo-go/credo/internal/pattern"
+	"sync"
 )
 
 // Route represents a registered route with its handler, metadata,
@@ -54,6 +52,14 @@ type Route struct {
 	// Surfaced via RouteInfo.AutoHead so introspection can distinguish it from
 	// an explicitly registered HEAD route (which keeps autoHead false).
 	autoHead bool
+
+	// tmplOnce lazily parses pattern and hostPattern into the generation
+	// templates used by BuildURI/BuildURL; parsing compiles the regex
+	// constraints once per route instead of once per call.
+	tmplOnce sync.Once
+	tmpl     *pathTemplate
+	hostTmpl *hostTemplate
+	tmplErr  error
 }
 
 // Name sets the route name for URL generation.
@@ -203,14 +209,23 @@ func (r *Route) resolveAllMeta() map[string]any {
 }
 
 // BuildURI generates a URI from the route pattern by replacing named
-// parameters with the provided values in order. It returns an error when a
-// parameter is missing, when too many values are provided, or when the route
-// pattern is malformed. Uses brace-depth-aware parsing to correctly handle
-// regex quantifiers like {id:[0-9]{2,4}}.
+// parameters with the provided values in order. Values are decoded parameter
+// values, exactly what [Request.RouteParam] reports for the generated URI:
+// each is checked against its regex constraint and percent-encoded for one
+// path segment with [url.PathEscape], so "a/b" for a single-segment parameter
+// yields "a%2Fb" while a catch-all value keeps its slashes as separators and
+// escapes each segment. Static text of the pattern is written verbatim.
+//
+// It returns an error when a value is missing or empty, fails its constraint,
+// when too many values are provided, or when the route pattern is malformed.
 //
 //	uri, err := route.BuildURI("42") // "/users/42"
 func (r *Route) BuildURI(params ...string) (string, error) {
-	uri, consumed, err := replaceParams(r.pattern, params)
+	tmpl, _, err := r.templates()
+	if err != nil {
+		return "", fmt.Errorf("credo: BuildURI %q: %w", r.pattern, err)
+	}
+	uri, consumed, err := tmpl.build(params)
 	if err != nil {
 		return "", fmt.Errorf("credo: BuildURI %q: %w", r.pattern, err)
 	}
@@ -222,10 +237,13 @@ func (r *Route) BuildURI(params ...string) (string, error) {
 
 // BuildURL generates a full URL by combining the route's host pattern and
 // path pattern, replacing parameters with the provided values in order.
-// Host pattern parameters are consumed first, then path parameters. It returns
-// an error when a parameter is missing, when too many values are provided, or
-// when either pattern is malformed. Wildcard host patterns cannot generate
-// concrete URLs and return an error.
+// Host pattern parameters are consumed first, then path parameters. A host
+// value fills exactly one label: it must be non-empty, consist of letters,
+// digits, hyphens and underscores, and satisfy the label's regex constraint;
+// host labels are never percent-encoded. Path values follow [Route.BuildURI].
+// It returns an error when a value is missing or invalid, when too many values
+// are provided, or when either pattern is malformed. Wildcard host patterns
+// cannot generate concrete URLs and return an error.
 //
 // For host-scoped routes:
 //
@@ -242,11 +260,15 @@ func (r *Route) BuildURL(params ...string) (string, error) {
 	if hostPatternHasWildcard(r.hostPattern) {
 		return "", fmt.Errorf("credo: BuildURL host %q: wildcard host patterns cannot generate concrete URLs", r.hostPattern)
 	}
-	host, consumed, err := replaceParams(r.hostPattern, params)
+	tmpl, hostTmpl, err := r.templates()
+	if err != nil {
+		return "", fmt.Errorf("credo: BuildURL %q%s: %w", r.hostPattern, r.pattern, err)
+	}
+	host, consumed, err := hostTmpl.build(params)
 	if err != nil {
 		return "", fmt.Errorf("credo: BuildURL host %q: %w", r.hostPattern, err)
 	}
-	uri, pathConsumed, err := replaceParams(r.pattern, params[consumed:])
+	uri, pathConsumed, err := tmpl.build(params[consumed:])
 	if err != nil {
 		return "", fmt.Errorf("credo: BuildURL path %q: %w", r.pattern, err)
 	}
@@ -257,36 +279,14 @@ func (r *Route) BuildURL(params ...string) (string, error) {
 	return host + uri, nil
 }
 
-// replaceParams replaces {placeholder} tokens in s with the provided values
-// in order. Returns the resulting string and the number of params consumed.
-// Uses brace-depth-aware parsing to correctly handle regex quantifiers
-// like {name:[0-9]{2,4}}.
-func replaceParams(s string, params []string) (string, int, error) {
-	var b strings.Builder
-	last := 0
-	consumed := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] != '{' {
-			continue
+// templates returns the route's cached generation templates, parsing the
+// path and host patterns on first use.
+func (r *Route) templates() (*pathTemplate, *hostTemplate, error) {
+	r.tmplOnce.Do(func() {
+		r.tmpl, r.tmplErr = parsePathTemplate(r.pattern)
+		if r.tmplErr == nil && r.hostPattern != "" {
+			r.hostTmpl = parseHostTemplate(r.hostPattern)
 		}
-
-		end := internalpattern.FindMatchingBrace(s, i)
-		if end < 0 {
-			return "", consumed, fmt.Errorf("missing closing brace at byte %d", i)
-		}
-		if consumed >= len(params) {
-			return "", consumed, fmt.Errorf("missing parameter %q", internalpattern.ParamName(s[i+1:end]))
-		}
-
-		b.WriteString(s[last:i])
-		b.WriteString(params[consumed])
-		consumed++
-		i = end
-		last = end + 1
-	}
-	if consumed == 0 {
-		return s, 0, nil
-	}
-	b.WriteString(s[last:])
-	return b.String(), consumed, nil
+	})
+	return r.tmpl, r.hostTmpl, r.tmplErr
 }

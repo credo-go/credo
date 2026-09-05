@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // Context is the request-scoped struct that holds the Request, Response,
@@ -329,18 +331,15 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.locale = ""
 	c.localeState = localeUnresolved
 	clear(c.extra)
-	if r.URL.RawPath != "" {
-		c.originalPath = r.URL.RawPath
-	} else {
-		c.originalPath = r.URL.Path
-	}
+	c.originalPath = r.URL.EscapedPath()
 	c.rewriteTarget = ""
 	c.rewriteRequested = false
 	c.rewriteCount = 0
 }
 
-// OriginalPath returns the request path as received from the client,
-// before any rewriting (middleware.Rewrite or ctx.Rewrite).
+// OriginalPath returns the request path as received from the client in its
+// wire form (percent-encoding preserved), before any rewriting
+// (middleware.Rewrite or ctx.Rewrite).
 // Useful for access logging, analytics, and debugging.
 func (c *Context) OriginalPath() string {
 	return c.originalPath
@@ -367,6 +366,14 @@ func (c *Context) Rewrite(path string) error {
 	}
 	if path == "" || path[0] != '/' {
 		return fmt.Errorf("credo: rewrite target must start with '/': %q", path)
+	}
+	// The target is a wire-form path: a percent-encoded value survives as one
+	// parameter ("/files/a%2Fb" reaches RouteParam as "a/b"), so a malformed
+	// escape is rejected here instead of at the next dispatch round.
+	if pathOnly, _, _ := strings.Cut(path, "?"); strings.IndexByte(pathOnly, '%') >= 0 {
+		if _, err := url.PathUnescape(pathOnly); err != nil {
+			return fmt.Errorf("credo: rewrite target %q: %w", path, err)
+		}
 	}
 	c.rewriteTarget = path
 	c.rewriteRequested = true

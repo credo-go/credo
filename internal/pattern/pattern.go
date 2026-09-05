@@ -38,7 +38,9 @@ type Segment struct {
 	// Name is the parameter name without braces, "..." or the constraint.
 	Name string
 
-	// Regexp is the constraint compiled as "^(regex)" for Regexp segments.
+	// Regexp is the constraint compiled as "^(?:regex)$" for Regexp segments:
+	// a constraint always applies to a whole decoded parameter value, never to
+	// a prefix of it.
 	Regexp *regexp.Regexp
 
 	// RegexpSource is the raw constraint text for Regexp segments.
@@ -103,7 +105,7 @@ func NextSegment(pattern string) (Segment, error) {
 		if reStr == "" {
 			return seg, fmt.Errorf("pattern: empty regex in %q", pattern)
 		}
-		re, err := regexp.Compile("^(" + reStr + ")")
+		re, err := regexp.Compile("^(?:" + reStr + ")$")
 		if err != nil {
 			return seg, fmt.Errorf("pattern: invalid regex %q in %q: %w", reStr, pattern, err)
 		}

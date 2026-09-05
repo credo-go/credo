@@ -35,6 +35,12 @@ type RouteContext struct {
 	// MethodNotAllowed indicates that the path matched but not the method.
 	MethodNotAllowed bool
 
+	// InvalidCapture reports that a candidate parameter value could not be
+	// percent-decoded to valid UTF-8 during matching. The tree skips such a
+	// candidate; when no route matches, the caller answers 400 rather than
+	// 404, since a well-formed request could have reached a parameter route.
+	InvalidCapture bool
+
 	// methodsAllowed tracks which methods ARE allowed (for 405 Allow header).
 	methodsAllowed MethodTyp
 }
@@ -52,6 +58,7 @@ func (rc *RouteContext) Reset() {
 	clear(rc.Params.Values)
 	rc.Params.Values = rc.Params.Values[:0]
 	rc.MethodNotAllowed = false
+	rc.InvalidCapture = false
 	rc.methodsAllowed = 0
 }
 
