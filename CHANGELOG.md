@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-06
+
 ### Added
 
 - `App.Has[T]() bool` — registration-presence check (direct or alias) that never constructs, adopts or protects; a snapshot, not a reservation.
@@ -397,7 +399,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/credo-go/credo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/credo-go/credo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/credo-go/credo/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/credo-go/credo/compare/v0.15.0...v0.16.0
