@@ -3,7 +3,12 @@
 
 package credo
 
-import internalrequestid "github.com/credo-go/credo/internal/requestid"
+import (
+	"fmt"
+	"strings"
+
+	internalrequestid "github.com/credo-go/credo/internal/requestid"
+)
 
 // requestIDKey is the context-store key for the request ID.
 const requestIDKey = internalrequestid.Key
@@ -12,7 +17,9 @@ const requestIDKey = internalrequestid.Key
 // [App.UseRequestID]. The zero value selects every default.
 type RequestIDConfig struct {
 	// Header is the HTTP header the request ID is read from and written to.
-	// Default: "X-Request-Id".
+	// Default: "X-Request-Id". Credential headers (Authorization,
+	// Proxy-Authorization, Cookie) are rejected at registration because the
+	// value is echoed on the response and attached to log records.
 	Header string
 
 	// Generator creates a request ID when the client did not send a valid
@@ -54,6 +61,10 @@ func (app *App) UseRequestID(cfgs ...RequestIDConfig) {
 	}
 	if f.header == "" {
 		f.header = internalrequestid.Header
+	}
+	switch strings.ToLower(f.header) {
+	case "authorization", "proxy-authorization", "cookie":
+		panic(fmt.Sprintf("credo: App.UseRequestID: Header %q is a credential header and cannot carry a request ID", f.header))
 	}
 	if f.generator == nil {
 		f.generator = internalrequestid.Generate

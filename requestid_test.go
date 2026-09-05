@@ -178,6 +178,20 @@ func TestUseRequestID_Misuse(t *testing.T) {
 		}()
 		app.UseRequestID()
 	})
+	t.Run("credential header", func(t *testing.T) {
+		for _, name := range []string{"Authorization", "proxy-authorization", "COOKIE"} {
+			app := mustNew(t)
+			expectPanicContaining(t, "credential header", func() {
+				app.UseRequestID(credo.RequestIDConfig{Header: name})
+			})
+			app.GET("/", func(ctx *credo.Context) error { return ctx.Response().NoContent(204) })
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+			if got := rec.Header().Get(name); got != "" {
+				t.Fatalf("header %s = %q after rejected registration, want nothing installed", name, got)
+			}
+		}
+	})
 }
 
 func TestContext_RequestID(t *testing.T) {
