@@ -10,7 +10,7 @@
 | P4: endpoint-owned path parameter names (implemented) | [ADR-007 radix tree](../adr/007-router-and-routing.md#radix-tree) | [Router URL parameters](../specs/router.md#url-parameters) |
 | P5: escaped URL round trips (implemented) | [ADR-007 URL amendment](../adr/007-router-and-routing.md#url-round-trip-amendment) | [Router encoded values](../specs/router.md#encoded-parameter-values) |
 | P8: built-in HTTP features (implemented) | [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) | [HTTP features](../specs/http-features.md) |
-| A/B: measured performance changes | Evidence required per change | [Wire hot-path plan](wire-hot-paths.md) |
+| A/B: measured performance changes (implemented) | [CHANGELOG performance entries](../../CHANGELOG.md) | [CONTRIBUTING performance rule](../../CONTRIBUTING.md#performance-changes) |
 
 Breaking changes are allowed before v1. Each behavioral/wire theme gets its own minor; no advance minor announcement or deferral to the v1.0.0 batch is required for this work. The existing v1 batch in TODO retains its existing scope. Do not choose release numbers until preparing the release.
 
@@ -91,7 +91,7 @@ Areas: radix endpoint keys and positional captures, root dispatch/mux tests, rou
 
 **P5 implemented 2026-09-05 (wire minor).** Matching runs on the wire-form path, captures decode once, constraints apply to the whole decoded value, parameters are single-segment, generation validates and escapes per segment with host-label validation, invalid UTF-8 captures answer 400, and rewrite targets and mount handoffs are wire-form. The [router spec](../specs/router.md#encoded-parameter-values) is the current contract; the round-trip table, backtracking, invalid input and generation error cases are covered by the root test package.
 
-Performance A1 → A2 → A3 and B follow the [measurement plan](wire-hot-paths.md). They do not require the DI minor. A2's Bundle cache can precede lazy locale; comparisons must use equivalent feature sets and distinguish unused, first-use and cached translations. B needs real HTTP/1.1, TLS and HTTP/2 validation. Removing wrappers or default features is not a demonstrated hot-path gain.
+**Performance A1–A3 implemented 2026-09-05, B 2026-09-06.** Precomputed error JSON options, a canonical locale table in the i18n bundle, the access-log level check before entry construction, and `Response.ReadFrom` with writer delegation and a pooled fallback (verified on live HTTP/1.1, TLS and HTTP/2, with and without compression). Each landed with a `-count=10` benchstat comparison in its PR and a performance note in CHANGELOG; the evidence rule lives in [CONTRIBUTING](../../CONTRIBUTING.md#performance-changes). Removing wrappers or default features was not a demonstrated hot-path gain and is not scheduled.
 
 ## Verification and release completion
 

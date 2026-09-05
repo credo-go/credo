@@ -48,6 +48,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - `HealthConfig.LogRequests` only matters once `UseAccessLog` is installed; probes stay silent by default either way.
 - The `examples/saas` composition root calls `UseRequestID`, `UseAccessLog` and `UseCompress` explicitly.
 - **Performance (wire hot paths).** Error bodies encode with a JSON option set joined once in `New` instead of on every error response (`BenchmarkWireJSONOptions/ErrorOptions`: 26.7 ns / 1 alloc → 0.6 ns / 0 allocs). Translation lookups for an already resolved request locale skip Accept-Language parsing and matching through a canonical-string table on the bundle (`BundleTranslate/CanonicalString` 344 ns / 6 allocs → 42 ns / 0 allocs; `UseI18n_T` 1.10 µs / 13 allocs → 0.19 µs / 1 alloc; a two-field validation error 4.14 µs / 50 allocs → 1.53 µs / 13 allocs). Access logging without a `ResultFilter` checks the target logger's level before building the entry (`WireObservability/AccessLog/HandlerFiltered` 136 ns / 1 alloc → 66 ns / 0 allocs); with a filter the entry is always built, so the filter keeps observing every response. Measured with `-count=10` and benchstat; no behaviour changes.
+- **Performance (`Response.ReadFrom`).** `Response` implements `io.ReaderFrom`: `Response.Stream` and `io.Copy` into a response no longer allocate a 32 KiB copy buffer per call for a Reader-only source. The copy is delegated to the underlying writer's own `ReadFrom` when it has one (net/http's HTTP/1.1 writer: pooled buffer, sendfile/splice on a plaintext TCP connection for file and socket sources) and otherwise runs through a pooled buffer (compressing or other wrapping writers, HTTP/2). `Size()` counting, partial-write errors, the hijack refusal and the implicit 200 are unchanged; verified against live HTTP/1.1, TLS and HTTP/2 servers with and without the compression feature. `WireSuccess/Core/StreamReaderOnly` (4 KiB body): 5.36 µs / 32.8 KiB / 3 allocs → 0.21 µs / 24 B / 2 allocs; the wrapped-writer variant 5.10 µs → 0.19 µs.
 
 ### Removed
 
@@ -58,7 +59,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ### Documentation
 
-- Promote accepted pre-v1 bootstrap/DI, router parameter and built-in HTTP feature contracts to ADR/spec, with a [delivery plan](docs/plans/pre-v1-implementation.md), migration guide and example migration notes; the remaining design decisions are closed there. Every promoted contract ships in this release (see above); the performance follow-ups remain measured work under the [wire hot-path plan](docs/plans/wire-hot-paths.md), and this entry announces no completed performance improvements.
+- Promote accepted pre-v1 bootstrap/DI, router parameter and built-in HTTP feature contracts to ADR/spec, with a [delivery plan](docs/plans/pre-v1-implementation.md), migration guide and example migration notes; the remaining design decisions are closed there. Every promoted contract ships in this release (see above); the performance follow-ups landed as the two performance entries above, with the benchmark evidence rule in [CONTRIBUTING](CONTRIBUTING.md#performance-changes).
 
 ## [0.18.0] - 2026-09-05
 

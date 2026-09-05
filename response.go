@@ -13,9 +13,30 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/credo-go/credo/internal/httpwriter"
 )
+
+// copyBufferSize is the size of the pooled buffers [Response.ReadFrom] copies
+// through when the underlying writer offers no [io.ReaderFrom]; it matches
+// the buffer io.Copy would otherwise allocate per call.
+const copyBufferSize = 32 << 10
+
+// copyBufferPool holds the [Response.ReadFrom] copy buffers. Pointers are
+// pooled so that Get and Put stay allocation-free.
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, copyBufferSize)
+		return &buf
+	},
+}
+
+// writerOnly hides a writer's optional ReadFrom method from io.CopyBuffer so
+// that the fallback copy cannot re-enter [Response.ReadFrom].
+type writerOnly struct {
+	io.Writer
+}
 
 const cacheControlNoCacheMustRevalidate = "no-cache, must-revalidate"
 
@@ -136,6 +157,40 @@ func (r *Response) WriteString(s string) (int, error) {
 	}
 	n, err := io.WriteString(r.ResponseWriter, s)
 	r.size += int64(n)
+	return n, err
+}
+
+// ReadFrom copies src into the response body until EOF, implementing
+// [io.ReaderFrom] for [io.Copy] and [Response.Stream]. When the underlying
+// writer implements io.ReaderFrom (net/http's HTTP/1.1 writer does, copying
+// through a pooled buffer and using sendfile or splice on a plaintext TCP
+// connection when src is a regular file or a socket) the copy is delegated to
+// it. Otherwise — a compressing or other wrapping writer, HTTP/2 — the copy
+// runs through a pooled 32 KiB buffer, so a Reader-only source never costs a
+// buffer allocation per response.
+//
+// The bytes the writer accepted count toward [Response.Size]; a hijacked
+// response returns [http.ErrHijacked]; when no status was written the first
+// byte commits 200 as [Response.Write] does.
+func (r *Response) ReadFrom(src io.Reader) (int64, error) {
+	if r.hijacked {
+		return 0, http.ErrHijacked
+	}
+	if !r.committed {
+		r.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		r.size += n
+		return n, err
+	}
+	// The destination is r itself (with ReadFrom hidden) rather than the
+	// bare writer: a src implementing io.WriterTo writes straight into the
+	// destination, and every path must pass through Response.Write so the
+	// byte count stays exact.
+	bufp := copyBufferPool.Get().(*[]byte)
+	n, err := io.CopyBuffer(writerOnly{r}, src, *bufp)
+	copyBufferPool.Put(bufp)
 	return n, err
 }
 
@@ -352,7 +407,10 @@ func (r *Response) Blob(code int, contentType string, b []byte) error {
 	return err
 }
 
-// Stream sends a streaming response from the given reader.
+// Stream sends a streaming response from the given reader. A reader that
+// implements [io.WriterTo] writes itself; any other reader is copied through
+// [Response.ReadFrom], which delegates to the underlying writer or a pooled
+// buffer instead of allocating one per call.
 // Body-forbidding status codes (1xx, 204, 304) write the status only and
 // never read from rd; see [Response.JSON].
 func (r *Response) Stream(code int, contentType string, rd io.Reader) error {
