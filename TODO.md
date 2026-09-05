@@ -8,7 +8,7 @@
 
 ## Pre-v1 Contract Migration
 
-Implementation details and acceptance live in the [delivery plan](docs/plans/pre-v1-implementation.md). These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.
+The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
 - [x] Close G1/G2 (2026-09-05): AdoptValue, Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
@@ -21,8 +21,6 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] Performance A1–A3 (2026-09-05): precomputed error JSON options, canonical locale table, early access-log level check; benchstat evidence in the PR and CHANGELOG, rule in [CONTRIBUTING](CONTRIBUTING.md#performance-changes)
 - [x] Performance B (2026-09-06): `Response.ReadFrom` with writer delegation and a pooled fallback, verified on live HTTP/1.1, TLS and HTTP/2 with and without compression
 - [ ] Performance backlog (only with a new measurement): dedicated request-ID field on `Context` instead of the context store (16 B / 1 alloc, costs a key compare on every `Set`/`Get`); PGO stays an application `main` concern — the framework ships no profile and never derives one from the wire microbenchmarks
-- [ ] P6 backlog: compiled route model only with demonstrated maintenance benefit
-- [ ] P7 backlog: read-only DI explanation after the core DI work; no runtime invocation accounting
 
 ## Phase 1 — Foundation
 

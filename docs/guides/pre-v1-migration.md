@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. Follow the [implementation plan](../plans/pre-v1-implementation.md) for boundaries and the accepted G1–G4 decisions, and [TODO](../../TODO.md#pre-v1-contract-migration) for progress.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress.
 
 ## Bootstrap and DI
 

@@ -47,7 +47,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 
 ## Accepted Pre-v1 Changes
 
-**Bootstrap/DI (DI minor), router parameter-name (router minor), built-in HTTP feature (HTTP minor) and URL round-trip (wire minor) changes implemented 2026-09-05.** All contracts are recorded in the [migration guide](docs/guides/pre-v1-migration.md) and the [implementation plan](docs/plans/pre-v1-implementation.md); progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). The quick start and examples below use the shipped APIs, and the [example migration notes](examples/README.md) explain what changed in them.
+**Bootstrap/DI (DI minor), router parameter-name (router minor), built-in HTTP feature (HTTP minor) and URL round-trip (wire minor) changes implemented 2026-09-05.** All contracts are recorded in the [migration guide](docs/guides/pre-v1-migration.md) and the ADRs and specs it links; progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). The quick start and examples below use the shipped APIs, and the [example migration notes](examples/README.md) explain what changed in them.
 
 ## Installation
 

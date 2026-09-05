@@ -1,6 +1,6 @@
 # Bootstrap and DI Lifecycle Contract
 
-**Status:** Implemented (2026-09-05, one DI minor). G1/G2 are closed in the [implementation plan](../plans/pre-v1-implementation.md#decision-gates). **ADR:** [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **Implementation areas:** root App/lifecycle (`prepare.go`, `lifecycle_manager.go`, `server.go`), `internal/di`, store and worker registration.
+**Status:** Implemented (2026-09-05, one DI minor). The registration-access and diagnostics decisions (G1/G2) are closed in [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **ADR:** [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **Implementation areas:** root App/lifecycle (`prepare.go`, `lifecycle_manager.go`, `server.go`), `internal/di`, store and worker registration.
 
 This is the phase, ownership and teardown contract of the DI container and the App bootstrap. The [container](container.md) and [lifecycle](lifecycle.md) specifications state the same behavior in API terms. P1/P2/P3 are work-package identifiers used by the delivery plan and the tests, not three separately shippable migrations.
 
