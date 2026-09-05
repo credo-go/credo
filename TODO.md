@@ -18,7 +18,7 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] P8 HTTP minor (2026-09-05): optional Use features, default recovery, single renderers, executor, cleanup and example/test migration
 - [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
 - [x] P5 wire minor (2026-09-05): one-time capture decoding on the wire-form path, decoded-value constraints, single-segment parameters, validated and escaped generation, 400 `invalid_path_encoding`
-- [ ] Performance A1–A3: [measured hot-path plan](docs/plans/wire-hot-paths.md), equivalent inputs and benchstat
+- [x] Performance A1–A3 (2026-09-05): precomputed error JSON options, canonical locale table, early access-log level check; benchstat evidence in the [hot-path plan](docs/plans/wire-hot-paths.md)
 - [ ] Performance B: Response.ReadFrom, live HTTP/1.1/TLS/HTTP2 verification
 - [ ] P6 backlog: compiled route model only with demonstrated maintenance benefit
 - [ ] P7 backlog: read-only DI explanation after the core DI work; no runtime invocation accounting
