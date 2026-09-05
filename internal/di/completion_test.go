@@ -122,7 +122,7 @@ func TestResolve_ConstructorPanic_ErrorValueUnwraps(t *testing.T) {
 		t.Fatalf("errors.Is(err, cause) = false for %v", err)
 	}
 	pe, ok := errors.AsType[*di.PanicError](err)
-	if !ok || pe.Value != cause {
+	if !ok || pe.Value != any(cause) {
 		t.Fatalf("PanicError.Value = %v, want the original error value", pe)
 	}
 }

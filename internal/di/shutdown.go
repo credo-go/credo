@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -425,7 +426,7 @@ func logLateCompletion(logger *slog.Logger, t reflect.Type, phase PanicPhase, ou
 }
 
 func isPanicError(err error) bool {
-	_, ok := err.(*PanicError)
+	_, ok := errors.AsType[*PanicError](err)
 	return ok
 }
 

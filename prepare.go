@@ -64,8 +64,8 @@ func (app *App) prepare() *preparation {
 // once with its stack; the stored error is what every later request or serve
 // call reports, so a partly compiled handler is never executed.
 func (app *App) buildHandler() (handler Handler, err error) {
-	if err := app.Finalize(); err != nil {
-		return nil, fmt.Errorf("credo: prepare: DI finalize: %w", err)
+	if finalizeErr := app.Finalize(); finalizeErr != nil {
+		return nil, fmt.Errorf("credo: prepare: DI finalize: %w", finalizeErr)
 	}
 	defer func() {
 		if r := recover(); r != nil {

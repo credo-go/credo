@@ -189,14 +189,14 @@ func isInterfaceSlice(t reflect.Type) bool {
 
 // frozenError is the shared registration-window rejection.
 func frozenError(op string, t reflect.Type) error {
-	return &frozenErr{op: op, t: t}
+	return &frozenStateError{op: op, t: t}
 }
 
-type frozenErr struct {
+type frozenStateError struct {
 	op string
 	t  reflect.Type
 }
 
-func (e *frozenErr) Error() string {
+func (e *frozenStateError) Error() string {
 	return "di: " + e.op + "[" + e.t.String() + "]: container is frozen (finalized or shut down)"
 }
