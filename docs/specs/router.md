@@ -130,7 +130,7 @@ Default status handlers are registered for common codes (404, 405, 500). StatusH
 app.UseI18n(credo.I18nConfig{Dir: "locales/"})  // frozen-guarded, like SetMeta/StatusHandler
 ```
 
-Initializes i18n: loads locale files, stores the bundle on App, and adds a global middleware for locale detection. See [ADR-013](../adr/013-internationalization.md).
+Initializes i18n: loads locale files and stores the bundle on App; the request locale is resolved lazily on the first `Locale()`/translation access through `I18nConfig.Detect`. See [ADR-013](../adr/013-internationalization.md).
 
 ### 3-Tier Middleware
 
@@ -206,7 +206,7 @@ adminMux.HandleFunc("/dashboard", dashboard)
 app.Mount("/admin", adminMux)
 ```
 
-**Middleware scope:** mounted handlers receive only built-in and global middleware. Group and route middleware do not apply because mounted handlers are plain `http.Handler` instances dispatched outside the per-route compiled chain. If the mounted sub-application requires authentication or other protections, it must enforce them internally or the protections must be registered as global middleware.
+**Middleware scope:** mounted handlers receive only global middleware (plus the framework features that wrap every request). Group and route middleware do not apply because mounted handlers are plain `http.Handler` instances dispatched outside the per-route compiled chain. If the mounted sub-application requires authentication or other protections, it must enforce them internally or the protections must be registered as global middleware.
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
@@ -220,7 +220,7 @@ GET routes automatically respond to HEAD requests (body discarded). Explicit HEA
 
 `App.QUERY` and `Group.QUERY` register explicit safe, idempotent QUERY routes. The query representation travels in request content and is normally decoded and validated with `ctx.Request().BindBody(&input)`. Credo does not generate a GET twin or a HEAD twin: GET query parameters and a QUERY body are different input contracts.
 
-Every matched QUERY request, including one dispatched to a mounted `http.Handler`, must carry a non-blank `Content-Type`. Missing or blank values fail before the application handler with `400 content_type_required`, even when the body is empty. A present but unsupported media type follows the normal binder contract and returns 415; malformed supported content follows the bind-error contract. The guard is innermost, so ordinary built-in/global/group/route middleware still runs first.
+Every matched QUERY request, including one dispatched to a mounted `http.Handler`, must carry a non-blank `Content-Type`. Missing or blank values fail before the application handler with `400 content_type_required`, even when the body is empty. A present but unsupported media type follows the normal binder contract and returns 415; malformed supported content follows the bind-error contract. The guard is innermost, so the framework features and ordinary global/group/route middleware still run first.
 
 `Accept-Query` advertisement is optional and application-owned. Set the response header directly or from application middleware when needed. Credo adds no QUERY-only registration option, metadata key, automatic OPTIONS handler, or media contract; `middleware.ContractGuard` with `MetaAccept` remains the generic opt-in request media contract.
 

@@ -1,7 +1,5 @@
 # Getting Started
 
-> **Pre-v1 migration preview (implementation pending):** this guide's code uses the current API. Accepted phase/default/registration changes are documented in the [migration preview](pre-v1-migration.md). Apply the new names and behavior when their minor lands.
-
 This guide walks through building a Credo application from scratch. By the end, you will have a working HTTP server with routing, middleware, dependency injection, validation, health checks, error handling, graceful shutdown, and clear extension points for background work.
 
 For deeper coverage of individual topics, see the linked guides and specs.
@@ -249,7 +247,7 @@ api.Middleware(authMiddleware)
 app.GET("/admin", adminHandler).Middleware(requireAdmin)
 ```
 
-Credo includes built-in request IDs, access logging, and panic recovery (`WithoutRequestID()`, `WithoutAccessLog()`, `WithoutRecover()`). Configure the authoritative built-in access logger with `WithAccessLogLogger`, `WithAccessLogMinLevel`, `WithAccessLogSkipper`, and `WithAccessLogResultFilter`; use `middleware.AccessLog()` for route/group-specific policies. `middleware.RequestID()` provides custom request-ID headers/generators, and `middleware.Recover()` provides per-group/route recovery config. Additional middleware include `CORS`, `Secure`, `Compress`, `Timeout`, and `RateLimit`.
+Panic recovery is on by default (`WithRecoverConfig` customizes it, `WithoutRecover` disables it). Request IDs, access logging, response compression and request decompression are framework features you enable explicitly — `app.UseRequestID()`, `app.UseAccessLog()`, `app.UseCompress()`, `app.UseDecompress()` — each with one optional config (`AccessLogConfig` carries the logger, `MinLevel`, `Skipper` and `ResultFilter`). They are not middleware: they wrap the whole chain and observe the final response. Middleware proper includes `CORS`, `CSRF`, `Secure`, `Timeout`, `RateLimit`, `Rewrite` and `ContractGuard`.
 
 See the [Middleware Guide](middleware.md) for the full list, configuration options, and custom middleware patterns.
 
@@ -374,14 +372,14 @@ Internal errors (5xx) are logged but never leaked to the client.
 You can replace the error renderer to customize the body. It returns the shape while the framework owns status, Content-Type, and the write; nil keeps the default body:
 
 ```go
-app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
     // info.Status / Code / MessageKey / Message / Details / Errors — normalized
     return myFormat(info)
 })
 ```
 
-Its success-side mirror is `SetSuccessRenderer` + `ctx.Render(status, data)` — the opt-in response-envelope pair; the error-handling guide's "Response Envelopes" section shows both together.
+Its success-side mirror is `UseSuccessRenderer` + `ctx.Render(status, data)` — the opt-in response-envelope pair; the error-handling guide's "Response Envelopes" section shows both together.
 
 ---
 
@@ -687,6 +685,6 @@ func main() {
 - [Routing Guide](routing.md) — host groups, rewrite middleware, internal forwarding
 - [Worker Guide](worker.md) — continuous workers, schedules, shutdown, status snapshots
 - [Localization Guide](localization.md) — locale detection, translation
-- [Middleware Guide](middleware.md) — 3-tier model, built-in middleware, custom middleware
+- [Middleware Guide](middleware.md) — 3-tier model, framework features, custom middleware
 - [Validation Spec](../specs/validation.md) — rule catalog, custom rules
 - [Router Spec](../specs/router.md) — regex constraints, named routes, URL generation

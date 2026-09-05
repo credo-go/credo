@@ -1,20 +1,16 @@
 # ADR-013: Internationalization
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-009
+**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-09-05 **Depends on:** ADR-009, ADR-010
 
-## Pre-v1 HTTP integration amendment
+## HTTP integration amendment
 
-**Accepted 2026-09-05; implementation pending:** i18n remains explicitly installed through UseI18n and becomes a framework-owned HTTP feature. Remove its hidden GlobalMiddleware registration; preserve catalog/source validation, exact keys, field catalogs and plural semantics.
+**2026-09-05 (HTTP minor):** i18n remains explicitly installed through `UseI18n` and is a framework-owned HTTP feature under [ADR-010](010-middleware-architecture.md#built-in-http-feature-configuration-criterion); its former hidden `GlobalMiddleware` registration is gone. Catalog/source validation, exact keys, field catalogs and plural semantics are unchanged.
 
-**Accepted detector contract (G4b):** `I18nConfig.Detect func(*Context) string` is the sole callback. Resolve on first Locale/translation access, including automatic error/field translation, and memoize one result per request. The default detector reads Accept-Language; empty/unresolvable results use the configured default. Inactive/unused i18n does not call the detector.
+**Detector contract:** `I18nConfig.Detect func(*Context) string` is the sole callback. It resolves on the first `Locale`/translation access, including automatic error/field translation, and memoizes one result per request in state that is reset with the pooled Context. The default detector reads Accept-Language; empty/unresolvable results use the configured default. Inactive or unused i18n does not call the detector. Recursive `Locale`/translation from `Detect` is a programming panic; a detector panic retains the default fallback and never detects again for that request, so error rendering uses the cached default without recursing. Recovery-enabled requests take the 500 path; disabled recovery propagates the panic after cleanup.
 
-Separate memo state is reset with the pooled Context. Recursive Locale/translation from Detect is a programming panic. On detector panic/re-entry, retain a default fallback and never detect again for that request. Recovery-enabled requests use the 500 path; disabled recovery propagates panic. Error rendering can use the cached default without recursing into the detector.
+First access fixes the language using the data visible then. Context-based detection permits `GetUser` but does not extend the principal's lifetime through Timeout/stdlib request restoration; applications needing the authenticated language in later errors resolve `Locale` after setting the user, before unwinding, and earlier reads still win. No detector runs on the terminal lifecycle 503.
 
-First access fixes the language using currently visible data. Context-based detection permits GetUser but does not extend the principal's lifetime through Timeout/stdlib request restoration. Applications needing the authenticated language in later errors resolve Locale after setting the user, before unwinding; earlier reads still win. No detector runs on terminal lifecycle 503.
-
-A successful UseI18n with missing/empty conventional discovery records configured-but-inactive state and consumes the sole registration. A second call is duplicate misuse. Real source/load/ validation errors leave the slot free for repair before preparation. This makes successful configuration independent of which deployment has conventional catalog files.
-
-The [HTTP feature contract](../specs/http-features.md#locale-and-transport-features) carries the full target. The eager request-stage detection and current callback below remain descriptions of the existing implementation until the HTTP minor lands.
+A successful `UseI18n` with missing/empty conventional discovery records configured-but-inactive state and consumes the sole registration; a second call is duplicate misuse. Real source/load/validation errors leave the slot free for repair before preparation, so successful configuration is independent of which deployment has conventional catalog files. The [HTTP feature contract](../specs/http-features.md#locale-and-transport-features) carries the full rules.
 
 ## Context
 
@@ -33,7 +29,7 @@ ctx.T("welcome", data)
 ctx.TPlural("items", count, data)
 ```
 
-`Accept-Language` detection is the default. `I18nConfig.Detect` may replace it. The selected canonical tag is stored on the request Context.
+`Accept-Language` detection is the default. `I18nConfig.Detect func(*Context) string` may replace it. Detection is lazy: it runs on the first `Locale`/translation access of a request (the error pipeline's automatic translation included), the selected canonical tag is memoized on the request Context, and requests that never touch locale or translation do not invoke the detector.
 
 ### Two catalogs, not one namespace
 
@@ -59,7 +55,7 @@ type I18nConfig struct {
     Dir      string
     DirFS    fs.FS
     Default  string
-    Detect   func(*http.Request) string
+    Detect   func(*Context) string
     Messages I18nMessages
     Fields   I18nFields
     ResolveMessageKey MessageKeyResolver
@@ -81,7 +77,7 @@ Load order is programmatic base first, external source second. Both messages and
 - A RawConfig `i18n.dir` is explicit and follows the same fail-loud rule.
 - Only absent conventional `./locales` discovery from zero-config setup is an inactive warning.
 - `Dir` and `DirFS` are mutually exclusive.
-- The complete bundle and middleware are published only after all sources validate, so a failed setup exposes no partial catalog.
+- The complete bundle is published only after all sources validate, so a failed setup exposes no partial catalog and leaves the registration free for repair; a successful setup — a conventional discovery that found nothing included — consumes the single `UseI18n` registration.
 
 This distinguishes an optional convention from a declared deployment dependency. Programmatic fallback prevents raw keys on individual misses; it must not hide the loss of an explicitly configured source.
 

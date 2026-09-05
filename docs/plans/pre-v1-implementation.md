@@ -1,6 +1,6 @@
 # Pre-v1 Contract Implementation Plan
 
-**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor) and P4 (the router minor) implemented 2026-09-05; P8, P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
+**Status:** G1–G4 decisions accepted; P1–P3 (the DI minor), P4 (the router minor) and P8 (the HTTP minor) implemented 2026-09-05; P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
 
 ## Contract map
 
@@ -9,7 +9,7 @@
 | P1–P3: bootstrap, DI ownership and teardown | [ADR-022](../adr/022-bootstrap-and-di-ownership.md) | [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) |
 | P4: endpoint-owned path parameter names (implemented) | [ADR-007 radix tree](../adr/007-router-and-routing.md#radix-tree) | [Router URL parameters](../specs/router.md#url-parameters) |
 | P5: escaped URL round trips | [ADR-007 URL amendment](../adr/007-router-and-routing.md#pre-v1-url-round-trip-amendment) | [Router URL contract](../specs/router.md#pre-v1-url-round-trip-contract) |
-| P8: built-in HTTP features | [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) | [HTTP features](../specs/http-features.md) |
+| P8: built-in HTTP features (implemented) | [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) | [HTTP features](../specs/http-features.md) |
 | A/B: measured performance changes | Evidence required per change | [Wire hot-path plan](wire-hot-paths.md) |
 
 Breaking changes are allowed before v1. Each behavioral/wire theme gets its own minor; no advance minor announcement or deferral to the v1.0.0 batch is required for this work. The existing v1 batch in TODO retains its existing scope. Do not choose release numbers until preparing the release.
@@ -27,7 +27,7 @@ Breaking changes are allowed before v1. Each behavioral/wire theme gets its own 
 | G4b: lazy locale | One Detect func(*Context) string; first-use memoization, current auth/request lifetime, default fallback and no recursive/repeated detection after failure | P8 locale |
 | G4c: transport/observation | Decompress before Global with original-request selection; post-compression body bytes and duration through finalization; recovery-aware callback failures and no second response | P8 executor/transport |
 
-AdoptValue and the DI diagnostic types are callable; the new HTTP names remain target APIs pending implementation. Lazy locale preserves first-access data: changing the detector signature does not extend principal lifetime through middleware request restoration. Applications can resolve Locale after auth to retain that language for later errors; earlier locale reads still win. The spec defines the full failure and measurement contracts; implementation does not reopen these decisions by adding parallel APIs or re-detection.
+AdoptValue, the DI diagnostic types and the HTTP feature APIs are callable. Lazy locale preserves first-access data: changing the detector signature does not extend principal lifetime through middleware request restoration. Applications can resolve Locale after auth to retain that language for later errors; earlier locale reads still win. The spec defines the full failure and measurement contracts; implementation does not reopen these decisions by adding parallel APIs or re-detection.
 
 ## Delivery sequence
 
@@ -83,16 +83,9 @@ Areas: radix endpoint keys and positional captures, root dispatch/mux tests, rou
 - Cover shared-prefix names, different methods, regex/catch-all captures, backtracking, automatic HEAD, mounted dispatch and host-scoped path routing. Host-pattern matching is outside this change.
 - Verify BuildURI still reads route-pattern names and path dispatch retains zero-allocation cases.
 
-### 6. P8: optional HTTP features and one setup API
+### 6. P8: optional HTTP features and one setup API (implemented)
 
-Start only after the implemented P1 gate passes. G4a–G4c are accepted; ship one HTTP minor.
-
-1. Install feature configs once through Use APIs, with atomic failed-setup rollback and immutable snapshots. Keep recovery default-on through WithRecoverConfig and WithoutRecover precedence. Successful inactive i18n setup consumes its registration; genuine setup errors remain retryable.
-2. Build the request executor around the three user middleware tiers. Integrate independent RequestID, recovery/error rendering, finalization and final-response AccessLog.
-3. Integrate first-use Detect(*Context), memoized failure/default state and pool reset. Install Decompress before Global with original-request selection; retain both byte limits. Measure output body bytes after compression and duration through finalization. Apply recovery-aware callback fallback, post-response filter isolation and abort rules; preserve streaming/HEAD/hijack cleanup.
-4. Migrate root/package tests, benchmarks, testutil, WebSocket compression tests, README, guides, package docs and examples. Remove old wrappers, options, setters, unused helpers and duplicate tests in the same change; preserve real protocol and failure contracts.
-
-Acceptance: default App enables recovery alone; independent RequestID/AccessLog; framework logs retain level filtering; equivalent Use-call permutations; DI-backed single renderer registration; prepared/stopped boundaries; successful-inactive i18n duplicate rejection and failed-setup retry; zero/one locale detections, auth/request restoration, recursive/panicking detectors and pool reuse; compressed error responses and exact final access measurements; original-body selection and limits; renderer/filter/finalization failures with recovery enabled/disabled and immutable committed status; all meaningful contracts in the [HTTP spec](../specs/http-features.md#acceptance-checks-for-the-implementation).
+**Implemented 2026-09-05 (HTTP minor).** Feature configs are installed once through `Use*` APIs with off-to-the-side validation and publication under the preparation mutex; recovery stays default-on through `WithRecoverConfig` with `WithoutRecover` precedence; successful inactive i18n setup consumes its registration while genuine setup errors remain retryable. One request executor runs RequestID, access-log start, Decompress (before Global, original-request selection), the Compress writer, the user chain, centralized error rendering, recovery, compressor finalization and the final access observation (post-compression bytes, duration through finalization, recovery-aware callback fallback and post-response filter isolation). `Detect(*Context)` resolves on first use with memoized failure/default state and pool reset. Root/package tests, benchmarks, testutil, WebSocket compression tests, README, guides, package docs and the examples were migrated and the old wrappers, options, setters and duplicate tests removed in the same change. The [HTTP features spec](../specs/http-features.md) is the current contract.
 
 ### 7. P5 and performance follow-ups
 

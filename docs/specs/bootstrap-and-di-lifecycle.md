@@ -8,7 +8,7 @@ Keep a single-use App, typed constructor injection, visible `Infra`, explicit al
 
 ## P1. Setup phases and ownership
 
-Flow: App construction → DI registrations and overrides → validate/freeze the DI plan → build controllers, bind routes and register HTTP features/renderers → compile/freeze the HTTP plan → run. DI-independent HTTP setup may happen earlier. `Run`, `RunContext`, `ServeContext` and an external `http.Server` reach the same validated runtime model. Keep `App` as the single entry point, typed constructor injection, the `Infra` carrier and singleton scope. The [HTTP feature contract](http-features.md) (pending, HTTP minor) replaces the built-in middleware tier with framework-owned HTTP processing around the three user middleware tiers: Global (including 404/405), Group and Route.
+Flow: App construction → DI registrations and overrides → validate/freeze the DI plan → build controllers, bind routes and register HTTP features/renderers → compile/freeze the HTTP plan → run. DI-independent HTTP setup may happen earlier. `Run`, `RunContext`, `ServeContext` and an external `http.Server` reach the same validated runtime model. Keep `App` as the single entry point, typed constructor injection, the `Infra` carrier and singleton scope. The [HTTP feature contract](http-features.md) defines the framework-owned HTTP processing around the three user middleware tiers: Global (including 404/405), Group and Route.
 
 ### Consumer migration
 

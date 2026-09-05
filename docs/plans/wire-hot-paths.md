@@ -47,9 +47,9 @@ The built-in HTTP feature work in [the HTTP feature contract](../specs/http-feat
 
 ### A3. Access log: check the effective logger's level before building the entry — measured, narrow
 
-- `builtinAccessLog` (`accesslog.go`): current order is MinLevel → entry construction (`RealIP`, User-Agent, Route, RequestID) → `ResultFilter` → logger selection → `EmitAccessLog` → `logger.Enabled`.
+- `observeAccess` (`accesslog.go`): current order is MinLevel → entry construction (`RealIP`, User-Agent, Route, RequestID) → `ResultFilter` → logger selection → `EmitAccessLog` → `logger.Enabled`.
 - Logger selection depends only on `configuredLogger` / `ctx.logger` / base logger; the level only on status. Neither needs the entry.
-- Change: when `filter == nil`, select the logger and call `logger.Enabled(r.Context(), level)` before constructing `AccessLogEntry`; return early when disabled. When `filter != nil`, keep the existing order so the filter still observes every response (documented contract). `EmitAccessLog` keeps its own `Enabled` check for the other producers.
+- Change: when `filter == nil`, select the logger and call `logger.Enabled(r.Context(), level)` before constructing `AccessLogEntry`; return early when disabled. When `filter != nil`, keep the existing order so the filter still observes every response (documented contract). `EmitAccessLog` keeps its own `Enabled` check for the WebSocket producer.
 - Ceiling: handler-filtered 131 ns / 1 alloc → ~60 ns / 0 allocs (the MinLevel figure).
 - Proof: `BenchmarkWireObservability/AccessLog/HandlerFiltered` vs `MinLevelFiltered`.
 

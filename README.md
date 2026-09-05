@@ -91,10 +91,11 @@ func main() {
         return ctx.Response().JSON(200, query)
     })
 
-    // Every request is access-logged out of the box. Silence a route/group with
-    // MetaAccessLog, skip a noisy path with WithAccessLogSkipper, or opt into
-    // Warn/Error-only logging with WithAccessLogMinLevel. Health probes are
-    // silent by default.
+    // Panic recovery is on by default. Request IDs and access logging are
+    // explicit features: app.UseRequestID() and app.UseAccessLog(cfg...),
+    // where AccessLogConfig carries the Skipper, MinLevel and ResultFilter.
+    // Silence a route/group with the MetaAccessLog route meta; health probes
+    // are silent by default.
 
     // Server settings come from framework-internal server config.
     // Example: set `CREDO_SERVER__PORT=8080`.

@@ -4,13 +4,11 @@
 
 ---
 
-## Accepted pre-v1 target
-
-**Implementation pending, 2026-09-05.** The [HTTP features contract](http-features.md) is the canonical replacement for the built-in tier and the converted middleware APIs below. Recovery stays default-on; RequestID, AccessLog, i18n, Compress and Decompress are optional Use registrations. Single-install renderers also use Use APIs. User middleware retains Global/Group/Route scope; the framework owns error rendering, feature lifetimes and final-response observation around it. See [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) and the [migration preview](../guides/pre-v1-migration.md#built-in-http-features). Current APIs below stay callable until the HTTP minor lands. G4 decisions are accepted: WithRecoverConfig, one-time inactive-i18n registration, lazy Detect(*Context), Decompress before Global, post-compression access measurements and recovery-aware failure handling. The P1 runtime gate this work builds on is implemented (DI minor, 2026-09-05).
-
 ## Overview
 
 Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model (Global / Group / Route) provides fine-grained control over which middleware runs where. URL rewriting is implemented as middleware at the global/group layer when path normalization must happen before route matching.
+
+Panic recovery, request IDs, access logging, response compression, request-body decompression and locale detection are not middleware. They are framework-owned HTTP features of the root package, installed once per App (`WithRecoverConfig`/`WithoutRecover` for recovery, `app.UseRequestID`, `app.UseAccessLog`, `app.UseCompress`, `app.UseDecompress`, `app.UseI18n` for the rest) and run by one request executor in a fixed order around the whole user chain. The [HTTP features spec](http-features.md) is their contract; this document covers the user chain and the `middleware` package.
 
 ---
 
@@ -34,64 +32,23 @@ Adapted stdlib middleware is deliberately second-class: it sees only `*http.Requ
 
 ---
 
-## Built-in Tier (Auto-Enabled)
+## Framework Features Around the Chain
 
-Three built-in middleware are applied automatically by `compile()` and require zero configuration:
+The request executor (`executor.go`) wraps the compiled user chain. Per admitted request it runs, in this fixed order and independently of `Use*` call order:
 
-| Built-in           | Purpose                        | Opt-out              |
-| ------------------ | ------------------------------ | -------------------- |
-| `builtinRecover`   | Outermost panic recovery       | `WithoutRecover()`   |
-| `builtinRequestID` | Request ID + logger enrichment | `WithoutRequestID()` |
-| `builtinAccessLog` | Structured access logging      | `WithoutAccessLog()` |
-
-**Execution chain:** `builtinRequestID → builtinAccessLog → builtinRecover → builtinErrorHandler → globalMW → dispatch`
-
-RequestID custom headers/generators still use the configurable middleware. AccessLog custom sinks, thresholds, request skipping, and result filtering stay on the authoritative built-in layer:
-
-```go
-app, err := credo.New(
-	credo.WithAccessLogLogger(accessLogger),
-	credo.WithAccessLogMinLevel(slog.LevelWarn),
-	credo.WithAccessLogSkipper(skipAssets),
-	credo.WithAccessLogResultFilter(keepInterestingResults),
-	credo.WithoutRequestID(), // custom RequestID middleware below
-)
-app.GlobalMiddleware(
-	middleware.RequestID(middleware.RequestIDConfig{Header: "X-Trace-Id"}),
-)
+```
+RequestID → AccessLog start → Decompress → Compress writer
+  → Global middleware → dispatch → Group middleware → Route middleware → Handler
+  → centralized error rendering → recovery → compressor finalization
+  → AccessLog observation → Context release
 ```
 
-`middleware.RequestID` behaves like the built-in tier: it also enriches the request-scoped logger with `request_id` (via `ctx.AddLogAttrs`), so handler logs and the access log carry the ID automatically.
+Consequences for middleware authors:
 
-**request_id sourcing rule** (shared by built-in and `middleware` AccessLog/Recover): the `request_id` attribute is added explicitly only when the target logger does not already carry it — that is, when a custom `Logger` was configured, or when no request-scoped logger was set (`ctx.HasRequestLogger()`). This keeps `request_id` appearing exactly once per log record in every combination.
-
-**Access-log contract.** Status maps to an actual record level: `1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`. `WithAccessLogMinLevel(slog.Leveler)` is an admission threshold, not a level rewrite; nil defaults to Info, a typed-nil provider is a `New` error, and concurrency-safe `slog.LevelVar` supports runtime changes. `WithAccessLogResultFilter(func(*Context, AccessLogEntry) bool)` is positive (`true = emit`), synchronous, concurrency-safe, and cannot restore an entry rejected by MinLevel. Its Context is pooled and must not be retained. The equivalent configurable fields are `AccessLogConfig.MinLevel` and `ResultFilter`; typed-nil MinLevel panics at middleware construction.
-
-```go
-// package credo
-type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
-
-func WithAccessLogLogger(*slog.Logger) Option
-func WithAccessLogMinLevel(slog.Leveler) Option
-func WithAccessLogSkipper(func(*Context) bool) Option
-func WithAccessLogResultFilter(AccessLogResultFilter) Option
-
-// package middleware
-type AccessLogConfig struct {
-	Logger       *slog.Logger
-	MinLevel     slog.Leveler
-	Skipper      Skipper
-	ResultFilter credo.AccessLogResultFilter
-}
-```
-
-Nil logger/filter values preserve defaults; nil MinLevel normalizes to Info. All four built-in controls perform no request-time work under `WithoutAccessLog`, although invalid typed-nil configuration is still rejected during `New`. A non-nil custom Leveler must be concurrency-safe and is read exactly once per eligible request.
-
-**Evaluation order:** `Skipper → handler → MetaAccessLog → status/level → MinLevel → snapshot → ResultFilter → emit`. The pre-dispatch Skipper (`true = skip`) sees only request data. `MetaAccessLog: false` then has precedence over result policies. Snapshot construction and ResultFilter are skipped for threshold/meta rejections. `AccessLogEntry.RequestID` is always populated from request state; the emitted `request_id` attribute is separately added only when the target logger does not already carry it. `Route` is the matched route's registered pattern (`/v1/jobs/{job_id}`) and is emitted as `route` whenever a route matched — a low-cardinality, value-free identity that a redacting slog handler can keep while dropping `path`/`path_original`. `RouteName` is filter metadata and is not emitted as `route_name`.
-
-The built-in producer runs outside recovery/error rendering and observes final status, bytes, and total duration when the inner pipeline completes. If recovery is disabled and a panic escapes, it records the 500 fallback and bytes written before the panic. `middleware.AccessLog` runs at its configured position; on returned-error paths status is its best pre-render classification, bytes are those written so far, and duration excludes later rendering. A custom access logger does not inherit arbitrary `ctx.AddLogAttrs` enrichment, although standard fields and request ID are emitted. Using built-in and configurable AccessLog together intentionally produces two records; disable the built-in only when that is not desired.
-
-The rule is convention-based: `HasRequestLogger` reports only that a request-scoped logger was set, not which attributes it carries (slog loggers are opaque). Middleware that replaces the logger without deriving from `ctx.Logger()` silently drops `request_id`, and the framework cannot detect it — enrich via `ctx.AddLogAttrs`, which derives by construction, and reserve `ctx.SetLogger` for genuine wholesale replacement.
+- Global middleware already sees the request ID (`ctx.RequestID()`, empty when `UseRequestID` is not installed), the decoded body when `UseDecompress` applied, and writes through the compressing writer when `UseCompress` negotiated an encoding. Error envelopes produced after the chain are compressed like handler output.
+- The access record is observed after error rendering, recovery and compressor finalization, so its status, bytes and duration are final. Middleware cannot alter or replace it; use `AccessLogConfig` (Skipper, MinLevel, ResultFilter, Logger) and the `credo.MetaAccessLog` route meta for selection.
+- Recovery is the outermost layer and covers middleware, handlers and every feature callback. There is no per-group or per-route recovery; a group that needs its own panic policy writes an ordinary middleware that recovers and returns an error.
+- The `request_id` attribute is added to access and panic records only when the target logger does not already carry it (a dedicated logger, or no request-scoped logger). Middleware that enriches the logger should derive from `ctx.Logger()` through `ctx.AddLogAttrs`; a wholesale `ctx.SetLogger` replacement drops the ID and the framework cannot detect it.
 
 ---
 
@@ -99,7 +56,6 @@ The rule is convention-based: `HasRequestLogger` reports only that a request-sco
 
 | Tier | Registration | Scope | Runs on 404/405? |
 | --- | --- | --- | --- |
-| **Built-in** | Automatic (compile-time) | Every request | **Yes** |
 | **Global** | `app.GlobalMiddleware(m...)` | Every request | **Yes** |
 | **Group** | `group.Middleware(m...)` | Routes under this group | No |
 | **Route** | `route.Middleware(m...)` | Single route only | No |
@@ -108,7 +64,7 @@ The rule is convention-based: `HasRequestLogger` reports only that a request-sco
 
 ```
 Request
-  → Built-in middleware (requestID → accessLog → recover)
+  → Framework features (request ID, decompression, compression writer)
     → Global middleware (outer to inner)
       → Group middleware (outer to inner, parent to child)
         → Route middleware (outer to inner)
@@ -116,7 +72,7 @@ Request
         ← Route middleware
       ← Group middleware
     ← Global middleware
-  ← Built-in middleware
+  ← Framework error rendering, recovery, finalization, access log
 Response
 ```
 
@@ -126,7 +82,7 @@ A route's chain is assembled when the app compiles (at `Run()` or the first requ
 
 ### Why Global Tier Matters
 
-Without a global tier, 404/405 responses bypass all group/route middleware — no CORS headers, no compression. The global tier ensures these cross-cutting concerns always run. (Request ID, access logging, and panic recovery are built-in and always active unless opted out.)
+Without a global tier, 404/405 responses bypass all group/route middleware — no CORS headers, no security headers. The global tier ensures these cross-cutting concerns always run. (Recovery, request IDs, access logging and compression are framework features and cover 404/405 as well.)
 
 ```go
 app, err := credo.New()
@@ -134,8 +90,12 @@ if err != nil {
     panic(err)
 }
 
-// Built-in: recover, requestID, access log — already active.
-// Add extra global middleware for cross-cutting concerns:
+// Framework features: recovery is on; the rest are explicit.
+app.UseRequestID()
+app.UseAccessLog()
+app.UseCompress()
+
+// Global middleware runs on every request, 404/405 included:
 app.GlobalMiddleware(
     middleware.CORS(),
     middleware.Secure(),
@@ -143,7 +103,7 @@ app.GlobalMiddleware(
 
 // These run only on matched routes within the group
 api := app.Group("/api")
-api.Middleware(middleware.Compress())
+api.Middleware(middleware.RateLimit())
 ```
 
 ---
@@ -177,11 +137,11 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 
 ### Framework Meta Keys
 
-These keys are read by built-in and framework middleware. Application middleware may also define its own convention keys — the `"auth"` key in the example above is one such user-defined key, not a framework key.
+These keys are read by framework features and framework middleware. Application middleware may also define its own convention keys — the `"auth"` key in the example above is one such user-defined key, not a framework key.
 
 | Key | Type | Used by |
 | --- | --- | --- |
-| `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access logger (built-in + `middleware.AccessLog`) |
+| `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access log feature (`app.UseAccessLog`) |
 | `middleware.MetaAccept` (`"accept"`) | `string` \| `[]string` | `ContractGuard` — 415 on Content-Type mismatch; a missing/empty header passes unless `ContractConfig.RequireContentType` is set and the request carries a body |
 | `middleware.MetaMaxBody` (`"max_body"`) | `int` \| `int32` \| `int64` (bytes) | `ContractGuard` — 413 over the per-route cap |
 | `middleware.MetaRequireHeaders` (`"require_headers"`) | `string` \| `[]string` | `ContractGuard` — 400 if a header is missing |
@@ -208,32 +168,19 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 
 ---
 
-## Built-in Middleware
-
-### Auto-Enabled (Framework Built-in)
-
-| Built-in | Description | Opt-out |
-| --- | --- | --- |
-| Panic recovery | Outermost layer, catches all panics | `WithoutRecover()` |
-| Request ID | `X-Request-Id` header + `ctx.Logger()` enrichment | `WithoutRequestID()` |
-| Access log | Final structured request logging via `slog`; configure with `WithAccessLogLogger`, `WithAccessLogMinLevel`, `WithAccessLogSkipper`, `WithAccessLogResultFilter`, or `MetaAccessLog` | `WithoutAccessLog()` |
-
-### Configurable (middleware package)
+## Middleware Catalog
 
 | Middleware | Source | Description |
 | --- | --- | --- |
-| `AccessLog` | Chi | Route/group-scoped request logging with Skipper, MinLevel, ResultFilter, `MetaAccessLog`, custom logger, and an earlier error-path observation boundary |
-| `Recover` | Chi | Per-group/route panic recovery with custom config |
-| `RequestID` | Chi | `X-Request-Id` with custom header, generator, limit |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
 | `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
-| `Compress` | Chi | gzip/deflate response compression |
-| `Decompress` | Credo | Opt-in gzip/deflate request-body decompression with a decompressed-size bound (413) |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
 | `RateLimit` | go-limiter | Token bucket rate limiting. Default key uses `Request.RealIP()` |
 | `Timeout` | Echo | Request timeout |
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
+
+Recovery, request IDs, access logging, response compression and request decompression are framework features, not entries in this catalog; see the [HTTP features spec](http-features.md).
 
 ### Rewrite
 
@@ -283,7 +230,7 @@ app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middle
 
 Register `Rewrite` as global middleware when routing must see the rewritten path. When attached at group or route scope, it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.
 
-When a handler later calls `ctx.Rewrite()`, built-in and global middleware do not run again. Group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind.
+When a handler later calls `ctx.Rewrite()`, framework features and global middleware do not run again. Group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind.
 
 ### CSRF
 
@@ -315,19 +262,6 @@ QUERY being safe and QUERY requiring CORS preflight are separate properties. A b
 **Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 
 CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
-
-### Decompress
-
-```go
-middleware.Decompress(cfg ...DecompressConfig) credo.Middleware
-
-type DecompressConfig struct {
-    Skipper  Skipper
-    MaxBytes int64 // decompressed bound; 0 = DefaultDecompressMaxBytes (4 MiB); negative panics
-}
-```
-
-Credo does not decompress request bodies by default; `BindBody` answers a non-identity `Content-Encoding` with 415 `unsupported_content_encoding`. `Decompress` is the opt-in: it recognizes `gzip` (and `x-gzip`) and `deflate` (zlib-wrapped per RFC 9110, raw DEFLATE accepted) using only the standard library, replaces the body with the decompressed stream wrapped in `http.MaxBytesReader(MaxBytes)`, sets `ContentLength` to -1, and removes the header so binding sees a plain body. The server-wide `max_body_bytes` only bounds compressed wire bytes, which is why the decompressed stream carries its own limit; overruns surface as the framework's regular 413. An unsupported coding or a multi-coding list returns 415 with the same code; a corrupt stream header returns 400 `bind_failed`/`syntax`; a body declared empty passes through with the header dropped. Multiple gzip members are not concatenated.
 
 ### Planned (Not Yet Implemented)
 
@@ -365,6 +299,8 @@ app.OnShutdown(rl.Shutdown)
 
 6. **CSRF via stdlib `CrossOriginProtection`, not token plumbing** — token/double-submit-cookie CSRF requires session state, template helpers, and header plumbing across the stack; `Sec-Fetch-Site` has shipped in all browsers since 2023 and reduces the problem to a header check. Credo wraps the stdlib detector (maintained upstream, security patches ride Go releases) and only adds config-struct ergonomics plus error-pipeline integration. Older-browser fallback (Origin/Host comparison) is inherited from the stdlib.
 
+7. **Framework features are not middleware** — Recovery, request IDs, access logging, compression, decompression and locale detection need to see the final response (after error rendering and recovery), the original request (before rewrites and body transformation), or both. A middleware position cannot give them that, so the root package owns them with one registration each and one fixed execution plan; the per-route/per-group variants that used to live in this package were removed rather than kept as compatibility wrappers ([ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion)).
+
 ---
 
 ## File Layout
@@ -372,12 +308,8 @@ app.OnShutdown(rl.Shutdown)
 ```
 middleware/
 ├── rewrite.go      Pre-dispatch path rewriting
-├── accesslog.go    Structured request logger (slog)
-├── recover.go      Optional per-group/route panic recovery (built-in recovery is automatic)
-├── requestid.go    X-Request-Id injection
 ├── cors.go         CORS with config struct
 ├── csrf.go         CSRF via stdlib CrossOriginProtection
-├── compress.go     Response compression
 ├── secure.go       Security headers
 ├── ratelimit.go    RateLimit + NewRateLimiter API
 ├── ratelimit_store.go Internal in-memory limiter store
