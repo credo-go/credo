@@ -103,7 +103,7 @@ Important points:
 - tracks it in the store registry for health reporting
 - makes DI the sole framework shutdown owner: `*sqldb.DB` implements
   `credo.Shutdowner`, so a live teardown deadline allows the container to
-  attempt it in reverse registration order
+  attempt it after the services constructed from it have shut down
 
 Ownership transfers only when `Register` succeeds. If it returns an error,
 including a Ping error, close `db` yourself before returning from composition.
@@ -670,9 +670,9 @@ non-cooperative Ping is not hard-bounded by the framework.
 For the usual direct registration, the value itself implements
 `store.Lifecycle`. Ownership transfers to the framework only after successful
 registration, and DI becomes the sole framework shutdown owner. During one
-teardown the container walks reverse registration order and makes at most one
-`Shutdown(ctx)` attempt if the still-live deadline reaches this value; it may
-make no attempt when the deadline expires first. The Registry never closes
+teardown the container walks the dependency graph — consumers first — and
+makes at most one `Shutdown(ctx)` attempt if the still-live deadline reaches
+this value; it may make no attempt when the deadline expires first. The Registry never closes
 resources. On any registration error, ownership remains with the caller.
 
 Useful options:
@@ -686,8 +686,8 @@ store.Register[*sqldb.DB](
 )
 ```
 
-Use raw `app.Provide`, `app.ProvideFactory`, `app.ProvideValue`,
-`app.ProvideProtectedValue`, or `app.Replace` only when you intentionally do
+Use raw `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
+`app.Replace` only when you intentionally do
 not want store Registry integration and will not register the same lifecycle
 through `store.Register`. Mixing either raw publication path with Register for
 one resource is unsupported.
@@ -758,8 +758,8 @@ second health entry or shutdown owner is created. Distinct multi-database
 wrappers remain valid when they contain distinct physical database clients.
 
 The guarantee stops at the `store.Register` ledger. Registering the same client
-again under another T with raw `app.Provide`, `app.ProvideFactory`,
-`app.ProvideValue`, `app.ProvideProtectedValue`, or `app.Replace` is unsupported
+again under another T with raw `app.Provide`, `app.ProvideValue`,
+`app.ProvideProtectedValue`, or `app.Replace` is unsupported
 and may give DI duplicate or contradictory shutdown ownership. Likewise, a
 handle declared caller-owned must not also be registered in DI as a
 `Shutdowner`. Use `Alias` for interface access. A general cross-infrastructure

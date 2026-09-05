@@ -314,13 +314,14 @@ func run() error {
 	// 6. Register services via DI
 	app.MustProvide[*TenantService](NewTenantService)
 
-	// 7. Resolve services for handler wiring
-	tenantSvc := app.MustResolve[*TenantService]()
-
-	// 8. Finalize DI container (freeze + validate: catches missing deps, cycles)
+	// 7. Finalize DI container (freeze + validate: catches missing deps,
+	// cycles). Constructors run only after this point.
 	if err := app.Finalize(); err != nil {
 		return fmt.Errorf("DI finalize: %w", err)
 	}
+
+	// 8. Resolve services for handler wiring
+	tenantSvc := app.MustResolve[*TenantService]()
 
 	// 9. Global middleware you add yourself (applied to all requests,
 	// including 404/405). Recover, request ID, and access log are built in.

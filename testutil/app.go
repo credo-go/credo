@@ -75,9 +75,17 @@ func WithLogBuffer(buf *LogBuffer) Option {
 // [WithWiring], swap them with [WithOverride], and capture logs with
 // [WithLogBuffer].
 //
-// NewApp registers a best-effort graceful shutdown via tb.Cleanup. The App is
-// not finalized, so tests may register additional routes, providers, or
-// overrides, and may resolve services directly.
+// NewApp registers a graceful shutdown via tb.Cleanup: it tears down every
+// singleton the test created whether or not the App was run. The App is not
+// finalized, so tests may still register routes, providers, and overrides.
+// Constructors run only after [credo.App.Finalize], so call it (or serve a
+// request, which finalizes implicitly) before resolving services:
+//
+//	app := testutil.NewApp(t, testutil.WithOverride[UserRepo](fakeRepo))
+//	if err := app.Finalize(); err != nil {
+//		t.Fatal(err)
+//	}
+//	svc := app.MustResolve[*UserService]()
 func NewApp(tb testing.TB, opts ...Option) *credo.App {
 	tb.Helper()
 
@@ -113,9 +121,9 @@ func NewApp(tb testing.TB, opts ...Option) *credo.App {
 	tb.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		// Best-effort: Shutdown returns a state error when the App was never
-		// Run, which is the common case for unit tests. When the App was Run,
-		// this drains in-flight requests and shuts down registered singletons.
+		// Best-effort: a never-run App takes the bootstrap teardown path; an App
+		// that was Run drains in-flight requests first. Either way registered
+		// singletons are shut down. A state error (already stopped) is fine.
 		_ = app.Shutdown(ctx)
 	})
 

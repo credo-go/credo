@@ -12,7 +12,7 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
 - [x] Close G1/G2 (2026-09-05): AdoptValue, Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
-- [ ] P1–P3 DI minor: shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
+- [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
 - [ ] P4 router minor: endpoint-owned path parameter names; strict duplicate/structural conflicts retained
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
 - [ ] P8 HTTP minor: optional Use features, default recovery, single renderers, executor, cleanup and example/test migration; only after the P1 gate is implemented and verified
@@ -144,18 +144,19 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] Adapt samber/do core: container, lifecycle types
   - [x] **Key divergence**: typed constructor params (not `func(Injector)` signature)
   - [x] `app.Provide[T](constructor)` — register with typed constructor
-  - [x] `app.ProvideFactory[T](fn)` — compiler-checked factory closure; fn resolves its own deps, opaque to Finalize graph validation
   - [x] `app.ProvideValue[T](value)` — register pre-built value
   - [x] `app.CanProvideValue[T]()` — read-only point-in-time frozen/direct-duplicate preflight for integrations that must validate before I/O; final normal/protected value publication remains authoritative
   - [x] `app.ProvideProtectedValue[T]()` / `app.ProtectBinding[T](expected ...T)` — low-level Replace protection for DI values coupled to external lifecycle/health state; the optional expected value atomically compares the resolved singleton before protection, and ordinary bindings remain replaceable
-- [x] `app.Resolve[T]()` — retrieve instance
+  - [x] `app.AdoptValue[T](validate)` — registration-time read → validate → atomic compare-and-protect; never constructs (constructor bindings rejected); used by store/worker registration (2026-09-05)
+  - [x] `app.Replace[T]` returns `(old, existed, err)` — caller owns the superseded instance; Warn log for a superseded Shutdowner (2026-09-05)
+- [x] `app.Resolve[T]()` — retrieve instance (admitted only after `Finalize`; terminal per-singleton completion, `DIPanicError` on constructor panic, `ErrDIClosed` once teardown begins)
 - [x] `app.MustResolve[T]()` — panics if not found
 - [x] Lifecycle support: `Singleton` (only — RequestScoped removed)
 - [x] `Alias[I, T]()` — interface-to-concrete type alias
 - [x] `BindMany[I, T]()` / `ResolveAll[I]()` — ordered interface collections
 - [x] `[]I` constructor injection via `BindMany` (empty slice when unbound)
 - [x] `Finalize()` — freeze container + validate dependency graph
-- [x] Shutdown: `Shutdowner` interface (root package), reverse-order `Shutdown()`
+- [x] Shutdown: `Shutdowner` interface (root package), dependency-ordered `Shutdown()` (Kahn ready queue, bounded sequential attempts, one 5 s late-construction attempt, immutable `DIShutdownError` report)
 - [x] Validation via `Finalize()` — missing deps, cycle detection (DFS)
 - [x] `internal/di/doc.go` with samber/do attribution
 - [x] Tests: container tests (provide, resolve, lifecycle, concurrent singleton)
@@ -687,7 +688,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [ ] `embed.FS` config provider — [Config Spec](docs/specs/config.md), deferred beyond Phase 1.5
 - [x] Interface alias `Alias[I,T]()` for DI — implemented
 - [ ] `app.Container()` ergonomic sugar — [Container Spec](docs/specs/container.md), deferred
-- [ ] `Has[T]()` probe API — registration check without singleton construction, cleaner alternative to Resolve-if-missing-Provide pattern
+- [x] `Has[T]()` probe API — registration check without singleton construction (2026-09-05, DI minor)
 - [ ] `cache/` contracts (in-memory + Redis) — consider together with Redis store contracts (Phase 3.3c); demand-driven, no commitment yet
 - [ ] Fluent validation builder — the language prerequisite is met (generic methods, [golang/go#77273](https://github.com/golang/go/issues/77273), landed with the repo's Go 1.27 floor, 2026-06); still deferred by choice; the programmatic `Rule[T]` API remains the substrate
 

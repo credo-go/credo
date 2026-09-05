@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 )
 
 var contextType = reflect.TypeFor[context.Context]()
@@ -175,6 +174,11 @@ func (c *Container) detectCycles() error {
 	return nil
 }
 
+// cycleDependenciesForParam resolves one constructor parameter to the
+// registered types construction would use: the direct registration, the
+// BindMany collection of an interface slice, or the alias target. The cycle
+// scan and the teardown graph share it so validation and shutdown ordering
+// never disagree about an edge.
 func (c *Container) cycleDependenciesForParam(paramType reflect.Type) []reflect.Type {
 	if _, ok := c.registrations[paramType]; ok {
 		return []reflect.Type{paramType}
@@ -198,41 +202,4 @@ func (c *Container) cycleDependenciesForParam(paramType reflect.Type) []reflect.
 	}
 
 	return nil
-}
-
-// Shutdown gracefully shuts down all cached singletons that implement
-// Shutdowner, in reverse registration order. The context carries the
-// shutdown deadline — services should respect ctx.Done() for timely cleanup.
-func (c *Container) Shutdown(ctx context.Context) error {
-	c.mu.RLock()
-	order := slices.Clone(c.order)
-	c.mu.RUnlock()
-
-	var errs []error
-
-	// Reverse order.
-	for i := len(order) - 1; i >= 0; i-- {
-		// Once the shutdown deadline passes, calling further Shutdowners is
-		// pointless at best (well-behaved ones fail fast on ctx) and can hang
-		// the process at worst — stop and report what was skipped.
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, fmt.Errorf("di: shutdown aborted with %d registration(s) left: %w", i+1, err))
-			break
-		}
-		t := order[i]
-		c.mu.RLock()
-		entry, ok := c.singletons[t]
-		c.mu.RUnlock()
-		if !ok || !entry.done.Load() || entry.err != nil {
-			continue
-		}
-
-		if s, ok := entry.value.(shutdowner); ok {
-			if err := s.Shutdown(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("di: shutting down %s: %w", t, err))
-			}
-		}
-	}
-
-	return errors.Join(errs...)
 }

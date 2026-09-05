@@ -395,17 +395,20 @@ func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
 // user-facing error (Shutdown) or a no-op (a drain that lost the race).
 var errShutdownNotRunning = errors.New("credo: shutdown: server not running")
 
-// serve contains the shared lifecycle for every entry point: compile, DI
-// finalize, single-use state claim, optional preflight, listen, startup hooks,
-// serve, and graceful drain on context cancellation.
+// serve contains the shared lifecycle for every entry point: single-use
+// state claim, preparation (DI finalize, compile, publish), optional
+// preflight, listen, startup hooks, serve, and graceful drain on context
+// cancellation.
 //
 // State machine: building → starting → running → stopping → stopped
 //
-//	↘ pre-session failure (preflight/listen)              → building (may run again)
+//	↘ pre-session failure (preparation/preflight/listen)  → building (may run again)
 //	↘ session failure (OnStart hook / post-running serve) → drain → stopped (terminal)
 //
 // A pre-session failure rolls back to building because nothing has started; a
 // session failure runs the full teardown and the App is terminal (ADR-006).
+// A preparation failure is stored: returning to building permits bootstrap
+// Shutdown, not a retry of the frozen, failed plan.
 //
 // Race safety: stateStarting prevents Shutdown from reading nil ctx/server.
 // stateRunning is stored only after the listener is bound and OnStart hooks
@@ -419,16 +422,23 @@ func (lm *lifecycleManager) serve(
 	redirectAddr string,
 ) error {
 	app := lm.app
-	app.handlerOnce.Do(app.compile)
 
-	// Implicit DI finalize (idempotent).
-	if err := app.Finalize(); err != nil {
-		return fmt.Errorf("credo: %s: DI finalize: %w", label, err)
-	}
-
-	// Phase 1: claim the start slot.
+	// Phase 1: claim the start slot. Holding starting keeps a bootstrap
+	// Shutdown out while the App is prepared.
 	if err := lm.claimStartSlot(label); err != nil {
 		return err
+	}
+
+	// Phase 1b: prepare — implicit DI finalize, compile, publish. The result is
+	// stored once; a failure releases the slot but stays terminal.
+	p := app.prepare()
+	if p == nil {
+		lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+		return fmt.Errorf("credo: %s: preparation rejected: app is shutting down", label)
+	}
+	if p.err != nil {
+		lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+		return fmt.Errorf("credo: %s: %w", label, p.err)
 	}
 
 	// Phase 2: preflight checks that must fail before stateRunning (e.g. TLS
@@ -671,10 +681,31 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 	return lm.drain(ctx)
 }
 
+// initiateBootstrapShutdown is the counterpart of claimStartSlot for an App
+// that was never run: the building → stopping CAS picks exactly one owner
+// between a concurrent managed start and Shutdown. At admission it closes HTTP
+// registration (app.frozen) and DI writes (container.Freeze, a validation-free
+// freeze that neither finalizes nor enters closing), waiting for any
+// preparation in flight so no handler is published afterwards. It then runs
+// the shared drain with no managed server. The bool reports whether the CAS
+// was won; false means the App was in some other state.
+func (lm *lifecycleManager) initiateBootstrapShutdown(ctx context.Context) (bool, error) {
+	if !lm.state.CompareAndSwap(uint32(stateBuilding), uint32(stateStopping)) {
+		return false, nil
+	}
+	app := lm.app
+	app.prepMu.Lock()
+	app.frozen.Store(true)
+	app.container.Freeze()
+	app.prepMu.Unlock()
+	return true, lm.drain(ctx)
+}
+
 // drain runs the teardown chain shared by every shutdown path — graceful
-// Shutdown, context cancellation, a runtime serve failure, and a failed startup:
+// Shutdown, context cancellation, a runtime serve failure, a failed startup,
+// and bootstrap Shutdown of a never-run App:
 // mark unready, run OnPreDrain hooks, cancel the lifecycle context, drain HTTP
-// and OnDrain hooks in parallel, tear down DI singletons (reverse order), run
+// and OnDrain hooks in parallel, tear down DI singletons (dependency order), run
 // OnShutdown hooks (LIFO), release the server-session references, and store
 // stateStopped.
 //
@@ -731,7 +762,8 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
-	// 4. Tear down infrastructure — reverse-order DI singleton cleanup.
+	// 4. Tear down infrastructure — dependency-ordered DI singleton cleanup
+	// (consumers before the singletons they were built from).
 	if err := lm.app.container.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}

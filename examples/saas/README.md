@@ -4,9 +4,9 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 ## Pre-v1 migration
 
-**Pending implementation.** Apply these changes with the framework minor that supplies them; the current main.go continues to use callable APIs.
+**DI minor applied; HTTP minor pending.** Apply the remaining changes with the framework minor that supplies them; main.go uses callable APIs only.
 
-1. DI minor: finish value/constructor registration before an error-checked Finalize, then resolve TenantService. Keep routes and DI-backed extension/hook registration before HTTP preparation. Use building-state Shutdown to clean up registered resources after later bootstrap failure once that path is implemented. Hooks capture resolved dependencies instead of resolving during drain.
+1. DI minor (done): value/constructor registration finishes before an error-checked Finalize, then TenantService is resolved. Routes and DI-backed extension/hook registration stay before HTTP preparation. Building-state Shutdown is available to clean up registered resources after a later bootstrap failure. Hooks capture resolved dependencies instead of resolving during drain.
 2. HTTP minor: add explicit UseRequestID and UseAccessLog to preserve this example's request correlation and records. Move middleware.Compress out of GlobalMiddleware into UseCompress. Secure and CORS remain global middleware; authentication/authorization keep their group scope.
 3. Keep UseI18n and the current catalogs. Custom detectors migrate to Detect(*Context), resolve on first use and handle absent auth data. Call Locale after auth when the authenticated language must survive later request restoration; earlier reads still win. Successful inactive discovery consumes registration, so it is not followed by another UseI18n call.
 4. Update source comments about automatic request features. Check successful and error responses for compression, health-probe logging policy, auth behavior, startup and graceful shutdown.

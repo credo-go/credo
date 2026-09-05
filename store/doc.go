@@ -53,16 +53,17 @@
 // health entry becomes visible only after Ping and DI publication both
 // succeed. The successful value binding and validated Registry binding are
 // protected against credo.App.Replace so DI cannot diverge from
-// lifecycle/readiness state. A composition-root Registry is adopted with
-// the expected-value compare-and-protect form of credo.App.ProtectBinding: if
-// the resolved pointer changed before protection, registration fails without
-// protecting the replacement. [Registry] exposes [Registry.HealthAll] as a
-// read-only view and has no public mutation API.
+// lifecycle/readiness state. A composition-root Registry value is adopted
+// through credo.App.AdoptValue, which validates it and atomically protects
+// that same binding; a replacement racing the adoption fails it without
+// protecting the replacement, and a Registry registered through a constructor
+// is rejected without being invoked. [Registry] exposes [Registry.HealthAll]
+// as a read-only view and has no public mutation API.
 //
 // Identity uniqueness covers only resources registered through [Register].
 // Publishing the same Lifecycle again through raw credo.App.Provide,
-// credo.App.ProvideFactory, credo.App.ProvideValue,
-// credo.App.ProvideProtectedValue, or credo.App.Replace is unsupported and can
+// credo.App.ProvideValue, credo.App.ProvideProtectedValue, or
+// credo.App.Replace is unsupported and can
 // create contradictory ownership or multiple shutdown attempts. In particular,
 // a caller-owned lifecycle handle must not also be registered in DI as a
 // Shutdowner.

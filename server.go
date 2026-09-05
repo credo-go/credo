@@ -8,10 +8,35 @@ import (
 	"net/http"
 )
 
-// ServeHTTP implements http.Handler. It compiles the handler chain on
-// first call using sync.Once for thread safety.
+// ServeHTTP implements http.Handler. The first call prepares the App —
+// Finalize, compile, publish — and stores the result; a preparation error is
+// a developer error and panics on every request rather than being retried.
+// Requests are admitted by lifecycle state: a stopped App, or a stopping App
+// that was never prepared, receives the default 503 envelope without touching
+// DI or any configured callback, while an already-prepared handler keeps
+// serving during the managed drain. Direct ServeHTTP never claims the managed
+// server's start slot; an external http.Server stays its owner's job to drain
+// before [App.Shutdown].
 func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	app.handlerOnce.Do(app.compile)
+	state := app.lifecycle.currentState()
+	if state == stateStopped {
+		app.rejectUnavailable(w, r, state)
+		return
+	}
+	p := app.prep.Load()
+	if p == nil {
+		if state >= stateStopping {
+			app.rejectUnavailable(w, r, state)
+			return
+		}
+		if p = app.prepare(); p == nil {
+			app.rejectUnavailable(w, r, app.lifecycle.currentState())
+			return
+		}
+	}
+	if p.err != nil {
+		panic(p.err)
+	}
 	// http.NoBody (every bodyless request the stdlib server delivers) has
 	// nothing to limit; skipping the wrap saves an allocation per request.
 	if app.serverCfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
@@ -22,7 +47,7 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Errors are handled inside the compiled handler chain by
 	// builtinErrorHandler (non-panic) and builtinRecover (panic).
 	// The chain always returns nil.
-	_ = app.compiledHandler(c)
+	_ = p.handler(c)
 	app.ctxPool.put(c)
 }
 
@@ -109,18 +134,30 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 // Shutdown gracefully shuts down the server: it withdraws readiness, runs
 // [App.OnPreDrain], cancels the lifecycle context, drains in-flight HTTP
 // requests and [App.OnDrain] subsystem hooks in parallel, tears down DI
-// singletons (reverse order), then runs OnShutdown hooks (LIFO). The caller's
-// ctx carries the shared absolute deadline; [WithShutdownTimeout] does not
-// replace it. An OnPreDrain hook that ignores ctx remains a hard teardown
-// barrier and may delay return beyond that deadline. Returns an error if the
-// server is not running, or if any shutdown step fails or remains incomplete
-// (joined via errors.Join).
+// singletons in dependency order, then runs OnShutdown hooks (LIFO). The
+// caller's ctx carries the shared absolute deadline; [WithShutdownTimeout]
+// does not replace it. An OnPreDrain hook that ignores ctx remains a hard
+// teardown barrier and may delay return beyond that deadline. Returns an error
+// if any shutdown step fails or remains incomplete (joined via errors.Join).
+//
+// Shutdown is also accepted on an App that was never run: bootstrap teardown
+// closes route and DI registration, runs the same drain with no managed
+// server, and tears down every singleton that exists — including values
+// registered by a composition root whose [App.Finalize] never ran or failed.
+// This is the cleanup path for tests and for Apps served through an external
+// http.Server; that server's admission and drain remain its owner's job and
+// must complete before Shutdown. The App is single-use: the terminal state is
+// stopped even when cleanup was incomplete. Shutdown returns an error when the
+// App is starting, or has already stopped.
 func (app *App) Shutdown(ctx context.Context) error {
 	lm := app.lifecycle
 	err := lm.initiateShutdown(ctx)
-	if errors.Is(err, errShutdownNotRunning) {
-		return fmt.Errorf("credo: Shutdown: server in state %q, expected %q",
-			lm.currentState(), stateRunning)
+	if !errors.Is(err, errShutdownNotRunning) {
+		return err
 	}
-	return err
+	if claimed, bootstrapErr := lm.initiateBootstrapShutdown(ctx); claimed {
+		return bootstrapErr
+	}
+	return fmt.Errorf("credo: Shutdown: server in state %q, expected %q or %q",
+		lm.currentState(), stateBuilding, stateRunning)
 }

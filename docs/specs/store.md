@@ -187,9 +187,10 @@ bypass Ping, DI publication, and shutdown ownership. It does not close
 connections. The Registry DI binding is protected against `App.Replace` once
 store integration adopts it, so the readiness seam cannot diverge from the
 resolved Registry. For framework-owned values, DI is the sole framework
-shutdown owner: it traverses registrations in reverse order and makes at most
-one Shutdown attempt per teardown when the still-live deadline reaches that
-entry. If the deadline is already exhausted, the entry may receive no attempt.
+shutdown owner: it closes singletons in dependency order (consumers before the
+resources they were constructed from) and makes at most one bounded Shutdown
+attempt per teardown when the still-live deadline reaches that entry. If the
+deadline is exhausted first, the entry may receive no attempt and is reported.
 
 ```go
 // Registry exposes health snapshots for successfully registered stores.
@@ -245,7 +246,7 @@ Shutdown ownership is explicit:
   and Shutdown. Ownership transfers to the framework only when `Register`
   succeeds. DI is the sole framework shutdown owner. During one teardown it
   makes at most one `Shutdown(ctx)` attempt if the still-live deadline reaches
-  the registration in reverse order; it may make zero attempts when the
+  the registration in dependency order; it may make zero attempts when the
   deadline expires first.
 - A value that cannot implement `Lifecycle` may use `WithLifecycle(lc)` only
   together with `WithCallerOwnedLifecycle()`. The handle supplies Ping and
@@ -273,22 +274,24 @@ resolve to the same store, register the concrete type once and use
 owner.
 
 This is not a container-wide resource ledger. Publishing the same lifecycle
-again under another T with raw `app.Provide`, `app.ProvideFactory`,
-`app.ProvideValue`, `app.ProvideProtectedValue`, or `app.Replace` is unsupported
+again under another T with raw `app.Provide`, `app.ProvideValue`,
+`app.ProvideProtectedValue`, or `app.Replace` is unsupported
 and can produce contradictory ownership or multiple Shutdown attempts. A
 caller-owned handle must not also be registered in DI as a Shutdowner. A
 general resource registry across store, pubsub, gRPC, workers, and other
 infrastructure remains deferred until a second concrete consumer requires it.
 
 The module-internal readiness seam is idempotently replaced around the
-resolved Registry during registration. A Registry provided earlier by the
-composition root is resolved and checked for a non-nil successful value before
-`app.ProtectBinding[*Registry](resolved)` atomically compares and protects that
-same already-resolved, comparable pointer against `Replace`; it is then
-re-resolved for wiring. A mismatch fails without protecting the replacement. A
-nil or failing constructor binding is also left unprotected so composition can
-repair it with `Replace` before Finalize and retry. An interrupted seam publish
-can be retried without creating a second Registry.
+adopted Registry during registration. A Registry value provided earlier by the
+composition root is read through `app.AdoptValue[*Registry]`, which validates
+that it is non-nil and atomically protects that same binding against `Replace`;
+a replacement or Finalize that wins during validation fails the adoption
+without protecting the replacement. A typed-nil value is left unprotected so
+composition can repair it with `Replace` before Finalize and retry. A Registry
+registered through a constructor is rejected with an explanatory error and the
+constructor is never invoked — constructors run only after Finalize — so the
+binding stays repairable with a ready value. An interrupted seam publish can be
+retried without creating a second Registry.
 
 `app.CanProvideValue[R]()` is a non-mutating, point-in-time preflight for the
 container's frozen and duplicate-type checks. It is not a reservation: an
@@ -1053,9 +1056,9 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 
 13. **Store-scoped identity ledger, not a general resource registry** — the
     duplicate-resource guarantee covers only `store.Register` entries. Raw
-    `app.Provide`, `app.ProvideFactory`, `app.ProvideValue`,
-    `app.ProvideProtectedValue`, or `app.Replace` publication of the same
-    lifecycle under another type is unsupported. A cross-infrastructure
+    `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
+    `app.Replace` publication of the same lifecycle under another type is
+    unsupported. A cross-infrastructure
     registry remains deferred until a second concrete consumer exists.
 
 ---
@@ -1117,9 +1120,9 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - Repeated identity tokens across concrete/interface views, explicit wrappers,
   and mixed ownership are rejected inside the Register ledger; interface
   access uses `Alias[I, T]` instead
-- Raw `app.Provide`, `app.ProvideFactory`, `app.ProvideValue`,
-  `app.ProvideProtectedValue`, or `app.Replace` publication of the same
-  lifecycle under another type is documented as unsupported; caller-owned
+- Raw `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
+  `app.Replace` publication of the same lifecycle under another type is
+  documented as unsupported; caller-owned
   handles are not also registered as Shutdowners
 - Valid pre-provided Registry instances remain the resolved/readiness instance
 - Successful store and validated/adopted Registry bindings reject

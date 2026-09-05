@@ -1,12 +1,12 @@
 # ADR-022: Bootstrap Phases and DI Ownership
 
-**Status:** Accepted contracts, pending implementation **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** [Pre-v1 implementation plan](../plans/pre-v1-implementation.md)
+**Status:** Accepted, implemented 2026-09-05 (DI minor) **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** [Pre-v1 implementation plan](../plans/pre-v1-implementation.md)
 
 ## Context
 
 The review of v0.18.0 identified separate lifecycle defects: shutdown uses reverse registration order, replacement abandons the previous instance, opaque factories can lose cycle detection, resolution has no terminal teardown boundary, and constructor/shutdown panics lack a consistent completion contract. These are ownership and coordination problems; replacing the whole DI API or introducing a general service framework is unnecessary.
 
-A scan of the maintainer's downstream applications found no factory or Replace use. It did find pre-Run resolution and an optional worker-pool existence probe. Framework store/worker adoption will use the registration-time AdoptValue path. Consumer absence does not prove an API is safe to remove internally; migration includes those integration flows.
+A scan of the maintainer's downstream applications found no factory or Replace use. It did find pre-Run resolution and an optional worker-pool existence probe. Framework store/worker adoption uses the registration-time AdoptValue path. Consumer absence does not prove an API is safe to remove internally; migration includes those integration flows.
 
 ## Decision
 
@@ -33,14 +33,14 @@ Keep `Shutdown(ctx) error`; failures expose `*credo.DIShutdownError`, a determin
 
 ## Decision closure
 
-G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration, use one AdoptValue operation, expose ErrDIClosed/DIShutdownError/DIPanicError, and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions close the design gates; implementation and race/consumer validation remain pending.
+G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration, use one AdoptValue operation, expose ErrDIClosed/DIShutdownError/DIPanicError, and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions closed the design gates; the DI minor implements them with the regression tests the specification requires.
 
 ## Adaptation and alternatives
 
-The planned reference is [samber/do v2.1.0](https://github.com/samber/do/releases/tag/v2.1.0), tag commit `f0d927f`, reviewed during the design. Reuse dependency-bookkeeping and diagnostic ideas; Credo adds terminal state, static-graph ownership, panic isolation and unwrapping. The reference does not establish the upstream revision originally copied into Credo. Preserve notices and separate a known adaptation date from an unknown upstream revision.
+The adaptation reference is [samber/do v2.1.0](https://github.com/samber/do/releases/tag/v2.1.0), tag commit `f0d927f`, reviewed during the design. Reuse dependency-bookkeeping and diagnostic ideas; Credo adds terminal state, static-graph ownership, panic isolation and unwrapping. The reference does not establish the upstream revision originally copied into Credo. Preserve notices and separate a known adaptation date from an unknown upstream revision.
 
 Rejected: protect-on-read before validation; bulk wait-for-builds before any cleanup; unbounded construction barriers; inline cleanup presented as a hard timeout; automatic retry after a panic; out-of-order fallback; dynamic factory graphs. Scopes, transient services, cloning and a global container remain outside this work. Read-only DI explanation is backlog, independent of OTel.
 
 ## Consequences
 
-Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. This requires coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral is required.
+Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.

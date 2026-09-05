@@ -33,9 +33,10 @@ type routeHandler struct {
 	srcLoc sourceLocation
 }
 
-// compile builds the handler chain: globalMW[0] → ... → globalMW[n] → dispatch.
-// It also precompiles per-route middleware chains and freezes the app.
-func (app *App) compile() {
+// compile builds the handler chain: globalMW[0] → ... → globalMW[n] → dispatch
+// and precompiles per-route middleware chains. It runs exactly once, under
+// prepare, after registration was frozen.
+func (app *App) compile() Handler {
 	// Sort host entries by specificity (most specific first).
 	slices.SortStableFunc(app.hosts, compareHostEntries)
 
@@ -80,8 +81,7 @@ func (app *App) compile() {
 		handler = builtinRequestID(handler)
 	}
 
-	app.compiledHandler = handler
-	app.frozen.Store(true)
+	return handler
 }
 
 // compileRoutes precompiles per-route middleware chains for a given mux.

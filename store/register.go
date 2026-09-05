@@ -104,16 +104,17 @@ func WithCallerOwnedLifecycle() RegisterOption {
 //
 // Shutdown ownership is unambiguous. A direct Lifecycle value is
 // framework-owned after successful registration. The DI container visits it in
-// reverse registration order and makes at most one shutdown attempt if the
-// live shutdown deadline reaches its entry. A separate WithLifecycle handle
+// dependency order — after the services constructed from it — and makes at
+// most one bounded shutdown attempt if the live shutdown deadline reaches its
+// entry. A separate WithLifecycle handle
 // remains caller-owned and requires WithCallerOwnedLifecycle; the caller must
 // arrange its shutdown. The Registry never closes connections.
 //
 // On every error, including Ping or final DI publication failure, Register
 // exposes no health entry and does not acquire ownership. This does not undo an
 // independent raw DI publication performed by the caller or another goroutine.
-// Do not place the same lifecycle in DI through Provide, ProvideFactory,
-// ProvideValue, ProvideProtectedValue, or Replace and also through Register;
+// Do not place the same lifecycle in DI through Provide, ProvideValue,
+// ProvideProtectedValue, or Replace and also through Register;
 // register it once and use [credo.App.Alias] for additional interface views.
 func Register[R any](app *credo.App, value R, opts ...RegisterOption) error {
 	if app == nil {
@@ -340,50 +341,38 @@ func wireStoreHealth(app *credo.App, reg *Registry) error {
 	// before the first Register call, and a previous publish attempt may have
 	// installed an obsolete or partial seam. Re-establishing this internal
 	// value is idempotent and keeps readiness bound to the resolved Registry.
-	if err := app.Replace[internalhealth.StoreFunc](fn); err != nil {
+	if _, _, err := app.Replace[internalhealth.StoreFunc](fn); err != nil {
 		return fmt.Errorf("store: wire health reporting: %w", err)
 	}
 	return nil
 }
 
-// ensureRegistry resolves or creates the store [Registry] in the DI
-// container. Its binding is protected before use so DI and the readiness seam
-// cannot later diverge through Replace. The internal health seam is
-// idempotently re-established for both new and pre-provided registries, so an
-// interrupted wiring attempt is retryable on the next Register call.
-// The Registry has no Shutdown method, so the container's shutdown pass
-// skips it — closing tracked connections is not its job.
+// ensureRegistry adopts or creates the store [Registry] in the DI container
+// during registration, before Finalize. Its binding is protected before use
+// so DI and the readiness seam cannot later diverge through Replace. The
+// internal health seam is idempotently re-established for both new and
+// pre-provided registries, so an interrupted wiring attempt is retryable on
+// the next Register call. The Registry has no Shutdown method, so the
+// container's teardown skips it — closing tracked connections is not its job.
+//
+// Constructors run only after Finalize, so a Registry registered through
+// Provide cannot be adopted here: AdoptValue rejects it with an explanatory
+// error without invoking it, and the binding stays repairable through
+// Replace with a ready value.
 func ensureRegistry(app *credo.App) (*Registry, error) {
-	// Validate a pre-provided Registry before making its binding permanent.
-	// Expected-value ProtectBinding atomically rejects a concurrent Replace
-	// winner. A second Resolve then supplies the exact protected instance to the
-	// readiness seam.
-	if reg, err := app.Resolve[*Registry](); err == nil {
-		if reg == nil {
-			return nil, fmt.Errorf("store: resolved Registry must not be nil")
-		}
-		if err := app.ProtectBinding[*Registry](reg); err != nil {
-			return nil, fmt.Errorf("store: protect Registry binding: %w", err)
-		}
-		return resolveAndWireRegistry(app)
+	if app.Has[*Registry]() {
+		return adoptRegistry(app)
 	}
 
 	// First store connection — create and register the registry.
 	reg := &Registry{}
 	if err := app.ProvideProtectedValue[*Registry](reg); err != nil {
-		// Race or pre-provided constructor: adopt only a successfully resolved,
-		// non-nil Registry, then protect and re-resolve it before wiring.
-		resolved, resolveErr := app.Resolve[*Registry]()
-		if resolveErr != nil || resolved == nil {
-			if resolveErr == nil {
-				resolveErr = fmt.Errorf("store: resolved Registry must not be nil")
-			}
-			return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, resolveErr))
+		// Lost a registration race: adopt the binding that won.
+		adopted, adoptErr := adoptRegistry(app)
+		if adoptErr != nil {
+			return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, adoptErr))
 		}
-		if protectErr := app.ProtectBinding[*Registry](resolved); protectErr != nil {
-			return nil, fmt.Errorf("store: register registry: %w", errors.Join(err, protectErr))
-		}
-		return resolveAndWireRegistry(app)
+		return adopted, nil
 	}
 	if err := wireStoreHealth(app, reg); err != nil {
 		return nil, err
@@ -391,13 +380,19 @@ func ensureRegistry(app *credo.App) (*Registry, error) {
 	return reg, nil
 }
 
-func resolveAndWireRegistry(app *credo.App) (*Registry, error) {
-	reg, err := app.Resolve[*Registry]()
+// adoptRegistry validates a pre-provided Registry value and atomically
+// protects that same binding, so a concurrent Replace or Finalize during
+// validation aborts adoption instead of protecting a stale instance. A
+// rejected value (typed nil) stays unprotected and repairable.
+func adoptRegistry(app *credo.App) (*Registry, error) {
+	reg, err := app.AdoptValue[*Registry](func(reg *Registry) error {
+		if reg == nil {
+			return errors.New("registry must not be nil")
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("store: resolve protected Registry: %w", err)
-	}
-	if reg == nil {
-		return nil, fmt.Errorf("store: resolved Registry must not be nil")
+		return nil, fmt.Errorf("store: adopt pre-provided Registry: %w", err)
 	}
 	if err := wireStoreHealth(app, reg); err != nil {
 		return nil, err

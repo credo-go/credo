@@ -1,10 +1,6 @@
 # ADR-004: Dependency Injection & credo.Infra
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-003
-
-## Accepted pre-v1 amendment
-
-**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) supersedes this ADR's phase, factory, replacement and teardown rules when the DI minor lands. Keep typed constructors, Infra, singleton scope, aliases and ordered collections. Add explicit post-Finalize resolution, ownership-transferring Replace, non-resolving Has, terminal completion and dependency ordering; remove ProvideFactory. AdoptValue validates and atomically protects a prebuilt binding; a mere read does not. Registry constructors cannot be adopted before Finalize. The public diagnostics are ErrDIClosed, DIShutdownError and DIPanicError; late construction has one five-second cleanup wait. The [target contract](../specs/bootstrap-and-di-lifecycle.md) defines closing, pending construction, bounded cleanup and error/report semantics. The sections below describe the current implementation.
+**Status:** Accepted **Date:** 2026-03-01 **Amended:** 2026-09-05 by [ADR-022](022-bootstrap-and-di-ownership.md) (phase-gated resolution, adoption, replacement ownership, dependency-ordered teardown) **Depends on:** ADR-001, ADR-003
 
 ## Context
 
@@ -95,9 +91,24 @@ Two low-level methods support integrations whose DI binding is coupled to extern
 
 `Replace[T]` returns an error for a protected binding. This prevents an integration from continuing to monitor or shut down one value while DI starts resolving another. Protection affects binding replacement only; it does not by itself create lifecycle ownership, health wiring, aliases, or collection bindings. Normal application and test bindings should continue to use override-friendly `ProvideValue`; the protected variants are intended for framework/integration registration paths such as `store.Register`.
 
+### Registration-Time Reads and Replacement Ownership
+
+Constructors run only after Finalize, so the registration phase has no general `Resolve`. Two observation/adoption operations cover what integrations need:
+
+- `app.Has[T]() bool` reports registration presence (direct or alias) without constructing, adopting or protecting. It is a snapshot, not a reservation.
+- `app.AdoptValue[T](validate func(T) error) (T, error)` reads an existing pre-built binding, validates it and atomically compare-and-protects that same binding. Protection is a consequence of successful validation, never of the read, so a rejected value (a typed-nil Registry) stays repairable through `Replace`. A replacement or phase change during validation makes the adoption fail rather than protect a stale instance. A constructor binding is rejected with an explanatory error and is never invoked; `store.Register` and `worker.Register` rely on this to refuse a Registry or Pool registered through `Provide`.
+
+`Replace[T](value) (old T, existed bool, err error)` transfers ownership explicitly: on success the container owns the new value and returns any already-created superseded instance to the caller, who assumes its cleanup responsibility. `existed` means exactly "a previously created instance existed": a superseded constructor binding that never ran yields zero and false, and Replace never constructs an old provider merely to return it. A superseded `Shutdowner` is logged at Warn as a reminder, not as the transfer mechanism. A rejected replacement changes neither the binding nor ownership. `MustReplace` returns the same information and panics on error.
+
 ### Finalize Phase
 
-`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideFactory`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Run()` and `RunContext()` call Finalize implicitly. `Resolve` is allowed both before and after Finalize (bootstrap phase supports `Resolve`-if-missing-`Provide` patterns). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern. After a failed Finalize, `Resolve` returns the error.
+`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Resolve` is admitted only after Finalize: constructors never run during registration, so the composition root finishes every DI write (store/worker registration included), calls Finalize and handles its error, and only then resolves controllers and binds routes. `Run()`, `RunContext()`, `ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly as an idempotent safeguard, which cannot precede a Resolve the composition root has already executed. Finalize is DI-only; HTTP registration stays open until the App prepares to serve (ADR-006). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern, and lifecycle hooks capture their dependencies instead of resolving. After a failed Finalize, `Resolve` returns the error.
+
+Construction completes once per singleton with a terminal result — value, error or panic — shared by every waiter; nothing is retried. A constructor panic is returned as `*credo.DIPanicError` (type, phase, original value, stack) and `MustResolve` panics with that error as its payload. Once shutdown reaches DI teardown the container is closing: new resolution, cached results included, returns an error wrapping `credo.ErrDIClosed`, while instances created by already-admitted builds remain owned and cleaned up by the container.
+
+### Shutdown
+
+`Container.Shutdown(ctx)` tears down live singletons in dependency order — consumers before the singletons they were constructed from — with a Kahn ready queue over the static graph (constructor parameters, aliases, collection edges; value bindings are vertices, dependencies hidden inside pre-built values are not) and reverse registration order as the tie-break. Each `Shutdowner` gets at most one sequential attempt bounded by the shared context through a helper goroutine; a hung callback keeps its dependencies blocked and is reported, never retried or closed around. Only construction completing after the context ended receives one separate fixed five-second best-effort attempt. Failure or incompleteness returns `*credo.DIShutdownError`, an immutable per-vertex snapshot that unwraps its causes; shutdown panics are isolated as `DIPanicError`. The [container spec](../specs/container.md#shutdown) and the [bootstrap contract](../specs/bootstrap-and-di-lifecycle.md) carry the full rules.
 
 ### credo.Infra: Explicit Infrastructure Carrier
 
@@ -162,6 +173,9 @@ The developer chooses on a per-service basis.
 | Container as separate public package | No standalone usage scenario, Credo-specific — internal is sufficient |
 | RequestScoped lifecycle | Go's `context.Context` + middleware pattern provides sufficient request-scoped dependency management without DI container complexity |
 | Model 3: Hybrid Embed (struct with embedded `credo.Infra` + resolved fields) | Reflective field population hides application boundaries. Model 1 with visible constructor parameters is clearer and sufficient |
+| Closure factory (`fn func(*App) (T, error)` resolving its own dependencies) | Compiler-checked signature, but the dependencies resolved inside the closure are invisible to Finalize validation, cycle detection and dependency-ordered shutdown; typed constructors keep the graph static. Capturing `app.Resolve` inside a constructor is unsupported for the same reason |
+| General early Resolve/Peek during registration; protect-on-read | Would run constructors against an unvalidated graph or freeze an invalid binding before validation. `AdoptValue` (validate, then atomically protect) and `Has` cover integration needs |
+| Reverse registration order for shutdown | Ignores the dependency graph: a service registered before its DB closed after it. Dependency order with reverse-registration tie-break keeps the old order where the graph does not decide |
 
 ## Consequences
 
@@ -176,7 +190,9 @@ The developer chooses on a per-service basis.
 - Immutable — snapshot semantics, no race conditions
 - `Alias[I, T]()` enables programming to interfaces without duplicate registrations
 - `BindMany[I, T]()` / `ResolveAll[I]` support ordered plugin-style composition without manual registry bootstrapping
-- `Finalize()` catches dependency graph errors at startup, not at first request
+- `Finalize()` catches dependency graph errors at startup, not at first request, and is the only gate before any constructor runs
+- Shutdown follows observable dependencies; cancellation bounds waiting and the report says what did not complete and why
+- Replacement ownership is explicit: the caller receives the superseded instance instead of leaking it
 
 **Negative:**
 
@@ -185,7 +201,4 @@ The developer chooses on a per-service basis.
 - Special code path in container for `credo.Infra` — but it's a simple type switch
 - `BindMany` adds ordering and empty-collection semantics that must be documented clearly
 - Container is in `internal/di` — cannot be used as a standalone DI library
-
-## ProvideFactory
-
-`Provide`'s `constructor` parameter is necessarily `any` — Go cannot express "a function with arbitrary parameters returning `T`" in the type system — so signature mistakes surface as registration-time errors, not compile errors. `ProvideFactory[T](app, fn func(*App) (T, error))` is the fully compiler-checked factory alternative: `fn`'s signature is enforced (with `T` inferred), and `fn` resolves its own dependencies via `Resolve` inside the closure. The factory name is intentional: the container cannot inspect its dependency graph. The trade-off is that `fn` is opaque to the container: its dependencies do not participate in `Finalize` graph validation or cycle detection, and `credo.Infra` is not auto-injected (`app.NewInfra` replaces Model 1 inside `fn`). Plain `Provide` with a named constructor remains the recommended default. See `docs/specs/container.md` for details.
+- The composition root needs an explicit, error-checked `Finalize` between registration and the first `Resolve`

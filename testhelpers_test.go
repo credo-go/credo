@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+
+	"github.com/credo-go/credo"
 )
 
 func newTestLogger(t *testing.T) (*slog.Logger, *bytes.Buffer) {
@@ -34,4 +36,13 @@ func parseJSONLines(t *testing.T, data []byte) []map[string]any {
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+// mustFinalize finalizes the DI container so constructor-backed Resolve calls
+// are admitted; registration is complete at that point.
+func mustFinalize(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
 }

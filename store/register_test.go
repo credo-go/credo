@@ -82,6 +82,7 @@ func TestRegister_Success(t *testing.T) {
 	}
 
 	// Verify the value is in DI.
+	finalize(t, app)
 	resolved, err := app.Resolve[*testDB]()
 	if err != nil {
 		t.Fatalf("Resolve() = %v", err)
@@ -266,6 +267,7 @@ func TestRegister_PingFailure_Cleanup(t *testing.T) {
 	}
 
 	// Value should NOT be in DI.
+	finalize(t, app)
 	_, resolveErr := app.Resolve[*testDB]()
 	if resolveErr == nil {
 		t.Error("value should not be in DI after failed registration")
@@ -320,6 +322,7 @@ func TestRegister_NonNilLifecycleInterface(t *testing.T) {
 	if err := store.Register[store.Lifecycle](app, lifecycle, store.WithName("interface-db")); err != nil {
 		t.Fatalf("Register(non-nil Lifecycle interface) = %v", err)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[store.Lifecycle]()
 	if err != nil || resolved != lifecycle {
 		t.Fatalf("Resolve[Lifecycle]() = (%v, %v), want original interface", resolved, err)
@@ -351,6 +354,7 @@ func TestRegister_WithName(t *testing.T) {
 		t.Fatalf("Register() = %v", err)
 	}
 
+	finalize(t, app)
 	reg, _ := app.Resolve[*store.Registry]()
 	health := reg.HealthAll(t.Context())
 	if _, ok := health["custom-db"]; !ok {
@@ -365,6 +369,7 @@ func TestRegister_DefaultNameIsOperatorFriendly(t *testing.T) {
 	if err := store.Register[*testDB](app, db); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
+	finalize(t, app)
 	registry, err := app.Resolve[*store.Registry]()
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
@@ -457,7 +462,7 @@ func TestRegister_UnstableLifecycleIdentityFailsBeforeInfrastructureOrPing(t *te
 	if pingCalls != 0 {
 		t.Fatalf("Ping calls = %d, want 0", pingCalls)
 	}
-	if _, err := app.Resolve[*store.Registry](); err == nil {
+	if app.Has[*store.Registry]() {
 		t.Fatal("invalid lifecycle identity should not create Registry infrastructure")
 	}
 }
@@ -467,7 +472,7 @@ func TestRegister_NonReflexiveLifecycleIdentityFailsBeforeInfrastructure(t *test
 	if err := store.Register[nanIdentityLifecycle](app, nanIdentityLifecycle(math.NaN())); err == nil {
 		t.Fatal("Register should reject a non-reflexive NaN lifecycle identity")
 	}
-	if _, err := app.Resolve[*store.Registry](); err == nil {
+	if app.Has[*store.Registry]() {
 		t.Fatal("non-reflexive lifecycle identity should not create Registry infrastructure")
 	}
 }
@@ -526,6 +531,7 @@ func TestRegister_WithCallerOwnedLifecycle(t *testing.T) {
 			if err := store.Register[*wrapperDB](app, wrapper, tt.opts(lc)...); err != nil {
 				t.Fatalf("Register() = %v", err)
 			}
+			finalize(t, app)
 			resolved, err := app.Resolve[*wrapperDB]()
 			if err != nil || resolved != wrapper {
 				t.Fatalf("Resolve[*wrapperDB]() = (%p, %v), want original %p", resolved, err, wrapper)
@@ -765,13 +771,10 @@ func TestRegister_CallerOwnedPingFailureRetainsOwnershipAndCanRetry(t *testing.T
 	if shutdownCalls != 0 {
 		t.Fatalf("Shutdown calls after failed registration = %d, want 0", shutdownCalls)
 	}
-	if _, err := app.Resolve[*callerOwnedFailureDB](); err == nil {
+	if app.Has[*callerOwnedFailureDB]() {
 		t.Fatal("failed caller-owned registration left a DI value")
 	}
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
+	registry := adoptedRegistry(t, app)
 	if got := len(registry.HealthAll(t.Context())); got != 0 {
 		t.Fatalf("Registry entries after failed registration = %d, want 0", got)
 	}
@@ -856,6 +859,7 @@ func TestRegister_RejectsSameLifecycleUnderDifferentDITypes(t *testing.T) {
 	if err := app.Alias[store.Lifecycle, *testDB](); err != nil {
 		t.Fatalf("Alias[Lifecycle, *testDB]() = %v", err)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[store.Lifecycle]()
 	if err != nil || resolved != db {
 		t.Fatalf("Resolve[Lifecycle]() = (%v, %v), want original db", resolved, err)
@@ -911,14 +915,15 @@ func TestRegister_ProtectsStoreAndRegistryBindingsFromReplace(t *testing.T) {
 	if err := store.Register[*testDB](app, original, store.WithName("protected")); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
+	finalize(t, app)
 	registry, err := app.Resolve[*store.Registry]()
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
 	}
-	if replaceErr := app.Replace[*testDB](newTestDB(&mockLifecycle{})); replaceErr == nil {
+	if _, _, replaceErr := app.Replace[*testDB](newTestDB(&mockLifecycle{})); replaceErr == nil {
 		t.Fatal("Replace should reject a registered store binding")
 	}
-	if replaceErr := app.Replace[*store.Registry](&store.Registry{}); replaceErr == nil {
+	if _, _, replaceErr := app.Replace[*store.Registry](&store.Registry{}); replaceErr == nil {
 		t.Fatal("Replace should reject the Registry binding")
 	}
 	resolved, err := app.Resolve[*testDB]()
@@ -943,7 +948,7 @@ func TestRegister_ProtectsCallerOwnedWrapperBindingFromReplace(t *testing.T) {
 	); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
-	if err := app.Replace[*wrapperDB](&wrapperDB{}); err == nil {
+	if _, _, err := app.Replace[*wrapperDB](&wrapperDB{}); err == nil {
 		t.Fatal("Replace should reject a registered caller-owned wrapper binding")
 	}
 }
@@ -961,7 +966,7 @@ func TestRegister_PreProvidedDIValueFailsBeforePing(t *testing.T) {
 	if pingCalls != 0 {
 		t.Fatalf("pre-provided DI value Ping calls = %d, want 0", pingCalls)
 	}
-	if _, err := app.Resolve[*store.Registry](); err == nil {
+	if app.Has[*store.Registry]() {
 		t.Fatal("duplicate DI preflight must not create Registry infrastructure")
 	}
 }
@@ -1026,10 +1031,7 @@ func TestRegister_PingFailureReleasesReservations(t *testing.T) {
 	); err == nil {
 		t.Fatal("first Register should fail Ping")
 	}
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
+	registry := adoptedRegistry(t, app)
 	if got := len(registry.HealthAll(t.Context())); got != 0 {
 		t.Fatalf("Registry entries after failed Ping = %d, want 0", got)
 	}
@@ -1083,6 +1085,7 @@ func TestRegister_FinalPublicationFailureLeavesNoHealthEntry(t *testing.T) {
 	if db.shutdownCalls != 0 {
 		t.Fatalf("Shutdown calls = %d, want 0 for failed registration", db.shutdownCalls)
 	}
+	finalize(t, app)
 	registry, resolveErr := app.Resolve[*store.Registry]()
 	if resolveErr != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", resolveErr)
@@ -1146,11 +1149,12 @@ func TestRegister_PreProvidedRegistryStillWiresReadiness(t *testing.T) {
 	if err := store.Register[*testDB](app, db, store.WithName("preprovided")); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[*store.Registry]()
 	if err != nil || resolved != provided {
 		t.Fatalf("resolved Registry = (%p, %v), want pre-provided %p", resolved, err, provided)
 	}
-	if err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
+	if _, _, err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
 		t.Fatal("Register should protect a pre-provided Registry from replacement")
 	}
 
@@ -1164,24 +1168,47 @@ func TestRegister_PreProvidedRegistryStillWiresReadiness(t *testing.T) {
 
 type constructorProvidedRegistryDB struct{ *mockLifecycle }
 
-func TestRegister_ConstructorProvidedRegistryIsAdoptedAndProtected(t *testing.T) {
+func TestRegister_ConstructorProvidedRegistryIsRejectedWithoutInvocation(t *testing.T) {
 	app := newTestApp(t)
-	provided := &store.Registry{}
-	if err := app.Provide[*store.Registry](func() *store.Registry { return provided }); err != nil {
+	calls := 0
+	if err := app.Provide[*store.Registry](func() *store.Registry {
+		calls++
+		return &store.Registry{}
+	}); err != nil {
 		t.Fatalf("Provide[*Registry]() = %v", err)
 	}
-	value := &constructorProvidedRegistryDB{mockLifecycle: &mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
-	}}
+	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
+	value := &constructorProvidedRegistryDB{mockLifecycle: lifecycle}
+	err := store.Register[*constructorProvidedRegistryDB](app, value)
+	if err == nil {
+		t.Fatal("Register should reject a Registry registered through a constructor")
+	}
+	if !strings.Contains(err.Error(), "constructor") {
+		t.Fatalf("Register() = %v, want the error to identify the constructor binding", err)
+	}
+	if calls != 0 {
+		t.Fatalf("Registry constructor ran %d times during registration, want 0", calls)
+	}
+	if lifecycle.pingCalled {
+		t.Fatal("Registry rejection must happen before Ping")
+	}
+	// The unsupported binding stays repairable with a ready value.
+	replacement := &store.Registry{}
+	if _, existed, err := app.Replace[*store.Registry](replacement); err != nil || existed {
+		t.Fatalf("Replace = (existed %v, %v), want a clean replacement of the unbuilt constructor", existed, err)
+	}
 	if err := store.Register[*constructorProvidedRegistryDB](app, value); err != nil {
-		t.Fatalf("Register() = %v", err)
+		t.Fatalf("Register() after Registry repair = %v", err)
 	}
-	resolved, err := app.Resolve[*store.Registry]()
-	if err != nil || resolved != provided {
-		t.Fatalf("Resolve[*Registry]() = (%p, %v), want constructor value %p", resolved, err, provided)
+	if _, _, err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
+		t.Fatal("Register should protect the adopted Registry")
 	}
-	if err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
-		t.Fatal("Register should protect a constructor-provided Registry")
+	finalize(t, app)
+	if resolved, err := app.Resolve[*store.Registry](); err != nil || resolved != replacement {
+		t.Fatalf("Resolve[*Registry]() = (%p, %v), want repaired %p", resolved, err, replacement)
+	}
+	if calls != 0 {
+		t.Fatalf("Registry constructor ran %d times, want 0 (it was replaced before Finalize)", calls)
 	}
 }
 
@@ -1202,12 +1229,13 @@ func TestRegister_TypedNilPreProvidedRegistryFailsBeforePing(t *testing.T) {
 		t.Fatalf("typed-nil Registry Ping calls = %d, want 0", pingCalls)
 	}
 	replacement := &store.Registry{}
-	if replaceErr := app.Replace[*store.Registry](replacement); replaceErr != nil {
+	if _, _, replaceErr := app.Replace[*store.Registry](replacement); replaceErr != nil {
 		t.Fatalf("Replace valid Registry after typed-nil rejection = %v", replaceErr)
 	}
 	if registerErr := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry")); registerErr != nil {
 		t.Fatalf("Register() after Registry repair = %v", registerErr)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[*store.Registry]()
 	if err != nil || resolved != replacement {
 		t.Fatalf("Resolve[*Registry]() = (%p, %v), want repaired %p", resolved, err, replacement)
@@ -1232,7 +1260,7 @@ func TestRegister_FailingRegistryConstructorRemainsRepairable(t *testing.T) {
 		t.Fatal("Registry construction error must happen before Ping")
 	}
 	replacement := &store.Registry{}
-	if err := app.Replace[*store.Registry](replacement); err != nil {
+	if _, _, err := app.Replace[*store.Registry](replacement); err != nil {
 		t.Fatalf("Replace valid Registry after constructor failure = %v", err)
 	}
 	if err := store.Register[*constructorRegistryDB](app, value); err != nil {
@@ -1317,6 +1345,7 @@ func TestRegister_ConcurrentSameNameRunsOnePing(t *testing.T) {
 	if firstCalls+secondCalls != 1 {
 		t.Fatalf("total Ping calls = %d, want 1", firstCalls+secondCalls)
 	}
+	finalize(t, app)
 	registry, err := app.Resolve[*store.Registry]()
 	if err != nil {
 		t.Fatalf("Resolve[*Registry]() = %v", err)
@@ -1352,10 +1381,7 @@ func TestRegister_PendingNameIsInvisibleAndRejectsLoserBeforePing(t *testing.T) 
 	}()
 	<-started
 
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
+	registry := adoptedRegistry(t, app)
 	if got := len(registry.HealthAll(t.Context())); got != 0 {
 		t.Fatalf("pending Registry entries = %d, want 0", got)
 	}
@@ -1422,6 +1448,7 @@ func TestRegister_PendingTypeRejectsLoserBeforePing(t *testing.T) {
 	if err := <-winnerErr; err != nil {
 		t.Fatalf("winner Register() = %v", err)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[*conflictingTypeDB]()
 	if err != nil || resolved != winner {
 		t.Fatalf("Resolve[*conflictingTypeDB]() = (%p, %v), want winner %p", resolved, err, winner)
@@ -1478,6 +1505,7 @@ func TestRegister_ConcurrentSameTypeKeepsDIAndRegistryWinnerAligned(t *testing.T
 	if firstCalls+secondCalls != 1 {
 		t.Fatalf("total Ping calls = %d, want 1", firstCalls+secondCalls)
 	}
+	finalize(t, app)
 	resolved, err := app.Resolve[*conflictingTypeDB]()
 	if err != nil || resolved != winner.value {
 		t.Fatalf("resolved value = (%p, %v), want winning value %p", resolved, err, winner.value)
@@ -1494,4 +1522,24 @@ func TestRegister_ConcurrentSameTypeKeepsDIAndRegistryWinnerAligned(t *testing.T
 	if !exists || entry.Details["id"] != winner.name {
 		t.Fatalf("Registry winner = %#v, want name/id %q", health, winner.name)
 	}
+}
+
+// finalize closes DI registration so Resolve becomes available. Register
+// calls must precede it.
+func finalize(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
+}
+
+// adoptedRegistry reads the protected Registry during registration, before
+// Finalize, so a test can inspect it and still register more stores.
+func adoptedRegistry(t *testing.T, app *credo.App) *store.Registry {
+	t.Helper()
+	registry, err := app.AdoptValue[*store.Registry](nil)
+	if err != nil {
+		t.Fatalf("AdoptValue[*Registry]() = %v", err)
+	}
+	return registry
 }

@@ -1,12 +1,6 @@
 # ADR-006: Application Lifecycle
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
-
-## Accepted pre-v1 amendment
-
-**2026-09-05, pending implementation.** [ADR-022](022-bootstrap-and-di-ownership.md) separates DI Finalize from HTTP preparation and coordinates preparation, start and bootstrap Shutdown. Building-state Shutdown becomes valid; direct ServeHTTP also prepares DI, then uses the same cached preparation result and HTTP write gate. Stopped rejection returns the callback-free default 503; an already-prepared stopping App retains normal drain behavior. DI enters closing only at its teardown stage, with dependency-ordered cleanup and a stable failure report.
-
-The [target lifecycle contract](../specs/bootstrap-and-di-lifecycle.md) governs the migration. The current state machine, preparation order and reverse-registration teardown below remain descriptions of shipped behavior until that work lands. External server drain stays owner-managed.
+**Status:** Accepted **Date:** 2026-03-01 **Amended:** 2026-09-05 by [ADR-022](022-bootstrap-and-di-ownership.md) (shared preparation, bootstrap Shutdown, lifecycle 503, dependency-ordered DI teardown) **Depends on:** ADR-001
 
 ## Context
 
@@ -20,19 +14,21 @@ Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but has no co
 
 ```
 building → starting → running → stopping → stopped
+building → stopping → stopped                (bootstrap Shutdown of a never-run App)
 
 Failure transitions:
-  preflight / listen error      → building   (pre-session: nothing started, retryable)
-  OnStart hook error            → stopped    (session: full teardown, terminal)
-  serve error (after running)   → stopped    (session: full teardown, terminal)
+  prepare / preflight / listen error → building   (pre-session: nothing started; a failed
+                                                   preparation is stored and never retried)
+  OnStart hook error                 → stopped    (session: full teardown, terminal)
+  serve error (after running)        → stopped    (session: full teardown, terminal)
 ```
 
-A failure is classed by how far startup progressed. **Pre-session** failures (TLS preflight, listener bind) happen before any OnStart hook runs and before startup resolves any singleton, so they roll back to `building` and the App may run again. **Session** failures — any error once the OnStart phase has begun (a hook returning an error, regardless of position) or a non-`ErrServerClosed` error from `Serve` after the app reached `running` — run the full teardown chain (the same one a graceful shutdown runs) and the App becomes terminally `stopped`; retry means a new App.
+A failure is classed by how far startup progressed. **Pre-session** failures (preparation, TLS preflight, listener bind) happen before any OnStart hook runs, so they roll back to `building` and the App may run again — with one exception: a preparation failure (DI finalize error, compile panic) is a stored terminal developer error, so `building` then permits bootstrap cleanup through `Shutdown`, not a retry. **Session** failures — any error once the OnStart phase has begun (a hook returning an error, regardless of position) or a non-`ErrServerClosed` error from `Serve` after the app reached `running` — run the full teardown chain (the same one a graceful shutdown runs) and the App becomes terminally `stopped`; retry means a new App.
 
 | State | Meaning |
 | --- | --- |
-| `building` | Initial. Route/middleware registration allowed |
-| `starting` | Transient. CAS claimed, ctx/server being written. Shutdown blocked |
+| `building` | Initial. Route/middleware registration allowed until preparation. `Shutdown` accepted (bootstrap teardown) |
+| `starting` | Transient. CAS claimed, preparation running, ctx/server being written. Shutdown blocked |
 | `running` | Port bound, server accepting. Registration frozen. Shutdown allowed |
 | `stopping` | Draining HTTP and pre-infrastructure subsystems, then DI/hooks |
 | `stopped` | Fully stopped |
@@ -133,8 +129,9 @@ Without an accessor the dead zone is structurally unreachable: there is no pre-`
 ### Startup Sequence
 
 ```
-1. DI Finalize (idempotent)
-2. CAS building → starting
+1. CAS building → starting (claims the start slot)
+2. Prepare: DI Finalize (idempotent) → compile → publish; one stored result shared with ServeHTTP
+   (failure: state back to building, error returned, result stored and never retried)
 3. Create lifecycle context
 4. Bind port (net.Listen)
 5. Store bound address (app.Addr() now returns the real address)
@@ -142,21 +139,27 @@ Without an accessor the dead zone is structurally unreachable: there is no pre-`
 7. Store state = running
 ```
 
-If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (mark unready → OnPreDrain → cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (which requires `stateRunning`) cannot race the drain.
+Managed serving, direct `ServeHTTP` and an external `http.Server` all reach the same validated runtime model through step 2. A direct `ServeHTTP` call prepares on its first request without claiming the start slot and panics with the stored preparation error while lifecycle admission is open. Preparation admission — not DI `Finalize` — freezes HTTP registration, so a composition root can `Finalize`, resolve controllers and bind their routes before serving.
+
+If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (mark unready → OnPreDrain → cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (accepted only in `running` or `building`) cannot race the drain.
 
 ### Shutdown Sequence
 
 ```
-1. CAS running → stopping
+1. CAS running → stopping (or building → stopping: bootstrap teardown, which freezes
+   HTTP and DI writes without validating DI and runs the chain with no servers)
 2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
 3. Run every OnPreDrain hook concurrently (lifecycle workers and DI remain live)
 4. Cancel lifecycle context (signals background services)
 5. In parallel: HTTP server drain and every OnDrain subsystem hook
-6. DI container shutdown (reverse-order singleton cleanup)
+6. DI container shutdown (dependency-ordered singleton cleanup: consumers before
+   the singletons they were built from; DI enters closing only here)
 7. OnShutdown hooks in LIFO order (last registered, first called)
 8. Clear bound address
 9. Store state = stopped
 ```
+
+After `stopped`, `ServeHTTP` answers every request with the framework's default 503 envelope through a callback-free branch (no preparation, resolution, dispatch, custom renderer or locale detection), so a rejected request can never touch a singleton that has already been shut down. An App that was prepared before the drain keeps serving during `stopping` — that is what the HTTP drain and the readiness/liveness probes need.
 
 OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hook execution order within each hook phase is intentionally unspecified. An OnPreDrain hook returns successfully only after work requiring live lifecycle workers or DI has finished; an OnDrain hook must guarantee its subsystem can no longer execute handlers that depend on DI infrastructure. At deadline expiry, Credo immediately logs that OnPreDrain work is still pending but does not abandon it: the lifecycle context and DI stay live until every OnPreDrain hook actually returns. The hook's completion timestamp then determines its final identified incomplete error. Later phases continue with the same, possibly ended context. HTTP or OnDrain work still follows the ordinary deadline-incomplete contract and is not a hard barrier. All errors are collected via `errors.Join` — no false graceful-success result.
 
@@ -230,7 +233,7 @@ app.OnShutdown(func(ctx context.Context) error {
 
 ### Frozen Guard
 
-After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. Late registration of routes, middleware, meta, status handlers, or shutdown hooks panics with a clear message. This prevents subtle race conditions from concurrent registration during serving.
+At preparation admission (the first `ServeHTTP` request or a managed serve entry point) and at bootstrap-shutdown admission, the app is frozen. Late registration of routes, middleware, meta, status handlers, or lifecycle hooks panics with `credo: <what> called after app was compiled or shut down`. This prevents subtle race conditions from concurrent registration during serving or teardown. DI `Finalize` alone does not freeze HTTP registration.
 
 ### Design Decisions
 
@@ -240,6 +243,9 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | SIGHUP reloads, never terminates | `Run` also handles SIGHUP (Unix) by calling `app.Reload` under `WithReloadTimeout`; a failed reload keeps the previous configuration and the process stays up. `WithoutReloadSignals()` opts out with subscribe-and-ignore semantics: the signal is still captured (never falls through to terminate) but is logged and ignored instead of reloading. `RunContext`/`ServeContext` stay signal-free and use `app.Reload` directly. Rejected: letting SIGHUP fall through to Go's default handler (kills the process — the opposite of `systemctl reload`), SIGUSR1/2 (non-conventional), filesystem watching (ADR-020) |
 | `Run` not a naive signal wrapper | `stop()` runs the instant the first signal arrives, _before_ the drain — so a second signal force-kills (standard two-stage Ctrl+C). A `defer stop(); RunContext(ctx)` wrapper would swallow it |
 | One drain mechanism, CAS-idempotent | Signal, context-cancel, and explicit `Shutdown` share one `initiateShutdown`; the `running`→`stopping` CAS (not a parallel `sync.Once`) makes concurrent triggers safe |
+| One stored preparation | Managed serving and direct `ServeHTTP` share a single Finalize → compile → publish result. A failed preparation is stored and repeated (managed: same error; `ServeHTTP`: panic), never retried against a frozen plan. Rejected: a `sync.Once` around compile (a panicking call counts as done and a later request would reach a nil handler) and per-entry-point preparation |
+| Bootstrap `Shutdown` in `building` | A `building`→`stopping` CAS mirrors the start claim so a concurrent start and shutdown pick one owner; writes are frozen without requiring successful `Finalize`, and the shared drain runs with no servers. Gives composition roots and `ServeHTTP`-only tests a cleanup path. External servers remain owner-drained |
+| Callback-free 503 after stopped | A rejected request gets the default `service_unavailable` envelope from a branch that cannot reach user middleware, custom renderers, locale detection or DI. Rejected: panicking (an availability outcome, not developer misuse) and routing through `handleError` (its renderer may capture a singleton already shut down) |
 | Single-use App | Terminal `stopped` state; re-run returns an error. Re-run was already broken (latched component flags); `New()` is the restart path |
 | TLS as server config | TLS is configured (`WithTLSFiles`/`WithTLSConfig`/`server.tls.*`), not selected by a serve method. Transport (plain vs TLS) is orthogonal to control flow (signal vs context) — folding it into `Run`/`RunContext` removes the `RunTLS`/`RunTLSContext` combinatorial pair. Rejected: separate `RunTLS*` methods (mirror stdlib `ListenAndServeTLS`, but TLS belongs to the same category as host/port — configuration) |
 | TLS source precedence, not conflict | `WithTLSConfig` > `WithTLSFiles` > `server.tls.*` > plaintext, whole-source override. Rejected: erroring when two sources are set — precedence lets an option cleanly override a config-file default, the common case, and avoids a brittle "set exactly one" rule |
@@ -254,7 +260,7 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 | Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
 | FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
 | OnStart fail-fast | Startup hooks are sequential and dependent — the first error aborts the rest and triggers full teardown |
-| OnStart before stateRunning | Hooks run in `stateStarting` — avoids race with `Shutdown()` which requires `stateRunning` |
+| OnStart before stateRunning | Hooks run in `stateStarting`, where `Shutdown()` is refused — avoids racing the drain |
 | `stateStarting` transient state | Closes race window between CAS and server field writes — Shutdown cannot read nil fields |
 | `http.ErrServerClosed` → nil | Graceful shutdown is not an error condition |
 | Pre-session failure → building | Preflight/listen errors start nothing — rolling back to `building` keeps the App retryable |
@@ -274,6 +280,8 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
 - Startup and runtime serve failures enter the same teardown chain as graceful shutdown, so cleanup of started resources is attempted instead of skipped; shared deadline semantics still apply
+- A never-run App has the same cleanup path, so bootstrap failures after resource registration do not leak
+- DI teardown follows the dependency graph and reports what did not complete instead of closing a dependency underneath a live consumer
 
 **Negative:**
 
@@ -281,3 +289,4 @@ After `compile()` (triggered by first `ServeHTTP` or `Run`), the app is frozen. 
 - A cancellation-ignoring `OnPreDrain` hook can delay shutdown beyond its deadline; Credo reports the breach but preserves the teardown barrier because cancelling workers or DI early would violate the hook's purpose
 - Sequential hooks may slow shutdown if a hook is slow (mitigate: deadline ctx)
 - No restart capability — must create new App after shutdown
+- A failed preparation cannot be repaired in place; the App's remaining use is cleanup

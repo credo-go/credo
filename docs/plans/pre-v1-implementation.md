@@ -1,6 +1,6 @@
 # Pre-v1 Contract Implementation Plan
 
-**Status:** Documentation promoted and G1–G4 decisions accepted 2026-09-05; runtime implementation not started. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
+**Status:** G1–G4 decisions accepted and P1–P3 (the DI minor) implemented 2026-09-05; P4, P8, P5 and the performance follow-ups are pending. **Progress source:** [TODO.md](../../TODO.md#pre-v1-contract-migration). This plan defines sequence, scope and acceptance; progress checkboxes live only in TODO.
 
 ## Contract map
 
@@ -16,7 +16,7 @@ Breaking changes are allowed before v1. Each behavioral/wire theme gets its own 
 
 ## Decision gates
 
-**Closed by user acceptance on 2026-09-05.** The gate identifiers below remain as traceability labels for implementation and tests. No G1–G4 design approval remains outstanding; the P1 runtime preparation/shutdown gate and the verification requirements still must be implemented.
+**Closed by user acceptance on 2026-09-05.** The gate identifiers below remain as traceability labels for implementation and tests. No G1–G4 design approval remains outstanding. The P1 runtime preparation/shutdown gate is implemented and tested, so P8 may start.
 
 | Gate | Accepted decision | Implementation scope |
 | --- | --- | --- |
@@ -27,22 +27,22 @@ Breaking changes are allowed before v1. Each behavioral/wire theme gets its own 
 | G4b: lazy locale | One Detect func(*Context) string; first-use memoization, current auth/request lifetime, default fallback and no recursive/repeated detection after failure | P8 locale |
 | G4c: transport/observation | Decompress before Global with original-request selection; post-compression body bytes and duration through finalization; recovery-aware callback failures and no second response | P8 executor/transport |
 
-AdoptValue, the DI diagnostic types and new HTTP names are target APIs, pending implementation. Lazy locale preserves first-access data: changing the detector signature does not extend principal lifetime through middleware request restoration. Applications can resolve Locale after auth to retain that language for later errors; earlier locale reads still win. The spec defines the full failure and measurement contracts; implementation does not reopen these decisions by adding parallel APIs or re-detection.
+AdoptValue and the DI diagnostic types are callable; the new HTTP names remain target APIs pending implementation. Lazy locale preserves first-access data: changing the detector signature does not extend principal lifetime through middleware request restoration. Applications can resolve Locale after auth to retain that language for later errors; earlier locale reads still win. The spec defines the full failure and measurement contracts; implementation does not reopen these decisions by adding parallel APIs or re-detection.
 
 ## Delivery sequence
 
-P1–P3 ship together in one DI minor. The steps below are reviewable implementation slices, not permission to release a half-migrated phase contract. P4 has its own independent minor. P8 follows the DI minor, or starts at the earliest after the shared P1 HTTP gate is implemented and tested. P8 must not start against today's `checkFrozen` and swap guards later. P6/P7 never block P8.
+P1–P3 shipped together in one DI minor (2026-09-05); steps 2–4 stay as the acceptance record until the plan is deleted with the last pending phase. P4 has its own independent minor. P8 follows the DI minor; the shared P1 HTTP gate it builds on (`app.frozen` set at preparation/shutdown admission, `checkFrozen`) is implemented and tested, and P8 must use it rather than swap guards later. P6/P7 never block P8.
 
 ### 1. Baseline and contract tests
 
 - Record the implementation base and working-tree state. Confirm that the wire benchmark suite (`wire_benchmark_test.go` and the i18n benchmarks) is present before using it.
 - Land this documentation promotion as a docs-only pull request branched from `main`. Merge the wire benchmark suite through its own pull request first; plans reference it by file name, not by commit, because squash merges do not preserve branch commit ids. Pre-existing documents had drifted from the repository paragraph-mode formatting; commit the prettier reflow of unchanged content separately from the promotion so reviewers see only substantive changes in the second commit.
-- Implement positive G1/G2 contract tests from the accepted spec. Do not keep obsolete repro tests whose expected outcome is the defect itself.
+- Implement positive G1/G2 contract tests from the accepted spec (done with the DI minor). Do not keep obsolete repro tests whose expected outcome is the defect itself.
 - Verify any copied upstream source at a pinned revision and preserve license headers. A reviewed reference tag is not proof of the original adaptation revision; do not invent NOTICES provenance.
 
 ### 2. P1: shared bootstrap and HTTP preparation gate
 
-Areas: App lifecycle/server preparation, DI write freeze, shared registration guards.
+**Done 2026-09-05.** Areas: App lifecycle/server preparation, DI write freeze, shared registration guards.
 
 - Implement DI-only Finalize and one stored Finalize → compile → publish result for all serve paths.
 - Coordinate managed start, building Shutdown, direct ServeHTTP preparation and publication. Roll back managed starting on every preparation failure without retrying a frozen failed plan.
@@ -53,7 +53,7 @@ Acceptance: direct readiness without explicit Finalize; repeated preparation err
 
 ### 3. P2 and phase APIs: migrate integrations atomically
 
-Areas: public/internal DI registration APIs, `store.Register`/Registry, worker Pool, health seams, testutil, SaaS composition root and DI examples.
+**Done 2026-09-05.** Areas: public/internal DI registration APIs, `store.Register`/Registry, worker Pool, health seams, testutil, SaaS composition root and DI examples.
 
 - Add non-resolving Has and shared AdoptValue; reject Registry constructor adoption without running it. Validate ready values and compare-and-protect only the unchanged accepted binding.
 - Return old-instance information from Replace/MustReplace and transfer cleanup only on success.
@@ -65,7 +65,7 @@ Acceptance: Has never constructs/protects; Registry constructors are rejected wi
 
 ### 4. P3: completion, graph scheduler and shutdown report
 
-Areas: `internal/di` entry completion, canonical graph extraction, lifecycle teardown and diagnostics.
+**Done 2026-09-05.** Areas: `internal/di` entry completion, canonical graph extraction, lifecycle teardown and diagnostics.
 
 - Record success/error/panic as one terminal construction result and wake all waiters.
 - Atomically coordinate closing, resolution admission, delivery and cleanup ownership. Extract teardown graphs even after missing/failed Seal; include visible value and collection edges.

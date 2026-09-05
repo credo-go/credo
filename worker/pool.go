@@ -188,8 +188,8 @@ func ensurePool(app *credo.App) (*Pool, error) {
 		return nil, fmt.Errorf("worker: Register after app.Finalize: %w", err)
 	}
 
-	if p, err := app.Resolve[*Pool](); err == nil {
-		return adoptPool(p)
+	if app.Has[*Pool]() {
+		return adoptPool(app)
 	}
 
 	cfg, err := loadPoolConfig(app)
@@ -204,17 +204,17 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	// Replace[*Pool] is rejected rather than silently splitting the two.
 	if err := app.ProvideProtectedValue[*Pool](p); err != nil {
 		// Lost a registration race: the winner published (and wired) its pool.
-		resolved, resolveErr := app.Resolve[*Pool]()
-		if resolveErr != nil {
-			return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, resolveErr))
+		adopted, adoptErr := adoptPool(app)
+		if adoptErr != nil {
+			return nil, fmt.Errorf("worker: register pool: %w", errors.Join(err, adoptErr))
 		}
-		return adoptPool(resolved)
+		return adopted, nil
 	}
 
 	// Readiness contributions reach the health engine through the
 	// module-internal DI seam, resolved lazily on each /ready request, so
 	// worker.Register and UseHealth may run in either order.
-	if err := app.Replace[internalhealth.ReadinessFunc](p.readinessChecks); err != nil {
+	if _, _, err := app.Replace[internalhealth.ReadinessFunc](p.readinessChecks); err != nil {
 		return nil, fmt.Errorf("worker: register readiness seam: %w", err)
 	}
 
@@ -231,25 +231,38 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	return p, nil
 }
 
-// adoptPool accepts an already-registered pool only when ensurePool built it,
-// because only that pool carries the lifecycle and readiness wiring.
-func adoptPool(p *Pool) (*Pool, error) {
-	if p == nil || !p.managed {
-		return nil, errors.New("worker: a *worker.Pool provided outside worker.Register is not supported")
+// adoptPool accepts the already-registered pool only when ensurePool built
+// it, because only that pool carries the lifecycle and readiness wiring. The
+// registration-time read is an adoption: the value is validated and its
+// binding protected atomically, never constructed — a *Pool registered
+// through Provide is rejected without running its constructor.
+func adoptPool(app *credo.App) (*Pool, error) {
+	p, err := app.AdoptValue[*Pool](func(p *Pool) error {
+		if p == nil || !p.managed {
+			return errors.New("a *worker.Pool provided outside worker.Register is not supported")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("worker: %w", err)
 	}
 	return p, nil
 }
 
+// loadPoolConfig reads the optional "worker" section straight from the
+// application's configuration: registration runs before Finalize, when
+// Resolve is not yet available.
 func loadPoolConfig(app *credo.App) (poolConfig, error) {
 	cfg := poolConfig{RestartDelay: DefaultRestartDelay}
 
-	raw, _ := app.Resolve[credo.RawConfig]()
-	if raw == nil || !raw.Exists("worker") {
+	if !app.ConfigExists("worker") {
 		return cfg, nil
 	}
-	if err := raw.Unmarshal("worker", &cfg); err != nil {
+	loaded, err := app.GetConfig[poolConfig]("worker")
+	if err != nil {
 		return poolConfig{}, fmt.Errorf("worker: invalid config: %w", err)
 	}
+	cfg = loaded
 	if cfg.RestartDelay < 0 {
 		return poolConfig{}, fmt.Errorf("worker: restart_delay must be >= 0, got %s", cfg.RestartDelay)
 	}

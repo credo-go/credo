@@ -10,18 +10,18 @@ import (
 
 // Provide registers a constructor for type T. The constructor can accept
 // any number of parameters that are themselves registered in the container,
-// and must return T or (T, error).
+// and must return T or (T, error). It runs at most once, on the first
+// resolution after Seal.
 //
 //	c.Provide[MyService](NewMyService)
 func (c *Container) Provide[T any](constructor any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.frozen {
-		return fmt.Errorf("di: Provide[%s]: container is frozen (container is sealed)", reflect.TypeFor[T]())
-	}
-
 	targetType := reflect.TypeFor[T]()
+	if c.frozen {
+		return frozenError("Provide", targetType)
+	}
 
 	reg, err := inspectConstructor(constructor, targetType)
 	if err != nil {
@@ -44,50 +44,6 @@ func (c *Container) Provide[T any](constructor any) error {
 // MustProvide is like Provide but panics on error.
 func (c *Container) MustProvide[T any](constructor any) {
 	if err := c.Provide[T](constructor); err != nil {
-		panic(err)
-	}
-}
-
-// ProvideFactory registers a compile-time-checked factory for type T.
-// Unlike Provide, whose constructor is typed any and inspected via reflection
-// at registration time, fn's signature is enforced by the compiler. fn runs
-// lazily on first resolution, exactly once.
-//
-// fn is opaque to the container: dependencies it resolves internally are not
-// visible to Seal's graph validation or to resolve-time cycle detection.
-func (c *Container) ProvideFactory[T any](fn func() (T, error)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	targetType := reflect.TypeFor[T]()
-
-	if c.frozen {
-		return fmt.Errorf("di: ProvideFactory[%s]: container is frozen (container is sealed)", targetType)
-	}
-
-	if fn == nil {
-		return fmt.Errorf("di: ProvideFactory[%s]: factory must not be nil", targetType)
-	}
-
-	if _, exists := c.registrations[targetType]; exists {
-		return fmt.Errorf("di: ProvideFactory[%s]: already registered", targetType)
-	}
-
-	c.registrations[targetType] = factoryProvider{
-		resultType: targetType,
-		fn:         func() (any, error) { return fn() },
-	}
-	c.order = append(c.order, targetType)
-
-	// Pre-create singleton entry for later lazy resolution.
-	c.singletons[targetType] = &singletonEntry{}
-
-	return nil
-}
-
-// MustProvideFactory is like ProvideFactory but panics on error.
-func (c *Container) MustProvideFactory[T any](fn func() (T, error)) {
-	if err := c.ProvideFactory[T](fn); err != nil {
 		panic(err)
 	}
 }
@@ -133,25 +89,24 @@ func (c *Container) provideValue[T any](value T, protected bool) error {
 	c.order = append(c.order, targetType)
 
 	// Cache in singletons immediately.
-	entry := &singletonEntry{value: value}
-	entry.done.Store(true)
-	c.singletons[targetType] = entry
+	c.singletons[targetType] = &singletonEntry{state: entryBuilt, value: value}
 
 	return nil
 }
 
 // ProtectBinding prevents Replace from overwriting the existing direct
 // registration for T. Calling it repeatedly is safe. When one expected value
-// is supplied, protection succeeds only if the currently resolved singleton is
-// the same comparable value. A mismatch adds no protection; protection already
-// present on the binding remains in effect.
+// is supplied, protection succeeds only if the bound prebuilt value is the
+// same comparable value. A mismatch adds no protection; protection already
+// present on the binding remains in effect. [Container.AdoptValue] is the
+// read-validate-protect form for integrations.
 func (c *Container) ProtectBinding[T any](expected ...T) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
 	if c.frozen {
-		return fmt.Errorf("di: ProtectBinding[%s]: container is frozen (container is sealed)", targetType)
+		return frozenError("ProtectBinding", targetType)
 	}
 	if _, exists := c.registrations[targetType]; !exists {
 		return fmt.Errorf("di: ProtectBinding[%s]: type is not registered", targetType)
@@ -161,7 +116,7 @@ func (c *Container) ProtectBinding[T any](expected ...T) error {
 	}
 	if len(expected) == 1 {
 		entry, exists := c.singletons[targetType]
-		if !exists || !entry.done.Load() || entry.err != nil {
+		if !exists || entry.state != entryBuilt {
 			return fmt.Errorf("di: ProtectBinding[%s]: expected value is not resolved", targetType)
 		}
 		matches, comparable := sameComparableValue(entry.value, any(expected[0]))
@@ -193,7 +148,7 @@ func sameComparableValue(left, right any) (matches bool, comparable bool) {
 
 func (c *Container) canProvideValueLocked(targetType reflect.Type) error {
 	if c.frozen {
-		return fmt.Errorf("di: ProvideValue[%s]: container is frozen (container is sealed)", targetType)
+		return frozenError("ProvideValue", targetType)
 	}
 	if _, exists := c.registrations[targetType]; exists {
 		return fmt.Errorf("di: ProvideValue[%s]: already registered", targetType)

@@ -133,7 +133,7 @@ Its ownership and publication boundary is the successful return:
   and Shutdown. A successful registration makes it framework-owned; the DI
   container is its sole framework shutdown owner. During one teardown DI makes
   at most one Shutdown attempt if the still-live deadline reaches the
-  registration in reverse order; deadline exhaustion may skip it entirely.
+  registration in dependency order; deadline exhaustion may skip it entirely.
 - If `value` cannot implement `Lifecycle`, a separate `WithLifecycle(lc)`
   handle is accepted only with `WithCallerOwnedLifecycle()`. The handle
   supplies Ping and Health, while the caller remains responsible for Shutdown.
@@ -187,8 +187,8 @@ alias resolves the same singleton without adding another health entry or
 shutdown owner.
 
 This uniqueness guarantee is store-ledger-scoped, not container-wide. Raw
-`app.Provide`, `app.ProvideFactory`, `app.ProvideValue`,
-`app.ProvideProtectedValue`, or `app.Replace` under another T can bypass it and
+`app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
+`app.Replace` under another T can bypass it and
 publishing the same Lifecycle that way is unsupported: DI may acquire
 contradictory ownership or attempt Shutdown more than once through distinct
 registrations. A caller-owned handle must not also be registered in DI as a
@@ -253,8 +253,8 @@ The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI regis
 - Identity forwarding by semantic wrappers is explicit; the framework does not
   guess ownership by scanning arbitrary fields
 - Store-ledger uniqueness does not cover raw `app.Provide`,
-  `app.ProvideFactory`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
-  `app.Replace` publication of the same lifecycle; callers must not bypass
+  `app.ProvideValue`, `app.ProvideProtectedValue`, or `app.Replace`
+  publication of the same lifecycle; callers must not bypass
   Register for another ownership view
 - The identity ledger remains store-specific until another infrastructure
   subsystem justifies a general resource registry
