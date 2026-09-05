@@ -39,7 +39,7 @@ func TestApp_FrozenPanic_OnPreDrain(t *testing.T) {
 }
 
 func TestApp_OnPreDrainPrecedesLifecycleCancellationAndDI(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
 	app.MustProvideValue[*drainTestResource](resource)
@@ -138,7 +138,7 @@ func TestApp_OnPreDrainPrecedesLifecycleCancellationAndDI(t *testing.T) {
 }
 
 func TestApp_OnPreDrainHooksOverlap(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	firstStarted := make(chan struct{})
 	secondStarted := make(chan struct{})
 	release := make(chan struct{})
@@ -174,7 +174,7 @@ func TestApp_OnPreDrainHooksOverlap(t *testing.T) {
 }
 
 func TestApp_OnPreDrainRunsDuringFailedStartupBeforeCancellation(t *testing.T) {
-	app := mustNew(t, credo.WithAddr("127.0.0.1", 0), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
 	app.MustProvideValue[*drainTestResource](resource)
@@ -229,7 +229,6 @@ func TestApp_OnPreDrainErrorsAndPanicsContinueTeardown(t *testing.T) {
 	app := mustNew(t,
 		credo.WithAddr("127.0.0.1", 0),
 		credo.WithLogger(logger),
-		credo.WithoutAccessLog(),
 	)
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
@@ -304,7 +303,6 @@ func TestApp_OnPreDrainDeadlineIsReportedButRemainsTeardownBarrier(t *testing.T)
 	app := mustNew(t,
 		credo.WithAddr("127.0.0.1", 0),
 		credo.WithLogger(logger),
-		credo.WithoutAccessLog(),
 	)
 	resource := &drainTestResource{}
 	resource.alive.Store(true)

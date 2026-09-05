@@ -197,7 +197,6 @@ func mustNewWebSocketApp(t *testing.T) *credo.App {
 	t.Helper()
 	app, err := credo.New(
 		credo.WithAddr("127.0.0.1", 0),
-		credo.WithoutAccessLog(),
 	)
 	if err != nil {
 		t.Fatal(err)

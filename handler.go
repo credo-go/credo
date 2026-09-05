@@ -65,7 +65,7 @@ type ErrorInfo struct {
 // response itself through the [Context] (as any handler could); once
 // [Response.Committed] reports true the return value is ignored.
 //
-// Register a custom renderer with [App.SetErrorRenderer].
+// Register a custom renderer with [App.UseErrorRenderer].
 type ErrorRenderer func(ctx *Context, info *ErrorInfo) any
 
 // RenderInfo carries a successful response's status, payload, and optional
@@ -109,7 +109,7 @@ type RenderInfo struct {
 // shapes always bypass any house envelope. A renderer that panics is treated
 // like a handler panic and caught by the built-in recovery layer.
 //
-// Register a custom renderer with [App.SetSuccessRenderer]. The single
+// Register a custom renderer with [App.UseSuccessRenderer]. The single
 // [RenderInfo] seam is also the integration point a future typed-endpoint
 // layer would route its typed result through, so one envelope policy covers
 // both.

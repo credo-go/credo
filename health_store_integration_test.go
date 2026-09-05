@@ -55,7 +55,7 @@ type diagnosticHealthStore struct{ *healthStoreProbe }
 func quietHealthApp(t *testing.T) *credo.App {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+	return mustNew(t, credo.WithLogger(logger))
 }
 
 func TestReadiness_RegisteredStoresRunInParallel(t *testing.T) {
@@ -169,7 +169,7 @@ func TestReadiness_RegisteredStoreCauseContract(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, logs := newTestLogger(t)
-			app := mustNew(t, credo.WithLogger(logger), credo.WithoutRequestID())
+			app := mustNew(t, credo.WithLogger(logger))
 			if err := store.Register[*diagnosticHealthStore](app, &diagnosticHealthStore{
 				healthStoreProbe: &healthStoreProbe{health: tt.health},
 			}, store.WithName("diagnostic")); err != nil {

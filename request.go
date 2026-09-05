@@ -244,9 +244,10 @@ func (r *Request) BindBody(target any) error {
 		return &BindError{Reason: BindReasonEmptyBody}
 	}
 
-	// Credo never decompresses implicitly: a transformed body that no
-	// middleware.Decompress has unwrapped would otherwise reach the decoder as
-	// opaque bytes and be misreported as a syntax error.
+	// Credo never decompresses implicitly: a transformed body that the
+	// decompression feature (App.UseDecompress) has not unwrapped would
+	// otherwise reach the decoder as opaque bytes and be misreported as a
+	// syntax error.
 	if coding := r.Header.Get("Content-Encoding"); !httpheader.IsIdentityContentCoding(coding) {
 		return NewHTTPError(http.StatusUnsupportedMediaType, CodeUnsupportedContentEncoding).
 			WithMessageKey("unsupported content encoding: " + coding)

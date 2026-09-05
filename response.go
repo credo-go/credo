@@ -240,7 +240,7 @@ func RenderMeta(v any) RenderOption {
 }
 
 // Render sends a successful response through the app's [SuccessRenderer] when
-// one is installed via [App.SetSuccessRenderer], letting an application apply
+// one is installed via [App.UseSuccessRenderer], letting an application apply
 // a uniform response envelope at a single seam. With no renderer installed
 // (the default), it writes data as plain JSON via [Response.JSON], imposes no
 // envelope, and any [RenderOption] side channels are dropped.

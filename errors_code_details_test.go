@@ -207,7 +207,7 @@ func TestHandleError_BindErrorSeparatesClassificationAndReason(t *testing.T) {
 	type payload struct {
 		Name string `json:"name"`
 	}
-	app := mustNew(t, credo.WithoutAccessLog())
+	app := mustNew(t)
 	app.POST("/test", func(ctx *credo.Context) error {
 		var p payload
 		if err := ctx.Request().BindBody(&p); err != nil {
@@ -240,7 +240,7 @@ func TestHandleError_BindErrorSeparatesClassificationAndReason(t *testing.T) {
 // returns.
 func TestHandleError_RendererProjectsAlternateCodeCasing(t *testing.T) {
 	app := mustNew(t)
-	app.SetErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
+	app.UseErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
 		info.Code = strings.ToUpper(info.Code)
 		return nil
 	})

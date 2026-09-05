@@ -15,7 +15,7 @@ Implementation details and acceptance live in the [delivery plan](docs/plans/pre
 - [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
 - [x] P4 router minor (2026-09-05): endpoint-owned path parameter names; strict duplicate/structural conflicts retained
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
-- [ ] P8 HTTP minor: optional Use features, default recovery, single renderers, executor, cleanup and example/test migration; only after the P1 gate is implemented and verified
+- [x] P8 HTTP minor (2026-09-05): optional Use features, default recovery, single renderers, executor, cleanup and example/test migration
 - [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
 - [ ] P5 wire minor: implement the accepted URL generation/decoding round-trip contract separately
 - [ ] Performance A1–A3: [measured hot-path plan](docs/plans/wire-hot-paths.md), equivalent inputs and benchstat

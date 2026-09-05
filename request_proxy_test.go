@@ -123,7 +123,7 @@ func TestRequestSchemeAndRealIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := mustNew(t, credo.WithTrustedProxies(tt.trustedProxies...), credo.WithoutAccessLog())
+			app := mustNew(t, credo.WithTrustedProxies(tt.trustedProxies...))
 			app.GET("/", func(ctx *credo.Context) error {
 				return ctx.Response().Text(http.StatusOK, ctx.Request().Scheme()+"|"+ctx.Request().RealIP())
 			})
@@ -154,7 +154,7 @@ func longRequestForwardedForChain() string {
 }
 
 func TestRequestProxyMetadataCache(t *testing.T) {
-	app := mustNew(t, credo.WithTrustedProxies("10.0.0.0/8"), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithTrustedProxies("10.0.0.0/8"))
 	app.GET("/", func(ctx *credo.Context) error {
 		first := ctx.Request().Scheme() + "|" + ctx.Request().RealIP()
 		ctx.Request().Header.Set("X-Forwarded-Proto", "http")

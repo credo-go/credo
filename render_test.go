@@ -40,7 +40,7 @@ func TestRender_DefaultIsPlainJSON(t *testing.T) {
 
 func TestRender_UsesInstalledRenderer(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		return map[string]any{"ok": true, "data": info.Data}
 	})
 	app.GET("/x", func(c *credo.Context) error {
@@ -65,7 +65,7 @@ func TestRender_UsesInstalledRenderer(t *testing.T) {
 
 func TestRender_RawHelpersBypassRenderer(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		return map[string]any{"ok": true, "data": info.Data}
 	})
 	app.GET("/raw", func(c *credo.Context) error {
@@ -88,7 +88,7 @@ func TestRender_RawHelpersBypassRenderer(t *testing.T) {
 
 func TestRender_RendererNilReturnWritesDataPlain(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		// Envelope selectively: nil = write info.Data without an envelope.
 		return nil
 	})
@@ -108,7 +108,7 @@ func TestRender_RendererNilReturnWritesDataPlain(t *testing.T) {
 
 func TestRender_CommittedRendererKeepsFullControl(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		_ = c.Response().Text(http.StatusAccepted, "custom")
 		// Committed: this return value must be ignored.
 		return map[string]string{"must": "not appear"}
@@ -129,7 +129,7 @@ func TestRender_CommittedRendererKeepsFullControl(t *testing.T) {
 func TestRender_OptionsReachRenderInfo(t *testing.T) {
 	app := mustNew(t)
 	var got credo.RenderInfo
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		got = info
 		return map[string]any{"data": info.Data, "meta": info.Meta}
 	})
@@ -174,7 +174,7 @@ func TestRender_OptionsSilentlyDropWithoutRenderer(t *testing.T) {
 
 func TestRender_BodilessStatusSkipsRendererBody(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		return map[string]string{"must": "not appear"}
 	})
 	app.DELETE("/x", func(c *credo.Context) error {
@@ -195,8 +195,8 @@ func TestRender_BodilessStatusSkipsRendererBody(t *testing.T) {
 }
 
 func TestRender_RendererPanicIsRecoveredAs500(t *testing.T) {
-	app := mustNew(t, credo.WithoutAccessLog())
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app := mustNew(t)
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		panic("renderer exploded")
 	})
 	app.GET("/x", func(c *credo.Context) error {
@@ -226,15 +226,15 @@ func TestRender_NilAppFallsBackToJSON(t *testing.T) {
 	}
 }
 
-func TestSetSuccessRenderer_FrozenPanics(t *testing.T) {
+func TestUseSuccessRenderer_FrozenPanics(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/x", func(c *credo.Context) error { return nil })
 	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 
 	defer func() {
 		if recover() == nil {
-			t.Fatal("expected panic from SetSuccessRenderer after compile")
+			t.Fatal("expected panic from UseSuccessRenderer after compile")
 		}
 	}()
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any { return nil })
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any { return nil })
 }

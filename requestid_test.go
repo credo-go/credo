@@ -2,17 +2,18 @@ package credo_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/middleware"
 )
 
-func TestBuiltinRequestID_GeneratesID(t *testing.T) {
-	app := mustNew(t, credo.WithoutAccessLog())
+func TestRequestID_GeneratesID(t *testing.T) {
+	app := mustNew(t)
+	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -31,8 +32,9 @@ func TestBuiltinRequestID_GeneratesID(t *testing.T) {
 	}
 }
 
-func TestBuiltinRequestID_PreservesExisting(t *testing.T) {
-	app := mustNew(t, credo.WithoutAccessLog())
+func TestRequestID_PreservesExisting(t *testing.T) {
+	app := mustNew(t)
+	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})
@@ -47,7 +49,7 @@ func TestBuiltinRequestID_PreservesExisting(t *testing.T) {
 	}
 }
 
-func TestBuiltinRequestID_RejectsInvalid(t *testing.T) {
+func TestRequestID_RejectsInvalid(t *testing.T) {
 	tests := []struct {
 		name string
 		id   string
@@ -60,7 +62,8 @@ func TestBuiltinRequestID_RejectsInvalid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := mustNew(t, credo.WithoutAccessLog())
+			app := mustNew(t)
+			app.UseRequestID()
 			app.GET("/", func(ctx *credo.Context) error {
 				return ctx.Response().NoContent(200)
 			})
@@ -81,10 +84,11 @@ func TestBuiltinRequestID_RejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestBuiltinRequestID_EnrichesLogger(t *testing.T) {
+func TestRequestID_EnrichesLogger(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
-	app := mustNew(t, credo.WithLogger(logger), credo.WithoutAccessLog())
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		ctx.Logger().Info("handler called")
 		return ctx.Response().NoContent(200)
@@ -109,30 +113,78 @@ func TestBuiltinRequestID_EnrichesLogger(t *testing.T) {
 	}
 }
 
-func TestBuiltinRequestID_CompatibleWithMiddleware(t *testing.T) {
+func TestRequestID_CustomConfig(t *testing.T) {
+	app := mustNew(t)
+	app.UseRequestID(credo.RequestIDConfig{
+		Header:    "X-Trace-Id",
+		Generator: func() string { return "generated-trace" },
+		Limit:     8,
+	})
 	var captured string
-	app := mustNew(t, credo.WithoutAccessLog())
 	app.GET("/", func(ctx *credo.Context) error {
-		captured = middleware.GetRequestID(ctx)
+		captured = ctx.RequestID()
 		return ctx.Response().NoContent(200)
 	})
 
+	// Incoming value within the limit is preserved on the custom header.
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Trace-Id", "abc123")
 	app.ServeHTTP(w, r)
+	if got := w.Header().Get("X-Trace-Id"); got != "abc123" || captured != "abc123" {
+		t.Errorf("X-Trace-Id = %q, RequestID = %q, want abc123", got, captured)
+	}
+	if got := w.Header().Get("X-Request-Id"); got != "" {
+		t.Errorf("X-Request-Id = %q, want empty with a custom header", got)
+	}
 
-	if captured == "" {
-		t.Error("GetRequestID returned empty string, expected built-in request ID")
+	// Over the limit → the custom generator replaces it.
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Trace-Id", "123456789")
+	app.ServeHTTP(w, r)
+	if got := w.Header().Get("X-Trace-Id"); got != "generated-trace" {
+		t.Errorf("X-Trace-Id = %q, want generated-trace", got)
 	}
-	if captured != w.Header().Get("X-Request-Id") {
-		t.Errorf("GetRequestID = %q, response header = %q", captured, w.Header().Get("X-Request-Id"))
-	}
+}
+
+func TestUseRequestID_Misuse(t *testing.T) {
+	t.Run("twice", func(t *testing.T) {
+		app := mustNew(t)
+		app.UseRequestID()
+		defer func() {
+			if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "called twice") {
+				t.Fatalf("panic = %v, want called twice", r)
+			}
+		}()
+		app.UseRequestID()
+	})
+	t.Run("two configs", func(t *testing.T) {
+		app := mustNew(t)
+		defer func() {
+			if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "at most one config") {
+				t.Fatalf("panic = %v, want at most one config", r)
+			}
+		}()
+		app.UseRequestID(credo.RequestIDConfig{}, credo.RequestIDConfig{})
+	})
+	t.Run("after prepare", func(t *testing.T) {
+		app := mustNew(t)
+		app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic from UseRequestID after preparation")
+			}
+		}()
+		app.UseRequestID()
+	})
 }
 
 func TestContext_RequestID(t *testing.T) {
 	var captured string
 
-	app := mustNew(t, credo.WithoutAccessLog())
+	app := mustNew(t)
+	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		captured = ctx.RequestID()
 		return ctx.Response().NoContent(200)
@@ -150,23 +202,30 @@ func TestContext_RequestID(t *testing.T) {
 	}
 }
 
-func TestWithoutRequestID_Disables(t *testing.T) {
-	app := mustNew(t, credo.WithoutRequestID(), credo.WithoutAccessLog())
+func TestRequestID_OffByDefault(t *testing.T) {
+	var captured string
+	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
+		captured = ctx.RequestID()
 		return ctx.Response().NoContent(200)
 	})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Request-Id", "incoming")
 	app.ServeHTTP(w, r)
 
 	if got := w.Header().Get("X-Request-Id"); got != "" {
-		t.Errorf("X-Request-Id = %q, want empty with WithoutRequestID", got)
+		t.Errorf("X-Request-Id = %q, want empty without UseRequestID", got)
+	}
+	if captured != "" {
+		t.Errorf("Context.RequestID = %q, want empty without UseRequestID", captured)
 	}
 }
 
-func TestBuiltinRequestID_UniquePerRequest(t *testing.T) {
-	app := mustNew(t, credo.WithoutAccessLog())
+func TestRequestID_UniquePerRequest(t *testing.T) {
+	app := mustNew(t)
+	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
 	})

@@ -204,8 +204,8 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 	if err := app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-		Detect: func(r *http.Request) string {
-			return r.URL.Query().Get("lang")
+		Detect: func(ctx *credo.Context) string {
+			return ctx.Request().URL.Query().Get("lang")
 		},
 	}); err != nil {
 		t.Fatalf("UseI18n: %v", err)

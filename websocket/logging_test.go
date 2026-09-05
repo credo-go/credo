@@ -22,6 +22,8 @@ func TestConnectionAndAccessLogContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	app.UseRequestID()
+	app.UseAccessLog()
 	server := Use(app, Config{Subprotocols: []string{"events.v1"}})
 	app.GET("/events", server.Handler(func(_ *credo.Context, conn *Conn) error {
 		_, _, readErr := conn.Read(conn.Context())
@@ -110,10 +112,11 @@ func TestConnectionFailureLogsAreStructuredAndSecretSafe(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			capture := &conformanceLogCapture{}
 			logger := slog.New(&conformanceLogHandler{capture: capture})
-			app, err := credo.New(credo.WithLogger(logger), credo.WithoutAccessLog())
+			app, err := credo.New(credo.WithLogger(logger))
 			if err != nil {
 				t.Fatal(err)
 			}
+			app.UseRequestID()
 			server := Use(app, Config{AllowedOrigins: []string{"https://allowed.example"}})
 			app.GET("/ws", server.Handler(tc.handler)).Name("secret-route")
 			httpServer := httptest.NewServer(app)
@@ -170,7 +173,7 @@ func TestConnectionFailureLogsAreStructuredAndSecretSafe(t *testing.T) {
 func TestReadLimitLogsWarnWithoutPayload(t *testing.T) {
 	capture := &conformanceLogCapture{}
 	logger := slog.New(&conformanceLogHandler{capture: capture})
-	app, err := credo.New(credo.WithLogger(logger), credo.WithoutAccessLog())
+	app, err := credo.New(credo.WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +215,7 @@ func TestReadLimitLogsWarnWithoutPayload(t *testing.T) {
 func TestPeerPolicyCloseLogsWarnWithoutRawReason(t *testing.T) {
 	capture := &conformanceLogCapture{}
 	logger := slog.New(&conformanceLogHandler{capture: capture})
-	app, err := credo.New(credo.WithLogger(logger), credo.WithoutAccessLog())
+	app, err := credo.New(credo.WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}

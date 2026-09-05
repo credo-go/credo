@@ -184,7 +184,7 @@ func TestRender_InheritsProfile(t *testing.T) {
 // framework profile applies only to bodies the renderer returns.
 func TestRender_SuccessRendererOwnsEncoding(t *testing.T) {
 	app := mustNew(t)
-	app.SetSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
+	app.UseSuccessRenderer(func(c *credo.Context, info credo.RenderInfo) any {
 		_ = c.Response().Text(info.Status, "rendered")
 		return nil
 	})

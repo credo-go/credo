@@ -12,39 +12,27 @@
 //
 // Middleware with options uses an optional config parameter:
 //
-//	app.GlobalMiddleware(middleware.AccessLog())                          // default config
-//	app.GlobalMiddleware(middleware.AccessLog(middleware.AccessLogConfig{...})) // custom config
+//	app.GlobalMiddleware(middleware.CORS())                            // default config
+//	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{...}))  // custom config
 //
-// # Built-in vs Configurable
+// # Framework Features Are Not Middleware
 //
-// Credo provides built-in versions of Recover, RequestID, and AccessLog that are
-// auto-enabled with zero configuration. Built-in AccessLog also supports a
-// dedicated logger, minimum level, skipper, and post-response result filter;
-// keeping it preserves final error-renderer status, bytes, and duration. Use
-// this package's AccessLog for route/group-specific policies or a deliberate
-// second sink. Disable the built-in first when duplicate records are unwanted:
+// Panic recovery, request IDs, access logging, response compression, request
+// decompression and locale detection are framework-owned HTTP features of the
+// root package, not middleware: recovery is on by default (configure it with
+// [credo.WithRecoverConfig], disable it with [credo.WithoutRecover]) and the
+// others are installed once per App through [credo.App.UseRequestID],
+// [credo.App.UseAccessLog], [credo.App.UseCompress], [credo.App.UseDecompress]
+// and [credo.App.UseI18n]. The request executor runs them in a fixed order
+// around the whole user chain, so they observe the final response — error
+// envelopes and panic responses included — and cannot be applied per route or
+// per group. Handlers read the current request ID via ctx.RequestID().
 //
-//	app, _ := credo.New(
-//	    credo.WithoutRequestID(),     // disable built-in
-//	    credo.WithoutAccessLog(), // disable built-in
-//	)
-//	app.GlobalMiddleware(
-//	    middleware.RequestID(middleware.RequestIDConfig{Header: "X-Trace-Id"}),
-//	    middleware.AccessLog(middleware.AccessLogConfig{Skipper: mySkipper}),
-//	)
-//
-// Most configurable middleware in this package expose a [Skipper] for
-// selective application. RequestID and Recover intentionally do not:
-// RequestID is expected to run on every request, and Recover is intended to
-// remain the outermost safety net.
-//
-// Handlers can read the current request ID via ctx.RequestID() or
-// [GetRequestID].
+// Most middleware in this package expose a [Skipper] for selective application.
 //
 // # Recommended Middleware Order
 //
-// Built-in middleware (recover, requestID, access log) runs automatically.
-// Add extra global middleware for additional cross-cutting concerns:
+// Add global middleware for cross-cutting concerns:
 //
 //	app.GlobalMiddleware(
 //	    middleware.Secure(),  // Security headers
@@ -57,13 +45,11 @@
 // group.Middleware(...) affects routes registered after that call, not previously
 // registered routes.
 //
-// Additional middleware in this package:
+// Middleware in this package:
 //   - Rewrite(cfg ...RewriteConfig) — pre-dispatch URL path rewriting
 //   - CORS(cfg ...CORSConfig)
 //   - CSRF(cfg ...CSRFConfig) — Sec-Fetch-Site based, no tokens
 //   - Secure(cfg ...SecureConfig)
-//   - Compress(cfg ...CompressConfig) — response compression
-//   - Decompress(cfg ...DecompressConfig) — opt-in request body decompression
 //   - Timeout(cfg ...TimeoutConfig)
 //   - RateLimit(cfg ...RateLimitConfig)
 //

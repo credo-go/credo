@@ -31,6 +31,18 @@ func newTranslateTestBundle(t *testing.T) *internali18n.Bundle {
 	return b
 }
 
+// newTranslateTestApp builds a bare App with the bundle installed as the
+// i18n feature (default language "en", Accept-Language detection).
+func newTranslateTestApp(b *internali18n.Bundle) *App {
+	return &App{i18n: &i18nFeature{bundle: b, defaultLang: "en", detect: detectAcceptLanguage}}
+}
+
+// resolvedLocaleContext returns a Context whose locale is already resolved to
+// lang, the state a request reaches after its first Locale/translation access.
+func resolvedLocaleContext(app *App, lang string) *Context {
+	return &Context{app: app, locale: lang, localeState: localeResolved}
+}
+
 // --- translateValidationErrors tests ---
 
 func TestTranslateValidationErrors_Turkish(t *testing.T) {
@@ -40,8 +52,8 @@ func TestTranslateValidationErrors_Turkish(t *testing.T) {
 		{Field: "name", Code: "required", Message: "is required"},
 	}
 
-	app := &App{i18nBundle: b}
-	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
+	app := newTranslateTestApp(b)
+	translated := app.translateValidationErrors(resolvedLocaleContext(app, "tr"), ve)
 
 	if len(translated) != 2 {
 		t.Fatalf("len = %d, want 2", len(translated))
@@ -70,8 +82,8 @@ func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
-	app := &App{i18nBundle: b}
-	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
+	app := newTranslateTestApp(b)
+	translated := app.translateValidationErrors(resolvedLocaleContext(app, "tr"), ve)
 	if translated[0].Message != "e-posta adresi zorunludur" {
 		t.Errorf("Message = %q, want %q", translated[0].Message, "e-posta adresi zorunludur")
 	}
@@ -95,8 +107,8 @@ func TestTranslateValidationErrors_WithParams(t *testing.T) {
 		},
 	}
 
-	app := &App{i18nBundle: b}
-	translated := app.translateValidationErrors(&Context{app: app, locale: "tr"}, ve)
+	app := newTranslateTestApp(b)
+	translated := app.translateValidationErrors(resolvedLocaleContext(app, "tr"), ve)
 	want := "2 ile 100 karakter arasında olmalıdır"
 	if translated[0].Message != want {
 		t.Errorf("Message = %q, want %q", translated[0].Message, want)
@@ -110,8 +122,8 @@ func TestTranslateValidationErrors_MissingTranslation(t *testing.T) {
 		{Field: "name", Code: "custom_rule", Message: "custom message"},
 	}
 
-	app := &App{i18nBundle: b}
-	translated := app.translateValidationErrors(&Context{app: app, locale: "en"}, ve)
+	app := newTranslateTestApp(b)
+	translated := app.translateValidationErrors(resolvedLocaleContext(app, "en"), ve)
 	if translated[0].Message != "custom message" {
 		t.Errorf("Message = %q, want %q (original)", translated[0].Message, "custom message")
 	}
@@ -123,8 +135,8 @@ func TestTranslateValidationErrors_DoesNotMutateOriginal(t *testing.T) {
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
-	app := &App{i18nBundle: b}
-	_ = app.translateValidationErrors(&Context{app: app, locale: "tr"}, original)
+	app := newTranslateTestApp(b)
+	_ = app.translateValidationErrors(resolvedLocaleContext(app, "tr"), original)
 
 	if original[0].Message != "is required" {
 		t.Errorf("original mutated: Message = %q, want %q", original[0].Message, "is required")
@@ -136,8 +148,8 @@ func TestTranslateValidationErrors_DoesNotMutateOriginal(t *testing.T) {
 func TestResolveMessage_WithI18n(t *testing.T) {
 	b := newTranslateTestBundle(t)
 
-	app := &App{i18nBundle: b}
-	ctx := &Context{app: app, locale: "tr"}
+	app := newTranslateTestApp(b)
+	ctx := resolvedLocaleContext(app, "tr")
 
 	_, got := app.resolveErrorMessage(ctx, 404, "not_found", "")
 	if got != "Bulunamadı" {
@@ -177,8 +189,8 @@ func TestResolveMessage_I18nMiss_BuiltInHit(t *testing.T) {
 	b, _ := internali18n.NewBundleFromString("en")
 	_, _ = b.LoadDirFSSource(fsys, ".")
 
-	app := &App{i18nBundle: b}
-	ctx := &Context{app: app, locale: "en"}
+	app := newTranslateTestApp(b)
+	ctx := resolvedLocaleContext(app, "en")
 
 	_, got := app.resolveErrorMessage(ctx, 409, "conflict", "")
 	if got != "Conflict" {

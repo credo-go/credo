@@ -26,7 +26,7 @@ func TestNewApp_Defaults(t *testing.T) {
 		t.Error("expected hermetic config: the server key should not exist")
 	}
 
-	// The App is usable and the built-in middleware tier runs.
+	// The App is usable and the framework request executor runs.
 	app.GET("/ping", func(c *credo.Context) error {
 		return c.Response().Text(http.StatusOK, "pong")
 	})
@@ -97,6 +97,7 @@ func TestWithConfig_Injection(t *testing.T) {
 func TestAssertHas_Pass(t *testing.T) {
 	buf := testutil.NewLogBuffer()
 	app := testutil.NewApp(t, testutil.WithLogBuffer(buf))
+	app.UseAccessLog()
 
 	app.GET("/ping", func(c *credo.Context) error {
 		return c.Response().Text(http.StatusOK, "pong")
@@ -104,7 +105,7 @@ func TestAssertHas_Pass(t *testing.T) {
 	rec := httptest.NewRecorder()
 	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ping", nil))
 
-	// The built-in access log emits "request completed" at INFO for a 200,
+	// The access log feature emits "request completed" at INFO for a 200,
 	// with method and status attributes. Level matches case-insensitively and
 	// status (an int) is compared after JSON normalization.
 	buf.AssertHas(t, testutil.LogEntry{
@@ -120,6 +121,7 @@ func TestAssertHas_Pass(t *testing.T) {
 func TestAssertNotHas_Pass(t *testing.T) {
 	buf := testutil.NewLogBuffer()
 	app := testutil.NewApp(t, testutil.WithLogBuffer(buf))
+	app.UseAccessLog()
 
 	app.GET("/ping", func(c *credo.Context) error {
 		return c.Response().Text(http.StatusOK, "pong")

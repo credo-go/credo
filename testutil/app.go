@@ -63,8 +63,9 @@ func WithConfig(key string, val any) Option {
 }
 
 // WithLogBuffer routes the App's logger to buf so tests can assert on
-// structured log output, including the built-in request ID and access log
-// records. Without this option the test App uses a silent logger.
+// structured log output, including the request ID and access log records
+// once those features are installed with app.UseRequestID and
+// app.UseAccessLog. Without this option the test App uses a silent logger.
 func WithLogBuffer(buf *LogBuffer) Option {
 	return func(o *options) { o.logBuffer = buf }
 }

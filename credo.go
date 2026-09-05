@@ -20,8 +20,6 @@ import (
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
 	internalhealth "github.com/credo-go/credo/internal/health"
-	internali18n "github.com/credo-go/credo/internal/i18n"
-	internalobserve "github.com/credo-go/credo/internal/observe"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
@@ -39,12 +37,12 @@ type App struct {
 	// mux is the underlying radix-tree router.
 	mux *mux
 
-	// errorRenderer shapes error response bodies, set via SetErrorRenderer.
+	// errorRenderer shapes error response bodies, set via UseErrorRenderer.
 	// nil = default Credo JSON error envelope.
 	errorRenderer ErrorRenderer
 
 	// successRenderer formats successful responses sent via Context.Render,
-	// set via SetSuccessRenderer. nil = default JSON (no envelope). Raw
+	// set via UseSuccessRenderer. nil = default JSON (no envelope). Raw
 	// Response helpers (JSON/XML/Text/Blob/...) never consult it.
 	successRenderer SuccessRenderer
 
@@ -116,12 +114,14 @@ type App struct {
 	// applies to Run/RunContext only (not ServeContext).
 	httpRedirectAddr string
 
-	// i18nBundle holds the loaded i18n message bundle (nil if i18n inactive).
-	i18nBundle *internali18n.Bundle
+	// i18n is the installed internationalization feature: the loaded bundle,
+	// the message-key resolver and the lazy locale detector. nil when i18n is
+	// inactive.
+	i18n *i18nFeature
 
-	// messageKeyResolver maps scoped machine codes to application-owned exact
-	// i18n keys. nil means the bare code is used.
-	messageKeyResolver MessageKeyResolver
+	// i18nRegistered records that UseI18n completed (an inactive conventional
+	// setup included) so a second call is rejected.
+	i18nRegistered bool
 
 	// healthEngine holds the health check engine (nil if UseHealth not called).
 	healthEngine *internalhealth.Engine
@@ -154,38 +154,21 @@ type App struct {
 	// Resolved once from config/option in New(); default true.
 	redirectTrailingSlash bool
 
-	// disableRecover disables the built-in panic recovery wrapper.
-	// Set via WithoutRecover option.
-	disableRecover bool
+	// recover is the panic recovery configuration; nil when WithoutRecover
+	// disabled recovery. Resolved from options in New.
+	recover *recoverFeature
 
-	// disableRequestID disables the built-in request ID middleware.
-	// Set via WithoutRequestID option.
-	disableRequestID bool
-
-	// disableAccessLog disables the built-in access logger middleware.
-	// Set via WithoutAccessLog option.
-	disableAccessLog bool
+	// requestID, accessLog, compress and decompress are the HTTP features
+	// installed through the Use* methods; nil means the feature is off. They
+	// are published under prepMu and read by the request executor.
+	requestID  *requestIDFeature
+	accessLog  *accessLogFeature
+	compress   *compressFeature
+	decompress *decompressFeature
 
 	// disableReloadSignals makes Run ignore (and log) reload signals instead
 	// of triggering App.Reload. Set via WithoutReloadSignals option.
 	disableReloadSignals bool
-
-	// accessLogLogger is the optional dedicated sink for built-in access-log
-	// records. nil uses the request-scoped logger.
-	accessLogLogger *slog.Logger
-
-	// accessLogMinLevel is the dynamic minimum status-derived level for the
-	// built-in access logger. It is normalized to Info during New.
-	accessLogMinLevel slog.Leveler
-
-	// accessLogSkipper, when non-nil, is consulted by the built-in access
-	// logger before routing; a true result skips logging for that request.
-	// Set via WithAccessLogSkipper option.
-	accessLogSkipper func(*Context) bool
-
-	// accessLogFilter, when non-nil, is consulted after the final response and
-	// minimum-level check. A true result emits the entry.
-	accessLogFilter AccessLogResultFilter
 
 	// debug enables development-mode warnings.
 	// Set via WithDebug option or server.debug config key.
@@ -255,12 +238,6 @@ func parseOptions(opts []Option) (appOptions, error) {
 	var o appOptions
 	for _, opt := range opts {
 		opt(&o)
-	}
-	if internalobserve.IsTypedNilLeveler(o.accessLogMinLevel) {
-		return appOptions{}, fmt.Errorf("credo: WithAccessLogMinLevel: typed-nil slog.Leveler")
-	}
-	if o.accessLogMinLevel == nil {
-		o.accessLogMinLevel = slog.LevelInfo
 	}
 	return o, nil
 }
@@ -336,19 +313,15 @@ func assembleApp(
 		tlsFilesSet:           o.tlsFiles.isSet,
 		httpRedirectAddr:      o.httpRedirectAddr,
 		redirectTrailingSlash: serverCfg.RedirectTrailingSlash == nil || *serverCfg.RedirectTrailingSlash,
-		disableRecover:        o.disableRecover,
-		disableRequestID:      o.disableRequestID,
-		disableAccessLog:      o.disableAccessLog,
 		disableReloadSignals:  o.disableReloadSignals,
-		accessLogLogger:       o.accessLogLogger,
-		accessLogMinLevel:     o.accessLogMinLevel,
-		accessLogSkipper:      o.accessLogSkipper,
-		accessLogFilter:       o.accessLogFilter,
 		debug:                 o.debug || serverCfg.Debug,
 		strictBodies:          o.strictBodies || serverCfg.StrictBodies,
 		configureServer:       o.configureServer,
 		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
+	}
+	if !o.disableRecover {
+		app.recover = newRecoverFeature(o.recoverCfg)
 	}
 	app.addReloadParticipant(app.tlsReloadParticipant())
 	app.root = &Group{registrar: app}
@@ -504,38 +477,6 @@ func (app *App) StatusHandler(code int, h Handler) {
 		app.statusHandlers = make(map[int]Handler)
 	}
 	app.statusHandlers[code] = h
-}
-
-// SetErrorRenderer sets the renderer that shapes error response bodies. The
-// framework handles error classification, logging, the status code, HEAD
-// handling, and committed-response guards internally; the renderer receives an
-// request-scoped [ErrorInfo] containing normalized status, code, message key,
-// resolved message, details, and violations, and returns the body to encode —
-// or nil for the default Credo body. Passing nil restores the default JSON
-// renderer. It is the error-side mirror of [App.SetSuccessRenderer]: install
-// both to give every response, success and failure alike, one envelope.
-//
-// Must be called before the server starts; panics if called after compile.
-func (app *App) SetErrorRenderer(r ErrorRenderer) {
-	app.checkFrozen("App.SetErrorRenderer")
-	app.errorRenderer = r
-}
-
-// SetSuccessRenderer sets the renderer that shapes successful responses sent
-// through [Context.Render]. It is opt-in: with no renderer installed, Render
-// falls back to plain JSON and the framework imposes no response envelope. The
-// renderer receives a [RenderInfo] (status, data, and any [RenderOption] side
-// channels) and returns the body to encode — nil writes the data plain; the
-// framework owns the write, mirroring [App.SetErrorRenderer]'s shape-only
-// contract. The raw [Response] helpers ([Response.JSON] and friends) are never
-// routed through it, so an enterprise envelope ({code,message,data}, HAL,
-// JSON:API, …) applies only where handlers opt in via Render. Passing nil
-// restores the default.
-//
-// Must be called before the server starts; panics if called after compile.
-func (app *App) SetSuccessRenderer(r SuccessRenderer) {
-	app.checkFrozen("App.SetSuccessRenderer")
-	app.successRenderer = r
 }
 
 // --- Meta ---

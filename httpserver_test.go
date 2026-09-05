@@ -172,7 +172,7 @@ func TestWithHTTPServer_TLSConfigNotHonoured(t *testing.T) {
 // WithHTTPServer, Protocols was unreachable and H2C could not be served at
 // all.
 func TestWithHTTPServer_H2C(t *testing.T) {
-	app := mustNew(t, credo.WithoutAccessLog(), credo.WithHTTPServer(func(s *http.Server) {
+	app := mustNew(t, credo.WithHTTPServer(func(s *http.Server) {
 		protocols := new(http.Protocols)
 		protocols.SetHTTP1(true)
 		protocols.SetUnencryptedHTTP2(true)
@@ -222,7 +222,6 @@ func TestWithHTTPServer_RedirectServerExcluded(t *testing.T) {
 
 	var calls atomic.Int64
 	app := mustNew(t, credo.WithAddr("127.0.0.1", 0),
-		credo.WithoutAccessLog(),
 		credo.WithTLSFiles(certFile, keyFile),
 		credo.WithHTTPRedirect(redirectAddr),
 		credo.WithHTTPServer(func(s *http.Server) {

@@ -33,13 +33,31 @@ func (w *wireBenchmarkWriter) ReadFrom(src io.Reader) (int64, error) {
 	return io.Copy(io.Discard, src)
 }
 
+// wireBenchmarkFeatures selects the HTTP features a benchmark app installs.
+type wireBenchmarkFeatures struct {
+	requestID bool
+	accessLog bool
+	accessCfg AccessLogConfig
+}
+
 func newWireBenchmarkApp(b *testing.B, coreOnly bool) *App {
 	b.Helper()
-	var opts []Option
 	if coreOnly {
-		opts = append(opts, WithoutRequestID(), WithoutAccessLog())
+		return newWireBenchmarkAppWithOptions(b)
 	}
-	return newWireBenchmarkAppWithOptions(b, opts...)
+	app := newWireBenchmarkAppWithOptions(b)
+	app.UseRequestID()
+	app.UseAccessLog()
+	return app
+}
+
+func installWireBenchmarkFeatures(app *App, f wireBenchmarkFeatures) {
+	if f.requestID {
+		app.UseRequestID()
+	}
+	if f.accessLog {
+		app.UseAccessLog(f.accessCfg)
+	}
 }
 
 func newWireBenchmarkAppWithOptions(b *testing.B, opts ...Option) *App {
@@ -77,30 +95,32 @@ func BenchmarkWireObservability(b *testing.B) {
 	tests := []struct {
 		name      string
 		opts      []Option
+		features  wireBenchmarkFeatures
 		requestID string
 	}{
-		{name: "Core", opts: []Option{WithoutRequestID(), WithoutAccessLog()}},
-		{name: "RequestID/Generated", opts: []Option{WithoutAccessLog()}},
-		{name: "RequestID/Incoming", opts: []Option{WithoutAccessLog()}, requestID: "upstream-request-id"},
-		{name: "AccessLog/Enabled", opts: []Option{WithoutRequestID()}},
+		{name: "Core"},
+		{name: "RequestID/Generated", features: wireBenchmarkFeatures{requestID: true}},
+		{name: "RequestID/Incoming", features: wireBenchmarkFeatures{requestID: true}, requestID: "upstream-request-id"},
+		{name: "AccessLog/Enabled", features: wireBenchmarkFeatures{accessLog: true}},
 		{
-			name: "AccessLog/MinLevelFiltered",
-			opts: []Option{WithoutRequestID(), WithAccessLogMinLevel(slog.LevelError)},
+			name:     "AccessLog/MinLevelFiltered",
+			features: wireBenchmarkFeatures{accessLog: true, accessCfg: AccessLogConfig{MinLevel: slog.LevelError}},
 		},
 		{
 			name: "AccessLog/HandlerFiltered",
 			opts: []Option{
-				WithoutRequestID(),
 				WithLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))),
 			},
+			features: wireBenchmarkFeatures{accessLog: true},
 		},
-		{name: "Both/Generated"},
-		{name: "Both/Incoming", requestID: "upstream-request-id"},
+		{name: "Both/Generated", features: wireBenchmarkFeatures{requestID: true, accessLog: true}},
+		{name: "Both/Incoming", features: wireBenchmarkFeatures{requestID: true, accessLog: true}, requestID: "upstream-request-id"},
 	}
 
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
 			app := newWireBenchmarkAppWithOptions(b, tt.opts...)
+			installWireBenchmarkFeatures(app, tt.features)
 			app.GET("/bench", func(ctx *Context) error {
 				return ctx.Response().NoContent(http.StatusNoContent)
 			})
@@ -199,12 +219,13 @@ func (r *wireBenchmarkReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// BenchmarkWireSuccess separates the default observability stack from the
-// response core. The Core cases still include recovery and centralized error
-// handling; only request ID and access logging are disabled.
+// BenchmarkWireSuccess separates the request-ID + access-log feature set from
+// the response core. The Core cases are the default profile — recovery and
+// centralized error handling only; the Features cases install UseRequestID
+// and UseAccessLog.
 func BenchmarkWireSuccess(b *testing.B) {
 	for _, coreOnly := range []bool{false, true} {
-		mode := "Builtins"
+		mode := "Features"
 		if coreOnly {
 			mode = "Core"
 		}
@@ -227,7 +248,7 @@ func BenchmarkWireSuccess(b *testing.B) {
 
 		b.Run(mode+"/RenderWithRenderer", func(b *testing.B) {
 			app := newWireBenchmarkApp(b, coreOnly)
-			app.SetSuccessRenderer(func(_ *Context, info RenderInfo) any {
+			app.UseSuccessRenderer(func(_ *Context, info RenderInfo) any {
 				return wireBenchmarkSuccessEnvelope{Success: true, Data: info.Data}
 			})
 			app.GET("/bench", func(ctx *Context) error {
@@ -238,7 +259,7 @@ func BenchmarkWireSuccess(b *testing.B) {
 
 		b.Run(mode+"/RenderWithOptions", func(b *testing.B) {
 			app := newWireBenchmarkApp(b, coreOnly)
-			app.SetSuccessRenderer(func(_ *Context, info RenderInfo) any {
+			app.UseSuccessRenderer(func(_ *Context, info RenderInfo) any {
 				return wireBenchmarkSuccessEnvelope{Success: true, Data: info.Data}
 			})
 			app.GET("/bench", func(ctx *Context) error {
@@ -292,10 +313,11 @@ func BenchmarkWireSuccess(b *testing.B) {
 }
 
 // BenchmarkWireError covers each error classifier branch and the first-party
-// RFC 9457 renderer, again with and without default observability overhead.
+// RFC 9457 renderer, again with and without the request-ID + access-log
+// feature set.
 func BenchmarkWireError(b *testing.B) {
 	for _, coreOnly := range []bool{false, true} {
-		mode := "Builtins"
+		mode := "Features"
 		if coreOnly {
 			mode = "Core"
 		}
@@ -340,7 +362,7 @@ func BenchmarkWireError(b *testing.B) {
 
 		b.Run(mode+"/RFC9457", func(b *testing.B) {
 			app := newWireBenchmarkApp(b, coreOnly)
-			app.SetErrorRenderer(RFC9457ErrorRenderer())
+			app.UseErrorRenderer(RFC9457ErrorRenderer())
 			app.GET("/bench", func(*Context) error { return ErrNotFound })
 			runWireBenchmark(b, app, http.MethodGet, "/bench")
 		})

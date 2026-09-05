@@ -13,7 +13,7 @@ import (
 )
 
 func Example() {
-	app, err := credo.New(credo.WithoutAccessLog())
+	app, err := credo.New()
 	if err != nil {
 		panic(err)
 	}

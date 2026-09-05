@@ -35,15 +35,17 @@
 //   - Handler: func(*credo.Context) error — all handlers return errors
 //   - Context: request-scoped struct with Request/Response accessors
 //   - Middleware: func(credo.Handler) credo.Handler — wraps Handlers.
-//     Four tiers run in order: built-in → global → group → route. Group
-//     middleware is collected from the group parent chain when the app
-//     compiles, so registration order affects execution order only —
-//     middleware added to a group after its routes still applies to them.
+//     Three tiers run in order: global → group → route. Group middleware is
+//     collected from the group parent chain when the app compiles, so
+//     registration order affects execution order only — middleware added to a
+//     group after its routes still applies to them. Panic recovery, request
+//     IDs, access logging, compression, decompression and locale detection
+//     are framework features that wrap the whole chain, not middleware.
 //   - Route: fluent API with Name(), SetMeta(), Middleware()
 //   - QUERY: first-class RFC 10008 routes via App.QUERY/Group.QUERY; request
 //     content requires Content-Type and is commonly decoded with BindBody
-//   - ErrorRenderer: receives normalized *ErrorInfo and shapes error response bodies via App.SetErrorRenderer — returns the body (nil = default Credo envelope); classification, localization, logging, status, and writing handled by framework; RFC 9457 is an opt-in renderer
-//   - SuccessRenderer: opt-in uniform success envelope via App.SetSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped) — shape-only like ErrorRenderer: returns the body for a RenderInfo, the framework writes it
+//   - ErrorRenderer: receives normalized *ErrorInfo and shapes error response bodies via App.UseErrorRenderer — returns the body (nil = default Credo envelope); classification, localization, logging, status, and writing handled by framework; RFC 9457 is an opt-in renderer
+//   - SuccessRenderer: opt-in uniform success envelope via App.UseSuccessRenderer, applied only at the Context.Render seam (raw Response helpers stay un-enveloped) — shape-only like ErrorRenderer: returns the body for a RenderInfo, the framework writes it
 //
 // # API Naming
 //
@@ -52,20 +54,25 @@
 //
 //   - With<X> / Without<X> — construction-time [Option] values passed to [New].
 //     They only set configuration and perform no I/O, so their order does not
-//     matter (e.g. [WithLogger], [WithAccessLogMinLevel], [WithoutAccessLog]).
-//   - Use<X> — post-construction setup that mounts a subsystem: it registers
-//     routes or an engine and may read files. It therefore can fail — panicking
-//     on developer misuse, or returning an error when it touches the outside
-//     world (e.g. [App.UseHealth], [App.UseI18n]).
-//   - Set<X> / Remove<X> — imperative mutators for a single value or a
-//     replaceable component (e.g. [App.SetErrorRenderer], [Route.SetMeta]).
+//     matter (e.g. [WithLogger], [WithRecoverConfig], [WithoutRecover]).
+//   - Use<X> — post-construction setup that installs a subsystem or an HTTP
+//     feature once: it registers routes, an engine or a feature configuration
+//     and may read files. It therefore can fail — panicking on developer
+//     misuse (duplicate or late registration, invalid config), or returning an
+//     error when it touches the outside world (e.g. [App.UseHealth],
+//     [App.UseI18n], [App.UseAccessLog], [App.UseErrorRenderer]).
+//   - Set<X> / Remove<X> — imperative mutators for a single request-state or
+//     route value (e.g. [Context.SetUser], [Route.SetMeta]).
 //   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnPreDrain],
 //     [App.OnDrain], [App.OnShutdown]).
 //
-// Request logging is on by default (see [WithLogger]). Silence individual
-// routes or whole groups with the [MetaAccessLog] route meta, noisy paths with
-// [WithAccessLogSkipper], or result classes with [WithAccessLogMinLevel] and
-// [WithAccessLogResultFilter]; health probes are silent by default
+// Panic recovery is on by default; request IDs, access logging, response
+// compression and request decompression are explicit ([App.UseRequestID],
+// [App.UseAccessLog], [App.UseCompress], [App.UseDecompress]). With access
+// logging installed, silence individual routes or whole groups with the
+// [MetaAccessLog] route meta, noisy paths with [AccessLogConfig.Skipper], or
+// result classes with [AccessLogConfig.MinLevel] and
+// [AccessLogConfig.ResultFilter]; health probes are silent by default
 // ([HealthConfig.LogRequests] re-enables them).
 //
 // # Panics and Errors

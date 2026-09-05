@@ -528,7 +528,7 @@ func TestApp_FrozenPanic_StatusHandler(t *testing.T) {
 	app.StatusHandler(404, func(ctx *credo.Context) error { return nil })
 }
 
-func TestApp_FrozenPanic_SetErrorRenderer(t *testing.T) {
+func TestApp_FrozenPanic_UseErrorRenderer(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/x", func(ctx *credo.Context) error { return nil })
 
@@ -538,10 +538,10 @@ func TestApp_FrozenPanic_SetErrorRenderer(t *testing.T) {
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic from SetErrorRenderer after compile")
+			t.Fatal("expected panic from UseErrorRenderer after compile")
 		}
 	}()
-	app.SetErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any { return nil })
+	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any { return nil })
 }
 
 func TestApp_FrozenPanic_SetMeta(t *testing.T) {

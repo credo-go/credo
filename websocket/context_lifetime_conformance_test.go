@@ -153,6 +153,7 @@ func TestContextLifetimeContractSnapshotsLoggerAcrossRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credo.New() error = %v", err)
 	}
+	app.UseRequestID()
 
 	var loggerSnapshot *slog.Logger
 	var requestIDSnapshot string

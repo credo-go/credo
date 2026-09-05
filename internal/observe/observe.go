@@ -70,8 +70,8 @@ func PanicError(v any) error {
 	return fmt.Errorf("panic: %v", v)
 }
 
-// PanicAttrs builds the common structured attributes used by Credo's built-in
-// recovery and the configurable middleware.Recover.
+// PanicAttrs builds the structured attributes of Credo's panic recovery
+// record.
 func PanicAttrs(value any, method string, path string, requestID string, stack string) []slog.Attr {
 	const basePanicAttrCount = 3
 	const maxPanicAttrCount = 5

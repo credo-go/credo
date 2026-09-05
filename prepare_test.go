@@ -242,7 +242,7 @@ func TestServeHTTP_StoppedNeverPrepared_503WithoutCallbacks(t *testing.T) {
 				middleware.Add(1)
 				return next
 			})
-			app.SetErrorRenderer(func(*credo.Context, *credo.ErrorInfo) any {
+			app.UseErrorRenderer(func(*credo.Context, *credo.ErrorInfo) any {
 				renderer.Add(1)
 				return nil
 			})

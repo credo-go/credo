@@ -54,7 +54,7 @@ func TestLifecycleManager_PreDrainCancellationBoundaryIsNeverMissed(t *testing.T
 
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	app, err := New(WithLogger(logger), WithoutAccessLog())
+	app, err := New(WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestLifecycleManager_PreDrainCancellationBoundaryIsNeverMissed(t *testing.T
 func TestLifecycleManager_PreDrainFastHookCompletesBeforeLiveBoundary(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	app, err := New(WithLogger(logger), WithoutAccessLog())
+	app, err := New(WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestLifecycleManager_PreDrainFastHookCompletesBeforeLiveBoundary(t *testing
 func TestLifecycleManager_PreDrainDeadlineTimestampDoesNotDependOnDelivery(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	app, err := New(WithLogger(logger), WithoutAccessLog())
+	app, err := New(WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestLifecycleManager_PreDrainLogsBoundaryBeforeHardBarrierReturns(t *testin
 		message: preDrainBoundaryLogMessage,
 		records: make(chan slog.Record, 1),
 	}
-	app, err := New(WithLogger(slog.New(capture)), WithoutAccessLog())
+	app, err := New(WithLogger(slog.New(capture)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,13 +36,26 @@ type Context struct {
 	// the With allocations entirely. Framework emitters read it directly
 	// and attach the ID as an explicit attribute instead of materializing.
 	pendingLogAttrID string
+	// locale and localeState hold the lazily resolved request locale: the
+	// detector runs on the first Locale/translation access and the result is
+	// memoized for the request (see resolveLocale).
 	locale           string
+	localeState      uint8
 	extra            map[string]any
 	originalPath     string // set in reset(), never modified after
 	rewriteTarget    string // set by Rewrite(), consumed by dispatch loop
 	rewriteRequested bool   // set by Rewrite(), read by dispatch loop
 	rewriteCount     int    // loop detection counter
+	// exec is the request executor's per-request bookkeeping.
+	exec execState
 }
+
+// Locale resolution states.
+const (
+	localeUnresolved uint8 = iota
+	localeResolving
+	localeResolved
+)
 
 const maxRewrites = 10
 
@@ -151,8 +164,8 @@ func (c *Context) AddLogAttrs(args ...any) {
 
 // HasRequestLogger reports whether [Context.Logger] returns (or, for the
 // request ID tier's deferred enrichment, will return on first use) a
-// request-scoped logger — one set by the built-in request ID tier,
-// middleware.RequestID, [Context.SetLogger], or [Context.AddLogAttrs]. It
+// request-scoped logger — one set by the request ID feature
+// ([App.UseRequestID]), [Context.SetLogger], or [Context.AddLogAttrs]. It
 // does not inspect the logger's attributes.
 //
 // The framework's log emitters (access log, panic recovery) use it as a
@@ -172,19 +185,48 @@ func (c *Context) RequestID() string {
 	return ""
 }
 
-// Locale returns the detected locale string for this request (e.g., "en", "tr").
-// Returns an empty string if i18n is not configured.
+// Locale returns the request's locale (e.g., "en", "tr"). It is resolved on
+// first use — by Locale itself, [Context.T], [Context.TPlural] or the error
+// pipeline's message translation — through [I18nConfig.Detect] and memoized
+// for the request: later header changes, authentication or rewrites do not
+// change it. An empty or unresolvable detection selects the configured
+// default language. Returns an empty string, without invoking the detector,
+// when i18n is not configured.
 func (c *Context) Locale() string {
-	return c.locale
+	return c.resolveLocale()
 }
 
 // translatable reports whether the error pipeline may translate for this
-// request: an i18n bundle is mounted and the locale middleware detected a
-// locale. [Context.T] deliberately does not use it — with a bundle mounted but
-// no detected locale, T still renders the bundle's default language, whereas
-// error and validation messages stay untranslated.
+// request: an i18n bundle is installed. Resolution itself is lazy, so the
+// first error translation may be what triggers detection.
 func (c *Context) translatable() bool {
-	return c.app != nil && c.app.i18nBundle != nil && c.locale != ""
+	return c.app != nil && c.app.i18n != nil
+}
+
+// resolveLocale returns the memoized request locale, running the detector on
+// first use. Detection is marked in progress before the callback runs:
+// calling Locale or a translation from inside the detector is programming
+// misuse and panics. When the detector panics (or re-enters), the default
+// language is cached before the panic propagates, so error rendering never
+// triggers a second detection for the request.
+func (c *Context) resolveLocale() string {
+	if c.localeState == localeResolved {
+		return c.locale
+	}
+	if c.app == nil || c.app.i18n == nil {
+		return ""
+	}
+	if c.localeState == localeResolving {
+		panic("credo: recursive locale detection: Locale or a translation was called from inside I18nConfig.Detect")
+	}
+	f := c.app.i18n
+	c.localeState = localeResolving
+	c.locale = f.defaultLang
+	defer func() { c.localeState = localeResolved }()
+	if lang := f.detect(c); lang != "" {
+		c.locale = f.bundle.MatchLangString(lang)
+	}
+	return c.locale
 }
 
 // T translates a message key using the detected locale. If i18n is not
@@ -194,14 +236,14 @@ func (c *Context) translatable() bool {
 // T always renders the message's Other plural form; for count-based plural
 // selection use [Context.TPlural].
 func (c *Context) T(key string, data ...map[string]any) string {
-	if c.app == nil || c.app.i18nBundle == nil {
+	if c.app == nil || c.app.i18n == nil {
 		return key
 	}
 	var d map[string]any
 	if len(data) > 0 {
 		d = data[0]
 	}
-	if s, ok := c.app.i18nBundle.TranslateForLang(c.locale, key, d); ok {
+	if s, ok := c.app.i18n.bundle.TranslateForLang(c.resolveLocale(), key, d); ok {
 		return s
 	}
 	return key
@@ -220,14 +262,14 @@ func (c *Context) T(key string, data ...map[string]any) string {
 // returned. When count cannot be interpreted as a number, the Other form
 // is rendered.
 func (c *Context) TPlural(key string, count any, data ...map[string]any) string {
-	if c.app == nil || c.app.i18nBundle == nil {
+	if c.app == nil || c.app.i18n == nil {
 		return key
 	}
 	var d map[string]any
 	if len(data) > 0 {
 		d = data[0]
 	}
-	if s, ok := c.app.i18nBundle.TranslatePluralForLang(c.locale, key, count, d); ok {
+	if s, ok := c.app.i18n.bundle.TranslatePluralForLang(c.resolveLocale(), key, count, d); ok {
 		return s
 	}
 	return key
@@ -285,6 +327,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.logger = nil
 	c.pendingLogAttrID = ""
 	c.locale = ""
+	c.localeState = localeUnresolved
 	clear(c.extra)
 	if r.URL.RawPath != "" {
 		c.originalPath = r.URL.RawPath
