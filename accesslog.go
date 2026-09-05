@@ -186,12 +186,41 @@ func (app *App) observeAccess(c *Context, outBytes int64, counted bool) {
 		return
 	}
 
+	req := c.request
+	r := req.Request
+
+	// The target logger depends only on the configuration and the request
+	// logger, never on the entry, so it is selected first.
+	logger := f.logger
+	explicitRequestID := true
+	switch {
+	case f.logger != nil:
+		// A configured logger never carries request-scoped enrichment;
+		// attach the ID explicitly.
+	case c.logger != nil:
+		// A materialized request logger already carries request_id
+		// (derivation contract on Context.SetLogger).
+		logger = c.logger
+		explicitRequestID = false
+	default:
+		// No materialized request logger: log through the base logger with
+		// an explicit request_id, so the deferred enrichment stays unpaid
+		// for handlers that never log.
+		logger = c.baseLogger()
+	}
+
+	// Without a result filter nobody observes the entry but the logger, so a
+	// level the logger will not record skips the entry construction (client
+	// address, user agent, route, request ID). With a filter installed the
+	// entry is always built: the filter observes every response.
+	if f.filter == nil && !logger.Enabled(r.Context(), internalobserve.Level(status)) {
+		return
+	}
+
 	bytes := c.response.Size()
 	if counted {
 		bytes = outBytes
 	}
-	req := c.request
-	r := req.Request
 	entry := AccessLogEntry{
 		Method:       r.Method,
 		Path:         r.URL.Path,
@@ -211,26 +240,12 @@ func (app *App) observeAccess(c *Context, outBytes int64, counted bool) {
 		return
 	}
 
-	logger := f.logger
-	explicitRequestID := ""
-	switch {
-	case f.logger != nil:
-		// A configured logger never carries request-scoped enrichment;
-		// attach the ID explicitly.
-		explicitRequestID = entry.RequestID
-	case c.logger != nil:
-		// A materialized request logger already carries request_id
-		// (derivation contract on Context.SetLogger).
-		logger = c.logger
-	default:
-		// No materialized request logger: log through the base logger with
-		// an explicit request_id, so the deferred enrichment stays unpaid
-		// for handlers that never log.
-		logger = c.baseLogger()
-		explicitRequestID = entry.RequestID
+	requestID := ""
+	if explicitRequestID {
+		requestID = entry.RequestID
 	}
 	internalobserve.EmitAccessLog(r.Context(), logger,
-		internalobserve.AccessLogRecord(entry), explicitRequestID)
+		internalobserve.AccessLogRecord(entry), requestID)
 }
 
 // runAccessFilter invokes the result filter. A panic inside it cannot change
