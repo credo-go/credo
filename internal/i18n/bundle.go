@@ -27,10 +27,19 @@ import (
 // It is safe for concurrent use after loading is complete.
 type Bundle struct {
 	defaultLang language.Tag
+	defaultRaw  string                                       // default language as the caller spelled it ("en-us")
 	messages    map[language.Tag]map[string]*messageTemplate // tag → id → compiled template
 	fields      map[language.Tag]map[string]string           // tag → fieldName → displayName
 	tags        []language.Tag
 	matcher     language.Matcher
+
+	// canonical maps the language strings a request locale can hold — the
+	// canonical spelling of every registered tag, of the default language and
+	// the default as configured — to the tag the matcher resolves them to, so
+	// repeated lookups for an already resolved locale skip Accept-Language
+	// parsing and matching. Built by rebuildMatcher through matchTag, so an
+	// entry is exactly what the slow path would return.
+	canonical map[string]language.Tag
 }
 
 // NewBundle creates a new Bundle with the given default language.
@@ -242,6 +251,22 @@ func (b *Bundle) rebuildMatcher() {
 	})
 	b.tags = tags
 	b.matcher = language.NewMatcher(tags)
+
+	candidates := make([]string, 0, len(tags)+2)
+	for _, tag := range tags {
+		candidates = append(candidates, tag.String())
+	}
+	candidates = append(candidates, b.defaultLang.String())
+	if b.defaultRaw != "" {
+		candidates = append(candidates, b.defaultRaw)
+	}
+	canonical := make(map[string]language.Tag, len(candidates))
+	for _, s := range candidates {
+		if tag, ok := b.matchTag(s); ok {
+			canonical[s] = tag
+		}
+	}
+	b.canonical = canonical
 }
 
 // messageTemplates returns the message map for the given tag.
@@ -284,6 +309,9 @@ func (b *Bundle) matchTag(lang string) (language.Tag, bool) {
 // resolveTag is matchTag with the default-language fallback applied: the
 // registered tag lang matches, or the bundle's default language.
 func (b *Bundle) resolveTag(lang string) language.Tag {
+	if tag, ok := b.canonical[lang]; ok {
+		return tag
+	}
 	if tag, ok := b.matchTag(lang); ok {
 		return tag
 	}
@@ -391,5 +419,7 @@ func NewBundleFromString(defaultLang string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("i18n: invalid default language %q: %w", defaultLang, err)
 	}
-	return NewBundle(tag), nil
+	b := NewBundle(tag)
+	b.defaultRaw = defaultLang
+	return b, nil
 }
