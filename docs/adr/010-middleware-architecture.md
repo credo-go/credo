@@ -144,11 +144,11 @@ The adapter handles request/response writer updates that stdlib middleware may a
 
 ### Configurable Middleware (middleware package)
 
-| Middleware  | Purpose                                           |
-| ----------- | ------------------------------------------------- |
-| `Recover`   | Per-group/route panic recovery with custom config |
+| Middleware | Purpose |
+| --- | --- |
+| `Recover` | Per-group/route panic recovery with custom config |
 | `AccessLog` | Route/group-scoped request logging with Skipper, MinLevel, ResultFilter, `MetaAccessLog`, and custom logger |
-| `RequestID` | X-Request-Id with custom header/generator/limit   |
+| `RequestID` | X-Request-Id with custom header/generator/limit |
 
 ### Frozen Guard
 

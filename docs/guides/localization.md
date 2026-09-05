@@ -106,8 +106,7 @@ With no arguments, `UseI18n` reads from `RawConfig` if the `i18n` key exists. If
 
 ### Programmatic default catalog
 
-For a deployment-independent default language, provide `Messages` and optional
-field display names in `Fields`:
+For a deployment-independent default language, provide `Messages` and optional field display names in `Fields`:
 
 ```go
 if err := app.UseI18n(credo.I18nConfig{
@@ -125,11 +124,7 @@ if err := app.UseI18n(credo.I18nConfig{
 }
 ```
 
-These maps represent only `Default`, are copied at setup, and may be the sole
-source. Add an explicit `Dir` or `DirFS` to layer multi-language files over
-them; file values override exact collisions and map-only keys remain. Supplying
-maps alone intentionally does not probe `./locales`. Use `DirFS` rather than an
-outer language map when translations must be embedded.
+These maps represent only `Default`, are copied at setup, and may be the sole source. Add an explicit `Dir` or `DirFS` to layer multi-language files over them; file values override exact collisions and map-only keys remain. Supplying maps alone intentionally does not probe `./locales`. Use `DirFS` rather than an outer language map when translations must be embedded.
 
 ---
 
@@ -152,10 +147,7 @@ Files:
 - `messages.json`: normal application messages plus validation and HTTP error keys
 - `fields.json`: optional display names for field-aware validation messages
 
-An absent conventional `locales/` directory discovered by zero-config setup is
-an inactive warning. An explicitly configured `Dir`, RawConfig directory, or
-`DirFS` is a declared deployment dependency: missing, unreadable, or empty
-sources return an error.
+An absent conventional `locales/` directory discovered by zero-config setup is an inactive warning. An explicitly configured `Dir`, RawConfig directory, or `DirFS` is a declared deployment dependency: missing, unreadable, or empty sources return an error.
 
 ---
 
@@ -172,9 +164,7 @@ Recommended namespaces:
 - `request.*` for decode (bind) error reasons
 - `problem.*` for HTTP and top-level error messages
 
-Credo does not add these prefixes. Without a resolver, framework lookups use
-bare codes such as `required`, `syntax`, `not_found`, `validation_failed`, and
-`bind_failed`. To use the recommended namespaces, configure them explicitly:
+Credo does not add these prefixes. Without a resolver, framework lookups use bare codes such as `required`, `syntax`, `not_found`, `validation_failed`, and `bind_failed`. To use the recommended namespaces, configure them explicitly:
 
 ```go
 ResolveMessageKey: func(ref credo.MessageRef) string {
@@ -494,10 +484,7 @@ With the namespace resolver shown above, Credo translates entries such as:
 - `validation.max`
 - `validation.between`
 
-Decode failures use bind scope and exact reasons. With that resolver their keys
-are `request.syntax`, `request.type_mismatch`, `request.invalid_value`, and so
-on. `{{.field}}`, `{{.expected}}`, and `{{.offset}}` are available where
-applicable. The top-level message uses error scope + `bind_failed`.
+Decode failures use bind scope and exact reasons. With that resolver their keys are `request.syntax`, `request.type_mismatch`, `request.invalid_value`, and so on. `{{.field}}`, `{{.expected}}`, and `{{.offset}}` are available where applicable. The top-level message uses error scope + `bind_failed`.
 
 Example validation response:
 
@@ -529,10 +516,7 @@ Notes:
 
 ## Automatic HTTP Error Translation
 
-Credo localizes error messages automatically. An explicit `MessageKey` is an
-exact key and falls back to its literal value. Otherwise Credo invokes the
-optional scope-aware resolver, then uses the bare code. An implicit lookup miss
-falls back to built-in/HTTP status text, never to the resolver-generated key.
+Credo localizes error messages automatically. An explicit `MessageKey` is an exact key and falls back to its literal value. Otherwise Credo invokes the optional scope-aware resolver, then uses the bare code. An implicit lookup miss falls back to built-in/HTTP status text, never to the resolver-generated key.
 
 ```go
 app.GET("/users/{id}", func(ctx *credo.Context) error {
@@ -554,11 +538,7 @@ If `locales/tr/messages.json` contains:
 
 then the default envelope message becomes `Bulunamadı` for Turkish requests.
 
-Default keys are bare frozen status codes—`bad_request`, `unauthorized`,
-`forbidden`, `not_found`, `internal_server_error`, and so on. Unknown statuses
-use `http_<status>`. Validation and bind top-level keys are
-`validation_failed` and `bind_failed`. A resolver may namespace all error-scope
-keys consistently.
+Default keys are bare frozen status codes—`bad_request`, `unauthorized`, `forbidden`, `not_found`, `internal_server_error`, and so on. Unknown statuses use `http_<status>`. Validation and bind top-level keys are `validation_failed` and `bind_failed`. A resolver may namespace all error-scope keys consistently.
 
 Explicit presentation keys are attached with `WithMessageKey`:
 
@@ -567,8 +547,7 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
     WithMessageKey("user.email_exists")
 ```
 
-If no translation is found, the explicit key itself (`"user.email_exists"`) is
-used as the message. It may therefore be a literal hard-coded message.
+If no translation is found, the explicit key itself (`"user.email_exists"`) is used as the message. It may therefore be a literal hard-coded message.
 
 ---
 
@@ -671,8 +650,7 @@ Typical causes:
 
 Check that your locale file contains the matching validation keys, for example:
 
-- bare `required`, `length`, `email`, `min`, and `max`, or the exact keys
-  produced by your configured resolver
+- bare `required`, `length`, `email`, `min`, and `max`, or the exact keys produced by your configured resolver
 
 If a key is missing, Credo keeps the original default message.
 
@@ -691,10 +669,7 @@ If a key is missing, Credo keeps the original default message.
 
 ## Complete Example
 
-Complete English and Turkish starter catalogs are available under
-[`examples/references/locales`](../../examples/references/locales/). The files
-are versioned copyable references, not catalogs embedded or loaded
-automatically by the framework.
+Complete English and Turkish starter catalogs are available under [`examples/references/locales`](../../examples/references/locales/). The files are versioned copyable references, not catalogs embedded or loaded automatically by the framework.
 
 `config.json`:
 

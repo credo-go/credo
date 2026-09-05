@@ -242,12 +242,12 @@ For ordinary methods, a missing `Content-Type` retains the JSON convenience defa
 
 A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
 
-| Content-Type                        | Decoder           | Status          |
-| ----------------------------------- | ----------------- | --------------- |
+| Content-Type                        | Decoder            | Status          |
+| ----------------------------------- | ------------------ | --------------- |
 | `application/json`                  | `encoding/json/v2` | **Implemented** |
-| `application/xml`                   | `encoding/xml`    | **Implemented** |
-| `application/x-www-form-urlencoded` | Form decoder      | **Implemented** |
-| `multipart/form-data`               | Multipart decoder | **Implemented** |
+| `application/xml`                   | `encoding/xml`     | **Implemented** |
+| `application/x-www-form-urlencoded` | Form decoder       | **Implemented** |
+| `multipart/form-data`               | Multipart decoder  | **Implemented** |
 
 ```go
 type CreateUserInput struct {
@@ -281,7 +281,7 @@ JSON bodies are decoded with `encoding/json/v2` under strict semantics:
 - **Object members must be unique** — a repeated member fails the bind with reason `duplicate_field`. Because member matching is case-insensitive (see below), a case-variant repeat (`{"name":…,"Name":…}`) is also rejected.
 - **Member matching stays case-insensitive** — v1-compatible matching is preserved via `MatchCaseInsensitiveNames`, so existing clients sending `{"Name":…}` for a `name`-tagged field keep working (v2's case-sensitive default would silently leave the field empty).
 - **`time.Duration` fields decode as integer nanoseconds** — json/v2 has no default Duration representation and Go 1.27 ships without the `format:` struct-tag option (removed before the v2 GA, go.dev/issue/79071), so `BindBody` enables the v1-compatible `FormatDurationAsNano` option: `{"timeout": 5000000000}` binds 5s, a string fails with `type_mismatch`. For human-readable durations (`"5s"`) declare a named type implementing `encoding.TextUnmarshaler`.
-- **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input. Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a *known* member is reported as `duplicate_field`, while a repeated *unknown* member fails as `unknown_field` on its first occurrence.
+- **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input. Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a _known_ member is reported as `duplicate_field`, while a repeated _unknown_ member fails as `unknown_field` on its first occurrence.
 
 Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
 
@@ -289,15 +289,15 @@ Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`,
 
 Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carrying a machine-readable `Reason`, the affected `Field` path (when known), the `Expected` type for mismatches, and the JSON byte `Offset`. The error pipeline classifies it as `400 Bad Request` with top-level code `bind_failed`, mirroring the validation output shape — a single `violations[]` entry whose `code` is the reason:
 
-| Reason            | Meaning                                                                                                        |
-| ----------------- | -------------------------------------------------------------------------------------------------------------- |
-| `syntax`          | malformed or truncated payload (JSON, XML, form encoding)                                                       |
-| `type_mismatch`   | value type does not match the target field (`expected` param set, JSON offset known)                            |
-| `invalid_value`   | value of the right shape failed semantic conversion (`encoding.TextUnmarshaler`, time parse, numeric overflow)  |
-| `empty_body`      | request body absent or empty                                                                                    |
-| `trailing_data`   | content after the first JSON value                                                                              |
-| `duplicate_field` | JSON object member appears more than once (including case-variant repeats)                                      |
-| `unknown_field`   | JSON object member maps to no target field — strict bodies only (`WithStrictBodies` / `server.strict_bodies`)   |
+| Reason | Meaning |
+| --- | --- |
+| `syntax` | malformed or truncated payload (JSON, XML, form encoding) |
+| `type_mismatch` | value type does not match the target field (`expected` param set, JSON offset known) |
+| `invalid_value` | value of the right shape failed semantic conversion (`encoding.TextUnmarshaler`, time parse, numeric overflow) |
+| `empty_body` | request body absent or empty |
+| `trailing_data` | content after the first JSON value |
+| `duplicate_field` | JSON object member appears more than once (including case-variant repeats) |
+| `unknown_field` | JSON object member maps to no target field — strict bodies only (`WithStrictBodies` / `server.strict_bodies`) |
 
 ```json
 {

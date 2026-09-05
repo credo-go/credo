@@ -111,9 +111,7 @@ func main() {
 
 For explicit config control, load it first with `config.Load(...)` and pass it to `credo.New(credo.WithRawConfig(raw))`; this bypasses the default auto-load.
 
-Copyable YAML/JSON configuration and English/Turkish locale catalogs live in
-[`examples/references`](examples/references/README.md). Runnable applications
-remain separate under `examples/hello` and `examples/saas`.
+Copyable YAML/JSON configuration and English/Turkish locale catalogs live in [`examples/references`](examples/references/README.md). Runnable applications remain separate under `examples/hello` and `examples/saas`.
 
 ## Config: Typed Snapshot (Anti-Pattern-Free)
 

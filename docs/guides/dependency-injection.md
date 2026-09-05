@@ -45,8 +45,7 @@ Provide / ProvideValue / Alias / BindMany
 - `ProvideValue[T]`: register a pre-built singleton
 - `CanProvideValue[T]`: point-in-time frozen/direct-duplicate preflight
 - `ProvideProtectedValue[T]`: low-level pre-built binding that rejects later `Replace[T]`
-- `ProtectBinding[T](expected ...T)`: low-level blind or CAS-style protection
-  for an existing direct binding
+- `ProtectBinding[T](expected ...T)`: low-level blind or CAS-style protection for an existing direct binding
 - `Replace[T]`: overwrite an ordinary pre-built binding; protected bindings reject it
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
@@ -248,19 +247,11 @@ Typical `ProvideValue` use cases:
 - test doubles
 - values created by another bootstrap system
 
-`app.CanProvideValue[T]()` is a non-mutating preflight for helpers that should
-avoid work before a predictable registration failure. It checks only whether
-the container is finalized or `T` already has a direct registration. It does
-not reserve `T`: another goroutine can still register or finalize before the
-real call, so the final `ProvideValue` or `ProvideProtectedValue` call remains
-authoritative and its error must still be handled.
+`app.CanProvideValue[T]()` is a non-mutating preflight for helpers that should avoid work before a predictable registration failure. It checks only whether the container is finalized or `T` already has a direct registration. It does not reserve `T`: another goroutine can still register or finalize before the real call, so the final `ProvideValue` or `ProvideProtectedValue` call remains authoritative and its error must still be handled.
 
 ### Protected integration bindings
 
-Most application values should stay replaceable: use `ProvideValue`, especially
-when tests use overrides. A framework integration may also publish lifecycle or
-health state that must keep referring to the exact DI value. For that narrow
-case Credo exposes:
+Most application values should stay replaceable: use `ProvideValue`, especially when tests use overrides. A framework integration may also publish lifecycle or health state that must keep referring to the exact DI value. For that narrow case Credo exposes:
 
 ```go
 if err := app.ProvideProtectedValue[Client](client); err != nil {
@@ -273,17 +264,7 @@ if err := app.ProtectBinding[Client](client); err != nil {
 }
 ```
 
-After either path, `app.Replace[Client](other)` returns an error. Protection is
-about binding consistency only: it does not register shutdown hooks, health
-checks, aliases, or collection membership. `ProtectBinding[T]()` blindly
-protects an existing direct binding without resolving it and is idempotent.
-`ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies,
-against `Replace`, that the already-resolved singleton is comparable and still
-equals expected before protecting it. An unresolved, non-comparable, changed,
-or multiply supplied expected value returns an error without adding protection.
-Both forms require an existing binding and must run before Finalize.
-`store.Register` uses the expected-value form so replacing the Registry between
-validation and adoption cannot detach DI from readiness state.
+After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register shutdown hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-resolved singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize. `store.Register` uses the expected-value form so replacing the Registry between validation and adoption cannot detach DI from readiness state.
 
 ### `ProvideFactory`: compiler-checked factory registration
 
@@ -561,11 +542,7 @@ func (c *Cache) Shutdown(ctx context.Context) error {
 }
 ```
 
-Credo traverses DI-managed Shutdowners in reverse registration order. If the
-live shutdown deadline reaches an entry, that registration receives at most one
-`Shutdown(ctx)` attempt for the teardown. If the deadline expires before the
-traversal reaches it, that registration receives no attempt and the container
-reports the skipped remainder.
+Credo traverses DI-managed Shutdowners in reverse registration order. If the live shutdown deadline reaches an entry, that registration receives at most one `Shutdown(ctx)` attempt for the teardown. If the deadline expires before the traversal reaches it, that registration receives no attempt and the container reports the skipped remainder.
 
 This is useful for:
 
@@ -576,8 +553,7 @@ This is useful for:
 
 ### Shutdowner vs OnPreDrain vs OnDrain vs OnShutdown
 
-Credo offers four shutdown mechanisms. Choose based on ownership and when the
-component must stop:
+Credo offers four shutdown mechanisms. Choose based on ownership and when the component must stop:
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
@@ -591,23 +567,12 @@ During graceful shutdown the full sequence is:
 1. Withdraw readiness and run every `OnPreDrain` hook concurrently.
 2. Cancel the lifecycle context.
 3. Drain HTTP and every `OnDrain` subsystem in parallel.
-4. Traverse DI singletons in reverse registration order, attempting each
-   reached `Shutdowner` while the deadline remains live.
+4. Traverse DI singletons in reverse registration order, attempting each reached `Shutdowner` while the deadline remains live.
 5. Run `OnShutdown` hooks in LIFO order.
 
-All phases receive the same absolute shutdown deadline. An over-deadline
-`OnPreDrain` hook is reported but remains a hard barrier until it returns;
-later phases then receive the same, possibly expired context. HTTP or `OnDrain`
-work that remains incomplete at the deadline is reported and teardown proceeds.
-Deadline exhaustion may prevent later DI registrations from receiving any
-shutdown attempt, so DI ownership guarantees one framework owner and at most
-one attempt when reached — not successful closure of every resource.
+All phases receive the same absolute shutdown deadline. An over-deadline `OnPreDrain` hook is reported but remains a hard barrier until it returns; later phases then receive the same, possibly expired context. HTTP or `OnDrain` work that remains incomplete at the deadline is reported and teardown proceeds. Deadline exhaustion may prevent later DI registrations from receiving any shutdown attempt, so DI ownership guarantees one framework owner and at most one attempt when reached — not successful closure of every resource.
 
-Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use
-`OnPreDrain` only when lifecycle cancellation would stop a dependency before
-required coordination can finish. Use `OnDrain` when a subsystem must quiesce
-DI-dependent work before container cleanup. Use `OnShutdown` for non-DI
-resources safe to close last.
+Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use `OnPreDrain` only when lifecycle cancellation would stop a dependency before required coordination can finish. Use `OnDrain` when a subsystem must quiesce DI-dependent work before container cleanup. Use `OnShutdown` for non-DI resources safe to close last.
 
 ---
 
