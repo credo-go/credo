@@ -33,6 +33,14 @@ func (w *wireBenchmarkWriter) ReadFrom(src io.Reader) (int64, error) {
 	return io.Copy(io.Discard, src)
 }
 
+// wireBenchmarkWrappedWriter hides the benchmark writer's ReadFrom, standing
+// in for a wrapping writer (compression, HTTP/2) that offers no io.ReaderFrom.
+type wireBenchmarkWrappedWriter struct {
+	*wireBenchmarkWriter
+}
+
+func (w wireBenchmarkWrappedWriter) Write(p []byte) (int, error) { return len(p), nil }
+
 // wireBenchmarkFeatures selects the HTTP features a benchmark app installs.
 type wireBenchmarkFeatures struct {
 	requestID bool
@@ -84,6 +92,19 @@ func runWireBenchmarkRequest(b *testing.B, app *App, r *http.Request) {
 	b.ReportAllocs()
 	for b.Loop() {
 		clear(w.header)
+		app.ServeHTTP(w, r)
+	}
+}
+
+// runWireBenchmarkWrapped drives the app through a writer without ReadFrom.
+func runWireBenchmarkWrapped(b *testing.B, app *App, method, path string) {
+	b.Helper()
+	r := httptest.NewRequest(method, path, nil)
+	inner := newWireBenchmarkWriter()
+	w := wireBenchmarkWrappedWriter{wireBenchmarkWriter: inner}
+	b.ReportAllocs()
+	for b.Loop() {
+		clear(inner.header)
 		app.ServeHTTP(w, r)
 	}
 }
@@ -300,6 +321,15 @@ func BenchmarkWireSuccess(b *testing.B) {
 				return ctx.Response().Stream(http.StatusOK, "application/octet-stream", &reader)
 			})
 			runWireBenchmark(b, app, http.MethodGet, "/bench")
+		})
+
+		b.Run(mode+"/StreamReaderOnlyWrapped", func(b *testing.B) {
+			app := newWireBenchmarkApp(b, coreOnly)
+			app.GET("/bench", func(ctx *Context) error {
+				reader := wireBenchmarkReader{remaining: wireBenchmarkStreamSize}
+				return ctx.Response().Stream(http.StatusOK, "application/octet-stream", &reader)
+			})
+			runWireBenchmarkWrapped(b, app, http.MethodGet, "/bench")
 		})
 
 		b.Run(mode+"/NoContent", func(b *testing.B) {
