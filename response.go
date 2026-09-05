@@ -170,17 +170,22 @@ func (r *Response) WriteString(s string) (int, error) {
 // buffer allocation per response.
 //
 // The bytes the writer accepted count toward [Response.Size]; a hijacked
-// response returns [http.ErrHijacked]; when no status was written the first
-// byte commits 200 as [Response.Write] does.
+// response returns [http.ErrHijacked]. Nothing is committed before the first
+// byte: a source that fails before producing any output leaves the response
+// uncommitted, so the handler's error still renders as an error response,
+// exactly as with [Response.Write]; the first byte written commits 200 when
+// no status was written.
 func (r *Response) ReadFrom(src io.Reader) (int64, error) {
 	if r.hijacked {
 		return 0, http.ErrHijacked
 	}
-	if !r.committed {
-		r.WriteHeader(http.StatusOK)
-	}
 	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
 		n, err := rf.ReadFrom(src)
+		if n > 0 && !r.committed {
+			// The writer committed its implicit 200 on the first byte it
+			// accepted; mirror that in the tracking state.
+			r.status, r.committed = http.StatusOK, true
+		}
 		r.size += n
 		return n, err
 	}
