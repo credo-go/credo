@@ -30,6 +30,11 @@ var defaultJSONOptions = jsonv2.JoinOptions(
 	jsonv1.FormatDurationAsNano(true),
 )
 
+// defaultErrorJSONOptions is the error-body profile for a nil App: the default
+// profile with deterministic ordering re-imposed, derived exactly like
+// App.errorJSONOpts so the two never drift.
+var defaultErrorJSONOptions = jsonv2.JoinOptions(defaultJSONOptions, jsonv2.Deterministic(true))
+
 // jsonOptions returns the application's response encoding profile, falling
 // back to the framework default for a nil App (a Response built directly with
 // [NewResponse], as tests do).
@@ -43,7 +48,11 @@ func (app *App) jsonOptions() jsonv2.Options {
 // errorJSONOptions returns the encoding profile for framework error
 // responses. Error bodies are a framework contract consumed by clients and
 // tests, so deterministic map ordering is imposed on top of the application
-// profile even when the application turned it off (later options win).
+// profile even when the application turned it off (later options win). The
+// join happens once in [New]; every error response reads the stored value.
 func (app *App) errorJSONOptions() jsonv2.Options {
-	return jsonv2.JoinOptions(app.jsonOptions(), jsonv2.Deterministic(true))
+	if app == nil || app.errorJSONOpts == nil {
+		return defaultErrorJSONOptions
+	}
+	return app.errorJSONOpts
 }

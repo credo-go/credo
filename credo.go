@@ -183,6 +183,10 @@ type App struct {
 	// after it. Read through App.jsonOptions, which is nil-safe.
 	jsonOpts jsonv2.Options
 
+	// errorJSONOpts is jsonOpts with deterministic ordering re-imposed, the
+	// profile of every framework error body; joined once at construction.
+	errorJSONOpts jsonv2.Options
+
 	// configureServer is the WithHTTPServer callback, applied at the end of
 	// buildServer. nil when the option was not used.
 	configureServer func(*http.Server)
@@ -320,6 +324,7 @@ func assembleApp(
 		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
 	}
+	app.errorJSONOpts = jsonv2.JoinOptions(app.jsonOpts, jsonv2.Deterministic(true))
 	if !o.disableRecover {
 		app.recover = newRecoverFeature(o.recoverCfg)
 	}

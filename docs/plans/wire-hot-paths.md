@@ -1,6 +1,6 @@
 # Wire Hot-Path Performance Plan
 
-**Status:** Measurement-backed candidates; implementation not started. Promoted 2026-09-05. **Progress:** [TODO.md](../../TODO.md#pre-v1-contract-migration).
+**Status:** Package A (A1–A3) implemented 2026-09-05 on `perf/wire-hot-paths`; Package B pending. Promoted 2026-09-05. **Progress:** [TODO.md](../../TODO.md#pre-v1-contract-migration).
 
 Source: the `200ms × 3` wire/i18n benchmark run on the v0.18.0 tree plus the benchmark suite, and the code assessment of 2026-09-05. These are historical measurements, not fresh results from documentation promotion. Performance changes need before/after evidence; none of the projected gains is guaranteed.
 
@@ -28,14 +28,15 @@ The built-in HTTP feature work in [the HTTP feature contract](../specs/http-feat
 
 ## Package A — `perf/wire-hot-paths` (one PR, three commits)
 
-### A1. Precompute error JSON options at construction — high confidence, low risk
+### A1. Precompute error JSON options at construction — implemented 2026-09-05
 
 - `errorJSONOptions` (`json.go`) calls `jsonv2.JoinOptions(app.jsonOptions(), Deterministic(true))` on every error response; `New` already fixes `jsonOpts` at construction.
 - Change: add `app.errorJSONOpts jsonv2.Options`, computed next to `jsonOpts`; package-level `defaultErrorJSONOptions` for the nil-App fallback (tests using `NewResponse`). `errorJSONOptions()` returns the field.
 - Only caller: the default error body writer in `errors.go`.
 - Proof: `BenchmarkWireJSONOptions/ErrorOptions` must match `PrecomputedErrorOptions` (0 allocs).
+- Result: `ErrorOptions` 26.7 ns / 112 B / 1 alloc → 0.61 ns / 0 B / 0 allocs, equal to `PrecomputedErrorOptions`.
 
-### A2. Skip language re-resolution for canonical locale strings — high yield, medium risk, contained in `internal/i18n`
+### A2. Skip language re-resolution for canonical locale strings — implemented 2026-09-05
 
 - Current source of repeated work: after the `UseI18n` locale middleware has run, `ctx.locale` contains `bundle.MatchLangString(lang)` or `cfg.Default`. Later `TranslateForLang`, `TranslatePluralForLang` and `FieldNameForLang` calls re-run parsing/matching on the same string. The validation path resolves twice per violation (field name + message).
 - Revised invariant for P8's accepted lazy contract: locale may be unresolved until the first `Locale()` or translation access. One request-owned resolver must initialize and memoize it before any of those lookups, including error/bind/validation and field-name translation. Only the resolved locale has the canonical/default-string fast-path property. Do not use an initially empty `ctx.locale` as proof that i18n is inactive; reset separate memoization state with the pooled Context. P8 owns this behavioral change and its ordering/failure contract; A2 owns the Bundle fast path.
@@ -44,14 +45,16 @@ The built-in HTTP feature work in [the HTTP feature contract](../specs/http-feat
 - Proof: `BenchmarkBundleTranslate/CanonicalString` approaches `ResolvedTag` (34 ns, 0 allocs); `BenchmarkUseI18n_ValidationError` allocs drop by roughly 2 × fields × (parse + match).
 - If P8 has landed, add equivalent no-locale-use, first-resolution and repeated-translation cases. First use still pays detector/header resolution; subsequent lookups should use the cached request locale and Bundle fast path. Assert no detector calls for unused i18n and at most one for used requests, including early error translation. Do not credit skipped work to canonical lookup cost. The Bundle-only cache can land before or after P8; its public string-input behavior stays the same.
 - Risk to watch: `MatchLangString` for a raw header like `tr` already returns `tr`; ensure the table never shadows a header that happens to equal a canonical string but should match differently (it cannot: exact canonical string → that tag is the correct match by definition).
+- Result: the table is built in `rebuildMatcher` by running `matchTag` on every candidate (registered tags, the default tag and the default as configured, kept by `NewBundleFromString`), so an entry is by construction what the slow path returns; `Bundle` is not mutated after `UseI18n` and i18n is not a reload participant. `BundleTranslate/CanonicalString` 344 ns / 6 allocs → 42 ns / 0 allocs (`ResolvedTag` 34–39 ns); `UseI18n_T` 1.10 µs / 13 allocs → 0.19 µs / 1 alloc; `UseI18n_ValidationError` 4.14 µs / 50 allocs → 1.53 µs / 13 allocs; `UseI18n_HTTPError` 1.73 µs / 18 allocs → 0.81 µs / 5 allocs.
 
-### A3. Access log: check the effective logger's level before building the entry — measured, narrow
+### A3. Access log: check the effective logger's level before building the entry — implemented 2026-09-05
 
 - `observeAccess` (`accesslog.go`): current order is MinLevel → entry construction (`RealIP`, User-Agent, Route, RequestID) → `ResultFilter` → logger selection → `EmitAccessLog` → `logger.Enabled`.
 - Logger selection depends only on `configuredLogger` / `ctx.logger` / base logger; the level only on status. Neither needs the entry.
 - Change: when `filter == nil`, select the logger and call `logger.Enabled(r.Context(), level)` before constructing `AccessLogEntry`; return early when disabled. When `filter != nil`, keep the existing order so the filter still observes every response (documented contract). `EmitAccessLog` keeps its own `Enabled` check for the WebSocket producer.
 - Ceiling: handler-filtered 131 ns / 1 alloc → ~60 ns / 0 allocs (the MinLevel figure).
 - Proof: `BenchmarkWireObservability/AccessLog/HandlerFiltered` vs `MinLevelFiltered`.
+- Result: `HandlerFiltered` 136 ns / 1 alloc → 66 ns / 0 allocs (`MinLevelFiltered` 63 ns); the enabled path pays one extra `Enabled` call, within noise.
 
 ## Package B — `perf/response-readfrom` (separate PR, needs live-server verification)
 
@@ -72,6 +75,6 @@ The built-in HTTP feature work in [the HTTP feature contract](../specs/http-feat
 ## Order
 
 1. Ensure the wire benchmark suite (`wire_benchmark_test.go` and the i18n benchmarks) is on the implementation base; if already merged, do not duplicate it. Resolve its current branch/merge state before starting.
-2. Package A as `perf/wire-hot-paths`: A1 → A2 → A3, one commit each, benchstat in the PR body.
+2. Package A as `perf/wire-hot-paths`: A1 → A2 → A3, one commit each, benchstat in the PR body — done 2026-09-05.
 3. Package B as `perf/response-readfrom`.
 4. Deferred items only with a new measurement that changes the picture.

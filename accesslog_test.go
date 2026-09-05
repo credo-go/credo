@@ -1,6 +1,7 @@
 package credo_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -883,5 +884,44 @@ func TestAccessLog_ZeroConfigKeepsDefaults(t *testing.T) {
 	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	if buf.Len() == 0 {
 		t.Fatal("zero-value access-log config did not preserve default logging")
+	}
+}
+
+// TestAccessLog_ResultFilterObservesLoggerFilteredResponse pins the contract
+// that a ResultFilter sees every response even when the target logger would
+// drop the record: the level shortcut applies only without a filter.
+func TestAccessLog_ResultFilterObservesLoggerFilteredResponse(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	var calls atomic.Int32
+	app := mustNew(t, credo.WithLogger(logger))
+	app.UseAccessLog(credo.AccessLogConfig{
+		ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
+			calls.Add(1)
+			if entry.Status != 200 || entry.Route != "/" {
+				t.Errorf("filter entry = %+v, want status 200 on route /", entry)
+			}
+			return true
+		},
+	})
+	app.GET("/", func(ctx *credo.Context) error {
+		return ctx.Response().NoContent(200)
+	})
+
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if calls.Load() != 1 {
+		t.Fatalf("filter calls = %d, want 1", calls.Load())
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Error-level logger recorded a 200: %s", buf.String())
+	}
+
+	// Without a filter the same logger level skips the record as well.
+	app2 := mustNew(t, credo.WithLogger(logger))
+	app2.UseAccessLog()
+	app2.GET("/", func(ctx *credo.Context) error { return ctx.Response().NoContent(200) })
+	app2.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if buf.Len() != 0 {
+		t.Fatalf("Error-level logger recorded a 200 without filter: %s", buf.String())
 	}
 }

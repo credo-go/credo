@@ -522,3 +522,49 @@ func TestBundle_EmptyBundleNoPanic(t *testing.T) {
 		t.Errorf("MatchLangString on an empty bundle = %q, want default %q", got, "en")
 	}
 }
+
+// TestBundle_CanonicalTableMatchesMatcher verifies that the canonical-string
+// fast path resolves exactly what the Accept-Language matcher resolves, for
+// every registered tag, the default language and the default as configured.
+func TestBundle_CanonicalTableMatchesMatcher(t *testing.T) {
+	b, err := NewBundleFromString("en-us")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddMessages(language.MustParse("en-US"), &Message{ID: "greeting", Other: "Hello"}); err != nil {
+		t.Fatalf("AddMessages(en-US): %v", err)
+	}
+	if err := b.AddMessages(language.Turkish, &Message{ID: "greeting", Other: "Merhaba"}); err != nil {
+		t.Fatalf("AddMessages(tr): %v", err)
+	}
+
+	for _, s := range []string{"en-US", "tr", "en-us"} {
+		tag, ok := b.canonical[s]
+		if !ok {
+			t.Fatalf("canonical table has no entry for %q", s)
+		}
+		want, ok := b.matchTag(s)
+		if !ok || tag != want {
+			t.Fatalf("canonical[%q] = %v, matcher gives %v (ok=%v)", s, tag, want, ok)
+		}
+		if got := b.resolveTag(s); got != want {
+			t.Fatalf("resolveTag(%q) = %v, want %v", s, got, want)
+		}
+	}
+
+	// Non-canonical inputs still take the matcher path.
+	if got := b.MatchLangString("tr-TR, en;q=0.5"); got != "tr" {
+		t.Fatalf("MatchLangString(header) = %q, want tr", got)
+	}
+	if s, ok := b.TranslateForLang("en-us", "greeting", nil); !ok || s != "Hello" {
+		t.Fatalf("TranslateForLang(en-us) = %q, %v", s, ok)
+	}
+
+	// A later registration rebuilds the table.
+	if err := b.AddMessages(language.German, &Message{ID: "greeting", Other: "Hallo"}); err != nil {
+		t.Fatalf("AddMessages(de): %v", err)
+	}
+	if got := b.resolveTag("de"); got != language.German {
+		t.Fatalf("resolveTag(de) after rebuild = %v", got)
+	}
+}

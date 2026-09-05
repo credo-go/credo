@@ -7,8 +7,7 @@ Thank you for your interest in contributing to Credo! This guide will help you g
 1. **Fork and clone** the repository.
 2. Ensure you have **Go 1.27+** installed.
 3. Install `golangci-lint` and a race-enabled Go toolchain.
-4. Run `make check` to vet, lint, and test both the root module and the
-   `store/sqldb` submodule (the benchmark smoke step remains root-only).
+4. Run `make check` to vet, lint, and test both the root module and the `store/sqldb` submodule (the benchmark smoke step remains root-only).
 
 ## Branch Strategy
 
@@ -40,45 +39,30 @@ refactor(middleware): simplify chain composition
 
 1. Create a feature branch from `dev`.
 2. Write tests first (TDD is encouraged).
-3. Ensure `make check` passes locally. If the platform cannot run `-race`, the
-   required CI race jobs remain authoritative and must pass before merge.
+3. Ensure `make check` passes locally. If the platform cannot run `-race`, the required CI race jobs remain authoritative and must pass before merge.
 4. Open a PR with a clear title and description explaining:
    - **What** changed
    - **Why** it changed
    - **How** to test it
 5. At least one maintainer review is required before merge.
 
+## Performance Changes
+
+A change made for performance carries its evidence. Run the relevant benchmarks on the base commit and on the change with `go test -run '^$' -bench <name> -count=10 -benchmem`, compare the two outputs with `benchstat` (`go run golang.org/x/perf/cmd/benchstat@latest old.txt new.txt`) and put the table in the PR body. There is no CI benchmark job because shared runners are too noisy; the PR table is the record. Existing tests stay unchanged unless one pins the old cost.
+
 ## Wrapped Dependency Upgrades
 
-An upgrade to a wrapped protocol or infrastructure dependency must identify the
-candidate tag and commit, review its release/security notes, and pass the full
-root test, race, vet, build, tidy, and pinned-lint jobs. For
-`github.com/coder/websocket`, the root test job is also the executable upgrade
-gate: do not skip or weaken `websocket/upstream_*_conformance_test.go` or the
-origin, handshake, real-network, and lifecycle suites when updating the pin.
-Record the upstream tag's Autobahn/conformance evidence in the PR; Credo does
-not require a separate Autobahn run on every commit.
+An upgrade to a wrapped protocol or infrastructure dependency must identify the candidate tag and commit, review its release/security notes, and pass the full root test, race, vet, build, tidy, and pinned-lint jobs. For `github.com/coder/websocket`, the root test job is also the executable upgrade gate: do not skip or weaken `websocket/upstream_*_conformance_test.go` or the origin, handshake, real-network, and lifecycle suites when updating the pin. Record the upstream tag's Autobahn/conformance evidence in the PR; Credo does not require a separate Autobahn run on every commit.
 
 ### Updating Bun
 
-`store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery`
-state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its
-three dialect modules together to the same reviewed release.
+`store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery` state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its three dialect modules together to the same reviewed release.
 
-Every Bun update must pass the full `Test (store/sqldb)` race job, including
-`TestBunSelectCloneLayoutCompatibility` and the critical query-state,
-pagination-count, and SQL-rendering contract tests. The normal build, tidy,
-lint, and real PostgreSQL/MySQL jobs must pass as well.
+Every Bun update must pass the full `Test (store/sqldb)` race job, including `TestBunSelectCloneLayoutCompatibility` and the critical query-state, pagination-count, and SQL-rendering contract tests. The normal build, tidy, lint, and real PostgreSQL/MySQL jobs must pass as well.
 
-If a Bun update changes private layout or SQL semantics, first evaluate an
-upstream fix, removing or narrowing the compatibility layer, or narrowing the
-Credo contract. Do not automatically expand unsafe private-field access or add
-SQL parser logic merely to preserve the previous implementation.
+If a Bun update changes private layout or SQL semantics, first evaluate an upstream fix, removing or narrowing the compatibility layer, or narrowing the Credo contract. Do not automatically expand unsafe private-field access or add SQL parser logic merely to preserve the previous implementation.
 
-Also re-check the migration finalizer limitation tracked in
-[Bun #1389](https://github.com/uptrace/bun/issues/1389): remove the Bun v1.2.18
-`.tx.up.sql` warning only after a conformance test proves that Commit/Rollback
-errors reach the caller and can gate the applied marker.
+Also re-check the migration finalizer limitation tracked in [Bun #1389](https://github.com/uptrace/bun/issues/1389): remove the Bun v1.2.18 `.tx.up.sql` warning only after a conformance test proves that Commit/Rollback errors reach the caller and can gate the applied marker.
 
 ## Releasing
 
@@ -92,8 +76,8 @@ Before the first root tag exists, `store/sqldb/go.mod` uses a bootstrap `replace
 The modules use the following compatibility rule:
 
 | `store/sqldb` version | Compatible root `credo` version |
-| --- | --- |
-| `vX.Y.Z` | exactly `vX.Y.Z` |
+| --------------------- | ------------------------------- |
+| `vX.Y.Z`              | exactly `vX.Y.Z`                |
 
 Release both modules in this order:
 
