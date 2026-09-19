@@ -88,6 +88,12 @@ func (r *runner) admitRun(startedAt time.Time, restart bool) {
 	})
 }
 
+func (r *runner) status() Status {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.st.status
+}
+
 func (r *runner) restartCount() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -133,6 +139,10 @@ type loopPolicy interface {
 	// stop=true when the loop must not run at all.
 	start(ctx context.Context) (wait time.Duration, stop bool)
 
+	// startAttrs returns the kind-specific attributes of the "worker
+	// started" line; it is called once, right after start.
+	startAttrs() []any
+
 	// beforeRun runs once the wait has elapsed. It must be side-effect-free:
 	// driveLoop checks for cancellation after it and may then exit without
 	// running. It returns the activation time recorded in the run context
@@ -152,6 +162,23 @@ type runResult struct {
 	duration    time.Duration
 }
 
+// logAttrs returns the attributes every failed-run line carries: run_id
+// (equal to RunID inside Run) and duration, plus timed_out, unexpected_exit
+// and stack only when they apply.
+func (res runResult) logAttrs() []any {
+	attrs := []any{"run_id", res.runID, "duration", res.duration}
+	if res.outcome.timedOut {
+		attrs = append(attrs, "timed_out", true)
+	}
+	if res.outcome.unexpectedExit {
+		attrs = append(attrs, "unexpected_exit", true)
+	}
+	if res.outcome.stack != nil {
+		attrs = append(attrs, "stack", string(res.outcome.stack))
+	}
+	return attrs
+}
+
 // driveLoop runs the worker under policy until it stops. Cancellation while
 // waiting, or observed at admission, preserves the last execution snapshot:
 // the worker is stopped only if it has not already transitioned to Failed.
@@ -168,10 +195,24 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 	}
 	defer timer.Stop()
 
-	kind := r.def.kind()
+	name, kind := r.def.name, r.def.kind()
 	timeout := r.def.runTimeout
 
+	// driveLoop owns both lifecycle lines, so every exit path — however the
+	// loop ends — logs exactly one start and one stop.
 	wait, stop := policy.start(ctx)
+	p.logger.InfoContext(ctx, "worker started",
+		append([]any{"worker", name, "kind", string(kind)}, policy.startAttrs()...)...)
+	defer func() {
+		status := r.status()
+		reason := "shutdown"
+		if status == StatusFailed {
+			reason = "failed"
+		}
+		p.logger.InfoContext(ctx, "worker stopped",
+			"worker", name, "kind", string(kind), "status", string(status), "reason", reason)
+	}()
+
 	for !stop {
 		if wait != waitNone {
 			timer.Reset(wait)
@@ -192,7 +233,7 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 		r.admitRun(startedAt, restart)
 
 		runID := newRunID()
-		runCtx := enrichContext(ctx, r.def.name, scheduledAt, runID)
+		runCtx := enrichContext(ctx, name, scheduledAt, runID)
 		cancel := context.CancelFunc(func() {})
 		if timeout > 0 {
 			runCtx, cancel = context.WithTimeoutCause(runCtx, timeout, ErrRunTimeout)
@@ -232,6 +273,8 @@ func (c *continuousPolicy) start(context.Context) (time.Duration, bool) {
 	return waitNone, false
 }
 
+func (c *continuousPolicy) startAttrs() []any { return nil }
+
 func (c *continuousPolicy) beforeRun() (time.Time, bool) {
 	return time.Time{}, c.ran
 }
@@ -244,17 +287,18 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 		// A continuous run never succeeds: the only other outcome is a
 		// graceful stop.
 		r.stopIfNotFailed()
-		p.logger.InfoContext(ctx, "worker stopped", "worker", r.def.name, "kind", string(KindContinuous))
 		return waitNone, true
 	}
 
 	restarts := r.restartCount()
 	p.logger.ErrorContext(ctx,
 		"worker run failed",
-		"worker", r.def.name,
-		"kind", string(KindContinuous),
-		"restarts", restarts,
-		"error", out.err,
+		append([]any{
+			"worker", r.def.name,
+			"kind", string(KindContinuous),
+			"restarts", restarts,
+			"error", out.err,
+		}, res.logAttrs()...)...,
 	)
 
 	if max := r.def.restartPolicy.maxRestarts; max > 0 && restarts >= int64(max) {
@@ -298,6 +342,17 @@ func (s *scheduledPolicy) start(ctx context.Context) (time.Duration, bool) {
 	return s.scheduleNext(ctx)
 }
 
+func (s *scheduledPolicy) startAttrs() []any {
+	attrs := []any{"schedule", s.r.def.scheduleExpr()}
+	if s.synthetic {
+		return append(attrs, "start_immediately", true)
+	}
+	if !s.next.IsZero() {
+		attrs = append(attrs, "next_run", s.next)
+	}
+	return attrs
+}
+
 func (s *scheduledPolicy) beforeRun() (time.Time, bool) {
 	if s.synthetic {
 		// Synthetic startup run: ScheduledAt is the zero time.
@@ -327,24 +382,29 @@ func (s *scheduledPolicy) finishRun(ctx context.Context, res runResult) (stop bo
 	switch out.verdict {
 	case runStopped:
 		r.stopIfNotFailed()
-		p.logger.InfoContext(ctx,
-			"worker stopped during scheduled run",
-			"worker", r.def.name,
-		)
 		return true
 	case runSucceeded:
 		s.consecutiveFailures = 0
 		r.recordSuccess(time.Now())
+		p.logger.DebugContext(ctx,
+			"scheduled worker run completed",
+			"worker", r.def.name,
+			"run_id", res.runID,
+			"scheduled_at", res.scheduledAt,
+			"duration", res.duration,
+		)
 		return false
 	}
 
 	s.consecutiveFailures++
 	p.logger.ErrorContext(ctx,
 		"scheduled worker run failed",
-		"worker", r.def.name,
-		"scheduled_at", res.scheduledAt,
-		"consecutive_failures", s.consecutiveFailures,
-		"error", out.err,
+		append([]any{
+			"worker", r.def.name,
+			"scheduled_at", res.scheduledAt,
+			"consecutive_failures", s.consecutiveFailures,
+			"error", out.err,
+		}, res.logAttrs()...)...,
 	)
 
 	if max := r.def.failurePolicy.maxConsecutiveFailures; max > 0 && s.consecutiveFailures >= int64(max) {
@@ -372,14 +432,27 @@ func (s *scheduledPolicy) finishRun(ctx context.Context, res runResult) (stop bo
 func (s *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool) {
 	r, p := s.r, s.p
 	next := r.def.schedule.Next(s.anchor)
+	var skipped int
+	var firstSkipped, lastSkipped time.Time
 	for !next.IsZero() && !next.After(time.Now()) {
 		// The previous run outlasted this activation — skip it.
-		p.logger.WarnContext(ctx,
-			"worker tick skipped",
-			"worker", r.def.name,
-			"scheduled_at", next,
-		)
+		if skipped == 0 {
+			firstSkipped = next
+		}
+		lastSkipped = next
+		skipped++
 		next = r.def.schedule.Next(next)
+	}
+	if skipped > 0 {
+		// One line per resumption, not one per activation: a one-second
+		// schedule behind a ten-minute run would otherwise log 600 lines.
+		p.logger.WarnContext(ctx,
+			"worker ticks skipped",
+			"worker", r.def.name,
+			"skipped", skipped,
+			"first_scheduled_at", firstSkipped,
+			"last_scheduled_at", lastSkipped,
+		)
 	}
 	if next.IsZero() {
 		r.update(func(st *runState) {

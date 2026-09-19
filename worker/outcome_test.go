@@ -108,6 +108,8 @@ func newBarrierPolicy(r *runner, blockAt int, wait time.Duration) *barrierPolicy
 
 func (b *barrierPolicy) start(context.Context) (time.Duration, bool) { return waitNone, false }
 
+func (b *barrierPolicy) startAttrs() []any { return nil }
+
 func (b *barrierPolicy) beforeRun() (time.Time, bool) {
 	b.calls++
 	if b.calls == b.blockAt {
@@ -499,8 +501,8 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 			if runs.Load() != 1 || info.LastError != "worker: run timed out after 10s" {
 				t.Fatalf("runs = %d, %+v, want one timed-out run", runs.Load(), info)
 			}
-			if n := len(logs.withMessage("worker tick skipped")); n != 2 {
-				t.Fatalf("%d skipped activations logged, want 2 (2:00 and 3:00)", n)
+			if skips := logs.withMessage("worker ticks skipped"); len(skips) != 1 || skips[0].Attrs["skipped"] != int64(2) {
+				t.Fatalf("skip lines = %+v, want one line for the 2:00 and 3:00 activations", skips)
 			}
 			time.Sleep(10 * time.Second) // 4:00
 			synctest.Wait()
