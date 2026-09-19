@@ -41,6 +41,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 | log `worker tick skipped` (one per activation) | `worker ticks skipped` with `skipped=N` |
 | names silently trimmed | surrounding whitespace and control characters are rejected |
 | untagged JSON field names from `pool.Workers()` | snake_case |
+| `worker.Definition` (exported, returned by no API) | removed; `info.Config` is the public view of a registration |
+| a continuous worker reported `Running` as soon as the pool started | `Idle` until its first run is admitted |
 
 The [pre-v1 migration guide](docs/guides/pre-v1-migration.md#workers) carries the same table with more context.
 

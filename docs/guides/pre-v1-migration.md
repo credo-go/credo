@@ -95,6 +95,8 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | log `worker tick skipped`, one line per skipped activation | one `worker ticks skipped` line per resumption with `skipped=N` |
 | names silently trimmed | surrounding whitespace and control characters are rejected |
 | untagged (Go field name) JSON from `pool.Workers()` | snake_case field names; empty `last_run`/`last_success`/`last_error`/`config.readiness` omitted |
+| `worker.Definition` (exported, returned by no API) | removed; `info.Config` is the public view of a registration |
+| a continuous worker reported `running` as soon as the pool started | `idle` until its first run is admitted |
 
 New and unchanged behavior worth knowing while migrating: `WithRunTimeout` is scheduled-only; failure log lines now carry `run_id` (equal to `worker.RunID(ctx)`) and `duration`; a successful scheduled run logs `scheduled worker run completed` at Debug; `Info.Config` reports the effective configuration, so a registration test can assert every worker's policy without running it.
 
