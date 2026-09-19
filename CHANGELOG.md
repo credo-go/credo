@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-19
+
 **Worker contract.** The `worker` package gets its pre-v1 contract ([ADR-023](docs/adr/023-worker-system.md), [worker spec](docs/specs/worker.md)). The release is breaking, and one change compiles unchanged but behaves differently — check it before upgrading:
 
 > **BREAKING (behavior): a continuous worker whose `Run` returns nil while the application is running is restarted.** It used to stop silently and permanently. The early return is now a failure: logged at Error as `worker run failed` with `unexpected_exit=true` and `LastError` = `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, restarted after the restart delay (3 s by default) — indefinitely unless `WithMaxRestarts` is set — and marked failed once a positive limit is exhausted, which `ReadinessPolicy.FailWhenFailed` now observes. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work. A nil return after the context is cancelled remains a graceful stop.
@@ -472,7 +474,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/credo-go/credo/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/credo-go/credo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/credo-go/credo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/credo-go/credo/compare/v0.16.0...v0.17.0
