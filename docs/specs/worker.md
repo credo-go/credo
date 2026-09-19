@@ -1,6 +1,6 @@
 # Worker Spec
 
-**Status**: Implemented (v0.20.0 contract) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
+**Status**: Implemented (v0.20.0 contract); [restart backoff](#restart-backoff) accepted, pending implementation (v0.21.0) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md) **Plan**: [Restart backoff and startup features](../plans/restart-backoff-and-startup-features.md)
 
 This file is the contract of Credo's worker system: what registration accepts, how a run is admitted and classified, what the pool reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023.
 
@@ -257,6 +257,57 @@ Cancellation while waiting (restart delay or next activation) ends the loop the 
 
 Finite background work does not fit a continuous worker's contract on its own. Run it in `app.OnStart` when startup should wait for it, or end the continuous `Run` with `<-ctx.Done()` after the work is done.
 
+### Restart backoff
+
+**Accepted, pending implementation (v0.21.0).** Until it ships, a continuous worker waits the fixed `RestartDelay` described above. When it ships, this section replaces that sentence, and the Public API, Validation, Logging Contract, Snapshot and Configuration sections gain the entries listed here. The rationale is in [ADR-023](../adr/023-worker-system.md#restart-backoff).
+
+API additions:
+
+```go
+func WithMaxRestartDelay(d time.Duration) Option // continuous
+const DefaultMaxRestartDelay = time.Minute
+```
+
+**Base.** `base` is the effective restart delay, resolved as today: `WithRestartDelay` → `worker.restart_delay` → `DefaultRestartDelay`, with zero at either level meaning the default. It becomes the first and the minimum delay.
+
+**Cap.** The cap resolves like `base`, explicit zero included:
+
+| `WithMaxRestartDelay` | Effective cap |
+| --- | --- |
+| omitted | `worker.max_restart_delay`, else `DefaultMaxRestartDelay`; raised to `base` when `base` is larger, without an error |
+| `WithMaxRestartDelay(0)` | `max(DefaultMaxRestartDelay, base)`; the pool configuration is skipped |
+| `WithMaxRestartDelay(d)`, `d > 0` | `d`; `d` below the effective `base` is a registration error |
+
+**Delay.** After a failed run for which a restart is planned:
+
+```text
+ceiling = min(base × 2^(k−1), cap)
+lower   = max(base, ceiling/2)
+delay   = uniform in [lower, ceiling]; exactly lower when lower == ceiling
+```
+
+`k` is the failure's position in the current sequence, starting at 1. The first delay is exactly `base`; every delay lies in `[base, cap]`; a cap equal to `base` is a fixed delay; the window saturates at the cap without overflow, however long the sequence. Individual delays need not grow monotonically.
+
+**Reset.** When the run that just failed lasted at least the effective cap (`duration >= cap`), the sequence restarts: that failure counts as `k = 1` and the next restart waits `base`. A reset never changes `Restarts` or the `WithMaxRestarts` budget.
+
+**Unchanged.** `WithMaxRestarts(N)` still allows the first run plus N restarts, and `Restarts` still counts restarts that started. Restarts are further apart, so the worker reaches `failed` later: with the defaults, `WithMaxRestarts(5)` waits roughly 48–93 s in total instead of 15 s, and each further restart adds 30–60 s. Cancellation during the wait ends the loop without counting a restart. Scheduled workers are unaffected.
+
+**Fixed delay.** Setting `WithRestartDelay(d)` and `WithMaxRestartDelay(d)` to the same positive `d` is the only fixed delay no configuration can change. `WithRestartDelay(time.Minute)` alone is fixed only while the pool cap does not exceed one minute — the default — and with `worker.max_restart_delay: 5m` it grows from one minute to five.
+
+**Validation.** Registration errors: a negative `WithMaxRestartDelay`; an explicit positive cap below the effective base; `WithMaxRestartDelay` on a scheduled worker, zero included (`worker: WithMaxRestartDelay is for continuous workers`). A negative `worker.max_restart_delay` fails pool creation, as a negative `worker.restart_delay` does.
+
+**Snapshot.** `Config.MaxRestartDelay time.Duration` (`json:"max_restart_delay"`) is the effective cap for continuous workers and zero for scheduled ones. `Config.RestartDelay` keeps reporting the effective base.
+
+**Logging.** The `worker run failed` line gains `next_restart_in`, the selected delay, only when a restart is planned. It is omitted when the failure exhausted `WithMaxRestarts` and when shutdown was already observed, and it is never written as zero to mean "no restart". The restart decision is therefore made before the line is written; each failed run still writes exactly one `worker run failed` line, followed by `worker exceeded max restarts` when the limit is exhausted. A cancellation that arrives after the line was written still ends the loop, so the attribute is a plan, not a promise.
+
+**Configuration.**
+
+```yaml
+worker:
+  restart_delay: "3s"      # base
+  max_restart_delay: "1m"  # cap
+```
+
 ### Scheduled workers
 
 Each scheduled worker is one goroutine running a serial loop: wait for the next activation, run it synchronously, compute the following one.
@@ -488,7 +539,7 @@ Cron expressions are compiled into a `Schedule` at registration; no raw string i
 | Interval | `@every 5m`, `@every 1h30m` | fixed period |
 
 - Field syntax: lists (`1,15`), ranges (`1-5`), steps (`*/10`, `8-18/2`), month and weekday names (`jan`, `sat`), `?` as an alias for `*`, `7` as Sunday.
-- Cron schedules are evaluated in the server's local time zone and fire at second 0 of the matching minute.
+- Cron schedules are evaluated in the process's local time zone (`time.Local`) and fire at second 0 of the matching minute. There is no per-worker time zone selection; `TZ=`/`CRON_TZ=` prefixes are rejected (below).
 - As in crontab(5), when both day-of-month and day-of-week are restricted (neither is `*`), the schedule fires when **either** matches; a step on `*` counts as restricted.
 - `@every` takes a Go duration that must be positive and a whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`). No input is rounded or clamped.
 - Not supported, each with a targeted error: the 6-field seconds form (use `@every` for sub-minute periods), `@yearly`/`@annually` (use `0 0 1 1 *`), and `TZ=`/`CRON_TZ=` prefixes.

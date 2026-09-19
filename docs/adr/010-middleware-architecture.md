@@ -1,6 +1,8 @@
 # ADR-010: Middleware Architecture
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-09-05 **Depends on:** ADR-007, ADR-008
+**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-09-19 **Depends on:** ADR-007, ADR-008
+
+**2026-09-19 amendment (accepted, pending implementation):** the managed server's start line will list the built-in features in effect; see [Startup visibility of effective features](#startup-visibility-of-effective-features). The delivery is tracked in the [restart backoff and startup features plan](../plans/restart-backoff-and-startup-features.md).
 
 **2026-09-05 amendment (HTTP minor):** panic recovery, request IDs, access logging, response compression, request decompression and locale detection left the middleware tiers and became framework-owned HTTP features with one registration path each. The built-in middleware tier, the `middleware.Recover`/`RequestID`/`AccessLog`/`Compress`/`Decompress` constructors, the `WithoutRequestID`/`WithoutAccessLog`/`WithAccessLog*` options and the renderer setters were removed in the same change. The [HTTP features spec](../specs/http-features.md) is the feature contract; this ADR records the decision and the middleware model around it.
 
@@ -30,6 +32,14 @@ The criterion concerns feature activation, not every zero-valued setting. Founda
 Custom renderer installation is optional even though core error rendering always exists. A renderer may be bound from a DI-resolved object during bootstrap, so `UseErrorRenderer` and `UseSuccessRenderer` provide their sole registration path; there are no constructor duplicates and no setters. The core pipeline retains its default rendering when no extension is registered.
 
 `Use*` registers a feature once during HTTP setup. Invocation order does not determine execution order, and registration ends at the shared HTTP preparation/shutdown gate ([bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md)); DI `Finalize` alone does not freeze HTTP setup. AccessLog activation does not govern framework/application diagnostic logs, which continue through their normal levels and logger filtering.
+
+### Startup visibility of effective features
+
+**Accepted 2026-09-19, pending implementation.** The criterion above makes most features default-off, and the HTTP minor turned request IDs and access records from default-on to default-off. Code that relied on the old defaults kept compiling and silently stopped producing both — a change visible only to someone who read the migration table. Nothing at runtime says which features are in effect.
+
+The managed start line, `credo: server started`, gains one `features` attribute: a string array of the built-in features in effect, in a fixed display order (`recover`, `request_id`, `access_log`, `decompress`, `compress`, `i18n`, `error_renderer`, `success_renderer`, `health`). The list is derived from the App's effective state after preparation, not from registration calls: recovery comes from constructor options rather than a `Use*` call, a successful `UseI18n` that found no catalogs consumes its registration without activating i18n, and `UseHealth` with both probes disabled creates its engine but mounts no probe. A default App reports `["recover"]`; when nothing is on, the attribute is an empty array. The [HTTP features spec](../specs/http-features.md#startup-visibility) defines the names and the derivation.
+
+The attribute is a permanent diagnostic, not a migration aid, in keeping with observable-by-default. It is written only by managed serving; an application that serves through its own `http.Server` and `ServeHTTP` has no start line, and none is added on the first request. It reports installation, not delivery: an installed access log can still be filtered per request. Rejected: a separate startup line (the start line already exists and carries the address); a Warn for each feature that is off (default-off is this ADR's deliberate choice, and a warning on every start would train operators to silence it); a public feature-introspection API or registry (no consumer needs more than the log line).
 
 ### Framework features around the user chain
 

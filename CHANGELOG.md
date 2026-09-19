@@ -14,6 +14,12 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Documentation
+
+- The routing guide warns that route parameters are not file names: a decoded value can contain `/` or `..` (`/files/..%2F..%2Fetc` gives `{name}` the value `../../etc`), so a handler that opens files confines the access with `os.Root` (or the `fs.FS` from `credo.DirFS`); `filepath.Join` is not a check, `filepath.IsLocal` is lexical only, and a regex constraint narrows the format but does not confine file access. The router spec states the boundary, and the static-files and pre-v1 migration guides link to it. The guide's canonical-form sentence is corrected: escapes of all RFC 3986 reserved characters and of `%` are kept, not only the encoded slash.
+- The worker guide, worker spec and ADR-023 state that cron schedules have no per-worker time zone selection: the process's local zone applies, with platform-accurate advice (`TZ` on Unix, `time/tzdata` for images without zoneinfo, the OS setting on Windows), and `@every` is not a substitute for a calendar rule.
+- Accepted, pending decisions are promoted with a [delivery plan](docs/plans/restart-backoff-and-startup-features.md): capped, jittered exponential restart backoff for continuous workers by default in v0.21.0 ([ADR-023](docs/adr/023-worker-system.md#restart-backoff), [worker spec](docs/specs/worker.md#restart-backoff)), and a `features` attribute on the managed `credo: server started` line listing the built-in HTTP features in effect ([ADR-010](docs/adr/010-middleware-architecture.md#startup-visibility-of-effective-features), [HTTP features spec](docs/specs/http-features.md#startup-visibility)). The lifecycle spec now documents the startup record. Implementation is pending; this entry changes no behavior.
+
 ## [0.20.1] - 2026-09-19
 
 ### Fixed

@@ -93,7 +93,7 @@ Regex constraints are structural: two different constraints at the same position
 
 ### Encoded Values
 
-Routing decodes every escape except the encoded slash before matching, so any spelling of the same bytes reaches the same route (`/caf%C3%A9` and `/caf%c3%a9` both meet `/café`), a percent-encoded slash is data inside one segment, each captured value is decoded once and a constraint is evaluated on the decoded value:
+Routing matches a canonical form of the path: every escape is decoded except those of the RFC 3986 reserved characters (such as `/`, `;` and `?`) and of `%` itself. Any spelling of the same bytes therefore reaches the same route (`/caf%C3%A9` and `/caf%c3%a9` both meet `/café`), a percent-encoded slash is data inside one segment, each captured value is decoded exactly once, and a constraint is evaluated on the decoded value:
 
 ```go
 app.GET("/files/{name}", func(ctx *credo.Context) error {
@@ -121,6 +121,35 @@ _, err := route.BuildURI("")      // error: empty value for parameter "name"
 order := app.GET("/orders/{id:[0-9]+}", getOrder)
 _, err = order.BuildURI("x1")     // error: does not match constraint "[0-9]+"
 ```
+
+#### Route Parameters Are Not File Names
+
+A route parameter is untrusted, already-decoded data. One URL segment is not a safe file name: `/files/..%2F..%2Fetc` gives `{name}` the value `../../etc`, and `/files/..` gives it `..`. Before using a parameter to open a file, confine the access to a directory:
+
+```go
+uploads, err := os.OpenRoot("./uploads")
+if err != nil {
+    log.Fatal(err)
+}
+app.OnShutdown(func(context.Context) error { return uploads.Close() })
+
+app.GET("/uploads/{name}", func(ctx *credo.Context) error {
+    f, err := uploads.Open(ctx.Request().RouteParam("name"))
+    if err != nil {
+        return credo.ErrNotFound // "../../etc": "path escapes from parent"
+    }
+    defer f.Close()
+    return ctx.Response().Stream(http.StatusOK, "application/octet-stream", f)
+})
+```
+
+- **Prefer `os.Root`.** Opening through an [`os.Root`](https://go.dev/blog/osroot) — or through the `fs.FS` that `credo.DirFS` returns, which is backed by one ([static files](static-files.md#osroot-production-symlink-safe)) — keeps every access inside the directory, symlinks included. Close the root, or the closer `DirFS` returns, when the application stops.
+- **`filepath.Join` is not a check.** It composes paths; `filepath.Join(base, "../../etc")` leaves `base`. Joining is fine once the name is known to be safe; it does not make it safe.
+- **`filepath.IsLocal` is lexical.** It rejects names that escape lexically, absolute and empty names, and reserved names on Windows, but it cannot see symlinks. Use it to reject bad input early, not instead of `os.Root`.
+- **A regex constraint narrows the format, not the location.** `{name:[a-z0-9-]+}` keeps identifiers simple, but a character class that admits `.` also admits `.` and `..`. A constraint describes what the application accepts; it does not confine file access.
+- **Do not decode again.** The value is decoded once; a second `PathUnescape` turns `%2F` data into a separator.
+
+`app.Static` and `app.File` apply their own path sanitization; this section concerns handlers that open files themselves. The URL contract is in the [router spec](../specs/router.md#encoded-parameter-values).
 
 ---
 

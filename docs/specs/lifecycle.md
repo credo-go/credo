@@ -124,6 +124,12 @@ The callback runs last among the construction steps, so it is the final word on 
 
 `Serve`, `ServeTLS`, `Shutdown`, `Close`, and `RegisterOnShutdown` belong to the lifecycle: the callback must not call them or retain the pointer past its return. The `WithHTTPRedirect` listener is a separate, fixed-function server and is not passed to the callback; it keeps its own mirrored `ErrorLog` and `ReadHeaderTimeout`. Everything the callback sets is restart-only — the server is constructed once per session, so a reload cannot change it.
 
+### Startup record
+
+Managed serving (`Run`, `RunContext`, `ServeContext`) writes one Info line after the listener is bound and the `OnStart` hooks have succeeded, as the App enters `running` and just before the server starts accepting connections: `credo: server started` with `label` (the entry point: `Run`, `RunContext` or `ServeContext`) and `addr` (the bound address, as `app.Addr()` reports it). A failed start writes no such line. An application that only calls `ServeHTTP` from its own `http.Server` gets no startup record.
+
+**Accepted, pending implementation:** the line gains a `features` attribute listing the built-in HTTP features in effect. The [HTTP features spec](http-features.md#startup-visibility) defines its names, order and derivation.
+
 ### Server diagnostics (`http.Server.ErrorLog`)
 
 `net/http` reports its own problems — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls, hijacked-connection writes — through `http.Server.ErrorLog`. Credo wires that to the application logger, so those records arrive as structured entries at `ERROR` with `component=net/http` instead of going to the standard `log` package's stderr output. The stdlib message text is preserved verbatim (`http: TLS handshake error from …`), so existing greps and alerts keep matching. The redirect listener from `WithHTTPRedirect` shares the same bridge.
