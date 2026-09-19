@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -242,7 +243,7 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 		// Read the cause before cancel, which would otherwise make every run
 		// look cancelled. context.Cause keeps the first reason, so a timeout
 		// that fired before shutdown stays a timeout.
-		timedOut := context.Cause(runCtx) == ErrRunTimeout
+		timedOut := errors.Is(context.Cause(runCtx), ErrRunTimeout)
 		cancel()
 
 		wait, stop = policy.afterRun(ctx, runResult{
