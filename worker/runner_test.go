@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,14 +12,21 @@ import (
 )
 
 func TestSafeRun_RecoversPanics(t *testing.T) {
-	err := safeRun(t.Context(), Func("panic-worker", func(context.Context) error {
+	err := safeRun(t.Context(), Func(func(context.Context) error {
 		panic("boom")
 	}))
-	if err == nil {
-		t.Fatal("safeRun() error = nil, want panic converted to error")
+	p, ok := errors.AsType[*panicError](err)
+	if !ok {
+		t.Fatalf("safeRun() error = %T %v, want *panicError", err, err)
 	}
-	if !strings.Contains(err.Error(), `worker "panic-worker" panicked: boom`) {
-		t.Fatalf("safeRun() error = %q, want panic prefix", err.Error())
+	if got := err.Error(); got != "worker: run panicked: boom" {
+		t.Fatalf("Error() = %q, want the panic value without a stack", got)
+	}
+	if !strings.Contains(string(p.stack), "goroutine") {
+		t.Fatalf("stack = %q, want the recovered goroutine stack", p.stack)
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatal("panicError must not unwrap")
 	}
 }
 
@@ -27,7 +35,7 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 		pool := newTestPool()
 
 		var calls atomic.Int64
-		worker := Func("continuous", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			if calls.Add(1) == 1 {
 				return errors.New("boom")
 			}
@@ -35,9 +43,9 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 			return ctx.Err()
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "continuous",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "continuous",
+			resolve: instance(worker),
 			restartPolicy: restartPolicy{
 				restartDelay: 5 * time.Second,
 			},
@@ -49,19 +57,20 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 			t.Fatalf("Start() = %v", err)
 		}
 
-		// First run fails; the runner sleeps on the restart timer.
+		// First run fails; the runner sleeps on the restart timer. No
+		// restart has happened yet.
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 {
-			t.Fatalf("after first failure: status = %q attempts = %d, want waiting/1", info.Status, info.Attempts)
+		if info.Status != StatusWaiting || info.Restarts != 0 {
+			t.Fatalf("after first failure: status = %q restarts = %d, want waiting/0", info.Status, info.Restarts)
 		}
 
 		// Virtual time passes the restart delay; the second run starts and
 		// blocks on ctx.
 		time.Sleep(5 * time.Second)
 		synctest.Wait()
-		if got := pool.Workers()[0].Status; got != StatusRunning {
-			t.Fatalf("after restart: status = %q, want %q", got, StatusRunning)
+		if info = pool.Workers()[0]; info.Status != StatusRunning || info.Restarts != 1 {
+			t.Fatalf("after restart: status = %q restarts = %d, want running/1", info.Status, info.Restarts)
 		}
 
 		shutdownPool(t, pool)
@@ -78,13 +87,15 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("continuous-fail", func(context.Context) error {
+		var calls atomic.Int64
+		worker := Func(func(context.Context) error {
+			calls.Add(1)
 			return errors.New("boom")
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "continuous-fail",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "continuous-fail",
+			resolve: instance(worker),
 			restartPolicy: restartPolicy{
 				maxRestarts:  2,
 				restartDelay: time.Minute,
@@ -97,17 +108,28 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 			t.Fatalf("Start() = %v", err)
 		}
 
+		// maxRestarts: 2 is the first run plus two restarts: three runs.
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 || !strings.Contains(info.LastError, "boom") {
-			t.Fatalf("after first failure: %+v, want waiting/1/boom", info)
+		if info.Status != StatusWaiting || info.Restarts != 0 || !strings.Contains(info.LastError, "boom") {
+			t.Fatalf("after first failure: %+v, want waiting/0/boom", info)
 		}
 
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info = pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 2 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusWaiting || info.Restarts != 1 {
+			t.Fatalf("after the first restart failed: %+v, want waiting/1", info)
+		}
+
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		info = pool.Workers()[0]
+		if info.Status != StatusFailed || info.Restarts != 2 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after max restarts: %+v, want failed/2/boom", info)
+		}
+		if got := calls.Load(); got != 3 {
+			t.Fatalf("runs = %d, want 3", got)
 		}
 
 		shutdownPool(t, pool)
@@ -118,16 +140,16 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("deadline", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			childCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
 			defer cancel()
 			<-childCtx.Done()
 			return childCtx.Err()
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:          "deadline",
-			worker:        worker,
+			resolve:       instance(worker),
 			restartPolicy: restartPolicy{maxRestarts: 1},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -141,9 +163,10 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 		// (synctest.Wait alone does not advance time).
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
+		// maxRestarts: 1 restarts once; the restarted run fails too.
 		info := pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 1 {
-			t.Fatalf("sub-context deadline: %+v, want failed/1 (real failure)", info)
+		if info.Status != StatusFailed || info.Restarts != 1 {
+			t.Fatalf("sub-context deadline: %+v, want failed/1 (real failure, restarted once)", info)
 		}
 
 		shutdownPool(t, pool)
@@ -154,19 +177,15 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		release := make(chan struct{})
-		worker := Func("snapshot", func(ctx context.Context) error {
-			select {
-			case <-release:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+		worker := Func(func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "snapshot",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:          "snapshot",
+			resolve:       instance(worker),
+			restartPolicy: restartPolicy{maxRestarts: 2, restartDelay: time.Second},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}
@@ -181,8 +200,11 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		if info.Name != "snapshot" {
 			t.Fatalf("Name = %q, want snapshot", info.Name)
 		}
-		if info.Kind != kindContinuous {
-			t.Fatalf("Kind = %q, want %q", info.Kind, kindContinuous)
+		if info.Kind != KindContinuous {
+			t.Fatalf("Kind = %q, want %q", info.Kind, KindContinuous)
+		}
+		if want := (Config{MaxRestarts: 2, RestartDelay: time.Second}); !reflect.DeepEqual(info.Config, want) {
+			t.Fatalf("Config = %+v, want %+v", info.Config, want)
 		}
 		if info.Status != StatusRunning {
 			t.Fatalf("Status = %q, want %q", info.Status, StatusRunning)
@@ -194,7 +216,6 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 			t.Fatalf("LastError = %q, want empty", info.LastError)
 		}
 
-		close(release)
 		shutdownPool(t, pool)
 	})
 }
@@ -205,7 +226,7 @@ func TestRunScheduled_SkipsOverlap(t *testing.T) {
 
 		var calls atomic.Int64
 		release := make(chan struct{})
-		worker := Func("scheduled", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			calls.Add(1)
 			select {
 			case <-release:
@@ -215,9 +236,9 @@ func TestRunScheduled_SkipsOverlap(t *testing.T) {
 			}
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:     "scheduled",
-			worker:   worker,
+			resolve:  instance(worker),
 			schedule: mustSchedule(t, "@every 1m"),
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -260,13 +281,13 @@ func TestRunScheduled_MaxConsecutiveFailuresMarksFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("scheduled-fail", func(context.Context) error {
+		worker := Func(func(context.Context) error {
 			return errors.New("boom")
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:          "scheduled-fail",
-			worker:        worker,
+			resolve:       instance(worker),
 			schedule:      mustSchedule(t, "@every 1m"),
 			failurePolicy: failurePolicy{maxConsecutiveFailures: 2},
 		}); err != nil {
@@ -280,14 +301,14 @@ func TestRunScheduled_MaxConsecutiveFailuresMarksFailed(t *testing.T) {
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusWaiting || info.ConsecutiveFailures != 1 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after first failure: %+v, want waiting/1/boom", info)
 		}
 
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info = pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 2 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusFailed || info.ConsecutiveFailures != 2 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after max consecutive failures: %+v, want failed/2/boom", info)
 		}
 
@@ -300,14 +321,14 @@ func TestRunScheduled_StartImmediatelySetsZeroScheduledAt(t *testing.T) {
 		pool := newTestPool()
 
 		scheduledAtCh := make(chan time.Time, 1)
-		worker := Func("startup", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			scheduledAtCh <- ScheduledAt(ctx)
 			return nil
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:             "startup",
-			worker:           worker,
+			resolve:          instance(worker),
 			schedule:         mustSchedule(t, "@every 1h"),
 			startImmediately: true,
 		}); err != nil {
@@ -337,14 +358,14 @@ func TestPoolShutdown_DeadlineExceeded(t *testing.T) {
 		pool := newTestPool()
 
 		release := make(chan struct{})
-		worker := Func("stubborn", func(context.Context) error {
+		worker := Func(func(context.Context) error {
 			<-release
 			return nil
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "stubborn",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "stubborn",
+			resolve: instance(worker),
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}

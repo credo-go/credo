@@ -292,9 +292,9 @@ if existed {
 Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
 
 - `store.Register[*sqldb.DB](app, db)`
-- `worker.Register(app, myWorker, opts...)`
+- `worker.Register(app, "name", myWorker, opts...)`, or `worker.RegisterProvided[*MyWorker](app, "name", opts...)` for a worker the container provides
 
-These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `app.Finalize()`. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
+These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `app.Finalize()`. `RegisterProvided` records only the type, so the worker's constructor runs with the rest of the graph after `Finalize`, when the pool starts. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
 
 ---
 

@@ -484,13 +484,14 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 **Source**: robfig/cron v3 parser (MIT, expression parser only)
 
 - [x] Adapt cron expression parser from robfig/cron v3
-- [x] `worker.Register(app, w, opts...) error` + `worker.MustRegister(app, w, opts...)` API
+- [x] `worker.Register(app, name, w, opts...) error` + `worker.MustRegister(app, name, w, opts...)` API — the name is registration identity; `Worker` is `Run`-only, `Func` is a function type
 - [x] Continuous + scheduled worker execution modes
 - [x] Graceful shutdown (wait for active workers) — drains in `OnDrain`, before DI teardown, regardless of registration order
 - [x] Integration with app lifecycle — uniform post-Finalize rejection, protected `*Pool` binding
 - [x] Tests
 - [x] Update NOTICES
-- [ ] Observability hooks (metrics/tracing)
+- [x] Worker contract (v0.20.0, [ADR-023](docs/adr/023-worker-system.md)): DI-provided workers through `RegisterProvided[T]` resolved at pool start (all-or-nothing, Shutdown during resolution wins); `Info` with the effective `Config`, typed `Kind`, `Restarts`/`ConsecutiveFailures` and a snake_case JSON shape; ordered run-outcome classification separate from the loop exit; permanent continuous workers (an early nil return restarts); cooperative `WithRunTimeout` with `ErrRunTimeout` as cause; panic stack kept out of `LastError`; `WithMaxRestarts(N)` = first run + N restarts; pre-run cancellation check in one admission step; `@every` rejects zero, negative and sub-second input; one start and one stop line per worker, `run_id`/`duration` on run lines, collapsed skip line
+- [ ] Observability hooks (metrics/tracing) — reuse the `run_id` and `duration` log attributes
 
 ### 4.3 gRPC (`grpc/`)
 

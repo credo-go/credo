@@ -159,8 +159,10 @@ func (app *App) noteReplacedShutdowner(t reflect.Type, old any) {
 //
 // Resolve is primarily intended for bootstrap/composition-root code after
 // Finalize; runtime calls remain available, but Credo's recommended
-// application pattern is constructor injection. Lifecycle hooks must not
-// resolve: take dependencies at registration time instead.
+// application pattern is constructor injection. The shutdown hooks
+// ([App.OnPreDrain], [App.OnDrain], [App.OnShutdown]) must not resolve: take
+// their dependencies at registration time instead. [App.OnStart] hooks run
+// after Finalize and before traffic, and may resolve.
 //
 //	svc, err := app.Resolve[*UserService]()
 func (app *App) Resolve[T any]() (T, error) {

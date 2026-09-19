@@ -566,7 +566,7 @@ These phases receive one absolute shutdown budget. A slow `OnPreDrain` hook emit
 
 Services that implement `credo.Shutdowner` participate automatically in dependency-ordered DI cleanup while the shared deadline remains live; an entry not reached before deadline exhaustion, or blocked behind a consumer that ignores it, receives no attempt and is reported. Use `app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after infrastructure teardown. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
 
-If you need managed background tasks, use `worker.Register(...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
+If you need managed background tasks, use `worker.Register(...)` or `worker.RegisterProvided[T](...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
 
 ---
 

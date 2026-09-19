@@ -49,7 +49,7 @@ func TestWithReadiness_Validation(t *testing.T) {
 
 func TestReadiness_FirstSuccessBarrier(t *testing.T) {
 	p := newTestPool()
-	w := Func("recover", func(context.Context) error { return nil })
+	w := Func(func(context.Context) error { return nil })
 	o, schedule, err := validateOptions([]Option{
 		WithSchedule("@every 1h"), WithStartImmediately(),
 		WithReadiness(ReadinessPolicy{RequireFirstSuccess: true}),
@@ -57,7 +57,8 @@ func TestReadiness_FirstSuccessBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("recover", w, o, schedule, DefaultRestartDelay)
+	def := buildDefinition("recover", o, schedule, DefaultRestartDelay)
+	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestReadiness_FirstSuccessBarrier(t *testing.T) {
 
 func TestReadiness_FailWhenFailed(t *testing.T) {
 	p := newTestPool()
-	w := Func("critical", func(context.Context) error { return errors.New("boom") })
+	w := Func(func(context.Context) error { return errors.New("boom") })
 	o, schedule, err := validateOptions([]Option{
 		WithMaxRestarts(1), WithRestartDelay(time.Millisecond),
 		WithReadiness(ReadinessPolicy{FailWhenFailed: true}),
@@ -95,7 +96,8 @@ func TestReadiness_FailWhenFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("critical", w, o, schedule, DefaultRestartDelay)
+	def := buildDefinition("critical", o, schedule, DefaultRestartDelay)
+	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)
 	}
@@ -117,7 +119,7 @@ func TestReadiness_FailWhenFailed(t *testing.T) {
 
 func TestReadiness_MaxSuccessAge(t *testing.T) {
 	p := newTestPool()
-	w := Func("sync", func(context.Context) error { return nil })
+	w := Func(func(context.Context) error { return nil })
 	o, schedule, err := validateOptions([]Option{
 		WithSchedule("@every 1h"), WithStartImmediately(),
 		WithReadiness(ReadinessPolicy{MaxSuccessAge: time.Hour}),
@@ -125,7 +127,8 @@ func TestReadiness_MaxSuccessAge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("sync", w, o, schedule, DefaultRestartDelay)
+	def := buildDefinition("sync", o, schedule, DefaultRestartDelay)
+	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)
 	}
@@ -146,7 +149,7 @@ func TestReadiness_MaxSuccessAge(t *testing.T) {
 	p.mu.Lock()
 	r := p.runners[0]
 	p.mu.Unlock()
-	r.update(func(r *runner) { r.lastSuccess = time.Now().Add(-2 * time.Hour) })
+	r.update(func(st *runState) { st.lastSuccess = time.Now().Add(-2 * time.Hour) })
 	if err := p.evaluateReadiness(def); err == nil || !strings.Contains(err.Error(), "last succeeded") {
 		t.Fatalf("stale success: err = %v, want age violation", err)
 	}
@@ -157,7 +160,7 @@ func TestReadiness_AppIntegration_OrderIndependent(t *testing.T) {
 	app := newTestApp(t)
 
 	// Register before UseHealth: the seam is resolved lazily, so order is free.
-	err := Register(app, Func("warmup", func(context.Context) error { return nil }),
+	err := Register(app, "warmup", Func(func(context.Context) error { return nil }),
 		WithSchedule("@every 1h"), WithStartImmediately(),
 		WithReadiness(ReadinessPolicy{RequireFirstSuccess: true}))
 	if err != nil {
@@ -194,7 +197,7 @@ func TestRegister_ReadinessNameCollisionFailsClosed(t *testing.T) {
 	app := newTestApp(t)
 	app.UseHealth()
 	app.AddReadinessCheck("worker:dup", credo.HealthCheckFunc(func(context.Context) error { return nil }))
-	if err := Register(app, Func("dup", func(context.Context) error { return nil }),
+	if err := Register(app, "dup", Func(func(context.Context) error { return nil }),
 		WithReadiness(ReadinessPolicy{FailWhenFailed: true})); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
