@@ -1,5 +1,5 @@
-// Package static implements Credo's static file serving: path decoding and
-// sanitization, index and SPA fallbacks, directory listings, Range-aware file
+// Package static implements Credo's static file serving: sanitization of the
+// router-decoded path, index and SPA fallbacks, directory listings, Range-aware file
 // delivery, and status-aware Cache-Control. The root package owns the public
 // StaticConfig/StaticRoute surface and the route registration; it converts
 // its config into this package's Config and adapts the request Context to
@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
-	"net/url"
 	"path"
 	"strings"
 )
@@ -76,9 +75,11 @@ func NewServer(fsys fs.FS, cfg Config) *Server {
 	return &Server{fsys: fsys, cfg: cfg}
 }
 
-// Serve resolves and writes filePath (the route-captured, still
-// percent-encoded remainder; "" for the prefix itself). requestPath is the
-// client path before internal rewrites.
+// Serve resolves and writes filePath, the route-captured remainder ("" for
+// the prefix itself). The router has already decoded it once, so it is a
+// file path, not URL text: it is sanitized but never decoded again, and "%"
+// is an ordinary character ("100%.txt"). requestPath is the client path
+// before internal rewrites.
 func (s *Server) Serve(w ResponseWriter, r *http.Request, requestPath, filePath string) error {
 	return servePath(exchange{w: w, r: r, requestPath: requestPath}, s.fsys, filePath, s.cfg)
 }
@@ -120,14 +121,9 @@ func (f *FileServer) Serve(w ResponseWriter, r *http.Request, requestPath string
 }
 
 // servePath is the core static serving logic shared by the catch-all and
-// index handlers.
+// index handlers. filePath is already decoded (see [Server.Serve]).
 func servePath(ex exchange, fsys fs.FS, filePath string, cfg Config) error {
-	decodedPath, err := decodePath(filePath)
-	if err != nil {
-		return err
-	}
-
-	cleanPath, err := sanitizePath(decodedPath)
+	cleanPath, err := sanitizePath(filePath)
 	if err != nil {
 		return err
 	}
@@ -136,7 +132,7 @@ func servePath(ex exchange, fsys fs.FS, filePath string, cfg Config) error {
 	if openErr != nil {
 		// File not found — try SvelteKit-style sibling .html (e.g., /admin/users
 		// → admin/users.html) before falling back to SPA root index.
-		if cfg.SPA && isSPACandidate(ex.r, decodedPath) {
+		if cfg.SPA && isSPACandidate(ex.r, filePath) {
 			siblingPath := cleanPath + ".html"
 			if sibF, sibErr := fsys.Open(siblingPath); sibErr == nil {
 				defer sibF.Close()
@@ -174,7 +170,7 @@ func servePath(ex exchange, fsys fs.FS, filePath string, cfg Config) error {
 		// SPA mode: try sibling <path>.html before falling back to root index.
 		// This supports SvelteKit static-adapter outputs where /reports.html
 		// (parent route) coexists with /reports/ (child routes dir).
-		if cfg.SPA && isSPACandidate(ex.r, decodedPath) {
+		if cfg.SPA && isSPACandidate(ex.r, filePath) {
 			siblingPath := strings.TrimSuffix(cleanPath, "/") + ".html"
 			if sibF, sibErr := fsys.Open(siblingPath); sibErr == nil {
 				defer sibF.Close()
@@ -188,7 +184,7 @@ func servePath(ex exchange, fsys fs.FS, filePath string, cfg Config) error {
 
 		// Directory listing.
 		if cfg.Browse {
-			return serveDirListing(ex, fsys, cleanPath, decodedPath, cfg)
+			return serveDirListing(ex, fsys, cleanPath, filePath, cfg)
 		}
 
 		return ErrNotFound
@@ -196,16 +192,6 @@ func servePath(ex exchange, fsys fs.FS, filePath string, cfg Config) error {
 
 	cacheCtx := setHeaders(ex, cleanPath, stat.Name(), cfg)
 	return serveFile(ex, f, stat, cacheCtx, cfg)
-}
-
-// decodePath decodes a route-captured path before sanitization. Malformed
-// escape sequences return ErrBadRequest.
-func decodePath(p string) (string, error) {
-	decoded, err := url.PathUnescape(p)
-	if err != nil {
-		return "", ErrBadRequest
-	}
-	return decoded, nil
 }
 
 // serveIndex serves the root index file for SPA fallback.

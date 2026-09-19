@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- **static:** `app.Static` decodes the requested path once, as the router does for every parameter, instead of decoding the already-decoded capture a second time. Files whose names contain `%` are served again (`/static/100%25.txt` answered 400 and now serves `100%.txt`; the matching `Browse` link was broken the same way), and a double-encoded request reaches the file it names: `/static/a%252Fb.txt` serves a file literally named `a%2Fb.txt` — or answers 404 when there is none — instead of serving `a/b.txt`. `/static/%252e%252e/secret` answers 404 as the static-files guide documents, not 400. Sanitization is unchanged; no path ever escaped the served directory. The gap dates from v0.19.0, when route parameters started to be decoded by the router.
+
 ### Documentation
 
 - The routing guide warns that route parameters are not file names: a decoded value can contain `/` or `..` (`/files/..%2F..%2Fetc` gives `{name}` the value `../../etc`), so a handler that opens files confines the access with `os.Root` (or the `fs.FS` from `credo.DirFS`); `filepath.Join` is not a check, `filepath.IsLocal` is lexical only, and a regex constraint narrows the format but does not confine file access. The router spec states the boundary, and the static-files and pre-v1 migration guides link to it. The guide's canonical-form sentence is corrected: escapes of all RFC 3986 reserved characters and of `%` are kept, not only the encoded slash.

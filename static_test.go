@@ -674,6 +674,60 @@ func TestStatic_PathTraversal_NullByte(t *testing.T) {
 	}
 }
 
+// --- Static: the captured path is decoded once, by the router ---
+
+func TestStatic_DecodesCapturedPathOnce(t *testing.T) {
+	app := mustNew(t)
+	app.Static("/static", fstest.MapFS{
+		"100%.txt":     {Data: []byte("percent")},
+		"a%2Fb.txt":    {Data: []byte("literal")},
+		"a/b.txt":      {Data: []byte("nested")},
+		"sub/file.txt": {Data: []byte("sub")},
+	})
+
+	tests := []struct {
+		path     string
+		wantCode int
+		wantBody string
+	}{
+		{"/static/100%25.txt", http.StatusOK, "percent"},
+		// Two files, different content: the body shows which one was chosen.
+		{"/static/a%252Fb.txt", http.StatusOK, "literal"},
+		{"/static/a%2Fb.txt", http.StatusOK, "nested"},
+		{"/static/a/b.txt", http.StatusOK, "nested"},
+		// Reachable only through a second decode, which no longer happens.
+		{"/static/sub%252Ffile.txt", http.StatusNotFound, ""},
+		{"/static/%252e%252e/secret", http.StatusNotFound, ""},
+		// Decoded once to "..": still rejected.
+		{"/static/%2e%2e/secret", http.StatusBadRequest, ""},
+		{"/static/..%2Fsecret", http.StatusBadRequest, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			w := serve(t, app, http.MethodGet, tt.path)
+			if w.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d", w.Code, tt.wantCode)
+			}
+			if tt.wantBody != "" && w.Body.String() != tt.wantBody {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestStatic_RewriteToEncodedPathServesSameFile(t *testing.T) {
+	app := mustNew(t)
+	app.Static("/static", fstest.MapFS{"100%.txt": {Data: []byte("percent")}})
+	app.GET("/alias", func(ctx *credo.Context) error {
+		return ctx.Rewrite("/static/100%25.txt")
+	})
+
+	w := serve(t, app, http.MethodGet, "/alias")
+	if w.Code != http.StatusOK || w.Body.String() != "percent" {
+		t.Errorf("status = %d, body = %q, want 200 %q", w.Code, w.Body.String(), "percent")
+	}
+}
+
 // --- File: basic ---
 
 func TestFile_ServesFile(t *testing.T) {
@@ -925,6 +979,11 @@ func TestStatic_Browse_URLEncodesSpecialChars(t *testing.T) {
 		}
 		if !strings.Contains(body, ">"+tt.wantInText+"<") {
 			t.Errorf("display name for %q: want %q in body", tt.rawName, tt.wantInText)
+		}
+		// Following the link reaches the listed file.
+		link := serve(t, app, http.MethodGet, "/files/docs/"+tt.wantInHref)
+		if want := string(fsys["docs/"+tt.rawName].Data); link.Code != http.StatusOK || link.Body.String() != want {
+			t.Errorf("link %q: status = %d, body = %q, want 200 %q", tt.wantInHref, link.Code, link.Body.String(), want)
 		}
 	}
 }

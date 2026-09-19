@@ -6,19 +6,19 @@
 
 | Work | Canonical decision | Detailed contract | Release |
 | --- | --- | --- | --- |
-| W1: static path decoded once (bug) | Router decode-once rule ([ADR-007](../adr/007-router-and-routing.md)) | [Router: encoded parameter values](../specs/router.md#encoded-parameter-values), [static-files guide: path sanitization](../guides/static-files.md#path-sanitization-and-security) | next patch |
-| W2: startup `features` attribute | [ADR-010](../adr/010-middleware-architecture.md#startup-visibility-of-effective-features) | [HTTP features: startup visibility](../specs/http-features.md#startup-visibility), [lifecycle: startup record](../specs/lifecycle.md#startup-record) | next patch or minor (additive) |
-| W3: continuous-worker restart backoff | [ADR-023](../adr/023-worker-system.md#restart-backoff) | [Worker spec: restart backoff](../specs/worker.md#restart-backoff) | v0.21.0, its own minor |
+| W1: static path decoded once (bug) | Router decode-once rule ([ADR-007](../adr/007-router-and-routing.md)) | [Router: encoded parameter values](../specs/router.md#encoded-parameter-values), [static-files guide: path sanitization](../guides/static-files.md#path-sanitization-and-security) | v0.21.0 (fix) |
+| W2: startup `features` attribute | [ADR-010](../adr/010-middleware-architecture.md#startup-visibility-of-effective-features) | [HTTP features: startup visibility](../specs/http-features.md#startup-visibility), [lifecycle: startup record](../specs/lifecycle.md#startup-record) | v0.21.0 (additive) |
+| W3: continuous-worker restart backoff | [ADR-023](../adr/023-worker-system.md#restart-backoff) | [Worker spec: restart backoff](../specs/worker.md#restart-backoff) | v0.21.0 (behavior change) |
 
 The documentation notes decided together with this work shipped with the promotion and need no release: the routing guide's [Route Parameters Are Not File Names](../guides/routing.md#route-parameters-are-not-file-names) section and corrected canonical-form sentence, the router spec's boundary statement, the static-files and migration-guide links to it, and the cron time-zone statements in the worker guide, worker spec and ADR-023.
 
-Breaking changes are allowed before v1, and a behavioral theme takes its own minor. W3 changes behavior without a compile error, so it ships alone as v0.21.0. W1 restores documented behavior and W2 only adds a log attribute; both may ride a patch release. The implementation does not reopen the accepted decisions by adding options, modes or parallel APIs.
+Breaking changes are allowed before v1, and a behavioral theme takes its own minor. W3 changes behavior without a compile error, so the release that carries it is the v0.21.0 minor, never a patch. W1 restores documented behavior and W2 only adds a log attribute; they ride the same release. The implementation does not reopen the accepted decisions by adding options, modes or parallel APIs.
 
 ## Sequence
 
-W1, W2 and W3 touch separate code and can be implemented in any order; the recommended order is W1 (a user-visible bug), then W2, then W3. Each work item is one content pull request with its own tests and documentation flip; releases follow the usual preparation pull request and `Release` dispatch in [CONTRIBUTING](../../CONTRIBUTING.md#releasing).
+W1, W2 and W3 touch separate code; they are implemented in that order as separate commits on one branch, followed by the v0.21.0 release preparation, and land through one pull request. Each commit carries its own tests and documentation flip; the release follows the `Release` dispatch in [CONTRIBUTING](../../CONTRIBUTING.md#releasing). The release preparation folds this plan into the ADRs and specs and deletes it.
 
-Every pull request runs `go vet`, the shadow analyzer, `gofmt` and `go test -race` over all packages except the ignored `tmp/` tree, and CI's required checks. Worker changes also run `go test ./worker/... -race -count=20`.
+The pull request runs `go vet`, the shadow analyzer, `gofmt` and `go test -race` over all packages except the ignored `tmp/` tree, and CI's required checks. Worker changes also run `go test ./worker/... -race -count=20`.
 
 ## W1: static serving decodes the captured path once
 
@@ -90,7 +90,7 @@ Tests that encode the double-decode assumption are updated, not kept. `internal/
 - Worker guide: a "Restart backoff" section with the rate estimates, the recovery trade-off, the pool key, and the fixed-delay example — with the pool cap at its default, `WithRestartDelay(time.Minute)` alone is fixed, and with `worker.max_restart_delay: 5m` it grows from one minute to five; the options list, the Configuration section (both keys) and the readiness note on later `failed`.
 - CHANGELOG **BREAKING (behavior)** and two migration rows, in the CHANGELOG, the [pre-v1 migration guide](../guides/pre-v1-migration.md#workers) and the v0.21.0 release notes: the fixed restart delay becomes a 3 s base doubling to a 1-minute cap with floor-preserving jitter (both options set to the same value keep a fixed delay); and `WithMaxRestarts(N)` reaches `failed` — and `FailWhenFailed` readiness drops — later.
 
-**Release.** Content pull request, then `release/v0.21.0` preparation (CHANGELOG version header and compare links, `docs/releases/v0.21.0.md`, `store/sqldb/go.mod` requiring `credo v0.21.0`, `releasegate tidy|prepared|candidate`), then `Release` dispatch after CI and CodeQL pass on the preparation commit.
+**Release.** The last commit on the branch prepares v0.21.0: CHANGELOG version header and compare links, `docs/releases/v0.21.0.md`, `store/sqldb/go.mod` requiring `credo v0.21.0`, `releasegate tidy|prepared|candidate`, and this plan folded and deleted. After the pull request merges, `Release` is dispatched once CI and CodeQL pass on the merged commit.
 
 ## Out of scope
 
