@@ -38,13 +38,13 @@ func mustPanicContaining(t *testing.T, want string, fn func()) {
 func TestRegister_RejectsCrossModeOptions(t *testing.T) {
 	app := newTestApp(t)
 
-	err := Register(app, Func("scheduled", func(context.Context) error { return nil }),
+	err := Register(app, "scheduled", Func(func(context.Context) error { return nil }),
 		WithSchedule("@every 1m"),
 		WithRestartDelay(time.Second),
 	)
 	requireErrContaining(t, err, "WithRestartDelay is for continuous workers")
 
-	err = Register(app, Func("continuous", func(context.Context) error { return nil }), WithStartImmediately())
+	err = Register(app, "continuous", Func(func(context.Context) error { return nil }), WithStartImmediately())
 	requireErrContaining(t, err, "WithStartImmediately is for scheduled workers")
 }
 
@@ -52,7 +52,7 @@ func TestMustRegister_PanicsOnError(t *testing.T) {
 	app := newTestApp(t)
 
 	mustPanicContaining(t, "WithRestartDelay is for continuous workers", func() {
-		MustRegister(app, Func("scheduled", func(context.Context) error { return nil }),
+		MustRegister(app, "scheduled", Func(func(context.Context) error { return nil }),
 			WithSchedule("@every 1m"),
 			WithRestartDelay(time.Second),
 		)
@@ -62,14 +62,14 @@ func TestMustRegister_PanicsOnError(t *testing.T) {
 func TestRegister_DuplicateName(t *testing.T) {
 	app := newTestApp(t)
 
-	if err := Register(app, Func("dup", func(context.Context) error { return nil })); err != nil {
+	if err := Register(app, "dup", Func(func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
-	err := Register(app, Func("dup", func(context.Context) error { return nil }))
+	err := Register(app, "dup", Func(func(context.Context) error { return nil }))
 	requireErrContaining(t, err, "duplicate worker name")
 
 	mustPanicContaining(t, "duplicate worker name", func() {
-		MustRegister(app, Func("dup", func(context.Context) error { return nil }))
+		MustRegister(app, "dup", Func(func(context.Context) error { return nil }))
 	})
 }
 
@@ -79,7 +79,7 @@ func TestRegister_UsesConfiguredRestartDelay(t *testing.T) {
 		worker: poolConfig{RestartDelay: 7 * time.Second},
 	}))
 
-	if err := Register(app, Func("job", func(context.Context) error { return nil })); err != nil {
+	if err := Register(app, "job", Func(func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestRegister_UsesConfiguredRestartDelay(t *testing.T) {
 
 func TestPoolWorkers_BeforeStartReturnsIdleSnapshot(t *testing.T) {
 	app := newTestApp(t)
-	if err := Register(app, Func("idle", func(context.Context) error { return nil })); err != nil {
+	if err := Register(app, "idle", Func(func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
 

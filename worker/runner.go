@@ -10,7 +10,8 @@ import (
 )
 
 type runner struct {
-	def *Definition
+	def    *definition
+	worker Worker // resolved once by Pool.Start
 
 	mu          sync.Mutex
 	status      Status
@@ -20,8 +21,8 @@ type runner struct {
 	lastError   string
 }
 
-func newRunner(def *Definition) *runner {
-	return &runner{def: def, status: StatusIdle}
+func newRunner(def *definition, w Worker) *runner {
+	return &runner{def: def, worker: w, status: StatusIdle}
 }
 
 func (r *runner) setStatus(status Status) {
@@ -162,7 +163,7 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 		}
 		r.startRun(time.Now())
 		runCtx := enrichContext(ctx, r.def.name, attempt, scheduledAt, newRunID())
-		wait, stop = policy.afterRun(ctx, safeRun(runCtx, r.def.worker))
+		wait, stop = policy.afterRun(ctx, safeRun(runCtx, r.def.name, r.worker))
 	}
 }
 
@@ -357,10 +358,10 @@ func (s *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool
 	return time.Until(next), false
 }
 
-func safeRun(ctx context.Context, w Worker) (err error) {
+func safeRun(ctx context.Context, name string, w Worker) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("worker %q panicked: %v\n%s", w.Name(), r, debug.Stack())
+			err = fmt.Errorf("worker %q panicked: %v\n%s", name, r, debug.Stack())
 		}
 	}()
 	return w.Run(ctx)

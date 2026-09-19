@@ -46,7 +46,7 @@ func TestApp_OnPreDrainPrecedesLifecycleCancellationAndDI(t *testing.T) {
 	app.UseHealth()
 
 	workerContext := make(chan context.Context, 1)
-	if err := worker.Register(app, worker.Func("pre-drain-order", func(ctx context.Context) error {
+	if err := worker.Register(app, "pre-drain-order", worker.Func(func(ctx context.Context) error {
 		workerContext <- ctx
 		<-ctx.Done()
 		return ctx.Err()
@@ -179,7 +179,7 @@ func TestApp_OnPreDrainRunsDuringFailedStartupBeforeCancellation(t *testing.T) {
 	resource.alive.Store(true)
 	app.MustProvideValue[*drainTestResource](resource)
 	workerContext := make(chan context.Context, 1)
-	if err := worker.Register(app, worker.Func("startup-failure-worker", func(ctx context.Context) error {
+	if err := worker.Register(app, "startup-failure-worker", worker.Func(func(ctx context.Context) error {
 		workerContext <- ctx
 		<-ctx.Done()
 		return ctx.Err()

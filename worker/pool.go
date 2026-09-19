@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/credo-go/credo"
 	internalhealth "github.com/credo-go/credo/internal/health"
@@ -20,14 +23,21 @@ type poolConfig struct {
 // Pool manages registered workers and integrates with app lifecycle.
 type Pool struct {
 	mu                  sync.Mutex
-	definitions         []*Definition
+	definitions         []*definition
 	runners             []*runner
 	logger              *slog.Logger
 	cancel              context.CancelFunc
 	wg                  sync.WaitGroup
-	started             bool
 	defaultRestartDelay time.Duration
 	readiness           []internalhealth.ReadinessCheck // one stable probe per WithReadiness worker
+
+	// claimed is set under mu by the first Start, before any worker is
+	// resolved; addDefinition and every later Start are refused from then on.
+	claimed bool
+	// published is set under mu once Start has created the runners. Until
+	// then — including after a failed or pre-empted Start — Workers reports
+	// every definition as idle.
+	published bool
 
 	// managed marks a pool built by ensurePool. Only such a pool carries the
 	// OnStart/OnDrain wiring and the protected DI binding; a *Pool published
@@ -45,22 +55,79 @@ type Pool struct {
 	stopped chan struct{}
 }
 
-// Register adds w to the application's worker pool.
+// Register adds w to the application's worker pool under name.
+//
+// The name identifies the registration: it must be unique within the pool,
+// non-empty, and free of surrounding whitespace and control characters. It
+// appears in logs, in [Pool.Workers] and in the readiness check name, and
+// [WorkerName] returns it inside Run. Registering the same instance under two
+// names runs it on two independent loops, so it must then be safe for
+// concurrent Run calls.
 //
 // Workers are started during [credo.App.Run] and stopped during
 // [credo.App.Shutdown]. Register must be called before the app is finalized or
-// run. Use [MustRegister] when bootstrap code should fail fast by panicking.
-func Register(app *credo.App, w Worker, opts ...Option) error {
+// run. Use [RegisterProvided] for a worker constructed by the DI container,
+// and [MustRegister] when bootstrap code should fail fast by panicking.
+func Register(app *credo.App, name string, w Worker, opts ...Option) error {
+	if isNilWorker(w) {
+		return fmt.Errorf("worker: worker %q must not be nil", name)
+	}
+	return register(app, name, instance(w), fmt.Sprintf("%T", w), opts)
+}
+
+// MustRegister is like [Register] but panics on error.
+func MustRegister(app *credo.App, name string, w Worker, opts ...Option) {
+	if err := Register(app, name, w, opts...); err != nil {
+		panic(err)
+	}
+}
+
+// RegisterProvided registers, under name, the worker that the application's
+// DI container provides as T:
+//
+//	app.MustProvide[*InvoiceWorker](NewInvoiceWorker)
+//	worker.MustRegisterProvided[*InvoiceWorker](app, "invoice-worker",
+//		worker.WithSchedule("@every 1m"))
+//
+// T is resolved once, when the pool starts (after [credo.App.Finalize], before
+// the server accepts traffic), so RegisterProvided and the matching Provide
+// may be called in either order. T may be an interface bound with
+// [credo.App.Alias]. A resolution failure — T not provided, a constructor
+// error or panic, a nil result — fails the application's startup with an
+// error naming the worker and the type, and no worker is started. The name
+// and options follow the same rules as [Register].
+func RegisterProvided[T Worker](app *credo.App, name string, opts ...Option) error {
+	resolve := func() (Worker, error) {
+		w, err := app.Resolve[T]()
+		if err != nil {
+			return nil, err
+		}
+		return w, nil
+	}
+	return register(app, name, resolve, reflect.TypeFor[T]().String(), opts)
+}
+
+// MustRegisterProvided is like [RegisterProvided] but panics on error.
+func MustRegisterProvided[T Worker](app *credo.App, name string, opts ...Option) {
+	if err := RegisterProvided[T](app, name, opts...); err != nil {
+		panic(err)
+	}
+}
+
+// instance is the resolver of a worker registered by value.
+func instance(w Worker) func() (Worker, error) {
+	return func() (Worker, error) { return w, nil }
+}
+
+// register is the single registration path behind Register and
+// RegisterProvided: resolve yields the worker when the pool starts, source
+// names it in resolution errors.
+func register(app *credo.App, name string, resolve func() (Worker, error), source string, opts []Option) error {
 	if app == nil {
 		return fmt.Errorf("worker: app must not be nil")
 	}
-	if isNilWorker(w) {
-		return fmt.Errorf("worker: worker must not be nil")
-	}
-
-	name := strings.TrimSpace(w.Name())
-	if name == "" {
-		return fmt.Errorf("worker: worker name must not be empty")
+	if err := validateName(name); err != nil {
+		return err
 	}
 
 	o, schedule, err := validateOptions(opts)
@@ -78,7 +145,29 @@ func Register(app *credo.App, w Worker, opts ...Option) error {
 		return err
 	}
 
-	return p.addDefinition(buildDefinition(name, w, o, schedule, p.defaultRestartDelay))
+	def := buildDefinition(name, o, schedule, p.defaultRestartDelay)
+	def.resolve = resolve
+	def.source = source
+	return p.addDefinition(def)
+}
+
+// validateName applies the worker name rules. Names are never normalized, so
+// the registered name is exactly the one every log line and snapshot reports.
+// The framework reserves no prefix: health's reserved "credo." prefix applies
+// to the full readiness check name "worker:<name>", never to a worker name.
+func validateName(name string) error {
+	if name == "" {
+		return errors.New("worker: name must not be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("worker: name %q must not have leading or trailing whitespace", name)
+	}
+	for _, char := range name {
+		if unicode.IsControl(char) {
+			return fmt.Errorf("worker: name %q must not contain control characters", name)
+		}
+	}
+	return nil
 }
 
 // validateOptions applies the registration options, checks their values, and
@@ -134,12 +223,12 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 	return o, schedule, nil
 }
 
-// buildDefinition turns validated options into the immutable Definition,
-// resolving the kind-specific restart or failure policy.
-func buildDefinition(name string, w Worker, o options, schedule *Schedule, defaultRestartDelay time.Duration) *Definition {
-	def := &Definition{
+// buildDefinition turns validated options into the immutable definition,
+// resolving the kind-specific restart or failure policy. The caller sets the
+// worker resolver.
+func buildDefinition(name string, o options, schedule *Schedule, defaultRestartDelay time.Duration) *definition {
+	def := &definition{
 		name:             name,
-		worker:           w,
 		schedule:         schedule,
 		startImmediately: o.startImmediately,
 	}
@@ -168,13 +257,6 @@ func buildDefinition(name string, w Worker, o options, schedule *Schedule, defau
 		restartDelay: restartDelay,
 	}
 	return def
-}
-
-// MustRegister is like [Register] but panics on error.
-func MustRegister(app *credo.App, w Worker, opts ...Option) {
-	if err := Register(app, w, opts...); err != nil {
-		panic(err)
-	}
 }
 
 // registrationProbe is never registered in the container. Asking whether it
@@ -286,7 +368,7 @@ func newPool(logger *slog.Logger, defaultRestartDelay time.Duration) *Pool {
 	}
 }
 
-func (p *Pool) addDefinition(def *Definition) error {
+func (p *Pool) addDefinition(def *definition) error {
 	if def == nil {
 		return fmt.Errorf("worker: definition must not be nil")
 	}
@@ -294,7 +376,7 @@ func (p *Pool) addDefinition(def *Definition) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.started {
+	if p.claimed {
 		return fmt.Errorf("worker: pool already started")
 	}
 	for _, existing := range p.definitions {
@@ -313,7 +395,14 @@ func (p *Pool) addDefinition(def *Definition) error {
 	return nil
 }
 
-// Start launches registered workers.
+// Start resolves every registered worker and launches them. It is
+// all-or-nothing: when any worker fails to resolve, Start returns the joined
+// errors, each naming its worker, and launches none.
+//
+// Start runs in three steps so that user constructors never run under the
+// pool lock: it claims the pool (refusing further registrations), resolves the
+// workers outside the lock, then publishes the runners — unless a Shutdown
+// arrived meanwhile, which wins.
 func (p *Pool) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -324,26 +413,52 @@ func (p *Pool) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return fmt.Errorf("worker: pool already shut down")
 	}
-	if p.started {
+	if p.claimed {
 		p.mu.Unlock()
 		return fmt.Errorf("worker: pool already started")
+	}
+	p.claimed = true
+	defs := slices.Clone(p.definitions)
+	p.mu.Unlock()
+
+	workers := make([]Worker, len(defs))
+	var errs []error
+	for i, def := range defs {
+		w, err := def.resolve()
+		if err == nil && isNilWorker(w) {
+			err = errors.New("resolved to nil")
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("worker: %q: resolve %s: %w", def.name, def.source, err))
+			continue
+		}
+		workers[i] = w
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A Shutdown that arrived while the workers were resolving has already
+	// begun its wait on wg; nothing may join it now.
+	if p.stopping {
+		return fmt.Errorf("worker: pool already shut down")
 	}
 
 	poolCtx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
-	p.started = true
 
-	runners := make([]*runner, 0, len(p.definitions))
-	for _, def := range p.definitions {
-		r := newRunner(def)
+	runners := make([]*runner, 0, len(defs))
+	for i, def := range defs {
+		r := newRunner(def, workers[i])
 		if def.schedule != nil {
 			r.setStatus(StatusWaiting)
-		} else {
-			r.setStatus(StatusRunning)
 		}
-		p.runners = append(p.runners, r)
 		runners = append(runners, r)
 	}
+	p.runners = runners
+	p.published = true
 	// Launch under mu: Shutdown sets stopping under the same lock before it
 	// starts waiting on wg, so either every worker has joined wg before the
 	// wait begins or Start is refused — a goroutine can never be added to a
@@ -355,8 +470,6 @@ func (p *Pool) Start(ctx context.Context) error {
 		}
 		p.wg.Go(func() { p.runContinuous(poolCtx, r) })
 	}
-	p.mu.Unlock()
-
 	return nil
 }
 
@@ -412,14 +525,12 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 // Workers returns a snapshot of registered worker state.
 func (p *Pool) Workers() []Info {
 	p.mu.Lock()
-	started := p.started
-	defs := make([]*Definition, len(p.definitions))
-	copy(defs, p.definitions)
-	runners := make([]*runner, len(p.runners))
-	copy(runners, p.runners)
+	published := p.published
+	defs := slices.Clone(p.definitions)
+	runners := slices.Clone(p.runners)
 	p.mu.Unlock()
 
-	if !started {
+	if !published {
 		infos := make([]Info, 0, len(defs))
 		for _, def := range defs {
 			infos = append(infos, Info{

@@ -11,7 +11,7 @@ import (
 )
 
 func TestSafeRun_RecoversPanics(t *testing.T) {
-	err := safeRun(t.Context(), Func("panic-worker", func(context.Context) error {
+	err := safeRun(t.Context(), "panic-worker", Func(func(context.Context) error {
 		panic("boom")
 	}))
 	if err == nil {
@@ -27,7 +27,7 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 		pool := newTestPool()
 
 		var calls atomic.Int64
-		worker := Func("continuous", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			if calls.Add(1) == 1 {
 				return errors.New("boom")
 			}
@@ -35,9 +35,9 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 			return ctx.Err()
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "continuous",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "continuous",
+			resolve: instance(worker),
 			restartPolicy: restartPolicy{
 				restartDelay: 5 * time.Second,
 			},
@@ -78,13 +78,13 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("continuous-fail", func(context.Context) error {
+		worker := Func(func(context.Context) error {
 			return errors.New("boom")
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "continuous-fail",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "continuous-fail",
+			resolve: instance(worker),
 			restartPolicy: restartPolicy{
 				maxRestarts:  2,
 				restartDelay: time.Minute,
@@ -118,16 +118,16 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("deadline", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			childCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
 			defer cancel()
 			<-childCtx.Done()
 			return childCtx.Err()
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:          "deadline",
-			worker:        worker,
+			resolve:       instance(worker),
 			restartPolicy: restartPolicy{maxRestarts: 1},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -155,7 +155,7 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		pool := newTestPool()
 
 		release := make(chan struct{})
-		worker := Func("snapshot", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			select {
 			case <-release:
 				return nil
@@ -164,9 +164,9 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 			}
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "snapshot",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "snapshot",
+			resolve: instance(worker),
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}
@@ -205,7 +205,7 @@ func TestRunScheduled_SkipsOverlap(t *testing.T) {
 
 		var calls atomic.Int64
 		release := make(chan struct{})
-		worker := Func("scheduled", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			calls.Add(1)
 			select {
 			case <-release:
@@ -215,9 +215,9 @@ func TestRunScheduled_SkipsOverlap(t *testing.T) {
 			}
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:     "scheduled",
-			worker:   worker,
+			resolve:  instance(worker),
 			schedule: mustSchedule(t, "@every 1m"),
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -260,13 +260,13 @@ func TestRunScheduled_MaxConsecutiveFailuresMarksFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		worker := Func("scheduled-fail", func(context.Context) error {
+		worker := Func(func(context.Context) error {
 			return errors.New("boom")
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:          "scheduled-fail",
-			worker:        worker,
+			resolve:       instance(worker),
 			schedule:      mustSchedule(t, "@every 1m"),
 			failurePolicy: failurePolicy{maxConsecutiveFailures: 2},
 		}); err != nil {
@@ -300,14 +300,14 @@ func TestRunScheduled_StartImmediatelySetsZeroScheduledAt(t *testing.T) {
 		pool := newTestPool()
 
 		scheduledAtCh := make(chan time.Time, 1)
-		worker := Func("startup", func(ctx context.Context) error {
+		worker := Func(func(ctx context.Context) error {
 			scheduledAtCh <- ScheduledAt(ctx)
 			return nil
 		})
 
-		if err := pool.addDefinition(&Definition{
+		if err := pool.addDefinition(&definition{
 			name:             "startup",
-			worker:           worker,
+			resolve:          instance(worker),
 			schedule:         mustSchedule(t, "@every 1h"),
 			startImmediately: true,
 		}); err != nil {
@@ -337,14 +337,14 @@ func TestPoolShutdown_DeadlineExceeded(t *testing.T) {
 		pool := newTestPool()
 
 		release := make(chan struct{})
-		worker := Func("stubborn", func(context.Context) error {
+		worker := Func(func(context.Context) error {
 			<-release
 			return nil
 		})
 
-		if err := pool.addDefinition(&Definition{
-			name:   "stubborn",
-			worker: worker,
+		if err := pool.addDefinition(&definition{
+			name:    "stubborn",
+			resolve: instance(worker),
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}

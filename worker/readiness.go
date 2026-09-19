@@ -90,7 +90,7 @@ func (p *Pool) readinessChecks() []internalhealth.ReadinessCheck {
 
 // newReadinessProbe builds the stable probe for def. The probe reads the
 // runner's last known state and never performs I/O.
-func (p *Pool) newReadinessProbe(def *Definition) *internalhealth.Probe {
+func (p *Pool) newReadinessProbe(def *definition) *internalhealth.Probe {
 	return internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 		if err := p.evaluateReadiness(def); err != nil {
 			return internalhealth.FailureResult(err)
@@ -100,7 +100,7 @@ func (p *Pool) newReadinessProbe(def *Definition) *internalhealth.Probe {
 }
 
 // evaluateReadiness applies def's policy to the worker's current snapshot.
-func (p *Pool) evaluateReadiness(def *Definition) error {
+func (p *Pool) evaluateReadiness(def *definition) error {
 	policy := def.readiness
 	if policy == nil {
 		return nil

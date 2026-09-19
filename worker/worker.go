@@ -3,37 +3,27 @@ package worker
 import (
 	"context"
 	"crypto/rand"
-	"fmt"
 	"reflect"
 	"time"
 )
 
-// Worker defines a background task managed by the framework.
+// Worker is a background task managed by the framework. The name that
+// identifies it is given at registration ([Register], [RegisterProvided]), not
+// by the worker itself.
+//
+// A continuous worker's Run must stay active until ctx is cancelled; a
+// scheduled worker's Run performs one activation and returns.
 type Worker interface {
-	// Name returns the worker's unique registration name.
-	Name() string
 	// Run executes the worker's logic.
 	Run(ctx context.Context) error
 }
 
-type funcWorker struct {
-	name string
-	fn   func(ctx context.Context) error
-}
+// Func adapts a plain function into a Worker, in the style of
+// [net/http.HandlerFunc].
+type Func func(ctx context.Context) error
 
-// Func adapts a plain function into a Worker.
-func Func(name string, fn func(ctx context.Context) error) Worker {
-	return &funcWorker{name: name, fn: fn}
-}
-
-func (w *funcWorker) Name() string { return w.name }
-
-func (w *funcWorker) Run(ctx context.Context) error {
-	if w.fn == nil {
-		return fmt.Errorf("worker: %q has nil function", w.name)
-	}
-	return w.fn(ctx)
-}
+// Run calls f(ctx).
+func (f Func) Run(ctx context.Context) error { return f(ctx) }
 
 type workerNameKey struct{}
 type attemptKey struct{}
@@ -62,7 +52,8 @@ func Attempt(ctx context.Context) int {
 	return 0
 }
 
-// WorkerName returns the worker name stored in ctx.
+// WorkerName returns the registration name of the worker whose run ctx
+// belongs to.
 func WorkerName(ctx context.Context) string {
 	if ctx == nil {
 		return ""

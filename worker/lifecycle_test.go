@@ -71,8 +71,6 @@ type flushingWorker struct {
 	resourceOpenAtExit atomic.Bool
 }
 
-func (*flushingWorker) Name() string { return "flusher" }
-
 func (w *flushingWorker) Run(ctx context.Context) error {
 	close(w.started)
 	<-ctx.Done()
@@ -91,7 +89,7 @@ func TestLifecycle_WorkersFinishBeforeInfrastructureShutdown(t *testing.T) {
 			w.r = r
 
 			register := func() {
-				if err := Register(app, w); err != nil {
+				if err := Register(app, "flusher", w); err != nil {
 					t.Fatalf("Register: %v", err)
 				}
 			}
@@ -125,7 +123,7 @@ func TestLifecycle_ShutdownReportsWorkerThatOutlivesTheDeadline(t *testing.T) {
 	app := newTestApp(t)
 	release := make(chan struct{})
 	started := make(chan struct{})
-	if err := Register(app, Func("stubborn", func(context.Context) error {
+	if err := Register(app, "stubborn", Func(func(context.Context) error {
 		close(started)
 		<-release
 		return nil
@@ -174,18 +172,20 @@ func TestRegister_RejectedAfterFinalize(t *testing.T) {
 		if err := app.Finalize(); err != nil {
 			t.Fatal(err)
 		}
-		err := Register(app, Func("late", func(context.Context) error { return nil }))
+		err := Register(app, "late", Func(func(context.Context) error { return nil }))
+		requireErrContaining(t, err, "after app.Finalize")
+		err = RegisterProvided[*stubWorker[kindA]](app, "late-provided")
 		requireErrContaining(t, err, "after app.Finalize")
 	})
 	t.Run("subsequent registration", func(t *testing.T) {
 		app := newTestApp(t)
-		if err := Register(app, Func("early", func(context.Context) error { return nil })); err != nil {
+		if err := Register(app, "early", Func(func(context.Context) error { return nil })); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		if err := app.Finalize(); err != nil {
 			t.Fatal(err)
 		}
-		err := Register(app, Func("late", func(context.Context) error { return nil }))
+		err := Register(app, "late", Func(func(context.Context) error { return nil }))
 		requireErrContaining(t, err, "after app.Finalize")
 		pool, err := app.Resolve[*Pool]()
 		if err != nil {
@@ -199,7 +199,7 @@ func TestRegister_RejectedAfterFinalize(t *testing.T) {
 
 func TestRegister_PoolBindingIsProtected(t *testing.T) {
 	app := newTestApp(t)
-	if err := Register(app, Func("w", func(context.Context) error { return nil })); err != nil {
+	if err := Register(app, "w", Func(func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if _, _, err := app.Replace[*Pool](newTestPool()); err == nil {
@@ -210,7 +210,7 @@ func TestRegister_PoolBindingIsProtected(t *testing.T) {
 func TestRegister_RejectsPoolProvidedOutsideRegister(t *testing.T) {
 	app := newTestApp(t)
 	app.MustProvideValue(&Pool{})
-	err := Register(app, Func("w", func(context.Context) error { return nil }))
+	err := Register(app, "w", Func(func(context.Context) error { return nil }))
 	requireErrContaining(t, err, "provided outside worker.Register")
 }
 
@@ -218,11 +218,11 @@ func TestPoolShutdown_SharedResult(t *testing.T) {
 	pool := newTestPool()
 	release := make(chan struct{})
 	started := make(chan struct{})
-	if err := pool.addDefinition(&Definition{name: "w", worker: Func("w", func(context.Context) error {
+	if err := pool.addDefinition(&definition{name: "w", resolve: instance(Func(func(context.Context) error {
 		close(started)
 		<-release
 		return nil
-	})}); err != nil {
+	}))}); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Start(t.Context()); err != nil {

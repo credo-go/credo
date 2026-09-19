@@ -31,10 +31,14 @@ type failurePolicy struct {
 	maxConsecutiveFailures int
 }
 
-// Definition is the immutable configuration of a registered worker.
-type Definition struct {
-	name             string
-	worker           Worker
+// definition is the immutable configuration of a registered worker.
+type definition struct {
+	name string
+	// resolve yields the worker instance when the pool starts: a closure over
+	// the instance for Register, a DI resolution for RegisterProvided.
+	resolve func() (Worker, error)
+	// source names what resolve produces in resolution errors.
+	source           string
 	schedule         *Schedule
 	restartPolicy    restartPolicy
 	failurePolicy    failurePolicy
@@ -43,14 +47,14 @@ type Definition struct {
 }
 
 // Kind reports whether the worker is continuous or scheduled.
-func (d *Definition) Kind() string {
+func (d *definition) Kind() string {
 	if d != nil && d.schedule != nil {
 		return kindScheduled
 	}
 	return kindContinuous
 }
 
-func (d *Definition) scheduleExpr() string {
+func (d *definition) scheduleExpr() string {
 	if d == nil || d.schedule == nil {
 		return ""
 	}
