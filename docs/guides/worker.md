@@ -102,7 +102,7 @@ func main() {
 
 Important points:
 
-- `Run` blocks until shutdown or a real failure. Returning nil (or `ctx.Err()`) after `ctx` is cancelled is a graceful stop.
+- `Run` blocks until shutdown or a real failure. Returning nil (or `ctx.Err()`, wrapped or not) after `ctx` is cancelled is a graceful stop. An error that carries anything else is a failure even then: `errors.Join(ctx.Err(), flushErr)` is recorded and logged, so a final write that failed during shutdown is never lost.
 - Restarts are unlimited unless you set `WithMaxRestarts`.
 - `newQueue()` and `newSender()` are placeholders for your application's dependencies; the [DI Integration](#di-integration) section shows the constructor-injected form.
 
@@ -294,7 +294,7 @@ func (w *ReportWorker) Run(ctx context.Context) error {
 What to expect:
 
 - A run cut short by its timeout is a **failure, even if `Run` returns nil**. It is recorded as `worker: run timed out after 15s…`, logged with `timed_out=true`, and counts toward `WithMaxConsecutiveFailures`. A half-finished run can therefore never stamp `LastSuccess` or satisfy a readiness barrier.
-- `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the application shutting down; during shutdown the cause is the application's, and a nil return is a graceful stop.
+- `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the application shutting down. Whichever happens first wins, because the context keeps its first cancellation cause: when shutdown comes first, the cause is the application's and a nil return is a graceful stop; when the timeout fires first and shutdown follows, the cause stays `ErrRunTimeout` and the run is a timed-out failure, nil return included.
 - The timeout is cooperative: it cancels the context and never kills the goroutine. A `Run` that ignores its context keeps the worker busy past the budget, and activations that pass meanwhile are skipped. There is never more than one run of a worker at a time.
 - Continuous workers have no run timeout — their `Run` is meant to last for the whole process. Put timeouts on the individual operations inside the loop instead.
 
