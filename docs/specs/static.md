@@ -282,14 +282,13 @@ Both routes share the same serving logic. HEAD routes are auto-registered by the
 
 ```
 1. Extract      RouteParams["_static"] (empty for exact match)
-2. Decode       url.PathUnescape(p); malformed escape → 400
-3. Sanitize     reject \x00, \, and explicit .. segments → 400;
+2. Sanitize     reject \x00, \, and explicit .. segments → 400;
                 path.Clean("/" + p) for remaining normalization
-4. Open         fsys.Open(cleanPath)
-5. Not found?
+3. Open         fsys.Open(cleanPath)
+4. Not found?
    ├─ SPA + GET/HEAD + no dot → try <cleanPath>.html sibling, else root index
    └─ else                    → NewHTTPError(404, MsgKeyNotFound)
-6. Directory?
+5. Directory?
    ├─ index file exists       → serve index
    ├─ SPA + GET/HEAD + no dot → try <cleanPath>.html sibling, else root index
    ├─ Browse enabled          → serve directory listing
@@ -297,19 +296,21 @@ Both routes share the same serving logic. HEAD routes are auto-registered by the
    (When SPA branch matches a candidate request, Browse listing is
     intentionally skipped — SPA navigation should not expose a browseable
     file index for routes the SPA owns.)
-7. Headers      X-Content-Type-Options: nosniff (always)
+6. Headers      X-Content-Type-Options: nosniff (always)
                 Cache-Control: whatever the CacheControl hook returns
                 ("" or nil hook → no header; hook runs only for status < 400)
                 Content-Disposition: attachment (if Download)
-8. Serve        http.ServeContent (Range, If-Modified-Since, Content-Type)
+7. Serve        http.ServeContent (Range, If-Modified-Since, Content-Type)
                 Fallback: io.Copy for non-seekable fs.File
 ```
+
+The captured value was decoded exactly once by the router, like every route parameter ([router spec](router.md#encoded-parameter-values)); static serving never decodes it again. `/static/100%25.txt` reaches the file `100%.txt`, and `/static/a%252Fb.txt` a file literally named `a%2Fb.txt`, never `a/b.txt`. A malformed escape such as `%zz` does not reach Credo: net/http rejects the request target with 400.
 
 ### Path Sanitization
 
 ```go
 func sanitizeStaticPath(p string) (string, error) {
-    // Input has already been decoded with url.PathUnescape.
+    // Input is the route capture, decoded exactly once by the router.
     // 1. Reject null bytes → ErrBadRequest
     // 2. Reject backslashes → ErrBadRequest
     // 3. Reject explicit ".." path segments → ErrBadRequest
@@ -360,12 +361,12 @@ Both presets floor the duration to whole seconds at construction time. `StaticCa
 | --- | --- |
 | Path traversal (`../`) | Explicit `..` segments rejected with 400 Bad Request |
 | Symlink escape | `os.Root.FS()` recommended; `os.DirFS` risk documented |
-| Encoded path tricks (`%2e`, `%5c`, `%00`) | URL-decoded before sanitization, then validated |
+| Encoded path tricks (`%2e`, `%5c`, `%00`) | Decoded once by the router, then validated |
 | Backslash traversal | Rejected with 400 Bad Request |
 | Null byte injection | Rejected with 400 Bad Request |
 | MIME sniffing | `X-Content-Type-Options: nosniff` on all static responses |
 | Directory listing leak | `Browse` defaults to false |
-| Double encoding (`%252e`) | One decode pass runs before sanitization; still-normalized output cannot escape the FS root |
+| Double encoding (`%252e`) | Exactly one decode pass (the router's) runs before sanitization: `%252e%252e` is the literal name `%2e%2e`, never `..` |
 
 **Production recommendation** (documented in godoc):
 

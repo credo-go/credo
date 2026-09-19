@@ -265,9 +265,9 @@ Use `StaticRoute.BuildURI` for clean URLs. `Route.BuildURI` on the underlying ca
 
 Credo sanitizes every incoming static file path **before** it reaches the filesystem. This protects the routes `app.Static` and `app.File` register; a handler that opens a file named by its own route parameter must confine the access itself — see [Route Parameters Are Not File Names](routing.md#route-parameters-are-not-file-names). The process has two stages:
 
-### 1. Decode
+### 1. Decode (once, by the router)
 
-The captured path is URL-decoded with `url.PathUnescape`. Malformed percent-encoding sequences (e.g., `%ZZ`) return **400 Bad Request**.
+The router decodes the captured path exactly once, as it does every route parameter, and static serving does not decode it again. A file whose name contains `%` is therefore reachable: `/static/100%25.txt` serves `100%.txt`, and `/static/a%252Fb.txt` serves a file literally named `a%2Fb.txt`, not `a/b.txt`. Malformed percent-encoding (e.g., `%ZZ`) never reaches Credo: net/http rejects the request with **400 Bad Request**.
 
 ### 2. Sanitize
 
@@ -298,6 +298,7 @@ After cleaning, the leading `/` is stripped to produce a relative path for `fs.F
 | `/static/foo%00bar` | — | 400 (null byte rejected) |
 | `/static/%2e%2e/%2e%2e/secret` | — | 400 (`%2e%2e` decodes to `..`, rejected before path.Clean) |
 | `/static/%252e%252e/secret` | `%2e%2e/secret` | 404 (one decode pass yields literal `%2e%2e`, no such file) |
+| `/static/100%25.txt` | `100%.txt` | Served normally |
 
 ### Defense in depth
 

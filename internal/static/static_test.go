@@ -146,8 +146,15 @@ func TestServerAndFileServer(t *testing.T) {
 	if err := srv.Serve(rec, req, "/missing", "missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing: err = %v, want ErrNotFound", err)
 	}
-	if err := srv.Serve(rec, req, "/bad", "%zz"); !errors.Is(err, ErrBadRequest) {
-		t.Errorf("bad escape: err = %v, want ErrBadRequest", err)
+	// The input is already decoded: "%zz" is a file name, not a malformed
+	// escape (net/http rejects that at the HTTP boundary).
+	if err := srv.Serve(rec, req, "/p", "%zz"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing %%zz: err = %v, want ErrNotFound", err)
+	}
+	percent := NewServer(fstest.MapFS{"%zz": {Data: []byte("literal")}}, Config{})
+	rec = &recorder{ResponseRecorder: httptest.NewRecorder()}
+	if err := percent.Serve(rec, req, "/p", "%zz"); err != nil || rec.Body.String() != "literal" {
+		t.Errorf("existing %%zz: err = %v, body = %q, want the file", err, rec.Body.String())
 	}
 
 	file := NewFileServer(fsys, "/docs/a.txt", Config{Download: true})
