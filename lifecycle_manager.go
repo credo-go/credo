@@ -483,7 +483,8 @@ func (lm *lifecycleManager) serve(
 
 	// Phase 6: open the Shutdown gate and serve until something ends the session.
 	lm.state.Store(uint32(stateRunning))
-	app.logger.Info("credo: server started", "label", label, "addr", l.Addr().String())
+	app.logger.Info("credo: server started",
+		"label", label, "addr", l.Addr().String(), "features", app.effectiveFeatures())
 	return lm.awaitServe(ctx, label, srv, l, serveFn, redirectErrCh)
 }
 

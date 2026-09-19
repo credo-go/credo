@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- **lifecycle:** the managed start line, `credo: server started`, carries a `features` attribute listing the built-in HTTP features in effect, in a fixed display order: `recover`, `request_id`, `access_log`, `decompress`, `compress`, `i18n`, `error_renderer`, `success_renderer`, `health`. The list comes from the App's effective state after preparation, not from registration calls: a `UseI18n` whose conventional discovery found no catalogs is not listed, and neither is a `UseHealth` with both probes disabled. A default App reports `["recover"]`; with every feature off the value is an empty array, never `null`. The summary adds no Warn for features that are off. Only `Run`, `RunContext` and `ServeContext` write the line. This makes the v0.19.0 switch of RequestID and AccessLog to default-off visible at startup ([HTTP features spec](docs/specs/http-features.md#startup-visibility)).
+
 ### Fixed
 
 - **static:** `app.Static` decodes the requested path once, as the router does for every parameter, instead of decoding the already-decoded capture a second time. Files whose names contain `%` are served again (`/static/100%25.txt` answered 400 and now serves `100%.txt`; the matching `Browse` link was broken the same way), and a double-encoded request reaches the file it names: `/static/a%252Fb.txt` serves a file literally named `a%2Fb.txt` — or answers 404 when there is none — instead of serving `a/b.txt`. `/static/%252e%252e/secret` answers 404 as the static-files guide documents, not 400. Sanitization is unchanged; no path ever escaped the served directory. The gap dates from v0.19.0, when route parameters started to be decoded by the router.

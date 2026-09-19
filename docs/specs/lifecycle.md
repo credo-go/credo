@@ -126,9 +126,7 @@ The callback runs last among the construction steps, so it is the final word on 
 
 ### Startup record
 
-Managed serving (`Run`, `RunContext`, `ServeContext`) writes one Info line after the listener is bound and the `OnStart` hooks have succeeded, as the App enters `running` and just before the server starts accepting connections: `credo: server started` with `label` (the entry point: `Run`, `RunContext` or `ServeContext`) and `addr` (the bound address, as `app.Addr()` reports it). A failed start writes no such line. An application that only calls `ServeHTTP` from its own `http.Server` gets no startup record.
-
-**Accepted, pending implementation:** the line gains a `features` attribute listing the built-in HTTP features in effect. The [HTTP features spec](http-features.md#startup-visibility) defines its names, order and derivation.
+Managed serving (`Run`, `RunContext`, `ServeContext`) writes one Info line after the listener is bound and the `OnStart` hooks have succeeded, as the App enters `running` and just before the server starts accepting connections: `credo: server started` with `label` (the entry point: `Run`, `RunContext` or `ServeContext`), `addr` (the bound address, as `app.Addr()` reports it) and `features` (the built-in HTTP features in effect; the [HTTP features spec](http-features.md#startup-visibility) defines its names, order and derivation). A failed start writes no such line. An application that only calls `ServeHTTP` from its own `http.Server` gets no startup record.
 
 ### Server diagnostics (`http.Server.ErrorLog`)
 

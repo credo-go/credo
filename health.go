@@ -134,6 +134,7 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 			Name("credo.ready").
 			SetMeta(MetaAccessLog, cfg.LogRequests)
 	}
+	app.healthProbes = livenessEnabled || readinessEnabled
 }
 
 // AddLivenessCheck registers a named liveness check.

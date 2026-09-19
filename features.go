@@ -35,6 +35,35 @@ func oneConfig[C any](what string, cfgs []C) C {
 	}
 }
 
+// effectiveFeatures lists the built-in features in effect for the managed
+// start line. It reads effective state after preparation, not registration
+// calls — an inactive UseI18n or a UseHealth without probe routes is not
+// listed — in a fixed display order that is not the executor's order. The
+// result is never nil, so a JSON log renders "nothing on" as [] rather than
+// null.
+func (app *App) effectiveFeatures() []string {
+	features := make([]string, 0, 9)
+	for _, f := range [...]struct {
+		name string
+		on   bool
+	}{
+		{"recover", app.recover != nil},
+		{"request_id", app.requestID != nil},
+		{"access_log", app.accessLog != nil},
+		{"decompress", app.decompress != nil},
+		{"compress", app.compress != nil},
+		{"i18n", app.i18n != nil},
+		{"error_renderer", app.errorRenderer != nil},
+		{"success_renderer", app.successRenderer != nil},
+		{"health", app.healthProbes},
+	} {
+		if f.on {
+			features = append(features, f.name)
+		}
+	}
+	return features
+}
+
 // installFeature publishes a validated feature under the preparation mutex.
 // The registration window closes at HTTP preparation or shutdown admission
 // (checkFrozen); re-checking under prepMu guarantees that a preparation
