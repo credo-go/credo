@@ -1,6 +1,6 @@
 # Built-in HTTP Features
 
-**Status:** Implemented (HTTP minor, 2026-09-05) **Implementation:** root package — `executor.go`, `features.go`, `recover.go`, `requestid.go`, `accesslog.go`, `compress.go`, `decompress.go`, `i18n.go` **ADR:** [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion)
+**Status:** Implemented (HTTP minor, 2026-09-05) **Implementation:** root package — `executor.go`, `features.go`, `recover.go`, `requestid.go`, `accesslog.go`, `compress.go`, `decompress.go`, `i18n.go` **ADR:** [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion); [startup visibility](#startup-visibility) accepted, pending implementation ([plan](../plans/restart-backoff-and-startup-features.md))
 
 Panic recovery, request IDs, access logging, response compression, request-body decompression, locale detection and the custom renderers are framework-owned HTTP features of the root package. They are not middleware: one internal request executor runs them in a fixed order around the user's Global → Group → Route chain, so they observe the final response — error envelopes and panic responses included — and cannot be scoped to a group or route. The [middleware spec](middleware.md) covers the user chain; this document is the feature contract.
 
@@ -54,6 +54,35 @@ Central error classification and rendering exist even when recovery and every op
 - **Measurements.** `AccessLogEntry.Bytes` counts the body bytes the underlying transport writer accepted after compression, compressor trailers and partial writes included; headers, framing and TLS overhead are excluded and the count is not proof of client receipt. `Response.Size` keeps its own meaning (bytes handed to the response). `Duration` runs from executor entry through response and compressor finalization and excludes `ResultFilter`, log emission and Context release. `Route` is the matched route's registered pattern (`/v1/jobs/{job_id}`), emitted as `route` whenever a route matched; `path_original` is emitted when the served path differs from the client path; `RouteName` is filter metadata only. `RemoteAddr` comes from `Request.RealIP`.
 - **AccessLog off does not silence framework logging.** Recovery, server errors, lifecycle, health and other framework diagnostics continue through their normal loggers and levels, as do application and `Infra` logs. `UseAccessLog` and `MinLevel` govern access records only. `WithLogger` does not activate access logging. `WithDebug` enables development diagnostics and does not change the logger's minimum level; some debug-mode diagnostics are Warn records.
 - Health probes registered by `UseHealth` set `MetaAccessLog` to `HealthConfig.LogRequests` (default false), so probe traffic is silent even when access logging is installed.
+
+## Startup visibility
+
+**Accepted, pending implementation** ([ADR-010](../adr/010-middleware-architecture.md#startup-visibility-of-effective-features)). It ships additively; until then the managed start line carries `label` and `addr` only ([lifecycle spec](lifecycle.md#startup-record)).
+
+The `credo: server started` line gains a `features` attribute listing the built-in features in effect:
+
+```json
+{"level":"INFO","msg":"credo: server started","label":"Run","addr":"127.0.0.1:8080","features":["recover","request_id","access_log","compress"]}
+```
+
+| Name | Listed when |
+| --- | --- |
+| `recover` | recovery is on (not `WithoutRecover`) |
+| `request_id` | `UseRequestID` installed it |
+| `access_log` | `UseAccessLog` installed it |
+| `decompress` | `UseDecompress` installed it |
+| `compress` | `UseCompress` installed it |
+| `i18n` | `UseI18n` installed an active bundle |
+| `error_renderer` | `UseErrorRenderer` installed a custom renderer |
+| `success_renderer` | `UseSuccessRenderer` installed a custom renderer |
+| `health` | `UseHealth` registered at least one probe route (liveness or readiness) |
+
+- **Order.** Names appear in the table's order, whatever the registration order. The order is for display; it is not the execution order of the request executor.
+- **Effective state, not registration calls.** The list is read from the App after preparation. A successful `UseI18n` whose conventional discovery found no catalogs consumes its registration but is not listed. Likewise, `UseHealth` with both `Liveness` and `Readiness` disabled registers no probe route and is not listed. A missing renderer name means the default rendering is in use, not that error rendering or `Context.Render` is off. `health` means at least one probe is mounted, not that the application is healthy.
+- **Empty list.** A default App reports `["recover"]`. With every feature off, the attribute is an empty array — `[]` in JSON, never `null`.
+- **No added diagnostics.** The feature summary adds no Warn or other record for features that are off. Existing installation diagnostics are unchanged, such as the Warn of a `UseI18n` whose discovery found no catalogs.
+- **Scope.** Only managed serving writes the line (`Run`, `RunContext`, `ServeContext`). An application that only calls `ServeHTTP` from its own server gets no start line, and no line is added on the first request.
+- **Installation, not delivery.** An installed access log can still drop records through `MinLevel`, `MetaAccessLog`, `Skipper` or `ResultFilter`, and health probes are silent by default. To verify an application's observability, send a request to an ordinary route and check that the response carries a request ID and that an access record with the same ID is written.
 
 ## Locale and transport features
 

@@ -6,6 +6,15 @@
 
 ---
 
+## Restart Backoff and Startup Features
+
+Scope, sequence and acceptance live in the [delivery plan](docs/plans/restart-backoff-and-startup-features.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked.
+
+- [x] Promote the accepted decisions to ADR-023, ADR-010 and the worker, HTTP-features and lifecycle specs; route-parameter/file-path and cron time-zone documentation (2026-09-19)
+- [ ] Static serving decodes the route-captured path only once (patch): files whose names contain `%` escapes are served again, and the static-files guide's table holds
+- [ ] Startup `features` attribute on the managed start line (additive; next patch or minor)
+- [ ] Continuous-worker restart backoff (v0.21.0, behavior change): `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, `worker.max_restart_delay`, `Config.MaxRestartDelay`, `next_restart_in`
+
 ## Pre-v1 Contract Migration
 
 The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.

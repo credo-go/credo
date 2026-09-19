@@ -1,6 +1,8 @@
 # ADR-023: Worker System
 
-**Status:** Accepted, implemented in v0.20.0 **Date:** 2026-09-19 **Depends on:** ADR-004, ADR-006, ADR-016, ADR-022 **Related:** ADR-021 **Specification:** [Worker spec](../specs/worker.md) **Guide:** [Worker guide](../guides/worker.md)
+**Status:** Accepted, implemented in v0.20.0; [restart backoff](#restart-backoff) accepted 2026-09-19, pending implementation (v0.21.0) **Date:** 2026-09-19 **Depends on:** ADR-004, ADR-006, ADR-016, ADR-022 **Related:** ADR-021 **Specification:** [Worker spec](../specs/worker.md) **Guide:** [Worker guide](../guides/worker.md) **Plan:** [Restart backoff and startup features](../plans/restart-backoff-and-startup-features.md)
+
+**2026-09-19 amendment:** continuous workers will restart with a capped, jittered exponential delay by default. The decision is recorded under [Restart backoff](#restart-backoff) and in the alternatives below. Until it ships in v0.21.0 the restart delay is fixed, and every other section describes the released behavior.
 
 ## Context
 
@@ -62,6 +64,32 @@ A recovered panic becomes an unexported error `worker: run panicked: <value>` wi
 
 `WithMaxRestarts(N)` means the first run plus at most N restarts. `Restarts` counts restarts that actually started: it advances in the run-admission commit, not when the previous run failed, so a shutdown during the restart delay does not count one. The run-context accessor for an attempt number is removed: the next cron activation is not a retry of the previous one, and removing an accessor is the reversible choice.
 
+### Restart backoff
+
+**Accepted 2026-09-19, pending implementation (v0.21.0).**
+
+Permanence made the restart delay load-bearing. The delay is fixed (3 s by default), `WithMaxRestarts` is unlimited by default, and every failed run writes one Error line. A continuous worker whose dependency stays unreachable, and whose `Run` therefore fails immediately every time, restarts about 28,800 times a day, writes at least as many Error lines and reconnects to the dependency at the same rate. Backoff changes how long the runner waits between restarts, not whether it restarts: the permanent-restart contract stands.
+
+After a failed run for which a restart is planned, the delay is drawn from a window that doubles and is capped:
+
+```text
+ceiling = min(base × 2^(k−1), cap)
+lower   = max(base, ceiling/2)
+delay   = uniform in [lower, ceiling]; exactly lower when lower == ceiling
+```
+
+`k` is the failure's position in the current sequence, starting at 1, and the multiplier is fixed at 2. `base` is the existing effective restart delay (`WithRestartDelay` → `worker.restart_delay` → `DefaultRestartDelay`); it becomes the first and the minimum delay. The cap is new: `WithMaxRestartDelay(d)` per worker, `worker.max_restart_delay` per pool, `DefaultMaxRestartDelay` = 1 minute otherwise.
+
+The jitter keeps `base` as a floor. Full jitter — a uniform pick in `[0, ceiling]` — spreads load best and is the right choice for `httpclient` retries, but it can pick a near-zero wait and reintroduce the tight loop the restart delay exists to prevent. With the floor, the first delay is exactly `base`, no delay is shorter than `base` or longer than the cap, and a cap equal to `base` is a fixed delay without a separate mode. Individual delays need not grow monotonically; their window does.
+
+A run that lasted at least the effective cap resets the sequence: its failure counts as the first, so the next restart waits `base`. Without a reset, a worker that runs for hours and fails once a day would wait at the cap for ever. Runtime is a heuristic, not proof of health, so a long run resets only the backoff — never `Restarts` or the `WithMaxRestarts` budget.
+
+The cap resolves the way `WithRestartDelay` resolves today. An omitted option takes the pool configuration, then the default, and is raised to `base` when `base` is larger: a pool-level cap below one worker's base is a default that does not fit that worker, not an error. An explicit `WithMaxRestartDelay(0)` skips the pool configuration and selects `max(DefaultMaxRestartDelay, base)`. An explicit positive cap is used as given, and one below the effective `base` is a registration error. An existing `WithRestartDelay(10 * time.Minute)` therefore stays valid, and stays a fixed delay unless a pool cap above ten minutes is configured. The only fixed delay that no configuration can change is the same positive value in both options.
+
+Backoff is the default rather than an option, because the flood appears precisely in applications that registered a continuous worker without restart options. With the default base and cap, the capped window is 30–60 s, about 45 s on average: roughly 1,920 runs a day once the cap is reached (2,880 at the floor), fifteen times fewer than today. A 5-minute cap would give about 384. The cap also bounds the wait before the next recovery attempt, so a larger default would delay recovery for every application after its dependency returns; an application that expects long outages raises the cap per pool or per worker. Log volume shrinks; failures are neither hidden nor downgraded.
+
+The snapshot and the log make the policy visible. `Config` reports the effective cap as `MaxRestartDelay` (`max_restart_delay`; zero for scheduled workers). The continuous failure line carries `next_restart_in`, the selected delay, only when a restart is planned — not when the limit was just exhausted and not when shutdown was already observed — so the restart decision is made before the line is written. The streak and the current delay are not exposed in `Info`: no consumer needs them, and either can be added later. Scheduled workers are unchanged: their cadence is the schedule, and `WithMaxRestartDelay` on a scheduled worker is a registration error like the other continuous-only options.
+
 ### Run admission is one ordered step
 
 The activation time is computed without side effects, the pool context is checked, one commit records the run (`StatusRunning`, `LastRun`, `Restarts`), and `Run` is called. The commit is the only writer of `StatusRunning`. If the check observes cancellation, no new run starts and nothing is recorded. The order is what lets an in-package test policy prove the property without a production test seam.
@@ -90,6 +118,14 @@ Workers start in `OnStart`, after the port is bound, and drain in `OnDrain`, bef
 - **An exported panic error that unwraps its value.** Rejected: it would let a context-error panic during shutdown pass as a graceful stop, and no caller would receive the error.
 - **An attempt number unified as `consecutiveFailures + 1` for scheduled workers.** Rejected: activations are not retries of each other.
 - **Transient or temporary restart strategies, or options such as "restart on success".** Not offered; one permanent strategy covers continuous work, and finite work has documented homes.
+- **Opt-in restart backoff.** Rejected: the failure it prevents occurs in applications that rely on the defaults.
+- **Full jitter for restart delays.** Not chosen: it can pick a near-zero wait, and the restart delay is a minimum-wait guarantee. It remains the right choice for `httpclient` retries.
+- **A circuit breaker or an elapsed-time budget ("give up after T").** Not offered: neither is the same as `WithMaxRestarts`, but the restart-count budget covers every known need, and nothing demonstrates a need for a second limit.
+- **Per-error-class restart delays** (retry a timeout quickly, an authentication failure slowly). Not offered: the worker's `Run` knows which failures deserve a quick retry and can retry them inside the run.
+- **Backoff for scheduled workers.** Not offered: a schedule is already a cadence, and skipping activations after failures would be a different feature (pause on failure).
+- **Pluggable backoff strategies, or a configurable multiplier, jitter or reset threshold.** Not offered: one built-in policy with two settings, base and cap, each available per worker and per pool.
+- **The backoff streak or the current delay in `Info`.** Deferred until a consumer needs them; the planned delay is on the failure line.
+- **Time zone selection for cron schedules** — a per-worker zone, or `TZ=`/`CRON_TZ=` prefixes. Not offered: schedules use the process's local time zone by design, and selection can be added when a concrete consumer needs it.
 - **Reserve the `credo.` prefix for worker names.** Not reserved: nothing needs it now, and restricting names later must account for the names the contract already allows.
 - **Overlap policies "allow" and "queue".** Deferred: allowing overlap needs per-execution state (several running flags and last errors, completion-order failure counting) that breaks the one-runner model; queueing adds buffering and staleness rules.
 - **A scheduler goroutine feeding an executor goroutine per worker.** Replaced by the serial loop, which has the same observable semantics without the coordination channels.
@@ -101,3 +137,5 @@ Workers start in `OnStart`, after the port is bound, and drain in `OnDrain`, bef
 Constructor-injected workers are the default path, and registration is testable: a test reads `Pool.Workers()` and asserts the effective policy of every worker without running it. A continuous worker can no longer disappear silently, a timeout cannot report a success, and a panic cannot pass as a shutdown. Operators get one start and one stop line per worker, correlated run lines and a stable JSON snapshot.
 
 Upgrading from earlier releases is a breaking change: registration calls take a name, `Func` loses its name argument, snapshot fields and counters change, the attempt accessor is removed, `WithMaxRestarts(N)` allows one more run, several log messages change, `@every` inputs that were rewritten are rejected, and — without a compile error — a continuous `Run` that returns nil on purpose is restarted. The release notes and the [pre-v1 migration guide](../guides/pre-v1-migration.md#workers) carry the full table. Metrics and tracing hooks are left to the observability release; they will reuse the `run_id` and `duration` attributes.
+
+The v0.21.0 restart backoff is a behavior change without a compile error. Restarts move further apart after repeated failures, so a worker with `WithMaxRestarts(N)` reaches `failed` — and a `FailWhenFailed` readiness check drops — later than before: with the defaults, `WithMaxRestarts(5)` waits roughly 48–93 s in total instead of 15 s. Setting both delay options to the same value restores the fixed delay. Those release notes and the migration guide will carry both rows.

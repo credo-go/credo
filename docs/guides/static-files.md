@@ -263,7 +263,7 @@ Use `StaticRoute.BuildURI` for clean URLs. `Route.BuildURI` on the underlying ca
 
 ## Path Sanitization and Security
 
-Credo sanitizes every incoming static file path **before** it reaches the filesystem. The process has two stages:
+Credo sanitizes every incoming static file path **before** it reaches the filesystem. This protects the routes `app.Static` and `app.File` register; a handler that opens a file named by its own route parameter must confine the access itself — see [Route Parameters Are Not File Names](routing.md#route-parameters-are-not-file-names). The process has two stages:
 
 ### 1. Decode
 

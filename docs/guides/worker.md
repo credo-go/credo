@@ -269,7 +269,7 @@ Shutdown never consumes restart budget: a restart is counted only when the next 
 - descriptors: `@hourly`, `@daily` (alias `@midnight`), `@weekly`, `@monthly`
 - intervals: `@every 5m`, `@every 90s`, `@every 1h30m`
 
-Cron schedules run in the server's local time and fire at second 0 of the matching minute. The 6-field seconds form is not supported — for sub-minute periods use `@every`. `@every` needs a positive whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
+Cron schedules use the process's local time zone and fire at second 0 of the matching minute. There is no per-worker time zone, and `TZ=`/`CRON_TZ=` prefixes are rejected: run the process in the zone the schedules are written for. Go reads the local zone from the `TZ` environment variable on Unix — a Linux container can set `TZ=Europe/Istanbul`, and an image without zoneinfo files can embed them with `import _ "time/tzdata"` — and from the operating system's time-zone setting on Windows. `@every` measures elapsed time and does not replace a calendar rule: "09:00 local time every day" and `@every 24h` are different schedules. The 6-field seconds form is not supported — for sub-minute periods use `@every`. `@every` needs a positive whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
 
 ---
 
