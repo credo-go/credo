@@ -14,6 +14,15 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- **worker:** an error that joins the shutdown cancellation with another error is no longer classified as a graceful stop. `errors.Join(ctx.Err(), flushErr)` — a final write that failed while the application was stopping — used to end the worker as `stopped` with no failure line, no counter change and an empty `LastError`, because one branch of the joined error matched `context.Canceled`. A return value is now a graceful stop only when it is nil or nothing but a context error: every branch of its unwrap/join tree must end in `context.Canceled` or `context.DeadlineExceeded`. A single wrap chain (`fmt.Errorf("query: %w", ctx.Err())`, a `*url.Error` around a cancelled dial) is still graceful; a joined error — `errors.Join`, or `fmt.Errorf` with several `%w` verbs — that carries any other error is a failure, recorded and logged with its full text. The gap predates v0.20.0.
+
+### Documentation
+
+- The v0.20.0 migration tables (this file, the pre-v1 migration guide and the release notes) gain the row they were missing: the `restart` attribute of the continuous `worker run failed` log line is now `restarts` and counts started restarts rather than failed runs.
+- The worker guide states that a run timeout and a shutdown are told apart by which came first: a timeout that fired before shutdown stays a timed-out failure, nil return included.
+
 ## [0.20.0] - 2026-09-19
 
 **Worker contract.** The `worker` package gets its pre-v1 contract ([ADR-023](docs/adr/023-worker-system.md), [worker spec](docs/specs/worker.md)). The release is breaking, and one change compiles unchanged but behaves differently — check it before upgrading:
@@ -41,6 +50,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 | `LastError` may contain a stack trace | no stack; the stack is the `stack` log attribute |
 | log `worker stopped during scheduled run` | `worker stopped` with `reason=shutdown` |
 | log `worker tick skipped` (one per activation) | `worker ticks skipped` with `skipped=N` |
+| log attribute `restart` on `worker run failed` (failed runs, `1` on the first failure) | `restarts` = `Info.Restarts` (started restarts, `0` on the first failure) |
 | names silently trimmed | surrounding whitespace and control characters are rejected |
 | untagged JSON field names from `pool.Workers()` | snake_case |
 | `worker.Definition` (exported, returned by no API) | removed; `info.Config` is the public view of a registration |
@@ -67,7 +77,7 @@ The [pre-v1 migration guide](docs/guides/pre-v1-migration.md#workers) carries th
 - **BREAKING (behavior): run outcomes are classified in one fixed order, and the loop exit is decided afterwards.** Panic → failure; timeout cause → failure; pool stopping with a nil or context-error return → graceful stop; other error → failure; scheduled nil → success; continuous nil while alive → failure. A scheduled `Run` that returns nil once shutdown cancellation has begun is a graceful stop, not a success: `LastSuccess` and `ConsecutiveFailures` keep their values. A graceful stop — at the end of a run, while waiting, or at admission — changes only the status and keeps `LastError`, which now always means "the most recent failed run; a successful scheduled run clears it". A failure during shutdown keeps its diagnostics and ends `Stopped` unless it exhausted the limit.
 - **BREAKING (behavior): panics keep their stack out of the error text.** A recovered panic is recorded as `worker: run panicked: <value>`; the stack is the separate `stack` attribute of the failure log line and never reaches `Info.LastError` or the readiness failure text. A panic whose value is a context error during shutdown is a failure, never a graceful stop.
 - **BREAKING (behavior): `@every` rejects what it used to rewrite.** A zero, negative or non-whole-second duration is a registration error (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`) instead of silently becoming a one-second period; the registered expression is the effective schedule.
-- **BREAKING (logs):** `worker stopped during scheduled run` and the path-dependent continuous `worker stopped` are replaced by the single `worker stopped` line; the per-activation `worker tick skipped` Warn is replaced by one `worker ticks skipped` line per resumption (`skipped`, `first_scheduled_at`, `last_scheduled_at`). Both failure lines (`worker run failed`, `scheduled worker run failed`) add `run_id` — equal to `worker.RunID(ctx)` inside the run — and `duration`, plus `timed_out`, `unexpected_exit` or `stack` when they apply. The alerting Error lines keep their text.
+- **BREAKING (logs):** `worker stopped during scheduled run` and the path-dependent continuous `worker stopped` are replaced by the single `worker stopped` line; the per-activation `worker tick skipped` Warn is replaced by one `worker ticks skipped` line per resumption (`skipped`, `first_scheduled_at`, `last_scheduled_at`). The continuous `worker run failed` line renames its `restart` attribute to `restarts` and changes what it counts: it used to be the number of failed runs (`1` on the first failure) and is now `Info.Restarts`, the restarts that actually started (`0` on the first failure) — update log queries and alerts that read it. Both failure lines (`worker run failed`, `scheduled worker run failed`) add `run_id` — equal to `worker.RunID(ctx)` inside the run — and `duration`, plus `timed_out`, `unexpected_exit` or `stack` when they apply. The alerting Error lines keep their text.
 - A published continuous worker reports `idle` until its first run is admitted; the run-admission commit is the only writer of `running`. Before the pool publishes its runners — including after a failed or pre-empted start — `Pool.Workers()` reports every registered worker as `idle`.
 - `App.Resolve` godoc names the three shutdown hooks that must not resolve (`OnPreDrain`, `OnDrain`, `OnShutdown`); `OnStart` hooks may.
 

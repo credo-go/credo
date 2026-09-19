@@ -93,6 +93,7 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | `LastError` may contain a panic stack trace | never; the stack is the `stack` attribute of the failure log line |
 | log `worker stopped during scheduled run`; continuous `worker stopped` only on some exit paths | exactly one `worker started` and one `worker stopped` (`reason=shutdown` or `reason=failed`) per worker |
 | log `worker tick skipped`, one line per skipped activation | one `worker ticks skipped` line per resumption with `skipped=N` |
+| `restart` attribute of the continuous `worker run failed` line, counting failed runs (`1` on the first failure) | renamed `restarts`; equals `Info.Restarts` — restarts that actually started, so `0` on the first failure |
 | names silently trimmed | surrounding whitespace and control characters are rejected |
 | untagged (Go field name) JSON from `pool.Workers()` | snake_case field names; empty `last_run`/`last_success`/`last_error`/`config.readiness` omitted |
 | `worker.Definition` (exported, returned by no API) | removed; `info.Config` is the public view of a registration |

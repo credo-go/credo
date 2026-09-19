@@ -48,12 +48,16 @@ func TestClassifyRun(t *testing.T) {
 			runOutcome{verdict: runStopped}, ""},
 		{"shutdown then wrapped deadline", runInput{kind: KindScheduled, err: fmt.Errorf("query: %w", context.DeadlineExceeded), poolDone: true},
 			runOutcome{verdict: runStopped}, ""},
+		{"shutdown then joined context errors", runInput{kind: KindContinuous, err: errors.Join(context.Canceled, context.Canceled), poolDone: true},
+			runOutcome{verdict: runStopped}, ""},
 
 		// Row 4: any other error is a failure, during shutdown too.
 		{"error", runInput{kind: KindContinuous, err: boom},
 			runOutcome{verdict: runFailed}, "boom"},
 		{"shutdown then a non-context error", runInput{kind: KindScheduled, err: boom, poolDone: true},
 			runOutcome{verdict: runFailed}, "boom"},
+		{"shutdown then a context error joined with another error", runInput{kind: KindScheduled, err: errors.Join(context.Canceled, boom), poolDone: true},
+			runOutcome{verdict: runFailed}, "context canceled\nboom"},
 		{"context error while alive", runInput{kind: KindContinuous, err: context.DeadlineExceeded},
 			runOutcome{verdict: runFailed}, "context deadline exceeded"},
 
@@ -84,6 +88,107 @@ func TestClassifyRun(t *testing.T) {
 		if !errors.Is(out.err, ErrRunTimeout) || !errors.Is(out.err, boom) {
 			t.Fatalf("recorded error %v does not wrap both ErrRunTimeout and the returned error", out.err)
 		}
+	})
+}
+
+// isCanceledError reports itself as context.Canceled through an Is method and
+// wraps nothing, the way the net package's cancelled-dial error does.
+type isCanceledError struct{}
+
+func (isCanceledError) Error() string { return "operation was canceled" }
+
+func (isCanceledError) Is(target error) bool { return target == context.Canceled }
+
+// vouchingError claims to be context.Canceled through its Is method while
+// its children carry whatever they carry.
+type vouchingError struct {
+	child    error
+	children []error
+}
+
+func (vouchingError) Error() string { return "vouching" }
+
+func (vouchingError) Is(target error) bool { return target == context.Canceled }
+
+type vouchingWrapError struct{ vouchingError }
+
+func (e vouchingWrapError) Unwrap() error { return e.child }
+
+type vouchingJoinError struct{ vouchingError }
+
+func (e vouchingJoinError) Unwrap() []error { return e.children }
+
+func TestIsContextError(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"canceled", context.Canceled, true},
+		{"deadline exceeded", context.DeadlineExceeded, true},
+		{"other error", boom, false},
+		{"wrap chain", fmt.Errorf("flush: %w", fmt.Errorf("query: %w", context.Canceled)), true},
+		{"Is method", isCanceledError{}, true},
+		{"wrapped Is method", fmt.Errorf("dial: %w", isCanceledError{}), true},
+		{"join of context errors", errors.Join(context.Canceled, context.DeadlineExceeded), true},
+		{"join with nested wrap chains", errors.Join(fmt.Errorf("a: %w", context.Canceled), isCanceledError{}), true},
+		{"join with another error", errors.Join(context.Canceled, boom), false},
+		{"join with another error first", errors.Join(boom, context.Canceled), false},
+		{"nested join hiding another error", errors.Join(context.Canceled, errors.Join(context.Canceled, boom)), false},
+		{"wrapped join with another error", fmt.Errorf("stop: %w", errors.Join(context.Canceled, boom)), false},
+		{"two %w verbs, one not a context error", fmt.Errorf("%w: %w", boom, context.Canceled), false},
+		{"Is method over a wrapped other error", vouchingWrapError{vouchingError{child: boom}}, false},
+		{"Is method over a mixed join", vouchingJoinError{vouchingError{children: []error{context.Canceled, boom}}}, false},
+		{"Is method over a wrapped context error", vouchingWrapError{vouchingError{child: context.Canceled}}, true},
+		{"Is method with a nil child is a leaf", vouchingWrapError{}, true},
+		{"Is method with no branches is a leaf", vouchingJoinError{}, true},
+		{"two %w verbs, both context errors", fmt.Errorf("%w: %w", context.DeadlineExceeded, context.Canceled), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isContextError(tt.err); got != tt.want {
+				t.Errorf("isContextError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRun_ContextErrorJoinedWithAnotherErrorIsAFailure is the regression test
+// for a final write that fails during shutdown: joining its error with
+// ctx.Err() must not turn the run into a graceful stop and lose the error.
+func TestRun_ContextErrorJoinedWithAnotherErrorIsAFailure(t *testing.T) {
+	flushErr := errors.New("final batch write failed")
+	run := Func(func(ctx context.Context) error {
+		<-ctx.Done()
+		return errors.Join(ctx.Err(), flushErr)
+	})
+	const want = "context canceled\nfinal batch write failed"
+
+	t.Run("continuous", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			p := newTestPool()
+			startPool(t, p, mustDefinition(t, "consumer", run))
+			synctest.Wait()
+			shutdownPool(t, p)
+			info := p.Workers()[0]
+			if info.Status != StatusStopped || info.LastError != want {
+				t.Fatalf("%+v, want stopped with LastError %q", info, want)
+			}
+		})
+	})
+	t.Run("scheduled", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			p := newTestPool()
+			startPool(t, p, mustDefinition(t, "report", run, WithSchedule("@every 1h"), WithStartImmediately()))
+			synctest.Wait()
+			shutdownPool(t, p)
+			info := p.Workers()[0]
+			if info.Status != StatusStopped || info.ConsecutiveFailures != 1 || info.LastError != want {
+				t.Fatalf("%+v, want stopped with one failure and LastError %q", info, want)
+			}
+		})
 	})
 }
 

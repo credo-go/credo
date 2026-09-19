@@ -85,8 +85,8 @@ type runOutcome struct {
 //  1. Run panicked → failure, whatever the panic value wraps.
 //  2. The run context was cancelled by the run timeout → timed-out failure,
 //     whatever Run returned, nil included.
-//  3. The pool context is done and Run returned nil or a context error →
-//     graceful stop.
+//  3. The pool context is done and Run returned nil or nothing but a context
+//     error → graceful stop.
 //  4. Run returned an error → failure.
 //  5. A scheduled run returned nil → success.
 //  6. A continuous run returned nil while the pool is alive → unexpected-exit
@@ -116,6 +116,49 @@ func classifyRun(in runInput) runOutcome {
 	return runOutcome{verdict: runFailed, err: errUnexpectedExit, unexpectedExit: true}
 }
 
+// isContextError reports whether err is a context error and nothing else:
+// every branch of its unwrap/join tree must end in context.Canceled or
+// context.DeadlineExceeded. A single wrap chain qualifies
+// (fmt.Errorf("query: %w", ctx.Err()), a *url.Error around a cancelled dial);
+// a joined error qualifies only when each of its branches does. errors.Is
+// would accept errors.Join(ctx.Err(), flushErr) on the strength of one branch
+// and lose the flush error, which alone would have been a failure.
 func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	if err == nil {
+		return false
+	}
+	// A node with children is judged by its children alone: its own Is
+	// method could vouch for a tree that also carries another error.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		branches := 0
+		for _, child := range joined.Unwrap() {
+			if child == nil {
+				continue
+			}
+			if !isContextError(child) {
+				return false
+			}
+			branches++
+		}
+		if branches > 0 {
+			return true
+		}
+	} else if child := errors.Unwrap(err); child != nil {
+		return isContextError(child)
+	}
+	return isContextErrorNode(err)
+}
+
+// isContextErrorNode inspects a leaf, an error that wraps nothing: the
+// explicit traversal in isContextError must see every branch, so errors.Is
+// cannot be used here. An Is method is honored the way errors.Is honors it,
+// which is how the net package reports a cancelled dial.
+func isContextErrorNode(err error) bool {
+	if err == context.Canceled || err == context.DeadlineExceeded { //nolint:errorlint // This leaf only; see above.
+		return true
+	}
+	if x, ok := err.(interface{ Is(error) bool }); ok { //nolint:errorlint // This leaf only; see above.
+		return x.Is(context.Canceled) || x.Is(context.DeadlineExceeded)
+	}
+	return false
 }
