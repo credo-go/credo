@@ -14,11 +14,13 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-20
+
 **Restart backoff and startup features.** Continuous workers back off between restarts, the managed start line lists the built-in HTTP features in effect, and static files whose names contain `%` are served again. One change compiles unchanged but behaves differently — check it before upgrading:
 
 > **BREAKING (behavior): continuous worker restarts back off.** Every restart used to wait the fixed restart delay (3 s by default), so a worker whose dependency stayed down restarted about 28,800 times a day. The first restart still waits the restart delay; repeated failures now wait longer, with jitter, up to a one-minute cap — about 1,920 restarts a day. A worker with `WithMaxRestarts(N)` therefore reaches `failed`, and a `FailWhenFailed` readiness check drops, later than before: roughly 48–93 s of waiting for N = 5 instead of 15 s. The same value in `WithRestartDelay` and `WithMaxRestartDelay` keeps a fixed delay.
 
-| v0.20 | v0.21.0 |
+| v0.20.x | v0.21.0 |
 | --- | --- |
 | every continuous restart waits the fixed restart delay (3 s by default) | the first restart waits the restart delay; repeated failures back off with jitter up to `DefaultMaxRestartDelay` (1 min) or `worker.max_restart_delay`; a run that lasted at least the cap resets the sequence |
 | `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5) | the waits back off, so `failed` and a `FailWhenFailed` readiness drop come later (roughly 48–93 s for N = 5) |
@@ -517,7 +519,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/credo-go/credo/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/credo-go/credo/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/credo-go/credo/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/credo-go/credo/compare/v0.18.0...v0.19.0
