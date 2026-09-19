@@ -45,7 +45,8 @@ func (s *Schedule) String() string {
 // @daily (alias @midnight), @weekly, @monthly, and "@every <duration>" are
 // also accepted. Schedules are evaluated in the server's local time zone
 // and fire at second 0 of the matching minute; for sub-minute periods use
-// "@every <duration>".
+// "@every <duration>", whose duration must be a positive whole number of
+// seconds ("@every 90s", "@every 1h30m"; "@every 1500ms" is rejected).
 //
 // As in crontab(5), when both the day-of-month and day-of-week fields are
 // restricted (neither is "*"), the schedule fires when EITHER matches:
@@ -238,9 +239,11 @@ type constantDelaySchedule struct {
 	Delay time.Duration
 }
 
+// every returns the schedule of "@every duration". parseDescriptor has
+// already rejected a duration that is not a positive whole number of
+// seconds, so the period is exactly the one written.
 func every(duration time.Duration) constantDelaySchedule {
-	duration = max(duration, time.Second)
-	return constantDelaySchedule{Delay: duration - time.Duration(duration.Nanoseconds())%time.Second}
+	return constantDelaySchedule{Delay: duration}
 }
 
 func (s constantDelaySchedule) Next(t time.Time) time.Time {
@@ -423,6 +426,15 @@ func parseDescriptor(expr string) (nextCalculator, error) {
 		duration, err := time.ParseDuration(expr[len(everyPrefix):])
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse duration %s: %w", expr, err)
+		}
+		// The scheduler's resolution is one second. Reject what it cannot
+		// represent instead of silently rewriting it, so the expression is
+		// exactly the period that runs.
+		if duration <= 0 {
+			return nil, fmt.Errorf("@every duration must be positive, got %s", duration)
+		}
+		if duration%time.Second != 0 {
+			return nil, fmt.Errorf("@every duration must be a whole number of seconds, got %s", duration)
 		}
 		return every(duration), nil
 	}

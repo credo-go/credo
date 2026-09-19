@@ -136,6 +136,18 @@ func TestParseSchedule_Pinned(t *testing.T) {
 			now:  time.Date(2026, 3, 10, 10, 3, 12, 500_000_000, time.UTC),
 			want: time.Date(2026, 3, 10, 10, 8, 12, 0, time.UTC),
 		},
+		{
+			name: "@every 1s is the shortest period",
+			expr: "@every 1s",
+			now:  time.Date(2026, 3, 10, 10, 0, 0, 500_000_000, time.UTC),
+			want: time.Date(2026, 3, 10, 10, 0, 1, 0, time.UTC),
+		},
+		{
+			name: "@every compound duration",
+			expr: "@every 1h30m",
+			now:  time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			want: time.Date(2026, 3, 10, 11, 30, 0, 0, time.UTC),
+		},
 	}
 
 	for _, tc := range cases {
@@ -170,6 +182,10 @@ func TestParseSchedule_Rejected(t *testing.T) {
 		{name: "dow out of bounds", expr: "* * * * 8"},
 		{name: "zero step", expr: "*/0 * * * *"},
 		{name: "bad @every duration", expr: "@every nope"},
+		{name: "@every zero", expr: "@every 0s", errHint: "@every duration must be positive"},
+		{name: "@every negative", expr: "@every -1h", errHint: "@every duration must be positive"},
+		{name: "@every sub-second", expr: "@every 1500ms", errHint: "must be a whole number of seconds, got 1.5s"},
+		{name: "@every fractional seconds", expr: "@every 1m30.5s", errHint: "must be a whole number of seconds, got 1m30.5s"},
 		{name: "unknown descriptor", expr: "@fortnightly"},
 	}
 
