@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,20 +17,27 @@ import (
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
+// poolConfig is the optional "worker" configuration section: the pool-wide
+// defaults of the per-worker restart delay options. Zero means the default.
 type poolConfig struct {
-	RestartDelay time.Duration `credo:"restart_delay"`
+	RestartDelay    time.Duration `credo:"restart_delay"`
+	MaxRestartDelay time.Duration `credo:"max_restart_delay"`
 }
 
 // Pool manages registered workers and integrates with app lifecycle.
 type Pool struct {
-	mu                  sync.Mutex
-	definitions         []*definition
-	runners             []*runner
-	logger              *slog.Logger
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
-	defaultRestartDelay time.Duration
-	readiness           []internalhealth.ReadinessCheck // one stable probe per WithReadiness worker
+	mu          sync.Mutex
+	definitions []*definition
+	runners     []*runner
+	logger      *slog.Logger
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	defaults    poolConfig                      // resolved: no zero fields
+	readiness   []internalhealth.ReadinessCheck // one stable probe per WithReadiness worker
+
+	// jitter picks a restart delay in [lo, hi]; uniformJitter unless a test
+	// pins it to a bound.
+	jitter func(lo, hi time.Duration) time.Duration
 
 	// claimed is set under mu by the first Start, before any worker is
 	// resolved; addDefinition and every later Start are refused from then on.
@@ -145,7 +153,10 @@ func register(app *credo.App, name string, resolve func() (Worker, error), sourc
 		return err
 	}
 
-	def := buildDefinition(name, o, schedule, p.defaultRestartDelay)
+	def, err := buildDefinition(name, o, schedule, p.defaults)
+	if err != nil {
+		return err
+	}
 	def.resolve = resolve
 	def.source = source
 	return p.addDefinition(def)
@@ -187,6 +198,9 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 	if o.hasRestartDelay && o.restartDelay < 0 {
 		return options{}, nil, fmt.Errorf("worker: restart delay must be >= 0, got %s", o.restartDelay)
 	}
+	if o.hasMaxRestartDelay && o.maxRestartDelay < 0 {
+		return options{}, nil, fmt.Errorf("worker: max restart delay must be >= 0, got %s", o.maxRestartDelay)
+	}
 	if o.hasRunTimeout && o.runTimeout < 0 {
 		return options{}, nil, fmt.Errorf("worker: run timeout must be >= 0, got %s", o.runTimeout)
 	}
@@ -215,6 +229,9 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 		if o.hasRestartDelay {
 			return options{}, nil, fmt.Errorf("worker: WithRestartDelay is for continuous workers")
 		}
+		if o.hasMaxRestartDelay {
+			return options{}, nil, fmt.Errorf("worker: WithMaxRestartDelay is for continuous workers")
+		}
 	} else {
 		if o.hasMaxConsecutiveFailures {
 			return options{}, nil, fmt.Errorf("worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts")
@@ -230,9 +247,11 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 }
 
 // buildDefinition turns validated options into the immutable definition,
-// resolving the kind-specific restart or failure policy. The caller sets the
-// worker resolver.
-func buildDefinition(name string, o options, schedule *Schedule, defaultRestartDelay time.Duration) *definition {
+// resolving the kind-specific restart or failure policy against the pool
+// defaults (zero fields mean the package defaults). The caller sets the worker
+// resolver. The one error is a positive WithMaxRestartDelay below the
+// effective base, which only the resolved base can reveal.
+func buildDefinition(name string, o options, schedule *Schedule, defaults poolConfig) (*definition, error) {
 	def := &definition{
 		name:             name,
 		schedule:         schedule,
@@ -247,23 +266,39 @@ func buildDefinition(name string, o options, schedule *Schedule, defaultRestartD
 			maxConsecutiveFailures: o.maxConsecutiveFailures,
 		}
 		def.runTimeout = o.runTimeout
-		return def
+		return def, nil
 	}
 
-	restartDelay := defaultRestartDelay
+	// A zero delay would busy-loop a worker that fails immediately, so zero
+	// means the default at either level; an explicit zero option skips the
+	// pool default too.
+	base := cmp.Or(defaults.RestartDelay, DefaultRestartDelay)
 	if o.hasRestartDelay {
-		restartDelay = o.restartDelay
+		base = cmp.Or(o.restartDelay, DefaultRestartDelay)
 	}
-	// A zero delay would busy-loop a worker that fails immediately. Treat 0
-	// as "use the default", matching how restart_delay is read from config.
-	if restartDelay == 0 {
-		restartDelay = DefaultRestartDelay
+
+	// The cap resolves like the base, explicit zero included, except that an
+	// omitted or zero cap is raised to a larger base instead of failing. Only
+	// an explicit positive cap is taken as given — and must fit the base.
+	var maxDelay time.Duration
+	switch {
+	case !o.hasMaxRestartDelay:
+		maxDelay = max(cmp.Or(defaults.MaxRestartDelay, DefaultMaxRestartDelay), base)
+	case o.maxRestartDelay == 0:
+		maxDelay = max(DefaultMaxRestartDelay, base)
+	case o.maxRestartDelay < base:
+		return nil, fmt.Errorf("worker: max restart delay must be >= the restart delay %s, got %s",
+			base, o.maxRestartDelay)
+	default:
+		maxDelay = o.maxRestartDelay
 	}
+
 	def.restartPolicy = restartPolicy{
-		maxRestarts:  o.maxRestarts,
-		restartDelay: restartDelay,
+		maxRestarts:     o.maxRestarts,
+		restartDelay:    base,
+		maxRestartDelay: maxDelay,
 	}
-	return def
+	return def, nil
 }
 
 // registrationProbe is never registered in the container. Asking whether it
@@ -286,7 +321,7 @@ func ensurePool(app *credo.App) (*Pool, error) {
 		return nil, err
 	}
 
-	p := newPool(app.Logger().With("module", "worker"), cfg.RestartDelay)
+	p := newPool(app.Logger().With("module", "worker"), cfg)
 	p.managed = true
 	// The binding is protected: the pool wired into OnStart/OnDrain and the
 	// readiness seam must stay the pool the container hands out, so a later
@@ -342,36 +377,39 @@ func adoptPool(app *credo.App) (*Pool, error) {
 // application's configuration: registration runs before Finalize, when
 // Resolve is not yet available.
 func loadPoolConfig(app *credo.App) (poolConfig, error) {
-	cfg := poolConfig{RestartDelay: DefaultRestartDelay}
-
 	if !app.ConfigExists("worker") {
-		return cfg, nil
+		return poolConfig{}, nil
 	}
-	loaded, err := app.GetConfig[poolConfig]("worker")
+	cfg, err := app.GetConfig[poolConfig]("worker")
 	if err != nil {
 		return poolConfig{}, fmt.Errorf("worker: invalid config: %w", err)
 	}
-	cfg = loaded
 	if cfg.RestartDelay < 0 {
 		return poolConfig{}, fmt.Errorf("worker: restart_delay must be >= 0, got %s", cfg.RestartDelay)
 	}
-	if cfg.RestartDelay == 0 {
-		cfg.RestartDelay = DefaultRestartDelay
+	if cfg.MaxRestartDelay < 0 {
+		return poolConfig{}, fmt.Errorf("worker: max_restart_delay must be >= 0, got %s", cfg.MaxRestartDelay)
 	}
 	return cfg, nil
 }
 
-func newPool(logger *slog.Logger, defaultRestartDelay time.Duration) *Pool {
+// newPool returns a pool whose defaults are cfg with zero (or negative)
+// fields replaced by the package defaults.
+func newPool(logger *slog.Logger, cfg poolConfig) *Pool {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	if defaultRestartDelay < 0 {
-		defaultRestartDelay = DefaultRestartDelay
+	if cfg.RestartDelay <= 0 {
+		cfg.RestartDelay = DefaultRestartDelay
+	}
+	if cfg.MaxRestartDelay <= 0 {
+		cfg.MaxRestartDelay = DefaultMaxRestartDelay
 	}
 	return &Pool{
-		logger:              logger,
-		defaultRestartDelay: defaultRestartDelay,
-		stopped:             make(chan struct{}),
+		logger:   logger,
+		defaults: cfg,
+		jitter:   uniformJitter,
+		stopped:  make(chan struct{}),
 	}
 }
 

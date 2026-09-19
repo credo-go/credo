@@ -57,7 +57,10 @@ func TestReadiness_FirstSuccessBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("recover", o, schedule, DefaultRestartDelay)
+	def, err := buildDefinition("recover", o, schedule, poolConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)
@@ -96,7 +99,10 @@ func TestReadiness_FailWhenFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("critical", o, schedule, DefaultRestartDelay)
+	def, err := buildDefinition("critical", o, schedule, poolConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)
@@ -127,7 +133,10 @@ func TestReadiness_MaxSuccessAge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateOptions: %v", err)
 	}
-	def := buildDefinition("sync", o, schedule, DefaultRestartDelay)
+	def, err := buildDefinition("sync", o, schedule, poolConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	def.resolve = instance(w)
 	if err := p.addDefinition(def); err != nil {
 		t.Fatalf("addDefinition: %v", err)

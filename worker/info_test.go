@@ -45,9 +45,10 @@ func TestPoolWorkers_ConfigRoundTripsBeforeAndAfterStart(t *testing.T) {
 		config Config
 	}{
 		{"consumer", KindContinuous, Config{
-			MaxRestarts:  4,
-			RestartDelay: 2 * time.Second,
-			Readiness:    &ReadinessPolicy{FailWhenFailed: true},
+			MaxRestarts:     4,
+			RestartDelay:    2 * time.Second,
+			MaxRestartDelay: DefaultMaxRestartDelay,
+			Readiness:       &ReadinessPolicy{FailWhenFailed: true},
 		}},
 		{"report", KindScheduled, Config{
 			Schedule:               "@every 1h",
@@ -56,7 +57,7 @@ func TestPoolWorkers_ConfigRoundTripsBeforeAndAfterStart(t *testing.T) {
 			MaxConsecutiveFailures: 3,
 			Readiness:              &ReadinessPolicy{RequireFirstSuccess: true, MaxSuccessAge: 2 * time.Hour},
 		}},
-		{"plain", KindContinuous, Config{RestartDelay: DefaultRestartDelay}},
+		{"plain", KindContinuous, Config{RestartDelay: DefaultRestartDelay, MaxRestartDelay: DefaultMaxRestartDelay}},
 	}
 	check := func(phase string, infos []Info) {
 		t.Helper()
@@ -182,7 +183,10 @@ func TestInfo_JSONShape(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		def := buildDefinition("report", o, schedule, DefaultRestartDelay)
+		def, err := buildDefinition("report", o, schedule, poolConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
 		def.resolve = instance(Func(func(context.Context) error { return errors.New("boom") }))
 		if err := p.addDefinition(def); err != nil {
 			t.Fatal(err)
@@ -209,10 +213,12 @@ func TestInfo_JSONShape(t *testing.T) {
 	const want = `[` +
 		`{"name":"consumer","kind":"continuous","config":{"schedule":"","start_immediately":false,` +
 		`"run_timeout":0,"max_consecutive_failures":0,"max_restarts":5,"restart_delay":3000000000,` +
+		`"max_restart_delay":60000000000,` +
 		`"readiness":{"require_first_success":false,"fail_when_failed":true,"max_success_age":0}},` +
 		`"status":"idle","restarts":0,"consecutive_failures":0},` +
 		`{"name":"report","kind":"scheduled","config":{"schedule":"@every 1m","start_immediately":false,` +
-		`"run_timeout":15000000000,"max_consecutive_failures":3,"max_restarts":0,"restart_delay":0},` +
+		`"run_timeout":15000000000,"max_consecutive_failures":3,"max_restarts":0,"restart_delay":0,` +
+		`"max_restart_delay":0},` +
 		`"status":"waiting","restarts":0,"consecutive_failures":1,` +
 		`"last_run":"2000-01-01T00:01:00Z","last_error":"boom"}` +
 		`]`

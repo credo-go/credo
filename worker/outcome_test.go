@@ -301,7 +301,7 @@ func TestDriveLoop_CancellationObservedAtAdmission(t *testing.T) {
 func TestRunContinuous_NilWhileAliveIsAnUnexpectedExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		logs := newLogCapture()
-		p := newPool(logs.logger(), DefaultRestartDelay)
+		p := newPool(logs.logger(), poolConfig{})
 		var runs atomic.Int32
 		def := mustDefinition(t, "consumer", Func(func(context.Context) error {
 			runs.Add(1)
@@ -403,8 +403,9 @@ func TestRunContinuous_MaxRestarts(t *testing.T) {
 			startPool(t, p, mustDefinition(t, "consumer", Func(func(context.Context) error {
 				runs.Add(1)
 				return errors.New("boom")
-			}), WithRestartDelay(time.Second)))
-			// Runs at 0s, 1s, 2s, 3s and 4s; the loop then waits for 5s.
+			}), WithRestartDelay(time.Second), WithMaxRestartDelay(time.Second)))
+			// A fixed one-second delay: runs at 0s, 1s, 2s, 3s and 4s; the
+			// loop then waits for 5s.
 			time.Sleep(4*time.Second + 500*time.Millisecond)
 			synctest.Wait()
 			info := p.Workers()[0]
@@ -587,7 +588,7 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 	t.Run("a run that ignores its context skips activations without overlap", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			p := newPool(logs.logger(), DefaultRestartDelay)
+			p := newPool(logs.logger(), poolConfig{})
 			var runs, running atomic.Int32
 			startPool(t, p, mustDefinition(t, "report", Func(func(context.Context) error {
 				if running.Add(1) > 1 {

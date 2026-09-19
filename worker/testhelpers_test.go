@@ -56,7 +56,7 @@ func (c fakeRawConfig) Exists(key string) bool {
 }
 
 func newTestPool() *Pool {
-	return newPool(slog.New(slog.DiscardHandler), DefaultRestartDelay)
+	return newPool(slog.New(slog.DiscardHandler), poolConfig{})
 }
 
 func shutdownPool(t *testing.T, p *Pool) {
@@ -85,7 +85,10 @@ func mustDefinition(t *testing.T, name string, w Worker, opts ...Option) *defini
 	if err != nil {
 		t.Fatalf("validateOptions(%s) = %v", name, err)
 	}
-	def := buildDefinition(name, o, schedule, DefaultRestartDelay)
+	def, err := buildDefinition(name, o, schedule, poolConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	def.resolve = instance(w)
 	return def
 }

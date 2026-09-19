@@ -1,6 +1,6 @@
 # Worker Spec
 
-**Status**: Implemented (v0.20.0 contract); [restart backoff](#restart-backoff) accepted, pending implementation (v0.21.0) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md) **Plan**: [Restart backoff and startup features](../plans/restart-backoff-and-startup-features.md)
+**Status**: Implemented (v0.20.0 contract; [restart backoff](#restart-backoff) in v0.21.0) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
 
 This file is the contract of Credo's worker system: what registration accepts, how a run is admitted and classified, what the pool reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023.
 
@@ -89,9 +89,11 @@ func WithMaxConsecutiveFailures(n int) Option      // scheduled
 func WithRunTimeout(d time.Duration) Option        // scheduled
 func WithMaxRestarts(n int) Option                 // continuous
 func WithRestartDelay(d time.Duration) Option      // continuous
+func WithMaxRestartDelay(d time.Duration) Option   // continuous
 func WithReadiness(policy ReadinessPolicy) Option  // both kinds (conditions are kind-checked)
 
 const DefaultRestartDelay = 3 * time.Second
+const DefaultMaxRestartDelay = time.Minute
 var ErrRunTimeout = errors.New("worker: run timed out")
 
 // Run context
@@ -142,7 +144,7 @@ Registering the same instance under two names runs it on two independent loops; 
 
 1. `app` is nil, or (for `Register`) the worker is nil — including a nil `Func` and a typed-nil pointer;
 2. the name breaks a rule above;
-3. an option value is out of range: negative `WithMaxRestarts`, `WithRestartDelay`, `WithRunTimeout` or `WithMaxConsecutiveFailures`;
+3. an option value is out of range: negative `WithMaxRestarts`, `WithRestartDelay`, `WithMaxRestartDelay`, `WithRunTimeout` or `WithMaxConsecutiveFailures`;
 4. the readiness policy is invalid (see [Health Integration](#health-integration));
 5. the schedule does not parse (see [Schedules](#schedules));
 6. an option belongs to the other kind:
@@ -151,13 +153,15 @@ Registering the same instance under two names runs it on two independent loops; 
 | --- | --- | --- |
 | scheduled | `WithMaxRestarts` | `worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures` |
 | scheduled | `WithRestartDelay` | `worker: WithRestartDelay is for continuous workers` |
+| scheduled | `WithMaxRestartDelay` (zero included) | `worker: WithMaxRestartDelay is for continuous workers` |
 | continuous | `WithMaxConsecutiveFailures` | `worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts` |
 | continuous | `WithStartImmediately` | `worker: WithStartImmediately is for scheduled workers` |
 | continuous | `WithRunTimeout` | `worker: WithRunTimeout is for scheduled workers` |
 
 7. with `WithReadiness`, the check name `worker:<name>` is not a valid health check name;
 8. the registration window is closed, the pool cannot be adopted, or — for the registration that creates the pool — the `worker` config section is invalid (below);
-9. the name is a duplicate, or the pool has already started.
+9. an explicit positive `WithMaxRestartDelay` is below the effective restart delay, which is known only once the pool's configuration is (`worker: max restart delay must be >= the restart delay 10s, got 5s`);
+10. the name is a duplicate, or the pool has already started.
 
 `MustRegister` and `MustRegisterProvided` panic with the same error.
 
@@ -251,7 +255,7 @@ Cancellation while waiting (restart delay or next activation) ends the loop the 
 
 - `Run` is called once at start and must stay active until the pool context is cancelled. The idiomatic ending is `case <-ctx.Done(): return nil` (or return `ctx.Err()`).
 - A nil return while the pool context is alive is outcome 6: the recorded error is `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, the failure line carries `unexpected_exit=true`, and the restart policy applies. A non-nil error or a panic keeps its own diagnostics and never carries that marker.
-- After a failure the worker waits `RestartDelay` (status `waiting`) and runs again. The delay is resolved at registration: `WithRestartDelay` → the pool's `worker.restart_delay` config → `DefaultRestartDelay`; zero at either level means the default, so an immediately failing worker is throttled rather than busy-looping.
+- After a failure the worker waits (status `waiting`) and runs again. The wait starts at the restart delay and backs off, with jitter, up to a cap as failures repeat ([Restart backoff](#restart-backoff)).
 - `WithMaxRestarts(N)`, N > 0, allows the first run plus at most N restarts. `Restarts` counts restarts that actually started (it advances in the admission commit, so a shutdown during the restart delay does not count one). The worker becomes `failed` when a run fails and `Restarts == N`: with N = 1 it runs twice. N = 0 (the default) means unlimited restarts.
 - A continuous worker never records a success: `LastSuccess` is always zero.
 
@@ -259,18 +263,11 @@ Finite background work does not fit a continuous worker's contract on its own. R
 
 ### Restart backoff
 
-**Accepted, pending implementation (v0.21.0).** Until it ships, a continuous worker waits the fixed `RestartDelay` described above. When it ships, this section replaces that sentence, and the Public API, Validation, Logging Contract, Snapshot and Configuration sections gain the entries listed here. The rationale is in [ADR-023](../adr/023-worker-system.md#restart-backoff).
+A continuous worker restarts after a capped, jittered exponential delay. The rationale is in [ADR-023](../adr/023-worker-system.md#restart-backoff).
 
-API additions:
+**Base.** `base` is the effective restart delay (`Config.RestartDelay`), resolved at registration: `WithRestartDelay` → the pool's `worker.restart_delay` → `DefaultRestartDelay`. Zero at either level means the default — an explicit `WithRestartDelay(0)` skips the pool configuration — so an immediately failing worker is throttled rather than busy-looping. It is the first and the minimum delay.
 
-```go
-func WithMaxRestartDelay(d time.Duration) Option // continuous
-const DefaultMaxRestartDelay = time.Minute
-```
-
-**Base.** `base` is the effective restart delay, resolved as today: `WithRestartDelay` → `worker.restart_delay` → `DefaultRestartDelay`, with zero at either level meaning the default. It becomes the first and the minimum delay.
-
-**Cap.** The cap resolves like `base`, explicit zero included:
+**Cap.** The cap (`Config.MaxRestartDelay`) resolves like `base`, explicit zero included:
 
 | `WithMaxRestartDelay` | Effective cap |
 | --- | --- |
@@ -290,23 +287,11 @@ delay   = uniform in [lower, ceiling]; exactly lower when lower == ceiling
 
 **Reset.** When the run that just failed lasted at least the effective cap (`duration >= cap`), the sequence restarts: that failure counts as `k = 1` and the next restart waits `base`. A reset never changes `Restarts` or the `WithMaxRestarts` budget.
 
-**Unchanged.** `WithMaxRestarts(N)` still allows the first run plus N restarts, and `Restarts` still counts restarts that started. Restarts are further apart, so the worker reaches `failed` later: with the defaults, `WithMaxRestarts(5)` waits roughly 48–93 s in total instead of 15 s, and each further restart adds 30–60 s. Cancellation during the wait ends the loop without counting a restart. Scheduled workers are unaffected.
+**Limits.** The backoff spaces restarts; it does not count them. `WithMaxRestarts(N)` allows the first run plus N restarts, and `Restarts` counts restarts that started, so the time to `failed` is the sum of the delays: with the defaults, `WithMaxRestarts(5)` reaches `failed` after roughly 48–93 s, and each further restart adds 30–60 s. Cancellation during the wait ends the loop without counting a restart. Scheduled workers do not back off: their schedule is the cadence.
 
 **Fixed delay.** Setting `WithRestartDelay(d)` and `WithMaxRestartDelay(d)` to the same positive `d` is the only fixed delay no configuration can change. `WithRestartDelay(time.Minute)` alone is fixed only while the pool cap does not exceed one minute — the default — and with `worker.max_restart_delay: 5m` it grows from one minute to five.
 
-**Validation.** Registration errors: a negative `WithMaxRestartDelay`; an explicit positive cap below the effective base; `WithMaxRestartDelay` on a scheduled worker, zero included (`worker: WithMaxRestartDelay is for continuous workers`). A negative `worker.max_restart_delay` fails pool creation, as a negative `worker.restart_delay` does.
-
-**Snapshot.** `Config.MaxRestartDelay time.Duration` (`json:"max_restart_delay"`) is the effective cap for continuous workers and zero for scheduled ones. `Config.RestartDelay` keeps reporting the effective base.
-
-**Logging.** The `worker run failed` line gains `next_restart_in`, the selected delay, only when a restart is planned. It is omitted when the failure exhausted `WithMaxRestarts` and when shutdown was already observed, and it is never written as zero to mean "no restart". The restart decision is therefore made before the line is written; each failed run still writes exactly one `worker run failed` line, followed by `worker exceeded max restarts` when the limit is exhausted. A cancellation that arrives after the line was written still ends the loop, so the attribute is a plan, not a promise.
-
-**Configuration.**
-
-```yaml
-worker:
-  restart_delay: "3s"      # base
-  max_restart_delay: "1m"  # cap
-```
+**Announcement.** The `worker run failed` line carries `next_restart_in` only when a restart is planned ([Logging Contract](#logging-contract)).
 
 ### Scheduled workers
 
@@ -355,7 +340,7 @@ For every worker, one pool session writes exactly one `worker started` and exact
 | --- | --- | --- |
 | `worker started` | Info | `worker`, `kind`; scheduled adds `schedule` and either `start_immediately=true` or `next_run` |
 | `worker stopped` | Info | `worker`, `kind`, `status`, `reason` (`shutdown` or `failed`) |
-| `worker run failed` | Error | `worker`, `kind`, `restarts`, `error`, `run_id`, `duration`; `unexpected_exit=true` for outcome 6; `stack` for a panic |
+| `worker run failed` | Error | `worker`, `kind`, `restarts`, `error`, `run_id`, `duration`; `next_restart_in` when a restart is planned; `unexpected_exit=true` for outcome 6; `stack` for a panic |
 | `scheduled worker run failed` | Error | `worker`, `scheduled_at`, `consecutive_failures`, `error`, `run_id`, `duration`; `timed_out=true` for outcome 2; `stack` for a panic |
 | `scheduled worker run completed` | Debug | `worker`, `run_id`, `scheduled_at`, `duration` |
 | `worker exceeded max restarts` | Error | `worker`, `kind`, `max_restarts` |
@@ -363,6 +348,7 @@ For every worker, one pool session writes exactly one `worker started` and exact
 | `worker schedule has no future activation` | Error | `worker`, `schedule` |
 | `worker ticks skipped` | Warn | `worker`, `skipped`, `first_scheduled_at`, `last_scheduled_at` |
 
+- `next_restart_in` is the delay the [backoff](#restart-backoff) selected for the next restart. The restart decision is made before the line is written, so the attribute is omitted when the failure exhausted `WithMaxRestarts` and when shutdown was already observed; it is never written as zero to mean "no restart". Each failed run writes exactly one `worker run failed` line, followed by `worker exceeded max restarts` when the limit is exhausted. A cancellation that arrives after the line was written still ends the loop, so the attribute is a plan, not a promise.
 - `reason=failed` stays at Info: the preceding Error line (`worker exceeded …` or `worker schedule has no future activation`) is the alerting signal; the stop line is lifecycle bookkeeping.
 - A graceful stop writes no line of its own besides `worker stopped`.
 - Successful scheduled runs are logged at Debug only. Liveness is answered by `Pool.Workers()` and `WithReadiness`; logs are the audit trail.
@@ -381,6 +367,7 @@ type Config struct {
 	MaxConsecutiveFailures int              `json:"max_consecutive_failures"`
 	MaxRestarts            int              `json:"max_restarts"`
 	RestartDelay           time.Duration    `json:"restart_delay"`
+	MaxRestartDelay        time.Duration    `json:"max_restart_delay"`
 	Readiness              *ReadinessPolicy `json:"readiness,omitzero"`
 }
 
@@ -397,7 +384,7 @@ type Info struct {
 }
 ```
 
-- `Config` is the **effective** policy the runner executes, not an echo of the options: `RestartDelay` is the resolved delay (option → config → default). `Schedule` is the expression as registered, which is also the effective schedule because `ParseSchedule` rejects every input it would otherwise have to rewrite. Fields that do not apply to the worker's kind are zero; zero limits mean unlimited.
+- `Config` is the **effective** policy the runner executes, not an echo of the options: `RestartDelay` is the resolved base and `MaxRestartDelay` the resolved cap of the [restart backoff](#restart-backoff) (option → config → default; zero for scheduled workers). `Schedule` is the expression as registered, which is also the effective schedule because `ParseSchedule` rejects every input it would otherwise have to rewrite. Fields that do not apply to the worker's kind are zero; zero limits mean unlimited.
 - `Config.Readiness` is a fresh copy on every snapshot; mutating it never reaches the worker's definition.
 - `Restarts` (continuous) counts restarts that started; `ConsecutiveFailures` (scheduled) counts failed runs since the last success.
 - `LastRun` is the start time of the most recently admitted run. `LastSuccess` is the completion time of the last successful scheduled run. `LastError` is the error of the most recent failed run; a successful scheduled run clears it, a graceful stop does not.
@@ -419,6 +406,7 @@ type Info struct {
       "max_consecutive_failures": 0,
       "max_restarts": 5,
       "restart_delay": 3000000000,
+      "max_restart_delay": 60000000000,
       "readiness": { "require_first_success": false, "fail_when_failed": true, "max_success_age": 0 }
     },
     "status": "idle",
@@ -434,7 +422,8 @@ type Info struct {
       "run_timeout": 15000000000,
       "max_consecutive_failures": 3,
       "max_restarts": 0,
-      "restart_delay": 0
+      "restart_delay": 0,
+      "max_restart_delay": 0
     },
     "status": "waiting",
     "restarts": 0,
@@ -451,7 +440,7 @@ type Info struct {
 | --- | --- |
 | `idle` | registered; the pool has not published its runners, or a continuous runner has not yet been admitted to its first run |
 | `running` | a run has been admitted and is executing |
-| `waiting` | continuous: restart delay after a failure; scheduled: waiting for the next activation |
+| `waiting` | continuous: restart backoff after a failure; scheduled: waiting for the next activation |
 | `stopped` | the loop ended because the pool was shut down; the worker will not run again |
 | `failed` | a positive failure limit was exhausted, or the schedule has no future activation; permanent until the application restarts |
 
@@ -518,10 +507,11 @@ worker.MustRegister(app, "recovery", recovery,
 
 ```yaml
 worker:
-  restart_delay: "5s" # default restart delay for continuous workers
+  restart_delay: "5s"     # default base restart delay for continuous workers
+  max_restart_delay: "5m" # default restart delay cap for continuous workers
 ```
 
-The section is optional and read once, when the first registration creates the pool. A negative value is a registration error; zero means `DefaultRestartDelay`. `WithRestartDelay` overrides it per worker. Schedules, limits and timeouts are per-worker options only; a config reload does not re-register workers, and a changed cron expression is restart-only.
+The section is optional and read once, when the first registration creates the pool. A negative value is a registration error; zero means `DefaultRestartDelay` or `DefaultMaxRestartDelay`. `WithRestartDelay` and `WithMaxRestartDelay` override them per worker; a pool cap below one worker's base is raised to that base, not rejected ([Restart backoff](#restart-backoff)). Schedules, limits and timeouts are per-worker options only; a config reload does not re-register workers, and a changed cron expression is restart-only.
 
 ---
 
@@ -568,7 +558,7 @@ func (w *OrderConsumer) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil // shutdown
 			}
-			return err // restarted after the restart delay
+			return err // restarted after the restart backoff
 		}
 		if err := w.orders.Process(ctx, msg); err != nil {
 			// One bad message must not stop the consumer.
@@ -587,6 +577,7 @@ func main() {
 	app.MustProvide[*OrderService](NewOrderService)
 	app.MustProvide[*OrderConsumer](NewOrderConsumer)
 
+	// Restarts after 5s, backing off up to the cap (1m by default) while failures repeat.
 	worker.MustRegisterProvided[*OrderConsumer](app, "order-consumer",
 		worker.WithRestartDelay(5*time.Second),
 	)

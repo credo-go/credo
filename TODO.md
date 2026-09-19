@@ -11,11 +11,12 @@
 Scope, sequence and acceptance live in the [delivery plan](docs/plans/restart-backoff-and-startup-features.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked.
 
 - [x] Promote the accepted decisions to ADR-023, ADR-010 and the worker, HTTP-features and lifecycle specs; route-parameter/file-path and cron time-zone documentation (2026-09-19)
+
 All three items ship together in v0.21.0.
 
 - [x] Static serving decodes the route-captured path only once: files whose names contain `%` escapes are served again, and the static-files guide's table holds (2026-09-19)
 - [x] Startup `features` attribute on the managed start line (additive) (2026-09-19)
-- [ ] Continuous-worker restart backoff (behavior change): `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, `worker.max_restart_delay`, `Config.MaxRestartDelay`, `next_restart_in`
+- [x] Continuous-worker restart backoff (behavior change): `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, `worker.max_restart_delay`, `Config.MaxRestartDelay`, `next_restart_in` (2026-09-20)
 
 ## Pre-v1 Contract Migration
 

@@ -5,8 +5,13 @@ import (
 	"time"
 )
 
-// DefaultRestartDelay is the default delay between continuous worker restarts.
+// DefaultRestartDelay is the default restart delay of a continuous worker: the
+// first and the minimum wait before a restart.
 const DefaultRestartDelay = 3 * time.Second
+
+// DefaultMaxRestartDelay is the default cap on the restart delay of a
+// continuous worker.
+const DefaultMaxRestartDelay = time.Minute
 
 // Option configures worker registration.
 type Option func(*options)
@@ -18,6 +23,8 @@ type options struct {
 	maxRestarts               int
 	hasRestartDelay           bool
 	restartDelay              time.Duration
+	hasMaxRestartDelay        bool
+	maxRestartDelay           time.Duration
 	hasMaxConsecutiveFailures bool
 	maxConsecutiveFailures    int
 	startImmediately          bool
@@ -28,8 +35,9 @@ type options struct {
 }
 
 type restartPolicy struct {
-	maxRestarts  int
-	restartDelay time.Duration
+	maxRestarts     int
+	restartDelay    time.Duration // base: the first and the minimum delay
+	maxRestartDelay time.Duration // cap; never below restartDelay
 }
 
 type failurePolicy struct {
@@ -77,6 +85,7 @@ func (d *definition) config() Config {
 		MaxConsecutiveFailures: d.failurePolicy.maxConsecutiveFailures,
 		MaxRestarts:            d.restartPolicy.maxRestarts,
 		RestartDelay:           d.restartPolicy.restartDelay,
+		MaxRestartDelay:        d.restartPolicy.maxRestartDelay,
 	}
 	if d.readiness != nil {
 		policy := *d.readiness
@@ -112,13 +121,39 @@ func WithMaxRestarts(n int) Option {
 	}
 }
 
-// WithRestartDelay sets the delay between continuous worker restarts.
-// A zero delay is treated as the default (DefaultRestartDelay) to avoid
-// busy-looping a worker that fails immediately on every run.
+// WithRestartDelay sets the base restart delay of a continuous worker: the
+// wait before the first restart of a failure sequence and the minimum wait
+// before any restart. Later restarts back off up to [WithMaxRestartDelay].
+// A zero delay selects [DefaultRestartDelay], skipping the pool's
+// worker.restart_delay, so that a worker failing immediately on every run
+// never busy-loops.
 func WithRestartDelay(d time.Duration) Option {
 	return func(o *options) {
 		o.hasRestartDelay = true
 		o.restartDelay = d
+	}
+}
+
+// WithMaxRestartDelay caps the restart delay of a continuous worker. After
+// each failed run the delay window doubles, from the base restart delay up to
+// this cap, and the delay is drawn from it with jitter:
+//
+//	ceiling = min(base × 2^(k−1), cap)
+//	delay   = uniform in [max(base, ceiling/2), ceiling]
+//
+// where k counts the failures of the current sequence, so the first delay is
+// exactly the base. A run that lasted at least the cap starts a new sequence.
+// Setting both delays to the same value gives a fixed delay.
+//
+// Omitted, the cap is the pool's worker.max_restart_delay, else
+// [DefaultMaxRestartDelay], raised to the base when the base is larger. Zero
+// skips the pool configuration and selects the larger of
+// DefaultMaxRestartDelay and the base. A positive cap below the base is a
+// registration error.
+func WithMaxRestartDelay(d time.Duration) Option {
+	return func(o *options) {
+		o.hasMaxRestartDelay = true
+		o.maxRestartDelay = d
 	}
 }
 

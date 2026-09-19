@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 is described under [Workers](#workers); its decisions are recorded in [ADR-023](../adr/023-worker-system.md).
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md).
 
 ## Bootstrap and DI
 
@@ -68,9 +68,9 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 
 ## Workers
 
-**Implemented (v0.20.0).** The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the new calls. One change compiles unchanged but behaves differently, so check it first:
+**Implemented (v0.20.0; restart backoff in v0.21.0).** The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the new calls. One change compiles unchanged but behaves differently, so check it first:
 
-> **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted after the restart delay (3 s by default) — for ever, unless `WithMaxRestarts` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
+> **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted with the restart backoff (3 s at first, up to a minute while failures repeat) — for ever, unless `WithMaxRestarts` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
 
 | Before v0.20.0 | Now |
 | --- | --- |
@@ -100,6 +100,15 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | a continuous worker reported `running` as soon as the pool started | `idle` until its first run is admitted |
 
 New and unchanged behavior worth knowing while migrating: `WithRunTimeout` is scheduled-only; failure log lines now carry `run_id` (equal to `worker.RunID(ctx)`) and `duration`; a successful scheduled run logs `scheduled worker run completed` at Debug; `Info.Config` reports the effective configuration, so a registration test can assert every worker's policy without running it.
+
+v0.21.0 changes the wait between continuous restarts without a compile error. Both rows apply to workers registered without restart options too:
+
+| Before v0.21.0 | Now |
+| --- | --- |
+| every restart waits the fixed restart delay (3 s by default) | the first restart waits the restart delay; repeated failures back off with jitter up to the cap (`DefaultMaxRestartDelay`, 1 min, or `worker.max_restart_delay`), and a run that lasted at least the cap resets the sequence. The same value in `WithRestartDelay` and `WithMaxRestartDelay` keeps a fixed delay |
+| `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5 with the defaults) | the waits back off, so `failed` — and a `FailWhenFailed` readiness drop — comes later: roughly 48–93 s for N = 5 with the defaults |
+
+New with it: `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, the `worker.max_restart_delay` configuration key, `Config.MaxRestartDelay` (`max_restart_delay` in JSON) and the `next_restart_in` attribute of `worker run failed`. A restart delay above one minute, per worker or per pool, stays fixed unless a larger cap is configured.
 
 ## Examples and downstream impact
 
