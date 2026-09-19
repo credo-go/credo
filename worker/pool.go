@@ -187,6 +187,9 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 	if o.hasRestartDelay && o.restartDelay < 0 {
 		return options{}, nil, fmt.Errorf("worker: restart delay must be >= 0, got %s", o.restartDelay)
 	}
+	if o.hasRunTimeout && o.runTimeout < 0 {
+		return options{}, nil, fmt.Errorf("worker: run timeout must be >= 0, got %s", o.runTimeout)
+	}
 	if o.hasMaxConsecutiveFailures && o.maxConsecutiveFailures < 0 {
 		return options{}, nil, fmt.Errorf("worker: max consecutive failures must be >= 0, got %d", o.maxConsecutiveFailures)
 	}
@@ -219,6 +222,9 @@ func validateOptions(opts []Option) (options, *Schedule, error) {
 		if o.startImmediately {
 			return options{}, nil, fmt.Errorf("worker: WithStartImmediately is for scheduled workers")
 		}
+		if o.hasRunTimeout {
+			return options{}, nil, fmt.Errorf("worker: WithRunTimeout is for scheduled workers")
+		}
 	}
 	return o, schedule, nil
 }
@@ -240,6 +246,7 @@ func buildDefinition(name string, o options, schedule *Schedule, defaultRestartD
 		def.failurePolicy = failurePolicy{
 			maxConsecutiveFailures: o.maxConsecutiveFailures,
 		}
+		def.runTimeout = o.runTimeout
 		return def
 	}
 

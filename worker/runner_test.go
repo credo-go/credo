@@ -12,14 +12,21 @@ import (
 )
 
 func TestSafeRun_RecoversPanics(t *testing.T) {
-	err := safeRun(t.Context(), "panic-worker", Func(func(context.Context) error {
+	err := safeRun(t.Context(), Func(func(context.Context) error {
 		panic("boom")
 	}))
-	if err == nil {
-		t.Fatal("safeRun() error = nil, want panic converted to error")
+	p, ok := errors.AsType[*panicError](err)
+	if !ok {
+		t.Fatalf("safeRun() error = %T %v, want *panicError", err, err)
 	}
-	if !strings.Contains(err.Error(), `worker "panic-worker" panicked: boom`) {
-		t.Fatalf("safeRun() error = %q, want panic prefix", err.Error())
+	if got := err.Error(); got != "worker: run panicked: boom" {
+		t.Fatalf("Error() = %q, want the panic value without a stack", got)
+	}
+	if !strings.Contains(string(p.stack), "goroutine") {
+		t.Fatalf("stack = %q, want the recovered goroutine stack", p.stack)
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatal("panicError must not unwrap")
 	}
 }
 
@@ -50,19 +57,20 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 			t.Fatalf("Start() = %v", err)
 		}
 
-		// First run fails; the runner sleeps on the restart timer.
+		// First run fails; the runner sleeps on the restart timer. No
+		// restart has happened yet.
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Restarts != 1 {
-			t.Fatalf("after first failure: status = %q restarts = %d, want waiting/1", info.Status, info.Restarts)
+		if info.Status != StatusWaiting || info.Restarts != 0 {
+			t.Fatalf("after first failure: status = %q restarts = %d, want waiting/0", info.Status, info.Restarts)
 		}
 
 		// Virtual time passes the restart delay; the second run starts and
 		// blocks on ctx.
 		time.Sleep(5 * time.Second)
 		synctest.Wait()
-		if got := pool.Workers()[0].Status; got != StatusRunning {
-			t.Fatalf("after restart: status = %q, want %q", got, StatusRunning)
+		if info = pool.Workers()[0]; info.Status != StatusRunning || info.Restarts != 1 {
+			t.Fatalf("after restart: status = %q restarts = %d, want running/1", info.Status, info.Restarts)
 		}
 
 		shutdownPool(t, pool)
@@ -79,7 +87,9 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
+		var calls atomic.Int64
 		worker := Func(func(context.Context) error {
+			calls.Add(1)
 			return errors.New("boom")
 		})
 
@@ -98,10 +108,18 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 			t.Fatalf("Start() = %v", err)
 		}
 
+		// maxRestarts: 2 is the first run plus two restarts: three runs.
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Restarts != 1 || !strings.Contains(info.LastError, "boom") {
-			t.Fatalf("after first failure: %+v, want waiting/1/boom", info)
+		if info.Status != StatusWaiting || info.Restarts != 0 || !strings.Contains(info.LastError, "boom") {
+			t.Fatalf("after first failure: %+v, want waiting/0/boom", info)
+		}
+
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		info = pool.Workers()[0]
+		if info.Status != StatusWaiting || info.Restarts != 1 {
+			t.Fatalf("after the first restart failed: %+v, want waiting/1", info)
 		}
 
 		time.Sleep(time.Minute)
@@ -109,6 +127,9 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 		info = pool.Workers()[0]
 		if info.Status != StatusFailed || info.Restarts != 2 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after max restarts: %+v, want failed/2/boom", info)
+		}
+		if got := calls.Load(); got != 3 {
+			t.Fatalf("runs = %d, want 3", got)
 		}
 
 		shutdownPool(t, pool)
@@ -142,9 +163,10 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 		// (synctest.Wait alone does not advance time).
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
+		// maxRestarts: 1 restarts once; the restarted run fails too.
 		info := pool.Workers()[0]
 		if info.Status != StatusFailed || info.Restarts != 1 {
-			t.Fatalf("sub-context deadline: %+v, want failed/1 (real failure)", info)
+			t.Fatalf("sub-context deadline: %+v, want failed/1 (real failure, restarted once)", info)
 		}
 
 		shutdownPool(t, pool)
@@ -155,14 +177,9 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := newTestPool()
 
-		release := make(chan struct{})
 		worker := Func(func(ctx context.Context) error {
-			select {
-			case <-release:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			<-ctx.Done()
+			return ctx.Err()
 		})
 
 		if err := pool.addDefinition(&definition{
@@ -199,7 +216,6 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 			t.Fatalf("LastError = %q, want empty", info.LastError)
 		}
 
-		close(release)
 		shutdownPool(t, pool)
 	})
 }

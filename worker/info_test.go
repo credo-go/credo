@@ -28,6 +28,7 @@ func TestPoolWorkers_ConfigRoundTripsBeforeAndAfterStart(t *testing.T) {
 	MustRegister(app, "report", scheduledOnce(),
 		WithSchedule("@every 1h"),
 		WithStartImmediately(),
+		WithRunTimeout(time.Minute),
 		WithMaxConsecutiveFailures(3),
 		WithReadiness(ReadinessPolicy{RequireFirstSuccess: true, MaxSuccessAge: 2 * time.Hour}),
 	)
@@ -51,6 +52,7 @@ func TestPoolWorkers_ConfigRoundTripsBeforeAndAfterStart(t *testing.T) {
 		{"report", KindScheduled, Config{
 			Schedule:               "@every 1h",
 			StartImmediately:       true,
+			RunTimeout:             time.Minute,
 			MaxConsecutiveFailures: 3,
 			Readiness:              &ReadinessPolicy{RequireFirstSuccess: true, MaxSuccessAge: 2 * time.Hour},
 		}},
@@ -174,7 +176,9 @@ func TestInfo_JSONShape(t *testing.T) {
 	var failed Info
 	synctest.Test(t, func(t *testing.T) {
 		p := newTestPool()
-		o, schedule, err := validateOptions([]Option{WithSchedule("@every 1m"), WithMaxConsecutiveFailures(3)})
+		o, schedule, err := validateOptions([]Option{
+			WithSchedule("@every 1m"), WithMaxConsecutiveFailures(3), WithRunTimeout(15 * time.Second),
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,11 +208,11 @@ func TestInfo_JSONShape(t *testing.T) {
 
 	const want = `[` +
 		`{"name":"consumer","kind":"continuous","config":{"schedule":"","start_immediately":false,` +
-		`"max_consecutive_failures":0,"max_restarts":5,"restart_delay":3000000000,` +
+		`"run_timeout":0,"max_consecutive_failures":0,"max_restarts":5,"restart_delay":3000000000,` +
 		`"readiness":{"require_first_success":false,"fail_when_failed":true,"max_success_age":0}},` +
 		`"status":"idle","restarts":0,"consecutive_failures":0},` +
 		`{"name":"report","kind":"scheduled","config":{"schedule":"@every 1m","start_immediately":false,` +
-		`"max_consecutive_failures":3,"max_restarts":0,"restart_delay":0},` +
+		`"run_timeout":15000000000,"max_consecutive_failures":3,"max_restarts":0,"restart_delay":0},` +
 		`"status":"waiting","restarts":0,"consecutive_failures":1,` +
 		`"last_run":"2000-01-01T00:01:00Z","last_error":"boom"}` +
 		`]`

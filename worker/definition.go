@@ -1,6 +1,9 @@
 package worker
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // DefaultRestartDelay is the default delay between continuous worker restarts.
 const DefaultRestartDelay = 3 * time.Second
@@ -18,6 +21,8 @@ type options struct {
 	hasMaxConsecutiveFailures bool
 	maxConsecutiveFailures    int
 	startImmediately          bool
+	hasRunTimeout             bool
+	runTimeout                time.Duration
 	hasReadiness              bool
 	readiness                 ReadinessPolicy
 }
@@ -43,6 +48,7 @@ type definition struct {
 	restartPolicy    restartPolicy
 	failurePolicy    failurePolicy
 	startImmediately bool
+	runTimeout       time.Duration    // scheduled only; 0: no timeout
 	readiness        *ReadinessPolicy // nil: the worker does not take part in readiness
 }
 
@@ -67,6 +73,7 @@ func (d *definition) config() Config {
 	cfg := Config{
 		Schedule:               d.scheduleExpr(),
 		StartImmediately:       d.startImmediately,
+		RunTimeout:             d.runTimeout,
 		MaxConsecutiveFailures: d.failurePolicy.maxConsecutiveFailures,
 		MaxRestarts:            d.restartPolicy.maxRestarts,
 		RestartDelay:           d.restartPolicy.restartDelay,
@@ -94,9 +101,10 @@ func (d *definition) info(state runState) Info {
 	}
 }
 
-// WithMaxRestarts sets the maximum restart count for continuous workers.
-// Zero (the default) means unlimited restarts; the worker is marked failed
-// only once a positive limit is reached.
+// WithMaxRestarts limits how often a continuous worker is restarted: a
+// positive n allows the first run plus at most n restarts, and the worker is
+// marked failed when a run fails after the n-th restart. Zero (the default)
+// means unlimited restarts.
 func WithMaxRestarts(n int) Option {
 	return func(o *options) {
 		o.hasMaxRestarts = true
@@ -136,5 +144,29 @@ func WithMaxConsecutiveFailures(n int) Option {
 func WithStartImmediately() Option {
 	return func(o *options) {
 		o.startImmediately = true
+	}
+}
+
+// ErrRunTimeout is the cancellation cause of a run that exceeded its
+// [WithRunTimeout] budget. Inside Run,
+//
+//	errors.Is(context.Cause(ctx), worker.ErrRunTimeout)
+//
+// tells the budget running out from the application shutting down. A run cut
+// short by the timeout is recorded as a failure wrapping ErrRunTimeout, even
+// when Run returns nil.
+var ErrRunTimeout = errors.New("worker: run timed out")
+
+// WithRunTimeout bounds every run of a scheduled worker, including the
+// startup run of [WithStartImmediately]: once d has elapsed the run context
+// is cancelled with the cause [ErrRunTimeout], and the run counts as a
+// failure whatever Run then returns. The timeout is cooperative — it cancels
+// the context and never abandons the running goroutine — so a Run that
+// ignores its context keeps the worker busy, and activations that pass in the
+// meantime are skipped. Zero (the default) means no timeout.
+func WithRunTimeout(d time.Duration) Option {
+	return func(o *options) {
+		o.hasRunTimeout = true
+		o.runTimeout = d
 	}
 }

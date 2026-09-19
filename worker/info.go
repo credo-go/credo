@@ -37,6 +37,9 @@ type Config struct {
 	Schedule string `json:"schedule"`
 	// StartImmediately reports [WithStartImmediately] (scheduled workers).
 	StartImmediately bool `json:"start_immediately"`
+	// RunTimeout is the [WithRunTimeout] budget of each run (scheduled
+	// workers); 0 means no timeout.
+	RunTimeout time.Duration `json:"run_timeout"`
 	// MaxConsecutiveFailures is the [WithMaxConsecutiveFailures] limit
 	// (scheduled workers); 0 means unlimited.
 	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
@@ -71,8 +74,11 @@ type Info struct {
 	// its last success.
 	ConsecutiveFailures int64     `json:"consecutive_failures"`
 	LastRun             time.Time `json:"last_run,omitzero"`
-	// LastSuccess is the completion time of the last run that returned nil;
-	// zero until then.
+	// LastSuccess is the completion time of the last successful run of a
+	// scheduled worker; zero until then, and always zero for a continuous
+	// worker, whose Run never completes successfully.
 	LastSuccess time.Time `json:"last_success,omitzero"`
-	LastError   string    `json:"last_error,omitzero"`
+	// LastError is the error of the most recent failed run, without any
+	// stack trace; a successful scheduled run clears it.
+	LastError string `json:"last_error,omitzero"`
 }

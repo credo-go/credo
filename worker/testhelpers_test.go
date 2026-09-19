@@ -77,6 +77,32 @@ func finalize(t *testing.T, app *credo.App) {
 	}
 }
 
+// mustDefinition builds the definition Register would build for w under
+// opts, with the default restart delay.
+func mustDefinition(t *testing.T, name string, w Worker, opts ...Option) *definition {
+	t.Helper()
+	o, schedule, err := validateOptions(opts)
+	if err != nil {
+		t.Fatalf("validateOptions(%s) = %v", name, err)
+	}
+	def := buildDefinition(name, o, schedule, DefaultRestartDelay)
+	def.resolve = instance(w)
+	return def
+}
+
+// startPool adds defs to p and starts it under t.Context().
+func startPool(t *testing.T, p *Pool, defs ...*definition) {
+	t.Helper()
+	for _, def := range defs {
+		if err := p.addDefinition(def); err != nil {
+			t.Fatalf("addDefinition(%s) = %v", def.name, err)
+		}
+	}
+	if err := p.Start(t.Context()); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+}
+
 // capturedLog is one record seen by a logCapture, with its attributes
 // (including those added through Logger.With) flattened by key.
 type capturedLog struct {
