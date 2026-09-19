@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 is described under [Workers](#workers); its decisions are recorded in [ADR-023](../adr/023-worker-system.md).
 
 ## Bootstrap and DI
 
@@ -65,6 +65,38 @@ AccessLog bytes are post-compression accepted body bytes; headers/framing/TLS ar
 | Mounted handlers received a decoded remainder with `RawPath` cleared | Mounted handlers receive `URL.Path` decoded plus `URL.RawPath` when the spellings differ |
 
 Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw values to `BuildURI`/`BuildURL` instead of pre-escaped ones, replace `{name:.+}` with `{name...}` where several segments were intended, and expect 400 rather than a captured byte sequence for invalid UTF-8. `OriginalPath` now reports the wire-form path. See [Encoded Parameter Values](../specs/router.md#encoded-parameter-values).
+
+## Workers
+
+**Implemented (v0.20.0).** The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the new calls. One change compiles unchanged but behaves differently, so check it first:
+
+> **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted after the restart delay (3 s by default) — for ever, unless `WithMaxRestarts` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
+
+| Before v0.20.0 | Now |
+| --- | --- |
+| `worker.Register(app, w, opts...)` | `worker.Register(app, "name", w, opts...)` |
+| `worker.Func("name", fn)` | `worker.Func(fn)`; the name is passed to `Register` |
+| `Name() string` on worker types | delete it (harmless if kept; it is no longer called) |
+| constructing a worker by hand before `Finalize` because `Resolve` was unavailable | `app.Provide[T](constructor)` + `worker.RegisterProvided[T](app, "name", opts...)`; T is resolved when the pool starts |
+| continuous `Run` returns nil → the worker stops | restarted like a failure; see above |
+| `WithMaxRestarts(N)`, `N > 0` → failed after N failures (N−1 restarts) | the first run plus N restarts → failed after N+1 failures |
+| `WithMaxRestarts(0)` → unlimited restarts | unchanged |
+| `info.Schedule` | `info.Config.Schedule` |
+| `info.Kind == "scheduled"` | still compiles; prefer `worker.KindScheduled` |
+| `info.Attempts` | `info.Restarts` (continuous) / `info.ConsecutiveFailures` (scheduled) |
+| `worker.Attempt(ctx)` | removed; use `worker.RunID`/`worker.ScheduledAt`, and `Info` for counters |
+| `LastSuccess` set when a continuous `Run` returned nil | never set for continuous workers |
+| a scheduled `Run` returning nil during shutdown stamps `LastSuccess` and resets `ConsecutiveFailures` | when shutdown cancellation came first, a graceful stop: both values unchanged, status `stopped` |
+| a graceful stop clears `LastError` | a graceful stop changes only the status; `LastError` keeps the most recent failure until a successful scheduled run clears it |
+| a hand-rolled `context.WithTimeout` inside `Run` | `worker.WithRunTimeout(d)`; a timed-out run is a failure even if it returns nil |
+| `@every 0s`, a negative `@every` or `@every 1500ms` silently became one second | a registration error |
+| `LastError` may contain a panic stack trace | never; the stack is the `stack` attribute of the failure log line |
+| log `worker stopped during scheduled run`; continuous `worker stopped` only on some exit paths | exactly one `worker started` and one `worker stopped` (`reason=shutdown` or `reason=failed`) per worker |
+| log `worker tick skipped`, one line per skipped activation | one `worker ticks skipped` line per resumption with `skipped=N` |
+| names silently trimmed | surrounding whitespace and control characters are rejected |
+| untagged (Go field name) JSON from `pool.Workers()` | snake_case field names; empty `last_run`/`last_success`/`last_error`/`config.readiness` omitted |
+
+New and unchanged behavior worth knowing while migrating: `WithRunTimeout` is scheduled-only; failure log lines now carry `run_id` (equal to `worker.RunID(ctx)`) and `duration`; a successful scheduled run logs `scheduled worker run completed` at Debug; `Info.Config` reports the effective configuration, so a registration test can assert every worker's policy without running it.
 
 ## Examples and downstream impact
 

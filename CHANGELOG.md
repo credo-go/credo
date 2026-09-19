@@ -14,6 +14,76 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+**Worker contract.** The `worker` package gets its pre-v1 contract ([ADR-023](docs/adr/023-worker-system.md), [worker spec](docs/specs/worker.md)). The release is breaking, and one change compiles unchanged but behaves differently — check it before upgrading:
+
+> **BREAKING (behavior): a continuous worker whose `Run` returns nil while the application is running is restarted.** It used to stop silently and permanently. The early return is now a failure: logged at Error as `worker run failed` with `unexpected_exit=true` and `LastError` = `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, restarted after the restart delay (3 s by default) — indefinitely unless `WithMaxRestarts` is set — and marked failed once a positive limit is exhausted, which `ReadinessPolicy.FailWhenFailed` now observes. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work. A nil return after the context is cancelled remains a graceful stop.
+
+| v0.19 and earlier | v0.20.0 |
+| --- | --- |
+| `worker.Register(app, w, opts...)` | `worker.Register(app, "name", w, opts...)` |
+| `worker.Func("name", fn)` | `worker.Func(fn)`, name passed to `Register` |
+| `Name() string` on worker types | delete (harmless if kept) |
+| construct by hand before `Finalize` | `app.Provide[T](ctor)` + `worker.RegisterProvided[T](app, "name", opts...)` |
+| **continuous `Run` returns nil → worker stops** | **restarted like a failure; end finite work with `<-ctx.Done()` or move it to `OnStart`** |
+| `WithMaxRestarts(N)`, `N > 0` → `Failed` after N failures (N−1 restarts) | first run + N restarts → `Failed` after N+1 failures |
+| `WithMaxRestarts(0)` → unlimited restarts | unchanged: unlimited restarts |
+| `info.Schedule` | `info.Config.Schedule` |
+| `info.Kind == "scheduled"` | still compiles; prefer `worker.KindScheduled` |
+| `info.Attempts` | `info.Restarts` / `info.ConsecutiveFailures` |
+| `worker.Attempt(ctx)` | removed; use `RunID`/`ScheduledAt`, and `Info` for counters |
+| `LastSuccess` on continuous workers | never set |
+| scheduled `Run` returns nil during shutdown → stamps `LastSuccess` and resets `ConsecutiveFailures` | when shutdown cancellation came first, graceful stop with both values unchanged; status becomes `Stopped` |
+| a graceful stop clears `LastError` | a graceful stop changes only the status; `LastError` keeps the most recent failure until a successful scheduled run clears it |
+| hand-rolled `context.WithTimeout` in `Run` | `worker.WithRunTimeout(d)`; a timed-out run is a failure even if it returns nil |
+| `@every 0s` / negative / `1500ms` silently became 1 s | `Register` error |
+| `LastError` may contain a stack trace | no stack; the stack is the `stack` log attribute |
+| log `worker stopped during scheduled run` | `worker stopped` with `reason=shutdown` |
+| log `worker tick skipped` (one per activation) | `worker ticks skipped` with `skipped=N` |
+| names silently trimmed | surrounding whitespace and control characters are rejected |
+| untagged JSON field names from `pool.Workers()` | snake_case |
+
+The [pre-v1 migration guide](docs/guides/pre-v1-migration.md#workers) carries the same table with more context.
+
+### Added
+
+- `worker.RegisterProvided[T Worker](app, name, opts...) error` and `worker.MustRegisterProvided[T]` register a worker the DI container provides as `T`. `T` is resolved once when the pool starts (the `OnStart` phase, after the implicit `Finalize`, before the server accepts traffic), so the call may precede or follow `app.Provide[T]`, and `T` may be an interface bound with `app.Alias`. Start is all-or-nothing: a missing provider, a constructor error or panic, or a nil result fails startup with the joined errors, each naming the worker and the type, and no worker runs. User constructors run outside the pool lock, and a `Shutdown` that arrives during resolution wins.
+- `worker.WithRunTimeout(d)` bounds every run of a scheduled worker, including the `WithStartImmediately` startup run, by cancelling the run context with the cause `worker.ErrRunTimeout`. A run cut short by the timeout is a failure whatever `Run` returns — recorded as `worker: run timed out after <d>[: <error>]`, logged with `timed_out=true`, counted toward `WithMaxConsecutiveFailures` — so it can never stamp `LastSuccess` or satisfy `RequireFirstSuccess`. The timeout is cooperative: it never abandons the goroutine, and at most one run per worker is active. Zero means no timeout; a negative value, or the option on a continuous worker, is a registration error.
+- `worker.Config` — the effective, immutable configuration of a worker (`Schedule`, `StartImmediately`, `RunTimeout`, `MaxConsecutiveFailures`, `MaxRestarts`, `RestartDelay` after option → `worker.restart_delay` config → default resolution, and a copy of the `Readiness` policy), reported as `Info.Config` both before and after the pool starts.
+- `worker.Kind` with `KindContinuous` and `KindScheduled`.
+- Snake_case JSON tags on `worker.Info`, `worker.Config` and `worker.ReadinessPolicy`; `last_run`, `last_success`, `last_error` and `config.readiness` are omitted while zero, every other field is always present, and durations encode as integer nanoseconds under the response profile.
+- Lifecycle log lines: exactly one `worker started` (with `kind`; scheduled workers add `schedule` and `next_run` or `start_immediately=true`) and exactly one `worker stopped` (with `status` and `reason=shutdown|failed`) per worker, whatever path ends it; a Debug `scheduled worker run completed` line with `run_id`, `scheduled_at` and `duration`.
+- Compile-checked `worker` package examples for both registration forms.
+
+### Changed
+
+- **BREAKING (Go API): the name is registration identity.** `Worker` has one method, `Run(ctx) error`; `Register(app, name, w, opts...)` and `MustRegister` take the name. `worker.Func` is a function type (`worker.Func(fn)`, in the `http.HandlerFunc` style); a nil `Func` or typed-nil worker is rejected at registration instead of failing each run. Names must be non-empty, unique, and free of surrounding whitespace and control characters; they are no longer trimmed. `WorkerName(ctx)`, every log line, the snapshot and the readiness check `worker:<name>` all report the registered name, including the panic path that used to call the instance's `Name()`.
+- **BREAKING (behavior): continuous workers are permanent** — see the note above.
+- **BREAKING (behavior): `WithMaxRestarts(N)`, `N > 0`, allows the first run plus N restarts.** It used to mark the worker failed after N failures (N−1 restarts); `WithMaxRestarts(1)` now restarts once. `Info.Restarts` counts restarts that actually started — it advances when the next run is admitted, so a shutdown during the restart delay does not count one. `WithMaxRestarts(0)` stays unlimited.
+- **BREAKING (Go API): `Info` reshaped.** `Info{Name, Kind, Config, Status, Restarts, ConsecutiveFailures, LastRun, LastSuccess, LastError}`: `Schedule` moves to `Config.Schedule`, `Kind` is `worker.Kind` (comparisons with string constants still compile), and `Attempts` is split into `Restarts` (continuous) and `ConsecutiveFailures` (scheduled).
+- **BREAKING (behavior): run outcomes are classified in one fixed order, and the loop exit is decided afterwards.** Panic → failure; timeout cause → failure; pool stopping with a nil or context-error return → graceful stop; other error → failure; scheduled nil → success; continuous nil while alive → failure. A scheduled `Run` that returns nil once shutdown cancellation has begun is a graceful stop, not a success: `LastSuccess` and `ConsecutiveFailures` keep their values. A graceful stop — at the end of a run, while waiting, or at admission — changes only the status and keeps `LastError`, which now always means "the most recent failed run; a successful scheduled run clears it". A failure during shutdown keeps its diagnostics and ends `Stopped` unless it exhausted the limit.
+- **BREAKING (behavior): panics keep their stack out of the error text.** A recovered panic is recorded as `worker: run panicked: <value>`; the stack is the separate `stack` attribute of the failure log line and never reaches `Info.LastError` or the readiness failure text. A panic whose value is a context error during shutdown is a failure, never a graceful stop.
+- **BREAKING (behavior): `@every` rejects what it used to rewrite.** A zero, negative or non-whole-second duration is a registration error (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`) instead of silently becoming a one-second period; the registered expression is the effective schedule.
+- **BREAKING (logs):** `worker stopped during scheduled run` and the path-dependent continuous `worker stopped` are replaced by the single `worker stopped` line; the per-activation `worker tick skipped` Warn is replaced by one `worker ticks skipped` line per resumption (`skipped`, `first_scheduled_at`, `last_scheduled_at`). Both failure lines (`worker run failed`, `scheduled worker run failed`) add `run_id` — equal to `worker.RunID(ctx)` inside the run — and `duration`, plus `timed_out`, `unexpected_exit` or `stack` when they apply. The alerting Error lines keep their text.
+- A published continuous worker reports `idle` until its first run is admitted; the run-admission commit is the only writer of `running`. Before the pool publishes its runners — including after a failed or pre-empted start — `Pool.Workers()` reports every registered worker as `idle`.
+- `App.Resolve` godoc names the three shutdown hooks that must not resolve (`OnPreDrain`, `OnDrain`, `OnShutdown`); `OnStart` hooks may.
+
+### Removed
+
+- **BREAKING (Go API): `worker.Attempt(ctx)`.** A scheduled activation is not a retry of the previous one; use `RunID`/`ScheduledAt` to identify a run and `Info.Restarts`/`Info.ConsecutiveFailures` for counters.
+- **BREAKING (Go API): `Worker.Name()`** from the interface (a type that still has the method keeps compiling) and the exported `worker.Definition`, which no API returned; `worker.Config` is its public projection.
+
+### Fixed
+
+- A scheduled worker could start a run with an already cancelled context when the activation timer and shutdown were ready together. Every run — first run, restart, activation and startup run — is now admitted in one step after a cancellation check; when the check observes cancellation, no run starts and neither `LastRun` nor `Restarts` changes.
+- A continuous worker that returned nil while the application was alive disappeared without a log line and stayed invisible to readiness.
+- Exit logging depended on the path: the recommended `case <-ctx.Done(): return nil` and cancellation during a wait logged nothing.
+- A burst of skipped activations no longer writes one Warn line per activation.
+
+### Documentation
+
+- The worker spec graduates from its draft status to the contract form, ADR-023 records the worker system's decisions and rejected alternatives, and the worker guide covers `RegisterProvided`, timeouts, finite background work and the log lines. The pre-v1 migration guide gains a Workers section.
+- `CONTRIBUTING.md` describes the `main` → feature branch → pull request → `main` workflow; the stale `dev` integration branch is gone.
+
 ## [0.19.0] - 2026-09-06
 
 ### Added

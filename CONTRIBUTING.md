@@ -11,11 +11,11 @@ Thank you for your interest in contributing to Credo! This guide will help you g
 
 ## Branch Strategy
 
-- `main` — Stable branch, always passes CI.
-- `dev` — Integration branch for features.
-- Feature branches: `feat/<name>`, `fix/<name>`, `docs/<name>`.
+- `main` — Stable, protected branch: changes land only through pull requests whose required checks pass, and it always passes CI.
+- Feature branches: `feat/<name>`, `fix/<name>`, `docs/<name>`, created from `main`.
+- Release preparation branches: `release/vX.Y.Z` (see [Releasing](#releasing)).
 
-Always branch from `dev` for new work.
+Branch from `main` for new work and open the pull request back into `main`; pull requests are squash-merged. There is no separate integration branch.
 
 ## Commit Messages
 
@@ -37,14 +37,14 @@ refactor(middleware): simplify chain composition
 
 ## Pull Request Process
 
-1. Create a feature branch from `dev`.
+1. Create a feature branch from `main`.
 2. Write tests first (TDD is encouraged).
 3. Ensure `make check` passes locally. If the platform cannot run `-race`, the required CI race jobs remain authoritative and must pass before merge.
 4. Open a PR with a clear title and description explaining:
    - **What** changed
    - **Why** it changed
    - **How** to test it
-5. At least one maintainer review is required before merge.
+5. At least one maintainer review and green required checks are needed before the squash-merge into `main`.
 
 ## Performance Changes
 

@@ -1,12 +1,12 @@
 # Worker Guide
 
-This guide explains how to run background tasks with Credo's `worker/` package. For low-level contracts and runtime semantics, see the [Worker Spec](../specs/worker.md).
+This guide explains how to run background tasks with Credo's `worker/` package. For the exact contracts — outcome classification, admission order, log attributes — see the [Worker Spec](../specs/worker.md); for the reasoning behind them, [ADR-023](../adr/023-worker-system.md).
 
 ---
 
 ## What Workers Are For
 
-Credo workers are for application work that should run outside the HTTP request path:
+Credo workers are for application work that runs outside the HTTP request path:
 
 - queue consumers
 - event processors
@@ -20,16 +20,16 @@ Workers are optional. If your app only serves HTTP requests, you do not need the
 
 ## Mental Model
 
-Credo supports two worker modes:
+A worker is anything with a `Run(ctx context.Context) error` method. You give it a name when you register it, and the registration decides its kind.
 
 ### Continuous worker
 
 No schedule is configured.
 
 - Credo calls `Run(ctx)` once at startup.
-- The worker owns its own loop.
-- If `Run` returns an error or panics, Credo applies the restart policy.
-- `app.Shutdown(ctx)` cancels the same context and waits for the worker to exit.
+- The worker owns its loop and **must keep running until `ctx` is cancelled**.
+- If `Run` returns an error, panics, or returns nil while the application is still running, Credo records a failure and restarts it after the restart delay.
+- `app.Shutdown(ctx)` cancels `ctx` and waits for `Run` to return.
 
 Use this for long-lived background processes such as consumers and watchers.
 
@@ -37,10 +37,10 @@ Use this for long-lived background processes such as consumers and watchers.
 
 `worker.WithSchedule(...)` is configured.
 
-- Credo calls `Run(ctx)` once per cron tick.
-- Each call should represent one execution, not an internal infinite loop.
-- If a tick fires while the previous execution is still running, Credo skips the new tick and logs the skip.
-- `worker.WithStartImmediately()` adds one synthetic startup execution before the normal schedule begins.
+- Credo calls `Run(ctx)` once per activation; each call does one execution and returns.
+- Returning nil is a success; returning an error or panicking is a failure.
+- If an activation comes due while the previous run is still in progress, it is skipped (and logged), never queued or run in parallel.
+- `worker.WithStartImmediately()` adds one run at startup before the schedule begins.
 
 Use this for cleanup, reporting, backfills, and other periodic jobs.
 
@@ -65,19 +65,14 @@ type EmailConsumer struct {
     sender Sender
 }
 
-func (c *EmailConsumer) Name() string { return "email-consumer" }
-
 func (c *EmailConsumer) Run(ctx context.Context) error {
     for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-        }
-
-        msg, err := c.queue.Receive(ctx)
+        msg, err := c.queue.Receive(ctx) // returns when a message arrives or ctx is done
         if err != nil {
-            return err
+            if ctx.Err() != nil {
+                return nil // shutdown: a graceful stop
+            }
+            return err // a failure: Credo restarts the worker
         }
         if err := c.sender.Send(ctx, msg); err != nil {
             return err
@@ -93,8 +88,7 @@ func main() {
 
     consumer := &EmailConsumer{queue: newQueue(), sender: newSender()}
 
-    if err := worker.Register(app, consumer,
-        worker.WithMaxRestarts(0),
+    if err := worker.Register(app, "email-consumer", consumer,
         worker.WithRestartDelay(5*time.Second),
     ); err != nil {
         log.Fatal(err)
@@ -108,32 +102,18 @@ func main() {
 
 Important points:
 
-- `WithMaxRestarts(0)` means unlimited restarts.
-- `Run` should block until shutdown or a real failure.
-- Returning `ctx.Err()` during shutdown is treated as a graceful stop, not a failure.
-- `newQueue()` and `newSender()` are placeholders for your application's dependencies.
+- `Run` blocks until shutdown or a real failure. Returning nil (or `ctx.Err()`) after `ctx` is cancelled is a graceful stop.
+- Restarts are unlimited unless you set `WithMaxRestarts`.
+- `newQueue()` and `newSender()` are placeholders for your application's dependencies; the [DI Integration](#di-integration) section shows the constructor-injected form.
 
 ---
 
 ## Quick Start: Scheduled Worker
 
 ```go
-package main
-
-import (
-    "context"
-    "log"
-    "time"
-
-    "github.com/credo-go/credo"
-    "github.com/credo-go/credo/worker"
-)
-
 type CleanupWorker struct {
     repo CleanupRepository
 }
-
-func (w *CleanupWorker) Name() string { return "cleanup" }
 
 func (w *CleanupWorker) Run(ctx context.Context) error {
     return w.repo.DeleteExpired(ctx)
@@ -147,9 +127,10 @@ func main() {
 
     cleanup := &CleanupWorker{repo: newCleanupRepo()}
 
-    if err := worker.Register(app, cleanup,
+    if err := worker.Register(app, "cleanup", cleanup,
         worker.WithSchedule("0 */6 * * *"),
         worker.WithStartImmediately(),
+        worker.WithRunTimeout(10*time.Minute),
         worker.WithMaxConsecutiveFailures(5),
     ); err != nil {
         log.Fatal(err)
@@ -163,147 +144,191 @@ func main() {
 
 Important points:
 
-- `Run` should do one cleanup execution and return.
-- Overlapping ticks are skipped automatically.
-- `WithStartImmediately()` runs once at startup before waiting for the first cron tick.
+- `Run` does one cleanup execution and returns.
+- `WithStartImmediately()` runs once at startup before waiting for the first cron activation.
+- `WithRunTimeout` gives every run a budget; see [Timeouts](#timeouts).
+- After five consecutive failures the worker is marked failed until the application restarts.
 
 ---
 
 ## `worker.Func`
 
-For small jobs, you do not need a custom struct type:
+For small jobs you do not need a struct type. `worker.Func` adapts a function, like `http.HandlerFunc`:
 
 ```go
-if err := worker.Register(app,
-    worker.Func("heartbeat", func(ctx context.Context) error {
-        ticker := time.NewTicker(30 * time.Second)
-        defer ticker.Stop()
+if err := worker.Register(app, "heartbeat", worker.Func(func(ctx context.Context) error {
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
 
-        for {
-            select {
-            case <-ctx.Done():
-                return ctx.Err()
-            case <-ticker.C:
-                log.Println("still alive")
-            }
+    for {
+        select {
+        case <-ctx.Done():
+            return nil
+        case <-ticker.C:
+            log.Println("still alive")
         }
-    }),
-); err != nil {
+    }
+})); err != nil {
     log.Fatal(err)
 }
 ```
 
-`worker.Func` is especially useful for tiny continuous workers or simple scheduled tasks created directly in bootstrap code.
+A method value works too: `worker.Func(reports.Send)`.
 
 ---
 
 ## Registration and Lifecycle
 
-`worker.Register(app, w, opts...)` does more than store the worker value:
+`worker.Register(app, name, w, opts...)` does more than store the worker:
 
-1. validates worker options
-2. parses schedules immediately
-3. creates the worker pool on first registration
-4. registers the pool in DI as a protected binding (`Replace[*Pool]` is rejected)
-5. attaches pool startup to `app.OnStart`
-6. attaches pool drain to `app.OnDrain`, so workers finish before any DI resource is shut down
+1. validates the name and the options, and parses the schedule
+2. creates the worker pool on first registration and publishes it in DI as a protected binding (`Replace[*Pool]` is rejected)
+3. attaches pool startup to `app.OnStart` and pool drain to `app.OnDrain`, so workers finish before any DI resource is shut down
 
-This means the normal lifecycle is:
+The normal lifecycle is:
 
 ```text
-worker.Register(...) -> app.Run() -> workers start
+worker.Register(...) -> app.Run() -> workers start (after the port is bound, before traffic)
 app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit -> DI resources close
 ```
 
 A worker's bounded cleanup after cancellation — flushing a last batch, acknowledging in-flight messages — therefore always runs against still-open resources, whatever order the worker and the resource were registered in. A worker that ignores cancellation past the shutdown deadline is reported as an incomplete drain task and teardown proceeds.
 
-Register workers before `app.Finalize()` or before `Run()`/`RunContext()`; every `Register` call after `Finalize` returns an error, including registrations made after the pool already exists. Use `worker.MustRegister` when bootstrap code should panic on registration failure instead of returning an error.
+**Names.** The name identifies the registration: it appears in every log line, in `pool.Workers()`, and in the readiness check `worker:<name>`, and `worker.WorkerName(ctx)` returns it inside `Run`. It must be unique, non-empty, and free of surrounding whitespace and control characters; names are never trimmed for you. Keep names stable — dashboards and alerts will key on them.
+
+**Registration window.** Register workers before `app.Finalize()` (or before `Run()`/`RunContext()`, which finalize implicitly); every registration after `Finalize` returns an error. Use `worker.MustRegister` when bootstrap code should panic on a registration error instead of returning it.
 
 ---
 
 ## DI Integration
 
-Workers fit naturally into Credo's constructor-injection model.
+Workers fit Credo's constructor-injection model through `worker.RegisterProvided`. Provide the worker like any service and register it by type; Credo resolves it when the pool starts:
 
 ```go
 type InvoiceWorker struct {
-    infra credo.Infra
-    repo  InvoiceRepository
+    log  *slog.Logger
+    repo InvoiceRepository
 }
 
 func NewInvoiceWorker(infra credo.Infra, repo InvoiceRepository) *InvoiceWorker {
-    return &InvoiceWorker{infra: infra, repo: repo}
+    return &InvoiceWorker{log: infra.Logger, repo: repo}
 }
 
-func (w *InvoiceWorker) Name() string { return "invoice-worker" }
-
 func (w *InvoiceWorker) Run(ctx context.Context) error {
-    w.infra.Logger.Info("processing invoices", "run_id", worker.RunID(ctx))
+    w.log.InfoContext(ctx, "processing invoices", "run_id", worker.RunID(ctx))
     return w.repo.ProcessPending(ctx)
 }
 
 func bootstrap(app *credo.App) error {
     app.MustProvide[*InvoiceWorker](NewInvoiceWorker)
 
-    invoiceWorker := app.MustResolve[*InvoiceWorker]()
-    if err := worker.Register(app, invoiceWorker,
+    return worker.RegisterProvided[*InvoiceWorker](app, "invoice-worker",
         worker.WithSchedule("@every 1m"),
-    ); err != nil {
-        return err
-    }
-
-    return app.Finalize()
+        worker.WithRunTimeout(15*time.Second),
+    )
 }
 ```
 
-Recommended pattern:
+How it fits together:
 
-- use DI to construct the worker
-- use `worker.Register` to attach lifecycle and scheduling behavior
-- call `Finalize` only after all worker registrations are complete
+- `RegisterProvided` records the type, not an instance, so it works before `Finalize` — exactly when registration is open — and may come before or after the matching `Provide`.
+- The worker is resolved once, in the `OnStart` phase: after `Finalize`, before the server accepts traffic.
+- If the type is not provided, or its constructor fails or panics, startup fails with an error naming the worker and the type, and no worker is started.
+- The type argument may be an interface bound with `app.Alias`.
+- If the worker implements `credo.Shutdowner`, the container closes it after the pool has drained.
 
-See the [Dependency Injection Guide](dependency-injection.md) for broader DI patterns.
+Use `worker.Register` with a value when the worker has no DI dependencies or is assembled by hand. See the [Dependency Injection Guide](dependency-injection.md) for broader DI patterns.
 
 ---
 
 ## Options
 
+Options are kind-specific. Using an option with the wrong kind of worker makes `Register` return an error (and `MustRegister` panic) rather than being ignored.
+
 ### Continuous worker options
 
-Use these only when **no** schedule is configured:
+- `worker.WithMaxRestarts(n)` — `n > 0` allows the first run plus at most `n` restarts; the worker is marked failed when a run fails after the `n`-th restart. `WithMaxRestarts(1)` means "try once more". `n == 0` (the default) means unlimited restarts.
+- `worker.WithRestartDelay(d)` — the wait before each restart (default 3s, or `worker.restart_delay` from config). Zero means the default, so a worker that fails instantly is throttled instead of busy-looping.
 
-- `worker.WithMaxRestarts(n)`
-- `worker.WithRestartDelay(d)`
-
-Behavior:
-
-- `n == 0` means unlimited restarts
-- restart count increases only for real failures / panics
-- shutdown cancellation does not consume restart budget
+Shutdown never consumes restart budget: a restart is counted only when the next run actually starts.
 
 ### Scheduled worker options
 
-Use these only when `worker.WithSchedule(...)` is present:
+- `worker.WithSchedule(expr)` — makes the worker scheduled.
+- `worker.WithStartImmediately()` — one extra run at startup.
+- `worker.WithRunTimeout(d)` — a budget for every run; see [Timeouts](#timeouts).
+- `worker.WithMaxConsecutiveFailures(n)` — the worker is marked failed after `n` failed runs in a row; a success resets the streak. `n == 0` (the default) means unlimited.
 
-- `worker.WithSchedule(expr)`
-- `worker.WithStartImmediately()`
-- `worker.WithMaxConsecutiveFailures(n)`
+### Both kinds
 
-Behavior:
-
-- consecutive failures reset after a successful run
-- exceeding the failure limit marks the worker failed until app restart
-- wrong-mode option combinations make `Register` panic (registration misuse)
+- `worker.WithReadiness(policy)` — see [Readiness Integration](#readiness-integration).
 
 ### Supported schedule formats
 
-Credo supports:
-
 - standard 5-field cron: `0 */6 * * *` — with lists (`1,15`), ranges (`1-5`), steps (`*/10`), month/weekday names (`jan`, `sat`), `?` as `*`, and `7` as Sunday
 - descriptors: `@hourly`, `@daily` (alias `@midnight`), `@weekly`, `@monthly`
-- intervals: `@every 5m`, `@every 1h30m`
+- intervals: `@every 5m`, `@every 90s`, `@every 1h30m`
 
-Schedules run in the server's local time and fire at second 0 of the matching minute. The 6-field seconds form is not supported — for sub-minute periods use `@every`. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
+Cron schedules run in the server's local time and fire at second 0 of the matching minute. The 6-field seconds form is not supported — for sub-minute periods use `@every`. `@every` needs a positive whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
+
+---
+
+## Timeouts
+
+`worker.WithRunTimeout(d)` bounds every run of a scheduled worker, including the startup run of `WithStartImmediately`. When the budget runs out, Credo cancels the run's context; the worker should notice and return.
+
+```go
+func (w *ReportWorker) Run(ctx context.Context) error {
+    for _, tenant := range w.tenants {
+        if err := w.buildReport(ctx, tenant); err != nil {
+            if errors.Is(context.Cause(ctx), worker.ErrRunTimeout) {
+                return fmt.Errorf("report for %s: budget exhausted: %w", tenant, err)
+            }
+            return err
+        }
+    }
+    return nil
+}
+```
+
+What to expect:
+
+- A run cut short by its timeout is a **failure, even if `Run` returns nil**. It is recorded as `worker: run timed out after 15s…`, logged with `timed_out=true`, and counts toward `WithMaxConsecutiveFailures`. A half-finished run can therefore never stamp `LastSuccess` or satisfy a readiness barrier.
+- `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the application shutting down; during shutdown the cause is the application's, and a nil return is a graceful stop.
+- The timeout is cooperative: it cancels the context and never kills the goroutine. A `Run` that ignores its context keeps the worker busy past the budget, and activations that pass meanwhile are skipped. There is never more than one run of a worker at a time.
+- Continuous workers have no run timeout — their `Run` is meant to last for the whole process. Put timeouts on the individual operations inside the loop instead.
+
+Replace hand-written `context.WithTimeout` wrappers inside scheduled `Run` methods with `WithRunTimeout`: the budget becomes visible in `pool.Workers()` and a timed-out run is classified consistently.
+
+---
+
+## Finite Background Work
+
+A continuous worker must keep running until shutdown. Returning nil early is treated as a bug: Credo logs `worker run failed` with `unexpected_exit=true` and restarts the worker after the restart delay. This catches a consumer loop that quietly ended — `for msg := range ch { … }; return nil` on a closed channel — before it goes unnoticed.
+
+For work that genuinely finishes, pick one of two homes:
+
+- **Startup should wait for it** (priming a cache the first request needs): use `app.OnStart`.
+
+  ```go
+  app.OnStart(func(ctx context.Context) error {
+      return cache.Warm(ctx)
+  })
+  ```
+
+- **It should run in the background** without delaying startup: do the work, then wait for shutdown.
+
+  ```go
+  func (w *Warmup) Run(ctx context.Context) error {
+      if err := w.warm(ctx); err != nil {
+          return err // retried after the restart delay
+      }
+      <-ctx.Done() // a continuous worker lives until shutdown
+      return nil
+  }
+  ```
+
+Recurring finite work is a scheduled worker.
 
 ---
 
@@ -311,59 +336,91 @@ Schedules run in the server's local time and fire at second 0 of the matching mi
 
 Credo enriches the `context.Context` passed to `Run` with execution metadata:
 
-- `worker.WorkerName(ctx)`
-- `worker.Attempt(ctx)`
-- `worker.RunID(ctx)`
-- `worker.ScheduledAt(ctx)`
-
-Example:
+- `worker.WorkerName(ctx)` — the registration name
+- `worker.RunID(ctx)` — a fresh identifier per run; Credo's own log lines for that run carry the same value as `run_id`
+- `worker.ScheduledAt(ctx)` — the intended activation time of a scheduled run
 
 ```go
 func (w *CleanupWorker) Run(ctx context.Context) error {
-    log.Printf(
-        "worker=%s attempt=%d run_id=%s scheduled_at=%s",
-        worker.WorkerName(ctx),
-        worker.Attempt(ctx),
-        worker.RunID(ctx),
-        worker.ScheduledAt(ctx),
+    w.log.InfoContext(ctx, "cleanup started",
+        "worker", worker.WorkerName(ctx),
+        "run_id", worker.RunID(ctx),
+        "scheduled_at", worker.ScheduledAt(ctx),
     )
-    return nil
+    return w.repo.DeleteExpired(ctx)
 }
 ```
 
 Notes:
 
-- for continuous workers, `ScheduledAt(ctx)` is zero
-- for `WithStartImmediately()`, `ScheduledAt(ctx)` is also zero because the startup tick is synthetic
-- the same parent context is canceled on app shutdown
+- `ScheduledAt(ctx)` is zero for continuous workers and for the `WithStartImmediately()` startup run.
+- The context is cancelled on application shutdown, and — with `WithRunTimeout` — when the run's budget runs out.
+- Restart and failure counters are not in the context; read them from `pool.Workers()`.
 
-Always check `ctx.Done()` in long-running workers.
+Always watch `ctx.Done()` in long-running work.
 
 ---
 
 ## Observing Worker State
 
-The worker pool is available from DI as `*worker.Pool`.
+The worker pool is available from DI as `*worker.Pool`. `pool.Workers()` returns one `worker.Info` per registered worker, in registration order:
 
 ```go
+if err := app.Finalize(); err != nil {
+    log.Fatal(err)
+}
 pool := app.MustResolve[*worker.Pool]()
 
 app.GET("/admin/workers", func(ctx *credo.Context) error {
-    return ctx.Response().JSON(200, pool.Workers())
+    return ctx.Response().JSON(http.StatusOK, pool.Workers())
 })
 ```
 
-`pool.Workers()` returns snapshot data such as:
+Each `Info` carries:
 
-- worker name
-- kind (`continuous` / `scheduled`)
-- current status
-- last run time
-- attempt counter
-- last error text
-- last successful run time
+- `Name` and `Kind` (`worker.KindContinuous` / `worker.KindScheduled`)
+- `Config` — the **effective** configuration: `Schedule`, `StartImmediately`, `RunTimeout`, `MaxConsecutiveFailures`, `MaxRestarts`, `RestartDelay` (after config and defaults are applied) and a copy of the `Readiness` policy; fields that do not apply to the kind are zero, and zero limits mean unlimited
+- `Status` — `idle`, `running`, `waiting`, `stopped` or `failed`
+- `Restarts` (continuous) and `ConsecutiveFailures` (scheduled)
+- `LastRun` (start of the latest run), `LastSuccess` (end of the latest successful scheduled run; always zero for continuous workers) and `LastError` (the latest failure, never with a stack trace; a successful scheduled run clears it)
 
-This is useful for admin endpoints, debugging, and operational visibility.
+Because `Config` is the effective policy, a registration test can assert it without running anything:
+
+```go
+func TestWorkerRegistration(t *testing.T) {
+    app := testutil.NewApp(t)
+    registerWorkers(app) // your composition root's worker registrations
+    if err := app.Finalize(); err != nil {
+        t.Fatal(err)
+    }
+    pool := app.MustResolve[*worker.Pool]()
+
+    for _, info := range pool.Workers() {
+        if info.Name == "invoice-worker" && info.Config.RunTimeout != 15*time.Second {
+            t.Fatalf("invoice-worker timeout = %s", info.Config.RunTimeout)
+        }
+    }
+}
+```
+
+**JSON.** `Info` is shaped for direct encoding: field names are snake_case (`restart_delay`, `consecutive_failures`, `last_error`, …); `last_run`, `last_success`, `last_error` and `config.readiness` are omitted while empty; every other field is always present. Durations encode as integer nanoseconds under Credo's JSON response profile — `"run_timeout": 15000000000` is 15 seconds. The spec shows a [full example](../specs/worker.md#json-shape).
+
+---
+
+## Reading the Logs
+
+Every worker writes exactly one `worker started` line when the pool starts it and exactly one `worker stopped` line when it ends, both at Info:
+
+```text
+level=INFO msg="worker started" module=worker worker=invoice-worker kind=scheduled schedule="@every 1m" next_run=…
+level=INFO msg="worker stopped" module=worker worker=invoice-worker kind=scheduled status=stopped reason=shutdown
+```
+
+- `reason=shutdown` — the application stopped the worker. `reason=failed` — the worker exhausted its failure limit (or its schedule has no future activation); it is preceded by an Error line such as `worker exceeded max consecutive failures`, which is the one to alert on.
+- A failed run logs `worker run failed` (continuous) or `scheduled worker run failed` at Error, with `error`, `run_id` and `duration`, plus `timed_out=true` for a timeout, `unexpected_exit=true` for a continuous `Run` that returned nil early, and `stack` for a panic.
+- A successful scheduled run logs `scheduled worker run completed` at **Debug** only; a worker running every minute would otherwise write 1,440 Info lines a day. Use `pool.Workers()` or `WithReadiness` to answer "is it alive", and the logs as the audit trail.
+- When runs outlast their schedule, one `worker ticks skipped` Warn line per resumption reports how many activations were skipped (`skipped`, `first_scheduled_at`, `last_scheduled_at`).
+- To join Credo's lines with your own for one run, log `worker.RunID(ctx)` as `run_id`.
 
 ---
 
@@ -374,7 +431,7 @@ A worker can take part in the readiness probe (`app.UseHealth()`, `/ready`) thro
 ```go
 app.UseHealth()
 
-worker.MustRegister(app, recovery,
+worker.MustRegister(app, "recovery", recovery,
     worker.WithSchedule("@every 5m"),
     worker.WithStartImmediately(),
     worker.WithReadiness(worker.ReadinessPolicy{
@@ -385,20 +442,18 @@ worker.MustRegister(app, recovery,
 )
 ```
 
-- `RequireFirstSuccess` is a startup barrier: the instance stays unready until the worker's first run returns nil, then stays ready even if later runs fail. Pair it with `WithStartImmediately()` unless waiting for the first cron activation is intended.
-- `FailWhenFailed` reports unready once the worker reaches `StatusFailed` (`WithMaxRestarts` / `WithMaxConsecutiveFailures` exhausted). Use it only for workers the instance cannot serve without: every replica hitting the same persistent failure leaves rotation together.
+- `RequireFirstSuccess` is a startup barrier: the instance stays unready until the worker's first run succeeds, then stays ready even if later runs fail. A timed-out run never satisfies it. Pair it with `WithStartImmediately()` unless waiting for the first cron activation is intended.
+- `FailWhenFailed` reports unready once the worker reaches `failed` (`WithMaxRestarts` / `WithMaxConsecutiveFailures` exhausted). For a continuous worker this includes one that keeps returning early. Use it only for workers the instance cannot serve without: every replica hitting the same persistent failure leaves rotation together.
 - `MaxSuccessAge` reports unready when the last success is older than the limit; it is not applied before the first success.
 - `RequireFirstSuccess` and `MaxSuccessAge` are for scheduled workers; `FailWhenFailed` works for both kinds. The zero policy is rejected at registration.
 
-The contribution appears in the `/ready` body as a check named `worker:<name>`. `worker.Register` and `app.UseHealth()` may run in either order.
+The contribution appears in the `/ready` body as a check named `worker:<name>`. Worker registration and `app.UseHealth()` may run in either order.
 
 ---
 
 ## Configuration
 
-Credo can read worker defaults from app config.
-
-Example:
+Credo reads one worker default from app config:
 
 ```json
 {
@@ -408,13 +463,13 @@ Example:
 }
 ```
 
-Currently, `worker.restart_delay` is used as the default restart delay for continuous workers. `worker.WithRestartDelay(...)` overrides it per worker. A zero delay (`WithRestartDelay(0)`) falls back to the default (`DefaultRestartDelay`, 3s), so a worker that fails immediately is throttled instead of busy-looping.
+`worker.restart_delay` is the default restart delay for continuous workers; `worker.WithRestartDelay(...)` overrides it per worker, and zero falls back to `DefaultRestartDelay` (3s). Schedules, limits and timeouts are per-worker options only.
 
 ---
 
 ## Reloadable Settings
 
-Workers are registered once and run for the life of the process; a [config reload](configuration.md#reloading-configuration) does not re-register them or change `WithSchedule`. For a setting a worker should honour without a restart — a batch size, a concurrency cap, a polling interval — give the worker an atomic holder and swap it from an `OnConfigChange[T]` subscriber:
+Workers are registered once and run for the life of the process; a [config reload](configuration.md#reloading-configuration) does not re-register them or change their options. For a setting a worker should honour without a restart — a batch size, a concurrency cap, a polling interval — give the worker an atomic holder and swap it from an `OnConfigChange[T]` subscriber:
 
 ```go
 type Sync struct {
@@ -429,7 +484,7 @@ func (s *Sync) Run(ctx context.Context) error {
         }
         select {
         case <-ctx.Done():
-            return ctx.Err()
+            return nil
         case <-time.After(cfg.Interval):
         }
     }
@@ -445,13 +500,36 @@ A changed cron expression is restart-only; the reload logs it as `restart requir
 
 ---
 
+## Testing Workers
+
+A worker is a type with a `Run` method, so its logic is tested by calling `Run` directly:
+
+```go
+func TestCleanupWorker(t *testing.T) {
+    repo := &fakeCleanupRepo{}
+    w := &CleanupWorker{repo: repo}
+
+    if err := w.Run(t.Context()); err != nil {
+        t.Fatal(err)
+    }
+    if repo.deleted != 1 {
+        t.Fatalf("deleted = %d, want 1", repo.deleted)
+    }
+}
+```
+
+Test the registration — names, schedules, limits, timeouts — through `pool.Workers()` as shown in [Observing Worker State](#observing-worker-state). Timing behaviour inside your own workers is easiest to test with `testing/synctest`.
+
+---
+
 ## Best Practices
 
-- continuous workers should own their loop; scheduled workers should do one execution and return
-- treat shutdown as normal control flow: return `ctx.Err()` or stop cleanly when `ctx.Done()` closes
-- keep worker names stable and unique; they appear in logs and status snapshots
-- make scheduled jobs idempotent where possible because skipped ticks can happen
-- inject dependencies via constructors; avoid building service graphs inside `Run`
+- continuous workers own their loop and return only at shutdown or on a real failure; scheduled workers do one execution and return
+- treat shutdown as normal control flow: return nil or `ctx.Err()` once `ctx.Done()` closes
+- give scheduled workers a `WithRunTimeout` budget instead of hand-rolled timeouts inside `Run`
+- keep worker names stable and unique; they key logs, snapshots and readiness checks
+- make scheduled jobs idempotent where possible, because activations can be skipped and a timed-out run may have done part of its work
+- inject dependencies via constructors and `RegisterProvided`; avoid building service graphs inside `Run`
 - capture `*worker.Pool` during bootstrap if you want admin/debug endpoints; avoid request-time `Resolve` as the default pattern
 
 ---
@@ -461,3 +539,4 @@ A changed cron expression is restart-only; the reload logs it as `restart requir
 - [Getting Started](getting-started.md)
 - [Dependency Injection Guide](dependency-injection.md)
 - [Data Access Guide](data-access.md)
+- [Pre-v1 Migration Guide](pre-v1-migration.md#workers)
