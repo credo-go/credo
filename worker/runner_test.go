@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,8 +53,8 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 		// First run fails; the runner sleeps on the restart timer.
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 {
-			t.Fatalf("after first failure: status = %q attempts = %d, want waiting/1", info.Status, info.Attempts)
+		if info.Status != StatusWaiting || info.Restarts != 1 {
+			t.Fatalf("after first failure: status = %q restarts = %d, want waiting/1", info.Status, info.Restarts)
 		}
 
 		// Virtual time passes the restart delay; the second run starts and
@@ -99,14 +100,14 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusWaiting || info.Restarts != 1 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after first failure: %+v, want waiting/1/boom", info)
 		}
 
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info = pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 2 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusFailed || info.Restarts != 2 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after max restarts: %+v, want failed/2/boom", info)
 		}
 
@@ -142,7 +143,7 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 1 {
+		if info.Status != StatusFailed || info.Restarts != 1 {
 			t.Fatalf("sub-context deadline: %+v, want failed/1 (real failure)", info)
 		}
 
@@ -165,8 +166,9 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		})
 
 		if err := pool.addDefinition(&definition{
-			name:    "snapshot",
-			resolve: instance(worker),
+			name:          "snapshot",
+			resolve:       instance(worker),
+			restartPolicy: restartPolicy{maxRestarts: 2, restartDelay: time.Second},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}
@@ -181,8 +183,11 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		if info.Name != "snapshot" {
 			t.Fatalf("Name = %q, want snapshot", info.Name)
 		}
-		if info.Kind != kindContinuous {
-			t.Fatalf("Kind = %q, want %q", info.Kind, kindContinuous)
+		if info.Kind != KindContinuous {
+			t.Fatalf("Kind = %q, want %q", info.Kind, KindContinuous)
+		}
+		if want := (Config{MaxRestarts: 2, RestartDelay: time.Second}); !reflect.DeepEqual(info.Config, want) {
+			t.Fatalf("Config = %+v, want %+v", info.Config, want)
 		}
 		if info.Status != StatusRunning {
 			t.Fatalf("Status = %q, want %q", info.Status, StatusRunning)
@@ -280,14 +285,14 @@ func TestRunScheduled_MaxConsecutiveFailuresMarksFailed(t *testing.T) {
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info := pool.Workers()[0]
-		if info.Status != StatusWaiting || info.Attempts != 1 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusWaiting || info.ConsecutiveFailures != 1 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after first failure: %+v, want waiting/1/boom", info)
 		}
 
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		info = pool.Workers()[0]
-		if info.Status != StatusFailed || info.Attempts != 2 || !strings.Contains(info.LastError, "boom") {
+		if info.Status != StatusFailed || info.ConsecutiveFailures != 2 || !strings.Contains(info.LastError, "boom") {
 			t.Fatalf("after max consecutive failures: %+v, want failed/2/boom", info)
 		}
 

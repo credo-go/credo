@@ -2,9 +2,14 @@ package worker
 
 import "time"
 
+// Kind reports whether a worker runs continuously or on a schedule.
+type Kind string
+
 const (
-	kindContinuous = "continuous"
-	kindScheduled  = "scheduled"
+	// KindContinuous is a worker whose Run lives until the pool stops.
+	KindContinuous Kind = "continuous"
+	// KindScheduled is a worker that runs once per cron activation.
+	KindScheduled Kind = "scheduled"
 )
 
 // Status represents a worker's current lifecycle state.
@@ -23,14 +28,51 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Info is a point-in-time snapshot of a worker's state.
+// Config is the effective, immutable configuration of a registered worker:
+// the policy the runner executes once defaults and the pool configuration are
+// applied, not an echo of the options passed to [Register]. Fields that do
+// not apply to the worker's [Kind] are zero, and zero limits mean unlimited.
+type Config struct {
+	// Schedule is the cron expression of a scheduled worker, as registered.
+	Schedule string `json:"schedule"`
+	// StartImmediately reports [WithStartImmediately] (scheduled workers).
+	StartImmediately bool `json:"start_immediately"`
+	// MaxConsecutiveFailures is the [WithMaxConsecutiveFailures] limit
+	// (scheduled workers); 0 means unlimited.
+	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
+	// MaxRestarts is the [WithMaxRestarts] limit (continuous workers); 0
+	// means unlimited.
+	MaxRestarts int `json:"max_restarts"`
+	// RestartDelay is the delay a continuous worker waits before a restart,
+	// after the option, the pool's worker.restart_delay configuration and
+	// [DefaultRestartDelay] are resolved.
+	RestartDelay time.Duration `json:"restart_delay"`
+	// Readiness is a copy of the worker's [ReadinessPolicy]; nil when the
+	// worker does not take part in readiness.
+	Readiness *ReadinessPolicy `json:"readiness,omitzero"`
+}
+
+// Info is a point-in-time snapshot of a worker: its identity, its effective
+// configuration and its live state.
+//
+// Info is shaped for direct JSON encoding (for example from an admin
+// endpoint): field names are snake_case, durations encode as integer
+// nanoseconds under Credo's response profile, and last_run, last_success,
+// last_error and config.readiness are omitted while zero.
 type Info struct {
-	Name        string
-	Kind        string
-	Schedule    string
-	Status      Status
-	Attempts    int64 // restart count for continuous workers; consecutive failures for scheduled workers.
-	LastRun     time.Time
-	LastSuccess time.Time // completion time of the last run that returned nil; zero until then
-	LastError   string
+	Name   string `json:"name"`
+	Kind   Kind   `json:"kind"`
+	Config Config `json:"config"`
+
+	Status Status `json:"status"`
+	// Restarts counts the restarts of a continuous worker.
+	Restarts int64 `json:"restarts"`
+	// ConsecutiveFailures counts the failed runs of a scheduled worker since
+	// its last success.
+	ConsecutiveFailures int64     `json:"consecutive_failures"`
+	LastRun             time.Time `json:"last_run,omitzero"`
+	// LastSuccess is the completion time of the last run that returned nil;
+	// zero until then.
+	LastSuccess time.Time `json:"last_success,omitzero"`
+	LastError   string    `json:"last_error,omitzero"`
 }

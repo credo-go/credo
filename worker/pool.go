@@ -522,7 +522,9 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Workers returns a snapshot of registered worker state.
+// Workers returns a snapshot of every registered worker, in registration
+// order: its effective configuration and its live state. Before the pool
+// starts — and after a Start that failed — every worker is reported idle.
 func (p *Pool) Workers() []Info {
 	p.mu.Lock()
 	published := p.published
@@ -533,12 +535,7 @@ func (p *Pool) Workers() []Info {
 	if !published {
 		infos := make([]Info, 0, len(defs))
 		for _, def := range defs {
-			infos = append(infos, Info{
-				Name:     def.name,
-				Kind:     def.Kind(),
-				Schedule: def.scheduleExpr(),
-				Status:   StatusIdle,
-			})
+			infos = append(infos, def.info(runState{status: StatusIdle}))
 		}
 		return infos
 	}

@@ -25,20 +25,20 @@ type ReadinessPolicy struct {
 	// warm-up jobs. Scheduled workers only; pair it with [WithStartImmediately]
 	// unless waiting for the first cron activation is intended. Once satisfied
 	// it stays satisfied, even if later runs fail.
-	RequireFirstSuccess bool
+	RequireFirstSuccess bool `json:"require_first_success"`
 
 	// FailWhenFailed reports the instance unready once the worker reaches
 	// [StatusFailed], that is, once it exhausted [WithMaxRestarts] or
 	// [WithMaxConsecutiveFailures]. Use it only for workers the instance cannot
 	// serve without: every replica hitting the same persistent failure leaves
 	// rotation together.
-	FailWhenFailed bool
+	FailWhenFailed bool `json:"fail_when_failed"`
 
 	// MaxSuccessAge reports the instance unready when the last successful run
 	// finished longer ago than this duration. Scheduled workers only; zero
 	// disables the check. Until the first success it is not applied — combine
 	// it with RequireFirstSuccess to close that window.
-	MaxSuccessAge time.Duration
+	MaxSuccessAge time.Duration `json:"max_success_age"`
 }
 
 // WithReadiness binds the worker to the readiness probe under policy.

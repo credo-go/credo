@@ -149,7 +149,7 @@ func TestReadiness_MaxSuccessAge(t *testing.T) {
 	p.mu.Lock()
 	r := p.runners[0]
 	p.mu.Unlock()
-	r.update(func(r *runner) { r.lastSuccess = time.Now().Add(-2 * time.Hour) })
+	r.update(func(st *runState) { st.lastSuccess = time.Now().Add(-2 * time.Hour) })
 	if err := p.evaluateReadiness(def); err == nil || !strings.Contains(err.Error(), "last succeeded") {
 		t.Fatalf("stale success: err = %v, want age violation", err)
 	}

@@ -46,19 +46,52 @@ type definition struct {
 	readiness        *ReadinessPolicy // nil: the worker does not take part in readiness
 }
 
-// Kind reports whether the worker is continuous or scheduled.
-func (d *definition) Kind() string {
-	if d != nil && d.schedule != nil {
-		return kindScheduled
+func (d *definition) kind() Kind {
+	if d.schedule != nil {
+		return KindScheduled
 	}
-	return kindContinuous
+	return KindContinuous
 }
 
 func (d *definition) scheduleExpr() string {
-	if d == nil || d.schedule == nil {
+	if d.schedule == nil {
 		return ""
 	}
 	return d.schedule.String()
+}
+
+// config projects the definition onto its public, effective form. Readiness
+// is a fresh copy, so a caller mutating a snapshot never reaches the
+// definition.
+func (d *definition) config() Config {
+	cfg := Config{
+		Schedule:               d.scheduleExpr(),
+		StartImmediately:       d.startImmediately,
+		MaxConsecutiveFailures: d.failurePolicy.maxConsecutiveFailures,
+		MaxRestarts:            d.restartPolicy.maxRestarts,
+		RestartDelay:           d.restartPolicy.restartDelay,
+	}
+	if d.readiness != nil {
+		policy := *d.readiness
+		cfg.Readiness = &policy
+	}
+	return cfg
+}
+
+// info is the single builder of Info: every snapshot — before Start from the
+// definition alone, afterwards from a runner — goes through it.
+func (d *definition) info(state runState) Info {
+	return Info{
+		Name:                d.name,
+		Kind:                d.kind(),
+		Config:              d.config(),
+		Status:              state.status,
+		Restarts:            state.restarts,
+		ConsecutiveFailures: state.consecutiveFailures,
+		LastRun:             state.lastRun,
+		LastSuccess:         state.lastSuccess,
+		LastError:           state.lastError,
+	}
 }
 
 // WithMaxRestarts sets the maximum restart count for continuous workers.

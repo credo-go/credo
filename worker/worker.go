@@ -26,7 +26,6 @@ type Func func(ctx context.Context) error
 func (f Func) Run(ctx context.Context) error { return f(ctx) }
 
 type workerNameKey struct{}
-type attemptKey struct{}
 type scheduledAtKey struct{}
 type runIDKey struct{}
 
@@ -39,17 +38,6 @@ func RunID(ctx context.Context) string {
 		return id
 	}
 	return ""
-}
-
-// Attempt returns the current worker attempt stored in ctx.
-func Attempt(ctx context.Context) int {
-	if ctx == nil {
-		return 0
-	}
-	if attempt, ok := ctx.Value(attemptKey{}).(int); ok {
-		return attempt
-	}
-	return 0
 }
 
 // WorkerName returns the registration name of the worker whose run ctx
@@ -75,9 +63,8 @@ func ScheduledAt(ctx context.Context) time.Time {
 	return time.Time{}
 }
 
-func enrichContext(parent context.Context, name string, attempt int, scheduledAt time.Time, runID string) context.Context {
+func enrichContext(parent context.Context, name string, scheduledAt time.Time, runID string) context.Context {
 	ctx := context.WithValue(parent, workerNameKey{}, name)
-	ctx = context.WithValue(ctx, attemptKey{}, attempt)
 	ctx = context.WithValue(ctx, scheduledAtKey{}, scheduledAt)
 	ctx = context.WithValue(ctx, runIDKey{}, runID)
 	return ctx
