@@ -126,6 +126,11 @@ type App struct {
 	// healthEngine holds the health check engine (nil if UseHealth not called).
 	healthEngine *internalhealth.Engine
 
+	// healthProbes records that UseHealth registered at least one probe route.
+	// The engine alone is not enough: with both probes disabled it exists but
+	// nothing is mounted.
+	healthProbes bool
+
 	// healthExposeErrors includes check error strings in readiness responses.
 	// Set from HealthConfig.ExposeErrors; default false (errors are logged,
 	// not exposed to probe callers).

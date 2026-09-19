@@ -14,7 +14,7 @@ Scope, sequence and acceptance live in the [delivery plan](docs/plans/restart-ba
 All three items ship together in v0.21.0.
 
 - [x] Static serving decodes the route-captured path only once: files whose names contain `%` escapes are served again, and the static-files guide's table holds (2026-09-19)
-- [ ] Startup `features` attribute on the managed start line (additive)
+- [x] Startup `features` attribute on the managed start line (additive) (2026-09-19)
 - [ ] Continuous-worker restart backoff (behavior change): `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, `worker.max_restart_delay`, `Config.MaxRestartDelay`, `next_restart_in`
 
 ## Pre-v1 Contract Migration

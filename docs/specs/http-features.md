@@ -1,6 +1,6 @@
 # Built-in HTTP Features
 
-**Status:** Implemented (HTTP minor, 2026-09-05) **Implementation:** root package — `executor.go`, `features.go`, `recover.go`, `requestid.go`, `accesslog.go`, `compress.go`, `decompress.go`, `i18n.go` **ADR:** [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion); [startup visibility](#startup-visibility) accepted, pending implementation ([plan](../plans/restart-backoff-and-startup-features.md))
+**Status:** Implemented (HTTP minor, 2026-09-05; [startup visibility](#startup-visibility) in v0.21.0) **Implementation:** root package — `executor.go`, `features.go`, `recover.go`, `requestid.go`, `accesslog.go`, `compress.go`, `decompress.go`, `i18n.go` **ADR:** [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion), [startup visibility](../adr/010-middleware-architecture.md#startup-visibility-of-effective-features)
 
 Panic recovery, request IDs, access logging, response compression, request-body decompression, locale detection and the custom renderers are framework-owned HTTP features of the root package. They are not middleware: one internal request executor runs them in a fixed order around the user's Global → Group → Route chain, so they observe the final response — error envelopes and panic responses included — and cannot be scoped to a group or route. The [middleware spec](middleware.md) covers the user chain; this document is the feature contract.
 
@@ -57,9 +57,7 @@ Central error classification and rendering exist even when recovery and every op
 
 ## Startup visibility
 
-**Accepted, pending implementation** ([ADR-010](../adr/010-middleware-architecture.md#startup-visibility-of-effective-features)). It ships additively; until then the managed start line carries `label` and `addr` only ([lifecycle spec](lifecycle.md#startup-record)).
-
-The `credo: server started` line gains a `features` attribute listing the built-in features in effect:
+The managed start line, `credo: server started` ([lifecycle spec](lifecycle.md#startup-record)), carries a `features` attribute listing the built-in features in effect:
 
 ```json
 {"level":"INFO","msg":"credo: server started","label":"Run","addr":"127.0.0.1:8080","features":["recover","request_id","access_log","compress"]}
