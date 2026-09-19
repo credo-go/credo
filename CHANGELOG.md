@@ -14,6 +14,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-19
+
 ### Fixed
 
 - **worker:** an error that joins the shutdown cancellation with another error is no longer classified as a graceful stop. `errors.Join(ctx.Err(), flushErr)` — a final write that failed while the application was stopping — used to end the worker as `stopped` with no failure line, no counter change and an empty `LastError`, because one branch of the joined error matched `context.Canceled`. A return value is now a graceful stop only when it is nil or nothing but a context error: every branch of its unwrap/join tree must end in `context.Canceled` or `context.DeadlineExceeded`. A single wrap chain (`fmt.Errorf("query: %w", ctx.Err())`, a `*url.Error` around a cancelled dial) is still graceful; a joined error — `errors.Join`, or `fmt.Errorf` with several `%w` verbs — that carries any other error is a failure, recorded and logged with its full text. The gap predates v0.20.0.
@@ -484,7 +486,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/credo-go/credo/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/credo-go/credo/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/credo-go/credo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/credo-go/credo/compare/v0.17.0...v0.18.0
