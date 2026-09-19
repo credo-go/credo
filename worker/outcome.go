@@ -127,9 +127,8 @@ func isContextError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isContextErrorNode(err) {
-		return true
-	}
+	// A node with children is judged by its children alone: its own Is
+	// method could vouch for a tree that also carries another error.
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		branches := 0
 		for _, child := range joined.Unwrap() {
@@ -141,20 +140,24 @@ func isContextError(err error) bool {
 			}
 			branches++
 		}
-		return branches > 0
+		if branches > 0 {
+			return true
+		}
+	} else if child := errors.Unwrap(err); child != nil {
+		return isContextError(child)
 	}
-	return isContextError(errors.Unwrap(err))
+	return isContextErrorNode(err)
 }
 
-// isContextErrorNode inspects err itself, without unwrapping it: the explicit
-// traversal in isContextError must see every branch, so errors.Is cannot be
-// used here. An Is method is honored the way errors.Is honors it, which is
-// how the net package reports a cancelled dial.
+// isContextErrorNode inspects a leaf, an error that wraps nothing: the
+// explicit traversal in isContextError must see every branch, so errors.Is
+// cannot be used here. An Is method is honored the way errors.Is honors it,
+// which is how the net package reports a cancelled dial.
 func isContextErrorNode(err error) bool {
-	if err == context.Canceled || err == context.DeadlineExceeded { //nolint:errorlint // This node only; see above.
+	if err == context.Canceled || err == context.DeadlineExceeded { //nolint:errorlint // This leaf only; see above.
 		return true
 	}
-	if x, ok := err.(interface{ Is(error) bool }); ok { //nolint:errorlint // This node only; see above.
+	if x, ok := err.(interface{ Is(error) bool }); ok { //nolint:errorlint // This leaf only; see above.
 		return x.Is(context.Canceled) || x.Is(context.DeadlineExceeded)
 	}
 	return false

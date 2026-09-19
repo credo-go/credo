@@ -99,6 +99,25 @@ func (isCanceledError) Error() string { return "operation was canceled" }
 
 func (isCanceledError) Is(target error) bool { return target == context.Canceled }
 
+// vouchingError claims to be context.Canceled through its Is method while
+// its children carry whatever they carry.
+type vouchingError struct {
+	child    error
+	children []error
+}
+
+func (vouchingError) Error() string { return "vouching" }
+
+func (vouchingError) Is(target error) bool { return target == context.Canceled }
+
+type vouchingWrap struct{ vouchingError }
+
+func (e vouchingWrap) Unwrap() error { return e.child }
+
+type vouchingJoin struct{ vouchingError }
+
+func (e vouchingJoin) Unwrap() []error { return e.children }
+
 func TestIsContextError(t *testing.T) {
 	boom := errors.New("boom")
 	tests := []struct {
@@ -120,6 +139,11 @@ func TestIsContextError(t *testing.T) {
 		{"nested join hiding another error", errors.Join(context.Canceled, errors.Join(context.Canceled, boom)), false},
 		{"wrapped join with another error", fmt.Errorf("stop: %w", errors.Join(context.Canceled, boom)), false},
 		{"two %w verbs, one not a context error", fmt.Errorf("%w: %w", boom, context.Canceled), false},
+		{"Is method over a wrapped other error", vouchingWrap{vouchingError{child: boom}}, false},
+		{"Is method over a mixed join", vouchingJoin{vouchingError{children: []error{context.Canceled, boom}}}, false},
+		{"Is method over a wrapped context error", vouchingWrap{vouchingError{child: context.Canceled}}, true},
+		{"Is method with a nil child is a leaf", vouchingWrap{}, true},
+		{"Is method with no branches is a leaf", vouchingJoin{}, true},
 		{"two %w verbs, both context errors", fmt.Errorf("%w: %w", context.DeadlineExceeded, context.Canceled), true},
 	}
 	for _, tt := range tests {
