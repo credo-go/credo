@@ -14,9 +14,26 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+**Restart backoff and startup features.** Continuous workers back off between restarts, the managed start line lists the built-in HTTP features in effect, and static files whose names contain `%` are served again. One change compiles unchanged but behaves differently — check it before upgrading:
+
+> **BREAKING (behavior): continuous worker restarts back off.** Every restart used to wait the fixed restart delay (3 s by default), so a worker whose dependency stayed down restarted about 28,800 times a day. The first restart still waits the restart delay; repeated failures now wait longer, with jitter, up to a one-minute cap — about 1,920 restarts a day. A worker with `WithMaxRestarts(N)` therefore reaches `failed`, and a `FailWhenFailed` readiness check drops, later than before: roughly 48–93 s of waiting for N = 5 instead of 15 s. The same value in `WithRestartDelay` and `WithMaxRestartDelay` keeps a fixed delay.
+
+| v0.20 | v0.21.0 |
+| --- | --- |
+| every continuous restart waits the fixed restart delay (3 s by default) | the first restart waits the restart delay; repeated failures back off with jitter up to `DefaultMaxRestartDelay` (1 min) or `worker.max_restart_delay`; a run that lasted at least the cap resets the sequence |
+| `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5) | the waits back off, so `failed` and a `FailWhenFailed` readiness drop come later (roughly 48–93 s for N = 5) |
+
+The [pre-v1 migration guide](docs/guides/pre-v1-migration.md#workers) carries the same rows.
+
 ### Added
 
+- **worker:** `worker.WithMaxRestartDelay(d)` and `worker.DefaultMaxRestartDelay` (1 minute) set the cap of the restart backoff for a continuous worker, and the `worker.max_restart_delay` configuration key sets it for the pool. An omitted option takes the pool value, then the default, raised to the worker's restart delay when that is longer; an explicit zero skips the pool value and selects `max(DefaultMaxRestartDelay, restart delay)`; an explicit positive cap below the restart delay, a negative value, or the option on a scheduled worker is a registration error ([worker spec](docs/specs/worker.md#restart-backoff)).
+- **worker:** `Config.MaxRestartDelay` (`max_restart_delay` in JSON) reports the effective cap; it is zero for scheduled workers. The continuous `worker run failed` line carries `next_restart_in`, the selected wait, when a restart is planned — not when the failure exhausted `WithMaxRestarts` and not when shutdown was already observed.
 - **lifecycle:** the managed start line, `credo: server started`, carries a `features` attribute listing the built-in HTTP features in effect, in a fixed display order: `recover`, `request_id`, `access_log`, `decompress`, `compress`, `i18n`, `error_renderer`, `success_renderer`, `health`. The list comes from the App's effective state after preparation, not from registration calls: a `UseI18n` whose conventional discovery found no catalogs is not listed, and neither is a `UseHealth` with both probes disabled. A default App reports `["recover"]`; with every feature off the value is an empty array, never `null`. The summary adds no Warn for features that are off. Only `Run`, `RunContext` and `ServeContext` write the line. This makes the v0.19.0 switch of RequestID and AccessLog to default-off visible at startup ([HTTP features spec](docs/specs/http-features.md#startup-visibility)).
+
+### Changed
+
+- **BREAKING (behavior): continuous worker restarts back off** — see the note above. After a failed run for which a restart is planned, the wait is drawn uniformly from `[max(base, ceiling/2), ceiling]`, where `ceiling = min(base × 2^(k−1), cap)` for the k-th failure in a row. `base` is the effective restart delay (`WithRestartDelay` → `worker.restart_delay` → `DefaultRestartDelay`) and the first wait is exactly `base`; the cap is `WithMaxRestartDelay` → `worker.max_restart_delay` → `DefaultMaxRestartDelay`. A run that lasted at least the cap resets the sequence but never `Restarts` or the `WithMaxRestarts` budget. Scheduled workers are unchanged ([ADR-023](docs/adr/023-worker-system.md#restart-backoff)).
 
 ### Fixed
 
@@ -26,7 +43,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 - The routing guide warns that route parameters are not file names: a decoded value can contain `/` or `..` (`/files/..%2F..%2Fetc` gives `{name}` the value `../../etc`), so a handler that opens files confines the access with `os.Root` (or the `fs.FS` from `credo.DirFS`); `filepath.Join` is not a check, `filepath.IsLocal` is lexical only, and a regex constraint narrows the format but does not confine file access. The router spec states the boundary, and the static-files and pre-v1 migration guides link to it. The guide's canonical-form sentence is corrected: escapes of all RFC 3986 reserved characters and of `%` are kept, not only the encoded slash.
 - The worker guide, worker spec and ADR-023 state that cron schedules have no per-worker time zone selection: the process's local zone applies, with platform-accurate advice (`TZ` on Unix, `time/tzdata` for images without zoneinfo, the OS setting on Windows), and `@every` is not a substitute for a calendar rule.
-- Accepted, pending decisions are promoted with a [delivery plan](docs/plans/restart-backoff-and-startup-features.md): capped, jittered exponential restart backoff for continuous workers by default in v0.21.0 ([ADR-023](docs/adr/023-worker-system.md#restart-backoff), [worker spec](docs/specs/worker.md#restart-backoff)), and a `features` attribute on the managed `credo: server started` line listing the built-in HTTP features in effect ([ADR-010](docs/adr/010-middleware-architecture.md#startup-visibility-of-effective-features), [HTTP features spec](docs/specs/http-features.md#startup-visibility)). The lifecycle spec now documents the startup record. Implementation is pending; this entry changes no behavior.
+- ADR-023 records the restart backoff decision ([Restart backoff](docs/adr/023-worker-system.md#restart-backoff)) and ADR-010 the startup summary ([Startup visibility of effective features](docs/adr/010-middleware-architecture.md#startup-visibility-of-effective-features)). The worker guide gains a Restart Backoff section with the waits under the defaults, the recovery trade-off and the fixed-delay recipe, and the lifecycle spec documents the startup record.
 
 ## [0.20.1] - 2026-09-19
 

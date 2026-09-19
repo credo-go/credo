@@ -46,10 +46,15 @@ type Config struct {
 	// MaxRestarts is the [WithMaxRestarts] limit (continuous workers); 0
 	// means unlimited.
 	MaxRestarts int `json:"max_restarts"`
-	// RestartDelay is the delay a continuous worker waits before a restart,
-	// after the option, the pool's worker.restart_delay configuration and
-	// [DefaultRestartDelay] are resolved.
+	// RestartDelay is the base restart delay of a continuous worker — the
+	// first and the minimum wait before a restart — after the option, the
+	// pool's worker.restart_delay configuration and [DefaultRestartDelay] are
+	// resolved.
 	RestartDelay time.Duration `json:"restart_delay"`
+	// MaxRestartDelay is the cap the restart delay of a continuous worker
+	// backs off to, resolved as described at [WithMaxRestartDelay]; never
+	// below RestartDelay.
+	MaxRestartDelay time.Duration `json:"max_restart_delay"`
 	// Readiness is a copy of the worker's [ReadinessPolicy]; nil when the
 	// worker does not take part in readiness.
 	Readiness *ReadinessPolicy `json:"readiness,omitzero"`

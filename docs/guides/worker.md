@@ -28,7 +28,7 @@ No schedule is configured.
 
 - Credo calls `Run(ctx)` once at startup.
 - The worker owns its loop and **must keep running until `ctx` is cancelled**.
-- If `Run` returns an error, panics, or returns nil while the application is still running, Credo records a failure and restarts it after the restart delay.
+- If `Run` returns an error, panics, or returns nil while the application is still running, Credo records a failure and restarts it after a delay that grows while failures repeat ([Restart backoff](#restart-backoff)).
 - `app.Shutdown(ctx)` cancels `ctx` and waits for `Run` to return.
 
 Use this for long-lived background processes such as consumers and watchers.
@@ -103,7 +103,7 @@ func main() {
 Important points:
 
 - `Run` blocks until shutdown or a real failure. Returning nil (or `ctx.Err()`, wrapped or not) after `ctx` is cancelled is a graceful stop. An error that carries anything else is a failure even then: `errors.Join(ctx.Err(), flushErr)` is recorded and logged, so a final write that failed during shutdown is never lost.
-- Restarts are unlimited unless you set `WithMaxRestarts`.
+- Restarts are unlimited unless you set `WithMaxRestarts`. `WithRestartDelay(5*time.Second)` sets the first wait; repeated failures back off from there up to a one-minute cap.
 - `newQueue()` and `newSender()` are placeholders for your application's dependencies; the [DI Integration](#di-integration) section shows the constructor-injected form.
 
 ---
@@ -248,7 +248,8 @@ Options are kind-specific. Using an option with the wrong kind of worker makes `
 ### Continuous worker options
 
 - `worker.WithMaxRestarts(n)` — `n > 0` allows the first run plus at most `n` restarts; the worker is marked failed when a run fails after the `n`-th restart. `WithMaxRestarts(1)` means "try once more". `n == 0` (the default) means unlimited restarts.
-- `worker.WithRestartDelay(d)` — the wait before each restart (default 3s, or `worker.restart_delay` from config). Zero means the default, so a worker that fails instantly is throttled instead of busy-looping.
+- `worker.WithRestartDelay(d)` — the first and shortest wait before a restart (default 3s, or `worker.restart_delay` from config). Zero means `DefaultRestartDelay` (3s), so a worker that fails instantly is throttled instead of busy-looping.
+- `worker.WithMaxRestartDelay(d)` — the longest wait while failures repeat (default 1m, or `worker.max_restart_delay` from config); see [Restart Backoff](#restart-backoff). Zero means `DefaultMaxRestartDelay` (1m), or the restart delay when that is longer; a positive value below the restart delay is a registration error.
 
 Shutdown never consumes restart budget: a restart is counted only when the next run actually starts.
 
@@ -270,6 +271,42 @@ Shutdown never consumes restart budget: a restart is counted only when the next 
 - intervals: `@every 5m`, `@every 90s`, `@every 1h30m`
 
 Cron schedules use the process's local time zone and fire at second 0 of the matching minute. There is no per-worker time zone, and `TZ=`/`CRON_TZ=` prefixes are rejected: run the process in the zone the schedules are written for. Go reads the local zone from the `TZ` environment variable on Unix — a Linux container can set `TZ=Europe/Istanbul`, and an image without zoneinfo files can embed them with `import _ "time/tzdata"` — and from the operating system's time-zone setting on Windows. `@every` measures elapsed time and does not replace a calendar rule: "09:00 local time every day" and `@every 24h` are different schedules. The 6-field seconds form is not supported — for sub-minute periods use `@every`. `@every` needs a positive whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors. As in crontab(5), when both day-of-month and day-of-week are restricted, the schedule fires when either matches.
+
+---
+
+## Restart Backoff
+
+A continuous worker that fails is restarted after a wait. The first wait is the restart delay (`WithRestartDelay`, 3s by default). While failures repeat, each wait is drawn from a window that doubles up to the cap (`WithMaxRestartDelay`, 1 minute by default):
+
+| Failure in a row | Wait with the defaults |
+| --- | --- |
+| 1st | 3s |
+| 2nd | 3–6s |
+| 3rd | 6–12s |
+| 4th | 12–24s |
+| 5th | 24–48s |
+| 6th and later | 30–60s |
+
+The wait is randomized inside the window, so replicas failing on the same dependency do not retry in lockstep. It is never shorter than the restart delay and never longer than the cap.
+
+A run that lasted at least the cap resets the sequence: its failure waits the restart delay again. A worker that runs for hours and fails once a day therefore restarts after 3s, not after a minute. The reset affects only the wait; `Restarts` and the `WithMaxRestarts` budget keep counting.
+
+**The trade-off.** A worker whose dependency is down for an hour restarts about 80 times instead of 1,200 with a fixed 3s delay — and writes that many `worker run failed` lines and makes that many connection attempts. The price is recovery time: once the dependency is back, the worker may wait up to the cap before it tries again. Raise the cap (per worker, or per pool with `worker.max_restart_delay`) for dependencies that tend to stay down for long; lower it where a minute without the worker is too long.
+
+**Visibility.** Each failure line carries the chosen wait, `next_restart_in=24.3s`, and `pool.Workers()` reports the effective `RestartDelay` and `MaxRestartDelay`. The attribute is omitted when no restart follows: the `WithMaxRestarts` budget was just exhausted, or the application is shutting down.
+
+**Fixed delay.** Set both options to the same value:
+
+```go
+worker.MustRegister(app, "poller", poller,
+    worker.WithRestartDelay(10*time.Second),
+    worker.WithMaxRestartDelay(10*time.Second),
+)
+```
+
+`WithRestartDelay(time.Minute)` alone is fixed under the default one-minute cap, but with `worker.max_restart_delay: 5m` in the configuration it grows from one minute to five. Only equal options stay fixed whatever the configuration says.
+
+**Limits.** Backoff makes `WithMaxRestarts(n)` take longer to exhaust: with the defaults, `WithMaxRestarts(5)` reaches `failed` after roughly 48–93s of waiting instead of 15s, and a `FailWhenFailed` readiness check drops correspondingly later.
 
 ---
 
@@ -304,7 +341,7 @@ Replace hand-written `context.WithTimeout` wrappers inside scheduled `Run` metho
 
 ## Finite Background Work
 
-A continuous worker must keep running until shutdown. Returning nil early is treated as a bug: Credo logs `worker run failed` with `unexpected_exit=true` and restarts the worker after the restart delay. This catches a consumer loop that quietly ended — `for msg := range ch { … }; return nil` on a closed channel — before it goes unnoticed.
+A continuous worker must keep running until shutdown. Returning nil early is treated as a bug: Credo logs `worker run failed` with `unexpected_exit=true` and restarts the worker with the [restart backoff](#restart-backoff). This catches a consumer loop that quietly ended — `for msg := range ch { … }; return nil` on a closed channel — before it goes unnoticed.
 
 For work that genuinely finishes, pick one of two homes:
 
@@ -321,7 +358,7 @@ For work that genuinely finishes, pick one of two homes:
   ```go
   func (w *Warmup) Run(ctx context.Context) error {
       if err := w.warm(ctx); err != nil {
-          return err // retried after the restart delay
+          return err // retried with the restart backoff
       }
       <-ctx.Done() // a continuous worker lives until shutdown
       return nil
@@ -379,7 +416,7 @@ app.GET("/admin/workers", func(ctx *credo.Context) error {
 Each `Info` carries:
 
 - `Name` and `Kind` (`worker.KindContinuous` / `worker.KindScheduled`)
-- `Config` — the **effective** configuration: `Schedule`, `StartImmediately`, `RunTimeout`, `MaxConsecutiveFailures`, `MaxRestarts`, `RestartDelay` (after config and defaults are applied) and a copy of the `Readiness` policy; fields that do not apply to the kind are zero, and zero limits mean unlimited
+- `Config` — the **effective** configuration: `Schedule`, `StartImmediately`, `RunTimeout`, `MaxConsecutiveFailures`, `MaxRestarts`, `RestartDelay` and `MaxRestartDelay` (after config and defaults are applied) and a copy of the `Readiness` policy; fields that do not apply to the kind are zero, and zero limits mean unlimited
 - `Status` — `idle`, `running`, `waiting`, `stopped` or `failed`
 - `Restarts` (continuous) and `ConsecutiveFailures` (scheduled)
 - `LastRun` (start of the latest run), `LastSuccess` (end of the latest successful scheduled run; always zero for continuous workers) and `LastError` (the latest failure, never with a stack trace; a successful scheduled run clears it)
@@ -417,7 +454,7 @@ level=INFO msg="worker stopped" module=worker worker=invoice-worker kind=schedul
 ```
 
 - `reason=shutdown` — the application stopped the worker. `reason=failed` — the worker exhausted its failure limit (or its schedule has no future activation); it is preceded by an Error line such as `worker exceeded max consecutive failures`, which is the one to alert on.
-- A failed run logs `worker run failed` (continuous) or `scheduled worker run failed` at Error, with `error`, `run_id` and `duration`, plus `timed_out=true` for a timeout, `unexpected_exit=true` for a continuous `Run` that returned nil early, and `stack` for a panic.
+- A failed run logs `worker run failed` (continuous) or `scheduled worker run failed` at Error, with `error`, `run_id` and `duration`, plus `timed_out=true` for a timeout, `unexpected_exit=true` for a continuous `Run` that returned nil early, and `stack` for a panic. A continuous failure line also carries `next_restart_in` when a restart follows ([Restart Backoff](#restart-backoff)).
 - A successful scheduled run logs `scheduled worker run completed` at **Debug** only; a worker running every minute would otherwise write 1,440 Info lines a day. Use `pool.Workers()` or `WithReadiness` to answer "is it alive", and the logs as the audit trail.
 - When runs outlast their schedule, one `worker ticks skipped` Warn line per resumption reports how many activations were skipped (`skipped`, `first_scheduled_at`, `last_scheduled_at`).
 - To join Credo's lines with your own for one run, log `worker.RunID(ctx)` as `run_id`.
@@ -443,7 +480,7 @@ worker.MustRegister(app, "recovery", recovery,
 ```
 
 - `RequireFirstSuccess` is a startup barrier: the instance stays unready until the worker's first run succeeds, then stays ready even if later runs fail. A timed-out run never satisfies it. Pair it with `WithStartImmediately()` unless waiting for the first cron activation is intended.
-- `FailWhenFailed` reports unready once the worker reaches `failed` (`WithMaxRestarts` / `WithMaxConsecutiveFailures` exhausted). For a continuous worker this includes one that keeps returning early. Use it only for workers the instance cannot serve without: every replica hitting the same persistent failure leaves rotation together.
+- `FailWhenFailed` reports unready once the worker reaches `failed` (`WithMaxRestarts` / `WithMaxConsecutiveFailures` exhausted). For a continuous worker this includes one that keeps returning early, and the [restart backoff](#restart-backoff) spaces the restarts that lead there. Use it only for workers the instance cannot serve without: every replica hitting the same persistent failure leaves rotation together.
 - `MaxSuccessAge` reports unready when the last success is older than the limit; it is not applied before the first success.
 - `RequireFirstSuccess` and `MaxSuccessAge` are for scheduled workers; `FailWhenFailed` works for both kinds. The zero policy is rejected at registration.
 
@@ -453,17 +490,18 @@ The contribution appears in the `/ready` body as a check named `worker:<name>`. 
 
 ## Configuration
 
-Credo reads one worker default from app config:
+Credo reads two worker defaults from app config:
 
 ```json
 {
   "worker": {
-    "restart_delay": "5s"
+    "restart_delay": "5s",
+    "max_restart_delay": "5m"
   }
 }
 ```
 
-`worker.restart_delay` is the default restart delay for continuous workers; `worker.WithRestartDelay(...)` overrides it per worker, and zero falls back to `DefaultRestartDelay` (3s). Schedules, limits and timeouts are per-worker options only.
+`worker.restart_delay` and `worker.max_restart_delay` are the default first wait and cap of the [restart backoff](#restart-backoff) for continuous workers. `worker.WithRestartDelay(...)` and `worker.WithMaxRestartDelay(...)` override them per worker; zero falls back to `DefaultRestartDelay` (3s) and `DefaultMaxRestartDelay` (1m), and a negative value is a registration error. A configured cap below one worker's restart delay is raised to that delay for that worker. Schedules, limits and timeouts are per-worker options only.
 
 ---
 

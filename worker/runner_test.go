@@ -47,7 +47,8 @@ func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 			name:    "continuous",
 			resolve: instance(worker),
 			restartPolicy: restartPolicy{
-				restartDelay: 5 * time.Second,
+				restartDelay:    5 * time.Second,
+				maxRestartDelay: 5 * time.Second,
 			},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -97,8 +98,9 @@ func TestRunContinuous_MaxRestartsMarksFailed(t *testing.T) {
 			name:    "continuous-fail",
 			resolve: instance(worker),
 			restartPolicy: restartPolicy{
-				maxRestarts:  2,
-				restartDelay: time.Minute,
+				maxRestarts:     2,
+				restartDelay:    time.Minute,
+				maxRestartDelay: time.Minute, // a fixed cadence
 			},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
@@ -185,7 +187,7 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		if err := pool.addDefinition(&definition{
 			name:          "snapshot",
 			resolve:       instance(worker),
-			restartPolicy: restartPolicy{maxRestarts: 2, restartDelay: time.Second},
+			restartPolicy: restartPolicy{maxRestarts: 2, restartDelay: time.Second, maxRestartDelay: time.Second},
 		}); err != nil {
 			t.Fatalf("addDefinition() = %v", err)
 		}
@@ -203,7 +205,7 @@ func TestPoolWorkers_SnapshotWhileRunning(t *testing.T) {
 		if info.Kind != KindContinuous {
 			t.Fatalf("Kind = %q, want %q", info.Kind, KindContinuous)
 		}
-		if want := (Config{MaxRestarts: 2, RestartDelay: time.Second}); !reflect.DeepEqual(info.Config, want) {
+		if want := (Config{MaxRestarts: 2, RestartDelay: time.Second, MaxRestartDelay: time.Second}); !reflect.DeepEqual(info.Config, want) {
 			t.Fatalf("Config = %+v, want %+v", info.Config, want)
 		}
 		if info.Status != StatusRunning {

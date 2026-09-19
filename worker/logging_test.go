@@ -60,7 +60,7 @@ func TestLogging_OneStartAndOneStopPerExitPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				p := newPool(logs.logger(), DefaultRestartDelay)
+				p := newPool(logs.logger(), poolConfig{})
 				startPool(t, p, mustDefinition(t, "w", tc.run, tc.opts...))
 				time.Sleep(tc.advance)
 				synctest.Wait()
@@ -113,7 +113,7 @@ func TestLogging_StartLineAttributes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		logs := newLogCapture()
-		p := newPool(logs.logger(), DefaultRestartDelay)
+		p := newPool(logs.logger(), poolConfig{})
 		startPool(t, p,
 			mustDefinition(t, "consumer", blockingFunc()),
 			mustDefinition(t, "report", scheduledOnce(), WithSchedule("@every 1h")),
@@ -157,7 +157,7 @@ func TestLogging_RunLines(t *testing.T) {
 	t.Run("success is debug only and carries the run id", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			p := newPool(logs.logger(), DefaultRestartDelay)
+			p := newPool(logs.logger(), poolConfig{})
 			var runID atomic.Value
 			startPool(t, p, mustDefinition(t, "report", Func(func(ctx context.Context) error {
 				runID.Store(RunID(ctx))
@@ -201,7 +201,7 @@ func TestLogging_RunLines(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			p := newPool(logs.logger(), DefaultRestartDelay)
+			p := newPool(logs.logger(), poolConfig{})
 			var runID atomic.Value
 			startPool(t, p, mustDefinition(t, "report", Func(func(ctx context.Context) error {
 				runID.Store(RunID(ctx))
@@ -238,7 +238,7 @@ func TestLogging_RunLines(t *testing.T) {
 		t.Run("continuous "+tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				p := newPool(logs.logger(), DefaultRestartDelay)
+				p := newPool(logs.logger(), poolConfig{})
 				startPool(t, p, mustDefinition(t, "consumer", tc.run, WithRestartDelay(time.Minute)))
 				synctest.Wait()
 				shutdownPool(t, p)
@@ -273,7 +273,7 @@ func TestLogging_SkippedActivationsCollapse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		logs := newLogCapture()
-		p := newPool(logs.logger(), DefaultRestartDelay)
+		p := newPool(logs.logger(), poolConfig{})
 		var runs atomic.Int32
 		startPool(t, p, mustDefinition(t, "ticker", Func(func(context.Context) error {
 			if runs.Add(1) == 1 {
@@ -309,7 +309,7 @@ func TestLogging_SkippedActivationsCollapse(t *testing.T) {
 // then stops it without a run.
 func TestPoolStart_PublishesContinuousRunnersIdle(t *testing.T) {
 	logs := newLogCapture()
-	p := newPool(logs.logger(), DefaultRestartDelay)
+	p := newPool(logs.logger(), poolConfig{})
 	var runs atomic.Int32
 	if err := p.addDefinition(mustDefinition(t, "consumer", Func(func(ctx context.Context) error {
 		runs.Add(1)

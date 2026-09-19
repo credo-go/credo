@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -262,12 +263,16 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 }
 
 // continuousPolicy restarts a continuous worker after every failed run —
-// including an early nil return — with the configured delay and restart
-// limit. WithMaxRestarts(N) allows the first run plus N restarts.
+// including an early nil return — with a capped, jittered exponential delay
+// and the restart limit. WithMaxRestarts(N) allows the first run plus N
+// restarts.
 type continuousPolicy struct {
 	p   *Pool
 	r   *runner
 	ran bool // a run has completed, so the next one is a restart
+	// ceiling is the upper bound of the last delay window; zero starts a new
+	// backoff sequence.
+	ceiling time.Duration
 }
 
 func (c *continuousPolicy) start(context.Context) (time.Duration, bool) {
@@ -291,35 +296,82 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 		return waitNone, true
 	}
 
+	// Decide before logging: the failure line announces the next delay only
+	// when a restart is planned.
 	restarts := r.restartCount()
-	p.logger.ErrorContext(ctx,
-		"worker run failed",
-		append([]any{
-			"worker", r.def.name,
-			"kind", string(KindContinuous),
-			"restarts", restarts,
-			"error", out.err,
-		}, res.logAttrs()...)...,
-	)
+	maxRestarts := r.def.restartPolicy.maxRestarts
+	exhausted := maxRestarts > 0 && restarts >= int64(maxRestarts)
+	stopping := ctx.Err() != nil
+	attrs := []any{
+		"worker", r.def.name,
+		"kind", string(KindContinuous),
+		"restarts", restarts,
+	}
+	var delay time.Duration
+	if !exhausted && !stopping {
+		delay = c.nextDelay(res.duration)
+		attrs = append(attrs, "next_restart_in", delay)
+	}
+	attrs = append(attrs, "error", out.err)
+	p.logger.ErrorContext(ctx, "worker run failed", append(attrs, res.logAttrs()...)...)
 
-	if max := r.def.restartPolicy.maxRestarts; max > 0 && restarts >= int64(max) {
+	if exhausted {
 		r.setOutcome(StatusFailed, out.err)
 		p.logger.ErrorContext(ctx,
 			"worker exceeded max restarts",
 			"worker", r.def.name,
 			"kind", string(KindContinuous),
-			"max_restarts", max,
+			"max_restarts", maxRestarts,
 		)
 		return waitNone, true
 	}
-	if ctx.Err() != nil {
+	if stopping {
 		// A failure during shutdown is recorded, and the loop ends.
 		r.setOutcome(StatusStopped, out.err)
 		return waitNone, true
 	}
 
 	r.setOutcome(StatusWaiting, out.err)
-	return r.def.restartPolicy.restartDelay, false
+	return delay, false
+}
+
+// nextDelay advances the backoff sequence after a failed run that lasted
+// runDuration and returns the wait before the restart: uniform in
+// [max(base, ceiling/2), ceiling], where the ceiling starts at base and
+// doubles up to the cap. A run that lasted at least the cap starts a new
+// sequence, so its restart waits base again.
+func (c *continuousPolicy) nextDelay(runDuration time.Duration) time.Duration {
+	base := c.r.def.restartPolicy.restartDelay
+	maxDelay := c.r.def.restartPolicy.maxRestartDelay
+	if runDuration >= maxDelay {
+		c.ceiling = 0
+	}
+	c.ceiling = nextCeiling(c.ceiling, base, maxDelay)
+	return c.p.jitter(max(base, c.ceiling/2), c.ceiling)
+}
+
+// nextCeiling returns the upper bound of the next delay window: base for the
+// first failure of a sequence (prev == 0), then twice the previous ceiling,
+// saturating at maxDelay. It never overflows: doubling happens only while the
+// result stays within maxDelay. base <= maxDelay holds by construction.
+func nextCeiling(prev, base, maxDelay time.Duration) time.Duration {
+	switch {
+	case prev == 0:
+		return base
+	case prev > maxDelay/2:
+		return maxDelay
+	default:
+		return prev * 2
+	}
+}
+
+// uniformJitter returns a duration drawn uniformly from [lo, hi]; lo when the
+// window is empty. lo is positive, so hi-lo+1 cannot overflow.
+func uniformJitter(lo, hi time.Duration) time.Duration {
+	if hi <= lo {
+		return lo
+	}
+	return lo + time.Duration(rand.Int64N(int64(hi-lo)+1))
 }
 
 // scheduledPolicy runs one activation at a time and computes the next one

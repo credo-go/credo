@@ -22,8 +22,10 @@
 // # Contract
 //
 // A continuous worker's Run must stay active until its context is cancelled;
-// returning nil earlier is a failure, and the worker is restarted after its
-// restart delay. A scheduled worker's Run performs one activation: activations
+// returning nil earlier is a failure. A failed continuous worker is restarted
+// after its restart delay, which backs off with jitter up to a cap while
+// failures repeat ([WithRestartDelay], [WithMaxRestartDelay]). A scheduled
+// worker's Run performs one activation: activations
 // never overlap, those that come due during a run are skipped, and
 // [WithRunTimeout] bounds each run cooperatively. Panics are recovered and
 // recorded as failures. Workers start in the application's OnStart phase and
