@@ -8,12 +8,9 @@
 
 ## Restart Backoff and Startup Features
 
-Scope, sequence and acceptance live in the [delivery plan](docs/plans/restart-backoff-and-startup-features.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked.
+Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](docs/adr/023-worker-system.md#restart-backoff), [ADR-010](docs/adr/010-middleware-architecture.md#startup-visibility-of-effective-features), the [worker spec](docs/specs/worker.md#restart-backoff), the [HTTP features spec](docs/specs/http-features.md#startup-visibility), the [static spec](docs/specs/static.md) and the [migration guide](docs/guides/pre-v1-migration.md#workers) and deleted on 2026-09-20; nothing scheduled remains.
 
 - [x] Promote the accepted decisions to ADR-023, ADR-010 and the worker, HTTP-features and lifecycle specs; route-parameter/file-path and cron time-zone documentation (2026-09-19)
-
-All three items ship together in v0.21.0.
-
 - [x] Static serving decodes the route-captured path only once: files whose names contain `%` escapes are served again, and the static-files guide's table holds (2026-09-19)
 - [x] Startup `features` attribute on the managed start line (additive) (2026-09-19)
 - [x] Continuous-worker restart backoff (behavior change): `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, `worker.max_restart_delay`, `Config.MaxRestartDelay`, `next_restart_in` (2026-09-20)
