@@ -128,11 +128,24 @@ type StdMiddleware = func(http.Handler) http.Handler
 // existing Go community middleware with Credo's unified middleware stack.
 //
 //	app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
+//
+// A response the middleware writes by itself, without calling next, is the
+// request's response. Its body is the middleware's own — it passes neither the
+// error pipeline nor a [SuccessRenderer] — but it is recorded: once the
+// middleware returns, [Response.Status], [Response.Size] and
+// [Response.Committed] report it, the access record observes it, and an error
+// that surfaces afterwards is logged instead of being written after it. A
+// connection the middleware hijacks is reported by [Response.Hijacked].
 func WrapStdMiddleware(m StdMiddleware) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx *Context) error {
 			origReq := ctx.request.Request
 			origWriter := ctx.response.ResponseWriter
+			// The middleware writes to a recording writer over the underlying
+			// ResponseWriter, not to the Response wrapper: if it wraps its
+			// writer, ctx.response.ResponseWriter = w below would otherwise
+			// make the Response delegate to itself.
+			rec := &stdMiddlewareWriter{ResponseWriter: origWriter}
 			// The stdlib middleware's request/writer substitutions are only
 			// valid while its ServeHTTP runs. Restore the originals afterwards
 			// (also on panic) so that later writes — the error pipeline,
@@ -143,6 +156,9 @@ func WrapStdMiddleware(m StdMiddleware) Middleware {
 				handOverMultipartForm(origReq, ctx.request.Request)
 				ctx.request.Request = origReq
 				ctx.response.ResponseWriter = origWriter
+				// A response the middleware wrote by itself is the request's
+				// response, and a connection it hijacked is gone.
+				ctx.response.adopt(rec)
 			}()
 			var handlerErr error
 			nextHTTP := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,10 +166,7 @@ func WrapStdMiddleware(m StdMiddleware) Middleware {
 				ctx.response.ResponseWriter = w // stdlib MW may wrap writer
 				handlerErr = next(ctx)
 			})
-			// Pass the underlying ResponseWriter (not the Response wrapper)
-			// so that if the stdlib middleware wraps w, we avoid circular
-			// delegation when setting ctx.response.ResponseWriter = w.
-			m(nextHTTP).ServeHTTP(origWriter, origReq)
+			m(nextHTTP).ServeHTTP(rec, origReq)
 			return handlerErr
 		}
 	}

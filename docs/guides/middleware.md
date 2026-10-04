@@ -834,6 +834,8 @@ The adapter handles request and response writer synchronization between the stdl
 
 Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`ctx.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's centralized error envelope (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
 
+A response the adapted middleware writes by itself is still observed. Once the middleware returns, `ctx.Response().Status()`, `Size()` and `Committed()` report it, and the access log records its status and size. An error that a middleware further out returns afterwards is logged, not written on top of the response that was already sent. The same holds for a connection the middleware hijacks: `ctx.Response().Hijacked()` reports it and nothing more is written to it.
+
 ---
 
 ## Recommended Middleware Stack

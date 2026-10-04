@@ -47,7 +47,9 @@ const cacheControlNoCacheMustRevalidate = "no-cache, must-revalidate"
 // The embedded ResponseWriter may be swapped by middleware that wraps the
 // writer (e.g., compression); the tracking state is framework-owned and
 // exposed read-only via [Response.Status], [Response.Size], and
-// [Response.Committed], and [Response.Hijacked].
+// [Response.Committed], and [Response.Hijacked]. A response written by a
+// stdlib middleware adapted with [WrapStdMiddleware] never passes the
+// Response; the state takes it over when that middleware returns.
 type Response struct {
 	http.ResponseWriter
 
@@ -105,9 +107,12 @@ func (r *Response) Committed() bool {
 }
 
 // Hijacked reports whether the underlying HTTP connection was successfully
-// taken over through [Response.Hijack]. Writing status or Upgrade headers alone
-// does not mark the response as hijacked. Middleware that bypasses Response and
-// hijacks a raw underlying writer cannot be observed by this state.
+// taken over: through [Response.Hijack], or by a stdlib middleware adapted with
+// [WrapStdMiddleware], whose hijack is recorded when the middleware returns.
+// Writing status or Upgrade headers alone does not mark the response as
+// hijacked. Code that reaches a raw underlying writer some other way — through
+// [Response.Unwrap], for example — and hijacks it cannot be observed by this
+// state.
 func (r *Response) Hijacked() bool {
 	return r.hijacked
 }
