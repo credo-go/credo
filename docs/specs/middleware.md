@@ -149,6 +149,10 @@ These keys are read by framework features and framework middleware. Application 
 | `middleware.MetaAPIVersion` (`"api_version"`) | `string` \| `[]string` | `ContractGuard` — 400 on version mismatch |
 | `middleware.MetaScope` (`"scope"`) | `string` \| `[]string` | `ContractGuard` — 403 (requires `ScopeChecker`) |
 
+`ContractGuard` matches these types exactly; a `[]any` whose elements are all strings is read like a `[]string`. A declared contract is never skipped: when the guard reaches a value of any other type — a named string type (`type Scope string`), `nil`, a `[]any` holding a non-string element, an unsigned or floating-point `MetaMaxBody` — it rejects the request with the generic 500 instead of calling the handler. The cause (route, meta key, the value's Go type and the fix) is the error's internal cause, so it appears once in the server-error log and never in the response. No reflection is involved, and the accepted set does not grow to named types: the declaration converts (`string(scope)`).
+
+A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `"*/*"` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `nil` is not a contract value and lifts nothing.
+
 ---
 
 ## Config Struct Pattern (Echo-inspired)

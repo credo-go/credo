@@ -737,7 +737,7 @@ api.GET("/health", healthCheck).SetMeta("auth", false) // auth = false (override
 | Meta key | Value type | Enforced as |
 | --- | --- | --- |
 | `middleware.MetaAccept` | `string` / `[]string` | Content-Type allow-list -> 415 (missing header passes unless `RequireContentType`) |
-| `middleware.MetaMaxBody` | `int` / `int64` | body byte cap (`MaxBytesReader`) -> 413 |
+| `middleware.MetaMaxBody` | `int` / `int32` / `int64` | body byte cap (`MaxBytesReader`) -> 413 |
 | `middleware.MetaRequireHeaders` | `string` / `[]string` | required headers -> 400 |
 | `middleware.MetaRequireQuery` | `string` / `[]string` | required query params -> 400 |
 | `middleware.MetaAPIVersion` | `string` / `[]string` | API version (header or `version` param) -> 400 |
@@ -754,6 +754,25 @@ api.POST("/users", createUser).
 ```
 
 Register ContractGuard at the **group or route level**, not via `app.GlobalMiddleware`. It reads matched-route metadata, and a route is only matched _after_ app-global middleware runs — group and route middleware run after the match, so the route (and its inherited group meta) is available there. Applied globally it degrades to a safe no-op rather than an error.
+
+The value types in the table are matched exactly (a `[]any` whose elements are all strings is read like a `[]string`). If you model scopes or header names as a named type, convert where you declare the contract:
+
+```go
+type Scope string
+
+const ScopeReports Scope = "reports:read"
+
+api.GET("/reports", listReports).
+    SetMeta(middleware.MetaScope, string(ScopeReports)) // not ScopeReports itself
+```
+
+A declared contract is never skipped. When the guard meets a value it cannot read — a named string type, `nil`, a `[]any` holding a non-string element, a `uint` or a `"1MB"` string as `MetaMaxBody` — it answers the request with a generic 500 instead of calling the handler. The response says nothing about the contract; the `credo: server error` log record (`status=500`) names the route, the key, the value's Go type and the fix in its `error` attribute:
+
+```text
+contractguard: route GET /api/reports: meta "scope" has unsupported type main.Scope; use string or []string (convert a named type, e.g. string(v); a []any must hold only strings); request denied
+```
+
+A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `"*/*"` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted — and `nil` lifts nothing: it is rejected like any other unreadable value.
 
 By default a request with **no** `Content-Type` header passes the `MetaAccept` contract — there may be nothing to police. For a JSON API where every body must be labelled, set `ContractConfig.RequireContentType: true`: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected, so the switch arms a declared contract rather than adding a new one:
 

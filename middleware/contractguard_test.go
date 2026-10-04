@@ -1,9 +1,13 @@
 package middleware_test
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -377,4 +381,194 @@ func TestContractGuard_RequireContentType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Named types are what an application reaches for when it models scopes as
+// constants. None of them is in the guard's accepted set.
+type (
+	scopeName  string
+	scopeNames []string
+)
+
+// errorRecords returns the Error-level records written to a JSON log buffer.
+func errorRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	sc := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
+	for sc.Scan() {
+		var rec map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v\n%s", err, sc.Bytes())
+		}
+		if rec["level"] == "ERROR" {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// TestContractGuard_UnrecognizedMetaFailsClosed pins the fail-closed rule: a
+// declared contract whose value the guard cannot read rejects the request
+// instead of being skipped. The request carries no header, query parameter or
+// body and the scope checker denies everything, so the handler could only be
+// reached through a skipped contract.
+func TestContractGuard_UnrecognizedMetaFailsClosed(t *testing.T) {
+	type value struct {
+		name   string
+		value  any
+		logged string // how the logged cause names the value
+	}
+	listValues := []value{
+		{"named string", scopeName("admin"), "type middleware_test.scopeName"},
+		{"named string slice", scopeNames{"admin"}, "type middleware_test.scopeNames"},
+		{"slice of named strings", []scopeName{"admin"}, "type []middleware_test.scopeName"},
+		{"int", 1, "type int"},
+		{"struct", struct{ Name string }{"admin"}, "type struct { Name string }"},
+		{"any slice with a non-string element", []any{"admin", 1}, "type []interface {}"},
+		{"untyped nil", nil, "is nil"},
+	}
+	sizeValues := []value{
+		{"uint", uint(10), "type uint"},
+		{"float64", float64(10), "type float64"},
+		{"string", "1MB", "type string"},
+		{"untyped nil", nil, "is nil"},
+	}
+	contracts := []struct {
+		key    string
+		values []value
+	}{
+		{middleware.MetaAccept, listValues},
+		{middleware.MetaRequireHeaders, listValues},
+		{middleware.MetaRequireQuery, listValues},
+		{middleware.MetaAPIVersion, listValues},
+		{middleware.MetaScope, listValues},
+		{middleware.MetaMaxBody, sizeValues},
+	}
+	for _, c := range contracts {
+		for _, v := range c.values {
+			t.Run(c.key+"/"+v.name, func(t *testing.T) {
+				logger, logs := newTestLogger(t)
+				app := mustNew(t, credo.WithLogger(logger))
+				g := app.Group("/g")
+				g.Middleware(middleware.ContractGuard(middleware.ContractConfig{
+					ScopeChecker: func(*credo.Context, string) bool { return false },
+				}))
+				called := false
+				g.POST("/x", func(ctx *credo.Context) error {
+					called = true
+					return contractOK(ctx)
+				}).SetMeta(c.key, v.value)
+
+				w := httptest.NewRecorder()
+				app.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/g/x", nil))
+
+				if w.Code != http.StatusInternalServerError {
+					t.Fatalf("status = %d, want 500 (body %q)", w.Code, w.Body.String())
+				}
+				if called {
+					t.Fatal("handler ran behind an unrecognized contract value")
+				}
+				var body struct {
+					Success bool `json:"success"`
+					Error   struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatalf("body is not JSON: %v", err)
+				}
+				if body.Success || body.Error.Code != "internal_server_error" ||
+					body.Error.Message != "Internal Server Error" {
+					t.Fatalf("body = %s, want the generic 500 envelope", w.Body.String())
+				}
+				// The response says nothing about the route's contracts.
+				if got := w.Body.String(); strings.Contains(got, c.key) || strings.Contains(got, "contract") {
+					t.Fatalf("body %q leaks the contract", got)
+				}
+
+				recs := errorRecords(t, logs)
+				if len(recs) != 1 {
+					t.Fatalf("got %d error records, want 1:\n%s", len(recs), logs.String())
+				}
+				cause, _ := recs[0]["error"].(string)
+				for _, want := range []string{"contractguard", "POST /g/x", `"` + c.key + `"`, v.logged} {
+					if !strings.Contains(cause, want) {
+						t.Errorf("logged cause %q does not name %q", cause, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestContractGuard_LiftingAnInheritedScope: a route lifts a group's scope
+// requirement with an explicit empty list. A nil value is not a contract
+// value — it used to switch the inherited requirement off silently.
+func TestContractGuard_LiftingAnInheritedScope(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(*credo.Route)
+		want int
+	}{
+		{"inherited requirement applies", func(*credo.Route) {}, http.StatusForbidden},
+		{"empty list lifts it", func(r *credo.Route) {
+			r.SetMeta(middleware.MetaScope, []string{})
+		}, http.StatusOK},
+		{"nil does not", func(r *credo.Route) {
+			r.SetMeta(middleware.MetaScope, nil)
+		}, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app, g := contractGroup(t, middleware.ContractConfig{
+				ScopeChecker: func(*credo.Context, string) bool { return false },
+			})
+			g.SetMeta(middleware.MetaScope, "admin")
+			tt.set(g.GET("/x", contractOK))
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/g/x", nil))
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d", w.Code, tt.want)
+			}
+		})
+	}
+}
+
+// TestContractGuard_RecognizedMetaTypes covers the accepted shapes the other
+// tests do not: a []any of strings is read like a []string, and an int32 byte
+// count like an int64.
+func TestContractGuard_RecognizedMetaTypes(t *testing.T) {
+	t.Run("any slice of strings", func(t *testing.T) {
+		var asked []string
+		app, g := contractGroup(t, middleware.ContractConfig{
+			ScopeChecker: func(_ *credo.Context, s string) bool {
+				asked = append(asked, s)
+				return true
+			},
+		})
+		g.GET("/x", contractOK).SetMeta(middleware.MetaScope, []any{"read", "write"})
+
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/g/x", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if want := []string{"read", "write"}; !slices.Equal(asked, want) {
+			t.Fatalf("checked scopes = %v, want %v", asked, want)
+		}
+	})
+
+	t.Run("int32 body cap", func(t *testing.T) {
+		app, g := contractGroup(t)
+		g.POST("/x", contractOK).SetMeta(middleware.MetaMaxBody, int32(10))
+
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/g/x", strings.NewReader(strings.Repeat("x", 50)))
+		app.ServeHTTP(w, r)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", w.Code)
+		}
+	})
 }
