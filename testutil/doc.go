@@ -5,9 +5,9 @@
 // # Building a test App
 //
 // [NewApp] constructs a *credo.App that, unlike [credo.New], never loads
-// configuration from disk. It injects an empty config by default, registers a
-// best-effort shutdown via tb.Cleanup, and leaves the container un-finalized so
-// the test can add routes, providers, or overrides:
+// configuration from disk or from the environment. It injects an empty config
+// by default, registers a best-effort shutdown via tb.Cleanup, and leaves the
+// container un-finalized so the test can add routes, providers, or overrides:
 //
 //	func TestPingHandler(t *testing.T) {
 //		app := testutil.NewApp(t)
@@ -37,7 +37,9 @@
 // # Injecting config
 //
 // [WithConfig] sets values at dotted key paths. Repeated calls merge into one
-// document that is injected as the App's RawConfig:
+// document that is injected as the App's RawConfig. Only these values are
+// loaded; a .env file in the working directory and CREDO_* environment
+// variables do not reach the test App:
 //
 //	app := testutil.NewApp(t,
 //		testutil.WithConfig("app.name", "checkout"),
