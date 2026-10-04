@@ -351,6 +351,8 @@ Duplicate registration of the same type returns an error.
 
 Circular dependencies (A -> B -> A) are detected during Finalize and produce a clear error listing the cycle. Dependencies inside pre-built values are opaque to the container and take no part in validation or shutdown ordering.
 
+The validation report is deterministic: the same wiring yields the same error text on every run. Errors are listed in registration order — a consumer registered earlier is reported earlier, its parameters left to right — and when the graph holds several cycles, the one reached first from the earliest registration is reported, its text starting at the member that was registered first.
+
 ### Resolution (root package)
 
 ```go
@@ -749,6 +751,7 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 - `Seal()` returns error listing missing dependencies
 - `Seal()` detects circular dependencies (A -> B -> A) with clear cycle description
 - `Seal()` reports error for `context.Context` constructor parameters
+- `Seal()` reports errors in registration order with identical text on every run, a cycle included
 - Registration order does not matter --- A depending on B registered after A is valid
 
 ### Resolution

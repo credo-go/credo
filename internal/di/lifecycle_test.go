@@ -121,6 +121,74 @@ func TestSeal_InterfaceSliceDependency_CycleDetected(t *testing.T) {
 
 // --- Shutdown tests ---
 
+// Types for the validation-order test: five consumers that each miss a
+// different dependency, and two independent cycles.
+type (
+	orderMissing1 struct{}
+	orderMissing2 struct{}
+	orderMissing3 struct{}
+	orderMissing4 struct{}
+	orderMissing5 struct{}
+
+	orderNeeds1 struct{}
+	orderNeeds2 struct{}
+	orderNeeds3 struct{}
+	orderNeeds4 struct{}
+	orderNeeds5 struct{}
+
+	orderCycleA1 struct{}
+	orderCycleB1 struct{}
+	orderCycleA2 struct{}
+	orderCycleB2 struct{}
+)
+
+func newOrderNeeds1(*orderMissing1) *orderNeeds1 { return &orderNeeds1{} }
+func newOrderNeeds2(*orderMissing2) *orderNeeds2 { return &orderNeeds2{} }
+func newOrderNeeds3(*orderMissing3) *orderNeeds3 { return &orderNeeds3{} }
+func newOrderNeeds4(*orderMissing4) *orderNeeds4 { return &orderNeeds4{} }
+func newOrderNeeds5(*orderMissing5) *orderNeeds5 { return &orderNeeds5{} }
+
+func newOrderCycleA1(*orderCycleB1) *orderCycleA1 { return &orderCycleA1{} }
+func newOrderCycleB1(*orderCycleA1) *orderCycleB1 { return &orderCycleB1{} }
+func newOrderCycleA2(*orderCycleB2) *orderCycleA2 { return &orderCycleA2{} }
+func newOrderCycleB2(*orderCycleA2) *orderCycleB2 { return &orderCycleB2{} }
+
+// TestSeal_ReportsInRegistrationOrder: the validation error reads the same on
+// every run. Missing dependencies are listed in the order their consumers were
+// registered, and of several cycles the one whose member was registered first
+// is reported, starting at that member.
+func TestSeal_ReportsInRegistrationOrder(t *testing.T) {
+	const want = "di: Validate: *di_test.orderNeeds1 (param 0): dependency *di_test.orderMissing1 is not registered\n" +
+		"di: Validate: *di_test.orderNeeds2 (param 0): dependency *di_test.orderMissing2 is not registered\n" +
+		"di: Validate: *di_test.orderNeeds3 (param 0): dependency *di_test.orderMissing3 is not registered\n" +
+		"di: Validate: *di_test.orderNeeds4 (param 0): dependency *di_test.orderMissing4 is not registered\n" +
+		"di: Validate: *di_test.orderNeeds5 (param 0): dependency *di_test.orderMissing5 is not registered\n" +
+		"di: Validate: circular dependency: *di_test.orderCycleB2 → *di_test.orderCycleA2 → *di_test.orderCycleB2"
+
+	// Map iteration order varies per run of the loop, so a container that
+	// walks its maps fails this within a few iterations.
+	for i := range 50 {
+		c := di.New()
+		c.MustProvide[*orderNeeds1](newOrderNeeds1)
+		c.MustProvide[*orderCycleB2](newOrderCycleB2)
+		c.MustProvide[*orderNeeds2](newOrderNeeds2)
+		c.MustProvide[*orderCycleA2](newOrderCycleA2)
+		c.MustProvide[*orderNeeds3](newOrderNeeds3)
+		c.MustProvide[*orderCycleA1](newOrderCycleA1)
+		c.MustProvide[*orderNeeds4](newOrderNeeds4)
+		c.MustProvide[*orderCycleB1](newOrderCycleB1)
+		c.MustProvide[*orderNeeds5](newOrderNeeds5)
+
+		err := c.Seal()
+		if err == nil {
+			t.Fatal("expected Seal to fail")
+		}
+		if got := err.Error(); got != want {
+			t.Fatalf("run %d: Seal error =\n%s\nwant\n%s", i, got, want)
+		}
+	}
+}
+
 func TestShutdown_ReverseOrder(t *testing.T) {
 	c := di.New()
 	var order []string
