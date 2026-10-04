@@ -385,23 +385,35 @@ func (n *Node[V]) firstEndpointPattern() string {
 // rctx.Params.Keys on success, so Keys and Values line up only for a match.
 // The boolean reports whether a route matched; when it is false,
 // rctx.MethodNotAllowed tells a 404 apart from a 405.
+//
+// Candidates are tried from the most to the least specific (static, regexp,
+// parameter, catch-all). A candidate that matches the path but has no endpoint
+// for the method does not end the search: a less specific one that serves the
+// method answers. The lookup is a 405 only when no candidate that matches the
+// path serves the method, and rctx.MethodsAllowed is then the union of their
+// methods.
 func (n *Node[V]) FindRoute(rctx *RouteContext, method MethodTyp, path string) (V, bool) {
-	v, found, _ := n.findRoute(rctx, method, path)
+	v, found := n.findRoute(rctx, method, path)
+	if found {
+		// A candidate visited before the match may have recorded a 405.
+		rctx.MethodNotAllowed = false
+		rctx.methodsAllowed = 0
+	}
 	return v, found
 }
 
-func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (v V, found, methodNotAllowed bool) {
+func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (v V, found bool) {
 	// Base case: path fully consumed
 	if len(path) == 0 {
 		if n.isLeaf() {
 			if h, ok := n.resolveEndpoint(rctx, method); ok {
-				return h, true, false
+				return h, true
 			}
-			// Method not allowed — record allowed methods
+			// Method not allowed here (resolveEndpoint recorded the allowed
+			// methods); the caller keeps trying its other candidates.
 			rctx.MethodNotAllowed = true
-			return v, false, true
 		}
-		return v, false, false
+		return v, false
 	}
 
 	// Search static children first (highest priority)
@@ -411,9 +423,8 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 		}
 
 		if len(path) >= len(child.Prefix) && path[:len(child.Prefix)] == child.Prefix {
-			h, ok, mna := child.findRoute(rctx, method, path[len(child.Prefix):])
-			if ok || mna {
-				return h, ok, mna
+			if h, ok := child.findRoute(rctx, method, path[len(child.Prefix):]); ok {
+				return h, true
 			}
 		}
 	}
@@ -438,9 +449,8 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 		rest := path[end:]
 
 		rctx.Params.Values = append(rctx.Params.Values, value)
-		h, ok, mna := child.findRoute(rctx, method, rest)
-		if ok || mna {
-			return h, ok, mna
+		if h, ok := child.findRoute(rctx, method, rest); ok {
+			return h, true
 		}
 		// Backtrack: drop the captured value
 		rctx.Params.Values = rctx.Params.Values[:len(rctx.Params.Values)-1]
@@ -459,9 +469,8 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 		rest := path[paramEnd:]
 
 		rctx.Params.Values = append(rctx.Params.Values, value)
-		h, ok, mna := child.findRoute(rctx, method, rest)
-		if ok || mna {
-			return h, ok, mna
+		if h, ok := child.findRoute(rctx, method, rest); ok {
+			return h, true
 		}
 		// Backtrack: drop the captured value
 		rctx.Params.Values = rctx.Params.Values[:len(rctx.Params.Values)-1]
@@ -477,19 +486,18 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 		// each encoded segment decodes once.
 		value, ok := decodeCapture(rctx, path)
 		if !ok {
-			return v, false, false
+			return v, false
 		}
 		rctx.Params.Values = append(rctx.Params.Values, value)
 		if h, ok := child.resolveEndpoint(rctx, method); ok {
-			return h, true, false
+			return h, true
 		}
 		// Method not allowed on catch-all
 		rctx.MethodNotAllowed = true
 		rctx.Params.Values = rctx.Params.Values[:len(rctx.Params.Values)-1]
-		return v, false, true
 	}
 
-	return v, false, false
+	return v, false
 }
 
 // canonicalPattern brings the literal text of a pattern to the canonical wire
