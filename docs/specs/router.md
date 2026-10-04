@@ -91,7 +91,7 @@ Names are unique per router tree. Duplicate names panic at startup. `BuildURL` a
 
 ### StatusHandler System (Goyave-inspired)
 
-App-level customizable handlers for HTTP error status codes.
+App-level customizable handlers for the router's own 404 and 405 answers.
 
 ```go
 // Custom 404 handler
@@ -100,7 +100,7 @@ app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
 })
 ```
 
-Default status handlers are registered for common codes (404, 405, 500). StatusHandler is set on the `App` only; group-level overrides are not supported.
+`StatusHandler` is consulted for two codes only: 404, when no route matches the request, and 405, when routes match the path but none of them serves the method (the `Allow` header is set before the handler runs). The handler answers in place of the default error response, inside the global middleware and without a matched route. With no custom handler registered, the two outcomes are the `ErrNotFound` and `ErrMethodNotAllowed` errors of the central error pipeline. A handler registered for any other code is accepted and never called — there is no status handler for 500 or any other status. Status handlers are not error handlers either: an error a route handler or middleware returns, `ErrNotFound` from a route handler included, goes through the central error pipeline, whose body an `ErrorRenderer` shapes, and does not reach the custom 404 handler. StatusHandler is set on the `App` only; group-level overrides are not supported.
 
 ### UseI18n (i18n integration)
 
@@ -422,6 +422,7 @@ app.StatusHandler(404, func(ctx *credo.Context) error {
     return ctx.Response().HTML(404, "<h1>Page Not Found</h1>")
 })
 
-// StatusHandler is app-level only; groups inherit the app's handlers.
+// StatusHandler is app-level only and consulted for 404 and 405;
+// groups inherit the app's handlers.
 // Use middleware with route meta for group-specific error responses.
 ```

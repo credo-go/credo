@@ -56,7 +56,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] **Fluent Route API** (Goyave): HTTP method registrations return `*Route` for chaining
 - [x] **Route Meta system** (Goyave): `SetMeta(key, val)` / `LookupMeta(key)` with parent chain inheritance
 - [x] **Named Routes** (Goyave): `route.Name("x")` + strict `BuildURI(params...)` / `BuildURL(params...)`
-- [x] **StatusHandler** (Goyave): App-level 404/405/5xx handlers
+- [x] **StatusHandler** (Goyave): App-level handlers for the router's own 404 and 405 (no other code is consulted)
 - [x] **3-tier middleware** (Goyave): Global / Group / Route levels
 - [x] **HEAD auto-handling**: GET routes automatically respond to HEAD (body discarded)
 - [x] **Trailing slash redirect**: Auto 301/308 redirect when trailing-slash variant matches

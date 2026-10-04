@@ -127,7 +127,7 @@ Groups inherit parent middleware and metadata.
 
 ### Status Handlers
 
-Custom handlers for 404, 405, and other status codes:
+Custom handlers for the router's own 404 and 405 answers:
 
 ```go
 app.StatusHandler(404, func(ctx *credo.Context) error {
@@ -135,7 +135,7 @@ app.StatusHandler(404, func(ctx *credo.Context) error {
 })
 ```
 
-Status handlers are resolved from the root group.
+Status handlers are app-level and consulted for these two codes only: 404 when no route matches, 405 when the path matches but no route serves the method. They are not error handlers — an error a handler returns, a 404 included, goes through the central error pipeline ([ADR-009](009-handler-and-error-handling.md)).
 
 ### HEAD Auto-Handling
 
