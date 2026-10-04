@@ -78,8 +78,8 @@ type BindError struct {
 	// detected. Zero when unknown or not applicable (XML, form, query).
 	Offset int64
 
-	// Internal is the underlying decoder error. It is logged but never
-	// exposed to the client.
+	// Internal is the underlying decoder error. It is logged at debug level
+	// (credo: client error) and never exposed to the client.
 	Internal error
 }
 

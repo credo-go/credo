@@ -506,6 +506,131 @@ func TestLogServerError_SentinelHTTPError(t *testing.T) {
 	})
 }
 
+// TestLogClientErrorCause: the internal cause of a client error is what
+// explains a 4xx to whoever looks for it, and is written at Debug — once, for
+// an HTTPError or a BindError that carries one, never at the default level.
+func TestLogClientErrorCause(t *testing.T) {
+	const msg = "credo: client error"
+	type payload struct {
+		Age int `json:"age"`
+	}
+	cause := errors.New("tenant 42 has no such plan")
+
+	tests := []struct {
+		name    string
+		handler credo.Handler
+		body    string
+		status  int
+		// wantErr is the "error" attribute of the single Debug record; empty
+		// means that no record is written.
+		wantErr string
+	}{
+		{
+			name: "HTTPError with an internal cause",
+			handler: func(*credo.Context) error {
+				return credo.NewHTTPError(http.StatusConflict).WithInternal(cause)
+			},
+			status: http.StatusConflict, wantErr: cause.Error(),
+		},
+		{
+			name: "wrapped HTTPError with an internal cause",
+			handler: func(*credo.Context) error {
+				return fmt.Errorf("plans: %w", credo.NewHTTPError(http.StatusForbidden).WithInternal(cause))
+			},
+			status: http.StatusForbidden, wantErr: cause.Error(),
+		},
+		{
+			name: "BindError carries the decoder error",
+			handler: func(ctx *credo.Context) error {
+				var in payload
+				return ctx.Request().BindBody(&in)
+			},
+			body:   `{"age":"old"}`,
+			status: http.StatusBadRequest, wantErr: "age",
+		},
+		{
+			name: "HTTPError without an internal cause",
+			handler: func(*credo.Context) error {
+				return credo.NewHTTPError(http.StatusConflict)
+			},
+			status: http.StatusConflict,
+		},
+		{
+			name:    "fault provider",
+			handler: func(*credo.Context) error { return store.ErrNotFound },
+			status:  http.StatusNotFound,
+		},
+		{
+			name: "HTTPStatus error",
+			handler: func(*credo.Context) error {
+				return &httpStatusError{msg: "store: record not found", status: http.StatusNotFound}
+			},
+			status: http.StatusNotFound,
+		},
+		{
+			name: "validation errors",
+			handler: func(*credo.Context) error {
+				return validation.Errors{{Field: "age", Code: "required", Message: "is required"}}
+			},
+			status: http.StatusUnprocessableEntity,
+		},
+		{
+			name: "server error keeps its own record",
+			handler: func(*credo.Context) error {
+				return credo.NewHTTPError(http.StatusBadGateway).WithInternal(cause)
+			},
+			status: http.StatusBadGateway,
+		},
+	}
+	serve := func(t *testing.T, logger *slog.Logger, handler credo.Handler, body string) int {
+		t.Helper()
+		app := mustNew(t, credo.WithLogger(logger))
+		app.POST("/x", handler)
+		req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if bytes.Contains(rec.Body.Bytes(), []byte(cause.Error())) {
+			t.Fatalf("the internal cause reached the client: %s", rec.Body.String())
+		}
+		return rec.Code
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, buf := newTestLogger(t) // Debug level
+			if got := serve(t, logger, tt.handler, tt.body); got != tt.status {
+				t.Fatalf("status = %d, want %d", got, tt.status)
+			}
+			recs := recordsWithMsg(t, buf.String(), msg)
+			if tt.wantErr == "" {
+				if len(recs) != 0 {
+					t.Fatalf("got %d %q record(s), want none:\n%s", len(recs), msg, buf.String())
+				}
+				return
+			}
+			if len(recs) != 1 {
+				t.Fatalf("got %d %q record(s), want 1:\n%s", len(recs), msg, buf.String())
+			}
+			rec := recs[0]
+			if rec["level"] != "DEBUG" || rec["status"] != float64(tt.status) {
+				t.Errorf("record level=%v status=%v, want DEBUG %d", rec["level"], rec["status"], tt.status)
+			}
+			if got, _ := rec["error"].(string); !contains(got, tt.wantErr) {
+				t.Errorf("record error = %q, want it to contain %q", got, tt.wantErr)
+			}
+
+			// At the default level the same request leaves no trace.
+			var quiet bytes.Buffer
+			if got := serve(t, slog.New(slog.NewJSONHandler(&quiet, nil)), tt.handler, tt.body); got != tt.status {
+				t.Fatalf("status at the default level = %d, want %d", got, tt.status)
+			}
+			if quiet.Len() != 0 {
+				t.Errorf("a client error wrote to the log at the default level:\n%s", quiet.String())
+			}
+		})
+	}
+}
+
 // --- ErrorRenderer tests ---
 
 func TestHandleError_ErrorRendererCalled(t *testing.T) {

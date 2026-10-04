@@ -44,7 +44,7 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
 - `Code` is stable machine identity.
 - `MessageKey` is optional presentation identity and is never used to derive Code.
 - `Details` is client-safe structured data.
-- `Internal` is logged but never exposed.
+- `Internal` is never exposed. It is logged: at Error for a 5xx (`credo: server error`), at debug level for a 4xx (`credo: client error`), so a client error adds no line at the default log level.
 
 Builders are copy-on-write, so shared sentinels such as `ErrNotFound` remain safe. `NewHTTPError` accepts zero or one code. A missing code comes from the frozen HTTP-status table. Codes use lowercase snake case. Invalid constructor input is programmer misuse and panics; request recovery converts it to a safe generic 500.
 
