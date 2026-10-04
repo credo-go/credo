@@ -334,6 +334,59 @@ func (lm *lifecycleManager) runDrainHook(ctx context.Context, phase string, hook
 	return hook.fn(ctx)
 }
 
+// lifecycleHookPanicError reports an OnStart or OnShutdown hook that panicked.
+// Like drainHookPanicError it reads only "panic: …"; the record written when
+// the panic was recovered names the hook and carries the stack.
+type lifecycleHookPanicError struct {
+	kind  string // "OnStart" or "OnShutdown"
+	index int    // registration index of the hook
+	cause error
+	stack string
+}
+
+func (e *lifecycleHookPanicError) Error() string {
+	return fmt.Sprintf("panic: %v", e.cause)
+}
+
+func (e *lifecycleHookPanicError) Unwrap() error {
+	return e.cause
+}
+
+// runLifecycleHook calls an OnStart or OnShutdown hook and turns a panic into
+// that hook's error, as runDrainHook does for the drain hooks. Without it a
+// panicking OnStart hook unwinds past the teardown — and, on the goroutine Run
+// serves from, ends the process — and a panicking OnShutdown hook skips the
+// remaining hooks and leaves the App short of stopped. The recovered panic is
+// logged once with the hook index and the stack, because the returned error
+// carries neither.
+func (lm *lifecycleManager) runLifecycleHook(
+	ctx context.Context,
+	kind string,
+	index int,
+	fn func(ctx context.Context) error,
+) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicErr := &lifecycleHookPanicError{
+				kind:  kind,
+				index: index,
+				cause: internalobserve.PanicError(recovered),
+				stack: internalobserve.StackTrace(drainHookStackSize),
+			}
+			lm.app.logger.LogAttrs(
+				context.WithoutCancel(ctx),
+				slog.LevelError,
+				"credo: "+kind+" hook panic",
+				slog.Int("hook_index", index),
+				slog.Any("panic", recovered),
+				slog.String("stack", panicErr.stack),
+			)
+			err = panicErr
+		}
+	}()
+	return fn(ctx)
+}
+
 func (lm *lifecycleManager) newDrainIncompleteError(
 	cause error,
 	pending map[int]drainWork,
