@@ -35,6 +35,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ### Documentation
 
+- `CONTRIBUTING.md` no longer says that the root package has zero external dependencies. Its own imports are the standard library and in-module packages; through `config` and `internal/i18n` it links three modules — `go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2` and `golang.org/x/text` — which is what an application importing `github.com/credo-go/credo` alone builds in. An architecture test now fails when that set changes without its allowlist changing in the same commit.
 - The `StatusHandler` godoc, the router spec and ADR-007 state what the code does: a custom status handler is consulted for 404 (no route matches) and 405 (the path matches, the method does not) only. The documents promised handlers for "404, 405, 500" and "other status codes"; a handler registered for another code is accepted and never called, and an error a route handler returns — `credo.ErrNotFound` included — goes through the central error pipeline, not through the custom 404 handler ([router spec](docs/specs/router.md#statushandler-system-goyave-inspired)).
 
 ## [0.21.0] - 2026-09-20

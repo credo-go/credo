@@ -102,7 +102,7 @@ go run ./scripts/releasegate workspace
 - Every exported symbol must have a godoc comment.
 - Table-driven tests with `t.Run()` sub-tests.
 - Target 80%+ code coverage for core packages.
-- Zero external dependencies in core packages (root).
+- Dependencies are an allowlist, enforced by `architecture_test.go`: what each package may import directly (the root package: the standard library and in-module packages only) and which modules the root package links in through them (`go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`, `golang.org/x/text`). Adding a dependency means changing that file in the same PR.
 
 ## Reporting Issues
 
