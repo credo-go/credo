@@ -151,8 +151,8 @@ type App struct {
 	// Appended only after a mount's radix registration succeeds.
 	mounts []mountInfo
 
-	// statusHandlers holds app-level custom handlers for 404/405/5xx
-	// responses, set via StatusHandler.
+	// statusHandlers holds the app-level custom handlers set via
+	// StatusHandler. Dispatch consults the entries for 404 and 405 only.
 	statusHandlers map[int]Handler
 
 	// redirectTrailingSlash controls automatic trailing-slash redirects.
@@ -484,8 +484,20 @@ func (app *App) Host(pattern string) *Group {
 
 // --- Status Handlers ---
 
-// StatusHandler sets a custom handler for the given HTTP status code
-// at the root level.
+// StatusHandler sets an app-level custom handler for the router's own 404 or
+// 405 answer. The handler registered for [http.StatusNotFound] runs when no
+// route matches the request; the one for [http.StatusMethodNotAllowed] runs
+// when routes match the path but none of them serves the method, with the
+// Allow header already set. It answers in place of the default error response
+// for that case, inside the global middleware and without a matched route
+// ([Context.HasRoute] reports false).
+//
+// Only these two codes are consulted. A handler registered for any other code
+// is accepted and never called. The handlers are not error handlers either: an
+// error that a route handler or a middleware returns — [ErrNotFound] included
+// — goes through the centralized error handling and does not reach them; use
+// [App.UseErrorRenderer] to shape error bodies.
+//
 // Must be called before the server starts; panics if called after compile.
 func (app *App) StatusHandler(code int, h Handler) {
 	app.checkFrozen("App.StatusHandler")
