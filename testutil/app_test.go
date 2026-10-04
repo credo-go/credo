@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -92,6 +94,59 @@ func TestWithConfig_Injection(t *testing.T) {
 	if cfg.Env != "testing" {
 		t.Errorf("cfg.Env = %q, want %q", cfg.Env, "testing")
 	}
+}
+
+// TestWithConfig_IsHermetic: a test App is built from the values the test
+// gives it and nothing else. A .env file in the working directory and CREDO_*
+// variables in the environment — a developer's shell, a CI job — must not reach
+// an App configured through WithConfig.
+func TestWithConfig_IsHermetic(t *testing.T) {
+	newApp := func(t *testing.T) *credo.App {
+		t.Helper()
+		return testutil.NewApp(t,
+			testutil.WithConfig("app.name", "credo-test"),
+			testutil.WithConfig("app.env", "testing"),
+		)
+	}
+	check := func(t *testing.T, app *credo.App) {
+		t.Helper()
+		for key, want := range map[string]string{"app.name": "credo-test", "app.env": "testing"} {
+			got, err := app.GetConfig[string](key)
+			if err != nil {
+				t.Fatalf("GetConfig(%q): %v", key, err)
+			}
+			if got != want {
+				t.Errorf("%s = %q, want the WithConfig value %q", key, got, want)
+			}
+		}
+		for _, key := range []string{"app.extra", "app.secret"} {
+			if app.ConfigExists(key) {
+				got, _ := app.GetConfig[string](key)
+				t.Errorf("%s = %q came from outside the test", key, got)
+			}
+		}
+	}
+
+	t.Run("a .env file in the working directory", func(t *testing.T) {
+		dir := t.TempDir()
+		dotenv := "APP__NAME=from-dotenv\nAPP__EXTRA=from-dotenv\n"
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotenv), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		check(t, newApp(t))
+	})
+
+	t.Run("CREDO_ variables in the process environment", func(t *testing.T) {
+		t.Setenv("CREDO_APP__ENV", "from-process-env")
+		t.Setenv("CREDO_APP__SECRET", "from-process-env")
+		check(t, newApp(t))
+	})
+
+	t.Run("CREDO_ENV_FILE naming a file that is not there", func(t *testing.T) {
+		t.Setenv("CREDO_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
+		check(t, newApp(t))
+	})
 }
 
 func TestAssertHas_Pass(t *testing.T) {

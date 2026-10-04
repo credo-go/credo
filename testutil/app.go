@@ -55,7 +55,9 @@ func WithOverride[T any](v T) Option {
 // WithConfig sets a single configuration value at a dotted key path (for
 // example "server.port"). Repeated calls merge into one nested document that is
 // injected as the App's RawConfig. Using WithConfig switches NewApp from its
-// hermetic empty config to the real config loader.
+// empty config to the real config loader, which decodes that document and
+// nothing else: no .env file is read and no environment variable is merged,
+// so the test sees exactly the values it set.
 func WithConfig(key string, val any) Option {
 	return func(o *options) {
 		o.configPairs = append(o.configPairs, configPair{key: key, val: val})
@@ -71,10 +73,11 @@ func WithLogBuffer(buf *LogBuffer) Option {
 }
 
 // NewApp constructs a *credo.App for tests. Unlike [credo.New], it never loads
-// configuration from disk: by default it injects an empty RawConfig, so tests
-// are hermetic. Provide values with [WithConfig], wire dependencies with
-// [WithWiring], swap them with [WithOverride], and capture logs with
-// [WithLogBuffer].
+// configuration from disk or from the environment: by default it injects an
+// empty RawConfig, and the values given with [WithConfig] are the only ones
+// loaded, so tests are hermetic. Provide values with [WithConfig], wire
+// dependencies with [WithWiring], swap them with [WithOverride], and capture
+// logs with [WithLogBuffer].
 //
 // NewApp registers a graceful shutdown via tb.Cleanup: it tears down every
 // singleton the test created whether or not the App was run. The App is not
@@ -133,7 +136,8 @@ func NewApp(tb testing.TB, opts ...Option) *credo.App {
 
 // buildConfig returns the RawConfig for a test App. With no pairs it is an
 // empty, hermetic config; otherwise the pairs are merged into a nested JSON
-// document and parsed by the real loader.
+// document and parsed by the real loader with its .env and process-environment
+// sources switched off, bootstrap keys (CREDO_ENV, CREDO_ENV_FILE) included.
 func buildConfig(tb testing.TB, pairs []configPair) credo.RawConfig {
 	tb.Helper()
 	if len(pairs) == 0 {
@@ -147,7 +151,8 @@ func buildConfig(tb testing.TB, pairs []configPair) credo.RawConfig {
 	if err != nil {
 		tb.Fatalf("testutil: marshal config: %v", err)
 	}
-	rc, err := config.LoadBytes(data, config.FormatJSON)
+	rc, err := config.LoadBytes(data, config.FormatJSON,
+		config.WithoutDotenv(), config.WithoutProcessEnv())
 	if err != nil {
 		tb.Fatalf("testutil: load config: %v", err)
 	}
