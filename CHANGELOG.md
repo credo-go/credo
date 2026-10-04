@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-04
+
+**Security and bug-fix release.** A fail-open defect in `middleware.ContractGuard` is closed, eight defects are fixed and YAML decoding moves to its maintained module. No exported API is added, removed or renamed; the [release notes](docs/releases/v0.21.1.md#check-this-first) list the fixes that change what a request does.
+
 ### Security
 
 - **middleware:** `ContractGuard` no longer skips a declared contract whose route-meta value has a type it does not recognize. The guard read `string`, `[]string` and `[]any` values (`int`, `int32`, `int64` for `MetaMaxBody`) and treated every other type as "no requirement", so the route ran without the check it declared. With `MetaScope` that was an authorization bypass: `SetMeta(middleware.MetaScope, Scope("admin"))` — a named string type — let every request through where the plain string `"admin"` answers 403. `MetaRequireHeaders` and `MetaRequireQuery` were skipped the same way, a `MetaMaxBody` given as `uint`, `float64` or a string was ignored, a route-level `nil` silently switched off the contract inherited from its group, and a `[]any` lost its non-string elements. (`MetaAccept` and `MetaAPIVersion` were not skipped: an unreadable value already rejected requests, with 415 and 400; they now answer 500 like the others.) **Affected:** every release up to v0.21.0, in applications that declare a `ContractGuard` contract with a value outside the documented types. **After upgrading**, the guard rejects the request with the generic 500 instead of calling the handler, and the `credo: server error` log record names the route, the key, the value's Go type and the fix: `contractguard: route GET /api/reports: meta "scope" has unsupported type main.Scope; use string or []string (convert a named type, e.g. string(v); …); request denied`. **What to change:** convert the value where the contract is declared (`string(scope)`); replace a `nil` that was meant to lift an inherited contract with the value that requires nothing — `[]string{}` for `MetaScope`, `MetaRequireHeaders` and `MetaRequireQuery`, `"*/*"` for `MetaAccept`, a negative `MetaMaxBody`. The accepted types themselves are unchanged ([middleware spec](docs/specs/middleware.md#framework-meta-keys)).
@@ -544,7 +548,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/credo-go/credo/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/credo-go/credo/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/credo-go/credo/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/credo-go/credo/compare/v0.19.0...v0.20.0
