@@ -40,7 +40,7 @@ var modulePolicies = map[string]importPolicy{
 	"": {credo: []string{"config", "fault", "validation", "internal/*"}},
 
 	"auth":       {credo: []string{""}, external: []string{"github.com/golang-jwt/jwt/v5"}},
-	"config":     {external: []string{"github.com/go-viper/mapstructure/v2", "gopkg.in/yaml.v3"}},
+	"config":     {external: []string{"github.com/go-viper/mapstructure/v2", "go.yaml.in/yaml/v3"}},
 	"fault":      {},
 	"httpclient": {}, // stdlib-only AND must not import credo (documented in its spec)
 	"middleware": {

@@ -189,6 +189,70 @@ func TestParseConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:   "yaml anchor and alias",
+			data:   "base: &base\n  a: 1\n  b: 2\nother: *base\n",
+			format: "yaml",
+			want: map[string]any{
+				"base":  map[string]any{"a": 1, "b": 2},
+				"other": map[string]any{"a": 1, "b": 2},
+			},
+		},
+		{
+			name:   "yaml merge key",
+			data:   "base: &base\n  a: 1\n  b: 2\nderived:\n  <<: *base\n  b: 3\n  c: 4\n",
+			format: "yaml",
+			want: map[string]any{
+				"base":    map[string]any{"a": 1, "b": 2},
+				"derived": map[string]any{"a": 1, "b": 3, "c": 4},
+			},
+		},
+		{
+			name:    "yaml alias to an unknown anchor",
+			data:    "a: *nope\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml duplicate key",
+			data:    "a: 1\na: 2\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml nested duplicate key",
+			data:    "a:\n  b: 1\n  b: 2\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			// The decoder reads the first document of a stream.
+			name:   "yaml multi-document input",
+			data:   "a: 1\n---\nb: 2\n",
+			format: "yaml",
+			want:   map[string]any{"a": 1},
+		},
+		// A merged mapping's keys are looked up before they are checked, so a
+		// sequence or a mapping as a key used to panic the decoder when the
+		// receiving mapping had a non-string key. It is a decode error.
+		{
+			name:    "yaml merge with a sequence key",
+			data:    "m:\n  1: x\n  <<: {? [a, b] : 1}\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml merge with a mapping key",
+			data:    "m:\n  1: x\n  <<: {? {a: b} : 1}\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml merge list with a sequence key",
+			data:    "m:\n  1: x\n  <<: [{? [a, b] : 1}]\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
 			name:    "unsupported format",
 			data:    "x",
 			format:  "toml",

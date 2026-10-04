@@ -365,7 +365,7 @@ For practical examples (JSON config, env var overrides, Go struct), see [Configu
 
 There are no provider/parser interfaces: sources are internal functions that each produce a `map[string]any`, merged in precedence order into one nested map held by `Config`.
 
-- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json` / `gopkg.in/yaml.v3`); the same parser backs `LoadBytes`.
+- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json` / `go.yaml.in/yaml/v3`); the same parser backs `LoadBytes`.
 - **`.env` file** — Credo's own line parser (`parseDotenv`), read once per `Load`; entries normalized (lowercase, `__` → `.`) and unflattened.
 - **Process env vars** — prefix-filtered, normalized the same way.
 
