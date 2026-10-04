@@ -60,6 +60,38 @@ func TestMount_IntrospectionMethodsMatchRegistration(t *testing.T) {
 	}
 }
 
+// TestMountPrefixParams pins what a parametric mount is cut by: the prefix's
+// parameter names and the number of path segments it spans, where a slash
+// inside a parameter definition is not a segment boundary.
+func TestMountPrefixParams(t *testing.T) {
+	tests := []struct {
+		prefix       string
+		wantNames    []string
+		wantSegments int
+	}{
+		{"/", nil, 1},
+		{"/admin", nil, 1},
+		{"/a/b", nil, 2},
+		{"/{area}", []string{"area"}, 1},
+		{"/t/{tenant}", []string{"tenant"}, 2},
+		{"/org/{org}/api", []string{"org"}, 3},
+		{"/a/{x}/b/{y}", []string{"x", "y"}, 4},
+		{"/v/{major}.{minor}", []string{"major", "minor"}, 2},
+		{"/y/{year:[0-9]{4}}", []string{"year"}, 2},
+		{"/f/{pair:[a-z]+/[a-z]+}", []string{"pair"}, 2},
+		{"/f/{pair:[^/]+/[^/]+}/x", []string{"pair"}, 3},
+		// Malformed: what was parsed before the fault; registration reports it.
+		{"/a/{x}/{y", []string{"x"}, 2},
+	}
+	for _, tc := range tests {
+		names, segments := mountPrefixParams(tc.prefix)
+		if !slices.Equal(names, tc.wantNames) || segments != tc.wantSegments {
+			t.Errorf("mountPrefixParams(%q) = %v, %d; want %v, %d",
+				tc.prefix, names, segments, tc.wantNames, tc.wantSegments)
+		}
+	}
+}
+
 // dispatchOnceForTest runs a single dispatchOnce pass against app for the
 // given request, returning the recorder and the handler-chain error. It mirrors
 // ServeHTTP's pool acquire/reset/release but stops below the rewrite loop and

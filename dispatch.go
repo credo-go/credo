@@ -442,6 +442,16 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // Mount attaches another http.Handler as a sub-router under the given pattern.
 // The sub-router receives the remainder of the URL path.
 //
+// The pattern may carry parameters ("/t/{tenant}", "/v/{major}.{minor}",
+// "/y/{year:[0-9]{4}}"). The handler then receives the path below the matched
+// prefix, and each parameter of the prefix as a path value: a stdlib handler
+// reads it with r.PathValue("tenant") or [URLParam], a mounted Credo app with
+// ctx.Request().PathValue("tenant") — [Request.RouteParam] returns that app's
+// own route parameters only. Path values the request already carried are
+// kept; a name used again holds the value of the prefix closest to the
+// handler. A catch-all parameter is not a prefix: it consumes the rest of the
+// path, so the handler would always be handed "/".
+//
 // Method scope: the mounted handler is registered for all standard HTTP
 // methods except CONNECT and TRACE, which are excluded deliberately
 // (CONNECT is a proxy mechanism; TRACE enables cross-site tracing).
@@ -458,7 +468,9 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // The parent's RouteContext (which may contain internal params like _mount) is
 // stripped before calling the child handler, so the child dispatch creates its
 // own fresh RouteContext. This prevents internal routing state from leaking
-// across mount boundaries.
+// across mount boundaries. The parameters of a prefix cross the boundary as
+// path values instead, set on a clone of the request, so the request the
+// caller holds keeps the path values it had.
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) Mount(pattern string, handler http.Handler) {
@@ -503,14 +515,24 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	mountHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveMounted(handler, w, mountChildRequest(r, mountRemainder(r, exact)))
 	})
-
-	app.mountRoutes(catchAll, mountHandler)
-
 	// Also handle exact pattern match (without trailing path)
 	exactHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveMounted(handler, w, mountChildRequest(r, "/"))
 	})
 
+	// A prefix with parameters is not text that could be cut off the path, and
+	// its parameters are the child's to read. Computed once, here; a static
+	// prefix keeps the handlers above.
+	if names, segments := mountPrefixParams(exact); len(names) > 0 {
+		mountHandler = func(w http.ResponseWriter, r *http.Request) {
+			serveMounted(handler, w, mountParamChildRequest(r, names, mountRemainderBelow(r, segments)))
+		}
+		exactHandler = func(w http.ResponseWriter, r *http.Request) {
+			serveMounted(handler, w, mountParamChildRequest(r, names, "/"))
+		}
+	}
+
+	app.mountRoutes(catchAll, mountHandler)
 	app.mountRoutes(exact, exactHandler)
 
 	// Record the mount for introspection only after both registrations
@@ -544,21 +566,96 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 	return r2.WithContext(context.WithValue(r2.Context(), routeCtxKey, (*RouteContext)(nil)))
 }
 
+// mountParamChildRequest creates the child request for a handler mounted
+// under a prefix with parameters. Like mountChildRequest it rewrites the path
+// and strips the parent's RouteContext; in addition every parameter of the
+// prefix becomes a path value of the child ([http.Request.PathValue]), read
+// from the parent's RouteContext, whose internal _mount capture is not among
+// names.
+//
+// The child is a Clone, not the shallow copy a static mount gets by with: a
+// shallow copy shares the storage behind its path values with the request it
+// was copied from, so SetPathValue would write into the caller's request — the
+// one an http.ServeMux in front of the app matched, or the child of a
+// parametric mount one level up. A clone inherits the values set so far and
+// keeps its own.
+func mountParamChildRequest(r *http.Request, names []string, newPath string) *http.Request {
+	rctx := getRouteContext(r)
+	child := r.Clone(context.WithValue(r.Context(), routeCtxKey, (*RouteContext)(nil)))
+	if err := setWirePath(child.URL, newPath); err != nil {
+		child.URL.Path = newPath
+		child.URL.RawPath = ""
+	}
+	if rctx != nil {
+		for _, name := range names {
+			child.SetPathValue(name, rctx.URLParam(name))
+		}
+	}
+	return child
+}
+
+// mountPrefixParams returns the parameter names of a mount prefix, in capture
+// order, and the number of path segments the prefix spans: its slashes outside
+// parameter definitions, since a slash in a regexp constraint
+// ("{pair:[a-z]+/[a-z]+}") is matched inside one segment. A malformed prefix
+// yields what was parsed before the fault; registering it reports the error.
+func mountPrefixParams(prefix string) (names []string, segments int) {
+	rest := prefix
+	for {
+		seg, err := internalpattern.NextSegment(rest)
+		if err != nil {
+			return names, segments
+		}
+		segments += strings.Count(seg.Prefix, "/")
+		if seg.Kind == internalpattern.Static {
+			return names, segments
+		}
+		names = append(names, seg.Name)
+		rest = seg.Suffix
+	}
+}
+
+// mountSourcePath returns the canonical wire path the tree matched the mount
+// on: the RoutePath dispatch recorded when the client's spelling was not
+// canonical, else the request's escaped path, which then is.
+func mountSourcePath(r *http.Request) string {
+	if rctx := getRouteContext(r); rctx != nil && rctx.RoutePath != "" {
+		return rctx.RoutePath
+	}
+	return wirepath.Canonical(r.URL.EscapedPath())
+}
+
 // mountRemainder returns the canonical wire path below the mount prefix, so
 // the child keeps the client's segment boundaries: "/admin/a%2Fb" mounted at
 // "/admin" hands the child "/a%2Fb", never "/a/b". The tree matched the
 // canonical prefix on the same canonical path, so the prefix is present
 // verbatim.
 func mountRemainder(r *http.Request, prefix string) string {
-	raw := wirepath.Canonical(r.URL.EscapedPath())
-	if rctx := getRouteContext(r); rctx != nil && rctx.RoutePath != "" {
-		raw = rctx.RoutePath
-	}
-	rest, ok := strings.CutPrefix(raw, wirepath.Static(prefix))
+	rest, ok := strings.CutPrefix(mountSourcePath(r), wirepath.Static(prefix))
 	if !ok {
 		return "/"
 	}
 	return "/" + strings.TrimPrefix(rest, "/")
+}
+
+// mountRemainderBelow returns the canonical wire path below a mount prefix
+// with parameters, which matched whatever the client sent and so cannot be cut
+// off as text. The path is cut after the segments the prefix spans instead: a
+// parameter never crosses a slash, and the canonical path keeps an encoded
+// slash encoded ("%2F"), so the prefix and the text it matched have the same
+// slashes.
+func mountRemainderBelow(r *http.Request, segments int) string {
+	path := mountSourcePath(r)
+	for i := 0; i < len(path); i++ {
+		if path[i] != '/' {
+			continue
+		}
+		if segments == 0 {
+			return path[i:]
+		}
+		segments--
+	}
+	return "/"
 }
 
 // rewriteRequest returns a shallow copy of r whose URL carries rawPath as its

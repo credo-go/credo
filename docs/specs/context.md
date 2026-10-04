@@ -205,7 +205,7 @@ id := ctx.Request().RouteParam("id")
 
 Host and path params share one namespace. Registering a host-scoped route whose path params collide with host param names panics at registration time.
 
-`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. Without it, `ctx.Request().PathValue("id")` would silently return "" — the dispatcher deliberately does not populate stdlib path values (an extra allocation per request for data `RouteParam` already serves). The raw embedded request — as seen by stdlib handlers via `Mount` or middleware via `WrapStdMiddleware` — still carries no path values.
+`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. Without it, `ctx.Request().PathValue("id")` would silently return "" — the dispatcher deliberately does not populate stdlib path values with a route's parameters (an extra allocation per request for data `RouteParam` already serves). The raw embedded request — as seen by middleware via `WrapStdMiddleware` — still carries none of them. The fallback is also how an app mounted under a parametric prefix reads that prefix: `Mount("/t/{tenant}", child)` hands the child a request whose path values hold `tenant`, so in the child `PathValue("tenant")` returns it while `RouteParam`/`RouteParams` hold the child's own route parameters only ([router spec](router.md#sub-router-mounting)).
 
 ### Scheme and RealIP
 

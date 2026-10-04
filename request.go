@@ -84,6 +84,10 @@ func NewRequest(r *http.Request) *Request {
 // The value is percent-decoded exactly once by the router ("a%2Fb" arrives as
 // "a/b" inside one segment); do not unescape it again.
 //
+// In an app mounted with [App.Mount], RouteParam returns that app's own route
+// parameters. The parameters of the mount prefix are path values of the
+// request: read them with [Request.PathValue].
+//
 // Unlike the map returned by [Request.RouteParams], the returned string is
 // safe to retain after the request completes.
 func (r *Request) RouteParam(name string) string {
@@ -138,11 +142,18 @@ func (r *Request) addRouteParam(key, value string) {
 // in new code.
 //
 // This shadow exists for stdlib muscle memory: Credo's dispatcher does not
-// populate the embedded *http.Request's path values (doing so would cost an
-// allocation per request for data [Request.RouteParam] already serves), so
-// without it ctx.Request().PathValue("id") would silently return "". The
-// raw embedded request — as seen by stdlib handlers via [App.Mount] or
-// middleware via [WrapStdMiddleware] — still carries no path values.
+// populate the embedded *http.Request's path values with a route's parameters
+// (doing so would cost an allocation per request for data
+// [Request.RouteParam] already serves), so without it
+// ctx.Request().PathValue("id") would silently return "". The raw embedded
+// request — as seen by middleware via [WrapStdMiddleware] — still carries
+// none of them.
+//
+// The fallback is also how an app mounted with [App.Mount] reads the
+// parameters of its mount prefix: Mount("/t/{tenant}", child) hands the child
+// a request whose path values hold the tenant, so in the child
+// PathValue("tenant") returns it, while [Request.RouteParam] knows the
+// child's own route parameters only.
 func (r *Request) PathValue(name string) string {
 	for i, k := range r.paramKeys {
 		if k == name {

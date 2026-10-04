@@ -170,6 +170,19 @@ func TestMultipartTempFiles_RemovedBehindRequestCopies(t *testing.T) {
 			},
 		},
 		{
+			name: "stdlib handler mounted under a parametric prefix", count: "1", want: http.StatusOK,
+			setup: func(app *credo.App, observe func()) {
+				app.Mount("/{area}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseMultipartForm(uploadSpillThreshold); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					observe()
+					_, _ = w.Write([]byte(r.PathValue("area")))
+				}))
+			},
+		},
+		{
 			name: "mounted stdlib handler panics", count: "1", want: http.StatusInternalServerError,
 			setup: func(app *credo.App, observe func()) {
 				app.Mount("/upload", http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

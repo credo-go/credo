@@ -258,6 +258,20 @@ A mount answers both its exact prefix (`/admin`) and everything beneath it (`/ad
 app.Mount("/", legacyApp) // every path, "/" included, goes to legacyApp
 ```
 
+The prefix may carry parameters. The mounted handler gets the path below the matched prefix and reads the parameters as path values:
+
+```go
+app.Mount("/t/{tenant}", tenantApp) // /t/acme/reports reaches tenantApp as /reports
+
+// in a mounted stdlib handler
+tenant := r.PathValue("tenant") // or credo.URLParam(r, "tenant")
+
+// in a mounted Credo app
+tenant := ctx.Request().PathValue("tenant")
+```
+
+In a mounted Credo app `RouteParam` returns that app's own route parameters; the parameters of the mount prefix are reached through `PathValue`. Nested parametric mounts add up: the innermost handler sees the parameters of every prefix on the way down. A catch-all parameter does not belong in a mount pattern — it consumes the whole path, and the handler would always see `/`.
+
 Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405.
 
 Mounted handlers run outside the per-route compiled chain, so only global middleware (and the framework features) apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).

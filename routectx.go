@@ -36,14 +36,18 @@ func withRouteContext(r *http.Request, rctx *RouteContext) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), routeCtxKey, rctx))
 }
 
-// URLParam returns the named URL parameter from the request's RouteContext.
-// It is intended for use in stdlib handlers mounted via [App.Mount]; normal
-// Credo handlers should use [Request.RouteParams] instead.
-// Returns empty string if the parameter doesn't exist or no RouteContext is set.
+// URLParam returns the named URL parameter of r: the value in the request's
+// RouteContext when it carries one, else the request's path value
+// ([http.Request.PathValue]). It is intended for stdlib handlers mounted via
+// [App.Mount], which receive the parameters of the mount prefix as path
+// values: under Mount("/t/{tenant}", h), URLParam(r, "tenant") is the tenant.
+// Credo handlers use [Request.RouteParam] instead.
+// Returns empty string if the parameter doesn't exist.
 func URLParam(r *http.Request, name string) string {
-	rctx := getRouteContext(r)
-	if rctx == nil {
-		return ""
+	if rctx := getRouteContext(r); rctx != nil {
+		if value := rctx.URLParam(name); value != "" {
+			return value
+		}
 	}
-	return rctx.URLParam(name)
+	return r.PathValue(name)
 }
