@@ -53,6 +53,7 @@ func (c *Container) Alias[I, T any]() error {
 	}
 
 	c.aliases[ifaceType] = concreteType
+	c.aliasOrder = append(c.aliasOrder, ifaceType)
 	return nil
 }
 
@@ -107,6 +108,7 @@ func (c *Container) BindMany[I, T any]() error {
 	if !ok {
 		set = make(map[reflect.Type]struct{})
 		c.manyBindingSet[ifaceType] = set
+		c.manyOrder = append(c.manyOrder, ifaceType)
 	}
 	if _, exists := set[concreteType]; exists {
 		return fmt.Errorf("di: BindMany[%s, %s]: binding already exists", ifaceType, concreteType)

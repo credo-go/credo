@@ -29,7 +29,13 @@ type Container struct {
 	aliases        map[reflect.Type]reflect.Type // interface → concrete type (Alias)
 	manyBindings   map[reflect.Type][]reflect.Type
 	manyBindingSet map[reflect.Type]map[reflect.Type]struct{}
-	order          []reflect.Type // registration order (teardown tie-break)
+	// order, aliasOrder and manyOrder hold the keys of registrations, aliases
+	// and manyBindings in registration order. Validation walks them instead of
+	// the maps, so its report reads the same on every run; order is also the
+	// teardown tie-break.
+	order      []reflect.Type
+	aliasOrder []reflect.Type
+	manyOrder  []reflect.Type
 	// frameworkProviders produces constructor parameters the framework injects
 	// without a registration (credo.Infra, Model 1). Written at setup only.
 	frameworkProviders map[reflect.Type]FrameworkProvider

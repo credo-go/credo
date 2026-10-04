@@ -22,13 +22,19 @@ type shutdowner interface {
 //   - Missing dependencies (constructor param not registered)
 //   - Circular dependencies (A → B → A)
 //   - context.Context parameters (not allowed)
+//
+// Every walk follows registration order, never a map, so the same wiring
+// yields the same report on every run: the errors in the order their
+// subjects were registered, and of several cycles the one reached first from
+// the earliest registration.
 func (c *Container) validate() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var errs []error
 
-	for t, reg := range c.registrations {
+	for _, t := range c.order {
+		reg := c.registrations[t]
 		for i, pt := range reg.deps() {
 			// context.Context is not allowed as a constructor parameter.
 			if pt == contextType {
@@ -68,7 +74,8 @@ func (c *Container) validate() error {
 	}
 
 	// Validate aliases: concrete types must be registered.
-	for iface, concrete := range c.aliases {
+	for _, iface := range c.aliasOrder {
+		concrete := c.aliases[iface]
 		if _, ok := c.registrations[concrete]; !ok {
 			errs = append(errs, fmt.Errorf(
 				"di: Validate: alias %s → %s: concrete type is not registered",
@@ -78,7 +85,8 @@ func (c *Container) validate() error {
 	}
 
 	// Validate BindMany collections.
-	for iface, concretes := range c.manyBindings {
+	for _, iface := range c.manyOrder {
+		concretes := c.manyBindings[iface]
 		if iface.Kind() != reflect.Interface {
 			errs = append(errs, fmt.Errorf(
 				"di: Validate: BindMany target %s: target type must be an interface",
@@ -120,7 +128,9 @@ func (c *Container) validate() error {
 	return errors.Join(errs...)
 }
 
-// detectCycles performs DFS across all registrations to find cycles.
+// detectCycles performs DFS across all registrations to find cycles. It
+// starts from the registrations in registration order: the start decides
+// which cycle is found and at which member its text begins.
 func (c *Container) detectCycles() error {
 	const (
 		white = 0 // unvisited
@@ -164,7 +174,7 @@ func (c *Container) detectCycles() error {
 		return nil
 	}
 
-	for t := range c.registrations {
+	for _, t := range c.order {
 		if colors[t] == white {
 			if err := visit(t); err != nil {
 				return err
