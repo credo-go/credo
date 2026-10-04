@@ -108,7 +108,8 @@ type HTTPError struct {
 	// application's JSON profile; never place secrets or internal state here.
 	Details any `json:"-"`
 
-	// Internal is the underlying error (not exposed to the client).
+	// Internal is the underlying error. It is never exposed to the client;
+	// the error pipeline logs it, at Error for a 5xx status and at Debug below.
 	Internal error `json:"-"`
 }
 
@@ -346,7 +347,7 @@ func RFC9457ErrorRenderer(cfgs ...RFC9457Config) ErrorRenderer {
 //  1. Panic recovery (if ErrorRenderer panics, logs and sends 500)
 //  2. Hijacked/committed guard (logs warning if the HTTP response is no longer writable)
 //  3. Error classification via classifyError
-//  4. Server error logging (5xx HTTPErrors with Internal, unhandled errors)
+//  4. Logging (5xx at Error; the internal cause of a client error at Debug)
 //  5. ErrorRenderer dispatch (renderer is called even for HEAD — can set headers)
 //  6. Body write (HEAD → status only; renderer body → JSON; nil → default envelope)
 func (app *App) handleError(err error, ctx *Context) {
@@ -365,7 +366,7 @@ func (app *App) handleError(err error, ctx *Context) {
 
 	info := app.classifyError(err, ctx)
 	info.Err = err
-	app.logServerError(err, info.Status, ctx)
+	app.logError(err, info.Status, ctx)
 	app.renderError(ctx, info)
 }
 
@@ -381,8 +382,11 @@ func (app *App) recoverErrorPipelinePanic(err error, ctx *Context) {
 	}
 }
 
-func (app *App) logServerError(err error, status int, ctx *Context) {
+// logError writes what the response keeps from the client: a server error at
+// Error, the internal cause of a client error at Debug.
+func (app *App) logError(err error, status int, ctx *Context) {
 	if status < 500 {
+		logClientErrorCause(err, status, ctx)
 		return
 	}
 
@@ -401,6 +405,26 @@ func (app *App) logServerError(err error, status int, ctx *Context) {
 	}
 	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 		message, slog.Int("status", status), slog.Any("error", logErr))
+}
+
+// logClientErrorCause writes the internal cause of an error below 500 at
+// Debug. A client error earns no line at the default level, but the cause
+// attached with [HTTPError.WithInternal], or the decoder error behind a
+// [BindError], is what explains the response to whoever goes looking. An
+// error that carries no such cause — a fault provider, an HTTPStatus error —
+// writes nothing.
+func logClientErrorCause(err error, status int, ctx *Context) {
+	var cause error
+	if he, isHTTPError := errors.AsType[*HTTPError](err); isHTTPError {
+		cause = he.Internal
+	} else if be, isBindError := errors.AsType[*BindError](err); isBindError {
+		cause = be.Internal
+	}
+	if cause == nil {
+		return
+	}
+	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelDebug,
+		"credo: client error", slog.Int("status", status), slog.Any("error", cause))
 }
 
 func (app *App) renderError(ctx *Context, info *ErrorInfo) {

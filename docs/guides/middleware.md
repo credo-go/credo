@@ -484,7 +484,7 @@ What passes without configuration:
 
 **Subdomains are cross-origin.** A form on `app.example.com` posting to `api.example.com` is rejected (browsers send `Sec-Fetch-Site: same-site`) unless the frontend origin is listed in `TrustedOrigins`.
 
-Rejections return a centralized 403 error envelope; the detector's reason is logged but never exposed. Override with `ErrorHandler`:
+Rejections return a centralized 403 error envelope; the detector's reason is logged at debug level and never exposed. Override with `ErrorHandler`:
 
 ```go
 middleware.CSRF(middleware.CSRFConfig{

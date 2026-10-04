@@ -322,7 +322,7 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 }
 ```
 
-Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal` for logging and is never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages use bind scope plus the exact reason: an optional resolver may namespace it, otherwise the bare reason is the key. Field display-name handling matches validation. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
+Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal`, logged at debug level (`credo: client error`) and never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages use bind scope plus the exact reason: an optional resolver may namespace it, otherwise the bare reason is the key. Field display-name handling matches validation. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
 
 ### BindQuery
 
