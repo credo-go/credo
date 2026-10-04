@@ -578,9 +578,12 @@ func (lm *lifecycleManager) startRedirectListener(label, redirectAddr string, ma
 // stateStarting, so a concurrent Shutdown (which requires stateRunning) cannot
 // race this drain; we store stateStopping and drain directly instead of going
 // through initiateShutdown's CAS.
+//
+// A hook that panics fails the same way: runLifecycleHook turns the panic into
+// that hook's error, so the teardown below still runs.
 func (lm *lifecycleManager) runStartHooks(label string, l net.Listener) error {
 	for i, fn := range lm.onStart {
-		startErr := fn(lm.ctx)
+		startErr := lm.runLifecycleHook(lm.ctx, "OnStart", i, fn)
 		if startErr == nil {
 			continue
 		}
@@ -769,9 +772,11 @@ func (lm *lifecycleManager) drain(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
-	// 5. User shutdown hooks (LIFO) — ctx carries the drain deadline.
+	// 5. User shutdown hooks (LIFO) — ctx carries the drain deadline. A hook
+	// that panics is recorded as that hook's error and the remaining hooks
+	// still run, so the App always reaches stopped.
 	for i := len(lm.onShutdown) - 1; i >= 0; i-- {
-		if err := lm.onShutdown[i](ctx); err != nil {
+		if err := lm.runLifecycleHook(ctx, "OnShutdown", i, lm.onShutdown[i]); err != nil {
 			errs = append(errs, err)
 		}
 	}

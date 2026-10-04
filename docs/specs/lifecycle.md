@@ -149,7 +149,7 @@ Gracefully shuts down the server:
 5. Drains HTTP servers and every `OnDrain` subsystem hook in parallel.
 6. Waits for an in-flight `Reload` to return (its callbacks may use DI infrastructure) and keeps the reload slot so no later reload can start; at the deadline the reload is reported as still in flight and teardown proceeds.
 7. Shuts down DI container singletons via `container.Shutdown(ctx)` in dependency order (see [Container Integration](#container-integration)).
-8. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness.
+8. Calls `OnShutdown` hooks in **LIFO** order, passing `ctx` for deadline awareness. The DI container is already shut down at this point: a singleton that implements `Shutdowner` is closed, so work that still needs one belongs in `OnDrain` (step 5). A hook that panics is recovered and recorded as that hook's error; the remaining hooks still run.
 9. Collects all errors via `errors.Join`.
 10. Clears bound address (`Addr()` returns nil).
 11. Transitions to `stopped`.
@@ -199,6 +199,8 @@ The hook `lifecycleCtx` is the **lifecycle context** — created from `context.B
 
 If any hook returns an error, startup aborts: remaining hooks are skipped (fail-fast), the App runs the full teardown chain (mark unready → OnPreDrain → cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), the listener is closed, and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state, not `building` — an earlier hook may already have started workers, acquired a migration lock, or opened a subscription, so a session that began tears down rather than rolling back (ADR-006). The drain runs directly (state is `starting`, where `Shutdown` cannot race it), with the deadline set by `WithShutdownTimeout` and the same hard-barrier exception for a cancellation-ignoring OnPreDrain hook.
 
+A hook that panics fails the same way. The panic is recovered, logged once (`credo: OnStart hook panic`, Error, with `hook_index`, the panic value and the stack) and reported as that hook's error — `credo: Run: OnStart hook [1]: panic: …` — so the teardown above runs and the listener is released instead of the panic ending the process.
+
 `app.Addr()` is available inside hooks — critical for port-0 scenarios.
 
 Typical uses include cache warm-up. The `store/sqldb` migration wrapper's `Migrate` method matches this hook signature, so `app.OnStart(db.Migrate)` is convenient for development and deliberate single-replica deployments. Multi-replica production should instead run the same method once in a deadline-bounded pre-deploy job; this also avoids relying on the independently-created lifecycle context for a migration deadline (see the [Store Spec](store.md)).
@@ -222,6 +224,10 @@ Must be called before compile. A nil hook or late registration panics.
 ### `app.OnShutdown(fn func(ctx context.Context) error)`
 
 Registers a final shutdown hook. Hooks run in LIFO order after DI teardown. The `ctx` parameter carries the shared shutdown deadline from `Shutdown(ctx)`. Must be called before `compile()` (panics if frozen).
+
+"After DI teardown" means that a singleton implementing `Shutdowner` is already closed when an OnShutdown hook runs. Work that still needs such a singleton — a final flush through a database handle, a last publish — belongs in `OnDrain`, which runs before the container shuts down.
+
+A hook that panics is recovered: the panic is logged once (`credo: OnShutdown hook panic`, Error, with `hook_index`, the panic value and the stack) and becomes that hook's error. The remaining hooks still run, the App reaches `stopped`, and `Shutdown` returns the joined errors.
 
 OnShutdown hooks run on **every** teardown, including a failed startup (an OnStart hook erroring after an earlier one ran). OnShutdown is therefore the session teardown point, not an OnStart mirror: hooks must be idempotent and must not assume any particular OnStart hook completed. Because `onStart` and `onShutdown` are independent lists — not pairs by index — a hook running without its conceptual counterpart was always possible; session-failure teardown only makes it routine.
 

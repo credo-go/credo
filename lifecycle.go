@@ -20,10 +20,20 @@ func (app *App) IsRunning() bool {
 // Hooks are called in LIFO order (last registered, first called).
 // The ctx passed to each hook carries the shutdown deadline from Shutdown(ctx).
 //
+// The hooks are the last teardown step: they run after HTTP and the OnDrain
+// hooks have drained and after the DI container has shut down, so a singleton
+// that implements [Shutdowner] is already closed when a hook runs. Work that
+// still needs such a singleton — flushing through a database handle, a final
+// publish — belongs in [App.OnDrain], which runs before DI teardown.
+//
 // Hooks run on every teardown, including a failed startup (an OnStart hook
 // erroring after an earlier one ran). OnShutdown is the session teardown point,
 // not an OnStart mirror, so hooks must be idempotent and must not assume any
 // particular OnStart hook completed.
+//
+// A hook that panics is recovered: the panic is logged with its stack and
+// becomes that hook's error, the remaining hooks still run, and Shutdown
+// returns the joined errors.
 //
 // Must be called before Run; panics for a nil hook or after the App is frozen.
 func (app *App) OnShutdown(fn func(ctx context.Context) error) {
@@ -109,6 +119,8 @@ func (app *App) OnDrain(fn func(ctx context.Context) error) {
 // including DI shutdown and OnShutdown hooks), and Run returns the error. The
 // App ends terminally stopped — a session that began tears down rather than
 // rolling back, so it cannot be run again (create a new App).
+// A hook that panics fails the same way: the panic is recovered, logged with
+// its stack and reported as that hook's error.
 // Typical uses include cache warm-up. The store/sqldb migration wrapper plugs
 // in directly as app.OnStart(db.Migrate) for development and deliberate
 // single-replica deployments; multi-replica production should use one
