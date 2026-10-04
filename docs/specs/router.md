@@ -250,6 +250,21 @@ app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already regi
 
 The duplicate policy stays strict: registering the same method on the same shape panics with `credo: duplicate route: GET "/…/{customer_id}" is already registered as "/…/{id}" (parameter names do not distinguish routes)` plus both call sites, exactly like a literal re-registration, and automatic HEAD twins follow the existing overwrite rules. Structural conflicts are unchanged and still panic at registration: two different regex matchers at one path level, or one matcher followed by different tail bytes. The same model applies to regex-constrained and catch-all segments; `BuildURI`/`BuildURL` read the names from the selected route's own pattern, and path trees under `app.Host(...)` behave identically while host-label captures are unaffected.
 
+### Matching Order and Method Not Allowed
+
+At each path level the candidates are tried from the most to the least specific: static text, a regex-constrained parameter, a plain parameter, a catch-all. A mount is a catch-all under its prefix. The first candidate that matches the path **and** serves the request method answers. A candidate that matches the path but has no endpoint for the method does not end the search — the next, less specific candidate is tried, as in chi and `net/http.ServeMux`:
+
+```go
+app.GET("/users/new", newUserForm)
+app.POST("/users/{id}", updateUser)
+
+// GET    /users/new → newUserForm
+// POST   /users/new → updateUser, id = "new"
+// DELETE /users/new → 405, Allow: GET, HEAD, POST
+```
+
+A request is answered 405 only when no candidate that matches the path serves its method, and `Allow` then lists the methods of every such candidate. The route that answers brings its own group and route middleware: `POST /users/new` above runs `updateUser`'s chain, not `newUserForm`'s. An application that wants the static path to refuse a method registers that method there.
+
 ### Encoded Parameter Values
 
 Matching runs on the canonical form of the wire path: `URL.EscapedPath()` with every escape decoded except those of the RFC 3986 reserved characters (`/ ? # [ ] : @` and `! $ & ' ( ) * + , ; =`) and of `%`, which stay in upper-case hexadecimal. Segment boundaries and reserved spellings therefore come from the client — an encoded slash stays data and `%3B` is not `;` (§2.2: `/lit/a%3Bb` does not match static `/lit/a;b`) — while every equivalent spelling meets the same route: `/caf%C3%A9/42`, `/caf%c3%a9/42` and `/%63af%C3%A9/42` all reach `/café/{id}`, and an encoded unreserved delimiter is the delimiter (`%2D` and `-` spell the same URI, §2.3). Registered static text is brought to the same form (a literal `%` becomes `%25`; every other byte, reserved characters included, matches only its literal spelling), and each captured value is percent-decoded exactly once, so a captured `%3B` is the value `;`. A parameter candidate is the canonical text up to its tail byte (the pattern byte after the closing brace, as in `{name}.json`; a literal `%` is its `%25` unit) or the next slash, whichever comes first, with every remaining escape treated as one unit (`%3B` is never a `;` delimiter, `%2F` never a boundary), so `{name}` and `{name:regex}` never span a raw slash; a catch-all takes the rest of the path, keeps its slashes as separators and decodes each segment. A regex constraint applies to the whole decoded value, never to a prefix of it, and `RouteParam` reports that same value.

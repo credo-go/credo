@@ -511,6 +511,107 @@ func TestFindRoute_MethodNotAllowedAppendsNoKeys(t *testing.T) {
 	}
 }
 
+// A branch that matches the path but not the method does not end the search:
+// a less specific sibling that serves the method answers, and the lookup is a
+// 405 only when no candidate that matches the path serves it. The allowed
+// methods are then the union across those candidates.
+func TestFindRoute_MethodNotAllowedKeepsSearchingSiblings(t *testing.T) {
+	type route struct {
+		method  MethodTyp
+		pattern string
+	}
+	tests := []struct {
+		name    string
+		routes  []route
+		method  MethodTyp
+		path    string
+		want    string // matched pattern; "" = no match
+		keys    []string
+		values  []string
+		allowed MethodTyp // for a 405
+	}{
+		{
+			name:   "static lacks the method, parameter serves it",
+			routes: []route{{MGet, "/users/new"}, {MPost, "/users/{id}"}},
+			method: MPost, path: "/users/new",
+			want: "/users/{id}", keys: []string{"id"}, values: []string{"new"},
+		},
+		{
+			name:   "regexp lacks the method, parameter serves it",
+			routes: []route{{MGet, "/items/{id:[0-9]+}"}, {MDelete, "/items/{slug}"}},
+			method: MDelete, path: "/items/42",
+			want: "/items/{slug}", keys: []string{"slug"}, values: []string{"42"},
+		},
+		{
+			name:   "parameter lacks the method, catch-all serves it",
+			routes: []route{{MGet, "/files/{name}"}, {MPut, "/files/{path...}"}},
+			method: MPut, path: "/files/a",
+			want: "/files/{path...}", keys: []string{"path"}, values: []string{"a"},
+		},
+		{
+			name:   "nested: the deeper static branch fails on the method",
+			routes: []route{{MGet, "/a/{x}/c"}, {MPost, "/a/b/{y}"}},
+			method: MGet, path: "/a/b/c",
+			want: "/a/{x}/c", keys: []string{"x"}, values: []string{"b"},
+		},
+		{
+			name:   "no candidate serves the method",
+			routes: []route{{MGet, "/users/new"}, {MPost, "/users/{id}"}, {MPut, "/users/{rest...}"}},
+			method: MDelete, path: "/users/new",
+			allowed: MGet | MPost | MPut,
+		},
+		{
+			name:   "a sibling that does not match the path adds nothing",
+			routes: []route{{MGet, "/users/new"}, {MPost, "/users/{id}/roles"}},
+			method: MPost, path: "/users/new",
+			allowed: MGet,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := newTree()
+			for _, r := range tt.routes {
+				if _, err := tree.InsertRoute(r.method, r.pattern, r.pattern); err != nil {
+					t.Fatalf("InsertRoute(%s): %v", r.pattern, err)
+				}
+			}
+
+			rctx := &RouteContext{}
+			got, found := tree.FindRoute(rctx, tt.method, tt.path)
+
+			if tt.want == "" {
+				if found {
+					t.Fatalf("FindRoute matched %q, want a 405", got)
+				}
+				if !rctx.MethodNotAllowed {
+					t.Error("MethodNotAllowed = false, want true")
+				}
+				if rctx.MethodsAllowed() != tt.allowed {
+					t.Errorf("allowed methods = %v, want %v",
+						MethodTypToString(rctx.MethodsAllowed()), MethodTypToString(tt.allowed))
+				}
+				if len(rctx.Params.Keys) != 0 || len(rctx.Params.Values) != 0 {
+					t.Errorf("Keys/Values = %q/%q, want none", rctx.Params.Keys, rctx.Params.Values)
+				}
+				return
+			}
+
+			if !found || got != tt.want {
+				t.Fatalf("FindRoute = %q (found=%v), want %q", got, found, tt.want)
+			}
+			if !slices.Equal(rctx.Params.Keys, tt.keys) || !slices.Equal(rctx.Params.Values, tt.values) {
+				t.Errorf("Keys/Values = %q/%q, want %q/%q",
+					rctx.Params.Keys, rctx.Params.Values, tt.keys, tt.values)
+			}
+			// The branch that failed on the method leaves no trace on a match.
+			if rctx.MethodNotAllowed || rctx.MethodsAllowed() != 0 {
+				t.Errorf("405 state survived a match: MethodNotAllowed=%v allowed=%v",
+					rctx.MethodNotAllowed, MethodTypToString(rctx.MethodsAllowed()))
+			}
+		})
+	}
+}
+
 func TestInsertRoute_ConflictingRegexSiblings(t *testing.T) {
 	tree := newTree()
 

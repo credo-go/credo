@@ -1561,6 +1561,91 @@ func TestRouting_MethodNotAllowed_AllowHeader(t *testing.T) {
 	}
 }
 
+// A route that matches the path but not the method does not shadow a less
+// specific route that serves the method, as in chi and net/http.ServeMux. The
+// request is a 405 only when no route matching the path serves it, and Allow
+// then lists the methods of every such route.
+func TestRouting_MethodNotAllowed_FallsThroughToLessSpecificRoute(t *testing.T) {
+	app := mustNew(t)
+	app.GET("/users/new", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "form")
+	})
+	app.POST("/users/{id}", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "post "+ctx.Request().RouteParam("id"))
+	})
+
+	tests := []struct {
+		method string
+		path   string
+		code   int
+		body   string
+		allow  string
+	}{
+		{"GET", "/users/new", 200, "form", ""},
+		{"POST", "/users/7", 200, "post 7", ""},
+		{"POST", "/users/new", 200, "post new", ""},
+		{"DELETE", "/users/new", 405, "", "GET, HEAD, POST"},
+		{"GET", "/users/7", 405, "", "POST"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if w.Code != tt.code {
+				t.Fatalf("status = %d, want %d", w.Code, tt.code)
+			}
+			if tt.code == 200 && w.Body.String() != tt.body {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.body)
+			}
+			if got := w.Header().Get("Allow"); got != tt.allow {
+				t.Errorf("Allow = %q, want %q", got, tt.allow)
+			}
+		})
+	}
+}
+
+// A mount is the least specific candidate under its prefix, so it receives a
+// request whose method a more specific route does not serve.
+func TestRouting_Mount_ReceivesMethodASiblingRouteLacks(t *testing.T) {
+	sub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "mount %s %s", r.Method, r.URL.Path)
+	})
+	app := mustNew(t)
+	app.GET("/api/users", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "route")
+	})
+	app.Mount("/api", sub)
+
+	tests := []struct {
+		method string
+		code   int
+		body   string
+		allow  string
+	}{
+		{"GET", 200, "route", ""},
+		{"POST", 200, "mount POST /users", ""},
+		// Neither the route nor the mount serves TRACE.
+		{"TRACE", 405, "", "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, QUERY"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(tt.method, "/api/users", nil))
+
+			if w.Code != tt.code {
+				t.Fatalf("status = %d, want %d", w.Code, tt.code)
+			}
+			if tt.code == 200 && w.Body.String() != tt.body {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.body)
+			}
+			if got := w.Header().Get("Allow"); got != tt.allow {
+				t.Errorf("Allow = %q, want %q", got, tt.allow)
+			}
+		})
+	}
+}
+
 func TestRouting_UnknownMethod_Returns404(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/users", func(ctx *credo.Context) error {
