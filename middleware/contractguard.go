@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,6 +27,24 @@ import (
 //	MetaRequireQuery    string | []string  -> 400 Bad Request
 //	MetaAPIVersion      string | []string  -> 400 Bad Request
 //	MetaScope           string | []string  -> 403 Forbidden (needs ScopeChecker)
+//
+// The types are matched exactly; a []any whose elements are all strings is
+// read like a []string. A declared contract is never skipped: when the guard
+// reaches a value of any other type — a named string type (type Scope
+// string), a nil, a []any holding a non-string element — it rejects the
+// request with the generic 500 instead of calling the handler, and the
+// server-error log names the route, the key, the value's Go type and the
+// fix. Convert named types where the contract is declared:
+//
+//	api.GET("/reports", listReports).SetMeta(middleware.MetaScope, string(ScopeReports))
+//
+// A route overrides a contract inherited from its group by setting the key
+// itself. To lift an inherited requirement, set the value that requires
+// nothing: an empty list ([]string{}) for MetaRequireHeaders,
+// MetaRequireQuery and MetaScope, "*/*" for MetaAccept (every media type;
+// ContractConfig.RequireContentType still applies), a negative value for
+// MetaMaxBody. An empty MetaAPIVersion list accepts no version, so that
+// contract can be replaced but not lifted.
 const (
 	// MetaAccept restricts the request Content-Type to the listed media types.
 	// Values may use a "type/*" or "*/*" wildcard. Requests without a
@@ -131,36 +150,61 @@ func ContractGuard(cfg ...ContractConfig) credo.Middleware {
 			}
 			route := ctx.Route()
 
+			// A declared contract is never skipped: a value the guard cannot
+			// read rejects the request (unrecognizedContract) instead of
+			// leaving the route without the check it asked for.
 			if v, ok := route.LookupMeta(MetaAccept); ok {
-				if err := checkAccept(ctx, contractStrings(v), config.RequireContentType); err != nil {
+				accepted, ok := contractStrings(v)
+				if !ok {
+					return unrecognizedContract(route, MetaAccept, v)
+				}
+				if err := checkAccept(ctx, accepted, config.RequireContentType); err != nil {
 					return err
 				}
 			}
 			if v, ok := route.LookupMeta(MetaRequireHeaders); ok {
-				if err := checkRequireHeaders(ctx, contractStrings(v)); err != nil {
+				names, ok := contractStrings(v)
+				if !ok {
+					return unrecognizedContract(route, MetaRequireHeaders, v)
+				}
+				if err := checkRequireHeaders(ctx, names); err != nil {
 					return err
 				}
 			}
 			if v, ok := route.LookupMeta(MetaRequireQuery); ok {
-				if err := checkRequireQuery(ctx, contractStrings(v)); err != nil {
+				names, ok := contractStrings(v)
+				if !ok {
+					return unrecognizedContract(route, MetaRequireQuery, v)
+				}
+				if err := checkRequireQuery(ctx, names); err != nil {
 					return err
 				}
 			}
 			if v, ok := route.LookupMeta(MetaAPIVersion); ok {
-				if err := checkAPIVersion(ctx, config.APIVersionHeader, contractStrings(v)); err != nil {
+				allowed, ok := contractStrings(v)
+				if !ok {
+					return unrecognizedContract(route, MetaAPIVersion, v)
+				}
+				if err := checkAPIVersion(ctx, config.APIVersionHeader, allowed); err != nil {
 					return err
 				}
 			}
 			if v, ok := route.LookupMeta(MetaScope); ok {
-				if err := checkScope(ctx, config.ScopeChecker, contractStrings(v)); err != nil {
+				required, ok := contractStrings(v)
+				if !ok {
+					return unrecognizedContract(route, MetaScope, v)
+				}
+				if err := checkScope(ctx, config.ScopeChecker, required); err != nil {
 					return err
 				}
 			}
 			if v, ok := route.LookupMeta(MetaMaxBody); ok {
-				if limit, ok := contractInt64(v); ok {
-					if err := enforceMaxBody(ctx, limit); err != nil {
-						return err
-					}
+				limit, ok := contractInt64(v)
+				if !ok {
+					return unrecognizedContract(route, MetaMaxBody, v)
+				}
+				if err := enforceMaxBody(ctx, limit); err != nil {
+					return err
 				}
 			}
 			for _, check := range config.CustomChecks {
@@ -300,25 +344,71 @@ func enforceMaxBody(ctx *credo.Context, limit int64) error {
 	return nil
 }
 
-// contractStrings coerces a Meta value into a string slice. It accepts a single
-// string, a []string, or a []any of strings.
-func contractStrings(v any) []string {
+// contractStrings reads a list-valued Meta value. It recognizes a single
+// string, a []string, and a []any whose elements are all strings; ok is false
+// for everything else — a named string type, an untyped nil and a []any
+// holding a non-string element included. The accepted set is matched exactly,
+// without reflection.
+func contractStrings(v any) (list []string, ok bool) {
 	switch t := v.(type) {
 	case string:
-		return []string{t}
+		return []string{t}, true
 	case []string:
-		return t
+		return t, true
 	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
 			}
+			out = append(out, s)
 		}
-		return out
+		return out, true
 	default:
-		return nil
+		return nil, false
 	}
+}
+
+// contractLift names, per contract, the value that lifts an inherited
+// requirement for one route — what a nil value is usually meant to say.
+// MetaAPIVersion has none: an empty list accepts no version.
+var contractLift = map[string]string{
+	MetaAccept:         `"*/*"`,
+	MetaMaxBody:        "a negative value",
+	MetaRequireHeaders: "[]string{}",
+	MetaRequireQuery:   "[]string{}",
+	MetaScope:          "[]string{}",
+}
+
+// unrecognizedContract builds the rejection for a declared contract whose
+// Meta value the guard cannot read. Skipping the contract would leave the
+// route without the check it declared, so the request is denied instead.
+//
+// The value is a developer error, not a client one: the response is the
+// generic 500, which tells the client nothing about the route's contracts,
+// and the cause — route, key, Go type and the fix — travels as the internal
+// error, so the central error handler writes it to the server-error log once.
+func unrecognizedContract(route *credo.Route, key string, v any) error {
+	where := route.GetMethod() + " " + route.GetPattern()
+	var cause error
+	switch {
+	case v == nil:
+		fix := "set a value of an accepted type"
+		if lift, ok := contractLift[key]; ok {
+			fix = "to lift an inherited contract set " + lift
+		}
+		cause = fmt.Errorf("contractguard: route %s: meta %q is nil, which is not a contract value; "+
+			"%s; request denied", where, key, fix)
+	case key == MetaMaxBody:
+		cause = fmt.Errorf("contractguard: route %s: meta %q has unsupported type %T; "+
+			"use int, int32 or int64 (bytes); request denied", where, key, v)
+	default:
+		cause = fmt.Errorf("contractguard: route %s: meta %q has unsupported type %T; "+
+			"use string or []string (convert a named type, e.g. string(v); a []any must hold only strings); "+
+			"request denied", where, key, v)
+	}
+	return credo.NewHTTPError(http.StatusInternalServerError).WithInternal(cause)
 }
 
 // contractInt64 coerces a Meta value into an int64 byte count.
