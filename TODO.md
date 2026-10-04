@@ -134,12 +134,12 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] Unmarshal supports both structs and primitives
   - [x] ~~`config.Get[T]` / typed getters~~ removed — RawConfig 2-method design
 - [x] Priority order: env vars > .env > config files
-- [x] Parsers: `parser_json.go` (encoding/json), `parser_yaml.go` (gopkg.in/yaml.v3)
+- [x] Parsers: `parser_json.go` (encoding/json), `parser_yaml.go` (go.yaml.in/yaml/v3)
 - [x] Orchestration: `config.go` (Config struct, New, Load, Options, RawConfig compliance)
 - [x] `config/doc.go`
 - [x] Tests: 89 tests (unit + integration with temp files), -race clean
 - [x] Update NOTICES
-- [x] External deps added: `gopkg.in/yaml.v3`, `github.com/go-viper/mapstructure/v2`
+- [x] External deps added: `go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`
 
 ---
 
