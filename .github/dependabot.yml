@@ -1,10 +1,11 @@
 # Dependabot — keeps the version-pinned ("wrap + pin") dependencies fresh.
 #
-# By policy (docs/adr/002-code-acquisition-strategy.md), adapted core packages
-# carry zero external runtime dependencies, so every entry in go.mod is by
-# definition a wrapped or directly-imported library — exactly the set that
-# needs version/CVE watching. Drift in *adapted* (forked) sources is watched
-# separately by .github/workflows/upstream-watch.yml (see SECURITY-UPSTREAMS.md).
+# By policy (docs/adr/002-code-acquisition-strategy.md), adapted code is
+# copied into the tree and does not appear in go.mod: every entry there is a
+# library imported as released, wrapped or direct — exactly the set that needs
+# version/CVE watching (architecture_test.go holds the allowlist). Drift in
+# *adapted* (forked) sources is watched separately by
+# .github/workflows/upstream-watch.yml (see SECURITY-UPSTREAMS.md).
 #
 # examples/* modules are deliberately not covered: demo code, no production
 # exposure.

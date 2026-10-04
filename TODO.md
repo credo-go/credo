@@ -268,6 +268,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 **Import Boundary Fitness Test**
 
 - [x] `architecture_test.go` — verifies root package doesn't import feature packages (go/parser)
+- [x] Root package module graph allowlist — `go list -deps` on the root package: the root module, `go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`, `golang.org/x/text`; a new or a stale entry fails the test
 
 ---
 

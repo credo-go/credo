@@ -1,10 +1,12 @@
 package credo_test
 
 import (
+	"bytes"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -34,9 +36,11 @@ type importPolicy struct {
 // in the other direction: a package directory without a row, or a row without
 // a directory, fails the test so the matrix cannot silently drift.
 var modulePolicies = map[string]importPolicy{
-	// Root package: adapted core, zero external runtime dependencies. The
-	// three feature imports are documented exceptions (RawConfig alias,
-	// transport-neutral fault contract, parse-don't-validate error types).
+	// Root package: adapted core. Its own imports are the standard library
+	// and in-module packages; the modules it links through them are the
+	// rootGraphModules allowlist. The three feature imports are documented
+	// exceptions (RawConfig alias, transport-neutral fault contract,
+	// parse-don't-validate error types).
 	"": {credo: []string{"config", "fault", "validation", "internal/*"}},
 
 	"auth":       {credo: []string{""}, external: []string{"github.com/golang-jwt/jwt/v5"}},
@@ -111,6 +115,80 @@ func TestImportBoundary_ModulePolicy(t *testing.T) {
 	if len(violations) > 0 {
 		sort.Strings(violations)
 		t.Errorf("module import policy violations:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+// rootGraphModules is every module the root package links in: what an
+// application gets by importing github.com/credo-go/credo and nothing else.
+// The root package imports no external package itself; these arrive through
+// config and internal/i18n.
+var rootGraphModules = []string{
+	modulePath,
+	"github.com/go-viper/mapstructure/v2", // config: decoding into typed values
+	"go.yaml.in/yaml/v3",                  // config: YAML documents
+	"golang.org/x/text",                   // internal/i18n: BCP 47 language tags
+}
+
+// TestImportBoundary_RootPackageGraph checks the transitive side of the
+// dependency policy. modulePolicies constrains what each package imports
+// directly; this test constrains what the root package ends up linking, which
+// is what every application pays for. A dependency added to config,
+// validation or an internal package the root imports has to be added to
+// rootGraphModules in the same change, and a module that left the graph has
+// to be removed from it.
+func TestImportBoundary_RootPackageGraph(t *testing.T) {
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("the go tool is needed to list the root package's dependencies: %v", err)
+	}
+
+	// One line per package of the graph: import path, then its module. The
+	// standard library is left out by the template; the workspace is switched
+	// off so that the answer is the root module's own.
+	cmd := exec.CommandContext(t.Context(), goTool, "list", "-deps",
+		"-f", "{{if not .Standard}}{{.ImportPath}}\t{{with .Module}}{{.Path}}{{end}}{{end}}", ".")
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v\n%s", err, stderr.String())
+	}
+
+	// The first package seen of each module names the way in.
+	linked := make(map[string]string)
+	for line := range strings.Lines(string(out)) {
+		importPath, module, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
+		if !ok {
+			continue // a standard-library package: the template printed nothing
+		}
+		if module == "" {
+			t.Errorf("%s: go list reported no module for a package outside the standard library", importPath)
+			continue
+		}
+		if _, seen := linked[module]; !seen {
+			linked[module] = importPath
+		}
+	}
+	if _, ok := linked[modulePath]; !ok {
+		t.Fatalf("go list -deps did not report the root module itself; output:\n%s", out)
+	}
+
+	var violations []string
+	for module, importPath := range linked {
+		if !slices.Contains(rootGraphModules, module) {
+			violations = append(violations, module+": linked by the root package (through "+importPath+
+				") but not in rootGraphModules; `go mod why -m "+module+"` shows the path")
+		}
+	}
+	for _, module := range rootGraphModules {
+		if _, ok := linked[module]; !ok {
+			violations = append(violations, module+": in rootGraphModules but no longer linked by the root package (remove the stale entry)")
+		}
+	}
+	if len(violations) > 0 {
+		sort.Strings(violations)
+		t.Errorf("root package module graph violations:\n  %s", strings.Join(violations, "\n  "))
 	}
 }
 
