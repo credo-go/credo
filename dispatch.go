@@ -501,14 +501,14 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	}
 
 	mountHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, mountChildRequest(r, mountRemainder(r, exact)))
+		serveMounted(handler, w, mountChildRequest(r, mountRemainder(r, exact)))
 	})
 
 	app.mountRoutes(catchAll, mountHandler)
 
 	// Also handle exact pattern match (without trailing path)
 	exactHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, mountChildRequest(r, "/"))
+		serveMounted(handler, w, mountChildRequest(r, "/"))
 	})
 
 	app.mountRoutes(exact, exactHandler)
@@ -517,6 +517,22 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
 	// The prefix is the same cleaned value the exact match was registered on.
 	app.mounts = append(app.mounts, mountInfo{prefix: exact, registeredAt: callerLocation()})
+}
+
+// serveMounted runs a mounted handler on its child request. The child is a
+// copy of the parent request, so a multipart form the handler parses on it is
+// seen neither by net/http, which removes only the original request's form,
+// nor by the executor, which knows only the parent. Its temporary files are
+// removed here when the handler returns or panics; a form the child merely
+// inherited from the parent is left to its owner.
+func serveMounted(handler http.Handler, w http.ResponseWriter, child *http.Request) {
+	inherited := child.MultipartForm
+	defer func() {
+		if form := child.MultipartForm; form != nil && form != inherited {
+			_ = form.RemoveAll()
+		}
+	}()
+	handler.ServeHTTP(w, child)
 }
 
 // mountChildRequest creates a child request for a mounted sub-handler.

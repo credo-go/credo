@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -58,6 +59,12 @@ type Request struct {
 	cachedSchemeSet bool
 	cachedRealIP    string
 	cachedRealIPSet bool
+
+	// multipartForm is the form BindBody parsed. The *http.Request it was
+	// parsed on may be a copy (SetUser, a timeout or a stdlib middleware
+	// installs one), which net/http never sees, so the executor removes the
+	// form's temporary files itself (removeMultipartFiles).
+	multipartForm *multipart.Form
 }
 
 // NewRequest creates a new Request wrapping the given *http.Request.
@@ -311,9 +318,12 @@ func (r *Request) BindBody(target any) error {
 		}
 
 	case "multipart/form-data":
-		if err := r.ParseMultipartForm(defaultMultipartMaxMemory); err != nil {
+		if err := r.ParseMultipartForm(r.multipartMaxMemory()); err != nil {
 			return formBindError(err)
 		}
+		// Recorded before decoding, so a decode or validation failure still
+		// leaves the parsed files to the executor's cleanup.
+		r.multipartForm = r.MultipartForm
 		if err := decodeValues(target, url.Values(r.MultipartForm.Value), "form"); err != nil {
 			return err
 		}
@@ -458,9 +468,47 @@ func (r *Request) validateBoundTarget(op string, target any) error {
 	return nil
 }
 
+// multipartMaxMemory is the in-memory threshold BindBody passes to
+// ParseMultipartForm; file parts beyond it are spilled to temporary files.
+func (r *Request) multipartMaxMemory() int64 {
+	if r.app != nil && r.app.multipartMaxMemory > 0 {
+		return r.app.multipartMaxMemory
+	}
+	return defaultMultipartMaxMemory
+}
+
+// removeMultipartFiles removes the temporary files of the multipart forms
+// this request holds: the one BindBody parsed and the one on the current
+// *http.Request (a handler that called ParseMultipartForm or FormFile
+// itself). net/http removes only the form of the request it created; a form
+// parsed on a copy of that request is invisible to it. Removal errors are
+// ignored, as net/http ignores them, and removing a form twice is harmless.
+func (r *Request) removeMultipartFiles() {
+	bound := r.multipartForm
+	if bound != nil {
+		r.multipartForm = nil
+		_ = bound.RemoveAll()
+	}
+	if form := r.Request.MultipartForm; form != nil && form != bound {
+		_ = form.RemoveAll()
+	}
+}
+
+// handOverMultipartForm gives dst the multipart form parsed on src, a copy
+// of dst that is about to be discarded, unless dst already has one. A layer
+// that swaps the request for the duration of the chain calls it before
+// restoring the original, so the form — and the duty to remove its temporary
+// files — is not lost with the copy.
+func handOverMultipartForm(dst, src *http.Request) {
+	if dst != src && dst.MultipartForm == nil && src.MultipartForm != nil {
+		dst.MultipartForm = src.MultipartForm
+	}
+}
+
 // reset prepares the Request for pool reuse.
 func (r *Request) reset(hr *http.Request) {
 	r.Request = hr
+	r.multipartForm = nil
 	r.resetRouteParams() // retains backing storage for reuse
 	r.cachedQuery = nil  // drop reference so next request parses its own URL
 	r.cachedScheme = ""
