@@ -257,6 +257,8 @@ A nil or non-pointer bind target (and a non-struct target for query/form binding
 | `application/x-www-form-urlencoded` | Form decoder       | **Implemented** |
 | `multipart/form-data`               | Multipart decoder  | **Implemented** |
 
+**Multipart files live for the request.** File parts beyond the in-memory threshold (32 MiB per form) are spilled to temporary files. They are removed when the request ends — on normal completion, a returned error and a panic alike — whether the form was parsed by `BindBody` or by the handler itself (`ParseMultipartForm`, `FormFile`). That includes a form parsed on a copy of the request, which `net/http` does not clean up on its own: after `SetUser`, behind `middleware.Timeout` or a wrapped stdlib middleware that substitutes the request, and in a handler attached with `Mount` (removed when the mounted handler returns). A `*multipart.FileHeader` is therefore valid only until the handler returns; copy the content before handing it to a goroutine that outlives the request.
+
 ```go
 type CreateUserInput struct {
     Name  string `json:"name"`

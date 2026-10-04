@@ -58,7 +58,15 @@ func Timeout(cfg ...TimeoutConfig) credo.Middleware {
 			origReq := ctx.Request().Request
 			timeoutCtx, cancel := context.WithTimeout(origReq.Context(), config.Timeout)
 			defer cancel()
-			defer func() { ctx.Request().Request = origReq }()
+			defer func() {
+				// A form the chain parsed on the deadline-carrying copy stays
+				// with the request that outlives it, which owns the cleanup
+				// of its temporary files.
+				if cur := ctx.Request().Request; origReq.MultipartForm == nil {
+					origReq.MultipartForm = cur.MultipartForm
+				}
+				ctx.Request().Request = origReq
+			}()
 
 			ctx.Request().Request = origReq.WithContext(timeoutCtx)
 

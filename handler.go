@@ -138,6 +138,9 @@ func WrapStdMiddleware(m StdMiddleware) Middleware {
 			// (also on panic) so that later writes — the error pipeline,
 			// recovery — never hit a writer the middleware already finalized.
 			defer func() {
+				// A form the chain parsed on the middleware's request copy
+				// stays with the request that outlives it.
+				handOverMultipartForm(origReq, ctx.request.Request)
 				ctx.request.Request = origReq
 				ctx.response.ResponseWriter = origWriter
 			}()

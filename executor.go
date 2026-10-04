@@ -114,7 +114,8 @@ func (app *App) runRequest(c *Context, chain Handler) {
 
 // finishRequest runs after the recovered region on every path — normal
 // completion, a propagating panic and a transport abort. It finalizes the
-// response (closing the compressor), observes the access record and releases
+// response (closing the compressor), observes the access record, removes the
+// temporary files of multipart forms parsed during the request and releases
 // the Context to the pool.
 func (app *App) finishRequest(c *Context) {
 	defer app.ctxPool.put(c)
@@ -147,6 +148,11 @@ func (app *App) finishRequest(c *Context) {
 	}
 	if c.exec.logging {
 		app.observeAccess(c, outBytes, counted)
+	}
+	// Before the abort below, so that path removes the files as well. The
+	// check is inlined: a request without a multipart form pays two loads.
+	if req := c.request; req.multipartForm != nil || req.Request.MultipartForm != nil {
+		req.removeMultipartFiles()
 	}
 	if abort {
 		// Output has started and the compressed stream is incomplete: no

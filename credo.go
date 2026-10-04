@@ -183,6 +183,12 @@ type App struct {
 	// Set via WithStrictBodies option or server.strict_bodies config key.
 	strictBodies bool
 
+	// multipartMaxMemory overrides the in-memory threshold BindBody passes to
+	// ParseMultipartForm; zero selects defaultMultipartMaxMemory. It has no
+	// option: tests lower it (export_test.go) to make small uploads spill to
+	// temporary files.
+	multipartMaxMemory int64
+
 	// jsonOpts is the response encoding profile: the framework default
 	// (see defaultJSONOptions) with any WithJSONOptions overrides applied
 	// after it. Read through App.jsonOptions, which is nil-safe.
