@@ -14,21 +14,30 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-06
+
+**Bun v1.3.0 release.** `store/sqldb` moves from Bun v1.2.18 to v1.3.0 and from pgx v5.10.0 to v5.11.0. The curated `store/sqldb` API keeps its signatures; the break is where an application reaches Bun directly (`int64` for `Limit`, `Offset` and `Count`) and in what the database accepts (NUL bytes, duplicate migration IDs, soft-delete `WhereOr` precedence). The pre-v1 [migration guide](docs/guides/pre-v1-migration.md#data-access) lists the consumer-visible changes in one table. The root module has no code changes; its tag follows the lockstep policy.
+
+### Security
+
+- **sqldb:** Bun v1.3.0 carries three upstream security fixes; no Credo code had a defect of its own, and applications upgrade to inherit them. A negative number rendered right after a `-` in the SQL text — `Where("x = -?", n)` with `n = -1` — formed the line comment `--1` and cut the statement short (CVE-2024-44906 class, [uptrace/bun#1396](https://github.com/uptrace/bun/issues/1396)); Bun now separates the two with a space. Credo hands every argument to Bun's formatter rather than to driver placeholders, so this reached any Credo query with that shape. A string argument carrying a NUL byte is rejected instead of silently shortened ([uptrace/bun#1406](https://github.com/uptrace/bun/pull/1406); the **Changed** entry below has the per-database behavior). `pgdriver` verifies the server certificate under `WithInsecure(false)` ([uptrace/bun#1402](https://github.com/uptrace/bun/pull/1402)); Credo's PostgreSQL driver is pgx, so this fix does not reach a Credo application.
+
 ### Changed
 
 - **BREAKING: `store/sqldb` requires Bun v1.3.0** (`github.com/uptrace/bun` and its three dialect modules, from v1.2.18). Bun now stores and accepts `LIMIT` and `OFFSET` as `int64` and `Count` returns `int64`. The curated `SelectQuery.Limit`, `Offset` and `Count` keep their `int` signatures, so code written against them compiles unchanged; code that reaches the native query — an `Apply` closure, `Unwrap`, `db.Conn(ctx)` — and passes an `int` variable to Bun's `Limit` or `Offset` stops compiling and needs `int64(n)`. `Count` returns an error instead of a truncated total when the `int64` count does not fit in `int`, which is possible on 32-bit platforms only. The private-field compatibility layer behind `Count` and `Page` is taught the new field types; its layout test pins Bun v1.3.0.
 - **sqldb:** `SelectQuery.Limit` and `Offset` forward every value to Bun, and `Page` executes any window whose offset fits in `int`. Both used to reject values outside the signed 32-bit range before the query ran, because Bun v1.2.18 stored them in `int32` fields; with `int64` storage there is no range to guard. The remaining pre-execution checks are unchanged: `Page` still rejects a nil request, a non-positive `Page` or `PerPage` and a native `int` offset overflow with `pagination.ErrInvalidPageRequest`, and zero or negative `Limit`/`Offset` values still omit the clause.
-
 - **sqldb:** a string argument that contains a NUL byte (`0x00`) fails the statement on SQLite and PostgreSQL instead of being stored with the byte removed. Bun v1.2.18's dialects dropped the byte, so a value that an application had validated — `"admin\x00x"`, distinct from `"adminx"` — was persisted as another value; Bun v1.3.0's base dialect refuses to render it and the database rejects the statement with an error that `store.KindOf` leaves unmapped. MySQL is unchanged: its dialect still strips the byte ([uptrace/bun#1443](https://github.com/uptrace/bun/issues/1443)), which a canary subtest of the real-MySQL job pins so that the documents are updated when upstream changes it. Reject NUL at the validation boundary ([data-access guide](docs/guides/data-access.md#nul-bytes-in-strings)).
 - **sqldb:** `github.com/jackc/pgx/v5` v5.11.0 (from v5.10.0). On Go 1.27 pgx scans PostgreSQL types through `database/sql` directly (`driver.RowsColumnScanner`); combined with Bun v1.2.18 that deadlocked every scan of a `jsonb`, `bytea` or `numeric` column into `map[string]any` ([uptrace/bun#1434](https://github.com/uptrace/bun/issues/1434)), which Bun v1.3.0 fixes and a real-PostgreSQL subtest pins under a deadline. pgx's own behavior changes that reach an application through `sqldb`: a `timestamptz` scanned from the text format is returned in `time.Local` (or the codec's `ScanLocation`), as the binary format always was; `date` rejects impossible dates such as `2024-02-30` instead of normalizing them; the OS user account is looked up only when the connection string, environment and service file name no user ([pgx v5.11.0 release notes](https://github.com/jackc/pgx/releases/tag/v5.11.0)).
-
-### Fixed
-
-- **sqldb:** the COMMIT or ROLLBACK error of a transactional SQL migration (`.tx.up.sql`) reaches `Migrate`, so a commit that fails leaves the migration unapplied. Bun v1.2.18 discarded that error ([Bun #1389](https://github.com/uptrace/bun/issues/1389), fixed in v1.3.0), and the documents advised a Go migration with an explicit transaction wherever the commit result had to gate the applied marker; that advice is withdrawn. The contract is pinned by a conformance test — a deferred foreign key violated at COMMIT — on SQLite and PostgreSQL.
+- **sqldb:** `migrate.Migrations.Discover` returns `migrate: duplicate migration ID …` when two migration files share a numeric prefix under different names ([uptrace/bun#1357](https://github.com/uptrace/bun/pull/1357)). Bun v1.2.18 let the later file replace the earlier one's `Up`/`Down` silently, so one of the two never ran. `RegisterMigrations` is not reached with such a set; rename the file.
+- **sqldb:** a top-level `WhereOr` on a soft-delete model, or next to `WherePK`, renders `WHERE (a OR b) AND deleted_at IS NULL` instead of `WHERE a OR b AND deleted_at IS NULL` ([uptrace/bun#1321](https://github.com/uptrace/bun/issues/1321)). A query that relied on the old precedence — a soft-deleted row reachable through the OR branch — changes its result set. `SelectQuery.Clone` carries the OR state along.
 
 ### Removed
 
 - **sqldb:** `ErrInvalidLimitOffset`. Nothing returns it any more (see the `Limit`/`Offset` entry above); an `errors.Is` check against it stops compiling and can be deleted.
+
+### Fixed
+
+- **sqldb:** the COMMIT or ROLLBACK error of a transactional SQL migration (`.tx.up.sql`) reaches `Migrate`, so a commit that fails leaves the migration unapplied. Bun v1.2.18 discarded that error ([Bun #1389](https://github.com/uptrace/bun/issues/1389), fixed in v1.3.0), and the documents advised a Go migration with an explicit transaction wherever the commit result had to gate the applied marker; that advice is withdrawn. The contract is pinned by a conformance test — a deferred foreign key violated at COMMIT — on SQLite and PostgreSQL.
 
 ### Documentation
 
@@ -568,7 +577,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/credo-go/credo/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/credo-go/credo/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/credo-go/credo/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/credo-go/credo/compare/v0.20.0...v0.20.1
