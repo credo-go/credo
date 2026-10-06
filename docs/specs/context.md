@@ -87,7 +87,7 @@ type Response struct {
 // State accessors (read-only — the framework owns the tracking state)
 func (r *Response) Status() int     // status code written; 0 until committed
 func (r *Response) Size() int64     // bytes written to the response body
-func (r *Response) Committed() bool // true after WriteHeader has been called
+func (r *Response) Committed() bool // true once the final status is written
 
 // Existing methods
 func (r *Response) WriteHeader(code int)
@@ -110,6 +110,8 @@ func (r *Response) Blob(code int, contentType string, b []byte) error
 func (r *Response) Stream(code int, contentType string, rd io.Reader) error
 func (r *Response) SetCookie(cookie *http.Cookie)
 ```
+
+`WriteHeader` writes the final status once; later calls are ignored. An informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once with the current headers and commits nothing: `Status()` stays 0, `Committed()` false, and the final status follows, as with net/http. Under `UseCompress` the compression decision waits for that final status too. A code outside 100–999 panics, as net/http's own check does, before `Response` records anything, so recovery still answers with a 500.
 
 Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) treats body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified (RFC 9110) — as status-only: the body **and** the Content-Type header are skipped, the call returns nil, and `Stream`'s reader is never read. Without this, writing a body to such a status fails inside net/http after the header is committed, and the returned error can only surface as a spurious "error after response committed" warning; a 204 also must not advertise a `Content-Type` it does not carry. Handler-set headers (ETag, Cache-Control on a 304) are untouched.
 

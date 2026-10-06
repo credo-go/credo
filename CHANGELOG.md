@@ -16,6 +16,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ### Fixed
 
+- **response:** an informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once and no longer recorded as the response status. The handler's final status used to be dropped, so the client saw 103 followed by an implicit 200; under `UseCompress` the compression writer also made its decision on the 1xx and left the body uncompressed. `Response.Status()` and `Committed()` stay 0 and false until the final status. A status outside 100–999 now panics before `Response` or the compression writer records anything, as net/http's own check does: the response used to be recorded as committed with the invalid code, so recovery could not answer, the access record carried that code and the exchange ended with an empty 200.
 - Release candidate validation confines its git commands to the throwaway clone it creates (`GIT_CEILING_DIRECTORIES`), so a directory that is not a repository root fails instead of resolving to an enclosing work tree. Go 1.27's `testing.T.TempDir` places test directories under `GOTMPDIR`; with `GOTMPDIR` inside a Credo checkout, the gate's own tests wrote the synthetic `v0.11.0` and `store/sqldb/v0.11.0` tags into that checkout. A checkout where the tests ran that way restores the published tags with `git fetch --force origin refs/tags/v0.11.0:refs/tags/v0.11.0 refs/tags/store/sqldb/v0.11.0:refs/tags/store/sqldb/v0.11.0`.
 
 ## [0.22.0] - 2026-10-06

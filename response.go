@@ -118,9 +118,20 @@ func (r *Response) Hijacked() bool {
 }
 
 // WriteHeader sends an HTTP response header with the given status code.
-// It can only be called once per response.
+// The final status is written once per response; later calls are ignored.
+//
+// An informational status other than 101 (103 Early Hints, for example) is
+// sent at once with the current headers and commits nothing: the final status
+// follows, as with net/http. A code outside 100–999 panics, as net/http does,
+// before anything is recorded, so the response stays uncommitted and the
+// recovered panic is still answered with a 500.
 func (r *Response) WriteHeader(code int) {
 	if r.committed || r.hijacked {
+		return
+	}
+	checkWriteHeaderCode(code)
+	if informationalStatus(code) {
+		r.ResponseWriter.WriteHeader(code)
 		return
 	}
 	if code >= http.StatusBadRequest && hasCacheControlDirective(r.Header().Get("Cache-Control"), "immutable") {
@@ -129,6 +140,22 @@ func (r *Response) WriteHeader(code int) {
 	r.status = code
 	r.committed = true
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// informationalStatus reports whether code is an interim 1xx response, sent
+// before the final one and never the response status. 101 Switching Protocols
+// is final: it ends the HTTP exchange.
+func informationalStatus(code int) bool {
+	return code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
+}
+
+// checkWriteHeaderCode panics, with net/http's message, on a status code
+// outside 100–999. The writers that record or change state on WriteHeader
+// call it first, so the panic leaves them as they were.
+func checkWriteHeaderCode(code int) {
+	if code < 100 || code > 999 {
+		panic(fmt.Sprintf("invalid WriteHeader code %v", code))
+	}
 }
 
 func hasCacheControlDirective(value, directive string) bool {
