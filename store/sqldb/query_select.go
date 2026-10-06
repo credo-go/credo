@@ -100,26 +100,16 @@ func (q *SelectQuery) OrderExpr(query string, args ...any) *SelectQuery {
 	return q
 }
 
-// Limit sets the LIMIT clause. Values outside Bun v1.2.18's signed-int32
-// storage range record [ErrInvalidLimitOffset]; the terminal then fails before
-// executing. Values inside that range retain Bun's zero/negative semantics.
+// Limit sets the LIMIT clause. Zero and negative values keep Bun's semantics:
+// the clause is omitted.
 func (q *SelectQuery) Limit(n int) *SelectQuery {
-	if err := validateBunLimitOffset("limit", n); err != nil {
-		q.raw = q.raw.Err(err)
-		return q
-	}
 	q.raw = q.raw.Limit(int64(n))
 	return q
 }
 
-// Offset sets the OFFSET clause. Values outside Bun v1.2.18's signed-int32
-// storage range record [ErrInvalidLimitOffset]; the terminal then fails before
-// executing. Values inside that range retain Bun's zero/negative semantics.
+// Offset sets the OFFSET clause. Zero and negative values keep Bun's
+// semantics: the clause is omitted.
 func (q *SelectQuery) Offset(n int) *SelectQuery {
-	if err := validateBunLimitOffset("offset", n); err != nil {
-		q.raw = q.raw.Err(err)
-		return q
-	}
 	q.raw = q.raw.Offset(int64(n))
 	return q
 }
@@ -438,8 +428,8 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // [pagination.PageRequest.Validate]; manually constructed requests may call
 // [pagination.PageRequest.Normalize] (or NormalizeWithMax) first. Page itself
 // never defaults or clamps: it strictly requires positive Page and PerPage
-// values and an offset/limit representable by Bun v1.2.18. Nil, invalid, or
-// overflowing requests return an error matching
+// values and an offset that fits in int. Nil, invalid, or overflowing requests
+// return an error matching
 // [pagination.ErrInvalidPageRequest] before COUNT or SELECT executes. Valid
 // custom PerPage values above pagination.MaxPerPage remain unchanged.
 //
@@ -496,7 +486,7 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 		return nil, fmt.Errorf("%w: request must not be nil", pagination.ErrInvalidPageRequest)
 	}
 	request := *req
-	offset, err := validatedPageOffset(request)
+	offset, err := request.Offset()
 	if err != nil {
 		return nil, fmt.Errorf("sqldb: Page: %w", err)
 	}

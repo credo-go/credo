@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"github.com/uptrace/bun"
-
-	"github.com/credo-go/credo/pagination"
 )
 
 // ErrTypedTerminalModel reports that One, All, or Page was called on a
@@ -14,11 +12,6 @@ import (
 // destination model, so overriding a pre-bound model would discard relation
 // and model state silently.
 var ErrTypedTerminalModel = errors.New("sqldb: typed terminal requires a model-less query")
-
-// ErrInvalidLimitOffset reports a Limit or Offset value that Bun v1.2.18
-// cannot represent without narrowing. The builder records this error and the
-// next terminal returns it without executing a query.
-var ErrInvalidLimitOffset = errors.New("sqldb: limit/offset is outside Bun v1.2.18 int32 range")
 
 // ErrUnsupportedCountQuery reports a query shape that Count and Page cannot
 // execute safely. Direct compound queries and HAVING without GROUP BY fail with
@@ -47,29 +40,6 @@ func wrapMySQLCountExecutionError(family driverFamily, err error) error {
 	)
 }
 
-// Bun v1.2.18 stores LIMIT and OFFSET in signed int32 fields even though its
-// public methods accept int. Keep these bounds beside the curated builder and
-// Page guards so an upgrade must deliberately re-evaluate the conversion
-// contract.
-const (
-	minBunLimitOffset = int(-1 << 31)
-	maxBunLimitOffset = int(1<<31 - 1)
-)
-
-func validateBunLimitOffset(name string, value int) error {
-	if value < minBunLimitOffset || value > maxBunLimitOffset {
-		return fmt.Errorf(
-			"%w: %s=%d, allowed range [%d, %d]",
-			ErrInvalidLimitOffset,
-			name,
-			value,
-			minBunLimitOffset,
-			maxBunLimitOffset,
-		)
-	}
-	return nil
-}
-
 func typedTerminalModelError(terminal string) error {
 	return fmt.Errorf(
 		"%w: %s cannot override a model bound with Select, Model, or Apply; "+
@@ -77,31 +47,6 @@ func typedTerminalModelError(terminal string) error {
 		ErrTypedTerminalModel,
 		terminal,
 	)
-}
-
-func validatedPageOffset(req pagination.PageRequest) (int, error) {
-	offset, err := req.Offset()
-	if err != nil {
-		return 0, err
-	}
-	if req.PerPage > maxBunLimitOffset {
-		return 0, fmt.Errorf(
-			"%w: per_page exceeds Bun v1.2.18 maximum %d, got %d",
-			pagination.ErrInvalidPageRequest,
-			maxBunLimitOffset,
-			req.PerPage,
-		)
-	}
-	if offset > maxBunLimitOffset {
-		return 0, fmt.Errorf(
-			"%w: offset exceeds Bun v1.2.18 maximum %d for page=%d per_page=%d",
-			pagination.ErrInvalidPageRequest,
-			maxBunLimitOffset,
-			req.Page,
-			req.PerPage,
-		)
-	}
-	return offset, nil
 }
 
 type countQueryShape struct {

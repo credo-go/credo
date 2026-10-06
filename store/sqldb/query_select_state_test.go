@@ -3,6 +3,7 @@ package sqldb_test
 import (
 	"context"
 	"errors"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -948,7 +949,6 @@ func TestSelectQuery_PageRejectsInvalidRequestWithoutQuery(t *testing.T) {
 	hook := &selectQueryCounter{}
 	db.Client().AddQueryHook(hook)
 
-	const maxBunValue = int(1<<31 - 1)
 	tests := []struct {
 		name string
 		req  *pagination.PageRequest
@@ -959,16 +959,9 @@ func TestSelectQuery_PageRejectsInvalidRequestWithoutQuery(t *testing.T) {
 		{"zero per page", &pagination.PageRequest{Page: 1, PerPage: 0}},
 		{"negative per page", &pagination.PageRequest{Page: 1, PerPage: -1}},
 		{
-			"Bun int32 offset overflow",
-			&pagination.PageRequest{Page: 1_073_741_825, PerPage: 2},
+			"native offset overflow",
+			&pagination.PageRequest{Page: math.MaxInt/2 + 2, PerPage: 2},
 		},
-	}
-	if strconv.IntSize > 32 {
-		aboveMax := int64(maxBunValue) + 1
-		tests = append(tests, struct {
-			name string
-			req  *pagination.PageRequest
-		}{"Bun int32 limit overflow", &pagination.PageRequest{Page: 1, PerPage: int(aboveMax)}})
 	}
 
 	for _, tt := range tests {
@@ -996,91 +989,67 @@ func TestSelectQuery_PageRejectsInvalidRequestWithoutQuery(t *testing.T) {
 	}
 }
 
-func TestSelectQuery_PageBunInt32Boundary(t *testing.T) {
+func TestSelectQuery_PageAboveInt32Window(t *testing.T) {
+	if strconv.IntSize <= 32 {
+		t.Skip("int cannot represent values outside the int32 range")
+	}
 	db := openTestDB(t)
 	createUsersTable(t, db)
-	if _, err := db.Insert(&User{Name: "boundary", Email: "boundary@example.com"}).Exec(t.Context()); err != nil {
-		t.Fatalf("insert boundary user: %v", err)
+	if _, err := db.Insert(&User{Name: "window", Email: "window@example.com"}).Exec(t.Context()); err != nil {
+		t.Fatalf("insert window user: %v", err)
 	}
 	hook := &selectQueryCounter{}
 	db.Client().AddQueryHook(hook)
 
-	tests := []struct {
-		name string
-		req  pagination.PageRequest
-	}{
-		{
-			name: "maximum offset minus one",
-			req:  pagination.PageRequest{Page: 1_073_741_824, PerPage: 2},
-		},
-		{
-			name: "maximum limit and offset",
-			req:  pagination.PageRequest{Page: 2, PerPage: int(1<<31 - 1)},
-		},
+	// Bun v1.3.0 stores LIMIT and OFFSET as int64: a window beyond the int32
+	// range is executed, not rejected.
+	req := pagination.PageRequest{Page: 2, PerPage: 1 << 31}
+	before := req
+	page, err := db.Select().Page[User](t.Context(), &req)
+	if err != nil {
+		t.Fatalf("Page() = %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hook.Reset()
-			req := tt.req
-			page, err := db.Select().Page[User](t.Context(), &req)
-			if err != nil {
-				t.Fatalf("Page() = %v", err)
-			}
-			if page == nil || page.Page != req.Page || page.PerPage != req.PerPage {
-				t.Fatalf("Page() = %+v, want request metadata %+v", page, req)
-			}
-			if page.Total != 1 || len(page.Records) != 0 {
-				t.Fatalf("Page() = %+v, want one total row beyond the requested offset", page)
-			}
-			if got := hook.Total(); got != 2 {
-				t.Fatalf("Page() executed %d DB operations, want COUNT and bounded SELECT", got)
-			}
-			if req != tt.req {
-				t.Fatalf("Page() mutated request: got %+v, want %+v", req, tt.req)
-			}
-		})
+	if page == nil || page.Page != req.Page || page.PerPage != req.PerPage {
+		t.Fatalf("Page() = %+v, want request metadata %+v", page, req)
+	}
+	if page.Total != 1 || len(page.Records) != 0 {
+		t.Fatalf("Page() = %+v, want one total row beyond the requested offset", page)
+	}
+	if got := hook.Total(); got != 2 {
+		t.Fatalf("Page() executed %d DB operations, want COUNT and bounded SELECT", got)
+	}
+	if req != before {
+		t.Fatalf("Page() mutated request: got %+v, want %+v", req, before)
 	}
 }
 
-func TestSelectQuery_LimitOffsetRejectBunNarrowingWithoutQuery(t *testing.T) {
+func TestSelectQuery_LimitOffsetAboveInt32ReachBun(t *testing.T) {
 	if strconv.IntSize <= 32 {
-		t.Skip("int cannot represent values outside Bun's int32 range")
+		t.Skip("int cannot represent values outside the int32 range")
 	}
 	db := openTestDB(t)
+	createUsersTable(t, db)
 	hook := &selectQueryCounter{}
 	db.Client().AddQueryHook(hook)
 
-	const (
-		minBunValue = int(-1 << 31)
-		maxBunValue = int(1<<31 - 1)
-	)
-	above64 := int64(maxBunValue)
-	above64++
-	aboveMax := int(above64)
-	below64 := int64(minBunValue)
-	below64--
-	belowMin := int(below64)
-	tests := []struct {
-		name  string
-		build func() *sqldb.SelectQuery
-	}{
-		{"limit above max", func() *sqldb.SelectQuery { return db.Select().Limit(aboveMax) }},
-		{"limit below min", func() *sqldb.SelectQuery { return db.Select().Limit(belowMin) }},
-		{"offset above max", func() *sqldb.SelectQuery { return db.Select().Offset(aboveMax) }},
-		{"offset below min", func() *sqldb.SelectQuery { return db.Select().Offset(belowMin) }},
+	const aboveInt32 = 1 << 31
+	sql := db.Select().
+		TableExpr("users").
+		Limit(aboveInt32).
+		Offset(aboveInt32).
+		Unwrap().String()
+	if !strings.Contains(sql, "LIMIT 2147483648") || !strings.Contains(sql, "OFFSET 2147483648") {
+		t.Fatalf("SQL = %q, want LIMIT and OFFSET above the int32 range", sql)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hook.Reset()
-			_, err := tt.build().All[User](t.Context())
-			if !errors.Is(err, sqldb.ErrInvalidLimitOffset) {
-				t.Fatalf("All() error = %v, want ErrInvalidLimitOffset", err)
-			}
-			if got := hook.Total(); got != 0 {
-				t.Fatalf("All() executed %d DB operations, want 0", got)
-			}
-		})
+	users, err := db.Select().Limit(aboveInt32).Offset(aboveInt32).All[User](t.Context())
+	if err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("All() = %d users, want 0 beyond the offset", len(users))
+	}
+	if got := hook.Total(); got != 1 {
+		t.Fatalf("All() executed %d DB operations, want 1", got)
 	}
 }

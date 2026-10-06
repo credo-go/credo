@@ -194,9 +194,8 @@ Lives in `store/sqldb/` — the Bun wrapper package. `Page[T]` is a typed termin
 ```go
 // Page runs COUNT + a LIMIT/OFFSET SELECT and assembles a *pagination.Page[T].
 // BindQuery can apply Validate's forgiving defaults/clamp policy. Page does not
-// repeat that policy: it snapshots req and strictly validates nil, positivity,
-// native offset overflow, and Bun v1.2.18's signed-int32 LIMIT/OFFSET range
-// before COUNT. Violations wrap pagination.ErrInvalidPageRequest. On zero rows
+// repeat that policy: it snapshots req and strictly validates nil, positivity
+// and native offset overflow before COUNT. Violations wrap pagination.ErrInvalidPageRequest. On zero rows
 // SELECT is skipped and the page keeps the snapshot's page/per-page. The caller's
 // request and query receiver are not mutated. COUNT and SELECT remain separate
 // statements; database visibility is determined by the caller's transaction
@@ -216,7 +215,7 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
         return nil, fmt.Errorf("%w: request must not be nil", pagination.ErrInvalidPageRequest)
     }
     request := *req
-    offset, err := validatedPageOffset(request) // int overflow + Bun int32 range
+    offset, err := request.Offset() // positivity + int overflow
     if err != nil {
         return nil, fmt.Errorf("sqldb: Page: %w", err)
     }
@@ -248,20 +247,15 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 }
 ```
 
-`validatedPageOffset` first calls the strict `PageRequest.Offset()` contract,
-then rejects `PerPage` or the computed offset above `math.MaxInt32`. This second
-bound is adapter-specific: Bun v1.2.18 accepts `int` in its public methods but
-stores LIMIT and OFFSET in signed `int32` fields. The division guard runs before
-multiplication, so the check is safe on both 32-bit and 64-bit Go targets. A Bun
-upgrade must re-run the range conformance test before changing the bound.
+`Page` calls the strict `PageRequest.Offset()` contract before COUNT. Its
+division guard runs before multiplication, so the check is safe on both 32-bit
+and 64-bit Go targets. No adapter bound follows: Bun v1.3.0 stores LIMIT and
+OFFSET as `int64`, so every `int` page size and offset is representable.
 
-The same narrowing risk exists when callers use the curated
-`SelectQuery.Limit(int)` or `Offset(int)` methods directly. Those methods accept
-the full signed-int32 range so Bun's existing zero/negative behavior is
-unchanged, but an `int` outside that range records `sqldb.ErrInvalidLimitOffset`;
-the terminal returns it before database execution. This is a proxy guarantee,
-not a rewrite of Bun: `Apply` and `Unwrap` expose raw Bun builders and retain
-Bun's own conversion semantics.
+The curated `SelectQuery.Limit(int)` and `Offset(int)` methods forward every
+value the same way; zero and negative values keep Bun's semantics and omit the
+clause. `Apply` and `Unwrap` expose raw Bun builders, whose `Limit` and `Offset`
+take `int64`.
 
 ### Logical total and supported count shapes
 
@@ -582,10 +576,8 @@ application-owned envelope. Cursor execution itself never runs COUNT.
 `CursorRequest.Validate` will mirror `PageRequest`'s input-policy role by
 defaulting/clamping `per_page`; the terminal will snapshot the request and
 strictly reject nil, non-positive, overflowed, or adapter-unrepresentable
-execution values without mutating it. Because Bun v1.2.18 stores LIMIT as a
-signed int32 and the terminal adds one, strict execution requires
-`per_page <= math.MaxInt32 - 1` and checks native-int addition before building
-SQL.
+execution values without mutating it. Because the terminal adds one to
+`per_page`, strict execution checks native-int addition before building SQL.
 
 ### Terminal-owned keyset
 
@@ -768,7 +760,6 @@ but Credo will not freeze a speculative public generic abstraction.
 | Cursor implementation gate remains closed | A real consumer, a fail-loud Bun hook boundary, invalid-argument transport mapping, canonical wire vectors, and PostgreSQL/MySQL/SQLite conformance are required before public symbols ship |
 | Normalize policy is separate from execution validation | `Normalize`/`Validate` mutate the input to apply defaults and caps. `Offset` and `SelectQuery.Page` never normalize or clamp: they reject unsafe values with `ErrInvalidPageRequest`, preserving a valid custom `PerPage` above 50 |
 | `Offset()` returns `(int, error)` | A plain `int` result could silently wrap. The pre-v1 signature break makes arithmetic failure explicit and keeps invalid LIMIT/OFFSET state from reaching adapters |
-| Bun Page windows are bounded to signed int32 | Bun v1.2.18 narrows its public `int` LIMIT/OFFSET inputs internally. `sqldb` validates that adapter-specific range before COUNT and rechecks it on Bun upgrades |
 | `PageRequest` uses non-pointer `int` | `Normalize()` handles absence/zero as the default-input policy. Strict execution validation runs only after policy has been applied; callers constructing requests manually must supply positive values |
 | `NewPage` uses quotient + remainder ceiling division | `(total + perPage - 1) / perPage` can overflow near `math.MaxInt64`; quotient plus a non-zero-remainder increment produces the same ceiling safely |
 | `ValidateSort` as method on `SortRequest` | SQL injection prevention is ORM-agnostic logic; method is more idiomatic than free function |
