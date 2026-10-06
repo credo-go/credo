@@ -56,7 +56,7 @@ An upgrade to a wrapped protocol or infrastructure dependency must identify the 
 
 ### Updating Bun
 
-`store/sqldb` has a narrow compatibility layer for private `bun.SelectQuery` state that Bun v1.2.18 does not copy. Update `github.com/uptrace/bun` and its three dialect modules together to the same reviewed release.
+`store/sqldb` has a narrow compatibility layer that restores private `bun.SelectQuery` execution state after `Clone`. Bun v1.3.0's `Clone` copies that state itself, so the layer is redundant on the pinned release; it stays, structurally pinned to the Bun release, until a later minor removes it. Update `github.com/uptrace/bun` and its three dialect modules together to the same reviewed release.
 
 Every Bun update must pass the full `Test (store/sqldb)` race job, including `TestBunSelectCloneLayoutCompatibility` and the critical query-state, pagination-count, and SQL-rendering contract tests. The normal build, tidy, lint, and real PostgreSQL/MySQL jobs must pass as well.
 

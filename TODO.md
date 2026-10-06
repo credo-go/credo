@@ -348,7 +348,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
 - [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure
 - [x] Query builder proxies: `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`
-- [x] 8 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, curated Select Limit/Offset int32 narrowing rejection, and fail-loud unsupported Count/Page shapes
+- [x] 7 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, and fail-loud unsupported Count/Page shapes
 - [x] Select execution snapshots preserve explicit/raw `Conn`, builder errors, `WherePK`, soft-delete flags, model hooks and relation state across `Scan`/`Count`/`Exists`/`Page`
 - [x] Typed `One`/`All`/`Page` are model-less terminals: pre-bound `Select`/`Model`/`Apply` state returns `ErrTypedTerminalModel` before DB execution; optional query model args reject arity >1
 - [x] Escape hatches: transaction-aware `Conn(ctx) bun.IDB` / `RequireTx(ctx)` plus base-pool `Client() *bun.DB`

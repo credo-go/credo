@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md).
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions.
 
 ## Bootstrap and DI
 
@@ -109,6 +109,23 @@ v0.21.0 changes the wait between continuous restarts without a compile error. Bo
 | `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5 with the defaults) | the waits back off, so `failed` — and a `FailWhenFailed` readiness drop — comes later: roughly 48–93 s for N = 5 with the defaults |
 
 New with it: `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, the `worker.max_restart_delay` configuration key, `Config.MaxRestartDelay` (`max_restart_delay` in JSON) and the `next_restart_in` attribute of `worker run failed`. A restart delay above one minute, per worker or per pool, stays fixed unless a larger cap is configured.
+
+## Data access
+
+**Implemented (v0.22.0).** `store/sqldb` requires Bun v1.3.0 (`github.com/uptrace/bun` and its three dialect modules) and pgx v5.11.0. Credo's curated API keeps its signatures: `SelectQuery.Limit`, `Offset` and `Page` take `int`, and `Count` returns `int`. What changes is visible where an application touches Bun directly — inside an `Apply` closure, through `Unwrap`, `Conn`, `RequireTx` or `Client()` — and in what the database accepts.
+
+| Before v0.22.0 | Now |
+| --- | --- |
+| `bun.SelectQuery.Limit`/`Offset` take `int`; `Count` returns `int` | `int64`. An untyped constant (`q.Limit(10)`) compiles unchanged; an `int` variable needs `int64(n)`, and a `Count` result assigned to an `int` needs a conversion |
+| curated `Limit`/`Offset` reject values outside the signed 32-bit range with `ErrInvalidLimitOffset`; `Page` rejects such windows with `ErrInvalidPageRequest` | every value reaches the database; `Page` executes any window whose offset fits in `int`. `ErrInvalidLimitOffset` is removed, so an `errors.Is` check against it stops compiling and can be deleted |
+| a string argument carrying a NUL byte (`0x00`) is stored with the byte removed | on SQLite and PostgreSQL the statement fails with an error that `store.KindOf` leaves unmapped, and nothing is persisted; MySQL still strips the byte ([data-access guide](data-access.md#nul-bytes-in-strings)). Reject NUL at the validation boundary |
+| two migration files with the same numeric prefix and different names: the later file silently replaced the earlier one's `Up`/`Down` | `migrate.Migrations.Discover` returns `migrate: duplicate migration ID …`, so `RegisterMigrations` is never reached |
+| a top-level `WhereOr` on a soft-delete model (or next to `WherePK`) rendered `WHERE a OR b AND deleted_at IS NULL` | Bun parenthesizes the OR group: `WHERE (a OR b) AND deleted_at IS NULL`. Queries that relied on the old precedence change their result set |
+| a `.tx.up.sql` migration whose COMMIT failed was marked applied | the COMMIT or ROLLBACK error reaches `Migrate` and the migration stays unapplied ([data-access guide](data-access.md#migrations)) |
+| a `jsonb`, `bytea` or `numeric` column scanned into `map[string]any` on Go 1.27 with pgx deadlocked | scans normally (Bun v1.3.0 fix, pinned by a real-PostgreSQL subtest) |
+| pgx returns a text-format `timestamptz` in a location that differs from the binary format's | both formats return `time.Local` (or the codec's `ScanLocation`); `date` rejects impossible dates such as `2024-02-30` instead of normalizing them |
+
+Unchanged: `SelectQuery.Clone` still restores the execution state Bun's `Clone` used to omit (v1.3.0 copies it itself; the compatibility layer is removed in a later minor), zero and negative `Limit`/`Offset` values still omit the clause, and standalone `Having` or a direct compound root still returns `ErrUnsupportedCountQuery` from `Count` and `Page`.
 
 ## Examples and downstream impact
 

@@ -147,11 +147,12 @@ func (q *SelectQuery) Having(query string, args ...any) *SelectQuery {
 }
 
 // Clone returns a top-level query-builder fork while preserving execution
-// state that Bun v1.2.18 omits: an explicit connection, builder errors, WherePK
-// fields, soft-delete flags, and CTE materialization flags. It follows Bun's
-// sharing semantics for nested values, including a bound destination and CTE
-// or relation subqueries; do not mutate or scan source and clone concurrently
-// when they share such values.
+// state that Bun's Clone omitted before v1.3.0: an explicit connection,
+// builder errors, WherePK fields, soft-delete flags, and CTE materialization
+// flags (v1.3.0 copies them itself). It follows Bun's sharing semantics for
+// nested values, including a bound destination and CTE or relation
+// subqueries; do not mutate or scan source and clone concurrently when they
+// share such values.
 func (q *SelectQuery) Clone() *SelectQuery {
 	return q.cloneQuery()
 }
@@ -441,7 +442,7 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // Total is the number of logical result rows before ordering and pagination.
 // An ungrouped aggregate projection counts as one row when it produces a row;
 // Distinct counts selected projection tuples; Group counts groups; Group with
-// Having counts the groups left after Having. Bun v1.2.18 cannot safely window
+// Having counts the groups left after Having. Bun v1.3.0 cannot safely window
 // standalone Having or a direct UNION/INTERSECT/EXCEPT query, so those shapes
 // return [ErrUnsupportedCountQuery] before execution. Restructure compound
 // input behind an outer derived-table/CTE source and compose explicit
