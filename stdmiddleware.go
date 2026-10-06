@@ -39,8 +39,7 @@ func (w *stdMiddlewareWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 	// Recorded after the call: net/http panics on an invalid code and has
 	// committed nothing then.
-	informational := code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
-	if !w.committed && !informational {
+	if !w.committed && !informationalStatus(code) {
 		w.status, w.committed = code, true
 	}
 }

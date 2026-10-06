@@ -188,9 +188,16 @@ func (w *compressResponseWriter) WriteHeader(code int) {
 	if w.wroteHeader {
 		return
 	}
+	checkWriteHeaderCode(code)
+	if informationalStatus(code) {
+		// An interim response: sent at once, the final status and the
+		// compression decision follow.
+		w.ResponseWriter.WriteHeader(code)
+		return
+	}
 	w.wroteHeader = true
 
-	// A body-forbidding status (1xx, 204, 304) never gets a compressor: even
+	// A body-forbidding status (101, 204, 304) never gets a compressor: even
 	// an empty compressed stream carries a header and trailer, and net/http
 	// rejects that body at finalization, which would abort the connection.
 	headers := w.Header()
