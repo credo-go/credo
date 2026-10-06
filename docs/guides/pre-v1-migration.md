@@ -66,7 +66,7 @@ AccessLog bytes are post-compression accepted body bytes; headers/framing/TLS ar
 
 Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw values to `BuildURI`/`BuildURL` instead of pre-escaped ones, replace `{name:.+}` with `{name...}` where several segments were intended, and expect 400 rather than a captured byte sequence for invalid UTF-8. `OriginalPath` now reports the wire-form path. See [Encoded Parameter Values](../specs/router.md#encoded-parameter-values).
 
-**Implemented (v0.23.0).** A catch-all matches an empty rest, as in chi and `net/http.ServeMux`.
+**Implemented (v0.23.0).** A catch-all matches an empty rest, and a pattern names each parameter once, as in chi and `net/http.ServeMux`.
 
 | Before v0.23.0 | Now |
 | --- | --- |
@@ -74,8 +74,10 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | A mount was reached through `/admin` only; `/admin/` was redirected to `/admin` (404 with `WithRedirectTrailingSlash(false)`), likewise `/t/acme/` under `Mount("/t/{tenant}", h)` | `/admin/` and `/t/acme/` reach the mounted handler as its root `/` |
 | `Static("/static", fsys)` served `/static/` through a redirect to `/static` | `/static/` serves the index directly |
 | `BuildURI("")` failed for a catch-all | It builds the prefix with the slash (`/files/`) |
+| `/a/{id}/b/{id}` registered; `RouteParam("id")` returned the first capture, `RouteParams()` and `URLParam` the last | Registration panics with `duplicate parameter name "id"`, whether the repeat comes from the route, a group or mount prefix, a rewrite rule or a host pattern (`{a}.{a}.example.com`) |
+| A host parameter without a name (`{}.example.com`) or with an empty constraint (`{org:}.example.com`) registered | `app.Host` panics |
 
-Migration: an application that registers both `GET /files` and `GET /files/{path...}` and relied on `/files/` being redirected to `/files` handles the empty capture in the catch-all handler, or registers `GET /files/` explicitly.
+Migration: an application that registers both `GET /files` and `GET /files/{path...}` and relied on `/files/` being redirected to `/files` handles the empty capture in the catch-all handler, or registers `GET /files/` explicitly. A pattern that repeats a parameter name gives each capture its own name (`/a/{a_id}/b/{b_id}`).
 
 ## Workers
 

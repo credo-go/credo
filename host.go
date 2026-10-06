@@ -3,6 +3,7 @@ package credo
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -61,21 +62,21 @@ func parseHostPattern(pattern string) ([]hostSegment, []string) {
 		if label == "*" {
 			segments = append(segments, hostSegment{typ: hostSegWildcard})
 		} else if len(label) > 1 && label[0] == '{' && label[len(label)-1] == '}' {
-			inner := label[1 : len(label)-1]
-			if name, reStr, ok := strings.Cut(inner, ":"); ok {
+			name, reStr, constrained := strings.Cut(label[1:len(label)-1], ":")
+			validateHostParam(pattern, name, reStr, constrained, paramKeys)
+			if constrained {
 				// Regex constraint: {name:pattern}
 				re := regexp.MustCompile("^(" + reStr + ")$")
 				segments = append(segments, hostSegment{
 					typ: hostSegRegexp, value: name, regexp: re,
 				})
-				paramKeys = append(paramKeys, name)
 			} else {
 				// Plain param: {name}
 				segments = append(segments, hostSegment{
-					typ: hostSegParam, value: inner,
+					typ: hostSegParam, value: name,
 				})
-				paramKeys = append(paramKeys, inner)
 			}
+			paramKeys = append(paramKeys, name)
 		} else {
 			segments = append(segments, hostSegment{
 				typ: hostSegStatic, value: label,
@@ -108,6 +109,21 @@ func validateHostWildcard(pattern string, labels []string) {
 	}
 	if wildcards == 1 && hasParam {
 		panic(fmt.Sprintf("credo: invalid host pattern %q: wildcard * cannot be mixed with host params", pattern))
+	}
+}
+
+// validateHostParam panics when a host parameter label has no name, a
+// constraint marker without a constraint, or a name that another label of the
+// pattern already uses (seen): host and path parameters share one namespace in
+// which each name reads one capture.
+func validateHostParam(pattern, name, reStr string, constrained bool, seen []string) {
+	switch {
+	case name == "":
+		panic(fmt.Sprintf("credo: invalid host pattern %q: empty parameter name", pattern))
+	case constrained && reStr == "":
+		panic(fmt.Sprintf("credo: invalid host pattern %q: empty regex for parameter %q", pattern, name))
+	case slices.Contains(seen, name):
+		panic(fmt.Sprintf("credo: invalid host pattern %q: duplicate parameter name %q", pattern, name))
 	}
 }
 

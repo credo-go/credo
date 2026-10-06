@@ -219,7 +219,7 @@ type RewriteRule struct {
 **Semantics:**
 
 - Rules are evaluated in order; first match wins.
-- `From` uses Credo route syntax (`{name}`, `{name...}`, `{name:regex}`) unless `Regexp` is provided. Brace matching follows the same parser as the router, including regex quantifiers, escaped braces, and character classes.
+- `From` uses Credo route syntax (`{name}`, `{name...}`, `{name:regex}`) unless `Regexp` is provided. Brace matching follows the same parser as the router, including regex quantifiers, escaped braces, and character classes. Like a route pattern, it names each parameter once: a repeated name panics with `duplicate parameter name`.
 - `To` expands named placeholders (`{name}`) from the matched captures.
 - `Host` is an optional exact host filter. Matching is case-insensitive, with request ports stripped before comparison.
 - If `To` contains a query string, it replaces the current query string.

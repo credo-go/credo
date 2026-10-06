@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"regexp"
 	"testing"
@@ -306,6 +307,21 @@ func TestRewrite_EmptyRulesPanic(t *testing.T) {
 		}
 	}()
 	middleware.Rewrite()
+}
+
+// A rule names each capture once, like a route pattern: with "id" used twice
+// the target was filled from the last capture and the first was dropped.
+func TestRewrite_DuplicateParamNamePanics(t *testing.T) {
+	want := `credo: middleware.Rewrite rule 0: pattern: duplicate parameter name "id" in "/x/{id}/y/{id}"`
+	defer func() {
+		if r := recover(); fmt.Sprint(r) != want {
+			t.Fatalf("panic = %v, want %q", r, want)
+		}
+	}()
+	middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+		From: "/x/{id}/y/{id}",
+		To:   "/z/{id}",
+	}}})
 }
 
 func TestRewrite_IntegrationWithRouting(t *testing.T) {

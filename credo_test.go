@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/credo-go/credo"
 )
@@ -1465,6 +1466,66 @@ func TestRouting_SameShapeDifferentParamNamesPanics(t *testing.T) {
 	}()
 
 	app.GET("/v1/crm/customers/{customer_id}", h)
+}
+
+// A pattern names each capture once. With a name used twice, RouteParam
+// answered with the first capture while RouteParams and URLParam answered with
+// the last; registration now rejects the pattern, wherever its parts came
+// from, before anything is registered — the same shape with distinct names is
+// still free afterwards.
+func TestRouting_DuplicateParamNamePanics(t *testing.T) {
+	h := func(ctx *credo.Context) error { return nil }
+	child := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	tests := []struct {
+		name     string
+		want     string
+		register func(app *credo.App)
+		retry    func(app *credo.App)
+	}{
+		{
+			name:     "route",
+			want:     `credo: pattern: duplicate parameter name "id" in "/a/{id}/b/{id}"`,
+			register: func(app *credo.App) { app.GET("/a/{id}/b/{id}", h) },
+			retry:    func(app *credo.App) { app.GET("/a/{id}/b/{name}", h) },
+		},
+		{
+			name:     "catch-all",
+			want:     `credo: pattern: duplicate parameter name "id" in "/a/{id}/{id...}"`,
+			register: func(app *credo.App) { app.GET("/a/{id}/{id...}", h) },
+			retry:    func(app *credo.App) { app.GET("/a/{id}/{rest...}", h) },
+		},
+		{
+			name:     "group prefix",
+			want:     `credo: pattern: duplicate parameter name "id" in "/t/{id}/x/{id}"`,
+			register: func(app *credo.App) { app.Group("/t/{id}").GET("/x/{id}", h) },
+			retry:    func(app *credo.App) { app.Group("/t/{id}").GET("/x/{name}", h) },
+		},
+		{
+			name:     "mount prefix",
+			want:     `duplicate parameter name "id"`,
+			register: func(app *credo.App) { app.Mount("/t/{id}/x/{id}", child) },
+			retry:    func(app *credo.App) { app.Mount("/t/{id}/x/{name}", child) },
+		},
+		{
+			name:     "static under a group prefix",
+			want:     `duplicate parameter name "_static"`,
+			register: func(app *credo.App) { app.Group("/t/{_static}").Static("/files", fstest.MapFS{}) },
+			retry:    func(app *credo.App) { app.Group("/t/{tenant}").Static("/files", fstest.MapFS{}) },
+		},
+		{
+			name:     "host",
+			want:     `credo: invalid host pattern "{a}.{a}.example.com": duplicate parameter name "a"`,
+			register: func(app *credo.App) { app.Host("{a}.{a}.example.com") },
+			retry:    func(app *credo.App) { app.Host("{a}.{b}.example.com") },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			expectPanicContaining(t, tt.want, func() { tt.register(app) })
+			tt.retry(app)
+		})
+	}
 }
 
 // Host-scoped path trees carry the same endpoint-owned names, independently

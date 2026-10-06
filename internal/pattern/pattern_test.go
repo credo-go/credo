@@ -1,6 +1,7 @@
 package pattern
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -122,6 +123,35 @@ func TestParamNames(t *testing.T) {
 	}
 }
 
+func TestCheckNames(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string // the repeated name; "" for no error
+	}{
+		{"/static", ""},
+		{"/a/{id}/b/{name}", ""},
+		{"/a/{id}/b/{id}", "id"},
+		{"/a/{id}/{id...}", "id"},
+		{"/a/{id:[0-9]+}/{id}", "id"},
+		{"/{a}/{b}/{b}/{a}", "b"},
+		// A malformed parameter ends the scan; NextSegment reports it.
+		{"/a/{id}/b/{id", ""},
+	}
+	for _, tt := range tests {
+		err := CheckNames(tt.pattern)
+		if tt.want == "" {
+			if err != nil {
+				t.Errorf("CheckNames(%q) = %v, want nil", tt.pattern, err)
+			}
+			continue
+		}
+		want := fmt.Sprintf("pattern: duplicate parameter name %q in %q", tt.want, tt.pattern)
+		if err == nil || err.Error() != want {
+			t.Errorf("CheckNames(%q) = %v, want %q", tt.pattern, err, want)
+		}
+	}
+}
+
 func TestToRegexp(t *testing.T) {
 	tests := []struct {
 		pattern   string
@@ -138,6 +168,7 @@ func TestToRegexp(t *testing.T) {
 		{pattern: "/exact", input: "/exact", wantMatch: []string{"/exact"}, wantNames: []string{""}},
 		{pattern: "/bad/{id", wantErr: true},
 		{pattern: "/bad/{id:[}", wantErr: true},
+		{pattern: "/bad/{id}/x/{id}", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pattern, func(t *testing.T) {

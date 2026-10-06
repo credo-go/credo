@@ -11,6 +11,7 @@ package pattern
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -182,10 +183,29 @@ func ParamNames(pattern string) []string {
 	}
 }
 
+// CheckNames reports an error when pattern uses a parameter name more than
+// once. A name is how a capture is read; with a name used twice, one capture
+// is unreadable and lookups that scan from different ends answer with
+// different captures. Parsing stops at the first malformed parameter, which
+// NextSegment reports.
+func CheckNames(pattern string) error {
+	names := ParamNames(pattern)
+	for i, name := range names {
+		if slices.Contains(names[:i], name) {
+			return fmt.Errorf("pattern: duplicate parameter name %q in %q", name, pattern)
+		}
+	}
+	return nil
+}
+
 // ToRegexp converts a whole pattern into an anchored regexp with one capture
 // group per parameter: {name} → ([^/]+), {name...} → (.*), {name:re} → (re).
-// names[0] is "" so the slice aligns with regexp.FindStringSubmatch.
+// names[0] is "" so the slice aligns with regexp.FindStringSubmatch. A
+// pattern that repeats a parameter name is rejected (see [CheckNames]).
 func ToRegexp(pattern string) (*regexp.Regexp, []string, error) {
+	if err := CheckNames(pattern); err != nil {
+		return nil, nil, err
+	}
 	var b strings.Builder
 	names := []string{""}
 	b.WriteString("^")

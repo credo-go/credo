@@ -158,6 +158,7 @@ wildcard := app.Host("*.acme.io")
 - Host matching runs before path lookup. A matched host selects its dedicated mux; otherwise the default mux handles the request.
 - Host params are exposed alongside path params: `ctx.Request().RouteParam(name)` for single values, `ctx.Request().RouteParams()` for the full map.
 - Host and path params share one namespace. Registering a route whose path params collide with host param names panics at registration time.
+- A host parameter has a name, used once in the pattern, and a regex-constrained one has a constraint: `{}.example.com`, `{:[a-z]+}.example.com`, `{a}.{a}.example.com` and `{org:}.example.com` panic at registration time.
 - Host patterns are normalized to lowercase and may not include a port. Incoming request hosts are normalized by lowercasing, stripping any port, and trimming a trailing dot.
 - Matching is case-insensitive.
 - Wildcard `*` is matching-only, captures no route param, and may only appear once as the leftmost complete label. `*.acme.io` matches `api.acme.io`, but not `acme.io` or `a.b.acme.io`.
@@ -253,6 +254,8 @@ app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already regi
 ```
 
 The duplicate policy stays strict: registering the same method on the same shape panics with `credo: duplicate route: GET "/…/{customer_id}" is already registered as "/…/{id}" (parameter names do not distinguish routes)` plus both call sites, exactly like a literal re-registration, and automatic HEAD twins follow the existing overwrite rules. Structural conflicts are unchanged and still panic at registration: two different regex matchers at one path level, or one matcher followed by different tail bytes. The same model applies to regex-constrained and catch-all segments; `BuildURI`/`BuildURL` read the names from the selected route's own pattern, and path trees under `app.Host(...)` behave identically while host-label captures are unaffected.
+
+**A pattern names each parameter once.** A name is how a capture is read, so `/a/{id}/b/{id}` panics at registration with `credo: pattern: duplicate parameter name "id" in "/a/{id}/b/{id}"`, as in chi and `net/http.ServeMux`. The check runs on the whole registered pattern, so it covers a group prefix joined to its routes, a `Mount` prefix and `Static` under a parametric group (`/t/{_static}` repeats the name `Static` captures with); a rewrite rule's `From` pattern follows the same rule.
 
 ### Matching Order and Method Not Allowed
 

@@ -1,6 +1,8 @@
 package credo
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	internalhost "github.com/credo-go/credo/internal/host"
@@ -152,6 +154,31 @@ func TestParseHostPattern_InvalidWildcardPanic(t *testing.T) {
 				}
 			}()
 			parseHostPattern(normalizeHostPattern(pattern))
+		})
+	}
+}
+
+// A host parameter needs a name of its own and, when constrained, a
+// constraint: an empty name made a capture only RouteParam("") could read, a
+// repeated one kept the leftmost label's value only, and an empty constraint
+// matched no label at all.
+func TestParseHostPattern_InvalidParamPanic(t *testing.T) {
+	tests := []struct{ pattern, want string }{
+		{"{a}.{a}.example.com", `credo: invalid host pattern "{a}.{a}.example.com": duplicate parameter name "a"`},
+		{"{a}.{b:[a-z]+}.{a}.example.com", `duplicate parameter name "a"`},
+		{"{}.example.com", `credo: invalid host pattern "{}.example.com": empty parameter name`},
+		{"{:[a-z]+}.example.com", `credo: invalid host pattern "{:[a-z]+}.example.com": empty parameter name`},
+		{"{org:}.example.com", `credo: invalid host pattern "{org:}.example.com": empty regex for parameter "org"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil || !strings.Contains(fmt.Sprint(r), tt.want) {
+					t.Fatalf("panic = %v, want containing %q", r, tt.want)
+				}
+			}()
+			parseHostPattern(normalizeHostPattern(tt.pattern))
 		})
 	}
 }
