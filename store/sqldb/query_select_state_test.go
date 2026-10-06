@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1041,31 +1040,6 @@ func TestSelectQuery_PageBunInt32Boundary(t *testing.T) {
 				t.Fatalf("Page() mutated request: got %+v, want %+v", req, tt.req)
 			}
 		})
-	}
-}
-
-func TestSelectQuery_BunInt32LimitOffsetConformance(t *testing.T) {
-	db := openTestDB(t)
-	const maxBunValue = int(1<<31 - 1)
-	selectType := reflect.TypeFor[bun.SelectQuery]()
-	orderLimitOffset, ok := selectType.FieldByName("orderLimitOffsetQuery")
-	if !ok {
-		t.Fatal("Bun SelectQuery no longer embeds orderLimitOffsetQuery; re-evaluate Page bounds")
-	}
-	for _, name := range []string{"limit", "offset"} {
-		field, ok := orderLimitOffset.Type.FieldByName(name)
-		if !ok || field.Type != reflect.TypeFor[int32]() {
-			t.Fatalf("Bun %s field = (%v, %v), want int32; re-evaluate Page bounds", name, field.Type, ok)
-		}
-	}
-
-	sql := db.Select().
-		TableExpr("users").
-		Limit(maxBunValue).
-		Offset(maxBunValue).
-		Unwrap().String()
-	if !strings.Contains(sql, "LIMIT 2147483647") || !strings.Contains(sql, "OFFSET 2147483647") {
-		t.Fatalf("Bun max LIMIT/OFFSET SQL = %q, want both int32 maxima", sql)
 	}
 }
 

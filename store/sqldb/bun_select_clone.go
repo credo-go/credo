@@ -138,7 +138,7 @@ func buildBunSelectCloneLayout() (bunSelectCloneLayout, error) {
 	}
 	limit, err := requireBunSelectField(
 		selectType,
-		reflect.TypeFor[int32](),
+		reflect.TypeFor[int64](),
 		"orderLimitOffsetQuery", "limit",
 	)
 	if err != nil {
@@ -146,7 +146,7 @@ func buildBunSelectCloneLayout() (bunSelectCloneLayout, error) {
 	}
 	offset, err := requireBunSelectField(
 		selectType,
-		reflect.TypeFor[int32](),
+		reflect.TypeFor[int64](),
 		"orderLimitOffsetQuery", "offset",
 	)
 	if err != nil {
@@ -380,8 +380,8 @@ func prepareBunSelectCountSource(raw *bun.SelectQuery) error {
 	}
 	ptr := unsafe.Pointer(raw)
 	*(*[]schema.QueryWithArgs)(unsafe.Add(ptr, layout.order)) = nil
-	*(*int32)(unsafe.Add(ptr, layout.limit)) = 0
-	*(*int32)(unsafe.Add(ptr, layout.offset)) = 0
+	*(*int64)(unsafe.Add(ptr, layout.limit)) = 0
+	*(*int64)(unsafe.Add(ptr, layout.offset)) = 0
 	*(*schema.QueryWithArgs)(unsafe.Add(ptr, layout.selFor)) = schema.QueryWithArgs{}
 	return nil
 }
@@ -439,8 +439,8 @@ func validateBunSelectCountSourceDecorations(raw *bun.SelectQuery) error {
 	}
 	ptr := unsafe.Pointer(raw)
 	order := bunSelectSliceLen(raw, layout.order)
-	limit := *(*int32)(unsafe.Add(ptr, layout.limit))
-	offset := *(*int32)(unsafe.Add(ptr, layout.offset))
+	limit := *(*int64)(unsafe.Add(ptr, layout.limit))
+	offset := *(*int64)(unsafe.Add(ptr, layout.offset))
 	selFor := *(*schema.QueryWithArgs)(unsafe.Add(ptr, layout.selFor))
 	if order == 0 && limit == 0 && offset == 0 && selFor.IsZero() {
 		return nil

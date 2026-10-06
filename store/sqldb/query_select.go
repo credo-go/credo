@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 
 	"github.com/uptrace/bun"
 
@@ -107,7 +108,7 @@ func (q *SelectQuery) Limit(n int) *SelectQuery {
 		q.raw = q.raw.Err(err)
 		return q
 	}
-	q.raw = q.raw.Limit(n)
+	q.raw = q.raw.Limit(int64(n))
 	return q
 }
 
@@ -119,7 +120,7 @@ func (q *SelectQuery) Offset(n int) *SelectQuery {
 		q.raw = q.raw.Err(err)
 		return q
 	}
-	q.raw = q.raw.Offset(n)
+	q.raw = q.raw.Offset(int64(n))
 	return q
 }
 
@@ -306,7 +307,10 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 			return 0, hookErr
 		}
 	}
-	return total, nil
+	if total > math.MaxInt || total < math.MinInt {
+		return 0, fmt.Errorf("sqldb: count: total %d does not fit in int", total)
+	}
+	return int(total), nil
 }
 
 func (q *SelectQuery) validateTypedTerminal(terminal string) error {

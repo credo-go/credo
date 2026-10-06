@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `store/sqldb` requires Bun v1.3.0** (`github.com/uptrace/bun` and its three dialect modules, from v1.2.18). Bun now stores and accepts `LIMIT` and `OFFSET` as `int64` and `Count` returns `int64`. The curated `SelectQuery.Limit`, `Offset` and `Count` keep their `int` signatures, so code written against them compiles unchanged; code that reaches the native query — an `Apply` closure, `Unwrap`, `db.Conn(ctx)` — and passes an `int` variable to Bun's `Limit` or `Offset` stops compiling and needs `int64(n)`. `Count` returns an error instead of a truncated total when the `int64` count does not fit in `int`, which is possible on 32-bit platforms only. The private-field compatibility layer behind `Count` and `Page` is taught the new field types; its layout test pins Bun v1.3.0.
+
 ## [0.21.1] - 2026-10-04
 
 **Security and bug-fix release.** A fail-open defect in `middleware.ContractGuard` is closed, eight defects are fixed and YAML decoding moves to its maintained module. No exported API is added, removed or renamed; the [release notes](docs/releases/v0.21.1.md#check-this-first) list the fixes that change what a request does.
