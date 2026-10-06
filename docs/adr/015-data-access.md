@@ -269,7 +269,7 @@ The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI regis
 
 **Optional model arity is strict**: `Select`, `Insert`, `Update`, and `Delete` accept zero or one optional model. Supplying more than one causes the builder to record an error that the terminal returns without executing; no argument is silently ignored.
 
-**Curated LIMIT/OFFSET narrowing is strict:** Bun v1.2.18 accepts `int` in `SelectQuery.Limit`/`Offset` but stores the result in signed `int32` fields. Credo's curated methods now range-check before delegation, recording `sqldb.ErrInvalidLimitOffset` so the terminal fails before database execution instead of silently using a narrowed value. The full in-range signed-int32 domain is preserved, including Bun's zero/negative semantics. `Apply` and `Unwrap` are raw Bun escape hatches, so calls made through them deliberately remain governed by Bun's conversion contract.
+**Curated LIMIT/OFFSET forward every value:** Bun v1.3.0 takes and stores `LIMIT` and `OFFSET` as `int64`, so the curated `SelectQuery.Limit(int)`/`Offset(int)` convert and delegate without a range check; zero and negative values keep Bun's semantics (the clause is omitted). `Apply` and `Unwrap` are raw Bun escape hatches and take `int64` directly.
 
 ## ApplyQueryBuilder
 
@@ -311,7 +311,7 @@ The private-field compatibility layer is limited to this public builder-fork con
 
 **Normalization policy and execution invariants are separate:** `PageRequest.Normalize` and its `Validate` hook remain forgiving, mutating input-policy operations: they apply defaults and clamp `PerPage`. `PageRequest.Offset` is deliberately strict and non-mutating, and now returns `(int, error)` so non-positive values or native `int` multiplication overflow cannot become a silent offset. This is a pre-v1 source break in favor of explicit correctness; callers must handle `pagination.ErrInvalidPageRequest`.
 
-`Page` takes its own value snapshot of `req` and never re-normalizes or mutates the caller's object. Before COUNT, it rejects nil, `Page < 1`, `PerPage < 1`, native offset overflow, and any limit/offset outside Bun v1.2.18's signed-int32 representation; all failures wrap `pagination.ErrInvalidPageRequest`. The Bun guard is adapter-specific because Bun's public methods accept `int` but its pinned internal fields are `int32`, and its conformance test must be revisited on upgrade. This strict boundary does not impose the package's default cap: a valid custom `PerPage` above 50 remains honoured. When COUNT reports zero rows SELECT is skipped and the result is `NewPage([]T{}, 0, snapshot.Page, snapshot.PerPage)`, preserving the requested metadata with a non-nil empty slice.
+`Page` takes its own value snapshot of `req` and never re-normalizes or mutates the caller's object. Before COUNT, it rejects nil, `Page < 1`, `PerPage < 1`, and native offset overflow; all failures wrap `pagination.ErrInvalidPageRequest`. This strict boundary does not impose the package's default cap: a valid custom `PerPage` above 50 remains honoured. When COUNT reports zero rows SELECT is skipped and the result is `NewPage([]T{}, 0, snapshot.Page, snapshot.PerPage)`, preserving the requested metadata with a non-nil empty slice.
 
 **Total means complete logical projection-row cardinality.** It is computed before ordering and the Page-owned LIMIT/OFFSET window. Credo clones the SELECT, removes root ORDER/LIMIT/OFFSET/FOR state, and counts the resulting universal `_credo_count_source` derived table. A plain projection counts its produced rows; an ungrouped aggregate normally produces one row (including `COUNT(*)` over an empty input); `Distinct` counts distinct selected projection tuples; `Group` counts groups; and `Group` + `Having` counts only groups left after the `Having` filter. Behavioral and generated-SQL conformance tests pin this Credo-owned wrapper instead of relying on Bun v1.2.18's narrower grouped/distinct count rewrite. Bun does not give standalone `Having` or a direct `UNION`/`INTERSECT`/`EXCEPT` root a safe Count+window contract, so `Count` and `Page` return `ErrUnsupportedCountQuery` before database I/O. Advanced callers put the compound query behind an outer derived-table/CTE source, run an explicit count query and data query, then construct `pagination.NewPage`.
 
@@ -367,8 +367,7 @@ AND; this prevents `A OR B AND cursor` precedence from leaking rows before the
 boundary. This ensures every key is scanned into `T` and prevents pre-query or
 post-scan hooks from changing the model,
 query shape, order/window, or cursor key behind the terminal's back. The strict
-request boundary also checks native addition and requires `per_page` to be at
-most Bun's signed-int32 maximum minus one.
+request boundary also checks that `per_page` plus one does not overflow `int`.
 
 Cursor integrity has no hidden fallback. The planned public-HTTP codec requires
 an explicit HMAC-SHA256 keyring and key identifier; Credo will not generate a

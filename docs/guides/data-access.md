@@ -257,7 +257,7 @@ These proxies add:
 
 `Select`, `Insert`, `Update`, and `Delete` accept at most one optional model. Supplying more causes the builder to record `sqldb: <Op> accepts at most one model, got N`; the terminal returns that error without executing, and no model is silently ignored.
 
-`SelectQuery.Limit` and `Offset` add one adapter guard around Bun v1.2.18. Bun's API accepts `int` but stores the values as signed `int32`; a value outside that range records `sqldb.ErrInvalidLimitOffset`, and the terminal returns before sending SQL. Values inside the range, including zero and negatives, keep Bun's normal semantics. This applies to the curated proxy methods only. If `Apply` or `Unwrap` is used to call raw Bun, Bun's own conversion behavior applies.
+`SelectQuery.Limit` and `Offset` take an `int` and forward it to Bun, which stores both values as `int64`, so every value is representable. Zero and negative values keep Bun's semantics: the clause is omitted. Through `Apply` or `Unwrap`, Bun's own `Limit` and `Offset` take `int64`.
 
 ### The Terminal Contract
 
@@ -429,7 +429,7 @@ func (h *UserHandler) List(ctx *credo.Context) error {
 }
 ```
 
-Outside a handler, call `req.Normalize()` (or `NormalizeWithMax` for a higher per-page cap) yourself when you want the same forgiving policy. Directly constructed requests may also be passed as-is, but `Page` requires positive values and a representable execution window; it never silently defaults or clamps them. Nil, zero/negative, native `int` offset overflow, and Bun v1.2.18 signed-int32 LIMIT/OFFSET overflow all return an error matching `pagination.ErrInvalidPageRequest` before COUNT. A custom normalized `PerPage` such as 100 is valid and remains 100. For direct offset calculations, handle the new strict signature: `offset, err := req.Offset()`.
+Outside a handler, call `req.Normalize()` (or `NormalizeWithMax` for a higher per-page cap) yourself when you want the same forgiving policy. Directly constructed requests may also be passed as-is, but `Page` requires positive values and a representable execution window; it never silently defaults or clamps them. Nil, zero/negative and native `int` offset overflow all return an error matching `pagination.ErrInvalidPageRequest` before COUNT. A custom normalized `PerPage` such as 100 is valid and remains 100. For direct offset calculations, handle the new strict signature: `offset, err := req.Offset()`.
 
 When COUNT reports zero rows, SELECT is skipped and the page comes back with a non-nil empty `Records` slice and the snapshot's page/per-page preserved. Use a stable total order for every offset-paginated query. If the primary sort key can repeat, append a unique tie-breaker such as `id`; `created_at DESC` alone does not determine which equal-timestamp record belongs to which page.
 

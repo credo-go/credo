@@ -17,6 +17,11 @@ The `v0.1.0` section records the initial public development baseline; it was not
 ### Changed
 
 - **BREAKING: `store/sqldb` requires Bun v1.3.0** (`github.com/uptrace/bun` and its three dialect modules, from v1.2.18). Bun now stores and accepts `LIMIT` and `OFFSET` as `int64` and `Count` returns `int64`. The curated `SelectQuery.Limit`, `Offset` and `Count` keep their `int` signatures, so code written against them compiles unchanged; code that reaches the native query — an `Apply` closure, `Unwrap`, `db.Conn(ctx)` — and passes an `int` variable to Bun's `Limit` or `Offset` stops compiling and needs `int64(n)`. `Count` returns an error instead of a truncated total when the `int64` count does not fit in `int`, which is possible on 32-bit platforms only. The private-field compatibility layer behind `Count` and `Page` is taught the new field types; its layout test pins Bun v1.3.0.
+- **sqldb:** `SelectQuery.Limit` and `Offset` forward every value to Bun, and `Page` executes any window whose offset fits in `int`. Both used to reject values outside the signed 32-bit range before the query ran, because Bun v1.2.18 stored them in `int32` fields; with `int64` storage there is no range to guard. The remaining pre-execution checks are unchanged: `Page` still rejects a nil request, a non-positive `Page` or `PerPage` and a native `int` offset overflow with `pagination.ErrInvalidPageRequest`, and zero or negative `Limit`/`Offset` values still omit the clause.
+
+### Removed
+
+- **sqldb:** `ErrInvalidLimitOffset`. Nothing returns it any more (see the `Limit`/`Offset` entry above); an `errors.Is` check against it stops compiling and can be deleted.
 
 ## [0.21.1] - 2026-10-04
 

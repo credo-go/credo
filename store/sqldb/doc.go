@@ -85,12 +85,8 @@
 // hatches (Apply, ApplyQueryBuilder, Unwrap) for advanced usage.
 // Each builder accepts at most one optional model. Supplying more causes the
 // builder to record an error that its terminal returns without executing.
-// SelectQuery's curated Limit and Offset methods also guard Bun v1.2.18's
-// signed-int32 storage: an out-of-range int records ErrInvalidLimitOffset and
-// the terminal returns before database execution. Values inside the int32
-// range, including zero and negatives, retain Bun's native semantics. Apply
-// and Unwrap expose raw Bun builders and therefore retain Bun's own narrowing
-// contract instead of this curated-method guard.
+// SelectQuery's curated Limit and Offset forward every value; zero and
+// negative values keep Bun's semantics and omit the clause.
 //
 //	var user User
 //	err := db.Select(&user).Where("id = ?", id).Scan(ctx)
@@ -204,9 +200,9 @@
 // BindQuery applies PageRequest.Validate, whose input policy defaults/clamps the
 // request. Page does not repeat that policy. Instead it copies req and strictly
 // validates the snapshot before touching the database: nil, non-positive Page
-// or PerPage, native-int offset overflow, and values outside Bun v1.2.18's
-// signed-int32 LIMIT/OFFSET range return pagination.ErrInvalidPageRequest before
-// COUNT. The caller's request is never mutated; a valid PerPage above the
+// or PerPage, and native-int offset overflow return
+// pagination.ErrInvalidPageRequest before COUNT. The caller's request is never
+// mutated; a valid PerPage above the
 // package default cap (for example a custom normalized value of 100) remains
 // valid and is not clamped by the terminal. When COUNT reports zero rows, SELECT
 // is skipped and the page keeps the snapshot's page/per-page with a non-nil

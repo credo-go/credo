@@ -22,8 +22,7 @@
 // separate, strict boundary. [PageRequest.Offset] returns (int, error), never
 // mutates or normalizes the request, and wraps [ErrInvalidPageRequest] when Page
 // or PerPage is non-positive or the multiplication would overflow int.
-// ORM adapters may impose a narrower execution range; sqldb additionally
-// enforces Bun v1.2.18's signed-int32 LIMIT/OFFSET representation before COUNT.
+// ORM adapters may impose a narrower execution range of their own.
 //
 // # Page Construction and Mapping
 //
