@@ -224,12 +224,61 @@ func TestParseConfig(t *testing.T) {
 			format:  "yaml",
 			wantErr: true,
 		},
+		// A config file holds one document. The first document used to be
+		// read and the rest of the stream dropped without a word.
 		{
-			// The decoder reads the first document of a stream.
-			name:   "yaml multi-document input",
-			data:   "a: 1\n---\nb: 2\n",
+			name:    "yaml multi-document input",
+			data:    "a: 1\n---\nb: 2\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml trailing empty document",
+			data:    "a: 1\n---\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml empty first document",
+			data:    "---\n---\na: 1\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:    "yaml malformed second document",
+			data:    "a: 1\n---\nb: [unclosed\n",
+			format:  "yaml",
+			wantErr: true,
+		},
+		{
+			name:   "yaml leading document marker",
+			data:   "---\na: 1\n",
 			format: "yaml",
 			want:   map[string]any{"a": 1},
+		},
+		{
+			name:   "yaml document end marker",
+			data:   "a: 1\n...\n",
+			format: "yaml",
+			want:   map[string]any{"a": 1},
+		},
+		{
+			name:   "yaml empty input",
+			data:   "",
+			format: "yaml",
+			want:   map[string]any{},
+		},
+		{
+			name:   "yaml comment only",
+			data:   "# nothing configured yet\n",
+			format: "yaml",
+			want:   map[string]any{},
+		},
+		{
+			name:   "yaml null document",
+			data:   "~\n",
+			format: "yaml",
+			want:   map[string]any{},
 		},
 		// A merged mapping's keys are looked up before they are checked, so a
 		// sequence or a mapping as a key used to panic the decoder when the
@@ -282,6 +331,17 @@ func TestParseConfig(t *testing.T) {
 				t.Errorf("parseConfig:\n  got  %#v\n  want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+// The multi-document error says what is wrong with the file, and the load
+// reports it with its source.
+func TestLoadBytes_YAMLWithSeveralDocuments(t *testing.T) {
+	_, err := LoadBytes([]byte("server:\n  port: 8080\n---\nserver:\n  port: 9090\n"), FormatYAML,
+		WithoutProcessEnv(), WithoutDotenv())
+	want := "config: load bytes: yaml: a config file holds one document; found another after the first"
+	if err == nil || err.Error() != want {
+		t.Fatalf("LoadBytes error = %v, want %q", err, want)
 	}
 }
 

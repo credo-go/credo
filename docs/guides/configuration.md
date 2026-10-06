@@ -2,7 +2,7 @@
 
 This guide covers how to configure a Credo application. For internal design rationale, see [Configuration Spec](../specs/config.md).
 
-All config examples in this guide use JSON for consistency. Credo also supports YAML/YML with the same structure.
+All config examples in this guide use JSON for consistency. Credo also supports YAML/YML with the same structure. A YAML file holds one document: it may open with `---`, but a second document — even an empty one after a trailing `---` — fails the load instead of being ignored.
 
 ---
 

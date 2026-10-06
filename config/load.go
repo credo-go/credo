@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -118,7 +120,8 @@ func (c *Config) populate(dotenv map[string]string) error {
 
 // parseConfig parses raw JSON or YAML bytes into a string-keyed nested map.
 // format accepts bare names ("json", "yaml", "yml") and file extensions
-// (".json", ".yaml", ".yml"), case-insensitively.
+// (".json", ".yaml", ".yml"), case-insensitively. Either format holds one
+// value: JSON rejects trailing data, YAML a second document.
 func parseConfig(data []byte, format string) (map[string]any, error) {
 	switch strings.ToLower(strings.TrimPrefix(format, ".")) {
 	case FormatJSON:
@@ -131,15 +134,37 @@ func parseConfig(data []byte, format string) (map[string]any, error) {
 		}
 		return out, nil
 	case FormatYAML, "yml":
-		var out map[string]any
-		if err := yaml.Unmarshal(data, &out); err != nil {
-			return nil, err
-		}
-		// YAML may produce map[any]any for non-string keys; normalize.
-		return intfaceKeysToStrings(out), nil
+		return parseYAML(data)
 	default:
 		return nil, fmt.Errorf("unsupported format: %q", format)
 	}
+}
+
+// parseYAML decodes the one document a YAML config holds. A stream with a
+// second document — a "---" after the first, an empty document included — is
+// an error: yaml.Unmarshal reads the first document and drops the rest, so
+// whatever followed the marker was lost without a word, a malformed second
+// document included. A leading "---" and a closing "..." belong to the one
+// document, and empty or comment-only input is an empty config.
+func parseYAML(data []byte) (map[string]any, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var out map[string]any
+	if err := dec.Decode(&out); err != nil {
+		if errors.Is(err, io.EOF) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	var next yaml.Node
+	switch err := dec.Decode(&next); {
+	case errors.Is(err, io.EOF):
+	case err != nil:
+		return nil, err
+	default:
+		return nil, errors.New("yaml: a config file holds one document; found another after the first")
+	}
+	// YAML may produce map[any]any for non-string keys; normalize.
+	return intfaceKeysToStrings(out), nil
 }
 
 // --- config files ---
