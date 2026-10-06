@@ -76,11 +76,13 @@ type compressFeature struct {
 // centralized error rendering, so error envelopes are compressed like handler
 // output. Compression is applied only to responses whose Content-Type is in
 // Types and that carry no Content-Encoding of their own; HEAD and bodiless
-// responses, streaming (Flush), committed responses and hijacked connections
-// keep their behavior. The compressor is finalized at the framework's
-// response-completion boundary, before the access record observes the
-// response, so access-log bytes count the compressed output the transport
-// accepted.
+// responses, committed responses and hijacked connections keep their
+// behavior. A Flush streams the compressed output; a flush before the first
+// write makes the compression decision then, from the headers set so far, so
+// the flushed header carries Content-Encoding. The compressor is finalized
+// at the framework's response-completion boundary, before the access record
+// observes the response, so access-log bytes count the compressed output the
+// transport accepted.
 //
 // The feature is off by default. UseCompress accepts zero configs for the
 // defaults or one config; it panics for more than one config, for a Level
@@ -226,16 +228,33 @@ func (w *compressResponseWriter) Write(p []byte) (int, error) {
 	return w.out.Write(p)
 }
 
-func (w *compressResponseWriter) Flush() {
+// FlushError flushes the compressed stream and then the writer below, and
+// reports whether it could; [http.ResponseController] prefers it to Flush. A
+// flush before the header commits status 200, as net/http's does, so the
+// compression decision is made first, from the headers set so far: the
+// header leaves with Content-Encoding when the body will be compressed. When
+// nothing below can flush, the result is [http.ErrNotSupported] and nothing
+// is decided or written.
+func (w *compressResponseWriter) FlushError() error {
+	if !w.wroteHeader {
+		if !httpwriter.CanFlush(w.ResponseWriter) {
+			return http.ErrNotSupported
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.enabled {
 		if fw, ok := w.compressor.(interface{ Flush() error }); ok {
-			_ = fw.Flush()
+			if err := fw.Flush(); err != nil {
+				return err
+			}
 		}
 	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
 
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+// Flush implements [http.Flusher]; see FlushError.
+func (w *compressResponseWriter) Flush() {
+	_ = w.FlushError()
 }
 
 func (w *compressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
