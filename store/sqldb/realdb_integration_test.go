@@ -99,6 +99,9 @@ func TestRealDB_Contracts(t *testing.T) {
 	t.Run("NUL byte in a string argument", func(t *testing.T) {
 		testRealDBNULString(t, ctx, db, cfg.Driver)
 	})
+	t.Run("pgx scans byte-valued columns into maps", func(t *testing.T) {
+		testRealDBPgxMapScan(t, ctx, db, cfg.Driver)
+	})
 }
 
 func loadRealDBConfig(t *testing.T) *sqldb.Config {
@@ -629,6 +632,48 @@ func testRealDBNULString(t *testing.T, ctx context.Context, db *sqldb.DB, driver
 			"This canary pins an upstream defect, not a Credo contract: update the NUL paragraph of "+
 			"docs/guides/data-access.md (\"NUL bytes in strings\") and the CHANGELOG, then make this "+
 			"subtest assert the new behavior", stored, nulStringValue)
+	}
+}
+
+// testRealDBPgxMapScan pins that a row with jsonb, bytea and numeric
+// columns — the types pgx hands to database/sql as []byte — scans into
+// map[string]any and []map[string]any. With Go 1.27, pgx v5.11.0 implements
+// driver.RowsColumnScanner, and Bun v1.2.18 deadlocked inside Scan on such a
+// column (uptrace/bun#1434, fixed in v1.3.0). A regression would hang the
+// job, so each scan runs under its own deadline and fails instead.
+func testRealDBPgxMapScan(t *testing.T, ctx context.Context, db *sqldb.DB, driver string) {
+	t.Helper()
+	if driver != "pgx" {
+		t.Skipf("driver %q is not pgx", driver)
+	}
+	const query = `SELECT '{"k": 1}'::jsonb AS j, '\x01ff'::bytea AS b, 12.5::numeric AS n`
+
+	scanBounded := func(name string, scan func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- scan() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not return within 10s: scanning a []byte-valued column into a map deadlocked (uptrace/bun#1434)", name)
+		}
+	}
+
+	var single map[string]any
+	scanBounded("map[string]any", func() error { return db.Query(ctx, &single, query) })
+	for _, column := range []string{"j", "b", "n"} {
+		if _, ok := single[column]; !ok {
+			t.Fatalf("map[string]any = %v, want column %q", single, column)
+		}
+	}
+
+	var rows []map[string]any
+	scanBounded("[]map[string]any", func() error { return db.Query(ctx, &rows, query) })
+	if len(rows) != 1 || len(rows[0]) != 3 {
+		t.Fatalf("[]map[string]any = %v, want one row with three columns", rows)
 	}
 }
 
