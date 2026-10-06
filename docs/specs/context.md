@@ -93,7 +93,8 @@ func (r *Response) Committed() bool // true once the final status is written
 func (r *Response) WriteHeader(code int)
 func (r *Response) Write(b []byte) (int, error)
 func (r *Response) ReadFrom(src io.Reader) (int64, error) // io.ReaderFrom; see below
-func (r *Response) Flush()
+func (r *Response) Flush()            // http.Flusher; see FlushError
+func (r *Response) FlushError() error // preferred by http.ResponseController
 func (r *Response) Hijack() (net.Conn, *bufio.ReadWriter, error)
 func (r *Response) Unwrap() http.ResponseWriter
 func (r *Response) Reset(w http.ResponseWriter)
@@ -112,6 +113,8 @@ func (r *Response) SetCookie(cookie *http.Cookie)
 ```
 
 `WriteHeader` writes the final status once; later calls are ignored. An informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once with the current headers and commits nothing: `Status()` stays 0, `Committed()` false, and the final status follows, as with net/http. Under `UseCompress` the compression decision waits for that final status too. A code outside 100–999 panics, as net/http's own check does, before `Response` records anything, so recovery still answers with a 500.
+
+A flush commits the response, as net/http's does: status 200 is written first when no status was, so `Status()` reports 200, `Committed()` true, and an error the handler returns afterwards is logged (`credo: error after response committed`) instead of being appended to the flushed response. `FlushError` reports `http.ErrNotSupported` and commits nothing when no writer in the chain can flush (`http.ErrHijacked` after a hijack); `Flush` discards the result. Under `UseCompress` a flush before the first write makes the compression decision then, from the headers set so far, so the flushed header carries `Content-Encoding`.
 
 Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) treats body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified (RFC 9110) — as status-only: the body **and** the Content-Type header are skipped, the call returns nil, and `Stream`'s reader is never read. Without this, writing a body to such a status fails inside net/http after the header is committed, and the returned error can only surface as a spurious "error after response committed" warning; a 204 also must not advertise a `Content-Type` it does not carry. Handler-set headers (ETag, Cache-Control on a 304) are untouched.
 

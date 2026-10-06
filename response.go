@@ -8,6 +8,7 @@ import (
 	"bufio"
 	jsonv2 "encoding/json/v2"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -276,14 +277,29 @@ func (r *Response) copyPooled(src io.Reader) (int64, error) {
 	return n, err
 }
 
-// Flush sends any buffered data to the client.
-func (r *Response) Flush() {
+// FlushError sends any buffered data to the client and reports whether it
+// could; [http.ResponseController] prefers it to Flush. A flush commits the
+// response, as net/http's does: status 200 is written first when no status
+// was. The commit is recorded, so an error the handler returns afterwards is
+// logged instead of being appended to the flushed response. When no writer
+// in the chain can flush, the result is [http.ErrNotSupported] and nothing is
+// committed; after a hijack it is [http.ErrHijacked].
+func (r *Response) FlushError() error {
 	if r.hijacked {
-		return
+		return http.ErrHijacked
 	}
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	err := http.NewResponseController(r.ResponseWriter).Flush()
+	if !r.committed && !errors.Is(err, http.ErrNotSupported) {
+		// net/http writes the 200 header before it flushes and keeps it
+		// written when the flush itself fails.
+		r.status, r.committed = http.StatusOK, true
 	}
+	return err
+}
+
+// Flush implements [http.Flusher]; see [Response.FlushError].
+func (r *Response) Flush() {
+	_ = r.FlushError()
 }
 
 // Hijack implements the http.Hijacker interface. It resolves nested Unwrap

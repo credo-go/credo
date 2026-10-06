@@ -18,9 +18,9 @@ import (
 // without the record a response the middleware writes by itself — a 401, a
 // redirect, a file — would leave it uncommitted with status 0.
 //
-// The record follows net/http rather than [Response.WriteHeader]: a 1xx status
-// other than 101 is informational and commits nothing, a body write commits
-// 200 when no status was written, and only the first status counts. Once the
+// The record follows net/http: a 1xx status other than 101 is informational
+// and commits nothing, a body write or a flush commits 200 when no status was
+// written, and only the first status counts. Once the
 // middleware hijacked the connection nothing more is forwarded or recorded.
 type stdMiddlewareWriter struct {
 	http.ResponseWriter
@@ -141,12 +141,17 @@ func (w *stdMiddlewareWriter) copyPooled(src io.Reader) (int64, error) {
 // FlushError flushes the underlying writer and reports whether it could.
 // [http.ResponseController] prefers this method to Flush, and resolving the
 // underlying writer through a controller reaches a Flusher behind an Unwrap
-// chain as well.
+// chain as well. A flush that reached a writer commits 200 when no status was
+// written, as [Response.FlushError] records it.
 func (w *stdMiddlewareWriter) FlushError() error {
 	if w.hijacked {
 		return http.ErrHijacked
 	}
-	return http.NewResponseController(w.ResponseWriter).Flush()
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	if !w.committed && !errors.Is(err, http.ErrNotSupported) {
+		w.status, w.committed = http.StatusOK, true
+	}
+	return err
 }
 
 // Flush implements [http.Flusher].
