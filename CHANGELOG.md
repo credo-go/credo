@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-06
+
+**Bug-fix release.** Fixes in the HTTP write path (informational statuses, flushes), routing (an empty catch-all rest, repeated and reserved parameter names), YAML configuration parsing and the release gate, found while shipping v0.22.0. Three change behavior an application can observe — a catch-all matches an empty rest, a pattern that repeats a parameter name panics at registration, and a YAML config with more than one document fails to load; the [release notes](docs/releases/v0.23.0.md#check-this-first) list what to check. `Response` gains `FlushError`; nothing is removed or renamed. `store/sqldb` has no code changes; its tag follows the lockstep policy.
+
 ### Changed
 
 - **BREAKING (behavior): a catch-all matches an empty rest.** `/files/{path...}` now serves `/files/` with `path` = `""`, as chi and `net/http.ServeMux` do; it used to need at least one byte, so the prefix with a trailing slash answered 404, or a trailing-slash redirect to a sibling route without the slash. A mount now reaches its own root through `/admin/` (and `/t/acme/` under a parametric prefix), where it was redirected to `/admin` or answered 404 with `WithRedirectTrailingSlash(false)`; `Static` serves `/static/` directly instead of redirecting to `/static`; `POST /files/` on a GET-only catch-all is 405 instead of 404; `/files` without a route of its own is redirected to `/files/`; and `BuildURI`/`BuildURL` accept an empty catch-all value. An application that registers both `GET /files` and `GET /files/{path...}` now serves `/files/` from the catch-all instead of redirecting it to `/files`. The rewrite middleware's `{name...}` already matched an empty rest; the router now agrees with it ([router spec](docs/specs/router.md#url-parameters), [migration guide](docs/guides/pre-v1-migration.md#router)).
@@ -25,6 +29,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **response:** a flush commits the response, and `Response` now records it. net/http writes status 200 when a flush comes before any status, but `Response` stayed uncommitted, so an error the handler returned afterwards was rendered into the response already on the wire — its envelope appended to the flushed 200. Such an error is now logged (`credo: error after response committed`), as after any other commit; a flush a stdlib middleware makes through `WrapStdMiddleware` is recorded the same way. `Response` gains `FlushError`, which `http.ResponseController` prefers: it reports `http.ErrNotSupported` and commits nothing when no writer in the chain can flush, where the controller used to report success. Under `UseCompress`, a flush before the first write sent the 200 header without `Content-Encoding` while the body that followed was compressed; the compression decision is now made at the flush, so the flushed header carries `Content-Encoding`.
 - **response:** an informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once and no longer recorded as the response status. The handler's final status used to be dropped, so the client saw 103 followed by an implicit 200; under `UseCompress` the compression writer also made its decision on the 1xx and left the body uncompressed. `Response.Status()` and `Committed()` stay 0 and false until the final status. A status outside 100–999 now panics before `Response` or the compression writer records anything, as net/http's own check does: the response used to be recorded as committed with the invalid code, so recovery could not answer, the access record carried that code and the exchange ended with an empty 200.
 - Release candidate validation confines its git commands to the throwaway clone it creates (`GIT_CEILING_DIRECTORIES`), so a directory that is not a repository root fails instead of resolving to an enclosing work tree. Go 1.27's `testing.T.TempDir` places test directories under `GOTMPDIR`; with `GOTMPDIR` inside a Credo checkout, the gate's own tests wrote the synthetic `v0.11.0` and `store/sqldb/v0.11.0` tags into that checkout. A checkout where the tests ran that way restores the published tags with `git fetch --force origin refs/tags/v0.11.0:refs/tags/v0.11.0 refs/tags/store/sqldb/v0.11.0:refs/tags/store/sqldb/v0.11.0`.
+
+### Documentation
+
+- The [pre-v1 migration guide](docs/guides/pre-v1-migration.md#configuration) gains a Configuration section and the v0.23.0 rows of its Router section. Tracked files no longer point at an untracked contributor file; the dependency allowlist the import-boundary test enforces is described in [CONTRIBUTING.md](CONTRIBUTING.md#coding-standards).
 
 ## [0.22.0] - 2026-10-06
 
@@ -589,7 +597,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/credo-go/credo/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/credo-go/credo/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/credo-go/credo/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/credo-go/credo/compare/v0.20.1...v0.21.0
