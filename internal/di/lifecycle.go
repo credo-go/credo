@@ -23,6 +23,11 @@ type shutdowner interface {
 //   - Circular dependencies (A → B → A)
 //   - context.Context parameters (not allowed)
 //
+// Aliases and BindMany collections are not checked again here: Alias and
+// BindMany reject a binding whose types do not fit when it is made, and no
+// registration is ever removed, so an alias always names a registered type
+// and a collection holds registered implementations of its interface.
+//
 // Every walk follows registration order, never a map, so the same wiring
 // yields the same report on every run: the errors in the order their
 // subjects were registered, and of several cycles the one reached first from
@@ -58,65 +63,17 @@ func (c *Container) validate() error {
 				continue
 			}
 
-			if _, ok := c.registrations[pt]; !ok {
-				// Check aliases.
-				if concrete, aliased := c.aliases[pt]; aliased {
-					if _, ok := c.registrations[concrete]; ok {
-						continue
-					}
-				}
-				errs = append(errs, fmt.Errorf(
-					"di: Validate: %s (param %d): dependency %s is not registered",
-					t, i, pt,
-				))
-			}
-		}
-	}
-
-	// Validate aliases: concrete types must be registered.
-	for _, iface := range c.aliasOrder {
-		concrete := c.aliases[iface]
-		if _, ok := c.registrations[concrete]; !ok {
-			errs = append(errs, fmt.Errorf(
-				"di: Validate: alias %s → %s: concrete type is not registered",
-				iface, concrete,
-			))
-		}
-	}
-
-	// Validate BindMany collections.
-	for _, iface := range c.manyOrder {
-		concretes := c.manyBindings[iface]
-		if iface.Kind() != reflect.Interface {
-			errs = append(errs, fmt.Errorf(
-				"di: Validate: BindMany target %s: target type must be an interface",
-				iface,
-			))
-			continue
-		}
-
-		for _, concrete := range concretes {
-			if concrete.Kind() == reflect.Interface {
-				errs = append(errs, fmt.Errorf(
-					"di: Validate: BindMany %s → %s: concrete type must not be an interface",
-					iface, concrete,
-				))
+			if _, ok := c.registrations[pt]; ok {
 				continue
 			}
-
-			if !concrete.Implements(iface) {
-				errs = append(errs, fmt.Errorf(
-					"di: Validate: BindMany %s → %s: concrete type does not implement interface",
-					iface, concrete,
-				))
+			// An alias always names a registered type (see above).
+			if _, aliased := c.aliases[pt]; aliased {
+				continue
 			}
-
-			if _, ok := c.registrations[concrete]; !ok {
-				errs = append(errs, fmt.Errorf(
-					"di: Validate: BindMany %s → %s: concrete type is not registered",
-					iface, concrete,
-				))
-			}
+			errs = append(errs, fmt.Errorf(
+				"di: Validate: %s (param %d): dependency %s is not registered",
+				t, i, pt,
+			))
 		}
 	}
 

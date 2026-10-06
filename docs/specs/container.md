@@ -351,6 +351,8 @@ Duplicate registration of the same type returns an error.
 
 Circular dependencies (A -> B -> A) are detected during Finalize and produce a clear error listing the cycle. Dependencies inside pre-built values are opaque to the container and take no part in validation or shutdown ordering.
 
+`Alias` and `BindMany` check their types when the binding is made — an interface target, and a registered concrete type that implements it — and no registration is ever removed, so Finalize does not check them again: it validates constructor parameters (missing dependencies, `context.Context`) and cycles.
+
 The validation report is deterministic: the same wiring yields the same error text on every run. Errors are listed in registration order — a consumer registered earlier is reported earlier, its parameters left to right — and when the graph holds several cycles, the one reached first from the earliest registration is reported, its text starting at the member that was registered first.
 
 ### Resolution (root package)
