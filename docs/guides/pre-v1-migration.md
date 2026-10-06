@@ -76,6 +76,7 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | `BuildURI("")` failed for a catch-all | It builds the prefix with the slash (`/files/`) |
 | `/a/{id}/b/{id}` registered; `RouteParam("id")` returned the first capture, `RouteParams()` and `URLParam` the last | Registration panics with `duplicate parameter name "id"`, whether the repeat comes from the route, a group or mount prefix, a rewrite rule or a host pattern (`{a}.{a}.example.com`) |
 | A host parameter without a name (`{}.example.com`) or with an empty constraint (`{org:}.example.com`) registered | `app.Host` panics |
+| `Mount("/t/{_mount}", h)` registered and handed the child the rest of the path as `_mount`; under `Static`, a group prefix parameter `_static` was served as the file path | Both panic: `_mount` and `_static` are reserved for the captures `Mount` and `Static` add |
 
 Migration: an application that registers both `GET /files` and `GET /files/{path...}` and relied on `/files/` being redirected to `/files` handles the empty capture in the catch-all handler, or registers `GET /files/` explicitly. A pattern that repeats a parameter name gives each capture its own name (`/a/{a_id}/b/{b_id}`).
 

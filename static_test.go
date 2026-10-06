@@ -1000,6 +1000,24 @@ func TestStatic_PanicsOnBraceInPrefix(t *testing.T) {
 	app.Static("/files/{id}", testFS())
 }
 
+// Static captures the file path under the name _static. A group prefix
+// parameter of that name came first among the captures, so its value was
+// served as the file path; the name is reserved, and the fault is reported
+// against the prefix, before anything is registered.
+func TestStatic_PanicsOnReservedNameInGroupPrefix(t *testing.T) {
+	app := mustNew(t)
+	func() {
+		want := `credo: Static "/t/{_static}/files": the parameter name "_static" is reserved`
+		defer func() {
+			if r := recover(); r != want {
+				t.Fatalf("panic = %v, want %q", r, want)
+			}
+		}()
+		app.Group("/t/{_static}").Static("/files", testFS())
+	}()
+	app.Group("/t/{tenant}").Static("/files", testFS())
+}
+
 func TestStaticCacheMaxAge_PanicsOnNegative(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

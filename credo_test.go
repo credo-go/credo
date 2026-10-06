@@ -1508,9 +1508,9 @@ func TestRouting_DuplicateParamNamePanics(t *testing.T) {
 		},
 		{
 			name:     "static under a group prefix",
-			want:     `duplicate parameter name "_static"`,
-			register: func(app *credo.App) { app.Group("/t/{_static}").Static("/files", fstest.MapFS{}) },
-			retry:    func(app *credo.App) { app.Group("/t/{tenant}").Static("/files", fstest.MapFS{}) },
+			want:     `credo: Static "/t/{id}/x/{id}/files": duplicate parameter name "id"`,
+			register: func(app *credo.App) { app.Group("/t/{id}/x/{id}").Static("/files", fstest.MapFS{}) },
+			retry:    func(app *credo.App) { app.Group("/t/{id}/x/{name}").Static("/files", fstest.MapFS{}) },
 		},
 		{
 			name:     "host",

@@ -96,6 +96,7 @@ Registers routes that serve files from `fsys` under the given URL prefix.
 **Registration-time panics:**
 
 - `prefix` contains `{` or `}` (route parameters in static prefix)
+- the group's prefix names a parameter `_static`, the name the file path is captured under, or uses a parameter name twice (`credo: Static "/t/{_static}/files": the parameter name "_static" is reserved`)
 
 (The cache presets panic at their own call site on invalid durations: `StaticCacheMaxAge` on negative, `StaticCacheImmutableAssets` on anything that floors below 1 second.)
 
