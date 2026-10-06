@@ -167,7 +167,7 @@ When both `cfg.SPA` and `cfg.Browse` are true and the request qualifies for SPA 
 
 The static handler is an `credo.Handler` (`func(*Context) error`):
 
-1. Extract path from `RouteParams["_static"]` (or empty for exact match).
+1. Extract path from `RouteParams["_static"]` (empty for the exact prefix and for the prefix with a trailing slash).
 2. Decode the captured path with `url.PathUnescape`. Malformed escape sequences return 400 Bad Request.
 3. Sanitize by rejecting null bytes, backslashes, and explicit `..` path segments (400 Bad Request), then normalize the remaining path via `path.Clean("/" + p)`.
 4. Open file via `fsys.Open(cleanPath)`.

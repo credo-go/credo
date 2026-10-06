@@ -81,11 +81,11 @@ func TestStatic_ServesIndexForTrailingSlash(t *testing.T) {
 	app := mustNew(t)
 	app.Static("/static", testFS())
 
-	// /static/ should match the catch-all with empty _static → serve index
+	// "/static/" is the catch-all with an empty rest: the index is served
+	// directly, not through a redirect to "/static".
 	w := serve(t, app, "GET", "/static/")
-	// May redirect or serve directly depending on trailing-slash behavior.
-	if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently {
-		t.Fatalf("status = %d, want 200 or 301", w.Code)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<html>index</html>") {
+		t.Fatalf("GET /static/ = %d %q, want 200 with the index", w.Code, w.Body.String())
 	}
 }
 

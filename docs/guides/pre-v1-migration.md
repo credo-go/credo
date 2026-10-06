@@ -66,6 +66,17 @@ AccessLog bytes are post-compression accepted body bytes; headers/framing/TLS ar
 
 Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw values to `BuildURI`/`BuildURL` instead of pre-escaped ones, replace `{name:.+}` with `{name...}` where several segments were intended, and expect 400 rather than a captured byte sequence for invalid UTF-8. `OriginalPath` now reports the wire-form path. See [Encoded Parameter Values](../specs/router.md#encoded-parameter-values).
 
+**Implemented (v0.23.0).** A catch-all matches an empty rest, as in chi and `net/http.ServeMux`.
+
+| Before v0.23.0 | Now |
+| --- | --- |
+| `/files/{path...}` needed a non-empty rest: `/files/` answered 404, or a trailing-slash redirect to a sibling `/files` route | `/files/` reaches the catch-all with `path` = `""`; `/files` without a route of its own is redirected to `/files/` |
+| A mount was reached through `/admin` only; `/admin/` was redirected to `/admin` (404 with `WithRedirectTrailingSlash(false)`), likewise `/t/acme/` under `Mount("/t/{tenant}", h)` | `/admin/` and `/t/acme/` reach the mounted handler as its root `/` |
+| `Static("/static", fsys)` served `/static/` through a redirect to `/static` | `/static/` serves the index directly |
+| `BuildURI("")` failed for a catch-all | It builds the prefix with the slash (`/files/`) |
+
+Migration: an application that registers both `GET /files` and `GET /files/{path...}` and relied on `/files/` being redirected to `/files` handles the empty capture in the catch-all handler, or registers `GET /files/` explicitly.
+
 ## Workers
 
 **Implemented (v0.20.0; restart backoff in v0.21.0).** The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the new calls. One change compiles unchanged but behaves differently, so check it first:

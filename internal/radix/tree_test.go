@@ -155,6 +155,8 @@ func TestInsertAndFind_CatchAll(t *testing.T) {
 		{"/files/a", true, map[string]string{"path": "a"}},
 		{"/files/a/b/c", true, map[string]string{"path": "a/b/c"}},
 		{"/files/a/b/c.txt", true, map[string]string{"path": "a/b/c.txt"}},
+		{"/files/", true, map[string]string{"path": ""}},
+		{"/files", false, nil},
 	}
 
 	for _, tt := range tests {
@@ -176,6 +178,100 @@ func TestInsertAndFind_CatchAll(t *testing.T) {
 						t.Errorf("param %q = %q, want %q", key, got, want)
 					}
 				}
+			}
+		})
+	}
+}
+
+// A catch-all consumes the rest of the path, an empty rest included, as in
+// chi and net/http.ServeMux: "/files/{path...}" serves "/files/". It stays
+// the least specific candidate, and a single-segment parameter still never
+// matches an empty value.
+func TestFindRoute_CatchAllMatchesEmptyRest(t *testing.T) {
+	type route struct {
+		method  MethodTyp
+		pattern string
+	}
+	tests := []struct {
+		name   string
+		routes []route
+		method MethodTyp
+		path   string
+		want   string // matched pattern; "" for no match
+		keys   []string
+		values []string
+		mna    bool // MethodNotAllowed on no match
+	}{
+		{
+			name:   "empty rest",
+			routes: []route{{MGet, "/files/{path...}"}},
+			method: MGet, path: "/files/",
+			want: "/files/{path...}", keys: []string{"path"}, values: []string{""},
+		},
+		{
+			name:   "root catch-all",
+			routes: []route{{MGet, "/{path...}"}},
+			method: MGet, path: "/",
+			want: "/{path...}", keys: []string{"path"}, values: []string{""},
+		},
+		{
+			name:   "after a parameter",
+			routes: []route{{MGet, "/t/{tenant}/{rest...}"}},
+			method: MGet, path: "/t/acme/",
+			want: "/t/{tenant}/{rest...}", keys: []string{"tenant", "rest"}, values: []string{"acme", ""},
+		},
+		{
+			name:   "a static route on the same path wins",
+			routes: []route{{MGet, "/files/{path...}"}, {MGet, "/files/"}},
+			method: MGet, path: "/files/",
+			want: "/files/",
+		},
+		{
+			name:   "static route lacks the method, catch-all serves it",
+			routes: []route{{MGet, "/files/"}, {MPut, "/files/{path...}"}},
+			method: MPut, path: "/files/",
+			want: "/files/{path...}", keys: []string{"path"}, values: []string{""},
+		},
+		{
+			name:   "method not allowed",
+			routes: []route{{MGet, "/files/{path...}"}},
+			method: MPost, path: "/files/",
+			mna: true,
+		},
+		{
+			name:   "a parameter does not match an empty segment",
+			routes: []route{{MGet, "/users/{id}"}},
+			method: MGet, path: "/users/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := newTree()
+			for _, r := range tt.routes {
+				if _, err := tree.InsertRoute(r.method, r.pattern, r.pattern); err != nil {
+					t.Fatalf("InsertRoute(%s): %v", r.pattern, err)
+				}
+			}
+			rctx := &RouteContext{}
+			got, found := tree.FindRoute(rctx, tt.method, tt.path)
+			if tt.want == "" {
+				if found {
+					t.Fatalf("FindRoute(%s) matched %q, want no match", tt.path, got)
+				}
+				if rctx.MethodNotAllowed != tt.mna {
+					t.Errorf("MethodNotAllowed = %t, want %t", rctx.MethodNotAllowed, tt.mna)
+				}
+				if len(rctx.Params.Keys) != 0 || len(rctx.Params.Values) != 0 {
+					t.Errorf("params = %q/%q on no match, want none", rctx.Params.Keys, rctx.Params.Values)
+				}
+				return
+			}
+			if !found || got != tt.want {
+				t.Fatalf("FindRoute(%s) = %q, %t; want %q", tt.path, got, found, tt.want)
+			}
+			if !slices.Equal(rctx.Params.Keys, tt.keys) || !slices.Equal(rctx.Params.Values, tt.values) {
+				t.Errorf("params = %q/%q, want %q/%q", rctx.Params.Keys, rctx.Params.Values, tt.keys, tt.values)
 			}
 		})
 	}

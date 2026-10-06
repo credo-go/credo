@@ -216,8 +216,11 @@ func (r *Route) resolveAllMeta() map[string]any {
 // yields "a%2Fb" while a catch-all value keeps its slashes as separators and
 // escapes each segment. Static text of the pattern is written verbatim.
 //
-// It returns an error when a value is missing or empty, fails its constraint,
-// when too many values are provided, or when the route pattern is malformed.
+// It returns an error when a value is missing, empty for a single-segment
+// parameter, fails its constraint, when too many values are provided, or when
+// the route pattern is malformed. An empty catch-all value is valid: the
+// catch-all matches an empty rest, so "/files/{path...}" with "" builds
+// "/files/".
 //
 //	uri, err := route.BuildURI("42") // "/users/42"
 func (r *Route) BuildURI(params ...string) (string, error) {
