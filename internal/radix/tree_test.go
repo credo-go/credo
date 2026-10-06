@@ -2,6 +2,7 @@ package radix
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -752,6 +753,28 @@ func TestInsertRoute_RegexSameMatcherDifferentParamName(t *testing.T) {
 	}
 	if got := rctx.URLParam("uid"); got != "42" {
 		t.Errorf("param uid = %q, want %q", got, "42")
+	}
+}
+
+// A pattern that uses a parameter name twice is rejected before the tree is
+// touched: the endpoint would name two captures alike, and lookups by name
+// disagree about which one they mean.
+func TestInsertRoute_DuplicateParamName(t *testing.T) {
+	for _, pattern := range []string{
+		"/a/{id}/b/{id}",
+		"/a/{id}/{id...}",
+		"/a/{id:[0-9]+}/{id}",
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			tree := newTree()
+			_, err := tree.InsertRoute(MGet, pattern, dummyValue)
+			if err == nil || !strings.Contains(err.Error(), `duplicate parameter name "id"`) {
+				t.Fatalf("InsertRoute(%s) error = %v, want a duplicate parameter name", pattern, err)
+			}
+			if !reflect.DeepEqual(tree, newTree()) {
+				t.Fatalf("the rejected pattern changed the tree: %+v", tree)
+			}
+		})
 	}
 }
 

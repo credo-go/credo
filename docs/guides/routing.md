@@ -91,6 +91,8 @@ app.GET("/v1/crm/customers/{customer_id}", showCustomer) // panics: already regi
 
 Regex constraints are structural: two different constraints at the same position (`{id:[0-9]+}` next to `{slug:[a-z]+}`) still conflict at registration, while the same constraint under different names is shared.
 
+Within one pattern each name is used once, counting a group or mount prefix and the host pattern: `/a/{id}/b/{id}` panics at registration, since `RouteParam("id")` could read only one of the two captures.
+
 ### Encoded Values
 
 Routing matches a canonical form of the path: every escape is decoded except those of the RFC 3986 reserved characters (such as `/`, `;` and `?`) and of `%` itself. Any spelling of the same bytes therefore reaches the same route (`/caf%C3%A9` and `/caf%c3%a9` both meet `/café`), a percent-encoded slash is data inside one segment, each captured value is decoded exactly once, and a constraint is evaluated on the decoded value:

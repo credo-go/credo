@@ -444,8 +444,9 @@ func (app *App) Group(prefix string) *Group {
 // Returns *Group for API consistency with [App.Group].
 //
 // Host panics if the pattern is a duplicate, overlaps an existing pattern with
-// identical match semantics, contains an invalid wildcard, an invalid regex
-// constraint, or a port. Registering a route on the returned Group panics if
+// identical match semantics, contains an invalid wildcard, a parameter without
+// a name, a parameter name used twice, an empty or invalid regex constraint,
+// or a port. Registering a route on the returned Group panics if
 // a route parameter name collides with a host parameter name.
 // Must be called before the server starts; panics if called after compile.
 func (app *App) Host(pattern string) *Group {

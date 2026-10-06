@@ -498,11 +498,12 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// before touching the tree if any explicit endpoint is already registered.
 	//
 	// Only duplicate endpoints need this guard. A structural conflict (a
-	// second regexp matcher or a mismatched regexp tail in the prefix) always
-	// fires on the very first insert: catchAll is registered before exact and
-	// shares its entire prefix, so any such conflict is hit by catchAll's first
-	// method — before any registration commits — and so cannot leave a partial
-	// state. Parameter names never conflict: they belong to endpoints.
+	// second regexp matcher or a mismatched regexp tail in the prefix) and a
+	// parameter name the prefix repeats always fire on the very first insert:
+	// catchAll is registered before exact and shares its entire prefix, so any
+	// such fault is hit by catchAll's first method — before any registration
+	// commits — and so cannot leave a partial state. Parameter names never
+	// conflict across routes: they belong to endpoints.
 	for _, pat := range [...]string{catchAll, exact} {
 		for _, method := range mountForwardedMethods() {
 			if existing, existingPattern, ok := app.mux.wouldConflict(method, pat); ok {

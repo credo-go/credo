@@ -25,3 +25,8 @@ type PatternSegment = pattern.Segment
 func patNextSegment(p string) (PatternSegment, error) {
 	return pattern.NextSegment(p)
 }
+
+// patCheckNames rejects a route pattern that repeats a parameter name.
+func patCheckNames(p string) error {
+	return pattern.CheckNames(p)
+}
