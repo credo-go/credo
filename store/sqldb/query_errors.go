@@ -83,7 +83,7 @@ func validateCountQueryShape(raw *bun.SelectQuery) error {
 	}
 	if shape.having && !shape.group {
 		return fmt.Errorf(
-			"%w: HAVING without GROUP BY does not have a safe Bun v1.2.18 row-count contract",
+			"%w: HAVING without GROUP BY does not have a safe Bun v1.3.0 row-count contract",
 			ErrUnsupportedCountQuery,
 		)
 	}

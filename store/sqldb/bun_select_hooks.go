@@ -11,7 +11,7 @@ import (
 // execution order rather than on its public API. Credo's own query policy
 // (logical count, transaction selection, error mapping, pagination) lives in
 // the query_*.go files and reaches Bun internals only through the helpers
-// defined here. Both files are structurally pinned to Bun v1.2.18; follow the
+// defined here. Both files are structurally pinned to Bun v1.3.0; follow the
 // upgrade protocol in bun_select_clone.go before bumping the requirement.
 
 // runBunSelectHooksBefore mirrors the pre-execution half of Bun's SELECT hook
@@ -20,7 +20,7 @@ import (
 // model is re-read after each step because BeforeSelect may replace the model
 // and Bun resolves BeforeAppendModel and AfterSelect from the post-hook state.
 //
-// Bun pin: this order is Bun v1.2.18's (SelectQuery.Scan → beforeSelectHook →
+// Bun pin: this order is Bun v1.3.0's (SelectQuery.Scan → beforeSelectHook →
 // BeforeAppendModel → afterSelectHook). It is not a public contract; re-verify
 // it against the pinned release when bumping Bun, following the upgrade
 // protocol documented in bun_select_clone.go.

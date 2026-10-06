@@ -11,11 +11,13 @@ import (
 	"github.com/uptrace/bun/schema"
 )
 
-// Bun v1.2.18 SelectQuery.Clone copies its documented builder/model structure,
-// but omits a handful of private fields that affect execution correctness.
-// The omissions can turn WherePK into an unfiltered query, discard builder
-// errors and soft-delete policy, or route an explicit connection to the
-// default pool.
+// Before Bun v1.3.0, SelectQuery.Clone copied its documented builder/model
+// structure but omitted a handful of private fields that affect execution
+// correctness. The omissions could turn WherePK into an unfiltered query,
+// discard builder errors and soft-delete policy, or route an explicit
+// connection to the default pool. Bun v1.3.0's Clone copies every one of
+// those fields itself, so on the pinned release this layer restores values
+// that are already equal.
 //
 // Keep Bun's Clone behavior and restore only those omitted fields. Offsets are
 // discovered and type-checked once from Bun's runtime type. Open returns a
@@ -24,10 +26,10 @@ import (
 // The hot path then uses typed assignments, including Go's normal write
 // barriers for interface and slice fields.
 //
-// Remove this compatibility layer once the pinned Bun release copies these
-// fields itself. Contract tests in query_select_state_test.go guard the update.
+// The pinned release copies these fields itself; the layer is removed in a
+// later minor. Contract tests in query_select_state_test.go guard that step.
 //
-// Bun upgrade protocol: this layer structurally pins Bun (currently v1.2.18).
+// Bun upgrade protocol: this layer structurally pins Bun (currently v1.3.0).
 // Any PR that bumps the Bun requirement must run the layout test in
 // bun_select_clone_test.go plus the full store/sqldb suite and merge only on
 // green. A layout change is caught fail-loud twice — at DB construction

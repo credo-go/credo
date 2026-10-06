@@ -603,7 +603,7 @@ from diverging.
 The first delivery also rejects model types that implement Bun SELECT,
 append-model, or row/result scan hooks. A pre-query hook can replace the model
 or alter query shape/order/window; `AfterScanRow` or `AfterSelect` can mutate a
-cursor key after SQL ordering but before token generation. Bun v1.2.18 exposes
+cursor key after SQL ordering but before token generation. Bun v1.3.0 exposes
 no public seam that lets Credo apply and verify terminal-owned state after all
 of those hooks, so accepting hook-capable models would make fail-loud behavior
 unprovable.
@@ -636,7 +636,7 @@ OR (a = :a AND b = :b AND id > :id)
 
 The complete ladder is appended to the already-validated filter root as one
 parenthesized AND condition. Column identifiers are quoted, and decoded values go through Bun's
-typed SQL formatter; token bytes are never concatenated into SQL. Bun v1.2.18
+typed SQL formatter; token bytes are never concatenated into SQL. Bun v1.3.0
 renders the final SQL rather than passing driver bind parameters, so the
 contract is formatter safety, not a claim about driver placeholders.
 

@@ -30,6 +30,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 - **sqldb:** `ErrInvalidLimitOffset`. Nothing returns it any more (see the `Limit`/`Offset` entry above); an `errors.Is` check against it stops compiling and can be deleted.
 
+### Documentation
+
+- Every Bun reference in the tracked documents and package comments is re-pinned to v1.3.0 after re-verification against its source, and the [pre-v1 migration guide](docs/guides/pre-v1-migration.md#data-access) gains a Data access section with the consumer-visible changes of this release.
+
 ## [0.21.1] - 2026-10-04
 
 **Security and bug-fix release.** A fail-open defect in `middleware.ContractGuard` is closed, eight defects are fixed and YAML decoding moves to its maintained module. No exported API is added, removed or renamed; the [release notes](docs/releases/v0.21.1.md#check-this-first) list the fixes that change what a request does.
