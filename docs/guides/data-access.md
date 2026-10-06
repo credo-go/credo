@@ -1036,7 +1036,7 @@ By default a migration is marked applied only after its Up function returns nil.
 
 Treat mark-on-success as at-least-once execution. Prefer database-supported transactions where appropriate, and make every retryable step idempotent, resumable, or accompanied by an explicit inspection/repair procedure. After a partial failure, inspect schema and data before rerunning instead of assuming “unapplied” means “nothing changed.” Passing `migrate.WithMarkAppliedOnSuccess(false)` selects Bun's record-before-running recovery tradeoff; it can make a failed body appear applied and requires explicit rollback/repair instead.
 
-Bun recognizes `.tx.up.sql`, but pinned Bun v1.2.18 does not reliably propagate the deferred SQL transaction Commit/Rollback error to the caller. Credo therefore does not promise that a `.tx.up.sql` commit failure prevents the applied marker. When the commit result must gate bookkeeping, use a Go migration that opens an explicit transaction and returns its error; still account for driver-specific ambiguous commit outcomes and DDL behavior.
+Bun recognizes `.tx.up.sql`: the file runs in one transaction, and the error of its COMMIT or ROLLBACK reaches `Migrate`, so a commit that fails — a deferred constraint violated at COMMIT, a serialization failure — leaves the migration unapplied and eligible for the next run. Driver-specific ambiguous commit outcomes (a timeout while the server was committing) and DDL that a database cannot roll back remain the application's concern.
 
 ### Expand-contract rollout
 

@@ -62,7 +62,7 @@ Every Bun update must pass the full `Test (store/sqldb)` race job, including `Te
 
 If a Bun update changes private layout or SQL semantics, first evaluate an upstream fix, removing or narrowing the compatibility layer, or narrowing the Credo contract. Do not automatically expand unsafe private-field access or add SQL parser logic merely to preserve the previous implementation.
 
-Also re-check the migration finalizer limitation tracked in [Bun #1389](https://github.com/uptrace/bun/issues/1389): remove the Bun v1.2.18 `.tx.up.sql` warning only after a conformance test proves that Commit/Rollback errors reach the caller and can gate the applied marker.
+The `.tx.up.sql` finalizer contract — a COMMIT or ROLLBACK error reaches `Migrate` and leaves the migration unapplied, fixed upstream in Bun v1.3.0 ([Bun #1389](https://github.com/uptrace/bun/issues/1389)) — is pinned by `TestMigrate_TxSQLCommitErrorReachesCaller` on SQLite and by the "transactional SQL migration commit error" subtest of `TestRealDB_Contracts` on PostgreSQL. A Bun update that fails them reinstates the documented warning instead of weakening the tests.
 
 ## Releasing
 

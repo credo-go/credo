@@ -65,9 +65,10 @@ func (db *DB) RegisterMigrations(m *migrate.Migrations, opts ...migrate.Migrator
 //
 // Returns an error if no migration set was registered, or if an operation
 // surfaced by Bun fails; errors are mapped to store.Err* sentinels where
-// applicable. Bun v1.2.18 does not surface SQL-migration transaction-finalizer
-// errors reliably, so use a Go migration with an explicit transaction when
-// the commit result must gate the applied marker. Direct Bun migrators do not
+// applicable. A transactional SQL migration (.tx.up.sql) reports the error of
+// its COMMIT or ROLLBACK, so a commit that fails leaves the migration
+// unapplied; a database that cannot roll back DDL still applies what it ran
+// before the failure. Direct Bun migrators do not
 // inherit RegisterMigrations options. Callers must repeat the options relevant
 // to status or generation; DB-mutating apply/rollback paths must additionally
 // own Init, Lock, and bounded cancellation-detached Unlock themselves.

@@ -27,6 +27,10 @@ const (
 	realDBNotesTable          = "credo_realdb_notes"
 	realDBMigrationsTable     = "credo_realdb_migrations"
 	realDBMigrationLocksTable = "credo_realdb_migration_locks"
+	// Tables of the transactional SQL migration subtest, which registers
+	// its own migration set on a second connection.
+	realDBTxSQLMigrationsTable     = "credo_realdb_txsql_migrations"
+	realDBTxSQLMigrationLocksTable = "credo_realdb_txsql_migration_locks"
 )
 
 type realDBItem struct {
@@ -89,6 +93,9 @@ func TestRealDB_Contracts(t *testing.T) {
 	t.Run("migration up lock unlock and retry", func(t *testing.T) {
 		testRealDBMigrations(t, ctx, db)
 	})
+	t.Run("transactional SQL migration commit error", func(t *testing.T) {
+		testRealDBTxSQLMigrationCommitError(t, ctx, cfg)
+	})
 }
 
 func loadRealDBConfig(t *testing.T) *sqldb.Config {
@@ -140,6 +147,10 @@ func requiredRealDBEnv(t *testing.T, name string) string {
 
 func dropRealDBTables(ctx context.Context, db *sqldb.DB) error {
 	for _, table := range []string{
+		"txsql_children",
+		"txsql_parents",
+		realDBTxSQLMigrationLocksTable,
+		realDBTxSQLMigrationsTable,
 		realDBNotesTable,
 		realDBMigrationLocksTable,
 		realDBMigrationsTable,
@@ -540,6 +551,40 @@ func testRealDBMigrations(t *testing.T, ctx context.Context, db *sqldb.DB) {
 		t.Fatalf("migration attempts after no-op = %d, want 2", attempts)
 	}
 	assertRealDBLockRows(t, ctx, db, 0)
+}
+
+// testRealDBTxSQLMigrationCommitError proves on PostgreSQL that the COMMIT
+// error of a .tx.up.sql migration reaches Migrate and leaves the migration
+// unapplied: a DEFERRABLE INITIALLY DEFERRED foreign key lets the INSERT
+// succeed and fails the COMMIT. MySQL checks foreign keys per statement, so
+// its COMMIT cannot fail this way and the subtest is skipped there.
+func testRealDBTxSQLMigrationCommitError(t *testing.T, ctx context.Context, cfg *sqldb.Config) {
+	t.Helper()
+	if cfg.Driver != "pgx" {
+		t.Skipf("driver %q has no deferred constraints; the SQLite test covers the contract", cfg.Driver)
+	}
+	// A DB registers one migration set; the shared instance carries the lock
+	// contract's set, so this subtest opens its own.
+	db, openErr := sqldb.Open(cfg)
+	if openErr != nil {
+		t.Fatalf("Open() = %v", openErr)
+	}
+	t.Cleanup(func() {
+		if shutdownErr := db.Shutdown(context.WithoutCancel(t.Context())); shutdownErr != nil {
+			t.Errorf("Shutdown() = %v", shutdownErr)
+		}
+	})
+
+	assertTxSQLCommitErrorReachesCaller(t, ctx, db, txSQLMigrationFS(
+		`CREATE TABLE txsql_parents (id BIGINT PRIMARY KEY);`,
+		`CREATE TABLE txsql_children (
+	id BIGINT PRIMARY KEY,
+	parent_id BIGINT NOT NULL REFERENCES txsql_parents(id) DEFERRABLE INITIALLY DEFERRED
+);`,
+	), "violates foreign key constraint",
+		migrate.WithTableName(realDBTxSQLMigrationsTable),
+		migrate.WithLocksTableName(realDBTxSQLMigrationLocksTable),
+	)
 }
 
 func assertRealDBLockRows(t *testing.T, ctx context.Context, db *sqldb.DB, want int) {

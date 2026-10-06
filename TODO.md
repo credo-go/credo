@@ -380,7 +380,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] Seeding: documented as plain migration files (no separate mechanism)
   - [x] Cancellation-detached migration unlock with a fixed five-second caller bound; timeout is an uncertain outcome and is not automatically retried
   - [x] Multi-replica production contract: one-shot pre-deploy job first, `OnStart` for dev/single-replica convenience, expand-contract and replay-safe/idempotent retry guidance
-  - [ ] Track [Bun #1389](https://github.com/uptrace/bun/issues/1389) and add a conformance test before promising `.tx.up.sql` commit-error → unapplied-marker correctness
+  - [x] `.tx.up.sql` commit-error → unapplied-marker correctness: fixed upstream in Bun v1.3.0 ([Bun #1389](https://github.com/uptrace/bun/issues/1389)), pinned by a conformance test on SQLite and PostgreSQL
 - [x] Tests (`migrate_test.go` + `InTx` cases in `integration_test.go`)
 
 ### 3.4 Health Checks (root package)
