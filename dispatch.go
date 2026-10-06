@@ -450,7 +450,8 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // own route parameters only. Path values the request already carried are
 // kept; a name used again holds the value of the prefix closest to the
 // handler. A catch-all parameter is not a prefix: it consumes the rest of the
-// path, so the handler would always be handed "/".
+// path, so the handler would always be handed "/". The name _mount is
+// reserved: the mount captures the rest of the path under it.
 //
 // Method scope: the mounted handler is registered for all standard HTTP
 // methods except CONNECT and TRACE, which are excluded deliberately
@@ -472,7 +473,9 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // path values instead, set on a clone of the request, so the request the
 // caller holds keeps the path values it had.
 //
-// Must be called before the server starts; panics if called after compile.
+// Mount panics if handler is nil, if the pattern is malformed, names a
+// parameter _mount or uses a name twice, if a route already occupies the
+// prefix, or if called after compile; nothing is registered then.
 func (app *App) Mount(pattern string, handler http.Handler) {
 	app.checkFrozen("App.Mount")
 	if handler == nil {
@@ -490,6 +493,12 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 		catchAll = "/{_mount...}"
 	}
 
+	// The prefix's names are checked against the pattern the caller wrote:
+	// the registrations below add the "{_mount...}" capture, so a fault found
+	// there would name a pattern nobody wrote.
+	names, segments := mountPrefixParams(exact)
+	checkPrefixNames("Mount", pattern, names, "_mount")
+
 	// Preflight: the 16 registrations below — every forwarded method on both
 	// catchAll and exact — mutate a radix tree that has no delete. A duplicate
 	// route detected partway through would strand the registrations that already
@@ -498,12 +507,12 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// before touching the tree if any explicit endpoint is already registered.
 	//
 	// Only duplicate endpoints need this guard. A structural conflict (a
-	// second regexp matcher or a mismatched regexp tail in the prefix) and a
-	// parameter name the prefix repeats always fire on the very first insert:
-	// catchAll is registered before exact and shares its entire prefix, so any
-	// such fault is hit by catchAll's first method — before any registration
-	// commits — and so cannot leave a partial state. Parameter names never
-	// conflict across routes: they belong to endpoints.
+	// second regexp matcher or a mismatched regexp tail in the prefix) always
+	// fires on the very first insert: catchAll is registered before exact and
+	// shares its entire prefix, so any such conflict is hit by catchAll's first
+	// method — before any registration commits — and so cannot leave a partial
+	// state. The prefix's own names were checked above; names never conflict
+	// across routes: they belong to endpoints.
 	for _, pat := range [...]string{catchAll, exact} {
 		for _, method := range mountForwardedMethods() {
 			if existing, existingPattern, ok := app.mux.wouldConflict(method, pat); ok {
@@ -522,9 +531,9 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	})
 
 	// A prefix with parameters is not text that could be cut off the path, and
-	// its parameters are the child's to read. Computed once, here; a static
-	// prefix keeps the handlers above.
-	if names, segments := mountPrefixParams(exact); len(names) > 0 {
+	// its parameters are the child's to read. A static prefix keeps the
+	// handlers above.
+	if len(names) > 0 {
 		mountHandler = func(w http.ResponseWriter, r *http.Request) {
 			serveMounted(handler, w, mountParamChildRequest(r, names, mountRemainderBelow(r, segments)))
 		}
@@ -613,6 +622,23 @@ func mountPrefixParams(prefix string) (names []string, segments int) {
 		}
 		names = append(names, seg.Name)
 		rest = seg.Suffix
+	}
+}
+
+// checkPrefixNames panics when the parameter names of a registration prefix
+// repeat a name or use reserved, the name of the capture the registration adds
+// below the prefix: that capture would share the name, and one of the two
+// values could not be read. op names the registration and pattern is the
+// prefix as the caller wrote it, so the message never shows the internal
+// capture.
+func checkPrefixNames(op, pattern string, names []string, reserved string) {
+	for i, name := range names {
+		switch {
+		case name == reserved:
+			panic(fmt.Sprintf("credo: %s %q: the parameter name %q is reserved", op, pattern, reserved))
+		case slices.Contains(names[:i], name):
+			panic(fmt.Sprintf("credo: %s %q: duplicate parameter name %q", op, pattern, name))
+		}
 	}
 }
 

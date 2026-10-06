@@ -129,6 +129,33 @@ func TestMount_ParametricPrefix(t *testing.T) {
 	}
 }
 
+// TestMount_PrefixParameterNames: the mount captures the rest of the path
+// under the name _mount, so a prefix parameter of that name read the remainder
+// instead of its own value. Faults in the prefix's names are reported against
+// the pattern the caller wrote, not the internal "/{_mount...}" registration,
+// and before anything is registered: the same shape with valid names is free
+// afterwards.
+func TestMount_PrefixParameterNames(t *testing.T) {
+	child := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	tests := []struct{ pattern, want, retry string }{
+		{"/t/{_mount}", `credo: Mount "/t/{_mount}": the parameter name "_mount" is reserved`, "/t/{tenant}"},
+		{"/t/{_mount:[a-z]+}/x/", `credo: Mount "/t/{_mount:[a-z]+}/x/": the parameter name "_mount" is reserved`, "/t/{tenant:[a-z]+}/x"},
+		{"/t/{id}/x/{id}", `credo: Mount "/t/{id}/x/{id}": duplicate parameter name "id"`, "/t/{id}/x/{name}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			app := mustNew(t)
+			defer func() {
+				if r := recover(); r != tt.want {
+					t.Fatalf("panic = %v, want %q", r, tt.want)
+				}
+				app.Mount(tt.retry, child)
+			}()
+			app.Mount(tt.pattern, child)
+		})
+	}
+}
+
 // TestMount_RootWithTrailingSlash: the prefix followed by a slash is the
 // mounted handler's root. The mount's catch-all used to need a non-empty rest,
 // so "/admin/" never reached the handler: the router answered 301 to "/admin",

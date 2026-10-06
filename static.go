@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	internalpattern "github.com/credo-go/credo/internal/pattern"
 	internalstatic "github.com/credo-go/credo/internal/static"
 )
 
@@ -236,7 +237,9 @@ func DirFS(dir string) (fs.FS, io.Closer, error) {
 // handler and receive fluent configuration uniformly via StaticRoute.
 //
 // Panics if prefix contains { or } (route parameters in a static prefix are
-// not meaningful) or if called after compile. The cache presets
+// not meaningful), if the group's prefix names a parameter _static (the name
+// the file path is captured under) or uses a name twice, or if called after
+// compile. The cache presets
 // ([StaticCacheMaxAge], [StaticCacheImmutableAssets]) panic at their own
 // call site on invalid durations.
 //
@@ -269,6 +272,7 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 	}
 
 	fullPrefix := joinPath(g.prefix, prefix)
+	checkPrefixNames("Static", fullPrefix, internalpattern.ParamNames(fullPrefix), "_static")
 	// Normalize: strip trailing slash for consistent path building,
 	// but preserve "/" for the root prefix case.
 	cleanPrefix := strings.TrimRight(fullPrefix, "/")
