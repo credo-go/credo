@@ -310,6 +310,10 @@ different driver.
 deadlock, and contention during migration, but new code should branch on the
 exact sentinel or kind.
 
+### NUL bytes in strings
+
+Reject a string that contains a NUL byte (`0x00`) at the validation boundary; no database stores it the way the application saw it. What happens below that boundary depends on the database: on SQLite and PostgreSQL, Bun refuses to render the value and the statement fails with an unmapped error (`store.KindOf` reports no kind), so nothing is persisted. On MySQL, Bun's dialect still drops the byte and the statement succeeds, so `"admin\x00x"` is stored as `"adminx"` — a value that passed a uniqueness or denylist check as something else. Credo does not patch this: the MySQL behavior is an upstream defect ([uptrace/bun#1443](https://github.com/uptrace/bun/issues/1443)) pinned by a canary test in the real-MySQL job, and a validation rule for it is the application's, until `validation` gains one.
+
 `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound`. If you need that behavior, inspect the returned `sql.Result`:
 
 ```go

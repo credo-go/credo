@@ -96,6 +96,9 @@ func TestRealDB_Contracts(t *testing.T) {
 	t.Run("transactional SQL migration commit error", func(t *testing.T) {
 		testRealDBTxSQLMigrationCommitError(t, ctx, cfg)
 	})
+	t.Run("NUL byte in a string argument", func(t *testing.T) {
+		testRealDBNULString(t, ctx, db, cfg.Driver)
+	})
 }
 
 func loadRealDBConfig(t *testing.T) *sqldb.Config {
@@ -585,6 +588,48 @@ func testRealDBTxSQLMigrationCommitError(t *testing.T, ctx context.Context, cfg 
 		migrate.WithTableName(realDBTxSQLMigrationsTable),
 		migrate.WithLocksTableName(realDBTxSQLMigrationLocksTable),
 	)
+}
+
+// testRealDBNULString pins what each database does with a string argument
+// that carries a NUL byte. PostgreSQL shares the SQLite contract: Bun's base
+// dialect refuses to render the value and the statement fails. MySQL is a
+// canary for an upstream defect, not a contract: mysqldialect still strips
+// the byte (uptrace/bun#1443), so the stored value differs from the one the
+// application validated.
+func testRealDBNULString(t *testing.T, ctx context.Context, db *sqldb.DB, driver string) {
+	t.Helper()
+	const id = 900
+	item := &realDBItem{ID: id, Name: nulStringValue, RequiredValue: "present"}
+	countRows := func() (int, error) {
+		var n int
+		err := db.Client().NewSelect().Table(realDBItemsTable).ColumnExpr("COUNT(*)").Where("id = ?", id).Scan(ctx, &n)
+		return n, err
+	}
+
+	if driver != "mysql" {
+		assertNULStringFailsClosed(t, func() error {
+			_, err := db.Insert(item).Exec(ctx)
+			return err
+		}, countRows)
+		return
+	}
+
+	if _, insertErr := db.Insert(item).Exec(ctx); insertErr != nil {
+		t.Fatalf("MySQL insert with a NUL byte = %v; mysqldialect used to strip the byte and succeed "+
+			"(uptrace/bun#1443). This canary pins an upstream defect, not a Credo contract: update the "+
+			"NUL paragraph of docs/guides/data-access.md (\"NUL bytes in strings\") and the CHANGELOG, "+
+			"then make this subtest assert the new behavior", insertErr)
+	}
+	var stored string
+	if scanErr := db.Client().NewSelect().Table(realDBItemsTable).Column("name").Where("id = ?", id).Scan(ctx, &stored); scanErr != nil {
+		t.Fatalf("read back the MySQL row: %v", scanErr)
+	}
+	if stored != "nulx" {
+		t.Fatalf("MySQL stored %q for %q; mysqldialect used to strip the NUL byte (uptrace/bun#1443). "+
+			"This canary pins an upstream defect, not a Credo contract: update the NUL paragraph of "+
+			"docs/guides/data-access.md (\"NUL bytes in strings\") and the CHANGELOG, then make this "+
+			"subtest assert the new behavior", stored, nulStringValue)
+	}
 }
 
 func assertRealDBLockRows(t *testing.T, ctx context.Context, db *sqldb.DB, want int) {
