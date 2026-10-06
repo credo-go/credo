@@ -14,6 +14,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Fixed
+
+- Release candidate validation confines its git commands to the throwaway clone it creates (`GIT_CEILING_DIRECTORIES`), so a directory that is not a repository root fails instead of resolving to an enclosing work tree. Go 1.27's `testing.T.TempDir` places test directories under `GOTMPDIR`; with `GOTMPDIR` inside a Credo checkout, the gate's own tests wrote the synthetic `v0.11.0` and `store/sqldb/v0.11.0` tags into that checkout. A checkout where the tests ran that way restores the published tags with `git fetch --force origin refs/tags/v0.11.0:refs/tags/v0.11.0 refs/tags/store/sqldb/v0.11.0:refs/tags/store/sqldb/v0.11.0`.
+
 ## [0.22.0] - 2026-10-06
 
 **Bun v1.3.0 release.** `store/sqldb` moves from Bun v1.2.18 to v1.3.0 and from pgx v5.10.0 to v5.11.0. The curated `store/sqldb` API keeps its signatures; the break is where an application reaches Bun directly (`int64` for `Limit`, `Offset` and `Count`) and in what the database accepts (NUL bytes, duplicate migration IDs, soft-delete `WhereOr` precedence). The pre-v1 [migration guide](docs/guides/pre-v1-migration.md#data-access) lists the consumer-visible changes in one table. The root module has no code changes; its tag follows the lockstep policy.

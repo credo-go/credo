@@ -316,6 +316,48 @@ func TestCandidateTagErrorContext(t *testing.T) {
 	})
 }
 
+// TestGitWritesStayInTheGivenRepository pins that the gate commits and tags
+// the repository rooted at the directory it is given, never one that merely
+// contains that directory. A test's temporary directory lies inside the
+// developer's checkout when GOTMPDIR does (testing.T.TempDir honors it), and
+// the synthetic release tags used to land on the checkout.
+func TestGitWritesStayInTheGivenRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	outer := writeTaggedGitFixture(t, "v0.10.0")
+	nested := filepath.Join(outer, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(outer, "tracked.txt"), "staged\n")
+	mustCommand(t, outer, "git", "add", "tracked.txt")
+	head := mustOutput(t, outer, "git", "rev-parse", "HEAD")
+
+	committed, err := commitStagedChanges(nested, "synthetic release")
+	if err == nil || !strings.Contains(err.Error(), "inspect staged release changes") {
+		t.Fatalf("commitStagedChanges(nested) error = %v, want staged-change inspection failure", err)
+	}
+	if committed {
+		t.Fatal("commitStagedChanges reported a commit for a directory that is not a repository root")
+	}
+	err = setCandidateTags(nested, "v0.11.0")
+	if err == nil || !strings.Contains(err.Error(), "tag synthetic root module") {
+		t.Fatalf("setCandidateTags(nested) error = %v, want root tag failure", err)
+	}
+
+	if got := mustOutput(t, outer, "git", "rev-parse", "HEAD"); got != head {
+		t.Fatalf("enclosing repository HEAD moved from %s to %s", head, got)
+	}
+	if tags := mustOutput(t, outer, "git", "tag", "--list", "*v0.11.0"); tags != "" {
+		t.Fatalf("enclosing repository gained tags %q", tags)
+	}
+	if staged := mustOutput(t, outer, "git", "diff", "--cached", "--name-only"); staged != "tracked.txt" {
+		t.Fatalf("enclosing repository staged files = %q, want tracked.txt", staged)
+	}
+}
+
 func TestCheckCandidateRecoversExistingTags(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available")

@@ -317,13 +317,14 @@ func checkCandidate(repoRoot, version string) error {
 	if err := command("", nil, "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", repoRoot, repo); err != nil {
 		return fmt.Errorf("clone candidate HEAD: %w", err)
 	}
-	if err := command(repo, nil, "git", "checkout", "--quiet", "--detach", sourceHead); err != nil {
+	gitEnv := repositoryGitEnv(repo)
+	if err := command(repo, gitEnv, "git", "checkout", "--quiet", "--detach", sourceHead); err != nil {
 		return fmt.Errorf("check out candidate HEAD: %w", err)
 	}
-	if err := command(repo, nil, "git", "config", "user.name", "Credo release gate"); err != nil {
+	if err := command(repo, gitEnv, "git", "config", "user.name", "Credo release gate"); err != nil {
 		return err
 	}
-	if err := command(repo, nil, "git", "config", "user.email", "release-gate@credo.invalid"); err != nil {
+	if err := command(repo, gitEnv, "git", "config", "user.email", "release-gate@credo.invalid"); err != nil {
 		return err
 	}
 
@@ -334,7 +335,7 @@ func checkCandidate(repoRoot, version string) error {
 	if err := command(sqldbDir, nil, "go", "mod", "edit", "-dropreplace="+rootModule); err != nil {
 		return fmt.Errorf("drop candidate root replacement: %w", err)
 	}
-	if err := command(repo, nil, "git", "add", "store/sqldb/go.mod"); err != nil {
+	if err := command(repo, gitEnv, "git", "add", "store/sqldb/go.mod"); err != nil {
 		return err
 	}
 	if _, err := commitStagedChanges(repo, "chore: prepare synthetic release "+version); err != nil {
@@ -382,8 +383,10 @@ func checkCandidate(repoRoot, version string) error {
 }
 
 func commitStagedChanges(repo, message string) (bool, error) {
+	gitEnv := repositoryGitEnv(repo)
 	cmd := exec.Command("git", "diff", "--cached", "--quiet")
 	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), gitEnv...)
 	raw, err := cmd.CombinedOutput()
 	if err == nil {
 		return false, nil
@@ -398,7 +401,7 @@ func commitStagedChanges(repo, message string) (bool, error) {
 		return false, fmt.Errorf("inspect staged release changes: %w", err)
 	}
 
-	if err := command(repo, nil, "git", "commit", "--quiet", "-m", message); err != nil {
+	if err := command(repo, gitEnv, "git", "commit", "--quiet", "-m", message); err != nil {
 		return false, fmt.Errorf("commit synthetic release: %w", err)
 	}
 	return true, nil
@@ -415,7 +418,19 @@ func setCandidateTags(repo, version string) error {
 }
 
 func setSyntheticTag(repo, tag string) error {
-	return command(repo, nil, "git", "update-ref", "refs/tags/"+tag, "HEAD")
+	return command(repo, repositoryGitEnv(repo), "git", "update-ref", "refs/tags/"+tag, "HEAD")
+}
+
+// repositoryGitEnv confines git's repository discovery to repo: a command run
+// in repo acts on the repository rooted there or fails. The gate commits, tags
+// and configures a throwaway clone; without the bound, a directory that is not
+// a repository root resolves to whichever work tree contains it, and those
+// writes land there. An inherited GIT_DIR still takes precedence.
+func repositoryGitEnv(repo string) []string {
+	if abs, err := filepath.Abs(repo); err == nil {
+		repo = abs
+	}
+	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(repo)}
 }
 
 func candidateEnvironment(tmp, repoURL string) []string {
