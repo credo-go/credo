@@ -413,7 +413,9 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 			// methods); the caller keeps trying its other candidates.
 			rctx.MethodNotAllowed = true
 		}
-		return v, false
+		// A catch-all also matches an empty rest: "/files/{path...}" serves
+		// "/files/" with an empty capture.
+		return n.findCatchAll(rctx, method, path)
 	}
 
 	// Search static children first (highest priority)
@@ -477,26 +479,33 @@ func (n *Node[V]) findRoute(rctx *RouteContext, method MethodTyp, path string) (
 	}
 
 	// Search the catch-all child (lowest priority).
-	// Invariant: a node has at most one catch-all child (enforced at insert,
-	// since two catch-all patterns at the same position conflict), so index
-	// directly rather than looping. Mirrors the upstream chi nds[0] form.
-	if cc := n.Children[NtCatchAll]; len(cc) > 0 {
-		child := cc[0]
-		// Catch-all consumes the rest of the path; slashes stay separators and
-		// each encoded segment decodes once.
-		value, ok := decodeCapture(rctx, path)
-		if !ok {
-			return v, false
-		}
-		rctx.Params.Values = append(rctx.Params.Values, value)
-		if h, ok := child.resolveEndpoint(rctx, method); ok {
-			return h, true
-		}
-		// Method not allowed on catch-all
-		rctx.MethodNotAllowed = true
-		rctx.Params.Values = rctx.Params.Values[:len(rctx.Params.Values)-1]
-	}
+	return n.findCatchAll(rctx, method, path)
+}
 
+// findCatchAll matches the catch-all child, which consumes the rest of the
+// path, an empty rest included; slashes stay separators and each encoded
+// segment decodes once.
+//
+// Invariant: a node has at most one catch-all child (enforced at insert,
+// since two catch-all patterns at the same position conflict), so index
+// directly rather than looping. Mirrors the upstream chi nds[0] form.
+func (n *Node[V]) findCatchAll(rctx *RouteContext, method MethodTyp, path string) (v V, found bool) {
+	cc := n.Children[NtCatchAll]
+	if len(cc) == 0 {
+		return v, false
+	}
+	child := cc[0]
+	value, ok := decodeCapture(rctx, path)
+	if !ok {
+		return v, false
+	}
+	rctx.Params.Values = append(rctx.Params.Values, value)
+	if h, ok := child.resolveEndpoint(rctx, method); ok {
+		return h, true
+	}
+	// Method not allowed on catch-all
+	rctx.MethodNotAllowed = true
+	rctx.Params.Values = rctx.Params.Values[:len(rctx.Params.Values)-1]
 	return v, false
 }
 

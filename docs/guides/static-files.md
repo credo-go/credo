@@ -35,7 +35,7 @@ func main() {
 }
 ```
 
-Requests to `/static/css/app.css` serve `public/css/app.css` from the embedded filesystem. `/static` (no trailing slash) serves the index file.
+Requests to `/static/css/app.css` serve `public/css/app.css` from the embedded filesystem. `/static` and `/static/` serve the index file.
 
 ---
 

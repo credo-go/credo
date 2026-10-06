@@ -52,11 +52,11 @@ func main() {
 
 Credo supports three path parameter forms:
 
-| Syntax         | Example              | Meaning             |
-| -------------- | -------------------- | ------------------- |
-| `{name}`       | `/users/{id}`        | single segment      |
-| `{name:regex}` | `/users/{id:[0-9]+}` | constrained segment |
-| `{name...}`    | `/files/{path...}`   | catch-all remainder |
+| Syntax         | Example              | Meaning                             |
+| -------------- | -------------------- | ----------------------------------- |
+| `{name}`       | `/users/{id}`        | single segment                      |
+| `{name:regex}` | `/users/{id:[0-9]+}` | constrained segment                 |
+| `{name...}`    | `/files/{path...}`   | catch-all remainder, possibly empty |
 
 ```go
 app.GET("/users/{id}", getUser)
@@ -117,6 +117,9 @@ route := app.GET("/files/{name}", h).Name("file.show")
 uri, _ := route.BuildURI("a/b")   // "/files/a%2Fb"
 uri, _ = route.BuildURI("café")   // "/files/caf%C3%A9"
 _, err := route.BuildURI("")      // error: empty value for parameter "name"
+
+files := app.GET("/files/{path...}", serveFile)
+uri, _ = files.BuildURI("")       // "/files/": a catch-all matches an empty rest
 
 order := app.GET("/orders/{id:[0-9]+}", getOrder)
 _, err = order.BuildURI("x1")     // error: does not match constraint "[0-9]+"

@@ -40,14 +40,15 @@ func parsePathTemplate(pattern string) (*pathTemplate, error) {
 // slash ("a/b" becomes "a%2Fb"), a catch-all keeps its slashes as separators
 // and escapes each segment, "+" stays "+" and valid Unicode is encoded as
 // UTF-8 octets; static pattern text is written in its wire spelling. A value
-// that cannot round-trip is rejected: an empty value matches no parameter,
-// invalid UTF-8 is refused by the router (400), and a value whose wire
-// spelling shows the byte that delimits its parameter in the pattern ("." for
-// "{name}.json") would be cut at that byte when matched. The check runs on
-// the canonical form of the escaped value, exactly where matching cuts: an
-// escaped unreserved byte is the delimiter ("%2E" is "."), an escaped
-// reserved one is not (url.PathEscape spells ";" as "%3B", which routes
-// back), and a "%" delimiter is its "%25" unit.
+// that cannot round-trip is rejected: an empty value matches no
+// single-segment parameter (a catch-all matches an empty rest, so "" is
+// accepted there), invalid UTF-8 is refused by the router (400), and a value
+// whose wire spelling shows the byte that delimits its parameter in the
+// pattern ("." for "{name}.json") would be cut at that byte when matched. The
+// check runs on the canonical form of the escaped value, exactly where
+// matching cuts: an escaped unreserved byte is the delimiter ("%2E" is "."),
+// an escaped reserved one is not (url.PathEscape spells ";" as "%3B", which
+// routes back), and a "%" delimiter is its "%25" unit.
 func (t *pathTemplate) build(values []string) (string, int, error) {
 	var b strings.Builder
 	consumed := 0
@@ -61,7 +62,7 @@ func (t *pathTemplate) build(values []string) (string, int, error) {
 		}
 		value := values[consumed]
 		consumed++
-		if value == "" {
+		if value == "" && seg.Kind != internalpattern.CatchAll {
 			return "", consumed, fmt.Errorf("empty value for parameter %q", seg.Name)
 		}
 		if !utf8.ValidString(value) {

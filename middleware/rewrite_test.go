@@ -99,6 +99,27 @@ func TestRewrite_CatchAll(t *testing.T) {
 	}
 }
 
+// TestRewrite_CatchAllEmptyRest: a catch-all matches an empty rest in a
+// rewrite rule and in the router alike, so "/old/" is rewritten to "/new/"
+// and reaches the "/new/{path...}" route with an empty path.
+func TestRewrite_CatchAllEmptyRest(t *testing.T) {
+	app := mustNew(t)
+	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+		From: "/old/{path...}",
+		To:   "/new/{path}",
+	}}}))
+	app.GET("/new/{path...}", func(ctx *credo.Context) error {
+		return ctx.Response().Text(200, "path:"+ctx.Request().RouteParam("path"))
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/old/", nil))
+
+	if w.Code != 200 || w.Body.String() != "path:" {
+		t.Errorf("GET /old/ = %d %q, want 200 \"path:\"", w.Code, w.Body.String())
+	}
+}
+
 func TestRewrite_RegexConstraint(t *testing.T) {
 	app := mustNew(t)
 	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{

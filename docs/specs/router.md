@@ -186,9 +186,9 @@ app.Mount("/admin", adminMux)
 
 **Middleware scope:** mounted handlers receive only global middleware (plus the framework features that wrap every request). Group and route middleware do not apply because mounted handlers are plain `http.Handler` instances dispatched outside the per-route compiled chain. If the mounted sub-application requires authentication or other protections, it must enforce them internally or the protections must be registered as global middleware.
 
-**Path handoff:** the child receives the remainder below the prefix spelled for the wire — `URL.Path` decoded and `URL.RawPath` set when the two spellings differ — so `/admin/a%2Fb` reaches the child as `/a%2Fb` (`EscapedPath`), never as `/a/b`, `/admin/a%3Bb` as `/a%3Bb` (a reserved escape is handed on as spelled), a prefix such as `/été` is matched in its canonical form, and a nested Credo app decodes its own captures once.
+**Path handoff:** the child receives the remainder below the prefix spelled for the wire — `URL.Path` decoded and `URL.RawPath` set when the two spellings differ — so `/admin/a%2Fb` reaches the child as `/a%2Fb` (`EscapedPath`), never as `/a/b`, `/admin/a%3Bb` as `/a%3Bb` (a reserved escape is handed on as spelled), a prefix such as `/été` is matched in its canonical form, and a nested Credo app decodes its own captures once. The prefix followed by a slash is the child's root, like the bare prefix: `/admin/` and `/admin` both reach the child as `/`.
 
-**Parametric prefix:** the prefix may carry parameters — `Mount("/t/{tenant}", h)`, several of them, also within one segment (`/v/{major}.{minor}`), and regex-constrained ones. The child receives the path below the matched prefix, handed over as under a static prefix (`/t/acme/x/y` → `/x/y`, `/t/acme/a%2Fb` → `/a%2Fb`, the exact prefix `/t/acme` → `/`), and each parameter of the prefix as a stdlib path value, decoded once like every capture (`/t/ac%2Fme/x` → `tenant` = `ac/me`, path `/x`). A stdlib handler reads it with `r.PathValue("tenant")` or `credo.URLParam(r, "tenant")`; a mounted Credo app with `ctx.Request().PathValue("tenant")`, while its `RouteParam`/`RouteParams` hold its own route parameters only. The values are set on a clone of the request (`http.Request.Clone`), so a request the caller still holds — the one an `http.ServeMux` in front of the app matched, or the child of an outer parametric mount — keeps its path values; the child inherits them, nested parametric mounts add up, and a name used again holds the value of the prefix closest to the handler. The child still gets no parent route context, and the internal `_mount` capture is not a path value. A static prefix pays for none of this: its child stays a shallow copy. A catch-all parameter is not a prefix — it consumes the rest of the path, so the handler would always be handed `/`.
+**Parametric prefix:** the prefix may carry parameters — `Mount("/t/{tenant}", h)`, several of them, also within one segment (`/v/{major}.{minor}`), and regex-constrained ones. The child receives the path below the matched prefix, handed over as under a static prefix (`/t/acme/x/y` → `/x/y`, `/t/acme/a%2Fb` → `/a%2Fb`, the exact prefix `/t/acme` and `/t/acme/` → `/`), and each parameter of the prefix as a stdlib path value, decoded once like every capture (`/t/ac%2Fme/x` → `tenant` = `ac/me`, path `/x`). A stdlib handler reads it with `r.PathValue("tenant")` or `credo.URLParam(r, "tenant")`; a mounted Credo app with `ctx.Request().PathValue("tenant")`, while its `RouteParam`/`RouteParams` hold its own route parameters only. The values are set on a clone of the request (`http.Request.Clone`), so a request the caller still holds — the one an `http.ServeMux` in front of the app matched, or the child of an outer parametric mount — keeps its path values; the child inherits them, nested parametric mounts add up, and a name used again holds the value of the prefix closest to the handler. The child still gets no parent route context, and the internal `_mount` capture is not a path value. A static prefix pays for none of this: its child stays a shallow copy. A catch-all parameter is not a prefix — it consumes the rest of the path, so the handler would always be handed `/`.
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
@@ -215,7 +215,7 @@ When a request path does not match any route, the router probes the path with th
 - **GET / HEAD** → `301 Moved Permanently`
 - **Other methods** → `308 Permanent Redirect` (preserves method)
 
-Query strings are preserved. The root path `/` is never redirected. 405 takes precedence over redirect.
+Query strings are preserved. The root path `/` is never redirected. 405 takes precedence over redirect. A catch-all's prefix with the slash is a match, not a redirect: `/files/` reaches `/files/{path...}` with an empty capture, and `/files` — with no route of its own — is redirected to `/files/`.
 
 Enabled by default. Disable via option or config:
 
@@ -229,13 +229,15 @@ credo.New(credo.WithRedirectTrailingSlash(false))
 
 ### URL Parameters
 
-| Syntax         | Example              | Description                 |
-| -------------- | -------------------- | --------------------------- |
-| `{name}`       | `/users/{id}`        | Named parameter             |
-| `{name:regex}` | `/users/{id:[0-9]+}` | Regex-constrained parameter |
-| `{name...}`    | `/files/{path...}`   | Catch-all (rest of path)    |
+| Syntax         | Example              | Description                              |
+| -------------- | -------------------- | ---------------------------------------- |
+| `{name}`       | `/users/{id}`        | Named parameter                          |
+| `{name:regex}` | `/users/{id:[0-9]+}` | Regex-constrained parameter              |
+| `{name...}`    | `/files/{path...}`   | Catch-all (rest of path, possibly empty) |
 
 The same `{name}` / `{name:regex}` syntax is reused for host labels in `app.Host(...)`.
+
+A catch-all matches an empty rest, as in chi and `net/http.ServeMux`: `/files/{path...}` serves `/files/` with `path` = `""`, and `BuildURI("")` builds `/files/`. A `{name}` or `{name:regex}` parameter never matches an empty segment.
 
 **Parameter names belong to the endpoint, not to the tree.** The radix tree identifies a route by its HTTP method and its name-stripped shape (`/users/{}`, `/users/{:[0-9]+}`, `/files/{...}`): dynamic nodes carry no name, matching captures values positionally, and the matched endpoint maps those captures to the names spelled in its own pattern (adapted from Chi's endpoint-key model). Routes that share a dynamic segment may therefore name it differently, and each handler sees only its own names — a sibling endpoint's name is never visible, and `RouteParams()` holds exactly the matched route's parameters.
 

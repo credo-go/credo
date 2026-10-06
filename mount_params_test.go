@@ -129,6 +129,35 @@ func TestMount_ParametricPrefix(t *testing.T) {
 	}
 }
 
+// TestMount_RootWithTrailingSlash: the prefix followed by a slash is the
+// mounted handler's root. The mount's catch-all used to need a non-empty rest,
+// so "/admin/" never reached the handler: the router answered 301 to "/admin",
+// or 404 with the trailing-slash redirect off.
+func TestMount_RootWithTrailingSlash(t *testing.T) {
+	for _, redirect := range []bool{true, false} {
+		name := "redirect on"
+		if !redirect {
+			name = "redirect off"
+		}
+		t.Run(name, func(t *testing.T) {
+			app := mustNew(t, credo.WithRedirectTrailingSlash(redirect))
+			app.Mount("/admin", mountProbe("tenant", "_mount"))
+			app.Mount("/t/{tenant}", mountProbe("tenant", "_mount"))
+
+			for target, want := range map[string]string{
+				"/admin":   "/||tenant=|_mount=",
+				"/admin/":  "/||tenant=|_mount=",
+				"/t/acme":  "/||tenant=acme|_mount=",
+				"/t/acme/": "/||tenant=acme|_mount=",
+			} {
+				if status, got := serveGET(app, target); status != http.StatusOK || got != want {
+					t.Errorf("GET %s = %d %q, want 200 %q", target, status, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestMount_ParametricPrefix_URLParam: URLParam is the accessor for stdlib
 // handlers mounted through App.Mount, and reads the prefix's parameters.
 func TestMount_ParametricPrefix_URLParam(t *testing.T) {

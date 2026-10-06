@@ -331,6 +331,20 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 		}
 	})
 
+	t.Run("empty catch-all value routes back", func(t *testing.T) {
+		app := mustNew(t)
+		route := app.GET("/files/{v...}", h)
+		uri, err := route.BuildURI("")
+		if err != nil || uri != "/files/" {
+			t.Fatalf("BuildURI(\"\") = %q, %v; want /files/", uri, err)
+		}
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", uri, nil))
+		if rec.Code != 200 || rec.Body.String() != "" {
+			t.Fatalf("GET %s = %d %q, want 200 with an empty value", uri, rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("constraint is validated", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/num/{id:[0-9]+}", h)
