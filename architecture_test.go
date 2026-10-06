@@ -30,11 +30,11 @@ type importPolicy struct {
 	external []string
 }
 
-// modulePolicies is the dependency matrix documented in CLAUDE.md
-// ("Dependencies" and "Internal Packages"). Each row is an explicit
-// allowance; anything not listed is a violation. The table is also checked
-// in the other direction: a package directory without a row, or a row without
-// a directory, fails the test so the matrix cannot silently drift.
+// modulePolicies is the dependency allowlist described in CONTRIBUTING.md
+// (Coding Standards). Each row is an explicit allowance; anything not listed
+// is a violation. The table is also checked in the other direction: a package
+// directory without a row, or a row without a directory, fails the test so
+// the matrix cannot silently drift.
 var modulePolicies = map[string]importPolicy{
 	// Root package: adapted core. Its own imports are the standard library
 	// and in-module packages; the modules it links through them are the

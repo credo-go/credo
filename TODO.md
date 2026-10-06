@@ -37,7 +37,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 - [x] Directory structure (28 packages)
 - [x] go.mod (`github.com/credo-go/credo`, Go 1.27)
-- [x] CLAUDE.md, README.md, LICENSE, CONTRIBUTING.md, SECURITY.md
+- [x] README.md, LICENSE, CONTRIBUTING.md, SECURITY.md
 - [x] .gitignore, .golangci.yml, Makefile
 - [x] .github/ templates (PR, issues, CI workflow)
 - [x] NOTICES file (third-party attribution)

@@ -10,7 +10,7 @@ Credo's store package already tracks connection health via `Registry.HealthAll`.
 
 Options considered:
 
-1. **Adapt alexliesenfeld/health** — the original plan (CLAUDE.md Adapt table). However, the library's API surface is much larger than needed (interceptors, middleware chains, async checkers with caching). Credo needs only about a hundred lines of engine code.
+1. **Adapt alexliesenfeld/health** — the original plan. However, the library's API surface is much larger than needed (interceptors, middleware chains, async checkers with caching). Credo needs only about a hundred lines of engine code.
 2. **Write from scratch** — small scope, well-understood requirements, no attribution overhead.
 
 ## Decision
