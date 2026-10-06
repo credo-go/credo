@@ -365,7 +365,7 @@ For practical examples (JSON config, env var overrides, Go struct), see [Configu
 
 There are no provider/parser interfaces: sources are internal functions that each produce a `map[string]any`, merged in precedence order into one nested map held by `Config`.
 
-- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json` / `go.yaml.in/yaml/v3`); the same parser backs `LoadBytes`.
+- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json/v2` / `go.yaml.in/yaml/v3`); the same parser backs `LoadBytes`. A file holds one value: JSON rejects trailing data and duplicate members; YAML rejects duplicate keys and a second document — a `---` after the first document, an empty one included — while a leading `---` and a closing `...` belong to the one document and an empty or comment-only file is an empty config.
 - **`.env` file** — Credo's own line parser (`parseDotenv`), read once per `Load`; entries normalized (lowercase, `__` → `.`) and unflattened.
 - **Process env vars** — prefix-filtered, normalized the same way.
 
@@ -375,7 +375,7 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Error Handling Contract
 
-- **Config File Error**: I/O or syntax error in JSON/YAML (only if found).
+- **Config File Error**: I/O or syntax error in JSON/YAML (only if found), including a YAML file with more than one document (`yaml: a config file holds one document; found another after the first`).
 - **Explicit .env Error**: `CREDO_ENV_FILE` points to a missing/unreadable file.
 - **Type Conversion**: Failing to map a string env var to a struct's `int` field.
 - **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling.

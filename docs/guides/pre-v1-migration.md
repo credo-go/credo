@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration).
 
 ## Bootstrap and DI
 
@@ -79,6 +79,17 @@ Migration: remove any second `PathUnescape` of `RouteParam` values, pass raw val
 | `Mount("/t/{_mount}", h)` registered and handed the child the rest of the path as `_mount`; under `Static`, a group prefix parameter `_static` was served as the file path | Both panic: `_mount` and `_static` are reserved for the captures `Mount` and `Static` add |
 
 Migration: an application that registers both `GET /files` and `GET /files/{path...}` and relied on `/files/` being redirected to `/files` handles the empty capture in the catch-all handler, or registers `GET /files/` explicitly. A pattern that repeats a parameter name gives each capture its own name (`/a/{a_id}/b/{b_id}`).
+
+## Configuration
+
+**Implemented (v0.23.0).** A YAML config file holds one document.
+
+| Before v0.23.0 | Now |
+| --- | --- |
+| A file with a second document (`a: 1`, `---`, `b: 2`) loaded the first and dropped the rest without a word, a malformed second document included; `---`, `---`, `a: 1` loaded an empty config | The load fails with `yaml: a config file holds one document; found another after the first`, or with the second document's syntax error |
+| A trailing `---` with nothing after it was ignored | It opens a second, empty document and fails the load |
+
+Migration: merge a multi-document config into one mapping — the application ran with the first document only, so its values are the ones in effect — and delete a stray trailing `---`. A leading `---` and a closing `...` stay valid.
 
 ## Workers
 
