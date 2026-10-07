@@ -128,7 +128,7 @@ Within one App the component registry keys components by resource identity — t
 
 ### Several Instances of One Type
 
-**Accepted, pending implementation (v0.24.0, W2, W4)** for the panics and the component registry this section relies on; the wrapper rule itself already holds.
+**Accepted, pending implementation (v0.24.0, W4)** for the component registry this section relies on; the wrapper rule itself already holds.
 
 The container keys bindings by type, so several instances of one type are several wrapper types — `type PrimaryDB struct{ *sqldb.DB }` and `type AnalyticsDB struct{ *sqldb.DB }` — each bound once. The type is the qualifier: the constructor's signature names the instance (`NewReportRepo(db AnalyticsDB)`), the compiler and `Finalize` check the choice, and the graph sees the edge, so each instance starts and stops in order. Embedding carries every capability of the handle — `Shutdown`, `Ping`, `Health`, `ResourceIdentity` — and each `*sqldb.DB` owns its transaction scope, so the transactions of two databases never meet. The rule composes with generics: `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings with no name between them. Google Wire answers the same question the same way, and the [httpclient spec](../specs/httpclient.md) already applies it to several `*http.Client`s. Under the component registry (W4) a wrapper and the handle it embeds are one resource through resource identity, so the wrapper, its interface view and its raw handle share one teardown.
 
@@ -143,17 +143,15 @@ Rejected:
 
 ### DI Stays the Spine
 
-**Accepted, pending implementation (v0.24.0, W2)** for the registration panics and the full dependency path this section describes.
-
 Rejected: a kernel that is complete without DI, with DI as an opt-in layer, and, as its radical form, Wire-style code generation. DI is part of Credo's identity: [ADR-001](001-framework-identity-and-goals.md) names structured dependency injection as a reflection of the enterprise target and has configuration cross module boundaries as typed structs via DI. With framework infrastructure in kernel-owned registries (The Public Surface), the kernel does not depend on DI internally, and a minimal App is `credo.New()`, routes and `Run()` without a binding, so an opt-in layer would change only where DI's API lives and how the documentation positions it. Code generation adds a tool step to every developer's loop.
 
-The real cost of reflection-based registration is not startup time, which is paid once: a wrong constructor surfaces when `Provide` runs and a missing dependency at `Finalize`, not in the compiler. A hand-wired `main` is checked by the compiler more strictly, at the price of churn at every call site when a constructor's signature changes, and Go has no variadic type parameters, so a reflection-free `Provide` over constructors of any arity cannot be written: the choice was between arity families, code generation and reflection, and Credo keeps reflection. That cost is answered by better reporting: `Provide` checks the constructor's signature at the call and panics there ([ADR-022](022-bootstrap-and-di-ownership.md), W2), `Finalize` reports a missing dependency with its whole path — `OrderService → PaymentClient → *http.Client (not registered)` (W2) — and, optionally after v1, a `go/analysis` checker reports signature mistakes before the program runs.
+The real cost of reflection-based registration is not startup time, which is paid once: a wrong constructor surfaces when `Provide` runs and a missing dependency at `Finalize`, not in the compiler. A hand-wired `main` is checked by the compiler more strictly, at the price of churn at every call site when a constructor's signature changes, and Go has no variadic type parameters, so a reflection-free `Provide` over constructors of any arity cannot be written: the choice was between arity families, code generation and reflection, and Credo keeps reflection. That cost is answered by better reporting: `Provide` checks the constructor's signature at the call and panics there ([ADR-022](022-bootstrap-and-di-ownership.md)), `Finalize` reports a missing dependency with its whole path — `OrderService → PaymentClient → *http.Client (not registered)` — and, optionally after v1, a `go/analysis` checker reports signature mistakes before the program runs.
 
 ### ProvideValue Preflight and Protected Bindings
 
 `app.CanProvideValue[T]() error` performs the same local frozen-container and direct duplicate-`T` checks that `ProvideValue[T]` applies, without registering or reserving anything. It exists for composition helpers such as `store.Register`, which should reject predictable local conflicts before doing network I/O.
 
-The result is only a point-in-time observation. Another goroutine may register `T` or finalize the container immediately afterward, so a nil result is not a promise that a later regular or protected value publication will succeed. The final `ProvideValue` or `ProvideProtectedValue` call remains authoritative and callers must handle its error.
+The result is only a point-in-time observation. A registration made in between may register `T` or finalize the container, so a nil result is not a promise that a later regular or protected value publication will succeed. The final publication remains authoritative: `ProvideValue` panics on a conflict, and callers handle `ProvideProtectedValue`'s error.
 
 Two low-level methods support integrations whose DI binding is coupled to external lifecycle, health, or registration state:
 
@@ -173,9 +171,9 @@ Constructors run only after Finalize, so the registration phase has no general `
 
 ### Finalize Phase
 
-`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue`, `Replace`, `Alias`, and `BindMany` calls are rejected. `Resolve` is admitted only after Finalize: constructors never run during registration, so the composition root finishes every DI write (store/worker registration included), calls Finalize and handles its error, and only then resolves controllers and binds routes. `Run()`, `RunContext()`, `ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly as an idempotent safeguard, which cannot precede a Resolve the composition root has already executed. Finalize is DI-only; HTTP registration stays open until the App prepares to serve (ADR-006). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern, and the shutdown hooks (`OnPreDrain`, `OnDrain`, `OnShutdown`) capture their dependencies instead of resolving; `OnStart` runs after Finalize and may resolve (`worker.RegisterProvided` resolves its workers there). After a failed Finalize, `Resolve` returns the error.
+`app.Finalize()` freezes the container and validates the dependency graph. After Finalize, a `Provide`, `ProvideValue`, `Alias` or `BindMany` call panics at the call site, as it does after shutdown began, and `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue` and `Replace` return an error. `Resolve` is admitted only after Finalize and panics before it: constructors never run during registration, so the composition root finishes every DI write (store/worker registration included), calls Finalize and handles its error, and only then resolves controllers and binds routes. `Run()`, `RunContext()`, `ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly as an idempotent safeguard, which cannot precede a Resolve the composition root has already executed. Finalize is DI-only; HTTP registration stays open until the App prepares to serve (ADR-006). Credo's recommended usage keeps `Resolve` in bootstrap/composition-root code; runtime `Resolve` remains available but is not the preferred application pattern, and the shutdown hooks (`OnPreDrain`, `OnDrain`, `OnShutdown`) capture their dependencies instead of resolving; `OnStart` runs after Finalize and may resolve (`worker.RegisterProvided` resolves its workers there). After a failed Finalize, `Resolve` returns the error. `Finalize` returns what only the whole graph reveals — missing dependencies, each with its whole path, and cycles — joined in registration order. The phases and the documented bootstrap order are [ADR-022](022-bootstrap-and-di-ownership.md)'s.
 
-**Accepted, pending implementation (v0.24.0, W2).** When it ships, a rejected call panics at the call site instead of returning an error: every registration after `Finalize` — `Manage` and the worker registrations included — and `Resolve` before it. `Finalize` returns what only the whole graph reveals — missing dependencies, each with its whole path, cycles and, with W4, an internal component that depends on an ingress one — joined in registration order. The phases and the documented bootstrap order are [ADR-022](022-bootstrap-and-di-ownership.md)'s.
+**Accepted, pending implementation (v0.24.0, W4, W6).** `Manage` (W4) and the worker registrations (W6) after `Finalize` panic like the DI registrations, and `Finalize` also reports an internal component that depends on an ingress one (W4).
 
 Construction completes once per singleton with a terminal result — value, error or panic — shared by every waiter; nothing is retried. A constructor panic is returned as `*credo.DIPanicError` (type, phase, original value, stack) and `MustResolve` panics with that error as its payload. Once shutdown reaches DI teardown the container is closing: new resolution, cached results included, returns an error wrapping `credo.ErrDIClosed`, while instances created by already-admitted builds remain owned and cleaned up by the container.
 
@@ -255,12 +253,11 @@ The developer chooses on a per-service basis.
 
 ## Consequences
 
-**Accepted, pending implementation (v0.24.0, W2–W5).** When the work items ship, these consequences join the lists below, and the replacement-ownership item goes:
+**Accepted, pending implementation (v0.24.0, W3–W5).** When the work items ship, these consequences join the lists below, and the replacement-ownership item goes:
 
 - The container holds only the application's bindings; seven methods and `Finalize` are its whole surface, and none of them exists for a framework integration.
 - An override is a registration option checked before `Finalize`, never a runtime replacement, and an override that matches nothing panics.
 - A resource's teardown, its owner and its tier are declared where it is bound; a resource several bindings hold is torn down once.
-- Registration misuse panics at the line that caused it, and `Finalize`'s report names each missing dependency's whole path.
 - A store takes its binding and a registration by type, and several instances of one type take a wrapper type each — more types in exchange for signatures that say which instance they receive.
 
 **Positive:**
@@ -275,6 +272,7 @@ The developer chooses on a per-service basis.
 - `Alias[I, T]()` enables programming to interfaces without duplicate registrations
 - `BindMany[I, T]()` / `ResolveAll[I]` support ordered plugin-style composition without manual registry bootstrapping
 - `Finalize()` catches dependency graph errors at startup, not at first request, and is the only gate before any constructor runs
+- Registration misuse panics at the line that caused it, and `Finalize`'s report names each missing dependency's whole path
 - Shutdown follows observable dependencies; cancellation bounds waiting and the report says what did not complete and why
 - Replacement ownership is explicit: the caller receives the superseded instance instead of leaking it
 

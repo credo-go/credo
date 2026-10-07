@@ -259,7 +259,7 @@ func TestApp_OnDrain_CompletesBeforeDIShutdown(t *testing.T) {
 	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*drainTestResource](resource)
+	app.ProvideValue[*drainTestResource](resource)
 	drainStarted := make(chan struct{})
 	releaseDrain := make(chan struct{})
 	var releaseOnce sync.Once

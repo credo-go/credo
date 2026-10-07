@@ -33,9 +33,9 @@ func (c *Container) AdoptValue[T any](validate func(T) error) (T, error) {
 	targetType := reflect.TypeFor[T]()
 
 	c.mu.RLock()
-	if c.frozen {
+	if err := c.closedLocked("AdoptValue", targetType); err != nil {
 		c.mu.RUnlock()
-		return zero, frozenError("AdoptValue", targetType)
+		return zero, err
 	}
 	reg, exists := c.registrations[targetType]
 	if !exists {
@@ -67,8 +67,8 @@ func (c *Container) AdoptValue[T any](validate func(T) error) (T, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.frozen {
-		return zero, frozenError("AdoptValue", targetType)
+	if err := c.closedLocked("AdoptValue", targetType); err != nil {
+		return zero, err
 	}
 	// The entry pointer is replaced by Replace, so pointer identity proves the
 	// validated instance is still the bound one.

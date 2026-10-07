@@ -45,7 +45,7 @@ func TestWithOverride_ReplacesWiredDep(t *testing.T) {
 	app := testutil.NewApp(t,
 		// Wiring establishes the "real" binding...
 		testutil.WithWiring(func(app *credo.App) {
-			app.MustProvideValue[*greeter](&greeter{msg: "real"})
+			app.ProvideValue[*greeter](&greeter{msg: "real"})
 		}),
 		// ...and the override replaces it (overrides run after wiring).
 		testutil.WithOverride[*greeter](&greeter{msg: "fake"}),

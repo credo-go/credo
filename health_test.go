@@ -363,12 +363,9 @@ func TestReadiness_StoreIntegration(t *testing.T) {
 	storeProbe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 		return internalhealth.Result{Status: "up", Latency: 2 * time.Millisecond}
 	})
-	err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
 		return []internalhealth.StoreCheck{{Name: "postgres", Probe: storeProbe}}
 	})
-	if err != nil {
-		t.Fatalf("ProvideValue: %v", err)
-	}
 	app.UseHealth()
 
 	w := httptest.NewRecorder()
@@ -418,11 +415,9 @@ func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
 					Cause:   errors.New(secret),
 				}
 			})
-			if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+			app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
 				return []internalhealth.StoreCheck{{Name: "postgres", Probe: probe}}
-			}); err != nil {
-				t.Fatalf("ProvideValue: %v", err)
-			}
+			})
 			app.UseHealth(credo.HealthConfig{ExposeErrors: tt.exposeErrors})
 
 			w := httptest.NewRecorder()
@@ -448,11 +443,9 @@ func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
 	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 		return internalhealth.Result{Status: invalidStatus}
 	})
-	if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
 		return []internalhealth.StoreCheck{{Name: "bad-adapter", Probe: probe}}
-	}); err != nil {
-		t.Fatalf("ProvideValue: %v", err)
-	}
+	})
 	app.UseHealth()
 
 	w := httptest.NewRecorder()
@@ -474,11 +467,9 @@ func TestReadiness_CustomStoreNameCollisionDoesNotOverwrite(t *testing.T) {
 	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
 		return internalhealth.Result{Status: "up"}
 	})
-	if err := app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
+	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
 		return []internalhealth.StoreCheck{{Name: "database", Probe: probe}}
-	}); err != nil {
-		t.Fatalf("ProvideValue: %v", err)
-	}
+	})
 	app.UseHealth()
 	app.AddReadinessCheck("database", credo.HealthCheckFunc(func(context.Context) error { return nil }))
 

@@ -30,7 +30,7 @@ func TestReload_CallbacksAreCancelledByShutdown(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
 	var hookDone atomic.Bool
 	r := &closingResource{hookDone: &hookDone}
-	f.app.MustProvideValue(r)
+	f.app.ProvideValue(r)
 
 	entered := make(chan struct{})
 	f.app.OnReload(func(ctx context.Context) error {

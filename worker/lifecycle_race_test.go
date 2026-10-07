@@ -43,7 +43,7 @@ func TestPoolStart_ShutdownDuringResolutionWins(t *testing.T) {
 	app := newTestApp(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	app.MustProvide[*stubWorker[kindA]](func() *stubWorker[kindA] {
+	app.Provide[*stubWorker[kindA]](func() *stubWorker[kindA] {
 		close(entered)
 		<-release
 		return newStubWorker[kindA]()

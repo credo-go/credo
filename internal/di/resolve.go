@@ -78,7 +78,8 @@ func (c *Container) MustResolveAll[T any]() []T {
 
 // admitResolve applies the phase rules shared by every resolution entry:
 // closing wins over everything, then Seal must have run, then a failed Seal
-// rejects. op names the API for the error text.
+// rejects. op names the API for the error text. A resolution before Seal is a
+// [*MisuseError]: the App panics with it at the call.
 func (c *Container) admitResolve(op string, targetType reflect.Type) error {
 	c.mu.RLock()
 	closing, sealed, sealErr := c.closing, c.sealed, c.sealErr
@@ -87,7 +88,8 @@ func (c *Container) admitResolve(op string, targetType reflect.Type) error {
 	case closing:
 		return fmt.Errorf("di: %s[%s]: %w", op, targetType, ErrClosed)
 	case !sealed:
-		return fmt.Errorf("di: %s[%s]: container is not finalized (call Finalize before resolving)", op, targetType)
+		return misuse(op, []reflect.Type{targetType}, "called before Finalize; call Finalize first "+
+			"(Run and the first ServeHTTP call it implicitly)")
 	case sealErr != nil:
 		return fmt.Errorf("di: %s[%s]: container seal failed: %w", op, targetType, sealErr)
 	}

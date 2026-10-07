@@ -95,9 +95,9 @@ func TestLifecycle_WorkersFinishBeforeInfrastructureShutdown(t *testing.T) {
 			}
 			if order == "worker-then-resource" {
 				register()
-				app.MustProvideValue(r)
+				app.ProvideValue(r)
 			} else {
-				app.MustProvideValue(r)
+				app.ProvideValue(r)
 				register()
 			}
 
@@ -209,7 +209,7 @@ func TestRegister_PoolBindingIsProtected(t *testing.T) {
 
 func TestRegister_RejectsPoolProvidedOutsideRegister(t *testing.T) {
 	app := newTestApp(t)
-	app.MustProvideValue(&Pool{})
+	app.ProvideValue(&Pool{})
 	err := Register(app, "w", Func(func(context.Context) error { return nil }))
 	requireErrContaining(t, err, "provided outside worker.Register")
 }

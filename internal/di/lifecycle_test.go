@@ -154,16 +154,24 @@ func newOrderCycleA2(*orderCycleB2) *orderCycleA2 { return &orderCycleA2{} }
 func newOrderCycleB2(*orderCycleA2) *orderCycleB2 { return &orderCycleB2{} }
 
 // TestSeal_ReportsInRegistrationOrder: the validation error reads the same on
-// every run. Missing dependencies are listed in the order their consumers were
-// registered, and of several cycles the one whose member was registered first
-// is reported, starting at that member.
+// every run and reports every problem. Each finding sits at the registration
+// it belongs to — a missing dependency at the consumer its path starts from, a
+// cycle at its earliest registered member, which its text starts at.
 func TestSeal_ReportsInRegistrationOrder(t *testing.T) {
-	const want = "di: Validate: *di_test.orderNeeds1 (param 0): dependency *di_test.orderMissing1 is not registered\n" +
-		"di: Validate: *di_test.orderNeeds2 (param 0): dependency *di_test.orderMissing2 is not registered\n" +
-		"di: Validate: *di_test.orderNeeds3 (param 0): dependency *di_test.orderMissing3 is not registered\n" +
-		"di: Validate: *di_test.orderNeeds4 (param 0): dependency *di_test.orderMissing4 is not registered\n" +
-		"di: Validate: *di_test.orderNeeds5 (param 0): dependency *di_test.orderMissing5 is not registered\n" +
-		"di: Validate: circular dependency: *di_test.orderCycleB2 → *di_test.orderCycleA2 → *di_test.orderCycleB2"
+	const want = "di: missing dependency: *di_test.orderNeeds1 → *di_test.orderMissing1 (not registered); " +
+		"provide *di_test.orderMissing1 before Finalize\n" +
+		"di: circular dependency: *di_test.orderCycleB2 → *di_test.orderCycleA2 → *di_test.orderCycleB2; " +
+		"remove one of these constructor parameters\n" +
+		"di: missing dependency: *di_test.orderNeeds2 → *di_test.orderMissing2 (not registered); " +
+		"provide *di_test.orderMissing2 before Finalize\n" +
+		"di: missing dependency: *di_test.orderNeeds3 → *di_test.orderMissing3 (not registered); " +
+		"provide *di_test.orderMissing3 before Finalize\n" +
+		"di: circular dependency: *di_test.orderCycleA1 → *di_test.orderCycleB1 → *di_test.orderCycleA1; " +
+		"remove one of these constructor parameters\n" +
+		"di: missing dependency: *di_test.orderNeeds4 → *di_test.orderMissing4 (not registered); " +
+		"provide *di_test.orderMissing4 before Finalize\n" +
+		"di: missing dependency: *di_test.orderNeeds5 → *di_test.orderMissing5 (not registered); " +
+		"provide *di_test.orderMissing5 before Finalize"
 
 	// Map iteration order varies per run of the loop, so a container that
 	// walks its maps fails this within a few iterations.
@@ -186,6 +194,60 @@ func TestSeal_ReportsInRegistrationOrder(t *testing.T) {
 		if got := err.Error(); got != want {
 			t.Fatalf("run %d: Seal error =\n%s\nwant\n%s", i, got, want)
 		}
+	}
+}
+
+// Types for the dependency-path tests: an order service that reaches a
+// missing HTTP client through an aliased payment gateway, and a plugin
+// collection whose member misses its store.
+type (
+	pathOrders   struct{}
+	pathGateway  interface{ Charge() }
+	pathStripe   struct{}
+	pathClient   struct{}
+	pathPlugin   interface{ Name() string }
+	pathAudit    struct{}
+	pathStore    struct{}
+	pathPlugins  struct{}
+	pathSelfLoop struct{}
+)
+
+func (*pathStripe) Charge()     {}
+func (*pathAudit) Name() string { return "audit" }
+
+// TestSeal_MissingDependencyPath: a missing dependency is reported with its
+// whole path from the entry point that needs it, naming an alias by the
+// interface its consumer asked for and a collection member by its slice; a
+// shared missing dependency is reported once.
+func TestSeal_MissingDependencyPath(t *testing.T) {
+	c := di.New()
+	c.MustProvide[*pathStripe](func(*pathClient) *pathStripe { return &pathStripe{} })
+	c.MustAlias[pathGateway, *pathStripe]()
+	c.MustProvide[*pathOrders](func(pathGateway) *pathOrders { return &pathOrders{} })
+	c.MustProvide[*pathAudit](func(*pathStore) *pathAudit { return &pathAudit{} })
+	c.MustBindMany[pathPlugin, *pathAudit]()
+	c.MustProvide[*pathPlugins](func([]pathPlugin) *pathPlugins { return &pathPlugins{} })
+
+	const want = "di: missing dependency: *di_test.pathOrders → di_test.pathGateway (alias of " +
+		"*di_test.pathStripe) → *di_test.pathClient (not registered); provide *di_test.pathClient before Finalize\n" +
+		"di: missing dependency: *di_test.pathPlugins → *di_test.pathAudit (in []di_test.pathPlugin) → " +
+		"*di_test.pathStore (not registered); provide *di_test.pathStore before Finalize"
+	err := c.Seal()
+	if err == nil || err.Error() != want {
+		t.Fatalf("Seal error =\n%v\nwant\n%s", err, want)
+	}
+}
+
+// TestSeal_SelfDependency: a constructor that takes its own type is a cycle of
+// one.
+func TestSeal_SelfDependency(t *testing.T) {
+	c := di.New()
+	c.MustProvide[*pathSelfLoop](func(*pathSelfLoop) *pathSelfLoop { return &pathSelfLoop{} })
+
+	const want = "di: circular dependency: *di_test.pathSelfLoop → *di_test.pathSelfLoop; " +
+		"remove one of these constructor parameters"
+	if err := c.Seal(); err == nil || err.Error() != want {
+		t.Fatalf("Seal error = %v, want %s", err, want)
 	}
 }
 

@@ -21,8 +21,8 @@ func TestSeal_FreezesContainer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
-	if !strings.Contains(err.Error(), "frozen") {
-		t.Errorf("error should mention 'frozen', got: %v", err)
+	if !strings.Contains(err.Error(), "called after Finalize") {
+		t.Errorf("error should say it was called after Finalize, got: %v", err)
 	}
 }
 
@@ -36,8 +36,8 @@ func TestSeal_ProvideValueAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for ProvideValue after Seal")
 	}
-	if !strings.Contains(err.Error(), "frozen") {
-		t.Errorf("error should mention 'frozen', got: %v", err)
+	if !strings.Contains(err.Error(), "called after Finalize") {
+		t.Errorf("error should say it was called after Finalize, got: %v", err)
 	}
 }
 
@@ -53,8 +53,8 @@ func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Alias after Seal")
 	}
-	if !strings.Contains(err.Error(), "frozen") {
-		t.Errorf("error should mention 'frozen', got: %v", err)
+	if !strings.Contains(err.Error(), "called after Finalize") {
+		t.Errorf("error should say it was called after Finalize, got: %v", err)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for BindMany after Seal")
 	}
-	if !strings.Contains(err.Error(), "frozen") {
-		t.Errorf("error should mention 'frozen', got: %v", err)
+	if !strings.Contains(err.Error(), "called after Finalize") {
+		t.Errorf("error should say it was called after Finalize, got: %v", err)
 	}
 }
 
@@ -161,14 +161,14 @@ func TestSeal_ResolveBeforeSeal_Rejected(t *testing.T) {
 
 	// Constructor execution starts only after Seal: neither a constructor nor
 	// a prebuilt value is resolvable during registration.
-	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "not finalized") {
-		t.Fatalf("Resolve before Seal = %v, want not-finalized error", err)
+	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
+		t.Fatalf("Resolve before Seal = %v, want before-Finalize error", err)
 	}
-	if _, err := c.Resolve[*ServiceWithConfig](); err == nil || !strings.Contains(err.Error(), "not finalized") {
-		t.Fatalf("Resolve of prebuilt value before Seal = %v, want not-finalized error", err)
+	if _, err := c.Resolve[*ServiceWithConfig](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
+		t.Fatalf("Resolve of prebuilt value before Seal = %v, want before-Finalize error", err)
 	}
-	if _, err := c.ResolveAll[Greeter](); err == nil || !strings.Contains(err.Error(), "not finalized") {
-		t.Fatalf("ResolveAll before Seal = %v, want not-finalized error", err)
+	if _, err := c.ResolveAll[Greeter](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
+		t.Fatalf("ResolveAll before Seal = %v, want before-Finalize error", err)
 	}
 	if calls != 0 {
 		t.Fatalf("constructor ran %d times before Seal, want 0", calls)
@@ -186,15 +186,15 @@ func TestFreeze_ClosesRegistrationWithoutSeal(t *testing.T) {
 
 	c.Freeze()
 
-	if err := c.Provide[*ServiceWithDep](NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "frozen") {
-		t.Fatalf("Provide after Freeze = %v, want frozen error", err)
+	if err := c.Provide[*ServiceWithDep](NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "called after shutdown began") {
+		t.Fatalf("Provide after Freeze = %v, want after-shutdown error", err)
 	}
 	if _, _, err := c.Replace[*SimpleService](&SimpleService{}); err == nil {
 		t.Fatal("Replace after Freeze should be rejected")
 	}
 	// Freeze neither validates nor admits resolution.
-	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "not finalized") {
-		t.Fatalf("Resolve after Freeze = %v, want not-finalized error", err)
+	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
+		t.Fatalf("Resolve after Freeze = %v, want before-Finalize error", err)
 	}
 	// Seal still runs its own validation afterwards and admits resolution.
 	seal(t, c)

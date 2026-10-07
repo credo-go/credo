@@ -125,7 +125,7 @@ func TestRegisterProvided_OrderFree(t *testing.T) {
 	for _, order := range []string{"provide-first", "register-first"} {
 		t.Run(order, func(t *testing.T) {
 			app := newTestApp(t)
-			provide := func() { app.MustProvide[*stubWorker[kindA]](newStubWorker[kindA]) }
+			provide := func() { app.Provide[*stubWorker[kindA]](newStubWorker[kindA]) }
 			register := func() { MustRegisterProvided[*stubWorker[kindA]](app, "provided") }
 			if order == "provide-first" {
 				provide()
@@ -171,10 +171,8 @@ func (*stubWorker[K]) aliased() {}
 
 func TestRegisterProvided_InterfaceThroughAlias(t *testing.T) {
 	app := newTestApp(t)
-	app.MustProvide[*stubWorker[kindB]](newStubWorker[kindB])
-	if err := app.Alias[aliasedWorker, *stubWorker[kindB]](); err != nil {
-		t.Fatal(err)
-	}
+	app.Provide[*stubWorker[kindB]](newStubWorker[kindB])
+	app.Alias[aliasedWorker, *stubWorker[kindB]]()
 	MustRegisterProvided[aliasedWorker](app, "aliased")
 	finalize(t, app)
 
@@ -211,15 +209,15 @@ func TestPoolStart_ResolutionFailuresStartNothing(t *testing.T) {
 	// Not provided at all.
 	MustRegisterProvided[*stubWorker[kindA]](app, "missing")
 	// Constructor error.
-	app.MustProvide[*stubWorker[kindB]](func() (*stubWorker[kindB], error) {
+	app.Provide[*stubWorker[kindB]](func() (*stubWorker[kindB], error) {
 		return nil, errors.New("constructor failed")
 	})
 	MustRegisterProvided[*stubWorker[kindB]](app, "ctor-error")
 	// Constructor panic.
-	app.MustProvide[*stubWorker[kindC]](func() *stubWorker[kindC] { panic("constructor boom") })
+	app.Provide[*stubWorker[kindC]](func() *stubWorker[kindC] { panic("constructor boom") })
 	MustRegisterProvided[*stubWorker[kindC]](app, "ctor-panic")
 	// Typed nil result.
-	app.MustProvide[*stubWorker[kindD]](func() *stubWorker[kindD] { return nil })
+	app.Provide[*stubWorker[kindD]](func() *stubWorker[kindD] { return nil })
 	MustRegisterProvided[*stubWorker[kindD]](app, "typed-nil")
 	finalize(t, app)
 
@@ -272,7 +270,7 @@ func TestPoolStart_ResolutionFailuresStartNothing(t *testing.T) {
 func TestRegisterProvided_FailedResolutionFailsAppStartup(t *testing.T) {
 	app := newTestApp(t, credo.WithAddr("127.0.0.1", 0))
 	res := &resource{workerDone: new(atomic.Bool)}
-	app.MustProvideValue(res)
+	app.ProvideValue(res)
 	var shutdownHooks atomic.Int32
 	app.OnShutdown(func(context.Context) error {
 		shutdownHooks.Add(1)

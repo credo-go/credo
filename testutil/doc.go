@@ -27,8 +27,8 @@
 //
 //	app := testutil.NewApp(t,
 //		testutil.WithWiring(func(app *credo.App) {
-//			app.MustProvide[*UserService](NewUserService)
-//			app.MustProvide[UserRepo](NewPostgresRepo)
+//			app.Provide[*UserService](NewUserService)
+//			app.Provide[UserRepo](NewPostgresRepo)
 //		}),
 //		testutil.WithOverride[UserRepo](fakeRepo),
 //	)

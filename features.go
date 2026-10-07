@@ -64,17 +64,12 @@ func (app *App) effectiveFeatures() []string {
 	return features
 }
 
-// installFeature publishes a validated feature under the preparation mutex.
-// The registration window closes at HTTP preparation or shutdown admission
-// (checkFrozen); re-checking under prepMu guarantees that a preparation
-// admitted while the caller was validating can never be followed by a late
-// publication, because prepare freezes the App while holding the same mutex.
-// publish itself must be cheap and must not block: it runs under the lock
-// that serializes preparation and bootstrap shutdown.
+// installFeature publishes a validated feature. Registration is sequential —
+// it comes from the goroutine that builds the App, before it runs — so the
+// call checks its phase once: after HTTP preparation or shutdown admission it
+// panics (checkFrozen), and otherwise nothing can prepare the App between the
+// check and the publication.
 func (app *App) installFeature(what string, publish func()) {
-	app.checkFrozen(what)
-	app.prepMu.Lock()
-	defer app.prepMu.Unlock()
 	app.checkFrozen(what)
 	publish()
 }

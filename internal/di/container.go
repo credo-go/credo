@@ -190,16 +190,17 @@ func isInterfaceSlice(t reflect.Type) bool {
 	return t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Interface
 }
 
-// frozenError is the shared registration-window rejection.
-func frozenError(op string, t reflect.Type) error {
-	return &frozenStateError{op: op, t: t}
-}
-
-type frozenStateError struct {
-	op string
-	t  reflect.Type
-}
-
-func (e *frozenStateError) Error() string {
-	return "di: " + e.op + "[" + e.t.String() + "]: container is frozen (finalized or shut down)"
+// closedLocked rejects a write once the registration window has closed,
+// naming the phase that closed it: Finalize, or a shutdown that began before
+// it. It returns nil while registration is open. c.mu must be held.
+func (c *Container) closedLocked(op string, types ...reflect.Type) error {
+	switch {
+	case !c.frozen:
+		return nil
+	case c.closing || !c.sealed:
+		return misuse(op, types, "called after shutdown began; registration ends when the App shuts down")
+	default:
+		return misuse(op, types, "called after Finalize; make every registration before Finalize, "+
+			"which Run and the first ServeHTTP call implicitly")
+	}
 }

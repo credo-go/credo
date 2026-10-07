@@ -699,7 +699,7 @@ func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
 	server := Use(app)
 	resource := &handlerTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*handlerTestResource](resource)
+	app.ProvideValue[*handlerTestResource](resource)
 	handlerStarted := make(chan struct{})
 	var aliveDuringCleanup atomic.Bool
 	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {

@@ -19,7 +19,7 @@ func TestReplace_NewBinding(t *testing.T) {
 
 func TestReplace_OverridesExisting(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvideValue[*replaceService](&replaceService{name: "real"})
+	app.ProvideValue[*replaceService](&replaceService{name: "real"})
 	if _, _, err := app.Replace[*replaceService](&replaceService{name: "mock"}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}

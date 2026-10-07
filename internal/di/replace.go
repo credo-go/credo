@@ -30,8 +30,8 @@ func (c *Container) Replace[T any](value T) (old T, existed bool, err error) {
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
-	if c.frozen {
-		return old, false, frozenError("Replace", targetType)
+	if err := c.closedLocked("Replace", targetType); err != nil {
+		return old, false, err
 	}
 	if _, protected := c.protected[targetType]; protected {
 		return old, false, fmt.Errorf("di: Replace[%s]: binding is protected", targetType)

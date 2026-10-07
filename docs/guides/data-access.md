@@ -752,9 +752,7 @@ type StoreHealth interface {
 if err := store.Register[*sqldb.DB](app, db); err != nil {
     return errors.Join(err, db.Shutdown(context.Background()))
 }
-if err := app.Alias[StoreHealth, *sqldb.DB](); err != nil {
-    return err
-}
+app.Alias[StoreHealth, *sqldb.DB]()
 ```
 
 `Resolve[StoreHealth]` now returns the already registered `*sqldb.DB`; no
@@ -1162,9 +1160,7 @@ if err != nil {
     return err
 }
 
-if err := app.ProvideValue(gormDB); err != nil {
-    return err
-}
+app.ProvideValue(gormDB)
 ```
 
 That path works, but you do not get the Bun-specific features from `store/sqldb`.

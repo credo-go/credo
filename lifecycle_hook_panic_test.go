@@ -73,7 +73,7 @@ func TestApp_OnStart_Panic_IsTheHooksError(t *testing.T) {
 		credo.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 
 	var order []string
-	app.MustProvideValue[*diShutdownTracker](&diShutdownTracker{order: &order, name: "di:svc"})
+	app.ProvideValue[*diShutdownTracker](&diShutdownTracker{order: &order, name: "di:svc"})
 
 	var laterRan atomic.Bool
 	app.OnStart(func(context.Context) error { return nil })

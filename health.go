@@ -171,7 +171,7 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
 // are registered. Resolved lazily on each readiness check so the relative
 // order of store.Register and UseHealth does not matter.
 func (app *App) storeHealthFunc() internalhealth.StoreFunc {
-	fn, err := app.Resolve[internalhealth.StoreFunc]()
+	fn, err := app.container.Resolve[internalhealth.StoreFunc]()
 	if err != nil {
 		return nil
 	}
@@ -183,7 +183,7 @@ func (app *App) storeHealthFunc() internalhealth.StoreFunc {
 // module-internal [internalhealth.ReadinessFunc] type), or nil when none is
 // registered. Resolved lazily on each readiness check, like the store seam.
 func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {
-	fn, err := app.Resolve[internalhealth.ReadinessFunc]()
+	fn, err := app.container.Resolve[internalhealth.ReadinessFunc]()
 	if err != nil {
 		return nil
 	}

@@ -24,8 +24,6 @@ type mockLifecycle struct {
 	shutCalled  bool
 	pingCalls   int
 	shutCalls   int
-	pingStarted chan<- struct{}
-	pingRelease <-chan struct{}
 }
 
 func (m *mockLifecycle) Ping(ctx context.Context) error {
@@ -33,20 +31,7 @@ func (m *mockLifecycle) Ping(ctx context.Context) error {
 	m.pingCalled = true
 	m.pingCalls++
 	err := m.pingErr
-	started := m.pingStarted
-	release := m.pingRelease
 	m.mu.Unlock()
-
-	if started != nil {
-		started <- struct{}{}
-	}
-	if release != nil {
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
 	return err
 }
 
