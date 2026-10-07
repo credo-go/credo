@@ -1,6 +1,6 @@
 # ADR-007: Router & Routing
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
 
 ## URL round-trip amendment
 
@@ -141,6 +141,8 @@ app.StatusHandler(404, func(ctx *credo.Context) error {
 
 Status handlers are app-level and consulted for these two codes only: 404 when no route matches, 405 when the path matches but no route serves the method. They are not error handlers — an error a handler returns, a 404 included, goes through the central error pipeline ([ADR-009](009-handler-and-error-handling.md)).
 
+**Accepted, pending implementation (v0.24.0, W8).** `StatusHandler(code, h)` panics at registration for any code but 404 and 405, with a message naming the two supported codes. Only those two are looked up, so a handler registered for another code would never run — a silent no-op — and supporting more codes is not the remedy: a 5xx handler would re-enter application code inside error rendering, the path that must stay safe when application code has just failed. The panic turns the no-op into a startup failure the developer sees at once. A 403 or 500 response is shaped through the error pipeline's `ErrorRenderer`, not a status handler.
+
 ### HEAD Auto-Handling
 
 Every `GET` registration automatically registers a `HEAD` handler that runs the same handler chain. An explicit `HEAD` registration overrides the auto-generated one.
@@ -163,7 +165,7 @@ app.Mount("/debug", http.DefaultServeMux)
 
 A mounted handler answers both its exact prefix (`/debug`) and every path beneath it (`/debug/...`), receiving the request with the prefix stripped. A root mount (`Mount("/", h)`) therefore forwards the entire path space, including the bare `/`. Registration is atomic: `Mount` preflights all of its method/pattern registrations and panics before mutating the tree if any explicit route already conflicts, so a conflicting mount leaves no orphan routes behind (the radix tree has no delete, so the guarantee is check-before-insert, not rollback).
 
-The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix is not text that could be stripped, so the child's path is cut by segment count on the canonical path — a parameter never crosses a slash and an encoded slash stays encoded there — and the prefix's parameters reach the child as stdlib path values (`http.Request.PathValue`), set on a clone of the request. Path values are the one mechanism every mounted handler already reads: a stdlib handler directly, a mounted Credo app through `Request.PathValue`, and no Credo-specific context key crosses the mount boundary. Passing the parent's route context down was rejected: it would hand the child internal captures (`_mount`) and switch a mounted Credo app from its own pooled route context to a pre-filled one, a dispatch path that otherwise never runs. Setting the values on the shallow copy a static mount uses was rejected too: a shallow copy shares the storage behind its path values with the request it was copied from, so the mount would overwrite the values of a request its caller still holds — an `http.ServeMux` in front of the app, or the parametric mount one level up.
+The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix is not text that could be stripped, so the child's path is cut by segment count on the canonical path — a parameter never crosses a slash and an encoded slash stays encoded there — and the prefix's parameters reach the child as stdlib path values (`http.Request.PathValue`), set on a clone of the request. Path values are the one mechanism every mounted handler already reads: a stdlib handler directly, a mounted Credo app through `Request.PathValue`, and no Credo-specific context key crosses the mount boundary. Passing the parent's route context down was rejected: it would hand the child internal captures (`_mount`) and switch a mounted Credo app from its own pooled route context to a pre-filled one, a dispatch path that otherwise never runs. Setting the values on the shallow copy a static mount uses was rejected too: a shallow copy shares the storage behind its path values with the request it was copied from, so the mount would overwrite the values of a request its caller still holds — an `http.ServeMux` in front of the app, or the parametric mount one level up. Refusing parametric prefixes at registration was rejected as well: it turns a pattern the router accepts everywhere else into a startup panic, and it is the worse stdlib interoperation — a stdlib handler mounted under a tenant or version prefix would have to re-parse the path to learn what the router already matched, where path values hand it over through the standard `PathValue`.
 
 ### Route Introspection
 

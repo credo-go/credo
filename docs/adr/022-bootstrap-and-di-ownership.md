@@ -1,6 +1,6 @@
 # ADR-022: Bootstrap Phases and DI Ownership
 
-**Status:** Accepted, implemented 2026-09-05 (DI minor) **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** shipped in the DI minor of 2026-09-05; progress in [TODO](../../TODO.md#pre-v1-contract-migration)
+**Status:** Accepted, implemented 2026-09-05 (DI minor); v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** shipped in the DI minor of 2026-09-05; progress in [TODO](../../TODO.md#pre-v1-contract-migration)
 
 ## Context
 
@@ -31,6 +31,77 @@ Normal Shutdowner calls remain sequential, with helper-based completion-or-conte
 
 Keep `Shutdown(ctx) error`; failures expose `*credo.DIShutdownError`, a deterministic immutable snapshot with per-vertex state, blockers, failures and timing, plus `Unwrap() []error`. `*credo.DIPanicError` retains type, phase, original value and stack, and unwraps error-valued panics. Late completion is logged and cannot mutate the returned report. Hooks capture dependencies; resolving from drain hooks is unsupported. A stopping-state Debug diagnostic must not misclassify active HTTP work as a hook violation.
 
+## Sequential bootstrap and three error phases
+
+**Accepted, pending implementation (v0.24.0, W2).** When it ships, this section replaces the numbered flow of the Decision above and its statements that registration and adoption are coordinated against concurrent callers; `AdoptValue`, `Replace` and the framework's adoption flows go with the ownership section below.
+
+### Problem
+
+Every DI and feature registration API is safe for concurrent use and checks its phase at runtime, and four notions of "closed" overlap beside the lifecycle state: the App's `frozen` flag and `prepMu`, `installFeature`'s second `checkFrozen` under `prepMu`, and the container's `frozen`, `sealed` and `closing`. The concurrency is paid for, unevenly, and used by nobody. `store.Register` runs a preflight, a reservation, a second preflight inside it, a network ping and a commit, and adopts the registry when it loses a creation race; `worker` asks `CanProvideValue` about a type it never registers, only to learn whether the container is still open, and adopts a pool that a racing call created; route and hook registration, meanwhile, are not synchronized at all. Bootstrap is sequential in practice, and no document says so. Ordering mistakes surface as runtime panics that the five-step summary (provide, `Finalize`, resolve, routes, run) does not predict: a worker registration must precede `Finalize` while the controllers beside it are resolved after it, and a readiness check built from a resolved value must follow `UseHealth`, so a bootstrap written in the natural order — provide, routes, workers, run — meets two panics at once.
+
+### Decision
+
+**The contract.** Bootstrap is sequential: registration calls come from the goroutine that builds the App, before it runs, and are not safe for concurrent use. The root package documentation, this ADR and the [bootstrap spec](../specs/bootstrap-and-di-lifecycle.md) state it.
+
+**The documented order** names every satellite:
+
+1. configuration (`credo.New`, or `credo.WithRawConfig` over `config.Load`);
+2. `Provide` and `ProvideValue`;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, stores, `Manage`;
+4. `Finalize`;
+5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
+6. `Run`.
+
+There is no resolve-then-provide step. A value that needs a resolved dependency and I/O to exist is a component whose `Start` does that work ([ADR-024](024-lifecycle-components.md)), not a late registration. `credo.New()`, routes and `Run()` stay the minimal shape ([ADR-001](001-framework-identity-and-goals.md)).
+
+**Three error phases** extend the package documentation's "Panics and Errors":
+
+| Phase | Reports | How |
+| --- | --- | --- |
+| Registration | Misuse known at the call site: a constructor of the wrong shape, a duplicate binding, a misused registration option, a call in the wrong phase | Panics with the call site's message; registration performs no I/O |
+| `Finalize` | What only the whole graph reveals: missing dependencies, each with its whole path (`OrderService → PaymentClient → *http.Client (not registered)`), cycles, and, with W4, an internal component that depends on an ingress one | Returns the errors joined in registration order |
+| `Start` | I/O: a store's ping, i18n catalog reads, a component's `Start` | Returns the error; the start rolls back ([ADR-024](024-lifecycle-components.md)) |
+
+Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, and `Resolve` before `Finalize` panics instead of returning a "not finalized" error. A DI or component registration after `Finalize` — `Manage` and the worker registrations included — panics, as does any registration after the App is prepared or shut down, each with the call site's message.
+
+**Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
+
+### Removes
+
+- the statement, and the machinery, that registration is safe for concurrent use: `installFeature`'s double check around `prepMu`, and the container's freeze flags as public states;
+- with W3, W5 and W6, the machinery whose only purpose was concurrent coordination through the container: `CanProvideValue`, `AdoptValue`, `registrationProbe`, `ensurePool`/`adoptPool`, `ensureRegistry`/`adoptRegistry` and `store.Register`'s reservation;
+- the "not finalized" error of `Resolve`, and the errors the registration calls return;
+- the tests of concurrent registration, which are deleted rather than loosened.
+
+### Rejected
+
+- **Keeping the concurrent-registration contract.** It defends a bootstrap nobody performs, unevenly — route and hook registration were never covered — and the cost of dropping it is that an application registering from several goroutines must serialize; none is known.
+- **A `Builder → Build() → App` type split.** Its own gain is that `Resolve` on the builder and `Provide` on the built App become compile errors; nothing else moves to compile time, because handlers close over resolved services and routes therefore stay on the App. The price is a second type to learn, a `credo.New()` shortcut that keeps the old shape alive beside the new one, and module helpers whose two halves take two different types. With framework infrastructure out of the container the DI surface on the App is seven methods and `Finalize` ([ADR-004](004-dependency-injection-and-infra.md)), which does not justify a second type; the split is revisited only if the App remains a hub for reasons other than DI.
+- **A registration window after `Finalize`** — registering workers, stores or other components once values have been resolved. It reopens the ordering problem this section closes; a value that needs resolved dependencies is a component whose `Start` does the work, and a DI-provided worker is registered before `Finalize` in its provided form.
+
+## Ownership through the component registry
+
+**Accepted, pending implementation (v0.24.0, W3, W4, W5).** When it ships, this section replaces the Decision's paragraph on `AdoptValue` and `Replace`, and the teardown paragraphs that state for `Shutdowner`s the rules [ADR-024](024-lifecycle-components.md) states for every component.
+
+### Problem
+
+Ownership was decided in three places: the container closed a bound `Shutdowner`; `store.Register` kept a ledger of resource identities with its own caller-owned option; and `AdoptValue` and protected bindings let an integration take ownership of a value the application had bound, at the price of defending that value against `Replace`. A resource several bindings hold — one pointer under a concrete binding and an adapter's interface view — was shut down once per holder, the first time while consumers of another holder could still run.
+
+### Decision
+
+Ownership is decided where a value is registered, and the kernel's component registry holds it ([ADR-024](024-lifecycle-components.md)):
+
+- A DI singleton the App owns is a component when it has `Shutdown`; a resource whose teardown is `Close` is one through `credo.Closer()`; a value or constructor handed to `Manage` is one by registration. The App owns what it builds and what it is given, unless `credo.Borrowed()` on `ProvideValue` leaves starting and shutting down to the caller ([ADR-004](004-dependency-injection-and-infra.md)).
+- Within one App, the registry keys components by resource identity: one resource has one teardown, run once, after the consumers of every holder. The holders that have a teardown agree on its kind — `Shutdown`, or `Close` through `credo.Closer()` — and the one registered first runs it; a borrowed resource is torn down through none of them. `store`'s identity ledger becomes this rule, with its refusal of mixed ownership.
+- Nothing framework-owned is bound in the container, so nothing is adopted or protected. A store registration names a binding by type and the start phase resolves it once, after `Finalize` and every override ([ADR-015](015-data-access.md)); the worker supervisor is not bound at all ([ADR-023](023-worker-system.md)).
+- `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built, and `Replace`'s ownership transfer has nothing left to transfer.
+
+Teardown keeps this ADR's mechanics, now stated for every component in [ADR-024](024-lifecycle-components.md): the Kahn order over the static graph with reverse registration as the tie-break, one bounded attempt per component under the shared deadline, an abandoned teardown that keeps its dependencies open and is reported, panic isolation, the single fixed five-second late attempt for a construction completing after the deadline, and one immutable report that unwraps its causes, `*credo.LifecycleError`, which generalizes `*credo.DIShutdownError`. The DI closing boundary, `ErrDIClosed` and `DIPanicError` for construction are unchanged.
+
+### Removes
+
+`AdoptValue` and its registration-time adoption; `Replace`, `MustReplace` and the ownership they transfer; protected bindings; `store.Register`'s ledger, reservation and `WithCallerOwnedLifecycle`; DI-owned teardown as a mechanism separate from the components'.
+
 ## Decision closure
 
 G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration, use one AdoptValue operation, expose ErrDIClosed/DIShutdownError/DIPanicError, and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions closed the design gates; the DI minor implements them with the regression tests the specification requires.
@@ -44,3 +115,5 @@ Rejected: protect-on-read before validation; bulk wait-for-builds before any cle
 ## Consequences
 
 Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.
+
+**Accepted, pending implementation (v0.24.0, W2–W5).** With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports I/O. Applications migrate by dropping the error checks of registration calls and the `Must*` registration twins, and by moving any registration that follows `Finalize` before it.

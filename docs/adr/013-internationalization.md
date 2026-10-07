@@ -1,6 +1,6 @@
 # ADR-013: Internationalization
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-09-05 **Depends on:** ADR-009, ADR-010
+**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-01 **Last revised:** 2026-09-05 **Depends on:** ADR-009, ADR-010
 
 ## HTTP integration amendment
 
@@ -80,6 +80,19 @@ Load order is programmatic base first, external source second. Both messages and
 - The complete bundle is published only after all sources validate, so a failed setup exposes no partial catalog and leaves the registration free for repair; a successful setup — a conventional discovery that found nothing included — consumes the single `UseI18n` registration.
 
 This distinguishes an optional convention from a declared deployment dependency. Programmatic fallback prevents raw keys on individual misses; it must not hide the loss of an explicitly configured source.
+
+### Registration and the start phase
+
+**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the amendment's paragraph on how a successful or failed `UseI18n` consumes its registration, and the last bullet of the source policy above.
+
+`UseI18n(cfg ...I18nConfig)` returns nothing and panics on misuse, like every other `Use*`. Registration performs no I/O ([ADR-022](022-bootstrap-and-di-ownership.md)); the catalogs are read in the start phase, and a read failure is a start failure that rolls back like any other ([ADR-024](024-lifecycle-components.md)).
+
+- **At the call**, with the call site in the panic: more than one config, `Dir` together with `DirFS`, a second call, a call after the App is prepared or shut down, and every rule decided without reading a source — the `Default` tag, the programmatic `Messages` and `Fields` (empty keys or values, templates that do not compile), `Fields` with no `Messages` and no file source, and an `i18n` RawConfig section that does not decode.
+- **In the start phase**, as errors: conventional `./locales` discovery, the reads of `Dir`, `DirFS` or a configured `i18n.dir`, malformed or read-denied files, and an explicit source that is missing or contains no messages. The source policy above is unchanged — an explicit source still fails loud, and only absent conventional discovery is an inactive warning, now logged by the start phase. The bundle is published whole, after every source has validated and before the listener accepts; a failure publishes nothing.
+- **No repair state.** The first `UseI18n` call consumes the registration. A source error no longer leaves the slot free, since it surfaces as a start failure of a single-use App.
+- **Serving waits for the catalogs.** An App that called `UseI18n` has something to start, so `ServeHTTP` refuses it until `App.Start` has succeeded, as for any start work ([ADR-024](024-lifecycle-components.md)). Request handling still performs no filesystem access, and the detector contract is unchanged.
+
+Rejected: keeping the error return. `UseI18n` returned an error only because it read files at the call; with the reads in the start phase that reason is gone, and a registration that both returns errors and panics on misuse gives its caller two channels for one phase. Rejected too: reading the catalogs at registration and only changing the return to a panic — a missing deployment directory is an I/O failure, not a programming mistake, and registration no longer performs I/O.
 
 ### Exact keys and application-owned namespaces
 
