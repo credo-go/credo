@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,8 +65,66 @@ func TestMaxHeaderValueCount_RejectsAndStaysSilent(t *testing.T) {
 	if got := rawRequest(t, addr, over); !strings.Contains(got, "431") {
 		t.Errorf("over-limit request: status line = %q, want 431", got)
 	}
-	if got := logs.String(); strings.Contains(got, "431") || strings.Contains(got, "too large") {
+	if got := logs.String(); logsMentionHeaderRejection(got) {
 		t.Errorf("431 rejections are written to the connection by net/http and must not appear in the logs:\n%s", got)
+	}
+}
+
+var (
+	logAddrPattern = regexp.MustCompile(`\[[0-9A-Fa-f:.%]+\]:\d+|\b(?:\d{1,3}\.){3}\d{1,3}:\d+|\blocalhost:\d+`)
+	logTimePattern = regexp.MustCompile(`\btime=\S+`)
+)
+
+// logsMentionHeaderRejection reports whether captured log text mentions
+// net/http's 431 rejection. Network addresses and timestamps are removed first:
+// an ephemeral port such as 43163, or a timestamp's milliseconds, can contain
+// the digits 431 without any rejection having been logged.
+func logsMentionHeaderRejection(logs string) bool {
+	s := logAddrPattern.ReplaceAllString(logs, "")
+	s = logTimePattern.ReplaceAllString(s, "")
+	return strings.Contains(s, "431") || strings.Contains(strings.ToLower(s), "too large")
+}
+
+func TestLogsMentionHeaderRejection(t *testing.T) {
+	tests := []struct {
+		name string
+		logs string
+		want bool
+	}{
+		{
+			name: "IPv4 listener address with 431 in the port",
+			logs: `time=2026-10-06T10:00:00.000Z level=INFO msg="credo: server started" label=HTTP addr=127.0.0.1:43163`,
+		},
+		{
+			name: "IPv6 listener address with 431 in the port",
+			logs: `level=INFO msg="credo: server started" addr=[::1]:43163`,
+		},
+		{
+			name: "timestamp with 431 in the milliseconds",
+			logs: `time=2026-10-06T10:00:00.431+03:00 level=INFO msg="credo: server started" addr=127.0.0.1:8080`,
+		},
+		{
+			name: "status line of the rejection",
+			logs: `level=ERROR msg="HTTP/1.1 431 Request Header Fields Too Large" addr=127.0.0.1:43163`,
+			want: true,
+		},
+		{
+			name: "status attribute",
+			logs: `level=WARN msg=request status=431`,
+			want: true,
+		},
+		{
+			name: "rejection reason",
+			logs: `level=ERROR msg="http: request header too large"`,
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := logsMentionHeaderRejection(tt.logs); got != tt.want {
+				t.Errorf("logsMentionHeaderRejection(%q) = %v, want %v", tt.logs, got, tt.want)
+			}
+		})
 	}
 }
 
