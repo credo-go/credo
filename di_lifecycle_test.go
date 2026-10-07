@@ -25,13 +25,13 @@ type diPanicky struct{}
 func TestResolve_BeforeFinalize_Rejected(t *testing.T) {
 	app := mustNew(t)
 	calls := 0
-	app.MustProvide[*diSimpleService](func() *diSimpleService {
+	app.Provide[*diSimpleService](func() *diSimpleService {
 		calls++
 		return newDISimpleService()
 	})
-	if _, err := app.Resolve[*diSimpleService](); err == nil || !strings.Contains(err.Error(), "not finalized") {
-		t.Fatalf("Resolve before Finalize = %v, want not-finalized error", err)
-	}
+	expectPanicContaining(t, "credo: App.Resolve[*credo_test.diSimpleService]: called before Finalize", func() {
+		_, _ = app.Resolve[*diSimpleService]()
+	})
 	if calls != 0 {
 		t.Fatalf("constructor ran %d times before Finalize", calls)
 	}
@@ -47,7 +47,7 @@ func TestHas(t *testing.T) {
 		t.Fatal("Has before registration = true")
 	}
 	calls := 0
-	app.MustProvide[*diSimpleService](func() *diSimpleService {
+	app.Provide[*diSimpleService](func() *diSimpleService {
 		calls++
 		return newDISimpleService()
 	})
@@ -65,7 +65,7 @@ func TestHas(t *testing.T) {
 func TestAdoptValue(t *testing.T) {
 	app := mustNew(t)
 	original := &diSimpleService{Value: "prebuilt"}
-	app.MustProvideValue[*diSimpleService](original)
+	app.ProvideValue[*diSimpleService](original)
 
 	got, err := app.AdoptValue[*diSimpleService](func(s *diSimpleService) error {
 		if s.Value == "" {
@@ -82,7 +82,7 @@ func TestAdoptValue(t *testing.T) {
 
 	// A constructor binding is rejected without running.
 	calls := 0
-	app.MustProvide[*diServiceWithDep](func(s *diSimpleService) *diServiceWithDep {
+	app.Provide[*diServiceWithDep](func(s *diSimpleService) *diServiceWithDep {
 		calls++
 		return &diServiceWithDep{Simple: s}
 	})
@@ -93,8 +93,8 @@ func TestAdoptValue(t *testing.T) {
 		t.Fatal("AdoptValue must never construct")
 	}
 	mustFinalize(t, app)
-	if _, err := app.AdoptValue[*diSimpleService](nil); err == nil || !strings.Contains(err.Error(), "frozen") {
-		t.Fatalf("AdoptValue after Finalize = %v, want frozen error", err)
+	if _, err := app.AdoptValue[*diSimpleService](nil); err == nil || !strings.Contains(err.Error(), "called after Finalize") {
+		t.Fatalf("AdoptValue after Finalize = %v, want after-Finalize error", err)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestReplace_ReturnsSupersededInstance(t *testing.T) {
 	logger, logs := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger))
 	oldDB := &diCloser{name: "old"}
-	app.MustProvideValue[*diCloser](oldDB)
+	app.ProvideValue[*diCloser](oldDB)
 
 	newDB := &diCloser{name: "new"}
 	old, existed, err := app.Replace[*diCloser](newDB)
@@ -110,7 +110,7 @@ func TestReplace_ReturnsSupersededInstance(t *testing.T) {
 		t.Fatalf("Replace = (%v, %v, %v), want (old, true, nil)", old, existed, err)
 	}
 	// An unbuilt constructor yields no previous instance.
-	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.Provide[*diSimpleService](newDISimpleService)
 	oldSvc, existed, err := app.Replace[*diSimpleService](&diSimpleService{Value: "mock"})
 	if err != nil || existed || oldSvc != nil {
 		t.Fatalf("Replace of an unbuilt constructor = (%v, %v, %v), want (nil, false, nil)", oldSvc, existed, err)
@@ -140,7 +140,7 @@ func TestReplace_ReturnsSupersededInstance(t *testing.T) {
 
 func TestDIDiagnostics_PublicTypes(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diPanicky](func() *diPanicky { panic("boom") })
+	app.Provide[*diPanicky](func() *diPanicky { panic("boom") })
 	mustFinalize(t, app)
 
 	_, err := app.Resolve[*diPanicky]()
@@ -162,7 +162,7 @@ func TestDIDiagnostics_PublicTypes(t *testing.T) {
 func TestResolve_DuringDrain_LogsDebug(t *testing.T) {
 	logger, logs := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger))
-	app.MustProvideValue[*diSimpleService](&diSimpleService{Value: "v"})
+	app.ProvideValue[*diSimpleService](&diSimpleService{Value: "v"})
 	app.OnDrain(func(context.Context) error {
 		_, err := app.Resolve[*diSimpleService]()
 		return err

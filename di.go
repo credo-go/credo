@@ -2,8 +2,11 @@ package credo
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"reflect"
+
+	"github.com/credo-go/credo/internal/di"
 )
 
 // Provide registers a constructor for type T in the application's DI
@@ -14,29 +17,36 @@ import (
 //	app.Provide[*UserService](NewUserService)
 //
 // Because Go cannot express "a function with arbitrary parameters returning
-// T" in the type system, constructor is typed any: signature mistakes (wrong
-// return type, not a function) are reported as an error at registration time,
-// not at compile time. The dependency graph itself is validated at
-// [App.Finalize]. A constructor that captures app and calls [App.Resolve]
-// inside its body is unsupported: such a dependency is invisible to graph
-// validation, cycle detection and dependency-ordered shutdown.
-func (app *App) Provide[T any](constructor any) error {
-	return app.container.Provide[T](constructor)
+// T" in the type system, constructor is typed any: a signature mistake (wrong
+// return type, not a function) panics here, at the call, not at compile time.
+// So do a nil constructor, a second binding of T and a call after
+// [App.Finalize] or after shutdown began; each is misuse known at the call
+// site (see "Panics and Errors" in the package documentation). The dependency
+// graph itself is validated at [App.Finalize]. A constructor that captures
+// app and calls [App.Resolve] inside its body is unsupported: such a
+// dependency is invisible to graph validation, cycle detection and
+// dependency-ordered shutdown.
+//
+// Registration is sequential: call Provide from the goroutine that builds the
+// App, before it runs.
+func (app *App) Provide[T any](constructor any) {
+	panicOnMisuse(app.container.Provide[T](constructor))
 }
 
-// MustProvide is like [App.Provide] but panics on error.
+// MustProvide is equivalent to [App.Provide], which panics on misuse.
 func (app *App) MustProvide[T any](constructor any) {
-	app.container.MustProvide[T](constructor)
+	app.Provide[T](constructor)
 }
 
 // ProvideValue registers a pre-built value for type T as a Singleton. The
 // container owns the value from then on: if it implements [Shutdowner] it is
 // closed during teardown, unless a later successful [App.Replace] hands it
-// back to the caller.
+// back to the caller. A second binding of T and a call after [App.Finalize]
+// or after shutdown began panic, like [App.Provide].
 //
 //	app.ProvideValue[*Logger](logger)
-func (app *App) ProvideValue[T any](value T) error {
-	return app.container.ProvideValue[T](value)
+func (app *App) ProvideValue[T any](value T) {
+	panicOnMisuse(app.container.ProvideValue[T](value))
 }
 
 // ProvideProtectedValue registers a pre-built singleton whose binding cannot
@@ -67,9 +77,10 @@ func (app *App) CanProvideValue[T any]() error {
 	return app.container.CanProvideValue[T]()
 }
 
-// MustProvideValue is like [App.ProvideValue] but panics on error.
+// MustProvideValue is equivalent to [App.ProvideValue], which panics on
+// misuse.
 func (app *App) MustProvideValue[T any](value T) {
-	app.container.MustProvideValue[T](value)
+	app.ProvideValue[T](value)
 }
 
 // Has reports whether type T is registered, directly or through [App.Alias].
@@ -152,10 +163,12 @@ func (app *App) noteReplacedShutdowner(t reflect.Type, old any) {
 
 // Resolve retrieves an instance of type T from the application's DI
 // container. It is admitted only after [App.Finalize] (Run and ServeHTTP
-// finalize implicitly): constructors run at first resolution, exactly once,
-// and a constructor panic is returned as a [DIPanicError] to every caller.
-// Once shutdown has reached DI teardown, Resolve returns an error wrapping
-// [ErrDIClosed].
+// finalize implicitly) and panics when called before it: constructors run at
+// first resolution, exactly once, and a constructor panic is returned as a
+// [DIPanicError] to every caller. After a failed Finalize, Resolve returns the
+// Finalize error. Once shutdown has reached DI teardown, Resolve returns an
+// error wrapping [ErrDIClosed]. After Finalize, Resolve is safe for concurrent
+// use.
 //
 // Resolve is primarily intended for bootstrap/composition-root code after
 // Finalize; runtime calls remain available, but Credo's recommended
@@ -167,15 +180,20 @@ func (app *App) noteReplacedShutdowner(t reflect.Type, old any) {
 //	svc, err := app.Resolve[*UserService]()
 func (app *App) Resolve[T any]() (T, error) {
 	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	return app.container.Resolve[T]()
+	v, err := app.container.Resolve[T]()
+	panicOnMisuse(err)
+	return v, err
 }
 
 // MustResolve is like [App.Resolve] but panics on error. It is primarily
 // intended for bootstrap/composition-root code. A constructor panic surfaces
 // here as a panic whose value is the [DIPanicError], not the original value.
 func (app *App) MustResolve[T any]() T {
-	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	return app.container.MustResolve[T]()
+	v, err := app.Resolve[T]()
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 // ResolveAll retrieves all singletons bound to interface type T via
@@ -183,13 +201,27 @@ func (app *App) MustResolve[T any]() T {
 // empty slice and nil error. The same phase rules as [App.Resolve] apply.
 func (app *App) ResolveAll[T any]() ([]T, error) {
 	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	return app.container.ResolveAll[T]()
+	v, err := app.container.ResolveAll[T]()
+	panicOnMisuse(err)
+	return v, err
 }
 
 // MustResolveAll is like [App.ResolveAll] but panics on error.
 func (app *App) MustResolveAll[T any]() []T {
-	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	return app.container.MustResolveAll[T]()
+	v, err := app.ResolveAll[T]()
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// panicOnMisuse panics with err when the container rejected a call because of
+// how it was made — out of phase or with arguments it cannot accept — naming
+// the App method that was called. Any other error, and nil, pass through.
+func panicOnMisuse(err error) {
+	if m, ok := errors.AsType[*di.MisuseError](err); ok {
+		panic("credo: App." + m.Call + ": " + m.Reason)
+	}
 }
 
 // noteResolveDuringDrain emits a Debug diagnostic when a resolution happens
@@ -207,42 +239,55 @@ func (app *App) noteResolveDuringDrain(t reflect.Type) {
 
 // Alias creates a type alias so that resolving interface I via [App.Resolve]
 // returns the singleton registered for concrete type T. I must be an
-// interface, T must implement I, and T must already be registered.
+// interface, T must implement I, T must already be registered and I must not
+// be; otherwise Alias panics, as it does after [App.Finalize] or after
+// shutdown began.
 //
 //	app.Alias[UserRepo, *PgUserRepo]()
-func (app *App) Alias[I, T any]() error {
-	return app.container.Alias[I, T]()
+func (app *App) Alias[I, T any]() {
+	panicOnMisuse(app.container.Alias[I, T]())
 }
 
-// MustAlias is like [App.Alias] but panics on error.
+// MustAlias is equivalent to [App.Alias], which panics on misuse.
 func (app *App) MustAlias[I, T any]() {
-	app.container.MustAlias[I, T]()
+	app.Alias[I, T]()
 }
 
 // BindMany adds concrete type T to the ordered collection for interface I.
-// I must be an interface, T must be a registered concrete type, and T must
-// implement I.
-func (app *App) BindMany[I, T any]() error {
-	return app.container.BindMany[I, T]()
+// I must be an interface, T must be a registered concrete type that
+// implements I, and the pair must be new; otherwise BindMany panics, as it
+// does after [App.Finalize] or after shutdown began.
+func (app *App) BindMany[I, T any]() {
+	panicOnMisuse(app.container.BindMany[I, T]())
 }
 
-// MustBindMany is like [App.BindMany] but panics on error.
+// MustBindMany is equivalent to [App.BindMany], which panics on misuse.
 func (app *App) MustBindMany[I, T any]() {
-	app.container.MustBindMany[I, T]()
+	app.BindMany[I, T]()
 }
 
 // Finalize freezes the DI container and validates the dependency graph.
-// After Finalize, no more Provide, ProvideValue, ProvideProtectedValue,
-// ProtectBinding, AdoptValue, Replace, Alias, or BindMany calls are allowed,
+// After Finalize, a Provide, ProvideValue, Alias or BindMany call panics,
+// ProvideProtectedValue, ProtectBinding, AdoptValue and Replace are rejected,
 // and [App.Resolve] becomes available. Finalize is DI-only: routes, hooks,
 // renderers and other HTTP registrations stay open until the App prepares to
 // serve, so controllers built from resolved services can still be wired
 // afterwards.
 //
+// Finalize returns what only the whole graph reveals, joined in registration
+// order with the same text on every run: each missing dependency with its
+// whole path from the registration that needs it, for example
+//
+//	di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); ...
+//
+// each circular dependency, and constructors that take a context.Context.
+//
 // Finalize is idempotent. If not called explicitly, the Run* entry points and
 // the first [App.ServeHTTP] call it implicitly.
 //
-//	app.Finalize()
+//	if err := app.Finalize(); err != nil {
+//		log.Fatal(err)
+//	}
 func (app *App) Finalize() error {
 	return app.container.Seal()
 }

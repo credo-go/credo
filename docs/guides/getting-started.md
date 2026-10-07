@@ -89,15 +89,14 @@ type AppConfig struct {
     Debug bool
 }
 
-rc := app.MustResolve[credo.RawConfig]()
-
-var cfg AppConfig
-if err := rc.Unmarshal("app", &cfg); err != nil {
+// Read it during registration; Resolve is available only after Finalize.
+cfg, err := app.GetConfig[AppConfig]("app")
+if err != nil {
     log.Fatal(err)
 }
 
 // Register in DI so services can receive it.
-app.MustProvideValue(&cfg)
+app.ProvideValue(&cfg)
 ```
 
 String keys appear once. After that, everything is typed.
@@ -400,8 +399,8 @@ func NewUserService(infra credo.Infra, repo *UserRepository) *UserService {
 }
 
 // 2. Register
-app.MustProvide[*UserRepository](NewUserRepository)
-app.MustProvide[*UserService](NewUserService)
+app.Provide[*UserRepository](NewUserRepository)
+app.Provide[*UserService](NewUserService)
 
 // 3. Finalize (catches missing deps, cycles)
 if err := app.Finalize(); err != nil {
@@ -414,6 +413,17 @@ app.GET("/users/{id}", svc.GetUser)
 ```
 
 `credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
+
+Bootstrap is sequential: every registration call comes from the goroutine that builds the App, before it runs, and none is safe for concurrent use. A bootstrap that follows this order meets no ordering panic:
+
+1. configuration — `credo.New()`;
+2. `Provide` and `ProvideValue`;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers;
+4. `Finalize`, handling its error;
+5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
+6. `Run`.
+
+A misused registration — a constructor of the wrong shape, a duplicate binding, a dependency registration after `Finalize`, `Resolve` before it — panics at its line. `Finalize` returns every missing dependency, each with its whole path, and every cycle at once.
 
 See [Dependency Injection Guide](dependency-injection.md) for `Alias`, `BindMany`/`ResolveAll`, `ProvideValue`, testing patterns, and the full mental model.
 
@@ -647,7 +657,11 @@ func main() {
     }
 
     // DI
-    app.MustProvide[*ItemService](NewItemService)
+    app.Provide[*ItemService](NewItemService)
+
+    // Health
+    app.UseHealth()
+
     if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
@@ -659,9 +673,6 @@ func main() {
         middleware.CORS(),
         middleware.Secure(),
     )
-
-    // Health
-    app.UseHealth()
 
     // Routes
     app.GET("/items", svc.List)

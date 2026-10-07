@@ -93,7 +93,7 @@ func MustRegister(app *credo.App, name string, w Worker, opts ...Option) {
 // RegisterProvided registers, under name, the worker that the application's
 // DI container provides as T:
 //
-//	app.MustProvide[*InvoiceWorker](NewInvoiceWorker)
+//	app.Provide[*InvoiceWorker](NewInvoiceWorker)
 //	worker.MustRegisterProvided[*InvoiceWorker](app, "invoice-worker",
 //		worker.WithSchedule("@every 1m"))
 //

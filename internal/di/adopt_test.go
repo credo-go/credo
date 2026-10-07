@@ -120,8 +120,8 @@ func TestAdoptValue(t *testing.T) {
 		c := di.New()
 		c.MustProvideValue[*SimpleService](&SimpleService{})
 		seal(t, c)
-		if _, err := c.AdoptValue[*SimpleService](nil); err == nil || !strings.Contains(err.Error(), "frozen") {
-			t.Fatalf("AdoptValue after Seal = %v, want frozen error", err)
+		if _, err := c.AdoptValue[*SimpleService](nil); err == nil || !strings.Contains(err.Error(), "called after Finalize") {
+			t.Fatalf("AdoptValue after Seal = %v, want after-Finalize error", err)
 		}
 	})
 
@@ -158,8 +158,8 @@ func TestAdoptValue(t *testing.T) {
 			seal(t, c)
 			return nil
 		})
-		if err == nil || !strings.Contains(err.Error(), "frozen") {
-			t.Fatalf("AdoptValue = %v, want frozen error after a racing Seal", err)
+		if err == nil || !strings.Contains(err.Error(), "called after Finalize") {
+			t.Fatalf("AdoptValue = %v, want after-Finalize error after a racing Seal", err)
 		}
 		if c.IsProtected[*SimpleService]() {
 			t.Fatal("adoption that lost to Finalize must not protect")

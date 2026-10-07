@@ -165,7 +165,8 @@ type App struct {
 
 	// requestID, accessLog, compress and decompress are the HTTP features
 	// installed through the Use* methods; nil means the feature is off. They
-	// are published under prepMu and read by the request executor.
+	// are written during sequential bootstrap and read by the request
+	// executor once preparation has published the handler.
 	requestID  *requestIDFeature
 	accessLog  *accessLogFeature
 	compress   *compressFeature

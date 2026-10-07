@@ -120,8 +120,8 @@ func TestReplace_Frozen(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error replacing on a sealed container")
 	}
-	if !strings.Contains(err.Error(), "frozen") {
-		t.Errorf("error = %q, want it to mention 'frozen'", err)
+	if !strings.Contains(err.Error(), "called after Finalize") {
+		t.Errorf("error = %q, want it to say it was called after Finalize", err)
 	}
 }
 

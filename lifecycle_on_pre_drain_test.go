@@ -42,7 +42,7 @@ func TestApp_OnPreDrainPrecedesLifecycleCancellationAndDI(t *testing.T) {
 	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*drainTestResource](resource)
+	app.ProvideValue[*drainTestResource](resource)
 	app.UseHealth()
 
 	workerContext := make(chan context.Context, 1)
@@ -177,7 +177,7 @@ func TestApp_OnPreDrainRunsDuringFailedStartupBeforeCancellation(t *testing.T) {
 	app := mustNew(t, credo.WithAddr("127.0.0.1", 0))
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*drainTestResource](resource)
+	app.ProvideValue[*drainTestResource](resource)
 	workerContext := make(chan context.Context, 1)
 	if err := worker.Register(app, "startup-failure-worker", worker.Func(func(ctx context.Context) error {
 		workerContext <- ctx
@@ -232,7 +232,7 @@ func TestApp_OnPreDrainErrorsAndPanicsContinueTeardown(t *testing.T) {
 	)
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*drainTestResource](resource)
+	app.ProvideValue[*drainTestResource](resource)
 	var lifecycleCtx context.Context
 	app.OnStart(func(ctx context.Context) error {
 		lifecycleCtx = ctx
@@ -306,7 +306,7 @@ func TestApp_OnPreDrainDeadlineIsReportedButRemainsTeardownBarrier(t *testing.T)
 	)
 	resource := &drainTestResource{}
 	resource.alive.Store(true)
-	app.MustProvideValue[*drainTestResource](resource)
+	app.ProvideValue[*drainTestResource](resource)
 	var lifecycleCtx context.Context
 	app.OnStart(func(ctx context.Context) error {
 		lifecycleCtx = ctx

@@ -79,15 +79,42 @@
 //
 // Credo separates developer errors from runtime failures:
 //
-//   - Startup configuration (registering routes, hosts, middleware, names,
-//     static files, health checks) panics on misuse — nil handlers, malformed
-//     patterns, duplicates, or registration after the handler chain has
-//     compiled. The route table is code written by the developer, so a
-//     mistake there is a bug best caught at startup, not a condition to
-//     handle.
+//   - Startup configuration (registering dependencies, routes, hosts,
+//     middleware, names, static files, health checks) panics on misuse — nil
+//     handlers, malformed patterns, duplicates, or registration after the
+//     handler chain has compiled. The route table and the dependency graph are
+//     code written by the developer, so a mistake there is a bug best caught
+//     at startup, not a condition to handle.
 //   - Anything that can legitimately fail at runtime — request handling,
 //     server lifecycle, or operations touching the outside world (file I/O,
 //     network) — returns an error.
+//
+// Bootstrap is sequential: registration calls — dependency bindings, feature
+// mounts, satellite registrations, routes and hooks — come from the goroutine
+// that builds the [App], before it runs, and are not safe for concurrent use.
+// The documented order is:
+//
+//  1. configuration — [New];
+//  2. [App.Provide] and [App.ProvideValue];
+//  3. feature mounts and satellite registrations, in any order among
+//     themselves — [App.UseI18n], [App.UseHealth], stores and workers;
+//  4. [App.Finalize], handling its error;
+//  5. [App.Resolve], routes and anything built from a resolved value, a
+//     readiness check included;
+//  6. [App.Run].
+//
+// A mistake surfaces in one of three phases:
+//
+//   - Registration panics on misuse known at the call site, with a message
+//     naming the call and the remedy: a constructor of the wrong shape, a
+//     duplicate binding, an [App.Alias] or [App.BindMany] whose types do not
+//     fit, a dependency registration after [App.Finalize] or after shutdown
+//     began, and [App.Resolve] before [App.Finalize].
+//   - [App.Finalize] returns what only the whole dependency graph reveals —
+//     every missing dependency with its whole path from the registration that
+//     needs it, every cycle — joined in registration order, with the same
+//     text on every run.
+//   - Starting and serving return errors for what touches the outside world.
 //
 // This is why [App.UseHealth] panics on misuse (it only registers in-process
 // state) while [App.UseI18n] returns an error (it loads locale files). The

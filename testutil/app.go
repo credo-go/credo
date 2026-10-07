@@ -31,7 +31,7 @@ type configPair struct {
 }
 
 // WithWiring registers functions that wire dependencies into the container
-// (typically [credo.App.Provide] / [credo.App.MustProvideValue] calls). They run after
+// (typically [credo.App.Provide] / [credo.App.ProvideValue] calls). They run after
 // the App is constructed but before any [WithOverride], so an override can
 // replace a binding established here.
 func WithWiring(fns ...func(*credo.App)) Option {

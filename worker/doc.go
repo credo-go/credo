@@ -12,7 +12,7 @@
 //		return nil
 //	}))
 //
-//	app.MustProvide[*Cleanup](NewCleanup)
+//	app.Provide[*Cleanup](NewCleanup)
 //	worker.MustRegisterProvided[*Cleanup](app, "cleanup",
 //		worker.WithSchedule("@every 5m"),
 //		worker.WithStartImmediately(),

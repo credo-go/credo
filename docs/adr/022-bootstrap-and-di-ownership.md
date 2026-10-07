@@ -10,12 +10,7 @@ A scan of the maintainer's downstream applications found no factory or Replace u
 
 ## Decision
 
-Keep App, typed constructors, explicit `Infra`, singleton scope, aliases and ordered collections. Separate DI validation/freeze from HTTP preparation/freeze:
-
-1. Construct App, register dependencies and apply overrides.
-2. Finalize the DI plan; build controllers and DI-backed renderers afterward.
-3. Register HTTP routes/features/hooks, then prepare once through Finalize → compile → publish.
-4. Drain before DI closing, then tear down consumers before their visible dependencies.
+Keep App, typed constructors, explicit `Infra`, singleton scope, aliases and ordered collections. Separate DI validation/freeze from HTTP preparation/freeze. Bootstrap follows the documented order of [Sequential bootstrap and three error phases](#sequential-bootstrap-and-three-error-phases): controllers and DI-backed renderers are built after `Finalize`, and the App prepares once through Finalize → compile → publish. Teardown drains before DI closing, then tears down consumers before their visible dependencies.
 
 DI-independent HTTP setup may precede Finalize. Managed serving and direct `ServeHTTP` share one stored preparation result. Preparation admission closes HTTP writes; DI Finalize alone does not. Bootstrap Shutdown competes atomically with managed start and direct preparation publication. It accepts an App in building, freezes writes without requiring successful Seal, runs serverless drain and ends stopped. Owners of external HTTP servers still drain those servers themselves.
 
@@ -33,11 +28,9 @@ Keep `Shutdown(ctx) error`; failures expose `*credo.DIShutdownError`, a determin
 
 ## Sequential bootstrap and three error phases
 
-**Accepted, pending implementation (v0.24.0, W2).** When it ships, this section replaces the numbered flow of the Decision above and its statements that registration and adoption are coordinated against concurrent callers; `AdoptValue`, `Replace` and the framework's adoption flows go with the ownership section below.
-
 ### Problem
 
-Every DI and feature registration API is safe for concurrent use and checks its phase at runtime, and four notions of "closed" overlap beside the lifecycle state: the App's `frozen` flag and `prepMu`, `installFeature`'s second `checkFrozen` under `prepMu`, and the container's `frozen`, `sealed` and `closing`. The concurrency is paid for, unevenly, and used by nobody. `store.Register` runs a preflight, a reservation, a second preflight inside it, a network ping and a commit, and adopts the registry when it loses a creation race; `worker` asks `CanProvideValue` about a type it never registers, only to learn whether the container is still open, and adopts a pool that a racing call created; route and hook registration, meanwhile, are not synchronized at all. Bootstrap is sequential in practice, and no document says so. Ordering mistakes surface as runtime panics that the five-step summary (provide, `Finalize`, resolve, routes, run) does not predict: a worker registration must precede `Finalize` while the controllers beside it are resolved after it, and a readiness check built from a resolved value must follow `UseHealth`, so a bootstrap written in the natural order — provide, routes, workers, run — meets two panics at once.
+Every DI and feature registration API was safe for concurrent use and checked its phase at runtime, and four notions of "closed" overlapped beside the lifecycle state: the App's `frozen` flag and `prepMu`, `installFeature`'s second `checkFrozen` under `prepMu`, and the container's `frozen`, `sealed` and `closing`. The concurrency was paid for, unevenly, and used by nobody. `store.Register` ran a preflight, a reservation, a second preflight inside it, a network ping and a commit, and adopted the registry when it lost a creation race; `worker` asked `CanProvideValue` about a type it never registers, only to learn whether the container was still open, and adopted a pool that a racing call created; route and hook registration, meanwhile, were not synchronized at all. Bootstrap was sequential in practice, and no document said so. Ordering mistakes surfaced as runtime panics that the five-step summary (provide, `Finalize`, resolve, routes, run) did not predict: a worker registration must precede `Finalize` while the controllers beside it are resolved after it, and a readiness check built from a resolved value must follow `UseHealth`, so a bootstrap written in the natural order — provide, routes, workers, run — met two panics at once.
 
 ### Decision
 
@@ -62,7 +55,9 @@ There is no resolve-then-provide step. A value that needs a resolved dependency 
 | `Finalize` | What only the whole graph reveals: missing dependencies, each with its whole path (`OrderService → PaymentClient → *http.Client (not registered)`), cycles, and, with W4, an internal component that depends on an ingress one | Returns the errors joined in registration order |
 | `Start` | I/O: a store's ping, i18n catalog reads, a component's `Start` | Returns the error; the start rolls back ([ADR-024](024-lifecycle-components.md)) |
 
-Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, and `Resolve` before `Finalize` panics instead of returning a "not finalized" error. A DI or component registration after `Finalize` — `Manage` and the worker registrations included — panics, as does any registration after the App is prepared or shut down, each with the call site's message.
+Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, and `Resolve` before `Finalize` panics. A DI registration after `Finalize` panics, as does any registration after the App is prepared or shut down, each with the call site's message.
+
+**Accepted, pending implementation (v0.24.0, W4–W6)** for the parts that name components: `Manage`, the registration options, `App.Start` and the check of an internal component that depends on an ingress one arrive with W4, and `Manage` after `Finalize` panics like a DI registration; until W5, `store.Register` pings its store and `UseI18n` reads its catalogs at the call and return those errors; until W6, the worker registrations return their errors instead of panicking.
 
 **Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
 
@@ -116,4 +111,6 @@ Rejected: protect-on-read before validation; bulk wait-for-builds before any cle
 
 Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.
 
-**Accepted, pending implementation (v0.24.0, W2–W5).** With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports I/O. Applications migrate by dropping the error checks of registration calls and the `Must*` registration twins, and by moving any registration that follows `Finalize` before it.
+With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics and `Finalize` reports the whole graph at once. Applications migrate by dropping the error checks of registration calls and by moving any registration that follows `Finalize` before it.
+
+**Accepted, pending implementation (v0.24.0, W3–W5).** `Start` reports I/O as the third phase, and applications drop the `Must*` registration twins.

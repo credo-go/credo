@@ -11,7 +11,7 @@ import (
 // Provide registers a constructor for type T. The constructor can accept
 // any number of parameters that are themselves registered in the container,
 // and must return T or (T, error). It runs at most once, on the first
-// resolution after Seal.
+// resolution after Seal. Every rejection is a [*MisuseError].
 //
 //	c.Provide[MyService](NewMyService)
 func (c *Container) Provide[T any](constructor any) error {
@@ -19,17 +19,18 @@ func (c *Container) Provide[T any](constructor any) error {
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
-	if c.frozen {
-		return frozenError("Provide", targetType)
+	if err := c.closedLocked("Provide", targetType); err != nil {
+		return err
 	}
 
 	reg, err := inspectConstructor(constructor, targetType)
 	if err != nil {
-		return fmt.Errorf("di: Provide[%s]: %w", targetType, err)
+		return misuse("Provide", []reflect.Type{targetType}, "%v; want func(dependencies...) %s or "+
+			"func(dependencies...) (%s, error)", err, targetType, targetType)
 	}
 
 	if _, exists := c.registrations[targetType]; exists {
-		return fmt.Errorf("di: Provide[%s]: already registered", targetType)
+		return duplicateError("Provide", targetType)
 	}
 
 	c.registrations[targetType] = reg
@@ -58,27 +59,27 @@ func (c *Container) CanProvideValue[T any]() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.canProvideValueLocked(reflect.TypeFor[T]())
+	return c.canProvideValueLocked("ProvideValue", reflect.TypeFor[T]())
 }
 
 // ProvideValue registers a pre-built value for type T as a Singleton.
-// The value is cached immediately.
+// The value is cached immediately. Every rejection is a [*MisuseError].
 func (c *Container) ProvideValue[T any](value T) error {
-	return c.provideValue(value, false)
+	return c.provideValue("ProvideValue", value, false)
 }
 
 // ProvideProtectedValue registers a pre-built singleton whose binding cannot
 // later be overwritten through [Container.Replace].
 func (c *Container) ProvideProtectedValue[T any](value T) error {
-	return c.provideValue(value, true)
+	return c.provideValue("ProvideProtectedValue", value, true)
 }
 
-func (c *Container) provideValue[T any](value T, protected bool) error {
+func (c *Container) provideValue[T any](op string, value T, protected bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
-	if err := c.canProvideValueLocked(targetType); err != nil {
+	if err := c.canProvideValueLocked(op, targetType); err != nil {
 		return err
 	}
 
@@ -105,8 +106,8 @@ func (c *Container) ProtectBinding[T any](expected ...T) error {
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
-	if c.frozen {
-		return frozenError("ProtectBinding", targetType)
+	if err := c.closedLocked("ProtectBinding", targetType); err != nil {
+		return err
 	}
 	if _, exists := c.registrations[targetType]; !exists {
 		return fmt.Errorf("di: ProtectBinding[%s]: type is not registered", targetType)
@@ -146,14 +147,25 @@ func sameComparableValue(left, right any) (matches bool, comparable bool) {
 	return leftValue.Equal(rightValue), true
 }
 
-func (c *Container) canProvideValueLocked(targetType reflect.Type) error {
-	if c.frozen {
-		return frozenError("ProvideValue", targetType)
+// canProvideValueLocked reports why a value binding for targetType cannot be
+// made now. CanProvideValue reports it under ProvideValue's name, so the
+// preflight and the call it previews fail with the same text.
+func (c *Container) canProvideValueLocked(op string, targetType reflect.Type) error {
+	if err := c.closedLocked(op, targetType); err != nil {
+		return err
 	}
 	if _, exists := c.registrations[targetType]; exists {
-		return fmt.Errorf("di: ProvideValue[%s]: already registered", targetType)
+		return duplicateError(op, targetType)
 	}
 	return nil
+}
+
+// duplicateError rejects a second binding of one type. Two instances of one
+// type are bound as two wrapper types, so each consumer names the one it
+// needs in its constructor.
+func duplicateError(op string, targetType reflect.Type) error {
+	return misuse(op, []reflect.Type{targetType}, "%s is already registered; bind a second instance "+
+		"under a wrapper type of its own", targetType)
 }
 
 // MustProvideValue is like ProvideValue but panics on error.

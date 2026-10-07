@@ -56,7 +56,7 @@ func ExampleRegisterProvided() {
 
 	// The worker is resolved when the pool starts, so the provider and the
 	// registration may come in either order.
-	app.MustProvide[*invoiceSweeper](newInvoiceSweeper)
+	app.Provide[*invoiceSweeper](newInvoiceSweeper)
 	if err = worker.RegisterProvided[*invoiceSweeper](app, "invoice-sweeper",
 		worker.WithSchedule("@every 1m"),
 		worker.WithStartImmediately(),

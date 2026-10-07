@@ -309,11 +309,11 @@ func run() error {
 	}
 
 	// 5. Register typed configs in DI container
-	app.MustProvideValue(&appCfg)
-	app.MustProvideValue(&dbCfg)
+	app.ProvideValue(&appCfg)
+	app.ProvideValue(&dbCfg)
 
 	// 6. Register services via DI
-	app.MustProvide[*TenantService](NewTenantService)
+	app.Provide[*TenantService](NewTenantService)
 
 	// 7. Finalize DI container (freeze + validate: catches missing deps,
 	// cycles). Constructors run only after this point.

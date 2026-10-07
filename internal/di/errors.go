@@ -14,6 +14,34 @@ import (
 // teardown rejection wins even after a failed Finalize.
 var ErrClosed = errors.New("di: container is closed")
 
+// MisuseError is a call the container rejects because of how it was made:
+// out of phase, or with arguments it cannot accept. It is known at the call
+// site, so the App panics with it, naming its own method.
+type MisuseError struct {
+	// Call is the container method with its type arguments, such as
+	// "Provide[*app.OrderService]".
+	Call string
+	// Reason says what is wrong and how to fix it.
+	Reason string
+}
+
+// Error returns the call and the reason.
+func (e *MisuseError) Error() string {
+	return "di: " + e.Call + ": " + e.Reason
+}
+
+// misuse builds a [MisuseError] for op over its type arguments.
+func misuse(op string, types []reflect.Type, format string, args ...any) error {
+	names := make([]string, len(types))
+	for i, t := range types {
+		names[i] = t.String()
+	}
+	return &MisuseError{
+		Call:   op + "[" + strings.Join(names, ", ") + "]",
+		Reason: fmt.Sprintf(format, args...),
+	}
+}
+
 // PanicPhase identifies where a recovered panic happened.
 type PanicPhase uint8
 

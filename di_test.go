@@ -31,9 +31,7 @@ func newDIServiceWithDep(s *diSimpleService) *diServiceWithDep {
 
 func TestProvide_Resolve(t *testing.T) {
 	app := mustNew(t)
-	if err := app.Provide[*diSimpleService](newDISimpleService); err != nil {
-		t.Fatalf("Provide: %v", err)
-	}
+	app.Provide[*diSimpleService](newDISimpleService)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diSimpleService]()
@@ -59,9 +57,7 @@ func TestMustProvide_MustResolve(t *testing.T) {
 func TestProvideValue_Resolve(t *testing.T) {
 	app := mustNew(t)
 	original := &diSimpleService{Value: "pre-built"}
-	if err := app.ProvideValue[*diSimpleService](original); err != nil {
-		t.Fatalf("ProvideValue: %v", err)
-	}
+	app.ProvideValue[*diSimpleService](original)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diSimpleService]()
@@ -80,15 +76,16 @@ func TestCanProvideValue(t *testing.T) {
 			t.Fatalf("CanProvideValue() = %v, want nil", err)
 		}
 
-		app.MustProvideValue[*diSimpleService](&diSimpleService{})
+		app.ProvideValue[*diSimpleService](&diSimpleService{})
 		preflightErr := app.CanProvideValue[*diSimpleService]()
-		provideErr := app.ProvideValue[*diSimpleService](&diSimpleService{})
-		if preflightErr == nil || provideErr == nil {
-			t.Fatalf("errors = (%v, %v), want duplicate errors", preflightErr, provideErr)
+		if preflightErr == nil {
+			t.Fatal("CanProvideValue = nil, want the duplicate error")
 		}
-		if preflightErr.Error() != provideErr.Error() {
-			t.Fatalf("CanProvideValue error = %q, ProvideValue error = %q", preflightErr, provideErr)
-		}
+		// The preflight reports the reason the call it previews panics with.
+		reason := strings.TrimPrefix(preflightErr.Error(), "di: ")
+		expectPanicContaining(t, "credo: App."+reason, func() {
+			app.ProvideValue[*diSimpleService](&diSimpleService{})
+		})
 	})
 
 	t.Run("finalized", func(t *testing.T) {
@@ -98,13 +95,13 @@ func TestCanProvideValue(t *testing.T) {
 		}
 
 		preflightErr := app.CanProvideValue[*diSimpleService]()
-		provideErr := app.ProvideValue[*diSimpleService](&diSimpleService{})
-		if preflightErr == nil || provideErr == nil {
-			t.Fatalf("errors = (%v, %v), want finalized errors", preflightErr, provideErr)
+		if preflightErr == nil {
+			t.Fatal("CanProvideValue = nil, want the after-Finalize error")
 		}
-		if preflightErr.Error() != provideErr.Error() {
-			t.Fatalf("CanProvideValue error = %q, ProvideValue error = %q", preflightErr, provideErr)
-		}
+		reason := strings.TrimPrefix(preflightErr.Error(), "di: ")
+		expectPanicContaining(t, "credo: App."+reason, func() {
+			app.ProvideValue[*diSimpleService](&diSimpleService{})
+		})
 	})
 }
 
@@ -127,7 +124,7 @@ func TestProtectedValueBinding(t *testing.T) {
 func TestProtectBinding(t *testing.T) {
 	app := mustNew(t)
 	original := &diSimpleService{Value: "original"}
-	app.MustProvideValue[*diSimpleService](original)
+	app.ProvideValue[*diSimpleService](original)
 	if err := app.ProtectBinding[*diSimpleService](original); err != nil {
 		t.Fatalf("ProtectBinding() = %v", err)
 	}
@@ -149,8 +146,8 @@ func TestMustProvideValue(t *testing.T) {
 
 func TestProvide_DependencyChain(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diSimpleService](newDISimpleService)
-	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide[*diSimpleService](newDISimpleService)
+	app.Provide[*diServiceWithDep](newDIServiceWithDep)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diServiceWithDep]()
@@ -162,16 +159,6 @@ func TestProvide_DependencyChain(t *testing.T) {
 	}
 	if svc.Simple.Value != "hello" {
 		t.Errorf("Simple.Value = %q, want %q", svc.Simple.Value, "hello")
-	}
-}
-
-func TestProvide_Duplicate(t *testing.T) {
-	app := mustNew(t)
-	app.MustProvide[*diSimpleService](newDISimpleService)
-
-	err := app.Provide[*diSimpleService](newDISimpleService)
-	if err == nil {
-		t.Fatal("expected error for duplicate registration")
 	}
 }
 
@@ -201,8 +188,8 @@ func newDIPgUserRepo() *diPgUserRepo           { return &diPgUserRepo{} }
 
 func TestAlias_ResolveByInterface(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diPgUserRepo](newDIPgUserRepo)
-	app.MustAlias[diUserRepo, *diPgUserRepo]()
+	app.Provide[*diPgUserRepo](newDIPgUserRepo)
+	app.Alias[diUserRepo, *diPgUserRepo]()
 
 	mustFinalize(t, app)
 	repo, err := app.Resolve[diUserRepo]()
@@ -214,20 +201,11 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 	}
 }
 
-func TestAlias_Error(t *testing.T) {
-	app := mustNew(t)
-
-	err := app.Alias[diUserRepo, *diPgUserRepo]()
-	if err == nil {
-		t.Fatal("expected error when T is not registered")
-	}
-}
-
 // --- Finalize tests ---
 
 func TestFinalize(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.Provide[*diSimpleService](newDISimpleService)
 
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
@@ -241,20 +219,14 @@ func TestFinalize(t *testing.T) {
 	if svc.Value != "hello" {
 		t.Errorf("Value = %q, want %q", svc.Value, "hello")
 	}
-
-	// Provide after Finalize should fail.
-	err = app.Provide[*diServiceWithDep](newDIServiceWithDep)
-	if err == nil {
-		t.Fatal("expected error for Provide after Finalize")
-	}
 }
 
 // --- Finalize validation tests ---
 
 func TestFinalize_ValidGraph(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diSimpleService](newDISimpleService)
-	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide[*diSimpleService](newDISimpleService)
+	app.Provide[*diServiceWithDep](newDIServiceWithDep)
 
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
@@ -264,7 +236,7 @@ func TestFinalize_ValidGraph(t *testing.T) {
 func TestFinalize_MissingDep(t *testing.T) {
 	app := mustNew(t)
 	// diServiceWithDep depends on diSimpleService which is not registered.
-	app.MustProvide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide[*diServiceWithDep](newDIServiceWithDep)
 
 	err := app.Finalize()
 	if err == nil {
@@ -330,7 +302,7 @@ func TestApp_Shutdown_ShutdownsContainer(t *testing.T) {
 	app := mustNew(t, credo.WithAddr(host, port))
 
 	var order []string
-	app.MustProvideValue[*diShutdownTracker](&diShutdownTracker{
+	app.ProvideValue[*diShutdownTracker](&diShutdownTracker{
 		order: &order,
 		name:  "svc",
 	})

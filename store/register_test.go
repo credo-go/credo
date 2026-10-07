@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -482,12 +481,6 @@ type wrapperDB struct {
 	inner *testDB
 }
 
-type concurrentDBA struct{ *mockLifecycle }
-type concurrentDBB struct{ *mockLifecycle }
-type sameNameDBA struct{ *mockLifecycle }
-type sameNameDBB struct{ *mockLifecycle }
-type conflictingTypeDB struct{ *mockLifecycle }
-
 func TestRegister_WithLifecycleRequiresExplicitCallerOwnership(t *testing.T) {
 	app := newTestApp(t)
 	lc := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
@@ -856,9 +849,7 @@ func TestRegister_RejectsSameLifecycleUnderDifferentDITypes(t *testing.T) {
 	if pingCalls != 1 {
 		t.Fatalf("Ping calls = %d, want only the first registration's call", pingCalls)
 	}
-	if err := app.Alias[store.Lifecycle, *testDB](); err != nil {
-		t.Fatalf("Alias[Lifecycle, *testDB]() = %v", err)
-	}
+	app.Alias[store.Lifecycle, *testDB]()
 	finalize(t, app)
 	resolved, err := app.Resolve[store.Lifecycle]()
 	if err != nil || resolved != db {
@@ -955,7 +946,7 @@ func TestRegister_ProtectsCallerOwnedWrapperBindingFromReplace(t *testing.T) {
 
 func TestRegister_PreProvidedDIValueFailsBeforePing(t *testing.T) {
 	app := newTestApp(t)
-	app.MustProvideValue[*testDB](newTestDB(&mockLifecycle{}))
+	app.ProvideValue[*testDB](newTestDB(&mockLifecycle{}))
 	candidate := &mockLifecycle{}
 	if err := store.Register[*testDB](app, newTestDB(candidate)); err == nil {
 		t.Fatal("Register should reject a pre-provided DI value")
@@ -1139,9 +1130,7 @@ func TestRegister_HealthAppearsInReadiness(t *testing.T) {
 func TestRegister_PreProvidedRegistryStillWiresReadiness(t *testing.T) {
 	app := newTestApp(t)
 	provided := &store.Registry{}
-	if err := app.ProvideValue[*store.Registry](provided); err != nil {
-		t.Fatalf("ProvideValue[*Registry]: %v", err)
-	}
+	app.ProvideValue[*store.Registry](provided)
 
 	db := newTestDB(&mockLifecycle{
 		health: store.Health{Status: store.StatusUp},
@@ -1171,12 +1160,10 @@ type constructorProvidedRegistryDB struct{ *mockLifecycle }
 func TestRegister_ConstructorProvidedRegistryIsRejectedWithoutInvocation(t *testing.T) {
 	app := newTestApp(t)
 	calls := 0
-	if err := app.Provide[*store.Registry](func() *store.Registry {
+	app.Provide[*store.Registry](func() *store.Registry {
 		calls++
 		return &store.Registry{}
-	}); err != nil {
-		t.Fatalf("Provide[*Registry]() = %v", err)
-	}
+	})
 	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
 	value := &constructorProvidedRegistryDB{mockLifecycle: lifecycle}
 	err := store.Register[*constructorProvidedRegistryDB](app, value)
@@ -1214,9 +1201,7 @@ func TestRegister_ConstructorProvidedRegistryIsRejectedWithoutInvocation(t *test
 
 func TestRegister_TypedNilPreProvidedRegistryFailsBeforePing(t *testing.T) {
 	app := newTestApp(t)
-	if err := app.ProvideValue[*store.Registry](nil); err != nil {
-		t.Fatalf("ProvideValue[*Registry](nil) = %v", err)
-	}
+	app.ProvideValue[*store.Registry](nil)
 	lc := &mockLifecycle{}
 	err := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry"))
 	if err == nil {
@@ -1246,11 +1231,9 @@ type constructorRegistryDB struct{ *mockLifecycle }
 
 func TestRegister_FailingRegistryConstructorRemainsRepairable(t *testing.T) {
 	app := newTestApp(t)
-	if err := app.Provide[*store.Registry](func() (*store.Registry, error) {
+	app.Provide[*store.Registry](func() (*store.Registry, error) {
 		return nil, fmt.Errorf("registry unavailable")
-	}); err != nil {
-		t.Fatalf("Provide[*Registry]() = %v", err)
-	}
+	})
 	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
 	value := &constructorRegistryDB{mockLifecycle: lifecycle}
 	if err := store.Register[*constructorRegistryDB](app, value); err == nil {
@@ -1265,262 +1248,6 @@ func TestRegister_FailingRegistryConstructorRemainsRepairable(t *testing.T) {
 	}
 	if err := store.Register[*constructorRegistryDB](app, value); err != nil {
 		t.Fatalf("Register() after Registry repair = %v", err)
-	}
-}
-
-func TestRegister_ConcurrentFirstStoresWireReadiness(t *testing.T) {
-	app := newTestApp(t)
-	errCh := make(chan error, 2)
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		errCh <- store.Register[*concurrentDBA](app, &concurrentDBA{mockLifecycle: &mockLifecycle{
-			health: store.Health{Status: store.StatusUp},
-		}}, store.WithName("concurrent-a"))
-	})
-	wait.Go(func() {
-		errCh <- store.Register[*concurrentDBB](app, &concurrentDBB{mockLifecycle: &mockLifecycle{
-			health: store.Health{Status: store.StatusUp},
-		}}, store.WithName("concurrent-b"))
-	})
-	wait.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("concurrent Register: %v", err)
-		}
-	}
-
-	app.UseHealth()
-	w := httptest.NewRecorder()
-	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
-	if w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), `"concurrent-a"`) ||
-		!strings.Contains(w.Body.String(), `"concurrent-b"`) {
-		t.Fatalf("/ready = %d %s, want both concurrent stores", w.Code, w.Body.String())
-	}
-}
-
-func TestRegister_ConcurrentSameNameRunsOnePing(t *testing.T) {
-	app := newTestApp(t)
-	first := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	second := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	start := make(chan struct{})
-	errCh := make(chan error, 2)
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		<-start
-		errCh <- store.Register[*sameNameDBA](
-			app,
-			&sameNameDBA{mockLifecycle: first},
-			store.WithName("shared"),
-		)
-	})
-	wait.Go(func() {
-		<-start
-		errCh <- store.Register[*sameNameDBB](
-			app,
-			&sameNameDBB{mockLifecycle: second},
-			store.WithName("shared"),
-		)
-	})
-	close(start)
-	wait.Wait()
-	close(errCh)
-
-	successes := 0
-	for err := range errCh {
-		if err == nil {
-			successes++
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("successful registrations = %d, want 1", successes)
-	}
-	first.mu.Lock()
-	firstCalls := first.pingCalls
-	first.mu.Unlock()
-	second.mu.Lock()
-	secondCalls := second.pingCalls
-	second.mu.Unlock()
-	if firstCalls+secondCalls != 1 {
-		t.Fatalf("total Ping calls = %d, want 1", firstCalls+secondCalls)
-	}
-	finalize(t, app)
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
-	if got := len(registry.HealthAll(t.Context())); got != 1 {
-		t.Fatalf("Registry entries = %d, want 1", got)
-	}
-}
-
-func TestRegister_PendingNameIsInvisibleAndRejectsLoserBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	started := make(chan struct{}, 1)
-	release := make(chan struct{})
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	winnerLifecycle := &mockLifecycle{
-		health:      store.Health{Status: store.StatusUp},
-		pingStarted: started,
-		pingRelease: release,
-	}
-	winnerErr := make(chan error, 1)
-	go func() {
-		winnerErr <- store.Register[*sameNameDBA](
-			app,
-			&sameNameDBA{mockLifecycle: winnerLifecycle},
-			store.WithName("pending-name"),
-		)
-	}()
-	<-started
-
-	registry := adoptedRegistry(t, app)
-	if got := len(registry.HealthAll(t.Context())); got != 0 {
-		t.Fatalf("pending Registry entries = %d, want 0", got)
-	}
-	loserLifecycle := &mockLifecycle{}
-	if err := store.Register[*sameNameDBB](
-		app,
-		&sameNameDBB{mockLifecycle: loserLifecycle},
-		store.WithName("pending-name"),
-	); err == nil {
-		t.Fatal("same-name loser should fail while winner is pending")
-	}
-	loserLifecycle.mu.Lock()
-	loserPingCalls := loserLifecycle.pingCalls
-	loserLifecycle.mu.Unlock()
-	if loserPingCalls != 0 {
-		t.Fatalf("loser Ping calls = %d, want 0", loserPingCalls)
-	}
-
-	close(release)
-	if err := <-winnerErr; err != nil {
-		t.Fatalf("winner Register() = %v", err)
-	}
-	if got := len(registry.HealthAll(t.Context())); got != 1 {
-		t.Fatalf("committed Registry entries = %d, want 1", got)
-	}
-}
-
-func TestRegister_PendingTypeRejectsLoserBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	started := make(chan struct{}, 1)
-	release := make(chan struct{})
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	winnerLifecycle := &mockLifecycle{
-		health:      store.Health{Status: store.StatusUp},
-		pingStarted: started,
-		pingRelease: release,
-	}
-	winner := &conflictingTypeDB{mockLifecycle: winnerLifecycle}
-	winnerErr := make(chan error, 1)
-	go func() {
-		winnerErr <- store.Register[*conflictingTypeDB](app, winner, store.WithName("winner"))
-	}()
-	<-started
-
-	loserLifecycle := &mockLifecycle{}
-	loser := &conflictingTypeDB{mockLifecycle: loserLifecycle}
-	if err := store.Register[*conflictingTypeDB](app, loser, store.WithName("loser")); err == nil {
-		t.Fatal("same-type loser should fail while winner is pending")
-	}
-	loserLifecycle.mu.Lock()
-	loserPingCalls := loserLifecycle.pingCalls
-	loserLifecycle.mu.Unlock()
-	if loserPingCalls != 0 {
-		t.Fatalf("loser Ping calls = %d, want 0", loserPingCalls)
-	}
-
-	close(release)
-	if err := <-winnerErr; err != nil {
-		t.Fatalf("winner Register() = %v", err)
-	}
-	finalize(t, app)
-	resolved, err := app.Resolve[*conflictingTypeDB]()
-	if err != nil || resolved != winner {
-		t.Fatalf("Resolve[*conflictingTypeDB]() = (%p, %v), want winner %p", resolved, err, winner)
-	}
-}
-
-func TestRegister_ConcurrentSameTypeKeepsDIAndRegistryWinnerAligned(t *testing.T) {
-	app := newTestApp(t)
-	first := &conflictingTypeDB{mockLifecycle: &mockLifecycle{health: store.Health{
-		Status: store.StatusUp, Details: map[string]any{"id": "first"},
-	}}}
-	second := &conflictingTypeDB{mockLifecycle: &mockLifecycle{health: store.Health{
-		Status: store.StatusUp, Details: map[string]any{"id": "second"},
-	}}}
-	type outcome struct {
-		name  string
-		value *conflictingTypeDB
-		err   error
-	}
-	start := make(chan struct{})
-	outcomes := make(chan outcome, 2)
-	var wait sync.WaitGroup
-	register := func(name string, value *conflictingTypeDB) {
-		<-start
-		outcomes <- outcome{
-			name:  name,
-			value: value,
-			err:   store.Register[*conflictingTypeDB](app, value, store.WithName(name)),
-		}
-	}
-	wait.Go(func() { register("first", first) })
-	wait.Go(func() { register("second", second) })
-	close(start)
-	wait.Wait()
-	close(outcomes)
-
-	var winner outcome
-	successes := 0
-	for result := range outcomes {
-		if result.err == nil {
-			successes++
-			winner = result
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("successful registrations = %d, want 1", successes)
-	}
-	first.mu.Lock()
-	firstCalls := first.pingCalls
-	first.mu.Unlock()
-	second.mu.Lock()
-	secondCalls := second.pingCalls
-	second.mu.Unlock()
-	if firstCalls+secondCalls != 1 {
-		t.Fatalf("total Ping calls = %d, want 1", firstCalls+secondCalls)
-	}
-	finalize(t, app)
-	resolved, err := app.Resolve[*conflictingTypeDB]()
-	if err != nil || resolved != winner.value {
-		t.Fatalf("resolved value = (%p, %v), want winning value %p", resolved, err, winner.value)
-	}
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
-	health := registry.HealthAll(t.Context())
-	if len(health) != 1 {
-		t.Fatalf("Registry entries = %d, want 1", len(health))
-	}
-	entry, exists := health[winner.name]
-	if !exists || entry.Details["id"] != winner.name {
-		t.Fatalf("Registry winner = %#v, want name/id %q", health, winner.name)
 	}
 }
 

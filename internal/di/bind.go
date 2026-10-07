@@ -1,55 +1,43 @@
 package di
 
 import (
-	"fmt"
 	"reflect"
 )
 
 // Alias creates a type alias so that Resolve[I] returns the singleton
-// registered for concrete type T. Contract rules:
+// registered for concrete type T. Contract rules, each rejection a
+// [*MisuseError]:
 //   - T must already be registered via Provide or ProvideValue
 //   - I must be an interface type
 //   - T must implement I
 //   - I must not already have a registration or alias
-//   - Container must not be frozen (container is sealed)
+//   - the registration window must be open (before Seal and Shutdown)
 func (c *Container) Alias[I, T any]() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.frozen {
-		return fmt.Errorf("di: Alias[%s, %s]: container is frozen (container is sealed)",
-			reflect.TypeFor[I](), reflect.TypeFor[T]())
-	}
-
 	ifaceType := reflect.TypeFor[I]()
 	concreteType := reflect.TypeFor[T]()
-
-	// I must be an interface.
-	if ifaceType.Kind() != reflect.Interface {
-		return fmt.Errorf("di: Alias[%s, %s]: first type parameter must be an interface",
-			ifaceType, concreteType)
+	types := []reflect.Type{ifaceType, concreteType}
+	if err := c.closedLocked("Alias", types...); err != nil {
+		return err
 	}
 
-	// T must implement I.
-	if !concreteType.Implements(ifaceType) {
-		return fmt.Errorf("di: Alias[%s, %s]: %s does not implement %s",
-			ifaceType, concreteType, concreteType, ifaceType)
+	switch {
+	case ifaceType.Kind() != reflect.Interface:
+		return misuse("Alias", types, "first type parameter must be an interface")
+	case !concreteType.Implements(ifaceType):
+		return misuse("Alias", types, "%s does not implement %s", concreteType, ifaceType)
 	}
-
-	// T must be registered.
 	if _, ok := c.registrations[concreteType]; !ok {
-		return fmt.Errorf("di: Alias[%s, %s]: concrete type %s is not registered",
-			ifaceType, concreteType, concreteType)
+		return misuse("Alias", types, "concrete type %s is not registered; provide it before aliasing it",
+			concreteType)
 	}
-
-	// I must not already be registered or aliased.
 	if _, ok := c.registrations[ifaceType]; ok {
-		return fmt.Errorf("di: Alias[%s, %s]: interface %s already has a direct registration",
-			ifaceType, concreteType, ifaceType)
+		return misuse("Alias", types, "interface %s already has a direct registration", ifaceType)
 	}
 	if _, ok := c.aliases[ifaceType]; ok {
-		return fmt.Errorf("di: Alias[%s, %s]: interface %s already has an alias",
-			ifaceType, concreteType, ifaceType)
+		return misuse("Alias", types, "interface %s already has an alias", ifaceType)
 	}
 
 	c.aliases[ifaceType] = concreteType
@@ -64,43 +52,35 @@ func (c *Container) MustAlias[I, T any]() {
 }
 
 // BindMany adds concrete type T to the ordered collection for interface I.
-// Contract rules:
+// Contract rules, each rejection a [*MisuseError]:
 //   - T must already be registered via Provide or ProvideValue
 //   - I must be an interface type
 //   - T must be a concrete type (not an interface)
 //   - T must implement I
 //   - The same (I, T) pair must not already exist
-//   - Container must not be frozen (container is sealed)
+//   - the registration window must be open (before Seal and Shutdown)
 func (c *Container) BindMany[I, T any]() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.frozen {
-		return fmt.Errorf("di: BindMany[%s, %s]: container is frozen (container is sealed)",
-			reflect.TypeFor[I](), reflect.TypeFor[T]())
-	}
-
 	ifaceType := reflect.TypeFor[I]()
 	concreteType := reflect.TypeFor[T]()
-
-	if ifaceType.Kind() != reflect.Interface {
-		return fmt.Errorf("di: BindMany[%s, %s]: first type parameter must be an interface",
-			ifaceType, concreteType)
+	types := []reflect.Type{ifaceType, concreteType}
+	if err := c.closedLocked("BindMany", types...); err != nil {
+		return err
 	}
 
-	if concreteType.Kind() == reflect.Interface {
-		return fmt.Errorf("di: BindMany[%s, %s]: second type parameter must be a concrete type",
-			ifaceType, concreteType)
+	switch {
+	case ifaceType.Kind() != reflect.Interface:
+		return misuse("BindMany", types, "first type parameter must be an interface")
+	case concreteType.Kind() == reflect.Interface:
+		return misuse("BindMany", types, "second type parameter must be a concrete type")
+	case !concreteType.Implements(ifaceType):
+		return misuse("BindMany", types, "%s does not implement %s", concreteType, ifaceType)
 	}
-
-	if !concreteType.Implements(ifaceType) {
-		return fmt.Errorf("di: BindMany[%s, %s]: %s does not implement %s",
-			ifaceType, concreteType, concreteType, ifaceType)
-	}
-
 	if _, ok := c.registrations[concreteType]; !ok {
-		return fmt.Errorf("di: BindMany[%s, %s]: concrete type %s is not registered",
-			ifaceType, concreteType, concreteType)
+		return misuse("BindMany", types, "concrete type %s is not registered; provide it before binding it",
+			concreteType)
 	}
 
 	set, ok := c.manyBindingSet[ifaceType]
@@ -109,7 +89,7 @@ func (c *Container) BindMany[I, T any]() error {
 		c.manyBindingSet[ifaceType] = set
 	}
 	if _, exists := set[concreteType]; exists {
-		return fmt.Errorf("di: BindMany[%s, %s]: binding already exists", ifaceType, concreteType)
+		return misuse("BindMany", types, "binding already exists")
 	}
 
 	set[concreteType] = struct{}{}

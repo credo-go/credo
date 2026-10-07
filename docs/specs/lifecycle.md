@@ -468,7 +468,7 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `app.Static()` / `app.File()` (and `group.*`) | `checkFrozen("Static")` / `checkFrozen("File")` |
 | `app.StatusHandler()` | `checkFrozen("StatusHandler")` |
 | `app.UseErrorRenderer()` / `app.UseSuccessRenderer()` | `checkFrozen("App.UseErrorRenderer")` / `checkFrozen("App.UseSuccessRenderer")`; nil renderer and a second call also panic |
-| `app.UseRequestID()` / `app.UseAccessLog()` / `app.UseCompress()` / `app.UseDecompress()` | `checkFrozen("App.UseX")`, re-checked under the preparation mutex (the re-check goes with sequential bootstrap, v0.24.0, W2); invalid config and a second call also panic |
+| `app.UseRequestID()` / `app.UseAccessLog()` / `app.UseCompress()` / `app.UseDecompress()` | `checkFrozen("App.UseX")`; invalid config and a second call also panic |
 | `app.SetMeta()` / `app.RemoveMeta()` | `checkFrozen("SetMeta")` / `checkFrozen("RemoveMeta")` |
 | `app.UseHealth()` | `checkFrozen("UseHealth")` |
 | `app.UseI18n()` | `checkFrozen("UseI18n")` |

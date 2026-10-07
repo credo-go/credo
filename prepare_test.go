@@ -75,7 +75,7 @@ func mustPanicWith(t *testing.T, fn func()) (recovered any) {
 func TestServeHTTP_ImplicitFinalizeThenServe(t *testing.T) {
 	app := mustNew(t)
 	var built atomic.Int32
-	app.MustProvide[*prepDep](func() *prepDep {
+	app.Provide[*prepDep](func() *prepDep {
 		built.Add(1)
 		return &prepDep{}
 	})
@@ -92,14 +92,14 @@ func TestServeHTTP_ImplicitFinalizeThenServe(t *testing.T) {
 	if w.Code != http.StatusOK || built.Load() != 1 {
 		t.Fatalf("status = %d, built = %d; want 200 and one construction", w.Code, built.Load())
 	}
-	if err := app.Provide[*prepMissing](func() *prepMissing { return &prepMissing{} }); err == nil {
-		t.Fatal("Provide after implicit Finalize should be rejected")
-	}
+	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after Finalize", func() {
+		app.Provide[*prepMissing](func() *prepMissing { return &prepMissing{} })
+	})
 }
 
 func TestFinalize_IsDIOnly_RoutesStayOpen(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*prepDep](func() *prepDep { return &prepDep{} })
+	app.Provide[*prepDep](func() *prepDep { return &prepDep{} })
 	mustFinalize(t, app)
 
 	// Composition after an explicit Finalize: resolve, then wire routes.
@@ -126,7 +126,7 @@ func TestFinalize_IsDIOnly_RoutesStayOpen(t *testing.T) {
 
 func TestServeHTTP_PreparationError_IsTerminal(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
+	app.Provide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
 	app.GET("/x", func(ctx *credo.Context) error { return nil })
 
 	first := mustPanicWith(t, func() {
@@ -234,7 +234,7 @@ func TestServeHTTP_StoppedNeverPrepared_503WithoutCallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			app := mustNew(t, tc.opts...)
 			var constructed, middleware, handler, renderer, status atomic.Int32
-			app.MustProvide[*prepDep](func() *prepDep {
+			app.Provide[*prepDep](func() *prepDep {
 				constructed.Add(1)
 				return &prepDep{}
 			})
@@ -431,9 +431,9 @@ func TestServeHTTP_PreparedHandlerServesDuringManagedDrain(t *testing.T) {
 func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 	app := mustNew(t)
 	value := &prepCloser{}
-	app.MustProvideValue[*prepCloser](value)
+	app.ProvideValue[*prepCloser](value)
 	var built atomic.Int32
-	app.MustProvide[*prepDep](func() *prepDep {
+	app.Provide[*prepDep](func() *prepDep {
 		built.Add(1)
 		return &prepDep{}
 	})
@@ -456,10 +456,9 @@ func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 	if got := app.State(); got != "stopped" {
 		t.Fatalf("State() = %q, want stopped", got)
 	}
-	if err := app.Provide[*prepMissing](func() *prepMissing { return nil }); err == nil ||
-		!strings.Contains(err.Error(), "frozen") {
-		t.Fatalf("Provide after Shutdown = %v, want frozen error", err)
-	}
+	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after shutdown began", func() {
+		app.Provide[*prepMissing](func() *prepMissing { return nil })
+	})
 	if _, err := app.Resolve[*prepCloser](); !errors.Is(err, credo.ErrDIClosed) {
 		t.Fatalf("Resolve after Shutdown = %v, want ErrDIClosed", err)
 	}
@@ -475,8 +474,8 @@ func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 func TestShutdown_Bootstrap_WorksAfterFailedFinalize(t *testing.T) {
 	app := mustNew(t)
 	value := &prepCloser{}
-	app.MustProvideValue[*prepCloser](value)
-	app.MustProvide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
+	app.ProvideValue[*prepCloser](value)
+	app.Provide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
 	if err := app.Finalize(); err == nil {
 		t.Fatal("Finalize should fail on the missing dependency")
 	}
@@ -491,7 +490,7 @@ func TestShutdown_Bootstrap_WorksAfterFailedFinalize(t *testing.T) {
 func TestShutdown_Bootstrap_ReportsShutdownerFailure(t *testing.T) {
 	app := mustNew(t)
 	cause := errors.New("flush failed")
-	app.MustProvideValue[*prepCloser](&prepCloser{err: cause})
+	app.ProvideValue[*prepCloser](&prepCloser{err: cause})
 	err := app.Shutdown(t.Context())
 	if !errors.Is(err, cause) {
 		t.Fatalf("Shutdown = %v, want the Shutdowner error in the chain", err)

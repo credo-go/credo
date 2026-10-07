@@ -8,8 +8,6 @@ Keep a single-use App, typed constructor injection, visible `Infra`, explicit al
 
 ## Sequential bootstrap
 
-**Accepted, pending implementation (v0.24.0, W2).** When it ships, this section and its subsections replace the setup flow and the consumer migration of the setup phases below, and the statements that registration, adoption, replacement and `Finalize` are serialized against concurrent callers; the registration-phase access, early-read, `Replace` and framework-registration-flow items go with W3, W5 and W6 (Deleted).
-
 ### Contract
 
 Bootstrap is sequential. Registration calls — DI bindings, feature mounts, satellite and component registrations, routes, hooks and renderers — come from the goroutine that builds the App, before it runs, and are not safe for concurrent use. Each call checks only that it is in its phase, and a call out of phase panics; none synchronizes with another registration. An application that registers from several goroutines serializes the calls itself.
@@ -26,6 +24,8 @@ The order names every satellite, so that a bootstrap written by following it mee
 4. **`Finalize`** — graph validation; handle its error.
 5. **`Resolve`, routes and anything built from a resolved value**, a readiness check included.
 6. **`Run`** — or `RunContext`, `ServeContext`, or `App.Start` for an App that an external server serves.
+
+**Accepted, pending implementation (v0.24.0, W4–W6)** for the registration options and `App.Start` in this order, and for `Manage`, the type-named `store.Register` and `worker.Use` in this example; the runnable `Example_bootstrapOrder` uses today's store and worker registrations.
 
 ```go
 func main() {
@@ -70,7 +70,7 @@ There is no resolve-then-provide step. A value that needs a resolved dependency 
 
 ### Three error phases
 
-The package documentation's "Panics and Errors" gains two phases beside registration's:
+The package documentation's "Panics and Errors" names three phases:
 
 | Phase | What it reports | How |
 | --- | --- | --- |
@@ -84,7 +84,7 @@ The package documentation's "Panics and Errors" gains two phases beside registra
 - a misused registration option ([container spec](container.md));
 - `Resolve` or `ResolveAll` before `Finalize`;
 - a DI or component registration after `Finalize` — `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Manage`, store registrations and the worker registrations;
-- any registration after the App is prepared or shut down — routes, hooks, feature mounts and renderers included, as today.
+- any registration after the App is prepared or shut down — routes, hooks, feature mounts and renderers included.
 
 Each message names the call that misused the API, the phase it was called in and the remedy. Registration performs no I/O: a store's ping and i18n's catalog reads move to the start phase.
 
@@ -97,18 +97,18 @@ Each message names the call that misused the API, the phase it was called in and
 
 **`Start`** returns I/O errors — a component's `Start`, a store's ping, a catalog read, a constructor that the start phase runs — and the start rolls back as the [lifecycle spec](lifecycle.md) states.
 
-Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing, and `Resolve` before `Finalize` panics instead of returning a "not finalized" error. `Resolve` after a failed `Finalize` still returns the `Finalize` error.
+Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing, and `Resolve` before `Finalize` panics. `Resolve` after a failed `Finalize` returns the `Finalize` error.
+
+**Accepted, pending implementation (v0.24.0, W4–W6)** for the parts that name components and the start phase: `Manage`, the registration options and `App.Start` arrive with W4; until W5, `store.Register` pings its store and `UseI18n` reads its catalogs at the call, and both return their errors, a store registration after `Finalize` included; until W6, the worker registrations return their errors instead of panicking.
 
 ### Deleted
-
-With W2:
 
 - the App's re-check of `frozen` under `prepMu` in `installFeature` — a registration checks its phase once;
 - the container's `frozen` and `sealed` flags as states that registration calls observe and report as errors; registration out of phase is a panic at the call;
 - the errors returned by `Provide`, `ProvideValue`, `Alias` and `BindMany`, and `Resolve`'s "not finalized" error;
 - the tests of concurrent registration, deleted rather than loosened.
 
-With the work items that remove their last callers:
+**Accepted, pending implementation (v0.24.0, W3, W5, W6)**, with the work items that remove their last callers:
 
 - `CanProvideValue` and `AdoptValue` (W3), whose registration-time reads existed for the store and worker integrations;
 - `registrationProbe`, `ensurePool` and `adoptPool` (W6): the worker supervisor is not bound in the container;
@@ -130,13 +130,11 @@ With the work items that remove their last callers:
 
 ## Setup phases and ownership
 
-Flow: App construction → DI registrations and overrides → validate/freeze the DI plan → build controllers, bind routes and register HTTP features/renderers → compile/freeze the HTTP plan → run. DI-independent HTTP setup may happen earlier. `Run`, `RunContext`, `ServeContext` and an external `http.Server` reach the same validated runtime model. Keep `App` as the single entry point, typed constructor injection, the `Infra` carrier and singleton scope. The [HTTP feature contract](http-features.md) defines the framework-owned HTTP processing around the three user middleware tiers: Global (including 404/405), Group and Route.
-
-### Consumer migration
-
-Finish all DI writes, including store/worker module registration, then call `Finalize` and handle its error before the first constructor-backed `MustResolve` or route binding that performs one. For a composition root that resolves in route files before Run, this adds one explicit Finalize step between registration and route wiring. A setup function that still registers or replaces bindings must run before that boundary; Run's implicit Finalize remains an idempotent validation safeguard.
+Bootstrap follows the [documented order](#documented-order); after it, preparation compiles and freezes the HTTP plan. DI-independent HTTP setup may happen before `Finalize`. `Run`, `RunContext`, `ServeContext` and an external `http.Server` reach the same validated runtime model. Keep `App` as the single entry point, typed constructor injection, the `Infra` carrier and singleton scope. The [HTTP feature contract](http-features.md) defines the framework-owned HTTP processing around the three user middleware tiers: Global (including 404/405), Group and Route.
 
 ### Contract
+
+**Accepted, pending implementation (v0.24.0, W3, W5, W6).** The registration-phase access, early-read and `Replace` items below and the [framework registration flows](#framework-registration-flows) go with the methods they describe ([Deleted](#deleted)).
 
 - **Registration-phase access, decided (G1).** Constructor execution starts only after Finalize. `store.Register` rejects a preprovided Registry constructor with an explanatory error without executing it; a ready Registry value can be validated and adopted. There is no constructor exception or general early Resolve/Peek path. The shared integration API is `app.AdoptValue[T](validate func(T) error) (T, error)`. It reads an existing prebuilt binding during registration, validates the value and atomically compare-and-protects that same binding before returning it. It never constructs a provider. Validation failure leaves the binding unprotected and repairable. Replacement or a phase change during validation prevents adoption/publication of the stale value; a prior read does not confer ownership or reserve the binding. Framework store/worker registration uses this one operation under the registration guard. `Has[T]` remains the non-adopting existence query.
 - **Ownership.** A `ProvideValue` value that implements `Shutdowner` is closed by the container. `store.Register`'s `WithCallerOwnedLifecycle` applies only to a separate lifecycle handle supplied through `WithLifecycle`; it is not a general ownership opt-out. A registered value that itself implements `Lifecycle` explicitly rejects that option in `store.Register`. Keep container ownership of successfully registered values and successfully constructed singletons until teardown or an explicit successful replacement. Validated adoption makes the binding permanent; replacement of an unprotected binding transfers the superseded instance and its cleanup responsibility as specified below.

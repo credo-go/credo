@@ -198,7 +198,7 @@ func TestCanProvideValue(t *testing.T) {
 		preflightErr := c.CanProvideValue[*SimpleService]()
 		provideErr := c.ProvideValue[*SimpleService](&SimpleService{})
 		if preflightErr == nil || provideErr == nil {
-			t.Fatalf("errors = (%v, %v), want frozen errors", preflightErr, provideErr)
+			t.Fatalf("errors = (%v, %v), want after-Finalize errors", preflightErr, provideErr)
 		}
 		if preflightErr.Error() != provideErr.Error() {
 			t.Fatalf("CanProvideValue error = %q, ProvideValue error = %q", preflightErr, provideErr)
@@ -363,51 +363,6 @@ func TestProtectBinding(t *testing.T) {
 			t.Fatal("ProtectBinding should reject a frozen container")
 		}
 	})
-}
-
-func TestProtectBinding_CompareAndProtectIsAtomic(t *testing.T) {
-	for i := range 100 {
-		c := di.New()
-		original := &SimpleService{Value: "original"}
-		replacement := &SimpleService{Value: "replacement"}
-		c.MustProvideValue[*SimpleService](original)
-
-		start := make(chan struct{})
-		protectResult := make(chan error, 1)
-		replaceResult := make(chan error, 1)
-		go func() {
-			<-start
-			protectResult <- c.ProtectBinding[*SimpleService](original)
-		}()
-		go func() {
-			<-start
-			_, _, err := c.Replace[*SimpleService](replacement)
-			replaceResult <- err
-		}()
-		close(start)
-
-		protectErr := <-protectResult
-		replaceErr := <-replaceResult
-		switch {
-		case protectErr == nil:
-			if replaceErr == nil {
-				t.Fatalf("iteration %d: ProtectBinding and Replace both succeeded", i)
-			}
-			if _, _, err := c.Replace[*SimpleService](&SimpleService{}); err == nil {
-				t.Fatalf("iteration %d: successful protection did not persist", i)
-			}
-			seal(t, c)
-			if resolved := c.MustResolve[*SimpleService](); resolved != original {
-				t.Fatalf("iteration %d: protected value = %p, want original %p", i, resolved, original)
-			}
-		case replaceErr == nil:
-			if old, existed, err := c.Replace[*SimpleService](&SimpleService{}); err != nil || !existed || old != replacement {
-				t.Fatalf("iteration %d: failed protection made replacement permanent: (%p, %v, %v)", i, old, existed, err)
-			}
-		default:
-			t.Fatalf("iteration %d: ProtectBinding and Replace both failed: (%v, %v)", i, protectErr, replaceErr)
-		}
-	}
 }
 
 func TestProvideValue_Duplicate(t *testing.T) {

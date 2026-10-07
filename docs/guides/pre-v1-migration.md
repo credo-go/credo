@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration).
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap).
 
 ## Bootstrap and DI
 
@@ -8,7 +8,7 @@ Complete dependency registrations, store/worker setup and overrides before an ex
 
 | Before the DI minor | Now |
 | --- | --- |
-| Resolve before Run, relying on Run to Finalize | Add an error-checked Finalize after all DI writes and before the first Resolve; Resolve before Finalize returns a "not finalized" error |
+| Resolve before Run, relying on Run to Finalize | Add an error-checked Finalize after all DI writes and before the first Resolve; Resolve before Finalize panics ([Sequential bootstrap](#sequential-bootstrap)) |
 | Resolve just to test optional registration | Use the non-resolving `Has[T]`; it is a snapshot, not a reservation or health check |
 | ProvideFactory/MustProvideFactory | Use typed constructors with explicit dependency parameters |
 | Preprovided Registry constructor adopted during registration | Provide a ready Registry value; store registration uses AdoptValue and never executes a constructor |
@@ -19,6 +19,19 @@ Complete dependency registrations, store/worker setup and overrides before an ex
 The Replace boolean means an already-created instance existed. An unbuilt constructor yields zero/false; a rejected replacement transfers nothing. A validated adopted binding is protected. Do not recover a constructor panic to retry resolution: the container stores a typed terminal failure. MustResolve still panics on error, with `*credo.DIPanicError` as its payload. Closing/closed resolution matches `credo.ErrDIClosed`; teardown failure is inspectable as `*credo.DIShutdownError` through App-level error joins. Only construction finishing after the shutdown context ends gets the separate five-second cleanup wait; normal Shutdowner calls retain the shared budget.
 
 Building-state Shutdown provides cleanup even after a failed Finalize. It does not drain an externally owned http.Server. Owners of such servers must stop admission and coordinate active HTTP drain before DI teardown. Stopped ServeHTTP returns the framework's default 503 envelope without custom renderers, i18n callbacks or DI access; it does not restart App.
+
+### Sequential bootstrap
+
+**Implemented (v0.24.0).** Bootstrap is sequential and every mistake has one phase: registration panics on misuse at the line that made it, and `Finalize` reports the whole graph at once. The [bootstrap spec](../specs/bootstrap-and-di-lifecycle.md#sequential-bootstrap) gives the documented order.
+
+| Before v0.24.0 | Now |
+| --- | --- |
+| `Provide`, `ProvideValue`, `Alias` and `BindMany` returned an error | They return nothing and panic on misuse — a constructor of the wrong shape, a duplicate binding, types that do not fit, a call after `Finalize` or after shutdown began — with a message naming the call and the remedy (`credo: App.Provide[*app.X]: *app.X is already registered; …`). Drop the error checks: `if err := app.Provide[T](ctor); err != nil` no longer compiles |
+| `Resolve`, `ResolveAll` and their `Must` forms before `Finalize` returned a "not finalized" error | They panic (`credo: App.Resolve[T]: called before Finalize; call Finalize first …`); call `Finalize` first. After a failed `Finalize`, `Resolve` returns the `Finalize` error |
+| Registration calls were safe for concurrent use | Registration comes from the goroutine that builds the App, before it runs, and is not safe for concurrent use; an application that registers from several goroutines serializes the calls itself |
+| `Finalize` reported the first cycle it found and each missing dependency by its direct consumer (`di: Validate: … dependency … is not registered`) | It reports every missing dependency with its whole path from the registration that needs it (`di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); provide *http.Client before Finalize`) and every cycle, joined in registration order with the same text on every run. Code or tests that match the old `di: Validate: …` text must change |
+
+The `Must*` registration twins (`MustProvide`, `MustProvideValue`, `MustAlias`, `MustBindMany`) remain and behave exactly like the plain calls. A `Use*` call after preparation or shutdown panics as before; it no longer synchronizes with a preparation running on another goroutine.
 
 ## Built-in HTTP features
 
