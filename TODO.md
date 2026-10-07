@@ -6,6 +6,21 @@
 
 ---
 
+## Components, Kernel Registries and Sequential Bootstrap
+
+Scope, sequence and acceptance live in the [delivery plan](docs/plans/components-and-sequential-bootstrap.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked. All of it ships in v0.24.0; the boxes follow the plan's dependency order.
+
+- [x] W0: the header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
+- [ ] W1: promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded
+- [ ] W2: sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted
+- [ ] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
+- [ ] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
+- [ ] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
+- [ ] W3: the DI surface — seven methods and `Finalize`; protected bindings, `AdoptValue`, `CanProvideValue`, `Replace` and the `Must*` registration twins deleted
+- [ ] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error
+- [ ] W8: `StatusHandler` panics for any code but 404 and 405
+- [ ] W9: examples, guides and the release
+
 ## Restart Backoff and Startup Features
 
 Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](docs/adr/023-worker-system.md#restart-backoff), [ADR-010](docs/adr/010-middleware-architecture.md#startup-visibility-of-effective-features), the [worker spec](docs/specs/worker.md#restart-backoff), the [HTTP features spec](docs/specs/http-features.md#startup-visibility), the [static spec](docs/specs/static.md) and the [migration guide](docs/guides/pre-v1-migration.md#workers) and deleted on 2026-09-20; nothing scheduled remains.
@@ -638,7 +653,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 ### v1 Gate
 
-> v1.0.0 is cut when every box below is checked — never because a minor number got "high". Pre-1.0 minors are unbounded (`v0.10`, `v0.15`, …); each one is a consumer-facing theme, and a wire or behavioral change always gets its own minor. Items listed as **post-v1** are additive packages that do not block the tag and ship as `v1.x` minors.
+> v1.0.0 is cut when every box below is checked — never because a minor number got "high". Pre-1.0 minors are unbounded (`v0.10`, `v0.15`, …); a security fix ships at once as a patch; otherwise a minor collects what is ready when it is cut, findings made while preparing it included, and names each break under its own CHANGELOG heading. A separate minor is cut only for a change that consumers must be able to adopt on its own. Items listed as **post-v1** are additive packages that do not block the tag and ship as `v1.x` minors.
 
 **Must land before v1** (each touches a surface that v1 freezes):
 
@@ -649,10 +664,11 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
 - [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
-  - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) reviewed on 2026-09-02 and kept as-is, so it is **not** part of the batch: `store.Register`'s atomic reservation needs a non-mutating preflight, a Replace-protected publish, and expected-value compare-and-protect from outside the root package, and no narrower public seam exists without an internal bridge. They stay documented as low-level integration primitives.
+  - [ ] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) is **deleted in v0.24.0** rather than kept or batched ([plan](docs/plans/components-and-sequential-bootstrap.md), W3): framework infrastructure moves to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
   - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide, and if flipped announce one minor ahead
+- [ ] **Lifecycle acceptance scenarios** (proposed with v0.24.0, W4) stay pinned by tests: the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
 - [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.

@@ -267,6 +267,8 @@ Wraps the standard library's `net/http.CrossOriginProtection`: cross-origin dete
 
 QUERY being safe and QUERY requiring CORS preflight are separate properties. A browser cannot send a cross-origin fetch/XHR QUERY without preflight, and HTML forms or navigation cannot produce QUERY, so the classic preflight-free CSRF channel does not exist. Treating QUERY as state-changing is a protocol violation; CSRF middleware does not compensate for it. CORS's default method list includes QUERY so a default-config preflight can authorize the request.
 
+No test pins the stdlib's own handling of QUERY. A Go release that adds QUERY to `CrossOriginProtection`'s safe methods is a correct upstream improvement after which Credo's bypass is redundant, not wrong; a canary that failed on it would break the suite or cap the toolchain, so none is added.
+
 **Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 
 CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
