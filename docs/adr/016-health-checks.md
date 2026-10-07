@@ -1,6 +1,6 @@
 # ADR-016: Health Checks
 
-**Status:** Accepted **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015
+**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015, ADR-024
 
 ## Context
 
@@ -128,6 +128,24 @@ through a module-internal DI seam, with no user-facing bridge API:
   the default HTTP response.
 - A custom readiness/store name collision produces an explicit synthetic down
   result and 503 instead of silently overwriting one result in the JSON map.
+
+### Readiness from the Kernel's Registries
+
+**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the two seam bullets of the Engine section and the Store Integration section.
+
+`/ready` reads what the kernel already holds, and resolves nothing from the DI container per request. Its sources are:
+
+- **components' `Ready`** — each component whose binding's type shows the `Ready` capability (`credo.Readier`), under the component's name (`credo.Named`, the type name by default; a worker reports as `worker:<name>`). A nil error is up and an error is down. A borrowed value keeps its readiness contribution though the App neither starts nor shuts it down ([ADR-024](024-lifecycle-components.md)).
+- **the store registry** — each registered store's typed `Health`, taken from the value the start phase resolved and pinged, under the store's name ([ADR-015](015-data-access.md#registration-on-the-kernel)). An override of the store's binding is the value reported.
+- **the application's checks** — those added with `AddReadinessCheck`.
+
+The three sources share the engine described above: each entry owns a stable `Probe`, runs under the per-check deadline with panics isolated, and overlapping requests join one in-flight execution. The store status allowlist, cause masking unless `ExposeErrors`, and the fail-closed treatment of a name that two sources report keep their rules across all three. The registries are filled at registration and by the start phase, so registration order between `UseHealth`, stores, workers and components still does not matter.
+
+Deleted: the `internal/health` `StoreFunc` and `ReadinessFunc` DI seams, their per-request resolution, and the `App.Replace` calls that installed them. The store registry reaches the root through an internal Go seam, not through a container binding.
+
+During the drain `/ready` returns 503 `shutting_down` as described under Graceful Shutdown, before any component stops; `/health` stays 200.
+
+Rejected: resolving a readiness seam from the container on each request — the service-locator access [ADR-004](004-dependency-injection-and-infra.md) rejects for applications; it also had to treat every resolution error as "no entries", so a broken seam made stores silently vanish from readiness instead of failing.
 
 ## Consequences
 

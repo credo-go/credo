@@ -1,6 +1,6 @@
 # ADR-009: Handler and Error Handling
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-008, ADR-013
+**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-008, ADR-013 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
 
 ## Pre-v1 amendments
 
@@ -94,6 +94,14 @@ Invalid status/code constructor input is developer misuse and panics even when t
 
 `MessageKey` is presentation identity and never determines `Code`. `WithMessageKey`, `WithDetails`, and `WithInternal` are copy-on-write so shared sentinels remain immutable.
 
+### An explicit status wins
+
+**Accepted, pending implementation (v0.24.0, W7).**
+
+An explicitly constructed `HTTPError` wins over a validation error wrapped inside it. `NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 with code `tenant_conflict`, not 422 `validation_failed`: the application stated the status, and a classification that searches the whole unwrap chain for `validation.Errors` first would overrule it with a cause the application chose to keep internal. The wrapped errors stay reachable through `ErrorInfo.Err` for logging and for a renderer that wants them. Validation errors that no `HTTPError` wraps still render as 422 `validation_failed`.
+
+The companion rule is in [ADR-011](011-validation-strategy.md#rule-errors-client-messages-and-internal-failures): a validation rule error that is not a `*ValidationError` is internal, leaves `Validate` as it would leave a handler, and is classified here — a plain error is a 500 whose text is logged, not rendered, and a fault keeps its mapped status. Both are the error model's final rules: later changes to the error model's status channels and message keys keep them, so the status a client receives changes once.
+
 ### Message-key resolution
 
 Credo never prepends `errors.`, `http.`, `v.`, or `bind.`. Resolution is:
@@ -115,6 +123,8 @@ app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
 ```
 
 The renderer writes `application/problem+json` and maps normalized information to `type`, `title`, `status`, `detail`, and `instance`, with `code`, `details`, and `violations` as extension members (the extension vocabulary matches the default envelope). `about:blank` is the default type; `RFC9457Config.ResolveType` can supply application problem-type URIs. The public `ProblemDetails` helper type is retained for this adapter.
+
+Rejected: making RFC 9457 the default body. The flip has no engineering content — `ErrorInfo` is independent of both wire formats and each body is a renderer over it, so the change would break every client's wire contract for no gain in the pipeline — and nothing has changed since this ADR chose the envelope for its smaller default body. The nested envelope stays the default, and RFC 9457 stays the one-line opt-in above.
 
 ### Where the pipeline begins
 

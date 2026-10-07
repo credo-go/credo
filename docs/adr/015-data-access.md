@@ -1,6 +1,6 @@
 # ADR-015: Data Access
 
-**Status:** Accepted **Date:** 2026-03-04 **Depends on:** ADR-004, ADR-005
+**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-04 **Depends on:** ADR-004, ADR-005, ADR-024
 
 ## Context
 
@@ -216,6 +216,61 @@ fail only after successful store adoption rather than disconnecting readiness
 or leaking an untracked resource.
 
 `store.Register` is a free function rather than a root `App` method, even though the DI surface itself is method-based (`app.Provide[T]` / `app.Resolve[T]`): the `store` package cannot add methods to `*credo.App` (Go forbids methods on a type from another package), and having the root import `store` to host the method would invert the dependency direction the architecture enforces. `worker.Register` stays a function for the same reason — feature-package registration lives in the feature package, while only the generic container surface lives on `App`.
+
+### Registration on the Kernel
+
+**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the Registration section above, the `Registry` in the package split, the registration paragraph of the connection-pool policy, and the registration, reservation and protected-binding bullets of the Consequences.
+
+A store takes two calls, each with one job. The application binds the store where ownership is decided — `ProvideValue`, or `Provide` with a constructor, and `credo.Borrowed()` on `ProvideValue` for a handle it shares with another App or a test fixture — and `store.Register` names that binding by type and adds it to the kernel's store registry:
+
+```go
+func Register[R store.Lifecycle](app *credo.App, opts ...RegisterOption)
+
+app.ProvideValue(db)           // the binding: the App owns db and shuts it down after its consumers
+store.Register[*sqldb.DB](app) // the registration: pinged at start, reported by /ready
+```
+
+- **Registration does no I/O and holds no value.** `store.Register` records `R`, its name (`WithName`, or the package-qualified type name as today) and its ping timeout (`WithPingTimeout`), returns nothing, and panics on misuse known at the call, like every registration. An `R` that does not implement `Lifecycle` does not compile. A registration whose `R` has no binding fails `Finalize`, with a message naming the type and `store.Register`.
+- **The start phase resolves `R` once.** After `Finalize`, and therefore after every override, the start phase resolves `R`, pings that value as `R`'s start step — before the components that depend on `R` start — and keeps it for `/ready`, which reports its typed `Health` without resolving anything per request ([ADR-016](016-health-checks.md)). A failed ping, or a constructor error while the start phase builds `R`, is a start failure and rolls back ([ADR-024](024-lifecycle-components.md)). A borrowed store is pinged and reported and never shut down.
+- **The registry's store is the value DI hands its consumers**, in tests too: an override of `R` (`credo.Override()`, `testutil.WithOverride`) is what gets pinged, reported and shut down, and the original value is never pinged. That keeps the guarantee protected bindings gave — no integration monitors one value while DI resolves another — without forbidding the override a test needs.
+- **Teardown belongs to the component registry, not to the store registry.** `Lifecycle` includes `Shutdown`, so the binding of `R` is a component whose teardown follows the App's ownership rule ([ADR-024](024-lifecycle-components.md)): owned unless borrowed, shut down after its consumers, abandoned at the drain deadline like any component. The store registry pings and reports; it never closes anything.
+- **Identity moves to the root.** `store.LifecycleIdentityProvider` becomes the root's identity capability, `credo.ResourceIdentifier` ([ADR-024](024-lifecycle-components.md#resource-identity-one-resource-one-teardown)), with the same `ResourceIdentity() any` method. `*sqldb.DB` keeps returning itself, so a wrapper that embeds it stays one resource with it. The identity check the reservation made becomes the component registry's teardown rule — one resource, one teardown, run when its last holder retires — and keeps its refusal of mixed ownership: a holder that claims the teardown of a borrowed resource panics at the later call or fails its construction. Two store registrations of one resource are no longer refused: each is pinged and reported, and the resource is still shut down once.
+- **Registration warnings** that a value reports through `StoreRegistrationWarningCodes` (`sqldb.pool.max_open_unlimited`) are logged once per code when the start phase has resolved `R` and its ping has succeeded, since registration no longer has the value.
+- **The registry is reached through an internal seam** between the root and `store`, not through the container. `WithCallerOwnedLifecycle`, `WithLifecycle`, the reservation, and the `Registry` type with its DI binding are deleted: `Registry.HealthAll` reported what `/ready` reports, and an application that needs one store's health calls the value's own `Health`.
+
+**A value without `Lifecycle`** is registered through a wrapper type that implements it — the rule ADR-024 gives a teardown that is not a `Close`: the wrapper is the binding, its constructor's parameters give its dependencies their edges, and its `Ping`, `Health` and `Shutdown` cannot target different objects.
+
+**Several databases.** The container keys bindings by type, so each database beyond a default `*sqldb.DB` is a wrapper type, bound once and registered by its type:
+
+```go
+type PrimaryDB struct{ *sqldb.DB }
+type AnalyticsDB struct{ *sqldb.DB }
+
+app.ProvideValue(PrimaryDB{primary})
+app.ProvideValue(AnalyticsDB{analytics})
+store.Register[PrimaryDB](app, store.WithName("primary"))
+store.Register[AnalyticsDB](app, store.WithName("analytics"))
+
+func NewReportRepo(db AnalyticsDB) *ReportRepo
+```
+
+The type is the qualifier: the constructor's signature names the database, the compiler and `Finalize` check the choice, and the graph sees the edge, so each database starts and stops in order. Embedding carries every capability of the handle — `Ping`, `Health`, `Shutdown`, `ResourceIdentity` — and each `*sqldb.DB` owns its transaction scope, so the transactions of two databases never meet. The wrapper is a value, so it stays one resource with its handle only through resource identity; a wrapper that releases state of its own therefore holds the handle in a named field instead, and shares no identity with it. The rest of the rule:
+
+- an interface view of a database is an `app.Alias[I, T]()`, never a second binding;
+- a constructor that needs the raw handle unwraps it (`db.DB`, or `db.Client()` for Bun) inside the constructor rather than binding it again;
+- a generic repository is instantiated per wrapper — `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings with no name between them;
+- databases whose number comes from configuration — shards, tenants — are one binding of a collection type that owns and closes them all, since a type per instance cannot be written;
+- a read replica of one database is routing, not a second store, and sits outside the rule: Bun offers it only experimentally (`extra/bunexp`), and `sqldb` does not expose it.
+
+[ADR-004](004-dependency-injection-and-infra.md) records the general rule for several instances of one type and the container-level alternatives it rejects.
+
+**Rejected alternatives:**
+
+- **A store registry that holds the store's value**, today's `Register(app, value)` — after an override it would ping, report and shut down a value DI no longer resolves: a test's services would use the test database while the ping and `/ready` reached the real one. Protected bindings closed that gap by forbidding the override, which `credo.Override()` and `testutil.WithOverride` exist to perform.
+- **A separate health handle passed as a value** (`WithLifecycle`) — it drifts from an override the same way, and lets ping, health and shutdown target different objects; the wrapper type above gives the same reach with one value.
+- **A generic handle in `sqldb`** (`sqldb.Of[Analytics]`) for several databases — still a marker type per database, for an API that turns generic throughout; the wrapper type is that marker with a better name.
+
+**Consequences.** Registration is pure and its misuse fails at the call; the store registry cannot disagree with DI, overrides included; a store's teardown has one owner, ordered by the graph. A store costs two calls where it cost one, and its ping moves from registration to the start phase, so an unreachable database fails `Run` (or `App.Start`) instead of `store.Register`.
 
 ### Bun-Only
 

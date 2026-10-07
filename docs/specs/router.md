@@ -1,6 +1,6 @@
 # Router Spec
 
-**Status**: Approved **Package**: Root (`github.com/credo-go/credo`), `internal/radix/` **Sources**: Chi (MIT, primary), Goyave (MIT), httprouter (BSD-3, reference) **Depends on**: — **ADRs**: [007-router-and-routing](../adr/007-router-and-routing.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md)
+**Status**: Approved **Package**: Root (`github.com/credo-go/credo`), `internal/radix/` **Sources**: Chi (MIT, primary), Goyave (MIT), httprouter (BSD-3, reference) **Depends on**: — **ADRs**: [007-router-and-routing](../adr/007-router-and-routing.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md) — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
 
 ---
 
@@ -101,6 +101,8 @@ app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
 ```
 
 `StatusHandler` is consulted for two codes only: 404, when no route matches the request, and 405, when routes match the path but none of them serves the method (the `Allow` header is set before the handler runs). The handler answers in place of the default error response, inside the global middleware and without a matched route. With no custom handler registered, the two outcomes are the `ErrNotFound` and `ErrMethodNotAllowed` errors of the central error pipeline. A handler registered for any other code is accepted and never called — there is no status handler for 500 or any other status. Status handlers are not error handlers either: an error a route handler or middleware returns, `ErrNotFound` from a route handler included, goes through the central error pipeline, whose body an `ErrorRenderer` shapes, and does not reach the custom 404 handler. StatusHandler is set on the `App` only; group-level overrides are not supported.
+
+**Accepted, pending implementation (v0.24.0, W8).** When it ships, this paragraph replaces the sentence above that accepts a handler for any other code: `StatusHandler(code, h)` panics at registration for any code but 404 and 405, with a message naming the two supported codes, so a registration that would never be consulted fails at startup instead of being silently ignored. A 5xx handler would re-enter application code inside error rendering, so no other code is consulted. 404 and 405 register and are consulted as described above. An application that registered a handler for another code — 403 is the likely one — deletes that registration rather than porting it, and shapes that response through `UseErrorRenderer`; a 404 or 405 handler that only returns the matching sentinel (`ErrNotFound`, `ErrMethodNotAllowed`) equals the default and can go as well. See [ADR-007](../adr/007-router-and-routing.md#status-handlers).
 
 ### UseI18n (i18n integration)
 

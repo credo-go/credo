@@ -1,12 +1,134 @@
 # Bootstrap and DI Lifecycle Contract
 
-**Status:** Implemented (2026-09-05, one DI minor). The registration-access and diagnostics decisions (G1/G2) are closed in [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **ADR:** [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **Implementation areas:** root App/lifecycle (`prepare.go`, `lifecycle_manager.go`, `server.go`), `internal/di`, store and worker registration.
+**Status:** Implemented (2026-09-05, one DI minor); v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)). The registration-access and diagnostics decisions (G1/G2) are closed in [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **ADR:** [ADR-022](../adr/022-bootstrap-and-di-ownership.md). **Implementation areas:** root App/lifecycle (`prepare.go`, `lifecycle_manager.go`, `server.go`), `internal/di`, store and worker registration.
 
-This is the phase, ownership and teardown contract of the DI container and the App bootstrap. The [container](container.md) and [lifecycle](lifecycle.md) specifications state the same behavior in API terms. P1/P2/P3 are work-package identifiers used by the delivery plan and the tests, not three separately shippable migrations.
+This is the phase, ownership and teardown contract of the DI container and the App bootstrap. The [container](container.md) and [lifecycle](lifecycle.md) specifications state the same behavior in API terms.
 
 Keep a single-use App, typed constructor injection, visible `Infra`, explicit aliases/collections and singleton scope. The changes address dependency ordering (D1), replacement ownership (D2), opaque factory resolution (D3), teardown admission (D4), lost constructor panics (D5), opaque dependencies inside prebuilt values (D6), and shutdown panic isolation (D7).
 
-## P1. Setup phases and ownership
+## Sequential bootstrap
+
+**Accepted, pending implementation (v0.24.0, W2).** When it ships, this section and its subsections replace the setup flow and the consumer migration of the setup phases below, and the statements that registration, adoption, replacement and `Finalize` are serialized against concurrent callers; the registration-phase access, early-read, `Replace` and framework-registration-flow items go with W3, W5 and W6 (Deleted).
+
+### Contract
+
+Bootstrap is sequential. Registration calls — DI bindings, feature mounts, satellite and component registrations, routes, hooks and renderers — come from the goroutine that builds the App, before it runs, and are not safe for concurrent use. Each call checks only that it is in its phase, and a call out of phase panics; none synchronizes with another registration. An application that registers from several goroutines serializes the calls itself.
+
+The contract covers registration, not the running App: what stays concurrent is listed under Unchanged.
+
+### Documented order
+
+The order names every satellite, so that a bootstrap written by following it meets no ordering panic:
+
+1. **Configuration** — `credo.New()`, which loads configuration, or `credo.New(credo.WithRawConfig(store))`.
+2. **`Provide`** — the application's bindings, with their registration options.
+3. **Feature mounts and satellite registrations**, in any order among themselves — `UseI18n`, `UseHealth`, workers, stores, `Manage`.
+4. **`Finalize`** — graph validation; handle its error.
+5. **`Resolve`, routes and anything built from a resolved value**, a readiness check included.
+6. **`Run`** — or `RunContext`, `ServeContext`, or `App.Start` for an App that an external server serves.
+
+```go
+func main() {
+    app, err := credo.New() // 1. configuration
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Provide
+    app.Provide[*sqldb.DB](NewDatabase)
+    app.Provide[*PaymentClient](NewPaymentClient)
+    app.Provide[*OrderService](NewOrderService)
+    app.Provide[*OrderController](NewOrderController)
+    app.Provide[*OutboxRelay](NewOutboxRelay)
+
+    // 3. Feature mounts and satellite registrations, in any order
+    app.UseI18n(credo.I18nConfig{Dir: "locales"})
+    app.UseHealth()
+    store.Register[*sqldb.DB](app)
+    worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
+    app.Manage(NewSearchIndexer, credo.Named("search-indexer"))
+
+    // 4. Finalize
+    if err := app.Finalize(); err != nil {
+        log.Fatal(err)
+    }
+
+    // 5. Resolve, routes, and what is built from resolved values
+    orders := app.MustResolve[*OrderController]()
+    app.POST("/orders", orders.Create)
+    payments := app.MustResolve[*PaymentClient]()
+    app.AddReadinessCheck("payments", credo.HealthCheckFunc(payments.Ping))
+
+    // 6. Run
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+There is no resolve-then-provide step. A value that needs a resolved dependency and I/O to exist — a provider whose settings are read from a database table, for example — is a component whose constructor takes its dependencies and whose `Start` reads the settings and opens its backend ([lifecycle spec](lifecycle.md)); nothing registers after `Finalize`. `credo.New()`, routes and `Run()` stay the minimal shape, and an App without bindings needs no explicit `Finalize`: the serve entry points call it.
+
+### Three error phases
+
+The package documentation's "Panics and Errors" gains two phases beside registration's:
+
+| Phase | What it reports | How |
+| --- | --- | --- |
+| Registration | Misuse known at the call site | Panics with the call site's message; performs no I/O |
+| `Finalize` | What only the whole graph reveals | Returns the errors joined in registration order |
+| `Start` | I/O | Returns the error; the start rolls back |
+
+**Registration** panics on:
+
+- a constructor of the wrong shape, a nil constructor, a duplicate binding, and an `Alias` or `BindMany` whose types do not fit;
+- a misused registration option ([container spec](container.md));
+- `Resolve` or `ResolveAll` before `Finalize`;
+- a DI or component registration after `Finalize` — `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Manage`, store registrations and the worker registrations;
+- any registration after the App is prepared or shut down — routes, hooks, feature mounts and renderers included, as today.
+
+Each message names the call that misused the API, the phase it was called in and the remedy. Registration performs no I/O: a store's ping and i18n's catalog reads move to the start phase.
+
+**`Finalize`** returns, joined in registration order with identical text on every run:
+
+- each missing dependency with its whole path from the registration that needs it, for example `OrderService → PaymentClient → *http.Client (not registered)`;
+- cycles;
+- with W4, an internal component that depends on an ingress one, with the path and both remedies;
+- with W5, a store registration whose type has no binding, naming the type and `store.Register`.
+
+**`Start`** returns I/O errors — a component's `Start`, a store's ping, a catalog read, a constructor that the start phase runs — and the start rolls back as the [lifecycle spec](lifecycle.md) states.
+
+Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing, and `Resolve` before `Finalize` panics instead of returning a "not finalized" error. `Resolve` after a failed `Finalize` still returns the `Finalize` error.
+
+### Deleted
+
+With W2:
+
+- the App's re-check of `frozen` under `prepMu` in `installFeature` — a registration checks its phase once;
+- the container's `frozen` and `sealed` flags as states that registration calls observe and report as errors; registration out of phase is a panic at the call;
+- the errors returned by `Provide`, `ProvideValue`, `Alias` and `BindMany`, and `Resolve`'s "not finalized" error;
+- the tests of concurrent registration, deleted rather than loosened.
+
+With the work items that remove their last callers:
+
+- `CanProvideValue` and `AdoptValue` (W3), whose registration-time reads existed for the store and worker integrations;
+- `registrationProbe`, `ensurePool` and `adoptPool` (W6): the worker supervisor is not bound in the container;
+- `ensureRegistry`, `adoptRegistry` and `store.Register`'s reservation (W5): the store registry is kernel-owned and names a binding.
+
+### Unchanged
+
+- After `Finalize`, `Resolve` and `ResolveAll` are safe for concurrent use: first resolutions of one singleton share one construction and its terminal result, and a resolution that races the drain returns an error wrapping `ErrDIClosed`.
+- The one-time preparation (`Finalize` → compile → publish) that concurrent first `ServeHTTP` calls share stays synchronized and stored once: it belongs to the running App, not to registration. Its coordination with bootstrap `Shutdown` stays as specified below.
+- `Finalize` is idempotent, side-effect-free and DI-only; route registration stays open after it until preparation.
+- Bootstrap `Shutdown` from `building` stays accepted, with its validation-free teardown.
+
+### Acceptance
+
+- A table of registration misuse, each case panicking with the call site's message: a constructor of the wrong shape, a duplicate binding, `Resolve` before `Finalize`, each DI and component registration after `Finalize`, and each registration after shutdown.
+- `Finalize` with two missing dependencies and a cycle returns all three, in registration order, each missing dependency with its full path.
+- The documented order, every satellite included, as an `Example` that runs.
+- The concurrent-resolution tests keep passing under `-race`.
+
+## Setup phases and ownership
 
 Flow: App construction → DI registrations and overrides → validate/freeze the DI plan → build controllers, bind routes and register HTTP features/renderers → compile/freeze the HTTP plan → run. DI-independent HTTP setup may happen earlier. `Run`, `RunContext`, `ServeContext` and an external `http.Server` reach the same validated runtime model. Keep `App` as the single entry point, typed constructor injection, the `Infra` carrier and singleton scope. The [HTTP feature contract](http-features.md) defines the framework-owned HTTP processing around the three user middleware tiers: Global (including 404/405), Group and Route.
 
@@ -18,23 +140,23 @@ Finish all DI writes, including store/worker module registration, then call `Fin
 
 - **Registration-phase access, decided (G1).** Constructor execution starts only after Finalize. `store.Register` rejects a preprovided Registry constructor with an explanatory error without executing it; a ready Registry value can be validated and adopted. There is no constructor exception or general early Resolve/Peek path. The shared integration API is `app.AdoptValue[T](validate func(T) error) (T, error)`. It reads an existing prebuilt binding during registration, validates the value and atomically compare-and-protects that same binding before returning it. It never constructs a provider. Validation failure leaves the binding unprotected and repairable. Replacement or a phase change during validation prevents adoption/publication of the stale value; a prior read does not confer ownership or reserve the binding. Framework store/worker registration uses this one operation under the registration guard. `Has[T]` remains the non-adopting existence query.
 - **Ownership.** A `ProvideValue` value that implements `Shutdowner` is closed by the container. `store.Register`'s `WithCallerOwnedLifecycle` applies only to a separate lifecycle handle supplied through `WithLifecycle`; it is not a general ownership opt-out. A registered value that itself implements `Lifecycle` explicitly rejects that option in `store.Register`. Keep container ownership of successfully registered values and successfully constructed singletons until teardown or an explicit successful replacement. Validated adoption makes the binding permanent; replacement of an unprotected binding transfers the superseded instance and its cleanup responsibility as specified below.
-- **Early reads and adoption, decided.** A registration-phase read of a value binding is an adoption attempt: read → validate → atomic compare-and-protect of the accepted instance. Protection is a consequence of successful validation, never of the read itself, so a rejected instance (typed-nil `Registry`, covered by the existing store repair test) stays replaceable and the repair path through `Replace` survives. `ensureRegistry` and `ensurePool` run this sequence through AdoptValue. Protection on every read is rejected: it would freeze an invalid binding before validation and contradict P2's guarantees. Existence checks use `Has[T]`, not a read. After successful adoption the instance is Replace-protected and framework-owned.
+- **Early reads and adoption, decided.** A registration-phase read of a value binding is an adoption attempt: read → validate → atomic compare-and-protect of the accepted instance. Protection is a consequence of successful validation, never of the read itself, so a rejected instance (typed-nil `Registry`, covered by the existing store repair test) stays replaceable and the repair path through `Replace` survives. `ensureRegistry` and `ensurePool` run this sequence through AdoptValue. Protection on every read is rejected: it would freeze an invalid binding before validation and contradict the guarantees of the framework registration flows. Existence checks use `Has[T]`, not a read. After successful adoption the instance is Replace-protected and framework-owned.
 - **Replace ownership, decided.** A successful `Replace` atomically installs the new binding and returns any superseded, already-created instance to the caller, with a `bool` that means exactly "a previously created instance existed": a superseded value binding or built singleton yields `old, true`; a superseded constructor binding that never ran yields `zero, false`. It never constructs an old provider merely to return it. Statement-form calls keep compiling (unused results are legal); `if err :=`, assignment and `return` sites are updated with the API. A rejected replacement changes neither the binding nor ownership. On success, the container owns the new value and no longer tracks or closes the returned old instance; its cleanup belongs to the caller. Callers therefore obtain the old reference without an early read that would adopt and protect it. `MustReplace` returns the same previous-instance information and panics on replacement error. When a superseded instance implements `Shutdowner`, log at Warn naming the type; this is a diagnostic, not the ownership-transfer mechanism. Contract sentence for the docs: "on successful Replace, the caller receives the superseded instance and assumes its cleanup responsibility". This covers unread old resources; successfully adopted bindings remain Replace-protected.
 - **Entry-point unification, decided.** One shared preparation step, order Finalize → compile → publish handler, whose result (handler or error) is stored once. Admission to preparation closes HTTP route/hook/feature/renderer registration; the HTTP work package's `Use*` methods use that same boundary. An explicit DI-only Finalize does not close it. Managed serve methods return preparation errors; while lifecycle admission remains open, `ServeHTTP` panics with the same stored preparation error on every request. Lifecycle admission rejection uses the separate 503 response below. The preparation-error panic must not live inside `handlerOnce.Do` alone in `App.ServeHTTP`: `sync.Once` counts a panicking call as done, so a later request would skip validation and reach a nil handler. Panic is the right shape for `ServeHTTP` (a graph error is developer misuse, per the `doc.go` panic-vs-error policy), the stored result is what makes it repeatable. The existing store readiness test that serves `/ready` through direct `ServeHTTP` then passes unchanged. Managed serving claims building → starting before preparation: `lifecycleManager.serve` prepares under `claimStartSlot`. Preparation errors and compilation panics, including middleware construction in `compile`, must leave a recorded terminal preparation failure and release the start slot back to building. Use rollback on every failed exit; a later call must not execute a partly compiled handler. Returning to building permits bootstrap cleanup, not repair of a frozen DI plan or a retry of failed preparation. Shutdown observing starting keeps the current state-error behavior. Direct `ServeHTTP` does not claim the managed server's start slot. Its preparation admission and result publication share coordination with bootstrap Shutdown: checking state only once inside the cached-result step is insufficient. If shutdown wins, no new preparation is admitted and no unfinished preparation may publish a successful handler afterward. A first preparation attempted in stopping or stopped is rejected with the lifecycle 503; a request whose preparation loses publication admission to shutdown receives the same response. Every call checks lifecycle admission even when a preparation result is cached: after stopped, the 503 takes precedence over a cached handler or preparation error without changing that stored result. No new dispatch is admitted after stopped. An already-prepared handler remains available for the managed HTTP drain in stopping; do not replace readiness/liveness behavior with a blanket stopping-state rejection.
 - **Lifecycle rejection response, decided (2026-09-05).** A `ServeHTTP` call rejected by the lifecycle rules above returns HTTP 503 with the existing `service_unavailable` machine code, rather than panicking because the App has stopped. Use the central default error-envelope and HEAD/bodyless-response rules. This is a runtime availability outcome; preparation/configuration failures remain the stored developer-error contract above. The rejection path must work without preparation or live DI: do not compile, Resolve, dispatch, run user middleware/status handlers, or invoke configured feature/renderer callbacks. In particular, a renderer registered through `UseErrorRenderer` may capture a singleton that has already been shut down. The ordinary `handleError` path also reaches the custom message-key resolver and application JSON options (`renderError`, `errorJSONOptions`). Reuse the framework-owned error-body/transport machinery through a shutdown-safe, callback-free branch, with the default message and encoder; do not route this rejection through those extension points. This is an explicit default-format exception for lifecycle-rejected requests, not a guarantee that custom renderers, locale detection, access-log filters or compression run after shutdown. Keep the preparation cache intact and release any acquired request state on every exit. This response is independent of `WithoutRecover` and does not reopen the single-use App. Acceptance checks cover never-prepared and previously prepared stopped Apps, a cached preparation failure followed by shutdown, preparation/publication races, HEAD and disabled recovery. Assert 503/default envelope and zero execution of constructors, user handlers and configured callbacks. A prepared stopping App still exposes the existing readiness 503 and liveness behavior during drain; external-server admission/drain remains its owner's job.
-- **Bootstrap teardown, decided.** `app.Shutdown` is accepted in `building`: it claims a building → stopping CAS (the counterpart of `claimStartSlot`), so a concurrent managed start and Shutdown pick exactly one owner, with direct preparation coordinated as above. At bootstrap shutdown admission, close App route/hook/feature/renderer writes (`app.frozen`, checked by `checkFrozen`) and DI writes (`container.frozen`, otherwise set by `Seal`). The early DI freeze is an internal, validation-free operation: it does not call Finalize, consume `sealOnce`, or enter closing. Enter DI closing only at the later `Container.Shutdown` stage, preserving the preceding drain stages' Resolve contract. Update `checkFrozen` diagnostics to say "compiled or shut down". Run the existing `drain` with no managed servers, retaining the failed-startup hook phases. This path must not require a successful Finalize: derive the cleanup graph from the frozen registrations and current instances/builds even when Seal never ran or failed. P3's same pending-build, ordering, deadline and reporting rules apply. Terminal state is stopped even when cleanup is incomplete; the single-use App contract is unchanged. This also provides teardown for apps used only through direct `ServeHTTP` in tests. An external `http.Server` or `httptest.Server` remains its owner's responsibility: stop HTTP admission and coordinate its active-request drain before DI teardown. Serverless App shutdown does not discover or drain an external server, and the terminal ServeHTTP guard is not a substitute for that drain.
+- **Bootstrap teardown, decided.** `app.Shutdown` is accepted in `building`: it claims a building → stopping CAS (the counterpart of `claimStartSlot`), so a concurrent managed start and Shutdown pick exactly one owner, with direct preparation coordinated as above. At bootstrap shutdown admission, close App route/hook/feature/renderer writes (`app.frozen`, checked by `checkFrozen`) and DI writes (`container.frozen`, otherwise set by `Seal`). The early DI freeze is an internal, validation-free operation: it does not call Finalize, consume `sealOnce`, or enter closing. Enter DI closing only at the later `Container.Shutdown` stage, preserving the preceding drain stages' Resolve contract. Update `checkFrozen` diagnostics to say "compiled or shut down". Run the existing `drain` with no managed servers, retaining the failed-startup hook phases. This path must not require a successful Finalize: derive the cleanup graph from the frozen registrations and current instances/builds even when Seal never ran or failed. The pending-build, ordering, deadline and reporting rules of dependency-ordered shutdown apply. Terminal state is stopped even when cleanup is incomplete; the single-use App contract is unchanged. This also provides teardown for apps used only through direct `ServeHTTP` in tests. An external `http.Server` or `httptest.Server` remains its owner's responsibility: stop HTTP admission and coordinate its active-request drain before DI teardown. Serverless App shutdown does not discover or drain an external server, and the terminal ServeHTTP guard is not a substitute for that drain.
 - **`Has[T]`.** Add a non-resolving, non-protecting registration-presence query for the consumer's optional Pool check. It must not execute a constructor, adopt ownership, or claim that an instance is healthy or usable. Its result is a snapshot, not an atomic reservation for a later registration.
 
-## P2. Framework registration flows
+## Framework registration flows
 
-`ensureRegistry` (store) and `ensurePool` (worker) are the framework's registration-time reads and use the P1 contract: `Has` for existence, `AdoptValue` for adoption, `ProvideProtectedValue` for first publication, with adoption again on a lost publication race. Their guarantees are unchanged: atomic reservation, `Replace`-protected publish, validated compare-and-protect, idempotent seam re-wiring, `managed` pool adoption, registration-window check. Registration-time configuration reads go through `App.ConfigExists`/`App.GetConfig` rather than resolving `RawConfig`, and the health seams are resolved at request time, after the implicit Finalize.
+`ensureRegistry` (store) and `ensurePool` (worker) are the framework's registration-time reads and use the setup-phase contract: `Has` for existence, `AdoptValue` for adoption, `ProvideProtectedValue` for first publication, with adoption again on a lost publication race. Their guarantees are unchanged: atomic reservation, `Replace`-protected publish, validated compare-and-protect, idempotent seam re-wiring, `managed` pool adoption, registration-window check. Registration-time configuration reads go through `App.ConfigExists`/`App.GetConfig` rather than resolving `RawConfig`, and the health seams are resolved at request time, after the implicit Finalize.
 
-## P3. Resolution and dependency-ordered shutdown
+## Resolution and dependency-ordered shutdown
 
 - **Resolve/Replace.** `Resolve` only after Finalize; `Replace` only before. Registration-time value adoption uses AdoptValue rather than an early Resolve exemption. D2 has three explicit rules: constructor bindings that obey this phase boundary cannot be replaced after construction; validated early adoption protects a value binding from replacement; replacing an unprotected prebuilt value atomically returns the old instance and transfers its cleanup responsibility to the caller. For example, replacing an unread `oldDB` with `newDB` returns `oldDB` for caller cleanup while the container owns `newDB`. This is an explicit ownership contract, not automatic cleanup of overridden resources. Test overrides follow the same rules (`testutil` docs). Preprovided Registry constructors are rejected during registration; use a ready value and AdoptValue's validation/protection contract.
 - **Dependency-ordered shutdown (D1).** Consumers before dependencies. Build the static graph at Seal from `deps()` + aliases + `BindMany` (the cycle scan already walks these edges), with aliases mapped to the canonical singleton. Include both constructor and value bindings as vertices: a constructor's dependency on a value binding is still a visible edge. For example, `Service` must close before its injected DB even when that DB came from `ProvideValue`. Dependencies inside prebuilt values remain opaque (D6). Preserve reverse registration order where graph constraints do not decide the order. Removing the factory eliminates the proposed factory runtime-edge recording mechanism. Reuse graph extraction for bootstrap teardown without requiring successful validation. Include current instances and admitted builds; invalid, unused registrations must not prevent cleanup of independent live resources. Relying on "Seal rejects cycles" alone does not cover this entry point. Use Kahn's algorithm with a ready queue ordered by reverse registration index and remaining live dependent counts, initialised atomically with the closing snapshot and decremented on retirement. This uses the reviewed dependency-bookkeeping idea from do v2.1.0's [batched dependent checks](https://github.com/samber/do/blob/v2.1.0/dag.go), using Credo's static graph. Never-started and terminal-failed constructors are inactive and contribute no live edges. A built instance without `Shutdowner` remains a vertex until its dependents retire, then retires without calling user code; this preserves ordering through intermediate services. Aliases do not create another instance or another cleanup attempt. A pending build that fails retires and releases its dependencies; one that succeeds while the shutdown context is live becomes eligible for normal shutdown subject to its dependents. Success after context end follows the late-cleanup policy below. An empty ready queue with pending work waits for completion. Remaining live vertices with neither ready nor pending work indicate an internal graph inconsistency: report them and their blockers, without do v2's fallback of shutting everything down out of order.
-- **Closed state (D4).** Atomically set `frozen` and enter `closing` when `Container.Shutdown` begins, reject new `Resolve` calls, and account for builds already admitted. This transition is independent of graph validation and does not consume `sealOnce`. The earlier bootstrap write freeze in P1 remains a separate step. For a running App, closing begins at the DI teardown stage after the HTTP/`OnDrain` and reload barriers, not the initial `App.Shutdown` state transition. DI must remain available under its existing phase rules during the preceding drain stages. Check closing/closed before `sealErr`, so teardown rejection wins even after a failed Finalize. Rejections in both `closing` and `closed` wrap `credo.ErrDIClosed`, so consumers can distinguish them with `errors.Is`. The sentinel applies from the beginning of DI closing. An `OnDrain` resolve before DI teardown does not receive that error and keeps working, but see the hook rule below: it is compatibility, not a guarantee.
-- **Hook resolve rule, decided.** `OnPreDrain`, `OnDrain` and `OnShutdown` hooks must not call `Resolve`; a hook takes its dependencies at registration time (closure capture). Documented as unsupported, not enforced. A Debug log "Resolve during drain" (lifecycle state stopping) is a cheap diagnostic; it must not be labelled a hook violation, because an HTTP request still in flight during the same stage may legitimately Resolve. This keeps supported hook code from initiating construction during teardown. In-flight work can still include handlers past the HTTP drain deadline and background goroutines the application has not stopped. Bootstrap teardown and any construction overlapping it must also be covered by P1; runtime drain is not the only teardown scenario.
+- **Closed state (D4).** Atomically set `frozen` and enter `closing` when `Container.Shutdown` begins, reject new `Resolve` calls, and account for builds already admitted. This transition is independent of graph validation and does not consume `sealOnce`. The earlier bootstrap write freeze of the setup phases remains a separate step. For a running App, closing begins at the DI teardown stage after the HTTP/`OnDrain` and reload barriers, not the initial `App.Shutdown` state transition. DI must remain available under its existing phase rules during the preceding drain stages. Check closing/closed before `sealErr`, so teardown rejection wins even after a failed Finalize. Rejections in both `closing` and `closed` wrap `credo.ErrDIClosed`, so consumers can distinguish them with `errors.Is`. The sentinel applies from the beginning of DI closing. An `OnDrain` resolve before DI teardown does not receive that error and keeps working, but see the hook rule below: it is compatibility, not a guarantee.
+- **Hook resolve rule, decided.** `OnPreDrain`, `OnDrain` and `OnShutdown` hooks must not call `Resolve`; a hook takes its dependencies at registration time (closure capture). Documented as unsupported, not enforced. A Debug log "Resolve during drain" (lifecycle state stopping) is a cheap diagnostic; it must not be labelled a hook violation, because an HTTP request still in flight during the same stage may legitimately Resolve. This keeps supported hook code from initiating construction during teardown. In-flight work can still include handlers past the HTTP drain deadline and background goroutines the application has not stopped. Bootstrap teardown and any construction overlapping it must also be covered by the setup-phase contract; runtime drain is not the only teardown scenario.
 - **Construction deadline policy, decided (bounded wait, best-effort late cleanup).** Passing the HTTP drain stage does not prove all HTTP work finished: the deadline path reports pending work and proceeds in `collectDrainResults`, so an in-flight constructor at `closing` is possible.
   - _No new resolution after closing._ Supported constructor injection resolves parameters before invoking the constructor (`constructorProvider.build`). If remaining parameter resolution encounters `closing`, it returns the sentinel and the dependent constructor is not invoked. A body already running is not forcibly failed: an unsupported captured `app.Resolve` call may return an error that application code ignores. The container's guarantees are rejecting new resolution and withholding results from callers once closing wins, not forcing arbitrary constructor code to fail. Prebuilt values' hidden dependencies remain outside the graph (D6).
   - _Separate caller delivery from resource ownership._ A result whose delivery loses to `closing` returns the closing sentinel to its Resolve caller, including waiters and the completed-entry fast path in `resolveSingleton`. A successfully created instance is still tracked for cleanup; this caller-facing error must not turn it into a failed construction that teardown skips. Coordinate result delivery and assignment to a cleanup path atomically so teardown owns each instance once and cannot publish an instance it has already claimed for cleanup.

@@ -11,7 +11,7 @@
 Scope, sequence and acceptance live in the [delivery plan](docs/plans/components-and-sequential-bootstrap.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked. All of it ships in v0.24.0; the boxes follow the plan's dependency order.
 
 - [x] W0: the header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
-- [ ] W1: promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded
+- [x] W1: promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
 - [ ] W2: sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted
 - [ ] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
 - [ ] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)

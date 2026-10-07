@@ -1,44 +1,48 @@
 # Worker Spec
 
-**Status**: Implemented (v0.20.0 contract; [restart backoff](#restart-backoff) in v0.21.0) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
+**Status**: Implemented through v0.23.0 (worker contract v0.20.0, restart backoff v0.21.0); v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
 
-This file is the contract of Credo's worker system: what registration accepts, how a run is admitted and classified, what the pool reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023.
+This file is the contract of Credo's worker system as work item W6 of the [delivery plan](../plans/components-and-sequential-bootstrap.md) implements it: what registration accepts, how each worker attaches to the App as a lifecycle component, how a run is admitted and classified, what the supervisor reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023; the component model lives in [ADR-024](../adr/024-lifecycle-components.md) and the [lifecycle spec](lifecycle.md). Until W6 ships, the released behavior is described by [the v0.23.0 version of this document](https://github.com/credo-go/credo/blob/v0.23.0/docs/specs/worker.md).
 
 ---
 
 ## Overview
 
-The `worker/` package runs background tasks — queue consumers, watchers, periodic cleanups, reports — inside a Credo application. Continuous and scheduled work share one interface; the kind is chosen at registration.
+The `worker/` package runs background tasks — queue consumers, watchers, periodic cleanups, reports — inside a Credo application. Continuous and scheduled work share one interface; the kind is chosen by the registration method.
 
 - **One interface** — `Worker` has a single method, `Run(ctx) error`. The name is given at registration and is the worker's identity.
-- **Two registration forms** — `Register(app, name, w, opts...)` for a constructed value, `RegisterProvided[T](app, name, opts...)` for a worker the DI container provides; T is resolved when the pool starts.
-- **Three layers** — an internal definition (immutable registration record) → a runner (mutable runtime state) → `Info` (read-only snapshot carrying the effective `Config` and the live state).
-- **Fail-fast registration** — names, options, cron expressions and readiness policies are validated when `Register` is called; nothing is parsed at run time.
-- **Lifecycle integrated** — the pool starts in an `OnStart` hook (after the port is bound, before traffic) and drains in the `OnDrain` phase, before any DI singleton is torn down.
+- **One supervisor** — `worker.Use(app)` returns a `*Supervisor`, a registry and reporting object with no lifecycle of its own.
+- **Four registration methods** — `Continuous` and `Scheduled` for a constructed value, `ContinuousProvided[T]` and `ScheduledProvided[T]` for a worker the DI container provides; `T` is built in the start walk.
+- **One component per worker** — each registration adds a component named `worker:<name>` to the App: its `Start` launches the loop, its `Shutdown` cancels the worker's context and waits for `Run`, its `Ready` reports the worker's readiness conditions.
+- **A tier per registration** — a scheduled worker defaults to the ingress tier and stops with the HTTP drain; a continuous worker defaults to the internal tier and stops after it, in reverse dependency order.
+- **Per-kind configuration in code** — `ContinuousConfig` and `ScheduledConfig`, zero meaning the default; the package reads no configuration section.
+- **Fail-fast registration** — names, configurations and cron expressions are validated when the registration method is called, and misuse panics; nothing is parsed at run time.
 - **Run outcomes are classified in one place** — panics, timeouts, graceful stops, errors, successes and early continuous exits follow one ordered table, and the loop exit is decided only after the outcome is recorded.
-- **Continuous workers are permanent** — `Run` must stay active until shutdown; an early nil return is a failure and restarts.
+- **Continuous workers are permanent** — `Run` must stay active until shutdown; an early nil return is a failure and follows the restart policy.
 - **Scheduled workers never overlap** — one goroutine per worker runs activations serially; activations that pass during a run are skipped and logged.
-- **Cooperative timeouts** — `WithRunTimeout` cancels a scheduled run's context; a timed-out run is a failure whatever `Run` returns.
-- **Observable** — exactly one start and one stop line per worker, run lines correlated by `run_id`, `Pool.Workers()` snapshots with snake_case JSON, opt-in readiness.
+- **Cooperative timeouts** — `ScheduledConfig.RunTimeout` cancels a scheduled run's context; a timed-out run is a failure whatever `Run` returns.
+- **Observable** — exactly one start and one stop line per started worker, run lines correlated by `run_id`, one terminal line, `Snapshot()` and `Lookup()` with snake_case JSON, opt-in readiness.
 
 ---
 
 ## Goals
 
 1. One abstraction for continuous and scheduled background work; cron is a scheduling strategy, not a separate system.
-2. Constructor-injected workers work with the framework's bootstrap order (register → `Finalize` → resolve).
-3. Registration is verifiable: a test can read the effective policy of every registered worker without running it.
-4. The lifecycle is legible from default-level logs and from readiness; no worker can end without reaching a reported state.
-5. Every timing path is deterministically testable with `testing/synctest`, without a clock seam.
+2. The kind's contract is visible at the call that registers the worker, and a setting of the other kind cannot be written.
+3. Constructor-injected workers work with the framework's bootstrap order (register → `Finalize` → start) and are ordered against the components they use, in both directions.
+4. Registration is verifiable: a test can read the effective policy of every registered worker without running it.
+5. The lifecycle is legible from default-level logs and from readiness; no worker can end without reaching a reported state.
+6. Every timing path is deterministically testable with `testing/synctest`, without a clock seam.
 
 ## Non-Goals
 
 - Job queues, task distribution, persistent job state (use a dedicated system).
-- Cluster-aware scheduling; the scheduler is per process.
-- On-demand triggering of a scheduled worker, or a synchronous first run as a startup gate (readiness `RequireFirstSuccess` covers the rotation side).
+- Cluster-aware scheduling: the scheduler is per process, and every replica runs every schedule ([Scheduled workers](#scheduled-workers)).
+- On-demand triggering of a scheduled worker, or a synchronous first run as a startup gate (`UnreadyUntilFirstSuccess` covers the rotation side).
 - Overlap policies other than skip; preemptive timeouts that abandon a goroutine; per-worker cancellation.
 - Restart strategies other than permanent for continuous workers.
-- Automatic readiness binding: participation is opt-in per worker through `WithReadiness`.
+- A worker kind that runs once at start, a policy by which a terminal worker failure stops the App, a lock hook for scheduled runs and a per-run logger — deferred (ADR-023).
+- Automatic readiness binding: participation is opt-in per condition.
 - A worker test package: a worker is tested by calling `w.Run(t.Context())`.
 - Metrics and tracing hooks (Phase 3.5; they will reuse the `run_id` and `duration` log attributes).
 
@@ -47,23 +51,23 @@ The `worker/` package runs background tasks — queue consumers, watchers, perio
 ## Three-Layer Model
 
 ```
-Register / RegisterProvided            Pool.Start                    Pool.Workers
-          │                                 │                              │
-          ▼                                 ▼                              ▼
-  ┌──────────────────┐   resolve+publish  ┌──────────────────┐   snapshot   ┌──────────────────────┐
-  │ definition       │ ─────────────────► │ runner           │ ───────────► │ Info                 │
-  │ (internal,       │                    │ (internal,       │              │ Name, Kind           │
-  │  immutable)      │                    │  mutable, mu)    │              │ Config  ← definition │
-  └──────────────────┘                    └──────────────────┘              │ Status, Restarts,    │
-  • name                                  • resolved Worker                 │ ConsecutiveFailures, │
-  • resolver + source label               • status, restarts,               │ LastRun, LastSuccess,│
-  • compiled schedule                     •   consecutiveFailures,          │ LastError ← runner   │
-  • restart / failure policy              •   lastRun, lastSuccess,         └──────────────────────┘
-  • startImmediately, runTimeout          •   lastError
-  • readiness policy (copy)
+Continuous / Scheduled / …Provided       component Start                   Snapshot / Lookup
+          │                                     │                                  │
+          ▼                                     ▼                                  ▼
+  ┌──────────────────┐   build (+ T) + launch  ┌──────────────────┐  snapshot  ┌───────────────────────────┐
+  │ definition       │ ──────────────────────► │ runner           │ ─────────► │ Info                      │
+  │ (internal,       │                         │ (internal,       │            │ Name, Kind, Schedule      │
+  │  immutable)      │                         │  mutable, mu)    │            │ Continuous | Scheduled    │
+  └──────────────────┘                         └──────────────────┘            │            ← definition   │
+  • name, kind                                 • Worker value                  │ Status, Restarts,         │
+  • worker value, or T                         • status, restarts,             │ ConsecutiveFailures,      │
+  • compiled schedule                          •   consecutiveFailures,        │ LastStartedAt,            │
+  • resolved ContinuousConfig                  •   lastStartedAt,              │ LastSucceededAt,          │
+  •   or ScheduledConfig                       •   lastSucceededAt,            │ LastError    ← runner     │
+                                               •   lastError                   └───────────────────────────┘
 ```
 
-Configuration and live state never share a mutable struct. The definition has one projection, `Config`, and one `Info` builder; the pre-start answer of `Pool.Workers()` and every runner snapshot go through that builder, so a field added to `Info` cannot be missing from one of them.
+Configuration and live state never share a mutable struct. The definition holds the resolved configuration of its kind, and one `Info` builder produces every snapshot — before the worker's component has started and from a running runner alike — so a field added to `Info` cannot be missing from one of them.
 
 ---
 
@@ -76,42 +80,36 @@ Signatures only; the godoc in `worker/` is authoritative for wording.
 type Worker interface{ Run(ctx context.Context) error }
 type Func func(ctx context.Context) error // Run calls f(ctx)
 
-// Registration
-func Register(app *credo.App, name string, w Worker, opts ...Option) error
-func MustRegister(app *credo.App, name string, w Worker, opts ...Option)
-func RegisterProvided[T Worker](app *credo.App, name string, opts ...Option) error
-func MustRegisterProvided[T Worker](app *credo.App, name string, opts ...Option)
+// Supervisor
+func Use(app *credo.App) *Supervisor
+func (s *Supervisor) Continuous(name string, w Worker, cfg ...ContinuousConfig)
+func (s *Supervisor) Scheduled(name, expr string, w Worker, cfg ...ScheduledConfig)
+func (s *Supervisor) ContinuousProvided[T Worker](name string, cfg ...ContinuousConfig)
+func (s *Supervisor) ScheduledProvided[T Worker](name, expr string, cfg ...ScheduledConfig)
+func (s *Supervisor) Snapshot() []Info
+func (s *Supervisor) Lookup(name string) (Info, bool)
 
-// Options
-func WithSchedule(expr string) Option
-func WithStartImmediately() Option                 // scheduled
-func WithMaxConsecutiveFailures(n int) Option      // scheduled
-func WithRunTimeout(d time.Duration) Option        // scheduled
-func WithMaxRestarts(n int) Option                 // continuous
-func WithRestartDelay(d time.Duration) Option      // continuous
-func WithMaxRestartDelay(d time.Duration) Option   // continuous
-func WithReadiness(policy ReadinessPolicy) Option  // both kinds (conditions are kind-checked)
+// Configuration
+type ContinuousConfig struct{ ... }
+type ScheduledConfig struct{ ... }
+type Restart struct{ ... }
 
-const DefaultRestartDelay = 3 * time.Second
+const DefaultMinRestartDelay = 3 * time.Second
 const DefaultMaxRestartDelay = time.Minute
 var ErrRunTimeout = errors.New("worker: run timed out")
 
 // Run context
-func RunID(ctx context.Context) string
-func WorkerName(ctx context.Context) string
-func ScheduledAt(ctx context.Context) time.Time
-
-// Pool (published in DI as *worker.Pool)
-func (p *Pool) Start(ctx context.Context) error
-func (p *Pool) Shutdown(ctx context.Context) error
-func (p *Pool) Workers() []Info
+type RunInfo struct {
+	Worker      string    // the registration name
+	ID          string    // the run's identifier, equal to the run_id of the framework's lines
+	ScheduledAt time.Time // the intended activation; zero for continuous runs and the RunOnStart run
+}
+func CurrentRun(ctx context.Context) (RunInfo, bool)
 
 // Snapshot types
-type Kind string     // KindContinuous, KindScheduled
-type Status string   // StatusIdle, StatusRunning, StatusWaiting, StatusStopped, StatusFailed
-type Config struct{ ... }
+type Kind string   // KindContinuous, KindScheduled
+type Status string // StatusPending, StatusRunning, StatusBackoff, StatusWaiting, StatusStopped, StatusFailed
 type Info struct{ ... }
-type ReadinessPolicy struct{ RequireFirstSuccess, FailWhenFailed bool; MaxSuccessAge time.Duration }
 
 // Schedules
 func ParseSchedule(expr string) (*Schedule, error)
@@ -119,91 +117,169 @@ func (s *Schedule) Next(now time.Time) time.Time
 func (s *Schedule) String() string
 ```
 
-`Pool.Start` and `Pool.Shutdown` are called by the lifecycle hooks the pool installs; applications call `Workers()`.
+The registration methods return nothing and panic on misuse ([Validation](#validation)). The worker components they add are the App's: no method of the supervisor starts or stops a worker.
+
+**Removed.** The `worker` configuration section; `Option` and every `With*` option (`WithSchedule`, `WithStartImmediately`, `WithMaxConsecutiveFailures`, `WithRunTimeout`, `WithMaxRestarts`, `WithRestartDelay`, `WithMaxRestartDelay`, `WithReadiness`), with the presence flags that told an omitted option from an explicit zero and the cross-kind validation; `ReadinessPolicy`; `Config`; `Pool` with `Start`, `Shutdown` and `Workers`, and its DI binding; `Register`, `RegisterProvided` and their `Must*` twins; `DefaultRestartDelay`; `RunID`, `WorkerName` and `ScheduledAt`; `StatusIdle`. The [migration guide](../guides/pre-v1-migration.md#workers) carries the naming table.
 
 ---
 
 ## Registration
 
+### The supervisor
+
+`worker.Use(app)` creates a supervisor for `app` and registers nothing: it binds nothing into the container, installs no hook and adds no component. The supervisor logs through `app.Logger()` with `module=worker`. `Use` may be called more than once; each supervisor is an independent registry.
+
+The framework publishes nothing into the application's container. A module that registers workers takes the supervisor as a parameter (`func RegisterBilling(app *credo.App, workers *worker.Supervisor)`), and an application that wants it injected — into an admin controller, say — binds it itself with `app.ProvideValue(workers)`. The supervisor is not a component.
+
 ### Names
 
-The name is the registration identity. It is the `worker` attribute of every log line, the `Name` of the snapshot, the suffix of the readiness check `worker:<name>` and the value `WorkerName(ctx)` returns inside `Run`. Rules, applied to both forms and independent of `WithReadiness`:
+The name is the registration identity. It is the `worker` attribute of every log line, the `Name` of the snapshot, the suffix of the component name `worker:<name>` — under which readiness and the lifecycle's reports name the worker — and `RunInfo.Worker` inside `Run`. Rules, the same for all four methods:
 
 - non-empty;
 - no leading or trailing whitespace (names are never trimmed or otherwise normalized);
 - no control characters;
-- unique within the pool (`worker: duplicate worker name "x"`), across `Register` and `RegisterProvided`.
+- unique within the supervisor (`worker: duplicate worker name "x"`), across all four methods; across supervisors, the component registry's unique-name rule refuses a second `worker:<name>`.
 
-No prefix is reserved. The health engine's reserved `credo.` prefix applies to the full readiness check name, which always starts with `worker:`.
+No prefix is reserved. The health engine's reserved `credo.` prefix applies to the full name, which always starts with `worker:`.
 
-Registering the same instance under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls.
+Registering the same `Worker` value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Registering one `T` twice through the provided methods panics — under two names in one supervisor, or in two supervisors of one App, which share that check — because the container would hand both loops one instance.
+
+### Configuration
+
+```go
+type ContinuousConfig struct {
+	Tier              credo.Tier `json:"tier"`                // 0 = credo.TierInternal
+	Restart           Restart    `json:"restart"`
+	UnreadyWhenFailed bool       `json:"unready_when_failed"`
+}
+
+type ScheduledConfig struct {
+	Tier                     credo.Tier    `json:"tier"`                        // 0 = credo.TierIngress
+	RunOnStart               bool          `json:"run_on_start"`                // one extra run when the worker starts
+	RunTimeout               time.Duration `json:"run_timeout"`                 // 0 = none
+	MaxConsecutiveFailures   int           `json:"max_consecutive_failures"`    // 0 = unlimited; reaching it is terminal
+	UnreadyWhenFailed        bool          `json:"unready_when_failed"`
+	UnreadyUntilFirstSuccess bool          `json:"unready_until_first_success"`
+	UnreadyAfterSuccessAge   time.Duration `json:"unready_after_success_age"`   // 0 = off
+}
+
+type Restart struct {
+	Disabled bool          `json:"disabled"`  // true: the first failed run is terminal
+	Limit    int           `json:"limit"`     // 0 = unlimited; N = the first run plus at most N restarts
+	MinDelay time.Duration `json:"min_delay"` // first and shortest wait; 0 = DefaultMinRestartDelay
+	MaxDelay time.Duration `json:"max_delay"` // longest wait; 0 = max(DefaultMaxRestartDelay, MinDelay)
+}
+```
+
+Each registration method takes its kind's configuration variadically: no argument for the defaults, one for custom, more than one panics. Zero always means the default; nothing distinguishes an omitted field from an explicit zero. The configuration comes from the registration call only: resolution has two levels, the given value and then the package default.
+
+| Field | Zero resolves to | Rejected (panics) |
+| --- | --- | --- |
+| `Tier` | `credo.TierInternal` for a continuous worker, `credo.TierIngress` for a scheduled one | a value that is neither zero nor one of the two tiers |
+| `Restart.Disabled` | restarts enabled | `true` beside a non-zero `Limit`, `MinDelay` or `MaxDelay` |
+| `Restart.Limit` | unlimited | negative |
+| `Restart.MinDelay` | `DefaultMinRestartDelay` (3 s) | negative |
+| `Restart.MaxDelay` | `max(DefaultMaxRestartDelay, resolved MinDelay)` | negative; positive and below the resolved `MinDelay` |
+| `RunTimeout` | no timeout | negative |
+| `MaxConsecutiveFailures` | unlimited | negative |
+| `UnreadyAfterSuccessAge` | off | negative |
+
+Validation runs on the **resolved** values. `MinDelay` resolves first. A zero `MaxDelay` is raised to fit it, so `Restart{MinDelay: 10 * time.Minute}` alone is valid and a fixed ten-minute delay. A positive `MaxDelay` below the resolved `MinDelay` panics — `Restart{MaxDelay: time.Second}` alone is rejected against the default floor, with a message that names both values, says the floor is the default and tells the caller to set `MinDelay` as well: lowering an omitted floor to fit an explicit ceiling would tighten the retry loop, so the application writes that floor itself. A resolved `Restart` with `Disabled` set keeps its delays zero: they do not apply.
+
+The package reads no configuration section. An application that wants environment-driven settings unmarshals a typed section of its own and passes the values:
+
+```go
+type workerSettings struct {
+	RestartMinDelay time.Duration
+	RestartMaxDelay time.Duration
+}
+
+settings := app.MustGetConfig[workerSettings]("workers")
+workers.ContinuousProvided[*OrderConsumer]("order-consumer", worker.ContinuousConfig{
+	Restart: worker.Restart{MinDelay: settings.RestartMinDelay, MaxDelay: settings.RestartMaxDelay},
+})
+```
+
+A leftover `worker` section is no longer read; like any section nothing decodes, it is ignored, unless the application decodes the whole configuration tree into a struct under `WithStrictDecoding`, where it is an unknown key. A changed schedule, limit or timeout takes effect at the next start: a config reload does not re-register workers.
 
 ### Validation
 
-`Register` and `RegisterProvided` share one path. In order, registration fails with an error when:
+The four methods share one path. In order, a registration panics when:
 
-1. `app` is nil, or (for `Register`) the worker is nil — including a nil `Func` and a typed-nil pointer;
+1. `app` given to `Use` is nil, or (for `Continuous` and `Scheduled`) the worker is nil — including a nil `Func` and a typed-nil pointer;
 2. the name breaks a rule above;
-3. an option value is out of range: negative `WithMaxRestarts`, `WithRestartDelay`, `WithMaxRestartDelay`, `WithRunTimeout` or `WithMaxConsecutiveFailures`;
-4. the readiness policy is invalid (see [Health Integration](#health-integration));
+3. more than one configuration is given;
+4. a configuration value is rejected by the table above;
 5. the schedule does not parse (see [Schedules](#schedules));
-6. an option belongs to the other kind:
+6. the name is a duplicate in the supervisor, or a provided `T` is registered twice in it;
+7. the component registry refuses the worker's component: the registration comes after `Finalize`, after the App is prepared or after it is shut down, or another supervisor already added `worker:<name>`.
 
-| Kind | Rejected option | Error |
-| --- | --- | --- |
-| scheduled | `WithMaxRestarts` | `worker: WithMaxRestarts is for continuous workers; use WithMaxConsecutiveFailures` |
-| scheduled | `WithRestartDelay` | `worker: WithRestartDelay is for continuous workers` |
-| scheduled | `WithMaxRestartDelay` (zero included) | `worker: WithMaxRestartDelay is for continuous workers` |
-| continuous | `WithMaxConsecutiveFailures` | `worker: WithMaxConsecutiveFailures is for scheduled workers; use WithMaxRestarts` |
-| continuous | `WithStartImmediately` | `worker: WithStartImmediately is for scheduled workers` |
-| continuous | `WithRunTimeout` | `worker: WithRunTimeout is for scheduled workers` |
-
-7. with `WithReadiness`, the check name `worker:<name>` is not a valid health check name;
-8. the registration window is closed, the pool cannot be adopted, or — for the registration that creates the pool — the `worker` config section is invalid (below);
-9. an explicit positive `WithMaxRestartDelay` is below the effective restart delay, which is known only once the pool's configuration is (`worker: max restart delay must be >= the restart delay 10s, got 5s`);
-10. the name is a duplicate, or the pool has already started.
-
-`MustRegister` and `MustRegisterProvided` panic with the same error.
-
-### Registration window and the pool
-
-Every registration call is rejected after `app.Finalize()` (`worker: Register after app.Finalize: …`), including calls made after the pool already exists. The first successful registration creates the pool:
-
-- the optional `worker` config section is read through `App.ConfigExists` / `App.GetConfig` (registration runs before `Finalize`, when `Resolve` is unavailable);
-- the pool is published as a protected DI binding (`ProvideProtectedValue[*Pool]`), so `Replace[*Pool]` is rejected; later registrations adopt it through `AdoptValue`, and a `*Pool` registered by any other means is refused without running a constructor;
-- the readiness seam (`internal/health.ReadinessFunc`) is installed, so registration and `UseHealth` may happen in either order;
-- `app.OnStart(pool.Start)` and `app.OnDrain(pool.Shutdown)` are installed. `Pool` also implements `credo.Shutdowner`; the container's later pass finds the stop sequence already complete.
-
-The pool logs through `app.Logger()` with `module=worker`.
+Every panic names the worker, the call and the remedy, for example `worker: Restart.MaxDelay 1s for "order-consumer" is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay` and `worker: Scheduled("report") after app.Finalize; register workers before Finalize`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Provided workers](#provided-workers)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
 
 ### Provided workers
 
-`RegisterProvided[T]` stores a resolver instead of an instance; `T` is resolved with `app.Resolve[T]()` when the pool starts — after the implicit `Finalize`, before the server accepts traffic. Consequences:
+`ContinuousProvided[T]` and `ScheduledProvided[T]` add the worker's component to the registry as a constructor over `T`: the start walk builds it, resolving `T` from the container, after `T`'s component dependencies have started. Consequences:
 
-- `RegisterProvided[T]` and `app.Provide[T]` may be called in either order.
+- `Provide[T]` and the provided registration may be called in either order, both before `Finalize`.
 - The constraint `T Worker` makes a type without `Run` a compile error. `T` may be an interface bound with `app.Alias`.
-- "T is not provided", a constructor error or panic, and a nil result are reported at start, not at registration; T's own constructor graph is validated by `Finalize` like any provider.
-- If T implements `credo.Shutdowner`, the container closes it after the pool has drained; no extra graph edge is needed.
+- A `T` with no binding is a missing dependency: `Finalize` returns it with its path. `T`'s own constructor graph is validated by `Finalize` like any provider's.
+- A constructor error or panic while building `T`, or a nil value, is a start failure of the worker's component: the start phase rolls back what was built and `Run` returns the error naming `worker:<name>`.
+- The worker stops before `T`'s component dependencies: if `T` itself is a component — it has `Shutdown` — it is shut down after the worker, in dependency order.
+- A provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path and both remedies: declare the worker `Tier: credo.TierIngress`, or split the ingress component so that what the worker uses is an internal part.
 
-Resolving in `OnStart` is within the DI rule, which forbids resolution only in the three shutdown hooks (`OnPreDrain`, `OnDrain`, `OnShutdown`).
+A worker registered by value has no edges the dependency graph can see — a closure's captures are invisible — and takes its place in its tier by registration order. A worker that uses infrastructure is registered in its provided form, so the graph orders it.
 
 ---
 
-## Start and Shutdown
+## Components
 
-### Start protocol
+### Start, Shutdown, Ready
 
-`Pool.Start` runs user constructors outside the pool lock and is all-or-nothing:
+Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
 
-1. **Claim, under the lock.** Refuse when shutdown has begun (`worker: pool already shut down`) or the pool was already claimed (`worker: pool already started`). Mark the pool claimed — further registrations are refused — and snapshot the definitions.
-2. **Resolve, outside the lock.** Resolve every definition. A nil result is an error (`resolved to nil`). Each failure is wrapped as `worker: "<name>": resolve <type>: <cause>`, and all failures are joined.
-3. **Publish, under the lock.** If any resolution failed, return the joined error and launch nothing. If a `Shutdown` arrived during step 2, return `worker: pool already shut down` and launch nothing. Otherwise create the runners — scheduled runners are published as `waiting`, continuous runners stay `idle` until their first run is admitted — and launch one goroutine per worker under the lock.
+- **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A provided worker's construction precedes `Start`, so its failure is the component's start failure.
+- **`Shutdown(ctx)`** cancels the worker's context and returns when `Run` and the loop have returned — and not before. It does not return at the deadline itself: a `Run` that ignores cancellation past the drain deadline is abandoned by the lifecycle, reported in the error `Run` returns, and the components the worker depends on stay open, so nothing closes a database under a run that may still use it. A worker whose component was built but never started shuts down at once.
+- **`Ready(ctx)`** exists only when the registration sets a readiness condition ([Health Integration](#health-integration)). It reads the runner's last state in memory and never performs I/O.
 
-A failed `Start` fails the application's `OnStart` phase, so startup fails before the server accepts traffic and the App runs its normal teardown. Until runners are published — before `Start`, and after a failed or pre-empted `Start` — `Workers()` reports every definition with status `idle`.
+The supervisor has no `Start` and no `Shutdown`: the lifecycle starts and stops each worker's component once, in order, and owns the race between a start and a shutdown requested during it.
+
+### Tiers
+
+| Kind | Default tier | Starts | Stops |
+| --- | --- | --- | --- |
+| scheduled | `credo.TierIngress` | after the internal tier, before the listener accepts | first, concurrently with the HTTP drain and the other ingress components no edge orders |
+| continuous | `credo.TierInternal` | in dependency order, before the ingress tier | after the HTTP drain and the ingress tier, in reverse dependency order; components without edges in reverse registration order |
+
+A scheduled worker originates its runs, so it stops with the listener and no run starts during the drain. A continuous worker that consumes what the HTTP handlers enqueue stops after the handlers have finished and before the database it writes to. A continuous worker that consumes an external queue declares `Tier: credo.TierIngress`, so it stops taking work while the listener does. The two defaults follow the asymmetry of the mistakes: an external consumer left internal merely stops later; an in-process consumer placed in ingress loses the work handlers enqueue during the drain.
+
+### Startup
+
+```
+app.Run()
+  ├─ prepare: Finalize (graph errors) → compile → publish
+  ├─ start walk, internal tier, dependency order
+  │   ├─ the components a provided worker's T depends on start first
+  │   └─ worker:<name> (continuous default): build (provided: resolve T) → Start launches the loop
+  ├─ start walk, ingress tier
+  │   └─ worker:<name> (scheduled default): Start launches the loop
+  └─ the listener accepts
+```
+
+An App served through `ServeHTTP` runs the same walk through `App.Start` ([lifecycle spec](lifecycle.md)).
 
 ### Shutdown
 
-The first `Shutdown` marks the pool stopping, cancels the pool context and starts waiting for every worker goroutine. Every call — concurrent, repeated, from the `OnDrain` hook or from the container's `Shutdowner` pass — returns nil once all goroutines have returned (completion takes precedence over an already-ended `ctx`) and `ctx.Err()` only while workers are still running when `ctx` ends. Because stopping is set under the same lock `Start` publishes under, a goroutine can never join a wait that has already begun. A pool that never started shuts down immediately.
+```
+app.Shutdown(ctx)
+  ├─ readiness → unready
+  ├─ ingress tier, concurrently with the HTTP drain
+  │   └─ worker:<name> (scheduled default): cancel the worker's context, wait for Run
+  └─ internal tier, reverse dependency order
+      ├─ worker:<name> (continuous default): cancel the worker's context, wait for Run
+      └─ then the components the worker depends on
+```
+
+One drain deadline serves both tiers and is spent in order, so a long HTTP drain leaves less for an internal worker's final flush. There is no worker-specific shutdown timeout.
 
 ---
 
@@ -216,11 +292,11 @@ Each worker runs on one goroutine driven by a single loop. A policy supplies the
 Admitting a run is one step, in this order:
 
 1. the policy yields the activation time (side-effect free);
-2. the pool context is checked — if it is done, the loop exits (`stopped`, unless already `failed`) and **no new `Run` is invoked**;
-3. one commit records "a run started": status `running`, `LastRun` = now, and for a continuous restart `Restarts++`;
+2. the worker's context is checked — if it is done, the loop exits (`stopped`, unless already `failed`) and **no new `Run` is invoked**;
+3. one commit records "a run started": status `running`, `LastStartedAt` = now, and for a continuous restart `Restarts++`;
 4. `Run` is called with the run context.
 
-This commit is the only writer of `StatusRunning`. When step 2 observes cancellation, neither `LastRun` nor `Restarts` changes: before the first run `LastRun` stays zero; before a restart it keeps the previous run's time. Cancellation after the check can still occur before `Run` starts; the worker handles it through its context. The check and the call are not atomic with cancellation, and no further admission protocol exists.
+This commit is the only writer of `StatusRunning`. When step 2 observes cancellation, neither `LastStartedAt` nor `Restarts` changes: before the first run `LastStartedAt` stays zero; before a restart it keeps the previous run's time. Cancellation after the check can still occur before `Run` starts; the worker handles it through its context. The check and the call are not atomic with cancellation, and no further admission protocol exists.
 
 ### Run outcome
 
@@ -230,50 +306,46 @@ After `Run` returns, the outcome is classified in this order; the first matching
 | --- | --- | --- |
 | 1 | `Run` panicked | failure — never a graceful stop, whatever the panic value wraps |
 | 2 | the run context's cause is `ErrRunTimeout` | failure, timed out — whatever `Run` returned, nil included |
-| 3 | the pool context is done and `Run` returned nil or nothing but a context error | graceful stop — no counter or timestamp changes |
+| 3 | the worker's context is done and `Run` returned nil or nothing but a context error | graceful stop — no counter or timestamp changes |
 | 4 | `Run` returned an error | failure |
 | 5 | `Run` returned nil, scheduled worker | success |
-| 6 | `Run` returned nil, continuous worker, pool context alive | failure, unexpected exit |
+| 6 | `Run` returned nil, continuous worker, the worker's context alive | failure, unexpected exit |
 
 `context.Cause` keeps the first cancellation reason: a timeout that fired before shutdown stays a timeout; a shutdown that came first is never turned into a timeout by a later deadline. Rows 1 and 2 are evaluated before row 3, so a panic during shutdown, or a timeout that fired before it, is still recorded as a failure. A non-context error returned during shutdown (a final batch that could not be written) is a failure too, with its own text preserved.
 
 Row 3 accepts an error only when it is a context error and nothing else: every branch of its unwrap/join tree must end in `context.Canceled` or `context.DeadlineExceeded` (on an error that wraps nothing, an `Is` method is honored as `errors.Is` honors it; an error that wraps others is judged by what it wraps, never by its own `Is`). A single wrap chain qualifies — `fmt.Errorf("query: %w", ctx.Err())`, a `*url.Error` around a cancelled dial. A joined error qualifies only when each branch does: `errors.Join(ctx.Err(), flushErr)` and `fmt.Errorf("%w: %w", ErrFlush, ctx.Err())` are failures under row 4, recorded with their full text, because `flushErr` alone would have been one. Joining an error with the cancellation never hides it.
 
+A client that reports a cancelled call as an error of its own, which does not wrap `ctx.Err()`, makes the stop a failure under row 4. The application translates that one error at the call, and only while its context is done — never with a blanket `if ctx.Err() != nil { return nil }`, which would also swallow a real flush error; the worker guide shows the recipe.
+
 What each outcome records:
 
-- **Failure**: `LastError` = the error text (no stack trace); the counter of the kind advances (continuous: see [Continuous workers](#continuous-workers); scheduled: `ConsecutiveFailures++`); an Error line is logged.
-- **Success** (scheduled only): status `waiting`, `ConsecutiveFailures` = 0, `LastSuccess` = completion time, `LastError` cleared.
-- **Graceful stop**: only the status changes (`stopped`, unless already `failed`). `LastError` keeps the most recent failure, and `LastSuccess` and the counters keep their values.
+- **Failure**: `LastError` = the error text (no stack trace); the counter of the kind advances (continuous: see [Continuous workers](#continuous-workers); scheduled: `ConsecutiveFailures++`); a `worker run failed` line is logged.
+- **Success** (scheduled only): status `waiting`, `ConsecutiveFailures` = 0, `LastSucceededAt` = completion time, `LastError` cleared.
+- **Graceful stop**: only the status changes (`stopped`, unless already `failed`). `LastError` keeps the most recent failure, and `LastSucceededAt` and the counters keep their values.
 
 ### Loop exit
 
-The exit is decided after the outcome is recorded: **failed** when this failure exhausted a positive limit (or the schedule has no future activation); otherwise **shutdown** when the pool context is done; otherwise the loop continues. A failure recorded during shutdown keeps its `LastError` and counter and ends in `stopped` — unless it was the one that exhausted the limit, in which case the worker is `failed`.
+The exit is decided after the outcome is recorded: **failed** when this failure ended the worker — it exhausted a positive limit, or restarts are disabled — or when the schedule has no future activation; otherwise **shutdown** when the worker's context is done; otherwise the loop continues. A failure recorded during shutdown keeps its `LastError` and counter and ends in `stopped` — unless it was the one that ended the worker, in which case the worker is `failed`.
 
-Cancellation while waiting (restart delay or next activation) ends the loop the same way: `stopped`, unless already `failed`, with the last execution's snapshot preserved.
+Cancellation while waiting (restart backoff or next activation) ends the loop the same way: `stopped`, unless already `failed`, with the last execution's snapshot preserved.
 
 ### Continuous workers
 
-- `Run` is called once at start and must stay active until the pool context is cancelled. The idiomatic ending is `case <-ctx.Done(): return nil` (or return `ctx.Err()`).
-- A nil return while the pool context is alive is outcome 6: the recorded error is `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, the failure line carries `unexpected_exit=true`, and the restart policy applies. A non-nil error or a panic keeps its own diagnostics and never carries that marker.
-- After a failure the worker waits (status `waiting`) and runs again. The wait starts at the restart delay and backs off, with jitter, up to a cap as failures repeat ([Restart backoff](#restart-backoff)).
-- `WithMaxRestarts(N)`, N > 0, allows the first run plus at most N restarts. `Restarts` counts restarts that actually started (it advances in the admission commit, so a shutdown during the restart delay does not count one). The worker becomes `failed` when a run fails and `Restarts == N`: with N = 1 it runs twice. N = 0 (the default) means unlimited restarts.
-- A continuous worker never records a success: `LastSuccess` is always zero.
+- `Run` is called once at start and must stay active until the worker's context is cancelled. The idiomatic ending is `case <-ctx.Done(): return nil` (or return `ctx.Err()`).
+- A nil return while the worker's context is alive is outcome 6: the recorded error is `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, the failure line carries `unexpected_exit=true`, and the restart policy applies. A non-nil error or a panic keeps its own diagnostics and never carries that marker.
+- **A restart calls `Run` again on the same value.** A continuous `Run` must therefore be re-enterable — it builds its per-run resources (a subscription, a watcher, a connection) inside `Run` and releases them before returning — or be registered with `Restart{Disabled: true}`.
+- After a failure the worker waits (status `backoff`) and runs again. The wait starts at `Restart.MinDelay` and backs off, with jitter, up to `Restart.MaxDelay` as failures repeat ([Restart backoff](#restart-backoff)).
+- `Restart.Limit` N, N > 0, allows the first run plus at most N restarts. `Restarts` counts restarts that actually started (it advances in the admission commit, so a shutdown during the backoff does not count one). The worker becomes `failed` when a run fails and `Restarts == N`: with N = 1 it runs twice. N = 0 (the default) means unlimited restarts.
+- `Restart{Disabled: true}`: the first failed run — an error, a panic or an early nil return — is terminal, and the worker becomes `failed` without a restart, during shutdown too. The worker is still permanent: `Disabled` removes in-process retries and nothing else. What follows a terminal failure is the application's ([Health Integration](#health-integration)).
+- A continuous worker never records a success: `LastSucceededAt` is always zero, and `ConsecutiveFailures` stays zero.
 
-Finite background work does not fit a continuous worker's contract on its own. Run it in `app.OnStart` when startup should wait for it, or end the continuous `Run` with `<-ctx.Done()` after the work is done.
+Finite background work does not fit a continuous worker's contract on its own. Run it in a component's `Start` or an `OnStart` hook when startup should wait for it, or end the continuous `Run` with `<-ctx.Done()` after the work is done.
 
 ### Restart backoff
 
 A continuous worker restarts after a capped, jittered exponential delay. The rationale is in [ADR-023](../adr/023-worker-system.md#restart-backoff).
 
-**Base.** `base` is the effective restart delay (`Config.RestartDelay`), resolved at registration: `WithRestartDelay` → the pool's `worker.restart_delay` → `DefaultRestartDelay`. Zero at either level means the default — an explicit `WithRestartDelay(0)` skips the pool configuration — so an immediately failing worker is throttled rather than busy-looping. It is the first and the minimum delay.
-
-**Cap.** The cap (`Config.MaxRestartDelay`) resolves like `base`, explicit zero included:
-
-| `WithMaxRestartDelay` | Effective cap |
-| --- | --- |
-| omitted | `worker.max_restart_delay`, else `DefaultMaxRestartDelay`; raised to `base` when `base` is larger, without an error |
-| `WithMaxRestartDelay(0)` | `max(DefaultMaxRestartDelay, base)`; the pool configuration is skipped |
-| `WithMaxRestartDelay(d)`, `d > 0` | `d`; `d` below the effective `base` is a registration error |
+**Floor and cap.** `base` is the resolved `Restart.MinDelay`: `DefaultMinRestartDelay` (3 s) when zero, so an immediately failing worker is throttled rather than busy-looping. It is the first and the minimum delay. The cap is the resolved `Restart.MaxDelay`: `max(DefaultMaxRestartDelay, base)` when zero; a positive value is used as given and must not be below `base` ([Configuration](#configuration)).
 
 **Delay.** After a failed run for which a restart is planned:
 
@@ -285,11 +357,11 @@ delay   = uniform in [lower, ceiling]; exactly lower when lower == ceiling
 
 `k` is the failure's position in the current sequence, starting at 1. The first delay is exactly `base`; every delay lies in `[base, cap]`; a cap equal to `base` is a fixed delay; the window saturates at the cap without overflow, however long the sequence. Individual delays need not grow monotonically.
 
-**Reset.** When the run that just failed lasted at least the effective cap (`duration >= cap`), the sequence restarts: that failure counts as `k = 1` and the next restart waits `base`. A reset never changes `Restarts` or the `WithMaxRestarts` budget.
+**Reset.** When the run that just failed lasted at least the cap (`duration >= cap`), the sequence restarts: that failure counts as `k = 1` and the next restart waits `base`. A reset never changes `Restarts` or the `Limit` budget.
 
-**Limits.** The backoff spaces restarts; it does not count them. `WithMaxRestarts(N)` allows the first run plus N restarts, and `Restarts` counts restarts that started, so the time to `failed` is the sum of the delays: with the defaults, `WithMaxRestarts(5)` reaches `failed` after roughly 48–93 s, and each further restart adds 30–60 s. Cancellation during the wait ends the loop without counting a restart. Scheduled workers do not back off: their schedule is the cadence.
+**Limits.** The backoff spaces restarts; it does not count them. `Limit` N allows the first run plus N restarts, and `Restarts` counts restarts that started, so the time to `failed` is the sum of the delays: with the default floor and cap, `Limit: 5` reaches `failed` after roughly 48–93 s, and each further restart adds 30–60 s. Cancellation during the wait ends the loop without counting a restart. Scheduled workers do not back off: their schedule is the cadence.
 
-**Fixed delay.** Setting `WithRestartDelay(d)` and `WithMaxRestartDelay(d)` to the same positive `d` is the only fixed delay no configuration can change. `WithRestartDelay(time.Minute)` alone is fixed only while the pool cap does not exceed one minute — the default — and with `worker.max_restart_delay: 5m` it grows from one minute to five.
+**Fixed delay.** `MinDelay` and `MaxDelay` set to the same positive value give a fixed delay; so does a `MinDelay` of a minute or more alone, since a zero `MaxDelay` resolves to it.
 
 **Announcement.** The `worker run failed` line carries `next_restart_in` only when a restart is planned ([Logging Contract](#logging-contract)).
 
@@ -297,22 +369,23 @@ delay   = uniform in [lower, ceiling]; exactly lower when lower == ceiling
 
 Each scheduled worker is one goroutine running a serial loop: wait for the next activation, run it synchronously, compute the following one.
 
-- **No overlap by construction.** Activations whose time passes while a run is in flight are skipped when the loop resumes and reported by one `worker ticks skipped` line per resumption; they are never queued.
+- **No overlap by construction.** Activations whose time passes while a run is in flight are skipped when the loop resumes and reported by one `worker activations skipped` line per resumption; they are never queued.
 - **Anchored grid.** The next activation is computed from the last intended activation, not from the completion time, so a long run delays the next fire without shifting an `@every` grid.
-- **Start immediately.** `WithStartImmediately` adds one synthetic run before the first computed activation; `ScheduledAt(ctx)` is the zero time for it. The first computed activation is then based on the time that run finished.
-- **Failure limit.** `WithMaxConsecutiveFailures(N)`, N > 0: the worker becomes `failed` after N consecutive failed runs. N = 0 (the default) means unlimited. A success resets the streak.
+- **Run on start.** `RunOnStart` adds one run as soon as the worker starts, before the first computed activation; `RunInfo.ScheduledAt` is the zero time for it. The first computed activation is then based on the time that run finished.
+- **Failure limit.** `MaxConsecutiveFailures` N, N > 0: the worker becomes `failed` after N consecutive failed runs. N = 0 (the default) means unlimited. A success resets the streak.
 - **No future activation.** If the schedule yields no activation, the worker becomes `failed` with `LastError` = `schedule has no future activation`.
-- A scheduled `Run` that returns nil while the pool is shutting down is a graceful stop (row 3), not a success: `LastSuccess` and `ConsecutiveFailures` keep their previous values.
+- A scheduled `Run` that returns nil while the worker is stopping is a graceful stop (row 3), not a success: `LastSucceededAt` and `ConsecutiveFailures` keep their previous values.
+- **Every replica runs every schedule.** The scheduler is per process: three replicas run a cleanup three times. A scheduled job is idempotent or guarded by an application-level lock (for SQL, an advisory lock or a claim row).
 
 ### Run timeout
 
-`WithRunTimeout(d)`, scheduled workers only, bounds every run, including the synthetic startup run. `d = 0` (the default) means no timeout.
+`ScheduledConfig.RunTimeout` bounds every run, including the `RunOnStart` run. Zero (the default) means no timeout.
 
-- The run context is derived with `context.WithTimeoutCause(ctx, d, ErrRunTimeout)`. Inside `Run`, `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the application shutting down.
-- A run whose context was cancelled by the timeout is a failure (row 2) whatever `Run` returned. The recorded error wraps `ErrRunTimeout`: `worker: run timed out after 15s` when `Run` returned nil, `worker: run timed out after 15s: <returned error>` otherwise. The failure line carries `timed_out=true`, and the failure counts toward `WithMaxConsecutiveFailures`.
+- The run context is derived with `context.WithTimeoutCause(ctx, d, ErrRunTimeout)`. Inside `Run`, `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the worker being stopped.
+- A run whose context was cancelled by the timeout is a failure (row 2) whatever `Run` returned. The recorded error wraps `ErrRunTimeout`: `worker: run timed out after 15s` when `Run` returned nil, `worker: run timed out after 15s: <returned error>` otherwise. The failure line carries `timed_out=true`, and the failure counts toward `MaxConsecutiveFailures`.
 - "Timed out" states that the run exceeded its budget; it does not claim that side effects were rolled back. A run that completes just after the deadline is recorded as a failure — the conservative side of the boundary.
 - The timeout is cooperative. It cancels the context and never abandons or kills the goroutine; a `Run` that ignores its context keeps the loop occupied, and activations that pass meanwhile are skipped. At most one run per worker is ever active.
-- There is no pool-level default; budgets are per worker.
+- There is no supervisor-level default; budgets are per worker.
 
 ### Panics
 
@@ -320,115 +393,110 @@ Each run is protected by panic recovery. A recovered panic becomes an internal e
 
 ### Run context
 
-The context passed to `Run` is derived from the pool context (cancelled on shutdown) and, with `WithRunTimeout`, bounded by the run timeout. It carries execution metadata only — services, loggers and configuration come from constructors:
+The context passed to `Run` is derived from the worker's context (cancelled when its component is shut down) and, with `RunTimeout`, bounded by the run timeout. It carries execution metadata only — services, loggers and configuration come from constructors. `CurrentRun(ctx)` returns it as one value:
 
-| Accessor | Value |
+| `RunInfo` field | Value |
 | --- | --- |
-| `WorkerName(ctx)` | the registration name |
-| `RunID(ctx)` | a fresh identifier per run (`crypto/rand.Text`), equal to the `run_id` of the framework's lines for that run |
-| `ScheduledAt(ctx)` | the intended activation time; zero for continuous workers and for the synthetic startup run |
+| `Worker` | the registration name |
+| `ID` | a fresh identifier per run (`crypto/rand.Text`), equal to the `run_id` of the framework's lines for that run |
+| `ScheduledAt` | the intended activation time; zero for continuous workers and for the `RunOnStart` run |
 
-Each accessor returns the zero value for a context that is not a run context.
+`CurrentRun` returns `false` and a zero `RunInfo` for a context that is not a run context.
 
 ---
 
 ## Logging Contract
 
-For every worker, one pool session writes exactly one `worker started` and exactly one `worker stopped` line at Info, whatever path ends the loop. A `Start` that fails during resolution writes neither. All lines carry `worker=<name>`, and the pool logger adds `module=worker`.
+For every worker whose component started, the loop writes exactly one `worker started` and exactly one `worker stopped` line at Info, whatever path ends it. A worker whose component never started — the start phase failed or was interrupted before it — writes neither. All lines carry `worker=<name>`, and the supervisor's logger adds `module=worker`.
 
 | Message | Level | Attributes |
 | --- | --- | --- |
-| `worker started` | Info | `worker`, `kind`; scheduled adds `schedule` and either `start_immediately=true` or `next_run` |
+| `worker started` | Info | `worker`, `kind`; scheduled adds `schedule` and either `run_on_start=true` or `next_run` |
+| `worker run failed` | Error | `worker`, `kind`, `error`, `run_id`, `duration`; continuous adds `restarts`, `next_restart_in` when a restart is planned and `unexpected_exit=true` for outcome 6; scheduled adds `scheduled_at`, `consecutive_failures` and `timed_out=true` for outcome 2; `stack` for a panic |
+| `worker run completed` | Debug | `worker`, `kind`, `run_id`, `scheduled_at`, `duration` (scheduled only) |
+| `worker activations skipped` | Warn | `worker`, `skipped`, `first_scheduled_at`, `last_scheduled_at` |
+| `worker failed` | Error | `worker`, `kind`, `reason`; `limit` for `restart_limit` and `failure_limit`; `schedule` for `schedule_exhausted` |
 | `worker stopped` | Info | `worker`, `kind`, `status`, `reason` (`shutdown` or `failed`) |
-| `worker run failed` | Error | `worker`, `kind`, `restarts`, `error`, `run_id`, `duration`; `next_restart_in` when a restart is planned; `unexpected_exit=true` for outcome 6; `stack` for a panic |
-| `scheduled worker run failed` | Error | `worker`, `scheduled_at`, `consecutive_failures`, `error`, `run_id`, `duration`; `timed_out=true` for outcome 2; `stack` for a panic |
-| `scheduled worker run completed` | Debug | `worker`, `run_id`, `scheduled_at`, `duration` |
-| `worker exceeded max restarts` | Error | `worker`, `kind`, `max_restarts` |
-| `worker exceeded max consecutive failures` | Error | `worker`, `max_consecutive_failures` |
-| `worker schedule has no future activation` | Error | `worker`, `schedule` |
-| `worker ticks skipped` | Warn | `worker`, `skipped`, `first_scheduled_at`, `last_scheduled_at` |
 
-- `next_restart_in` is the delay the [backoff](#restart-backoff) selected for the next restart. The restart decision is made before the line is written, so the attribute is omitted when the failure exhausted `WithMaxRestarts` and when shutdown was already observed; it is never written as zero to mean "no restart". Each failed run writes exactly one `worker run failed` line, followed by `worker exceeded max restarts` when the limit is exhausted. A cancellation that arrives after the line was written still ends the loop, so the attribute is a plan, not a promise.
-- `reason=failed` stays at Info: the preceding Error line (`worker exceeded …` or `worker schedule has no future activation`) is the alerting signal; the stop line is lifecycle bookkeeping.
+`worker failed` is the single terminal line, written once when the worker becomes `failed`:
+
+| `reason` | When |
+| --- | --- |
+| `restart_limit` | a continuous run failed with `Restarts == Restart.Limit` |
+| `restart_disabled` | a continuous run failed under `Restart{Disabled: true}` |
+| `failure_limit` | a scheduled worker reached `MaxConsecutiveFailures` |
+| `schedule_exhausted` | the schedule has no future activation |
+
+- `next_restart_in` is the delay the [backoff](#restart-backoff) selected for the next restart. The restart decision is made before the line is written, so the attribute is omitted when the failure ended the worker and when shutdown was already observed; it is never written as zero to mean "no restart". Each failed run writes exactly one `worker run failed` line, followed by `worker failed` when it ended the worker. A cancellation that arrives after the line was written still ends the loop, so the attribute is a plan, not a promise.
+- `reason=failed` on the stop line stays at Info: the preceding `worker failed` line is the alerting signal, one rule for every kind; the stop line is lifecycle bookkeeping.
 - A graceful stop writes no line of its own besides `worker stopped`.
-- Successful scheduled runs are logged at Debug only. Liveness is answered by `Pool.Workers()` and `WithReadiness`; logs are the audit trail.
+- Successful scheduled runs are logged at Debug only. Liveness is answered by `Snapshot()`, `Lookup()` and readiness; logs are the audit trail.
 
 ---
 
 ## Snapshot
 
-### Info and Config
+### Info
 
 ```go
-type Config struct {
-	Schedule               string           `json:"schedule"`
-	StartImmediately       bool             `json:"start_immediately"`
-	RunTimeout             time.Duration    `json:"run_timeout"`
-	MaxConsecutiveFailures int              `json:"max_consecutive_failures"`
-	MaxRestarts            int              `json:"max_restarts"`
-	RestartDelay           time.Duration    `json:"restart_delay"`
-	MaxRestartDelay        time.Duration    `json:"max_restart_delay"`
-	Readiness              *ReadinessPolicy `json:"readiness,omitzero"`
-}
-
 type Info struct {
-	Name                string    `json:"name"`
-	Kind                Kind      `json:"kind"`
-	Config              Config    `json:"config"`
-	Status              Status    `json:"status"`
-	Restarts            int64     `json:"restarts"`
-	ConsecutiveFailures int64     `json:"consecutive_failures"`
-	LastRun             time.Time `json:"last_run,omitzero"`
-	LastSuccess         time.Time `json:"last_success,omitzero"`
-	LastError           string    `json:"last_error,omitzero"`
+	Name                string            `json:"name"`
+	Kind                Kind              `json:"kind"`
+	Schedule            string            `json:"schedule,omitzero"`
+	Continuous          *ContinuousConfig `json:"continuous,omitzero"`
+	Scheduled           *ScheduledConfig  `json:"scheduled,omitzero"`
+	Status              Status            `json:"status"`
+	Restarts            int64             `json:"restarts"`
+	ConsecutiveFailures int64             `json:"consecutive_failures"`
+	LastStartedAt       time.Time         `json:"last_started_at,omitzero"`
+	LastSucceededAt     time.Time         `json:"last_succeeded_at,omitzero"`
+	LastError           string            `json:"last_error,omitzero"`
 }
 ```
 
-- `Config` is the **effective** policy the runner executes, not an echo of the options: `RestartDelay` is the resolved base and `MaxRestartDelay` the resolved cap of the [restart backoff](#restart-backoff) (option → config → default; zero for scheduled workers). `Schedule` is the expression as registered, which is also the effective schedule because `ParseSchedule` rejects every input it would otherwise have to rewrite. Fields that do not apply to the worker's kind are zero; zero limits mean unlimited.
-- `Config.Readiness` is a fresh copy on every snapshot; mutating it never reaches the worker's definition.
-- `Restarts` (continuous) counts restarts that started; `ConsecutiveFailures` (scheduled) counts failed runs since the last success.
-- `LastRun` is the start time of the most recently admitted run. `LastSuccess` is the completion time of the last successful scheduled run. `LastError` is the error of the most recent failed run; a successful scheduled run clears it, a graceful stop does not.
+`Snapshot()` returns one `Info` per registered worker, in registration order. `Lookup(name)` returns the worker registered under exactly that name, or `false`; a name it does not know is the caller's error to report, never a pass.
+
+- Exactly one of `Continuous` and `Scheduled` is set, holding the **resolved** configuration the runner executes, not the arguments as passed: `Tier` is the resolved tier, `Restart.MinDelay` and `Restart.MaxDelay` the resolved floor and cap of the [restart backoff](#restart-backoff) (zero when `Disabled`). `Schedule` is the expression as registered, which is also the effective schedule because `ParseSchedule` rejects every input it would otherwise have to rewrite; it is empty for a continuous worker.
+- Every snapshot carries its own copy of the configuration: mutating `info.Continuous` changes neither the supervisor nor the next snapshot. The configuration types hold only scalars, so the copy is deep.
+- `Restarts` (continuous) counts restarts that started; `ConsecutiveFailures` (scheduled) counts failed runs since the last success. The other kind's counter is zero.
+- `LastStartedAt` is the start time of the most recently admitted run. `LastSucceededAt` is the completion time of the last successful scheduled run. `LastError` is the error of the most recent failed run; a successful scheduled run clears it, a graceful stop does not.
 - `LastError` is a string, not an `error`: a snapshot is for display and serialization.
 
 ### JSON shape
 
-`Info` is shaped for direct encoding from an admin endpoint. Field names are snake_case (including the nested readiness policy); `last_run`, `last_success`, `last_error` and `config.readiness` are omitted while zero; every other field is always present, including the kind-inapplicable zeros in `config`; durations encode as integer nanoseconds under the framework's JSON response profile (ADR-021). An idle continuous worker and a scheduled worker after one failed run:
+`Info` is shaped for direct encoding from an admin endpoint. Field names are snake_case, the nested configuration included; `schedule`, `continuous`, `scheduled`, `last_started_at`, `last_succeeded_at` and `last_error` are omitted while zero; every other field is always present, every configuration field included, so dashboards keep one schema; durations encode as integer nanoseconds under the framework's JSON response profile (ADR-021); `tier` echoes the resolved `credo.Tier` as the root encodes it (`ingress` or `internal`). A pending continuous worker and a scheduled worker after one failed run:
 
 ```json
 [
   {
     "name": "consumer",
     "kind": "continuous",
-    "config": {
-      "schedule": "",
-      "start_immediately": false,
-      "run_timeout": 0,
-      "max_consecutive_failures": 0,
-      "max_restarts": 5,
-      "restart_delay": 3000000000,
-      "max_restart_delay": 60000000000,
-      "readiness": { "require_first_success": false, "fail_when_failed": true, "max_success_age": 0 }
+    "continuous": {
+      "tier": "internal",
+      "restart": { "disabled": false, "limit": 5, "min_delay": 3000000000, "max_delay": 60000000000 },
+      "unready_when_failed": true
     },
-    "status": "idle",
+    "status": "pending",
     "restarts": 0,
     "consecutive_failures": 0
   },
   {
     "name": "report",
     "kind": "scheduled",
-    "config": {
-      "schedule": "@every 1m",
-      "start_immediately": false,
+    "schedule": "@every 1m",
+    "scheduled": {
+      "tier": "ingress",
+      "run_on_start": false,
       "run_timeout": 15000000000,
       "max_consecutive_failures": 3,
-      "max_restarts": 0,
-      "restart_delay": 0,
-      "max_restart_delay": 0
+      "unready_when_failed": false,
+      "unready_until_first_success": false,
+      "unready_after_success_age": 0
     },
     "status": "waiting",
     "restarts": 0,
     "consecutive_failures": 1,
-    "last_run": "2000-01-01T00:01:00Z",
+    "last_started_at": "2000-01-01T00:01:00Z",
     "last_error": "boom"
   }
 ]
@@ -438,80 +506,36 @@ type Info struct {
 
 | Status | Meaning |
 | --- | --- |
-| `idle` | registered; the pool has not published its runners, or a continuous runner has not yet been admitted to its first run |
+| `pending` | registered; its component has not started, or a continuous worker has not yet been admitted to its first run |
 | `running` | a run has been admitted and is executing |
-| `waiting` | continuous: restart backoff after a failure; scheduled: waiting for the next activation |
-| `stopped` | the loop ended because the pool was shut down; the worker will not run again |
-| `failed` | a positive failure limit was exhausted, or the schedule has no future activation; permanent until the application restarts |
+| `backoff` | continuous only: waiting to restart after a failure — unhealthy, recovering |
+| `waiting` | scheduled only: waiting for the next activation, whatever the last run did |
+| `stopped` | the loop ended because the worker's component was shut down; the worker will not run again |
+| `failed` | a positive failure limit was exhausted, restarts are disabled and a run failed, or the schedule has no future activation; permanent until the application restarts |
 
-`failed` is permanent: there is no paused or suppressed state. Applications that want indefinite recovery leave the limit at zero and handle degradation in their own logic.
-
----
-
-## Lifecycle Integration
-
-### Startup
-
-```
-app.Run()
-  ├─ prepare: Finalize (DI freeze) → compile → publish
-  ├─ net.Listen() — bind port
-  ├─ OnStart hooks (FIFO)
-  │   └─ pool.Start(ctx): claim → resolve (RegisterProvided types) → publish → one goroutine per worker
-  ├─ state → running
-  └─ srv.Serve() — accept connections
-```
-
-### Shutdown
-
-```
-app.Shutdown(ctx)
-  ├─ state → stopping, readiness → unready
-  ├─ OnPreDrain hooks            ← workers and DI remain live
-  ├─ cancel app ctx              ← worker run contexts are cancelled
-  ├─ parallel drain
-  │   ├─ HTTP server drain
-  │   └─ OnDrain hooks           ← pool.Shutdown(ctx): cancel pool ctx, wait for every worker goroutine
-  ├─ DI teardown                 ← Pool's Shutdowner pass: already complete
-  └─ OnShutdown hooks (LIFO)
-```
-
-Workers finish in the `OnDrain` phase, concurrently with the HTTP drain and before any DI singleton is torn down, so a worker's bounded cleanup (flushing a last batch) never observes a closed resource, whatever the registration order of the worker and the resource. All phases share the shutdown deadline; a worker that outlives it is reported as an incomplete `OnDrain` task and teardown proceeds with the expired context. There is no worker-specific shutdown timeout.
+`backoff` is the one status that means "currently unhealthy but recovering". A scheduled worker has no such status: between activations it is `waiting`, and its signal is `consecutive_failures > 0`. A worker whose component was never started — before the start phase reaches it, or after a start that failed or was interrupted before it — stays `pending`. `failed` is permanent: there is no paused or suppressed state. Applications that want indefinite recovery leave the limits at zero and handle degradation in their own logic.
 
 ---
 
 ## Health Integration
 
-Readiness participation is opt-in per worker; a failed metrics reporter must not take an instance out of rotation.
+Readiness participation is opt-in per condition; a failed metrics reporter must not take an instance out of rotation.
 
 ```go
-worker.MustRegister(app, "recovery", recovery,
-	worker.WithSchedule("@every 5m"),
-	worker.WithStartImmediately(),
-	worker.WithReadiness(worker.ReadinessPolicy{
-		RequireFirstSuccess: true,             // unready until the first run succeeds
-		FailWhenFailed:      true,             // unready once the worker is failed
-		MaxSuccessAge:       15 * time.Minute, // unready when the last success is older
-	}),
-)
+workers.Scheduled("recovery", "@every 5m", recovery, worker.ScheduledConfig{
+	RunOnStart:               true,
+	UnreadyUntilFirstSuccess: true,             // unready until the first run succeeds
+	UnreadyWhenFailed:        true,             // unready once the worker is failed
+	UnreadyAfterSuccessAge:   15 * time.Minute, // unready when the last success is older
+})
 ```
 
-- The zero policy is rejected; `MaxSuccessAge` must be `>= 0`. `RequireFirstSuccess` and `MaxSuccessAge` are scheduled-only (a continuous worker never succeeds); `FailWhenFailed` applies to both kinds.
-- `RequireFirstSuccess` stays satisfied once met. `MaxSuccessAge` is not applied before the first success; combine it with `RequireFirstSuccess` to close that window.
-- `FailWhenFailed` sees every way a continuous worker can die: an early nil return is a failure like an error or a panic, so under a positive `WithMaxRestarts` limit a worker that keeps exiting reaches `failed`.
-- The contribution is a readiness check named `worker:<name>` next to `AddReadinessCheck` entries (a name collision fails closed as a configuration error). It is evaluated in memory from the runner's last snapshot and never performs I/O; failure text is masked unless `HealthConfig.ExposeErrors` is set. Before `Pool.Start` a `RequireFirstSuccess` worker reports "has not started".
+- `UnreadyWhenFailed` applies to both kinds; `UnreadyUntilFirstSuccess` and `UnreadyAfterSuccessAge` exist only on `ScheduledConfig`, because a continuous worker never succeeds. A worker with no condition set has no `Ready` and contributes nothing to readiness.
+- `UnreadyUntilFirstSuccess` stays satisfied once met; pair it with `RunOnStart` unless waiting for the first activation is intended. `UnreadyAfterSuccessAge` is not applied before the first success; combine it with `UnreadyUntilFirstSuccess` to close that window.
+- `UnreadyWhenFailed` sees every way a continuous worker can die: an early nil return is a failure like an error or a panic, so under a positive `Restart.Limit`, or with `Restart.Disabled`, a worker that keeps exiting reaches `failed`. With unlimited restarts it never does.
+- The contribution is the worker component's `Ready`, reported by `/ready` under the component name `worker:<name>` next to `AddReadinessCheck` entries (a name collision fails closed as a configuration error). It is evaluated in memory from the runner's last snapshot, resolves nothing per request and never performs I/O; failure text is masked unless `HealthConfig.ExposeErrors` is set. A worker with `UnreadyUntilFirstSuccess` whose component has not started reports "has not started".
 
----
-
-## Configuration
-
-```yaml
-worker:
-  restart_delay: "5s"     # default base restart delay for continuous workers
-  max_restart_delay: "5m" # default restart delay cap for continuous workers
-```
-
-The section is optional and read once, when the first registration creates the pool. A negative value is a registration error; zero means `DefaultRestartDelay` or `DefaultMaxRestartDelay`. `WithRestartDelay` and `WithMaxRestartDelay` override them per worker; a pool cap below one worker's base is raised to that base, not rejected ([Restart backoff](#restart-backoff)). Schedules, limits and timeouts are per-worker options only; a config reload does not re-register workers, and a changed cron expression is restart-only.
+Readiness takes an instance out of rotation and restarts nothing: a worker that reached `failed` under `UnreadyWhenFailed` leaves a process that is alive, unready and never restarted. An application that wants the orchestrator to restart the process ties a liveness check to the worker through `Lookup` — `AddLivenessCheck` with a check that fails when `Lookup` reports `StatusFailed` or does not know the name — knowing that a failure caused by a shared dependency then restarts every replica. The worker guide carries the recipe; no liveness setting exists on the configuration.
 
 ---
 
@@ -531,8 +555,9 @@ Cron expressions are compiled into a `Schedule` at registration; no raw string i
 - Field syntax: lists (`1,15`), ranges (`1-5`), steps (`*/10`, `8-18/2`), month and weekday names (`jan`, `sat`), `?` as an alias for `*`, `7` as Sunday.
 - Cron schedules are evaluated in the process's local time zone (`time.Local`) and fire at second 0 of the matching minute. There is no per-worker time zone selection; `TZ=`/`CRON_TZ=` prefixes are rejected (below).
 - As in crontab(5), when both day-of-month and day-of-week are restricted (neither is `*`), the schedule fires when **either** matches; a step on `*` counts as restricted.
-- `@every` takes a Go duration that must be positive and a whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are registration errors (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`). No input is rounded or clamped.
+- `@every` takes a Go duration that must be positive and a whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are rejected (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`). No input is rounded or clamped.
 - Not supported, each with a targeted error: the 6-field seconds form (use `@every` for sub-minute periods), `@yearly`/`@annually` (use `0 0 1 1 *`), and `TZ=`/`CRON_TZ=` prefixes.
+- `Scheduled` and `ScheduledProvided` panic with the parse error; `ParseSchedule` returns it, for an expression that comes from configuration and should be validated before registration.
 
 ---
 
@@ -555,15 +580,13 @@ func (w *OrderConsumer) Run(ctx context.Context) error {
 	for {
 		msg, err := w.queue.Receive(ctx) // blocks until a message arrives or ctx is done
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil // shutdown
-			}
-			return err // restarted after the restart backoff
+			return err // a cancelled Receive wraps ctx.Err(): a graceful stop at shutdown, otherwise a restart
 		}
 		if err := w.orders.Process(ctx, msg); err != nil {
 			// One bad message must not stop the consumer.
+			run, _ := worker.CurrentRun(ctx)
 			w.log.ErrorContext(ctx, "process order failed",
-				"error", err, "msg_id", msg.ID, "run_id", worker.RunID(ctx))
+				"error", err, "msg_id", msg.ID, "run_id", run.ID)
 		}
 	}
 }
@@ -573,14 +596,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	app.MustProvide[*Queue](NewQueue)
-	app.MustProvide[*OrderService](NewOrderService)
-	app.MustProvide[*OrderConsumer](NewOrderConsumer)
+	app.Provide[*Queue](NewQueue)
+	app.Provide[*OrderService](NewOrderService)
+	app.Provide[*OrderConsumer](NewOrderConsumer)
 
+	// Internal tier: stops after the HTTP drain, before the queue and the service.
 	// Restarts after 5s, backing off up to the cap (1m by default) while failures repeat.
-	worker.MustRegisterProvided[*OrderConsumer](app, "order-consumer",
-		worker.WithRestartDelay(5*time.Second),
-	)
+	workers := worker.Use(app)
+	workers.ContinuousProvided[*OrderConsumer]("order-consumer", worker.ContinuousConfig{
+		Restart: worker.Restart{MinDelay: 5 * time.Second},
+	})
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
@@ -604,33 +629,33 @@ func (w *SessionCleanup) Run(ctx context.Context) error {
 	result, err := w.db.NewDelete().
 		Model((*Session)(nil)).
 		Where("expired_at < ?", time.Now()).
-		Exec(ctx)
+		Exec(ctx) // idempotent: every replica runs it
 	if err != nil {
 		return err
 	}
+	run, _ := worker.CurrentRun(ctx)
 	w.log.InfoContext(ctx, "expired sessions cleaned",
-		"count", result.RowsAffected(), "run_id", worker.RunID(ctx))
+		"count", result.RowsAffected(), "run_id", run.ID)
 	return nil
 }
 
-func register(app *credo.App) error {
-	app.MustProvide[*SessionCleanup](NewSessionCleanup)
+func registerCleanup(app *credo.App, workers *worker.Supervisor) {
+	app.Provide[*SessionCleanup](NewSessionCleanup)
 
 	// Every 6 hours plus once at startup; each run gets 10 minutes;
-	// failed after 3 consecutive failures.
-	return worker.RegisterProvided[*SessionCleanup](app, "session-cleanup",
-		worker.WithSchedule("0 */6 * * *"),
-		worker.WithStartImmediately(),
-		worker.WithRunTimeout(10*time.Minute),
-		worker.WithMaxConsecutiveFailures(3),
-	)
+	// failed after 3 consecutive failures. Ingress tier: no run starts during the drain.
+	workers.ScheduledProvided[*SessionCleanup]("session-cleanup", "0 */6 * * *", worker.ScheduledConfig{
+		RunOnStart:             true,
+		RunTimeout:             10 * time.Minute,
+		MaxConsecutiveFailures: 3,
+	})
 }
 ```
 
 ### Example 3: Inline functions
 
 ```go
-worker.MustRegister(app, "heartbeat", worker.Func(func(ctx context.Context) error {
+workers.Continuous("heartbeat", worker.Func(func(ctx context.Context) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -638,18 +663,19 @@ worker.MustRegister(app, "heartbeat", worker.Func(func(ctx context.Context) erro
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			slog.InfoContext(ctx, "heartbeat", "worker", worker.WorkerName(ctx))
+			run, _ := worker.CurrentRun(ctx)
+			slog.InfoContext(ctx, "heartbeat", "worker", run.Worker)
 		}
 	}
 }))
 
 // Skips an activation if the previous report is still running.
-worker.MustRegister(app, "metrics-report", worker.Func(reportMetrics),
-	worker.WithSchedule("@every 1m"),
-)
+workers.Scheduled("metrics-report", "@every 1m", worker.Func(reportMetrics))
 ```
 
-### Example 4: File watcher (continuous, limited restarts)
+Both are registered by value: they have no edges, and each takes its place in its tier by registration order.
+
+### Example 4: File watcher (ingress, limited restarts)
 
 ```go
 type ConfigWatcher struct {
@@ -657,6 +683,7 @@ type ConfigWatcher struct {
 	onChange func(name string)
 }
 
+// Run is re-enterable: the watcher is built inside Run and closed before it returns.
 func (w *ConfigWatcher) Run(ctx context.Context) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -680,41 +707,34 @@ func (w *ConfigWatcher) Run(ctx context.Context) error {
 	}
 }
 
-worker.MustRegister(app, "config-watcher", &ConfigWatcher{path: "./configs", onChange: reloadFile},
-	worker.WithMaxRestarts(5),
-	worker.WithRestartDelay(10*time.Second),
-	worker.WithReadiness(worker.ReadinessPolicy{FailWhenFailed: true}),
-)
+workers.Continuous("config-watcher", &ConfigWatcher{path: "./configs", onChange: reloadFile},
+	worker.ContinuousConfig{
+		Tier:              credo.TierIngress, // work enters the process here: stop with the listener
+		Restart:           worker.Restart{Limit: 5, MinDelay: 10 * time.Second},
+		UnreadyWhenFailed: true,
+	})
 ```
 
 ---
 
 ## Package Structure
 
-```
-worker/
-├── doc.go          # package doc + robfig/cron attribution
-├── worker.go       # Worker, Func, run-context accessors
-├── definition.go   # internal definition, options, ErrRunTimeout, Config/Info builders
-├── info.go         # Kind, Status, Config, Info
-├── pool.go         # Pool, Register/RegisterProvided, name and option validation, Start/Shutdown/Workers
-├── runner.go       # runner state, run admission, loop, continuous and scheduled policies, log lines
-├── outcome.go      # panic recovery, run-outcome classification
-├── readiness.go    # ReadinessPolicy, WithReadiness, readiness probes
-├── schedule.go     # Schedule, ParseSchedule (adapted from robfig/cron v3)
-└── *_test.go       # synctest timing tests, capturing slog handler, examples
-```
+`worker/` keeps its engine files — `worker.go` (`Worker`, `Func`, the run context), `runner.go` (runner state, run admission, the loop, the continuous and scheduled policies, the log lines), `outcome.go` (panic recovery, run-outcome classification), `schedule.go` (`Schedule`, `ParseSchedule`, adapted from robfig/cron v3), `info.go` (`Kind`, `Status`, `Info`) and `doc.go` (package doc and robfig/cron attribution) — beside the supervisor with its registration methods, the per-kind configuration with its resolution and validation, the worker component and the readiness conditions its `Ready` evaluates. Tests use synctest timing, a capturing slog handler and examples.
 
-`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The pool uses only public App methods — `CanProvideValue`, `Has`, `AdoptValue`, `ProvideProtectedValue`, `Replace`, `ConfigExists`/`GetConfig`, `Resolve`, `Logger`, `OnStart`, `OnDrain` — plus the module-internal readiness seam.
+`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The supervisor uses only the App's public surface — `Manage` with `credo.Named` and `credo.Ingress()` to add each worker's component (a value, or a constructor over `T` for the provided forms), and `Logger` — and binds nothing into the container.
 
 ---
 
 ## Test Strategy
 
 - **Virtual time.** Every timing test runs in a `testing/synctest` bubble; the runner calls the `time` package directly and there is no clock seam. `synctest.Wait` does not advance the clock — sleep past a deadline to fire timers.
+- **Configuration tables.** Each field's resolution and each rejected value is a table entry for both configuration types: zero → default per kind (the tier included), the `Restart` resolution (`MinDelay` first, a zero `MaxDelay` raised to it, a positive `MaxDelay` below it panicking with both values named, `Disabled` beside any other field panicking), more than one configuration panicking. The snapshot is asserted for each, without running a worker.
+- **Registration misuse.** Every row of [Validation](#validation) panics with a message naming the worker, the call and the remedy, registration after `Finalize` and a duplicate `worker:<name>` across two supervisors included; a provided worker whose `T` has no binding fails `Finalize` with the path.
 - **Classification as a table.** The outcome classifier is a pure function; each row of the outcome table and each ordering edge (timeout then shutdown, shutdown then deadline, panic with a context-error value during shutdown) is a table entry.
-- **Admission without a production seam.** An in-package test policy blocks in its activation step, the test cancels and releases it, and the admission check must observe the cancellation: zero `Run` calls and a zero `LastRun` before the first run; unchanged invocation count, `LastRun` and `Restarts` before a restart.
-- **Logs through a capturing handler.** One `slog.Handler` records level, message and attributes; the lifecycle invariant (one `started`, one `stopped`, per exit path), run correlation (`run_id` equals `RunID(ctx)`) and the skip collapse are asserted through it.
-- **Start/Shutdown races** use real goroutines: a `Shutdown` during resolution wins and nothing launches; concurrent `Start`/`Shutdown` never adds to a wait that has begun.
-- **Wire shape.** A JSON golden encodes `Workers()` through the framework's response profile.
+- **Admission without a production seam.** An in-package test policy blocks in its activation step, the test cancels and releases it, and the admission check must observe the cancellation: zero `Run` calls and a zero `LastStartedAt` before the first run; unchanged invocation count, `LastStartedAt` and `Restarts` before a restart.
+- **Logs through a capturing handler.** One `slog.Handler` records level, message and attributes; each event of the [vocabulary](#logging-contract) is asserted — one `started` and one `stopped` per exit path, `worker failed` once with each `reason`, `run_id` equal to `CurrentRun(ctx).ID`, the skip collapse.
+- **Timing against the lifecycle.** A continuous worker's context is cancelled in its tier's turn: after the HTTP drain for the internal default — a handler enqueues to an in-process continuous worker that writes through a database component, a request accepted just before shutdown completes, its job is written, and the database shuts down after the worker. A scheduled worker stops concurrently with the HTTP drain. A `Run` that ignores cancellation past the deadline keeps its dependencies open, and `Run` returns an error naming `worker:<name>` as abandoned.
+- **Provided workers in the start walk.** `T` is built after its component dependencies have started and the worker stops before them; a constructor error fails the start and rolls back what was built; a provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path.
+- **Wire shape.** A JSON golden encodes `Snapshot()` through the framework's response profile, for each kind and status.
 - **Schedules.** Pinned parse and `Next` behavior, rejected syntax, the `@every` rejection matrix, DST and end-of-month edges.
+- Worker commits run `go test ./worker/... -race -count=20`.

@@ -1,6 +1,6 @@
 # ADR-011: Validation Strategy
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
 
 ## Context
 
@@ -88,6 +88,21 @@ Rules are organized by topic, not by implementation detail:
 ### Error Format
 
 Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the default Credo envelope (ADR-009).
+
+### Rule Errors: Client Messages and Internal Failures
+
+**Accepted, pending implementation (v0.24.0, W7).**
+
+A rule error has two possible meanings: a message meant for the client ("must be a 2-letter code") or a failure the client did not cause (a lookup inside a rule that could not reach its database). One channel cannot carry both: converting every error into an `invalid` violation that carries the error's text puts internal text, such as `pq: connection to 10.1.2.3:5432 refused`, into a 422 body, where it reaches the client unless an i18n catalog happens to translate the generic code. The type of the returned error therefore decides its meaning:
+
+- **Client-visible.** A rule that wants a client-visible message returns a `*ValidationError` (or a `validation.Errors`), or builds one with the small constructor W7 adds, `validation.NewError(code, message string) *ValidationError`. It becomes a violation of the field the rule validates and renders as 422 `validation_failed`. `By`'s documented example returns one.
+- **Internal.** Any other error is internal. Validation stops — `ValidateStruct` returns that error without collecting further violations, and nested `Validate` calls, `Each`, `When` and `NilSafe` pass it on unchanged — and the error leaves `Validate`, and `BindBody`/`BindQuery`, as it would leave a handler. The error pipeline classifies it like any other handler error (ADR-009): a plain error is a 500 whose text is logged, not rendered, and an error that carries a fault keeps its mapped status, so `store`'s unavailable kind is a 503.
+
+This keeps the stateless boundary honest without policing it: a rule that does I/O anyway and fails reports a server failure, not invalid input.
+
+Rejected: rendering such an error as a generic 422 violation with a fixed, safe message. It hides the text but still tells the client that its input was wrong when the server failed, and a client that trusts the status does not retry a request that would succeed later.
+
+Together with the precedence of an explicit `HTTPError` over a wrapped validation error ([ADR-009](009-handler-and-error-handling.md)), this is one of the error model's final rules: later changes to the error model keep it.
 
 ### Rejected Alternatives
 
