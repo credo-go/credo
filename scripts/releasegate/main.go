@@ -417,6 +417,15 @@ func setCandidateTags(repo, version string) error {
 	return nil
 }
 
+// setSyntheticTag points tag at the temporary clone's HEAD. The invariant the
+// gate relies on: before consumer resolution begins, the requested-version tags
+// of the root and store/sqldb point at the exact synthetic HEAD, whether or not
+// the tag existed before and whether or not preparing the candidate produced a
+// new commit. Rejected alternatives: skipping a tag that already exists can
+// validate the wrong candidate through a stale tag; a --no-tags clone keeps the
+// invariant only indirectly, tied to clone depth, object reachability and
+// future clone mechanics; git tag -f moves the tag less directly than
+// git update-ref and prints a needless force-update warning.
 func setSyntheticTag(repo, tag string) error {
 	return command(repo, repositoryGitEnv(repo), "git", "update-ref", "refs/tags/"+tag, "HEAD")
 }
