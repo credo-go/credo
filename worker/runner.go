@@ -9,8 +9,10 @@ import (
 )
 
 type runner struct {
-	def    *definition
-	worker Worker // resolved once by Pool.Start
+	def *definition
+	// worker is set at registration for a value, and by the component's
+	// constructor for a provided worker, before Start launches the loop.
+	worker Worker
 
 	mu sync.Mutex
 	st runState
@@ -21,13 +23,13 @@ type runState struct {
 	status              Status
 	restarts            int64
 	consecutiveFailures int64
-	lastRun             time.Time
-	lastSuccess         time.Time
+	lastStartedAt       time.Time
+	lastSucceededAt     time.Time
 	lastError           string
 }
 
 func newRunner(def *definition, w Worker) *runner {
-	return &runner{def: def, worker: w, st: runState{status: StatusIdle}}
+	return &runner{def: def, worker: w, st: runState{status: StatusPending}}
 }
 
 func (r *runner) setStatus(status Status) {
@@ -50,13 +52,13 @@ func (r *runner) setFailureOutcome(status Status, consecutiveFailures int64, err
 	})
 }
 
-// recordSuccess records a successful scheduled run: it stamps LastSuccess,
-// resets the failure streak and clears LastError.
+// recordSuccess records a successful scheduled run: it stamps
+// LastSucceededAt, resets the failure streak and clears LastError.
 func (r *runner) recordSuccess(at time.Time) {
 	r.update(func(st *runState) {
 		st.status = StatusWaiting
 		st.consecutiveFailures = 0
-		st.lastSuccess = at
+		st.lastSucceededAt = at
 		st.lastError = ""
 	})
 }
@@ -67,9 +69,9 @@ func (r *runner) update(fn func(*runState)) {
 	fn(&r.st)
 }
 
-// stopIfNotFailed ends the worker as Stopped unless it already reached
-// Failed. It records nothing else: a graceful stop is neither a success nor a
-// failure, so counters, LastSuccess and LastError keep their values.
+// stopIfNotFailed ends the worker as stopped unless it already reached
+// failed. It records nothing else: a graceful stop is neither a success nor a
+// failure, so counters, LastSucceededAt and LastError keep their values.
 func (r *runner) stopIfNotFailed() {
 	r.update(func(st *runState) {
 		if st.status != StatusFailed {
@@ -83,7 +85,7 @@ func (r *runner) stopIfNotFailed() {
 func (r *runner) admitRun(startedAt time.Time, restart bool) {
 	r.update(func(st *runState) {
 		st.status = StatusRunning
-		st.lastRun = startedAt
+		st.lastStartedAt = startedAt
 		if restart {
 			st.restarts++
 		}
@@ -116,18 +118,6 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-func (p *Pool) runContinuous(ctx context.Context, r *runner) {
-	p.driveLoop(ctx, r, &continuousPolicy{p: p, r: r})
-}
-
-// runScheduled drives a scheduled worker with a single goroutine:
-// sleep until the next activation, run it synchronously, recompute.
-// Activations that pass while a run is still in flight are skipped (and
-// logged), never queued.
-func (p *Pool) runScheduled(ctx context.Context, r *runner) {
-	p.driveLoop(ctx, r, &scheduledPolicy{p: p, r: r})
-}
-
 // waitNone tells driveLoop to start the next run without a timer.
 const waitNone = time.Duration(-1)
 
@@ -144,6 +134,10 @@ type loopPolicy interface {
 	// startAttrs returns the kind-specific attributes of the "worker
 	// started" line; it is called once, right after start.
 	startAttrs() []any
+
+	// started runs right after the "worker started" line, for what start
+	// decided but must log after that line.
+	started(ctx context.Context)
 
 	// beforeRun runs once the wait has elapsed. It must be side-effect-free:
 	// driveLoop checks for cancellation after it and may then exit without
@@ -165,8 +159,8 @@ type runResult struct {
 }
 
 // logAttrs returns the attributes every failed-run line carries: run_id
-// (equal to RunID inside Run) and duration, plus timed_out, unexpected_exit
-// and stack only when they apply.
+// (equal to CurrentRun(ctx).ID inside Run) and duration, plus timed_out,
+// unexpected_exit and stack only when they apply.
 func (res runResult) logAttrs() []any {
 	attrs := []any{"run_id", res.runID, "duration", res.duration}
 	if res.outcome.timedOut {
@@ -181,37 +175,48 @@ func (res runResult) logAttrs() []any {
 	return attrs
 }
 
-// driveLoop runs the worker under policy until it stops. Cancellation while
-// waiting, or observed at admission, preserves the last execution snapshot:
-// the worker is stopped only if it has not already transitioned to Failed.
+// driveLoop runs the worker until it stops, under the policy of its kind.
+// Cancellation while waiting, or observed at admission, preserves the last
+// execution snapshot: the worker is stopped only if it has not already
+// transitioned to failed.
 //
 // Admitting a run is one step, in a fixed order: the side-effect-free
 // policy.beforeRun, then the cancellation check, then a single commit of
 // "a run started" (the only writer of StatusRunning), then Run. When the
-// check observes cancellation, no new Run is invoked and neither LastRun nor
-// Restarts changes.
-func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
+// check observes cancellation, no new Run is invoked and neither
+// LastStartedAt nor Restarts changes.
+func (s *Supervisor) driveLoop(ctx context.Context, r *runner) {
+	var policy loopPolicy = &continuousPolicy{s: s, r: r}
+	if r.def.kind == KindScheduled {
+		policy = &scheduledPolicy{s: s, r: r}
+	}
+	s.runLoop(ctx, r, policy)
+}
+
+// runLoop is driveLoop's skeleton under the given policy.
+func (s *Supervisor) runLoop(ctx context.Context, r *runner, policy loopPolicy) {
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
 	}
 	defer timer.Stop()
 
-	name, kind := r.def.name, r.def.kind()
-	timeout := r.def.runTimeout
+	name, kind := r.def.name, r.def.kind
+	timeout := r.def.runTimeout()
 
 	// driveLoop owns both lifecycle lines, so every exit path — however the
 	// loop ends — logs exactly one start and one stop.
 	wait, stop := policy.start(ctx)
-	p.logger.InfoContext(ctx, "worker started",
+	s.logger.InfoContext(ctx, "worker started",
 		append([]any{"worker", name, "kind", string(kind)}, policy.startAttrs()...)...)
+	policy.started(ctx)
 	defer func() {
 		status := r.status()
 		reason := "shutdown"
 		if status == StatusFailed {
 			reason = "failed"
 		}
-		p.logger.InfoContext(ctx, "worker stopped",
+		s.logger.InfoContext(ctx, "worker stopped",
 			"worker", name, "kind", string(kind), "status", string(status), "reason", reason)
 	}()
 
@@ -235,7 +240,7 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 		r.admitRun(startedAt, restart)
 
 		runID := newRunID()
-		runCtx := enrichContext(ctx, name, scheduledAt, runID)
+		runCtx := withRunInfo(ctx, RunInfo{Worker: name, ID: runID, ScheduledAt: scheduledAt})
 		cancel := context.CancelFunc(func() {})
 		if timeout > 0 {
 			runCtx, cancel = context.WithTimeoutCause(runCtx, timeout, ErrRunTimeout)
@@ -253,7 +258,7 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 				err:      err,
 				timedOut: timedOut,
 				timeout:  timeout,
-				poolDone: ctx.Err() != nil,
+				stopping: ctx.Err() != nil,
 			}),
 			runID:       runID,
 			scheduledAt: scheduledAt,
@@ -263,11 +268,11 @@ func (p *Pool) driveLoop(ctx context.Context, r *runner, policy loopPolicy) {
 }
 
 // continuousPolicy restarts a continuous worker after every failed run —
-// including an early nil return — with a capped, jittered exponential delay
-// and the restart limit. WithMaxRestarts(N) allows the first run plus N
-// restarts.
+// including an early nil return — with a capped, jittered exponential delay,
+// within the restart limit; Restart.Disabled makes the first failure
+// terminal.
 type continuousPolicy struct {
-	p   *Pool
+	s   *Supervisor
 	r   *runner
 	ran bool // a run has completed, so the next one is a restart
 	// ceiling is the upper bound of the last delay window; zero starts a new
@@ -281,12 +286,14 @@ func (c *continuousPolicy) start(context.Context) (time.Duration, bool) {
 
 func (c *continuousPolicy) startAttrs() []any { return nil }
 
+func (c *continuousPolicy) started(context.Context) {}
+
 func (c *continuousPolicy) beforeRun() (time.Time, bool) {
 	return time.Time{}, c.ran
 }
 
 func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Duration, bool) {
-	r, p := c.r, c.p
+	r, s := c.r, c.s
 	c.ran = true
 	out := res.outcome
 	if out.verdict != runFailed {
@@ -298,9 +305,15 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 
 	// Decide before logging: the failure line announces the next delay only
 	// when a restart is planned.
+	restart := r.def.continuous.Restart
 	restarts := r.restartCount()
-	maxRestarts := r.def.restartPolicy.maxRestarts
-	exhausted := maxRestarts > 0 && restarts >= int64(maxRestarts)
+	reason := ""
+	switch {
+	case restart.Disabled:
+		reason = "restart_disabled"
+	case restart.Limit > 0 && restarts >= int64(restart.Limit):
+		reason = "restart_limit"
+	}
 	stopping := ctx.Err() != nil
 	attrs := []any{
 		"worker", r.def.name,
@@ -308,21 +321,20 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 		"restarts", restarts,
 	}
 	var delay time.Duration
-	if !exhausted && !stopping {
+	if reason == "" && !stopping {
 		delay = c.nextDelay(res.duration)
 		attrs = append(attrs, "next_restart_in", delay)
 	}
 	attrs = append(attrs, "error", out.err)
-	p.logger.ErrorContext(ctx, "worker run failed", append(attrs, res.logAttrs()...)...)
+	s.logger.ErrorContext(ctx, "worker run failed", append(attrs, res.logAttrs()...)...)
 
-	if exhausted {
+	if reason != "" {
 		r.setOutcome(StatusFailed, out.err)
-		p.logger.ErrorContext(ctx,
-			"worker exceeded max restarts",
-			"worker", r.def.name,
-			"kind", string(KindContinuous),
-			"max_restarts", maxRestarts,
-		)
+		failed := []any{"worker", r.def.name, "kind", string(KindContinuous), "reason", reason}
+		if reason == "restart_limit" {
+			failed = append(failed, "limit", restart.Limit)
+		}
+		s.logger.ErrorContext(ctx, "worker failed", failed...)
 		return waitNone, true
 	}
 	if stopping {
@@ -331,7 +343,7 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 		return waitNone, true
 	}
 
-	r.setOutcome(StatusWaiting, out.err)
+	r.setOutcome(StatusBackoff, out.err)
 	return delay, false
 }
 
@@ -341,13 +353,13 @@ func (c *continuousPolicy) afterRun(ctx context.Context, res runResult) (time.Du
 // doubles up to the cap. A run that lasted at least the cap starts a new
 // sequence, so its restart waits base again.
 func (c *continuousPolicy) nextDelay(runDuration time.Duration) time.Duration {
-	base := c.r.def.restartPolicy.restartDelay
-	maxDelay := c.r.def.restartPolicy.maxRestartDelay
+	base := c.r.def.continuous.Restart.MinDelay
+	maxDelay := c.r.def.continuous.Restart.MaxDelay
 	if runDuration >= maxDelay {
 		c.ceiling = 0
 	}
 	c.ceiling = nextCeiling(c.ceiling, base, maxDelay)
-	return c.p.jitter(max(base, c.ceiling/2), c.ceiling)
+	return c.s.jitter(max(base, c.ceiling/2), c.ceiling)
 }
 
 // nextCeiling returns the upper bound of the next delay window: base for the
@@ -378,70 +390,83 @@ func uniformJitter(lo, hi time.Duration) time.Duration {
 // from the last intended activation (the anchor), so a long run delays the
 // next fire but does not shift the grid.
 type scheduledPolicy struct {
-	p                   *Pool
+	s                   *Supervisor
 	r                   *runner
 	consecutiveFailures int64
 	anchor              time.Time
 	next                time.Time
-	synthetic           bool // the pending run is the startup run (WithStartImmediately)
+	onStart             bool // the pending run is the RunOnStart run
+	// exhaustedAtStart is set when start found no future activation; the
+	// terminal line follows the "worker started" line.
+	exhaustedAtStart bool
 }
 
-func (s *scheduledPolicy) start(ctx context.Context) (time.Duration, bool) {
-	if s.r.def.startImmediately {
-		s.synthetic = true
+func (p *scheduledPolicy) start(ctx context.Context) (time.Duration, bool) {
+	if p.r.def.scheduled.RunOnStart {
+		p.onStart = true
 		return waitNone, false
 	}
-	s.anchor = time.Now()
-	return s.scheduleNext(ctx)
+	p.anchor = time.Now()
+	wait, stop := p.computeNext(ctx)
+	if stop {
+		p.exhaustedAtStart = true
+	}
+	return wait, stop
 }
 
-func (s *scheduledPolicy) startAttrs() []any {
-	attrs := []any{"schedule", s.r.def.scheduleExpr()}
-	if s.synthetic {
-		return append(attrs, "start_immediately", true)
+func (p *scheduledPolicy) started(ctx context.Context) {
+	if p.exhaustedAtStart {
+		p.logExhausted(ctx)
 	}
-	if !s.next.IsZero() {
-		attrs = append(attrs, "next_run", s.next)
+}
+
+func (p *scheduledPolicy) startAttrs() []any {
+	attrs := []any{"schedule", p.r.def.scheduleExpr()}
+	if p.onStart {
+		return append(attrs, "run_on_start", true)
+	}
+	if !p.next.IsZero() {
+		attrs = append(attrs, "next_run", p.next)
 	}
 	return attrs
 }
 
-func (s *scheduledPolicy) beforeRun() (time.Time, bool) {
-	if s.synthetic {
-		// Synthetic startup run: ScheduledAt is the zero time.
+func (p *scheduledPolicy) beforeRun() (time.Time, bool) {
+	if p.onStart {
+		// The RunOnStart run: ScheduledAt is the zero time.
 		return time.Time{}, false
 	}
-	return s.next, false
+	return p.next, false
 }
 
-func (s *scheduledPolicy) afterRun(ctx context.Context, res runResult) (time.Duration, bool) {
-	if s.finishRun(ctx, res) {
+func (p *scheduledPolicy) afterRun(ctx context.Context, res runResult) (time.Duration, bool) {
+	if p.finishRun(ctx, res) {
 		return waitNone, true
 	}
-	if s.synthetic {
-		s.synthetic = false
-		s.anchor = time.Now()
+	if p.onStart {
+		p.onStart = false
+		p.anchor = time.Now()
 	} else {
-		s.anchor = s.next
+		p.anchor = p.next
 	}
-	return s.scheduleNext(ctx)
+	return p.scheduleNext(ctx)
 }
 
 // finishRun records one activation's outcome and reports whether the
 // scheduling loop should stop (graceful stop or permanent failure).
-func (s *scheduledPolicy) finishRun(ctx context.Context, res runResult) (stop bool) {
-	r, p := s.r, s.p
+func (p *scheduledPolicy) finishRun(ctx context.Context, res runResult) (stop bool) {
+	r, s := p.r, p.s
 	out := res.outcome
 	switch out.verdict {
 	case runStopped:
 		r.stopIfNotFailed()
 		return true
 	case runSucceeded:
-		s.consecutiveFailures = 0
+		p.consecutiveFailures = 0
 		r.recordSuccess(time.Now())
-		p.logger.DebugContext(ctx,
-			"scheduled worker run completed",
+		s.logger.DebugContext(ctx, "worker run completed",
 			"worker", r.def.name,
+			"kind", string(KindScheduled),
 			"run_id", res.runID,
 			"scheduled_at", res.scheduledAt,
 			"duration", res.duration,
@@ -449,42 +474,53 @@ func (s *scheduledPolicy) finishRun(ctx context.Context, res runResult) (stop bo
 		return false
 	}
 
-	s.consecutiveFailures++
-	p.logger.ErrorContext(ctx,
-		"scheduled worker run failed",
+	p.consecutiveFailures++
+	s.logger.ErrorContext(ctx, "worker run failed",
 		append([]any{
 			"worker", r.def.name,
+			"kind", string(KindScheduled),
 			"scheduled_at", res.scheduledAt,
-			"consecutive_failures", s.consecutiveFailures,
+			"consecutive_failures", p.consecutiveFailures,
 			"error", out.err,
 		}, res.logAttrs()...)...,
 	)
 
-	if max := r.def.failurePolicy.maxConsecutiveFailures; max > 0 && s.consecutiveFailures >= int64(max) {
-		r.setFailureOutcome(StatusFailed, s.consecutiveFailures, out.err)
-		p.logger.ErrorContext(ctx,
-			"worker exceeded max consecutive failures",
+	if limit := r.def.scheduled.MaxConsecutiveFailures; limit > 0 && p.consecutiveFailures >= int64(limit) {
+		r.setFailureOutcome(StatusFailed, p.consecutiveFailures, out.err)
+		s.logger.ErrorContext(ctx, "worker failed",
 			"worker", r.def.name,
-			"max_consecutive_failures", max,
+			"kind", string(KindScheduled),
+			"reason", "failure_limit",
+			"limit", limit,
 		)
 		return true
 	}
 	if ctx.Err() != nil {
 		// A failure during shutdown is recorded, and the loop ends.
-		r.setFailureOutcome(StatusStopped, s.consecutiveFailures, out.err)
+		r.setFailureOutcome(StatusStopped, p.consecutiveFailures, out.err)
 		return true
 	}
 
-	r.setFailureOutcome(StatusWaiting, s.consecutiveFailures, out.err)
+	r.setFailureOutcome(StatusWaiting, p.consecutiveFailures, out.err)
 	return false
 }
 
 // scheduleNext computes the next activation from the anchor, skipping (and
 // logging) activations the previous run outlasted, and returns the wait until
-// it. A schedule with no future activation marks the worker Failed and stops.
-func (s *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool) {
-	r, p := s.r, s.p
-	next := r.def.schedule.Next(s.anchor)
+// it. A schedule with no future activation makes the worker failed and stops.
+func (p *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool) {
+	wait, stop := p.computeNext(ctx)
+	if stop {
+		p.logExhausted(ctx)
+	}
+	return wait, stop
+}
+
+// computeNext is scheduleNext without the terminal line, which start defers
+// until after the "worker started" line.
+func (p *scheduledPolicy) computeNext(ctx context.Context) (time.Duration, bool) {
+	r, s := p.r, p.s
+	next := r.def.schedule.Next(p.anchor)
 	var skipped int
 	var firstSkipped, lastSkipped time.Time
 	for !next.IsZero() && !next.After(time.Now()) {
@@ -499,8 +535,7 @@ func (s *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool
 	if skipped > 0 {
 		// One line per resumption, not one per activation: a one-second
 		// schedule behind a ten-minute run would otherwise log 600 lines.
-		p.logger.WarnContext(ctx,
-			"worker ticks skipped",
+		s.logger.WarnContext(ctx, "worker activations skipped",
 			"worker", r.def.name,
 			"skipped", skipped,
 			"first_scheduled_at", firstSkipped,
@@ -512,13 +547,19 @@ func (s *scheduledPolicy) scheduleNext(ctx context.Context) (time.Duration, bool
 			st.lastError = "schedule has no future activation"
 			st.status = StatusFailed
 		})
-		p.logger.ErrorContext(ctx,
-			"worker schedule has no future activation",
-			"worker", r.def.name,
-			"schedule", r.def.scheduleExpr(),
-		)
 		return waitNone, true
 	}
-	s.next = next
+	p.next = next
 	return time.Until(next), false
+}
+
+// logExhausted writes the terminal line of a schedule with no future
+// activation.
+func (p *scheduledPolicy) logExhausted(ctx context.Context) {
+	p.s.logger.ErrorContext(ctx, "worker failed",
+		"worker", p.r.def.name,
+		"kind", string(KindScheduled),
+		"reason", "schedule_exhausted",
+		"schedule", p.r.def.scheduleExpr(),
+	)
 }

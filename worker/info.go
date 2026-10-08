@@ -6,84 +6,69 @@ import "time"
 type Kind string
 
 const (
-	// KindContinuous is a worker whose Run lives until the pool stops.
+	// KindContinuous is a worker whose Run lives until its component stops.
 	KindContinuous Kind = "continuous"
 	// KindScheduled is a worker that runs once per cron activation.
 	KindScheduled Kind = "scheduled"
 )
 
-// Status represents a worker's current lifecycle state.
+// Status is a worker's lifecycle state.
 type Status string
 
 const (
-	// StatusIdle means the worker is registered but not yet started.
-	StatusIdle Status = "idle"
-	// StatusRunning means the worker is actively executing.
+	// StatusPending means the worker's component has not started, or a
+	// continuous worker has not yet been admitted to its first run.
+	StatusPending Status = "pending"
+	// StatusRunning means a run has been admitted and is executing.
 	StatusRunning Status = "running"
-	// StatusWaiting means the worker is waiting for restart delay or next tick.
+	// StatusBackoff means a continuous worker is waiting to restart after a
+	// failure: unhealthy, recovering.
+	StatusBackoff Status = "backoff"
+	// StatusWaiting means a scheduled worker is waiting for its next
+	// activation, whatever its last run did.
 	StatusWaiting Status = "waiting"
-	// StatusStopped means the worker exited normally and will not run again.
+	// StatusStopped means the loop ended because the worker's component was
+	// shut down; the worker will not run again.
 	StatusStopped Status = "stopped"
-	// StatusFailed means the worker exceeded its configured failure threshold.
+	// StatusFailed means a positive failure limit was exhausted, restarts are
+	// disabled and a run failed, or the schedule has no future activation. It
+	// is permanent until the application restarts.
 	StatusFailed Status = "failed"
 )
 
-// Config is the effective, immutable configuration of a registered worker:
-// the policy the runner executes once defaults and the pool configuration are
-// applied, not an echo of the options passed to [Register]. Fields that do
-// not apply to the worker's [Kind] are zero, and zero limits mean unlimited.
-type Config struct {
-	// Schedule is the cron expression of a scheduled worker, as registered.
-	Schedule string `json:"schedule"`
-	// StartImmediately reports [WithStartImmediately] (scheduled workers).
-	StartImmediately bool `json:"start_immediately"`
-	// RunTimeout is the [WithRunTimeout] budget of each run (scheduled
-	// workers); 0 means no timeout.
-	RunTimeout time.Duration `json:"run_timeout"`
-	// MaxConsecutiveFailures is the [WithMaxConsecutiveFailures] limit
-	// (scheduled workers); 0 means unlimited.
-	MaxConsecutiveFailures int `json:"max_consecutive_failures"`
-	// MaxRestarts is the [WithMaxRestarts] limit (continuous workers); 0
-	// means unlimited.
-	MaxRestarts int `json:"max_restarts"`
-	// RestartDelay is the base restart delay of a continuous worker — the
-	// first and the minimum wait before a restart — after the option, the
-	// pool's worker.restart_delay configuration and [DefaultRestartDelay] are
-	// resolved.
-	RestartDelay time.Duration `json:"restart_delay"`
-	// MaxRestartDelay is the cap the restart delay of a continuous worker
-	// backs off to, resolved as described at [WithMaxRestartDelay]; never
-	// below RestartDelay.
-	MaxRestartDelay time.Duration `json:"max_restart_delay"`
-	// Readiness is a copy of the worker's [ReadinessPolicy]; nil when the
-	// worker does not take part in readiness.
-	Readiness *ReadinessPolicy `json:"readiness,omitzero"`
-}
-
-// Info is a point-in-time snapshot of a worker: its identity, its effective
+// Info is a point-in-time snapshot of a worker: its identity, its resolved
 // configuration and its live state.
 //
-// Info is shaped for direct JSON encoding (for example from an admin
-// endpoint): field names are snake_case, durations encode as integer
-// nanoseconds under Credo's response profile, and last_run, last_success,
-// last_error and config.readiness are omitted while zero.
+// Info is shaped for direct JSON encoding, for example from an admin
+// endpoint: field names are snake_case, durations encode as integer
+// nanoseconds under Credo's response profile, and schedule, continuous,
+// scheduled, last_started_at, last_succeeded_at and last_error are omitted
+// while zero.
 type Info struct {
-	Name   string `json:"name"`
-	Kind   Kind   `json:"kind"`
-	Config Config `json:"config"`
+	Name string `json:"name"`
+	Kind Kind   `json:"kind"`
+	// Schedule is the expression of a scheduled worker, as registered; empty
+	// for a continuous worker.
+	Schedule string `json:"schedule,omitzero"`
+	// Continuous is the resolved configuration of a continuous worker; nil
+	// for a scheduled one. Each snapshot holds its own copy.
+	Continuous *ContinuousConfig `json:"continuous,omitzero"`
+	// Scheduled is the resolved configuration of a scheduled worker; nil for
+	// a continuous one. Each snapshot holds its own copy.
+	Scheduled *ScheduledConfig `json:"scheduled,omitzero"`
 
 	Status Status `json:"status"`
-	// Restarts counts the restarts of a continuous worker.
+	// Restarts counts the restarts of a continuous worker that started.
 	Restarts int64 `json:"restarts"`
 	// ConsecutiveFailures counts the failed runs of a scheduled worker since
 	// its last success.
-	ConsecutiveFailures int64     `json:"consecutive_failures"`
-	LastRun             time.Time `json:"last_run,omitzero"`
-	// LastSuccess is the completion time of the last successful run of a
-	// scheduled worker; zero until then, and always zero for a continuous
-	// worker, whose Run never completes successfully.
-	LastSuccess time.Time `json:"last_success,omitzero"`
-	// LastError is the error of the most recent failed run, without any
-	// stack trace; a successful scheduled run clears it.
+	ConsecutiveFailures int64 `json:"consecutive_failures"`
+	// LastStartedAt is the start time of the most recently admitted run.
+	LastStartedAt time.Time `json:"last_started_at,omitzero"`
+	// LastSucceededAt is the completion time of the last successful run of a
+	// scheduled worker; always zero for a continuous worker.
+	LastSucceededAt time.Time `json:"last_succeeded_at,omitzero"`
+	// LastError is the error of the most recent failed run, without any stack
+	// trace; a successful scheduled run clears it, a graceful stop does not.
 	LastError string `json:"last_error,omitzero"`
 }

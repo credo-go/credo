@@ -573,7 +573,7 @@ For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdow
 Shutdown sequence:
 
 1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
-2. The **ingress tier** — where work enters the process — stops concurrently with the drain of in-flight HTTP requests: ingress `OnStop` hooks in reverse registration order, then ingress components such as the WebSocket server and the worker pool
+2. The **ingress tier** — where work enters the process — stops concurrently with the drain of in-flight HTTP requests: ingress `OnStop` hooks in reverse registration order, then ingress components such as the WebSocket server and scheduled workers
 3. An in-flight reload finishes
 4. The **internal tier** stops: internal `OnStop` hooks in reverse registration order, then internal components in reverse dependency order — each consumer before the components it was built from
 
@@ -581,7 +581,7 @@ The steps share one deadline (`WithShutdownTimeout`, 30 seconds by default) and 
 
 DI singletons that have `Shutdown` take part automatically; components are internal unless registered with `credo.Ingress()`. Prefer a component for anything with its own teardown, and an `OnStop` hook for a leaf action. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for components, tiers and the registration options, and the [Deployment guide](deployment.md#shutdown-and-readiness) for sizing the deadline.
 
-If you need managed background tasks, use `worker.Register(...)` or `worker.RegisterProvided[T](...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
+If you need managed background tasks, register them with a worker supervisor — `workers := worker.Use(app)`, then `workers.ContinuousProvided[T](name)` or `workers.ScheduledProvided[T](name, expr)` for a worker the container builds — instead of starting goroutines in `main()`. Each worker is a component: the App starts it in the start phase and, at shutdown, cancels its context and waits for its `Run` in its tier's turn — a scheduled worker with the HTTP drain, a continuous worker after it and before the components it uses. See the [Worker Guide](worker.md).
 
 ---
 

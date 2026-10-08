@@ -15,7 +15,7 @@ Scope, sequence and acceptance live in the [delivery plan](docs/plans/components
 - [x] W2: sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted (2026-10-08)
 - [x] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
 - [x] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
-- [ ] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
+- [x] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
 - [ ] W3: the DI surface — seven methods and `Finalize`; protected bindings, `AdoptValue`, `CanProvideValue`, `Replace` and the `Must*` registration twins deleted
 - [ ] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error
 - [ ] W8: `StatusHandler` panics for any code but 404 and 405
@@ -170,7 +170,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `app.ProvideValue[T](value)` — register pre-built value
   - [x] `app.CanProvideValue[T]()` — read-only point-in-time frozen/direct-duplicate preflight for integrations that must validate before I/O; final normal/protected value publication remains authoritative
   - [x] `app.ProvideProtectedValue[T]()` / `app.ProtectBinding[T](expected ...T)` — low-level Replace protection for DI values coupled to external lifecycle/health state; the optional expected value atomically compares the resolved singleton before protection, and ordinary bindings remain replaceable
-  - [x] `app.AdoptValue[T](validate)` — registration-time read → validate → atomic compare-and-protect; never constructs (constructor bindings rejected); used by store/worker registration (2026-09-05)
+  - [x] `app.AdoptValue[T](validate)` — registration-time read → validate → atomic compare-and-protect; never constructs (constructor bindings rejected) (2026-09-05); no framework caller remains since stores and workers moved onto the components
   - [x] `app.Replace[T]` returns `(old, existed, err)` — caller owns the superseded instance; Warn log for a superseded Shutdowner (2026-09-05)
 - [x] `app.Resolve[T]()` — retrieve instance (admitted only after `Finalize`; terminal per-singleton completion, `DIPanicError` on constructor panic, `ErrDIClosed` once teardown begins)
 - [x] `app.MustResolve[T]()` — panics if not found
@@ -509,10 +509,10 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 **Source**: robfig/cron v3 parser (MIT, expression parser only)
 
 - [x] Adapt cron expression parser from robfig/cron v3
-- [x] `worker.Register(app, name, w, opts...) error` + `worker.MustRegister(app, name, w, opts...)` API — the name is registration identity; `Worker` is `Run`-only, `Func` is a function type
+- [x] `worker.Use(app)` → `*Supervisor` with `Continuous`/`Scheduled` and the DI-provided `ContinuousProvided[T]`/`ScheduledProvided[T]`; the name is registration identity, misuse panics; `Worker` is `Run`-only, `Func` is a function type (v0.24.0; `worker.Register`/`MustRegister` before)
 - [x] Continuous + scheduled worker execution modes
-- [x] Graceful shutdown (wait for active workers) — drains in `OnDrain`, before DI teardown, regardless of registration order
-- [x] Integration with app lifecycle — uniform post-Finalize rejection, protected `*Pool` binding
+- [x] Graceful shutdown (wait for active workers) — each worker is a component `worker:<name>` stopped in its tier: scheduled workers with the HTTP drain, continuous workers after it and before their dependencies; a `Run` that ignores cancellation is abandoned with its dependencies kept open
+- [x] Integration with app lifecycle — registration after `Finalize` panics; per-kind `ContinuousConfig`/`ScheduledConfig` in code (no `worker` configuration section); readiness through each component's `Ready`; `Snapshot`/`Lookup` with no DI binding
 - [x] Tests
 - [x] Update NOTICES
 - [x] Worker contract (v0.20.0, [ADR-023](docs/adr/023-worker-system.md)): DI-provided workers through `RegisterProvided[T]` resolved at pool start (all-or-nothing, Shutdown during resolution wins); `Info` with the effective `Config`, typed `Kind`, `Restarts`/`ConsecutiveFailures` and a snake_case JSON shape; ordered run-outcome classification separate from the loop exit; permanent continuous workers (an early nil return restarts); cooperative `WithRunTimeout` with `ErrRunTimeout` as cause; panic stack kept out of `LastError`; `WithMaxRestarts(N)` = first run + N restarts; pre-run cancellation check in one admission step; `@every` rejects zero, negative and sub-second input; one start and one stop line per worker, `run_id`/`duration` on run lines, collapsed skip line

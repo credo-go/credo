@@ -1,6 +1,6 @@
 # ADR-016: Health Checks
 
-**Status:** Accepted; v0.24.0 readiness from the kernel's registries implemented for stores and components, worker readiness pending ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015, ADR-024
+**Status:** Accepted; readiness from the kernel's registries implemented in v0.24.0 **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015, ADR-024
 
 ## Context
 
@@ -89,9 +89,9 @@ When the application begins graceful shutdown, `/ready` immediately returns 503 
 
 ### Readiness from the Kernel's Registries
 
-`/ready` reads what the kernel already holds, and resolves nothing from the DI container per request for stores and components. Its sources are:
+`/ready` reads what the kernel already holds, and resolves nothing from the DI container per request. Its sources are:
 
-- **components' `Ready`** — each component whose binding's type shows the `Ready` capability (`credo.Readier`), under the component's name (`credo.Named`, the type name by default). A nil error is up and an error is down. The probes are built once by the start walk from the values it built. A borrowed value keeps its readiness contribution though the App neither starts nor shuts it down ([ADR-024](024-lifecycle-components.md)).
+- **components' `Ready`** — each component whose binding's type shows the `Ready` capability (`credo.Readier`), under the component's name (`credo.Named`, the type name by default). A nil error is up and an error is down. The probes are built once by the start walk from the values it built. A borrowed value keeps its readiness contribution though the App neither starts nor shuts it down ([ADR-024](024-lifecycle-components.md)). A worker whose registration sets a readiness condition reports here, as its component `worker:<name>` ([ADR-023](023-worker-system.md)); a worker without one has no `Ready` and contributes nothing.
 - **the store registry** — each registered store's typed `Health`, under the store's name ([ADR-015](015-data-access.md#registration)). Its probe is built once, when the start phase has built the store's binding and pinged it, so an override of the binding is the value reported. Before the App has started there are no store entries.
 - **the application's checks** — those added with `AddReadinessCheck`.
 
@@ -102,9 +102,7 @@ The three sources share the engine described above: each entry owns a stable `Pr
 - Cause text is captured once inside the Probe worker. A custom `Error()` that blocks or panics is therefore subject to the same timeout/recovery boundary; HTTP rendering and slog use only the immutable captured string, while the typed cause remains available internally for `errors.Is/As`.
 - A name that two sources report — a custom readiness check and a store, for example — produces an explicit synthetic down result and 503 instead of silently overwriting one result in the JSON map.
 
-The store registry reaches the root through an internal Go seam between the root and `store`, not through a container binding. The former `internal/health.StoreFunc` DI seam — resolved on every readiness request and installed with `App.Replace` by each `store.Register` — is gone.
-
-**Accepted, pending implementation (v0.24.0, W6).** Worker readiness (`worker.WithReadiness`) still flows through the module-internal DI seam `internal/health.ReadinessFunc`, resolved on each readiness request: its checks are reported among the named checks (`worker:<name>`), share their name space (collisions fail closed), and a resolution error yields no entries. When workers become components, a worker reports through its component's `Ready` as `worker:<name>`, and this seam is deleted with the `App.Replace` call that installs it.
+The store registry reaches the root through an internal Go seam between the root and `store`, not through a container binding. The former `internal/health.StoreFunc` DI seam — resolved on every readiness request and installed with `App.Replace` by each `store.Register` — is gone, and so is the worker readiness seam that the worker pool installed the same way: a worker reports through its component's `Ready`.
 
 During the drain `/ready` returns 503 `shutting_down` as described under Graceful Shutdown, before any component stops; `/health` stays 200.
 

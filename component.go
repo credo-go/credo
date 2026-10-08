@@ -6,7 +6,18 @@ import (
 	"reflect"
 
 	"github.com/credo-go/credo/internal/di"
+	"github.com/credo-go/credo/internal/kernel"
 )
+
+func init() {
+	kernel.Manage = func(app any, c kernel.Component) {
+		panicOnMisuse(app.(*App).container.Manage(c.Value, di.Options{
+			Ingress:       c.Ingress,
+			Name:          c.Name,
+			IngressRemedy: c.IngressRemedy,
+		}))
+	}
+}
 
 // Component is a value whose teardown the App owns. A DI singleton is a
 // component when it has Shutdown — its binding's type shows the method at

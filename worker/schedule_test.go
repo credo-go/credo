@@ -152,7 +152,7 @@ func TestParseSchedule_Pinned(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			schedule := mustSchedule(t, tc.expr)
+			schedule := mustSchedule("test", tc.expr)
 			got := schedule.Next(tc.now)
 			if !got.Equal(tc.want) {
 				t.Fatalf("Next(%s) = %s, want %s", tc.now, got, tc.want)

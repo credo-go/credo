@@ -40,6 +40,7 @@ func (c *Container) Manage(v any, o Options) error {
 		}
 	}
 	u.name = o.Name
+	u.ingressRemedy = o.IngressRemedy
 	if u.name == "" {
 		u.name = u.t.String()
 	}

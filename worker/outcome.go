@@ -9,7 +9,7 @@ import (
 )
 
 // errUnexpectedExit is recorded when a continuous worker's Run returns nil
-// while the pool is still running. The message states the contract because
+// while its context is still alive. The message states the contract because
 // the failure log line may be the only place an upgrader learns about it.
 var errUnexpectedExit = errors.New(
 	"worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled")
@@ -46,7 +46,7 @@ type runVerdict int
 const (
 	// runFailed counts toward the restart or failure limit.
 	runFailed runVerdict = iota
-	// runSucceeded is a scheduled run that returned nil while the pool ran.
+	// runSucceeded is a scheduled run that returned nil while the worker ran.
 	runSucceeded
 	// runStopped is a graceful stop: neither a success nor a failure.
 	runStopped
@@ -60,10 +60,10 @@ type runInput struct {
 	// timedOut reports that the run context's cancellation cause was
 	// ErrRunTimeout, read before the run context was cancelled.
 	timedOut bool
-	// timeout is the WithRunTimeout budget, for the recorded error.
+	// timeout is the RunTimeout budget, for the recorded error.
 	timeout time.Duration
-	// poolDone reports that the pool context was done when Run returned.
-	poolDone bool
+	// stopping reports that the worker's context was done when Run returned.
+	stopping bool
 }
 
 // runOutcome is the classified result of one run.
@@ -85,11 +85,11 @@ type runOutcome struct {
 //  1. Run panicked → failure, whatever the panic value wraps.
 //  2. The run context was cancelled by the run timeout → timed-out failure,
 //     whatever Run returned, nil included.
-//  3. The pool context is done and Run returned nil or nothing but a context
+//  3. The worker's context is done and Run returned nil or nothing but a context
 //     error → graceful stop.
 //  4. Run returned an error → failure.
 //  5. A scheduled run returned nil → success.
-//  6. A continuous run returned nil while the pool is alive → unexpected-exit
+//  6. A continuous run returned nil while its context is alive → unexpected-exit
 //     failure.
 //
 // Why the loop ends is decided separately, after the outcome is recorded.
@@ -104,7 +104,7 @@ func classifyRun(in runInput) runOutcome {
 		}
 		return runOutcome{verdict: runFailed, err: err, timedOut: true}
 	}
-	if in.poolDone && (in.err == nil || isContextError(in.err)) {
+	if in.stopping && (in.err == nil || isContextError(in.err)) {
 		return runOutcome{verdict: runStopped}
 	}
 	if in.err != nil {

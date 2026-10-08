@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// Worker is a background task managed by the framework. The name that
-// identifies it is given at registration ([Register], [RegisterProvided]), not
-// by the worker itself.
+// Worker is a background task run by the framework. The name that identifies
+// it is given at registration ([Supervisor.Continuous], [Supervisor.Scheduled]
+// and their provided forms), not by the worker itself.
 //
 // A continuous worker's Run must stay active until ctx is cancelled; a
 // scheduled worker's Run performs one activation and returns.
@@ -25,49 +25,33 @@ type Func func(ctx context.Context) error
 // Run calls f(ctx).
 func (f Func) Run(ctx context.Context) error { return f(ctx) }
 
-type workerNameKey struct{}
-type scheduledAtKey struct{}
-type runIDKey struct{}
-
-// RunID returns the execution identifier stored in ctx.
-func RunID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if id, ok := ctx.Value(runIDKey{}).(string); ok {
-		return id
-	}
-	return ""
+// RunInfo is the execution metadata of one run, carried by the context
+// passed to Run.
+type RunInfo struct {
+	// Worker is the registration name.
+	Worker string
+	// ID is the run's identifier, equal to the run_id of the framework's log
+	// lines for that run.
+	ID string
+	// ScheduledAt is the intended activation of a scheduled run; zero for
+	// continuous runs and for the RunOnStart run.
+	ScheduledAt time.Time
 }
 
-// WorkerName returns the registration name of the worker whose run ctx
-// belongs to.
-func WorkerName(ctx context.Context) string {
+type runInfoKey struct{}
+
+// CurrentRun returns the metadata of the run that ctx belongs to, and false
+// with a zero RunInfo for a context that is not a run context.
+func CurrentRun(ctx context.Context) (RunInfo, bool) {
 	if ctx == nil {
-		return ""
+		return RunInfo{}, false
 	}
-	if name, ok := ctx.Value(workerNameKey{}).(string); ok {
-		return name
-	}
-	return ""
+	info, ok := ctx.Value(runInfoKey{}).(RunInfo)
+	return info, ok
 }
 
-// ScheduledAt returns the intended fire time for scheduled workers.
-func ScheduledAt(ctx context.Context) time.Time {
-	if ctx == nil {
-		return time.Time{}
-	}
-	if scheduledAt, ok := ctx.Value(scheduledAtKey{}).(time.Time); ok {
-		return scheduledAt
-	}
-	return time.Time{}
-}
-
-func enrichContext(parent context.Context, name string, scheduledAt time.Time, runID string) context.Context {
-	ctx := context.WithValue(parent, workerNameKey{}, name)
-	ctx = context.WithValue(ctx, scheduledAtKey{}, scheduledAt)
-	ctx = context.WithValue(ctx, runIDKey{}, runID)
-	return ctx
+func withRunInfo(parent context.Context, info RunInfo) context.Context {
+	return context.WithValue(parent, runInfoKey{}, info)
 }
 
 func newRunID() string {

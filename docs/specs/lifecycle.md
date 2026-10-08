@@ -1,6 +1,6 @@
 # Lifecycle Spec
 
-> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8); v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md), [024-lifecycle-components](../adr/024-lifecycle-components.md)
+> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8); lifecycle components **Implemented** (v0.24.0) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md), [024-lifecycle-components](../adr/024-lifecycle-components.md)
 
 ## Overview
 
@@ -180,7 +180,7 @@ An explicit `Shutdown(ctx)` uses the caller's `ctx` deadline as-is. Signal- and 
 
 #### Single-use App
 
-An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `stopping`/`stopped`, any further `Run`/`RunContext`/`ServeContext`/`App.Start` call returns an error (`app cannot be run after shutdown; create a new App`). Tests that need a fresh server create a new `App` with `New()`. Re-run is intentionally unsupported: components are start-once, and background components (e.g. `worker.Pool`) latch a started flag and would not reset cleanly on a second run.
+An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `stopping`/`stopped`, any further `Run`/`RunContext`/`ServeContext`/`App.Start` call returns an error (`app cannot be run after shutdown; create a new App`). Tests that need a fresh server create a new `App` with `New()`. Re-run is intentionally unsupported: components are start-once, and background components (a worker's component, for example) refuse a second `Start` and would not reset cleanly on a second run.
 
 #### Bootstrap teardown
 
@@ -328,11 +328,11 @@ Stop hooks run before their tier's components, so a hook can still use them. The
 
 Background work is a component: its `Start` launches the work on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, and its `Shutdown` cancels that work and waits for it ([Contexts](#contexts)). Its tier places its stop: ingress for work that enters the process — a consumer of an external queue, a scheduled job — which stops beside the HTTP drain, and internal for in-process work that handlers feed, which stops after the HTTP drain and before the components it depends on. A producer that hands work to a consumer component takes the consumer as a constructor dependency, so the producer stops first. A lifecycle `Service` abstraction with a blocking `Run(ctx)` and a restartable/start-once taxonomy is rejected: a `Start` that blocks for the component's lifetime cannot tell a started component from a running one, components are start-once, and restart remains a worker concern ([ADR-024](../adr/024-lifecycle-components.md#rejected-alternatives)).
 
-**Accepted, pending implementation (v0.24.0, W6).** Workers become components of their own. Until then the `worker` pool is one ingress component, bound with `ProvideProtectedValue[*worker.Pool](p, credo.Ingress())` and started by the start walk; its workers run on `context.WithoutCancel` of its `Start` context and stop in its `Shutdown` ([worker spec](worker.md)).
+Each worker is such a component, named `worker:<name>` and added with `app.Manage` — a provided worker as a constructor over its `T`, so it starts after `T`'s component dependencies and stops before them. A scheduled worker defaults to the ingress tier and a continuous worker to the internal tier; the registration's configuration may declare the other ([worker spec](worker.md#components)).
 
 ### The lifecycle error
 
-A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEntry, Cause error}`, obtained with `errors.AsType[*credo.LifecycleError]` from `Run`, `RunContext`, `ServeContext`, `App.Start` and `Shutdown`. Each `LifecycleEntry` names a component — by its `credo.Named` name or its type name, a hook as `OnStart[i]` or `OnStop[i]` — with its `Tier`, its `Phase` (`PhaseStart`, or `PhaseShutdown` for the drain and for the rollback of a start), its `Outcome` (`failed`, `panicked`, `abandoned` at the deadline, or `kept_open` by an abandoned consumer, named in `KeptOpenBy`), its `Err` and its `Duration`. Only those outcomes appear: a component that started and stopped cleanly has no entry. `Cause` is the context error that ended a phase before it completed. The text reads `credo: lifecycle (cause): name (tier) phase outcome[ after d][ by …]: err; …`. It is an immutable snapshot taken at the boundary: a call returning later, or a late-construction attempt, is logged and never written back. `Unwrap() []error` exposes each failure and the cause, so `errors.Is` and `errors.As` traverse it; a panicking `Start` is a `*credo.DIPanicError` with phase `DIPanicStart`. **Accepted, pending implementation (v0.24.0, W6):** a worker is named `worker:<name>`.
+A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEntry, Cause error}`, obtained with `errors.AsType[*credo.LifecycleError]` from `Run`, `RunContext`, `ServeContext`, `App.Start` and `Shutdown`. Each `LifecycleEntry` names a component — by its `credo.Named` name or its type name, a hook as `OnStart[i]` or `OnStop[i]` — with its `Tier`, its `Phase` (`PhaseStart`, or `PhaseShutdown` for the drain and for the rollback of a start), its `Outcome` (`failed`, `panicked`, `abandoned` at the deadline, or `kept_open` by an abandoned consumer, named in `KeptOpenBy`), its `Err` and its `Duration`. Only those outcomes appear: a component that started and stopped cleanly has no entry. `Cause` is the context error that ended a phase before it completed. The text reads `credo: lifecycle (cause): name (tier) phase outcome[ after d][ by …]: err; …`. It is an immutable snapshot taken at the boundary: a call returning later, or a late-construction attempt, is logged and never written back. `Unwrap() []error` exposes each failure and the cause, so `errors.Is` and `errors.As` traverse it; a panicking `Start` is a `*credo.DIPanicError` with phase `DIPanicStart`. A worker is named `worker:<name>`.
 
 ### Readiness
 
@@ -340,7 +340,7 @@ A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEnt
 
 A failure after `Start` has returned is reported through `Ready`. No component ends the App — the App's own listeners excepted — so a component that has stopped for good leaves the process alive and unready, and a failing readiness probe restarts nothing. An application that wants a restart ties a liveness check to the component itself, knowing that a liveness check failing because of a shared dependency restarts every replica.
 
-**Accepted, pending implementation (v0.24.0, W6)** for worker readiness: until W6 it still comes from the internal seam the health engine resolves from the container on every `/ready` request.
+A worker's readiness conditions reach `/ready` the same way: through its component's `Ready`, under `worker:<name>`. A worker whose registration sets no condition has no `Ready` and contributes nothing ([worker spec](worker.md#health-integration)).
 
 ### `app.OnStart(fn, opts...)` and `app.OnStop(fn, opts...)`
 
@@ -372,9 +372,7 @@ The component model is specified to close four scenarios end to end, each pinned
 1. **A handler hands work to a worker that writes to the database.** A handler enqueues to an in-process continuous worker (internal tier) that writes through a database component. A request accepted just before shutdown completes during the HTTP drain, its job is written, and the database shuts down after the worker ([worker spec](worker.md)).
 2. **A WebSocket drain.** The WebSocket server is an ingress component; it drains concurrently with the HTTP drain and before the internal components its handlers use ([WebSocket spec](websocket.md)).
 3. **A scheduled worker.** It originates its runs, so it is ingress by default and stops with the ingress tier, before the internal components its runs use ([worker spec](worker.md)).
-4. **A consumer of an external queue.** Registered with `credo.Ingress()`, it stops in the ingress tier, before the database it writes to.
-
-**Accepted, pending implementation (v0.24.0, W6)** for scenarios 1 and 3, which need workers as components; the first scenario's acceptance test waits for W6.
+4. **A consumer of an external queue.** Registered in the ingress tier — with `credo.Ingress()`, or `Tier: credo.TierIngress` for a worker — it stops in the ingress tier, before the database it writes to.
 
 ## Registration Guards
 
@@ -400,7 +398,7 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
 
-`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([bootstrap spec](bootstrap-and-di-lifecycle.md)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). `app.Manage()` also panics on a value without `Shutdown`, a duplicate name, a resource DI already holds, or a resource handed over twice.
+`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([bootstrap spec](bootstrap-and-di-lifecycle.md)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). `app.Manage()` also panics on a value without `Shutdown`, a duplicate name, a resource DI already holds, or a resource handed over twice. The worker registrations add their components through `app.Manage` and panic the same way, with the worker's own message ([worker spec](worker.md#validation)).
 
 The same fail-fast policy governs all registration APIs: misconfiguration (nil handlers, malformed patterns, duplicates) panics at startup, while operations that touch the outside world (request handling, file I/O) return errors. A registration that needs I/O defers it to the start phase, where a failure is a start failure: `UseI18n` returns nothing and panics on misuse, and its catalogs are read by the start phase ([i18n spec](i18n.md)); `store.Register` returns nothing, and the start phase pings the store ([store spec](store.md)). See the package documentation's "Panics and Errors" section.
 

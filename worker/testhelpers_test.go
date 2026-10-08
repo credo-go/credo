@@ -21,46 +21,70 @@ func newTestApp(t *testing.T, opts ...credo.Option) *credo.App {
 	return app
 }
 
-func mustSchedule(t *testing.T, expr string) *Schedule {
+// newTestSupervisor returns a supervisor without an App, for driving worker
+// components directly — inside synctest bubbles too.
+func newTestSupervisor() *Supervisor {
+	return newTestSupervisorWithLogger(slog.New(slog.DiscardHandler))
+}
+
+func newTestSupervisorWithLogger(logger *slog.Logger) *Supervisor {
+	return &Supervisor{logger: logger, jitter: uniformJitter}
+}
+
+// continuousDef builds the definition Continuous builds for name and cfg.
+func continuousDef(name string, cfg ...ContinuousConfig) *definition {
+	call := fmt.Sprintf("Continuous(%q)", name)
+	return &definition{name: name, kind: KindContinuous, continuous: resolveContinuous(call, oneConfig(call, cfg))}
+}
+
+// scheduledDef builds the definition Scheduled builds for name, expr and cfg.
+func scheduledDef(name, expr string, cfg ...ScheduledConfig) *definition {
+	call := fmt.Sprintf("Scheduled(%q)", name)
+	return &definition{
+		name:      name,
+		kind:      KindScheduled,
+		scheduled: resolveScheduled(call, oneConfig(call, cfg)),
+		schedule:  mustSchedule(call, expr),
+	}
+}
+
+// addWorker adds w's component to s without an App, as register does after
+// the App accepted it, and returns it.
+func addWorker(s *Supervisor, def *definition, w Worker) *component {
+	c := &component{s: s, def: def, r: newRunner(def, w)}
+	s.mu.Lock()
+	s.components = append(s.components, c)
+	s.mu.Unlock()
+	return c
+}
+
+// startWorker starts c under t.Context() and stops it when the test ends.
+func startWorker(t *testing.T, c *component) {
 	t.Helper()
-	s, err := ParseSchedule(expr)
-	if err != nil {
-		t.Fatalf("ParseSchedule(%q) = %v", expr, err)
+	if err := c.Start(t.Context()); err != nil {
+		t.Fatalf("Start(%s) = %v", c.def.name, err)
 	}
-	return s
+	t.Cleanup(func() { stopWorker(t, c) })
 }
 
-type fakeRawConfig struct {
-	worker poolConfig
-	err    error
-	exists bool
-}
-
-func (c fakeRawConfig) Unmarshal(key string, dst any) error {
-	if key != "worker" {
-		return fmt.Errorf("unknown key %q", key)
+// stopWorker shuts c down, failing the test when its loop has not returned
+// within two seconds.
+func stopWorker(t *testing.T, c *component) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = c.Shutdown(context.WithoutCancel(t.Context()))
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Shutdown(%s) did not return", c.def.name)
 	}
-	if c.err != nil {
-		return c.err
-	}
-	config, ok := dst.(*poolConfig)
-	if !ok {
-		return fmt.Errorf("unsupported destination %T", dst)
-	}
-	*config = c.worker
-	return nil
 }
 
-func (c fakeRawConfig) Exists(key string) bool {
-	return key == "worker" && c.exists
-}
-
-func newTestPool() *Pool {
-	return newPool(slog.New(slog.DiscardHandler), poolConfig{})
-}
-
-// startApp runs the App's start phase — which starts its worker pool — and
-// shuts the App down when the test ends.
+// startApp runs the App's start phase — which starts its workers — and shuts
+// the App down when the test ends.
 func startApp(t *testing.T, app *credo.App) {
 	t.Helper()
 	if err := app.Start(t.Context()); err != nil {
@@ -75,51 +99,19 @@ func startApp(t *testing.T, app *credo.App) {
 	})
 }
 
-func shutdownPool(t *testing.T, p *Pool) {
+// mustPanic runs fn and returns the text of its panic, failing the test when
+// it does not panic.
+func mustPanic(t *testing.T, fn func()) (msg string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-}
-
-// finalize closes DI registration so Resolve becomes available. Register
-// calls must precede it.
-func finalize(t *testing.T, app *credo.App) {
-	t.Helper()
-	if err := app.Finalize(); err != nil {
-		t.Fatalf("Finalize() = %v", err)
-	}
-}
-
-// mustDefinition builds the definition Register would build for w under
-// opts, with the default restart delay.
-func mustDefinition(t *testing.T, name string, w Worker, opts ...Option) *definition {
-	t.Helper()
-	o, schedule, err := validateOptions(opts)
-	if err != nil {
-		t.Fatalf("validateOptions(%s) = %v", name, err)
-	}
-	def, err := buildDefinition(name, o, schedule, poolConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	def.resolve = instance(w)
-	return def
-}
-
-// startPool adds defs to p and starts it under t.Context().
-func startPool(t *testing.T, p *Pool, defs ...*definition) {
-	t.Helper()
-	for _, def := range defs {
-		if err := p.addDefinition(def); err != nil {
-			t.Fatalf("addDefinition(%s) = %v", def.name, err)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("did not panic")
 		}
-	}
-	if err := p.Start(t.Context()); err != nil {
-		t.Fatalf("Start() = %v", err)
-	}
+		msg = fmt.Sprint(r)
+	}()
+	fn()
+	return ""
 }
 
 // capturedLog is one record seen by a logCapture, with its attributes
@@ -203,4 +195,12 @@ func (h *logCapture) withMessage(msg string) []capturedLog {
 		}
 	}
 	return out
+}
+
+// finalize closes DI registration; registrations must precede it.
+func finalize(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
 }

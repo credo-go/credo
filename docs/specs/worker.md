@@ -1,8 +1,8 @@
 # Worker Spec
 
-**Status**: Implemented through v0.23.0 (worker contract v0.20.0, restart backoff v0.21.0); v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
+**Status**: Implemented (worker contract v0.20.0, restart backoff v0.21.0, workers as lifecycle components v0.24.0) **Package**: `worker/` **Sources**: robfig/cron v3 (MIT, cron expression parser only) **ADR**: [ADR-023](../adr/023-worker-system.md) **Guide**: [Worker Guide](../guides/worker.md)
 
-This file is the contract of Credo's worker system as work item W6 of the [delivery plan](../plans/components-and-sequential-bootstrap.md) implements it: what registration accepts, how each worker attaches to the App as a lifecycle component, how a run is admitted and classified, what the supervisor reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023; the component model lives in [ADR-024](../adr/024-lifecycle-components.md) and the [lifecycle spec](lifecycle.md). Until W6 ships, the released behavior is described by [the v0.23.0 version of this document](https://github.com/credo-go/credo/blob/v0.23.0/docs/specs/worker.md).
+This file is the contract of Credo's worker system: what registration accepts, how each worker attaches to the App as a lifecycle component, how a run is admitted and classified, what the supervisor reports, and which log lines it writes. The rationale and the rejected alternatives live in ADR-023; the component model lives in [ADR-024](../adr/024-lifecycle-components.md) and the [lifecycle spec](lifecycle.md).
 
 ---
 
@@ -13,7 +13,7 @@ The `worker/` package runs background tasks — queue consumers, watchers, perio
 - **One interface** — `Worker` has a single method, `Run(ctx) error`. The name is given at registration and is the worker's identity.
 - **One supervisor** — `worker.Use(app)` returns a `*Supervisor`, a registry and reporting object with no lifecycle of its own.
 - **Four registration methods** — `Continuous` and `Scheduled` for a constructed value, `ContinuousProvided[T]` and `ScheduledProvided[T]` for a worker the DI container provides; `T` is built in the start walk.
-- **One component per worker** — each registration adds a component named `worker:<name>` to the App: its `Start` launches the loop, its `Shutdown` cancels the worker's context and waits for `Run`, its `Ready` reports the worker's readiness conditions.
+- **One component per worker** — each registration adds a component named `worker:<name>` to the App: its `Start` launches the loop, its `Shutdown` cancels the worker's context and waits for `Run`, and its `Ready`, present only when the registration sets a readiness condition, reports those conditions.
 - **A tier per registration** — a scheduled worker defaults to the ingress tier and stops with the HTTP drain; a continuous worker defaults to the internal tier and stops after it, in reverse dependency order.
 - **Per-kind configuration in code** — `ContinuousConfig` and `ScheduledConfig`, zero meaning the default; the package reads no configuration section.
 - **Fail-fast registration** — names, configurations and cron expressions are validated when the registration method is called, and misuse panics; nothing is parsed at run time.
@@ -138,11 +138,11 @@ The name is the registration identity. It is the `worker` attribute of every log
 - non-empty;
 - no leading or trailing whitespace (names are never trimmed or otherwise normalized);
 - no control characters;
-- unique within the supervisor (`worker: duplicate worker name "x"`), across all four methods; across supervisors, the component registry's unique-name rule refuses a second `worker:<name>`.
+- unique within the supervisor (`worker: Continuous("x"): duplicate worker name "x"; give each worker its own name`), across all four methods; across supervisors, the component registry's unique-name rule refuses a second `worker:<name>`, and so does a component of that name added with `credo.Named` (`worker: Continuous("x"): the App already has a component named "worker:x", registered by another supervisor or with credo.Named; give each worker its own name`).
 
 No prefix is reserved. The health engine's reserved `credo.` prefix applies to the full name, which always starts with `worker:`.
 
-Registering the same `Worker` value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Registering one `T` twice through the provided methods panics — under two names in one supervisor, or in two supervisors of one App, which share that check — because the container would hand both loops one instance.
+Registering the same `Worker` value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Registering one `T` twice through the provided methods panics — under two names in one supervisor, or in two supervisors of one App, which share that check — because the container would hand both loops one instance (`worker: ContinuousProvided[*app.Relay]("b"): *app.Relay is already registered as worker "a"; the container hands every registration the same instance, so register it once`). The worker package keeps that record per App, holding the App weakly; a registration the App refuses releases its entry.
 
 ### Configuration
 
@@ -211,21 +211,26 @@ The four methods share one path. In order, a registration panics when:
 3. more than one configuration is given;
 4. a configuration value is rejected by the table above;
 5. the schedule does not parse (see [Schedules](#schedules));
-6. the name is a duplicate in the supervisor, or a provided `T` is registered twice in it;
-7. the component registry refuses the worker's component: the registration comes after `Finalize`, after the App is prepared or after it is shut down, or another supervisor already added `worker:<name>`.
+6. the name is a duplicate in the supervisor, or a provided `T` is already registered in the App, by this supervisor or another;
+7. the component registry refuses the worker's component: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App shut down, or another supervisor or a `credo.Named` component already holds `worker:<name>`.
 
-Every panic names the worker, the call and the remedy, for example `worker: Restart.MaxDelay 1s for "order-consumer" is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay` and `worker: Scheduled("report") after app.Finalize; register workers before Finalize`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Provided workers](#provided-workers)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
+Every panic follows one format, `worker: <Call>: <problem>; <remedy>`, where `<Call>` is `Continuous("name")`, `Scheduled("name")`, `ContinuousProvided[*T]("name")` or `ScheduledProvided[*T]("name")`, with `T` spelled as Go prints the type (package-qualified). For example:
+
+- `worker: Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay`;
+- `worker: Scheduled("x"): 2 configurations given; pass at most one worker.ScheduledConfig`.
+
+A registration the phase refuses reads without the colon after the call: `worker: Scheduled("report") after app.Finalize; register workers before Finalize`, and `worker: Scheduled("report") after the App shut down; register workers before Finalize`. `Use(nil)` panics with `worker: Use: app must not be nil; pass the *credo.App the workers belong to`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Provided workers](#provided-workers)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
 
 ### Provided workers
 
-`ContinuousProvided[T]` and `ScheduledProvided[T]` add the worker's component to the registry as a constructor over `T`: the start walk builds it, resolving `T` from the container, after `T`'s component dependencies have started. Consequences:
+`ContinuousProvided[T]` and `ScheduledProvided[T]` add the worker's component to the registry as a constructor over `T` — `app.Manage` receives a `func(T) (component, error)` — so `T` is an edge: the start walk builds the component, resolving `T` from the container, after `T`'s component dependencies have started. Consequences:
 
 - `Provide[T]` and the provided registration may be called in either order, both before `Finalize`.
 - The constraint `T Worker` makes a type without `Run` a compile error. `T` may be an interface bound with `app.Alias`.
 - A `T` with no binding is a missing dependency: `Finalize` returns it with its path. `T`'s own constructor graph is validated by `Finalize` like any provider's.
-- A constructor error or panic while building `T`, or a nil value, is a start failure of the worker's component: the start phase rolls back what was built and `Run` returns the error naming `worker:<name>`.
+- A constructor error or panic while building `T`, or a nil value (`worker: "name": *app.Relay resolved to nil`), is a start failure of the worker's component: the start phase rolls back what was built and `Run` returns the error naming `worker:<name>`.
 - The worker stops before `T`'s component dependencies: if `T` itself is a component — it has `Shutdown` — it is shut down after the worker, in dependency order.
-- A provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path and both remedies: declare the worker `Tier: credo.TierIngress`, or split the ingress component so that what the worker uses is an internal part.
+- A provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path and both remedies: declare the worker ingress with `Tier: credo.TierIngress` in its configuration — the message names the worker's own setting, since a worker registration takes no `RegistrationOption` — or split the ingress component so that what the worker uses is an internal part.
 
 A worker registered by value has no edges the dependency graph can see — a closure's captures are invisible — and takes its place in its tier by registration order. A worker that uses infrastructure is registered in its provided form, so the graph orders it.
 
@@ -235,11 +240,11 @@ A worker registered by value has no edges the dependency graph can see — a clo
 
 ### Start, Shutdown, Ready
 
-Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
+Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to, exactly as `app.Manage(component, credo.Named("worker:<name>"))` would add it, with `credo.Ingress()` when that tier is ingress. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
 
-- **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A provided worker's construction precedes `Start`, so its failure is the component's start failure.
+- **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A provided worker's construction precedes `Start`, so its failure is the component's start failure. A second `Start`, or a `Start` after `Shutdown`, returns an error; the lifecycle never makes either call.
 - **`Shutdown(ctx)`** cancels the worker's context and returns when `Run` and the loop have returned — and not before. It does not return at the deadline itself: a `Run` that ignores cancellation past the drain deadline is abandoned by the lifecycle, reported in the error `Run` returns, and the components the worker depends on stay open, so nothing closes a database under a run that may still use it. A worker whose component was built but never started shuts down at once.
-- **`Ready(ctx)`** exists only when the registration sets a readiness condition ([Health Integration](#health-integration)). It reads the runner's last state in memory and never performs I/O.
+- **`Ready(ctx)`** exists only when the registration sets a readiness condition ([Health Integration](#health-integration)): the component has one of two types, and the App plans `Ready` from the type. It reads the runner's last state in memory and never performs I/O.
 
 The supervisor has no `Start` and no `Shutdown`: the lifecycle starts and stops each worker's component once, in order, and owns the race between a start and a shutdown requested during it.
 
@@ -407,7 +412,7 @@ The context passed to `Run` is derived from the worker's context (cancelled when
 
 ## Logging Contract
 
-For every worker whose component started, the loop writes exactly one `worker started` and exactly one `worker stopped` line at Info, whatever path ends it. A worker whose component never started — the start phase failed or was interrupted before it — writes neither. All lines carry `worker=<name>`, and the supervisor's logger adds `module=worker`.
+For every worker whose component started, the loop writes exactly one `worker started` and exactly one `worker stopped` line at Info, whatever path ends it; `worker started` is the worker's first line and `worker stopped` its last, so a schedule with no activation at start writes its `worker failed` between them. A worker whose component never started — the start phase failed or was interrupted before it — writes neither. All lines carry `worker=<name>`, and the supervisor's logger adds `module=worker`.
 
 | Message | Level | Attributes |
 | --- | --- | --- |
@@ -533,7 +538,7 @@ workers.Scheduled("recovery", "@every 5m", recovery, worker.ScheduledConfig{
 - `UnreadyWhenFailed` applies to both kinds; `UnreadyUntilFirstSuccess` and `UnreadyAfterSuccessAge` exist only on `ScheduledConfig`, because a continuous worker never succeeds. A worker with no condition set has no `Ready` and contributes nothing to readiness.
 - `UnreadyUntilFirstSuccess` stays satisfied once met; pair it with `RunOnStart` unless waiting for the first activation is intended. `UnreadyAfterSuccessAge` is not applied before the first success; combine it with `UnreadyUntilFirstSuccess` to close that window.
 - `UnreadyWhenFailed` sees every way a continuous worker can die: an early nil return is a failure like an error or a panic, so under a positive `Restart.Limit`, or with `Restart.Disabled`, a worker that keeps exiting reaches `failed`. With unlimited restarts it never does.
-- The contribution is the worker component's `Ready`, reported by `/ready` under the component name `worker:<name>` next to `AddReadinessCheck` entries (a name collision fails closed as a configuration error). It is evaluated in memory from the runner's last snapshot, resolves nothing per request and never performs I/O; failure text is masked unless `HealthConfig.ExposeErrors` is set. A worker with `UnreadyUntilFirstSuccess` whose component has not started reports "has not started".
+- The contribution is the worker component's `Ready`, reported by `/ready` under the component name `worker:<name>` next to `AddReadinessCheck` entries (a name collision fails closed as a configuration error). It is evaluated in memory from the runner's last snapshot, resolves nothing per request and never performs I/O; failure text is masked unless `HealthConfig.ExposeErrors` is set. `/ready` asks components only once the App has entered running, when every worker's component has started; called earlier, `Ready` of a worker with `UnreadyUntilFirstSuccess` reports "has not started", and any other condition passes.
 
 Readiness takes an instance out of rotation and restarts nothing: a worker that reached `failed` under `UnreadyWhenFailed` leaves a process that is alive, unready and never restarted. An application that wants the orchestrator to restart the process ties a liveness check to the worker through `Lookup` — `AddLivenessCheck` with a check that fails when `Lookup` reports `StatusFailed` or does not know the name — knowing that a failure caused by a shared dependency then restarts every replica. The worker guide carries the recipe; no liveness setting exists on the configuration.
 
@@ -719,9 +724,9 @@ workers.Continuous("config-watcher", &ConfigWatcher{path: "./configs", onChange:
 
 ## Package Structure
 
-`worker/` keeps its engine files — `worker.go` (`Worker`, `Func`, the run context), `runner.go` (runner state, run admission, the loop, the continuous and scheduled policies, the log lines), `outcome.go` (panic recovery, run-outcome classification), `schedule.go` (`Schedule`, `ParseSchedule`, adapted from robfig/cron v3), `info.go` (`Kind`, `Status`, `Info`) and `doc.go` (package doc and robfig/cron attribution) — beside the supervisor with its registration methods, the per-kind configuration with its resolution and validation, the worker component and the readiness conditions its `Ready` evaluates. Tests use synctest timing, a capturing slog handler and examples.
+`worker/` holds `worker.go` (`Worker`, `Func`, the run context), `supervisor.go` (`Supervisor`, `Use`, the four registration methods, `Snapshot`, `Lookup`, name validation and the per-App record of provided types), `config.go` (`ContinuousConfig`, `ScheduledConfig`, `Restart`, the defaults, `ErrRunTimeout`, resolution and validation), `definition.go` (the immutable registration and the single `Info` builder), `component.go` (the worker component and the readiness conditions its `Ready` evaluates), `runner.go` (runner state, run admission, the loop, the continuous and scheduled policies, the log lines), `outcome.go` (panic recovery, run-outcome classification), `schedule.go` (`Schedule`, `ParseSchedule`, adapted from robfig/cron v3), `info.go` (`Kind`, `Status`, `Info`) and `doc.go` (package doc and robfig/cron attribution). Tests use synctest timing and a capturing slog handler.
 
-`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The supervisor uses only the App's public surface — `Manage` with `credo.Named` and `credo.Ingress()` to add each worker's component (a value, or a constructor over `T` for the provided forms), and `Logger` — and binds nothing into the container.
+`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The supervisor adds each worker's component — a value, or a constructor over `T` for the provided forms — through the module-internal kernel seam (`internal/kernel`), which does what `App.Manage` with `credo.Named` and `credo.Ingress()` does and also carries the worker's own remedy into `Finalize`'s tier finding; it logs through `App.Logger` and binds nothing into the container.
 
 ---
 

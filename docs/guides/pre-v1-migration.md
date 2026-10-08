@@ -1,6 +1,6 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0 and the restart backoff of v0.21.0 are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), and its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip-amendment) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0, the restart backoff of v0.21.0 and the v0.24.0 workers as components are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n), and its workers as components under [Workers as components](#workers-as-components); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions.
 
 ## Bootstrap and DI
 
@@ -146,47 +146,102 @@ Migration: merge a multi-document config into one mapping — the application ra
 
 ## Workers
 
-**Implemented (v0.20.0; restart backoff in v0.21.0).** The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the new calls. One change compiles unchanged but behaves differently, so check it first:
+### Workers as components
 
-> **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted with the restart backoff (3 s at first, up to a minute while failures repeat) — for ever, unless `WithMaxRestarts` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
+**Implemented (v0.24.0).** Each worker is a lifecycle component of the App. `worker.Use(app)` returns a supervisor — a registry and reporting object with no lifecycle of its own — whose registration method chooses the worker's kind, and each registration adds a component named `worker:<name>` that the App starts in the start phase and stops in its tier: a scheduled worker with the HTTP drain, a continuous worker after it and before the components it depends on. Configuration is a per-kind struct in code. The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the calls.
+
+None of these changes is a compile error, so check them first:
+
+| Before v0.24.0 | Now |
+| --- | --- |
+| The `worker` configuration section (`worker.restart_delay`, `worker.max_restart_delay`) set the restart floor and cap of every continuous worker | No configuration section is read. A leftover `worker` section is ignored — it is an unknown key only when the application decodes the whole configuration tree into a struct under `WithStrictDecoding` — and every worker runs with the package defaults (3 s, 1 min) unless its registration sets `Restart{MinDelay, MaxDelay}`. Settings that must come from the environment move to a typed section the application reads itself ([worker guide](worker.md#configuration)) |
+| Snapshot JSON: the configuration under `config` (`schedule`, `start_immediately`, `run_timeout`, `max_consecutive_failures`, `max_restarts`, `restart_delay`, `max_restart_delay`, `readiness`); `last_run`; `last_success` | `schedule` at the top level, and the resolved configuration under `continuous` (`tier`, `restart.disabled`, `restart.limit`, `restart.min_delay`, `restart.max_delay`, `unready_when_failed`) or `scheduled` (`tier`, `run_on_start`, `run_timeout`, `max_consecutive_failures`, `unready_when_failed`, `unready_until_first_success`, `unready_after_success_age`); `last_started_at`; `last_succeeded_at`. Dashboards and alert rules on the old field names must change |
+| Statuses `idle`, and `waiting` for a continuous worker waiting to restart | `pending`, and `backoff` for a continuous worker waiting to restart; `waiting` belongs to a scheduled worker between activations |
+| The log messages in the next table | Their new names; queries and alerts on the old messages must change |
+| Registration misuse returned an error (`MustRegister` panicked), so a schedule read from configuration that did not parse was an error the composition root could handle | Every registration panics on misuse at the call, with a message naming the call and the remedy (`worker: Scheduled("report") after app.Finalize; register workers before Finalize`). Validate a schedule from configuration with `worker.ParseSchedule` first, which returns the error |
+| Every worker's context was cancelled when the drain began, concurrently with the HTTP drain | A worker is stopped in its tier's turn. A scheduled worker still stops with the HTTP drain; a continuous worker now stops **after** it, once the handlers that enqueue its work have finished, and before the components it depends on. A continuous worker that consumes an external queue declares `Tier: credo.TierIngress` to stop with the listener as before |
+| A `Run` that ignored cancellation past the drain deadline made the drain report a timeout, and the teardown went on to close the resources that `Run` still used | The worker's component is abandoned at the deadline: the components it depends on stay open, and `Run` (or `Shutdown`) returns a `*credo.LifecycleError` naming `worker:<name>` as abandoned |
+
+| Log line before v0.24.0 | Now |
+| --- | --- |
+| `scheduled worker run failed` | `worker run failed` with `kind=scheduled`: one message for both kinds |
+| `scheduled worker run completed` (Debug) | `worker run completed` (Debug), with `kind=scheduled` |
+| `worker ticks skipped` | `worker activations skipped` |
+| `worker exceeded max restarts` with `max_restarts` | `worker failed` with `reason=restart_limit` and `limit` |
+| `worker exceeded max consecutive failures` with `max_consecutive_failures` | `worker failed` with `reason=failure_limit` and `limit` |
+| `worker schedule has no future activation` | `worker failed` with `reason=schedule_exhausted` and `schedule` |
+| `worker started` with `start_immediately=true` | `worker started` with `run_on_start=true` |
+
+`worker failed` is now the single terminal line, also written with `reason=restart_disabled` for a worker registered with `Restart{Disabled: true}`. `worker started`, the continuous `worker run failed` line and `worker stopped` keep their messages and attributes.
+
+The calls and types are renamed:
+
+| Before v0.24.0 | Now |
+| --- | --- |
+| `worker.Register(app, name, w, opts...) error` / `worker.MustRegister(app, name, w, opts...)` | `workers := worker.Use(app)`, then `workers.Continuous(name, w, cfg)` or `workers.Scheduled(name, expr, w, cfg)`; both return nothing and panic on misuse |
+| `worker.RegisterProvided[T](app, name, opts...) error` / `worker.MustRegisterProvided[T](app, name, opts...)` | `workers.ContinuousProvided[T](name, cfg)` or `workers.ScheduledProvided[T](name, expr, cfg)`: `T` is built in the start phase, after the components it depends on, and the worker stops before them. One `T` under two names panics |
+| `WithSchedule(expr)` | the `expr` argument of `Scheduled` and `ScheduledProvided`; the method chooses the kind |
+| `WithStartImmediately()` | `ScheduledConfig{RunOnStart: true}` |
+| `WithRunTimeout(d)` | `ScheduledConfig{RunTimeout: d}` |
+| `WithMaxConsecutiveFailures(n)` | `ScheduledConfig{MaxConsecutiveFailures: n}` |
+| `WithMaxRestarts(n)` | `ContinuousConfig{Restart: worker.Restart{Limit: n}}` |
+| `WithRestartDelay(d)` / `WithMaxRestartDelay(d)` | `worker.Restart{MinDelay: d}` / `worker.Restart{MaxDelay: d}` |
+| `WithReadiness(worker.ReadinessPolicy{RequireFirstSuccess, FailWhenFailed, MaxSuccessAge})` | The configuration fields `UnreadyUntilFirstSuccess`, `UnreadyWhenFailed` and `UnreadyAfterSuccessAge`; `UnreadyWhenFailed` exists on both kinds, the other two on `ScheduledConfig` |
+| `pool.Workers()` | `workers.Snapshot()`, or `workers.Lookup(name)` for one worker |
+| `info.Config` | `info.Continuous` or `info.Scheduled`, the resolved configuration of the worker's kind (`info.Config.MaxRestarts` → `info.Continuous.Restart.Limit`, `info.Config.RestartDelay` → `info.Continuous.Restart.MinDelay`, `info.Config.StartImmediately` → `info.Scheduled.RunOnStart`, …); `info.Config.Schedule` → `info.Schedule` |
+| `info.LastRun` / `info.LastSuccess` | `info.LastStartedAt` / `info.LastSucceededAt` |
+| `worker.StatusIdle` | `worker.StatusPending`; `worker.StatusBackoff` is new |
+| `worker.RunID(ctx)`, `worker.WorkerName(ctx)`, `worker.ScheduledAt(ctx)` | `run, ok := worker.CurrentRun(ctx)` with `run.ID`, `run.Worker` and `run.ScheduledAt` |
+| `worker.DefaultRestartDelay` | `worker.DefaultMinRestartDelay` |
+| `*worker.Pool` resolved from DI or taken as a constructor parameter | The supervisor `worker.Use` returns, passed on from the composition root; to inject it, bind it yourself with `app.ProvideValue(workers)` |
+| `Pool.Start`, `Pool.Shutdown`, `worker.Option`, `worker.Config`, `worker.ReadinessPolicy` | Removed: the App starts and stops each worker's component, and the configuration is the two per-kind structs |
+
+Before v0.24.0 the pool stopped every worker before DI teardown whatever the registration order, so a worker registered by value could use a database safely. Now a worker registered by value has no dependency edges — the App cannot see what a value uses — and takes its place in its tier by registration order alone. Register a worker that uses infrastructure in its provided form, so the App starts it after its dependencies and stops it before them. Workers also start as components now: in the start phase, before their tier's `OnStart` hooks, where the pool used to start inside an `OnStart` hook in registration order.
+
+New with it: per-worker `Tier`, `Restart.Disabled` (the first failure is terminal), `Supervisor.Lookup`, `worker.CurrentRun` with `worker.RunInfo`, and the escalation of a terminal failure through a liveness check built on `Lookup` ([worker guide](worker.md#escalating-a-terminal-failure)).
+
+### Worker contract and restart backoff
+
+**Implemented (v0.20.0; restart backoff in v0.21.0).** The rows below name today's calls; [Workers as components](#workers-as-components) maps the v0.20.0 names to them. One change compiles unchanged but behaves differently, so check it first:
+
+> **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted with the restart backoff (3 s at first, up to a minute while failures repeat) — for ever, unless `Restart.Limit` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
 
 | Before v0.20.0 | Now |
 | --- | --- |
-| `worker.Register(app, w, opts...)` | `worker.Register(app, "name", w, opts...)` |
-| `worker.Func("name", fn)` | `worker.Func(fn)`; the name is passed to `Register` |
+| `worker.Register(app, w, opts...)` | a name at registration: `workers.Continuous("name", w)` or `workers.Scheduled("name", expr, w)` |
+| `worker.Func("name", fn)` | `worker.Func(fn)`; the name is passed at registration |
 | `Name() string` on worker types | delete it (harmless if kept; it is no longer called) |
-| constructing a worker by hand before `Finalize` because `Resolve` was unavailable | `app.Provide[T](constructor)` + `worker.RegisterProvided[T](app, "name", opts...)`; T is resolved when the pool starts |
+| constructing a worker by hand before `Finalize` because `Resolve` was unavailable | `app.Provide[T](constructor)` + `workers.ContinuousProvided[T]("name")` or `workers.ScheduledProvided[T]("name", expr)`; `T` is built in the start phase |
 | continuous `Run` returns nil → the worker stops | restarted like a failure; see above |
-| `WithMaxRestarts(N)`, `N > 0` → failed after N failures (N−1 restarts) | the first run plus N restarts → failed after N+1 failures |
-| `WithMaxRestarts(0)` → unlimited restarts | unchanged |
-| `info.Schedule` | `info.Config.Schedule` |
+| `WithMaxRestarts(N)`, `N > 0` → failed after N failures (N−1 restarts) | `Restart.Limit` N: the first run plus N restarts → failed after N+1 failures |
+| `WithMaxRestarts(0)` → unlimited restarts | `Restart.Limit` zero: unchanged |
 | `info.Kind == "scheduled"` | still compiles; prefer `worker.KindScheduled` |
 | `info.Attempts` | `info.Restarts` (continuous) / `info.ConsecutiveFailures` (scheduled) |
-| `worker.Attempt(ctx)` | removed; use `worker.RunID`/`worker.ScheduledAt`, and `Info` for counters |
-| `LastSuccess` set when a continuous `Run` returned nil | never set for continuous workers |
-| a scheduled `Run` returning nil during shutdown stamps `LastSuccess` and resets `ConsecutiveFailures` | when shutdown cancellation came first, a graceful stop: both values unchanged, status `stopped` |
+| `worker.Attempt(ctx)` | removed; use `worker.CurrentRun(ctx)` for the run's identity, and the snapshot for counters |
+| `LastSuccess` set when a continuous `Run` returned nil | `LastSucceededAt` is never set for continuous workers |
+| a scheduled `Run` returning nil during shutdown stamps `LastSuccess` and resets `ConsecutiveFailures` | when shutdown cancellation came first, a graceful stop: `LastSucceededAt` and `ConsecutiveFailures` unchanged, status `stopped` |
 | a graceful stop clears `LastError` | a graceful stop changes only the status; `LastError` keeps the most recent failure until a successful scheduled run clears it |
-| a hand-rolled `context.WithTimeout` inside `Run` | `worker.WithRunTimeout(d)`; a timed-out run is a failure even if it returns nil |
-| `@every 0s`, a negative `@every` or `@every 1500ms` silently became one second | a registration error |
+| a hand-rolled `context.WithTimeout` inside `Run` | `ScheduledConfig.RunTimeout`; a timed-out run is a failure even if it returns nil |
+| `@every 0s`, a negative `@every` or `@every 1500ms` silently became one second | rejected: registration panics, and `worker.ParseSchedule` returns the error |
 | `LastError` may contain a panic stack trace | never; the stack is the `stack` attribute of the failure log line |
 | log `worker stopped during scheduled run`; continuous `worker stopped` only on some exit paths | exactly one `worker started` and one `worker stopped` (`reason=shutdown` or `reason=failed`) per worker |
-| log `worker tick skipped`, one line per skipped activation | one `worker ticks skipped` line per resumption with `skipped=N` |
+| log `worker tick skipped`, one line per skipped activation | one `worker activations skipped` line per resumption with `skipped=N` |
 | `restart` attribute of the continuous `worker run failed` line, counting failed runs (`1` on the first failure) | renamed `restarts`; equals `Info.Restarts` — restarts that actually started, so `0` on the first failure |
 | names silently trimmed | surrounding whitespace and control characters are rejected |
-| untagged (Go field name) JSON from `pool.Workers()` | snake_case field names; empty `last_run`/`last_success`/`last_error`/`config.readiness` omitted |
-| `worker.Definition` (exported, returned by no API) | removed; `info.Config` is the public view of a registration |
-| a continuous worker reported `running` as soon as the pool started | `idle` until its first run is admitted |
+| untagged (Go field name) JSON from the pool's snapshot | snake_case field names from `workers.Snapshot()`; empty `schedule`, `continuous`/`scheduled`, `last_started_at`, `last_succeeded_at` and `last_error` omitted |
+| `worker.Definition` (exported, returned by no API) | removed; `info.Continuous` or `info.Scheduled` is the public view of a registration |
+| a continuous worker reported `running` as soon as the pool started | `pending` until its first run is admitted |
 
-New and unchanged behavior worth knowing while migrating: `WithRunTimeout` is scheduled-only; failure log lines now carry `run_id` (equal to `worker.RunID(ctx)`) and `duration`; a successful scheduled run logs `scheduled worker run completed` at Debug; `Info.Config` reports the effective configuration, so a registration test can assert every worker's policy without running it.
+New and unchanged behavior worth knowing while migrating: `RunTimeout` is scheduled-only; failure log lines carry `run_id` (equal to `worker.CurrentRun(ctx).ID`) and `duration`; a successful scheduled run logs `worker run completed` at Debug; the snapshot reports the resolved configuration, so a registration test can assert every worker's policy without running it.
 
-v0.21.0 changes the wait between continuous restarts without a compile error. Both rows apply to workers registered without restart options too:
+v0.21.0 changes the wait between continuous restarts without a compile error. Both rows apply to workers registered without a restart policy too:
 
 | Before v0.21.0 | Now |
 | --- | --- |
-| every restart waits the fixed restart delay (3 s by default) | the first restart waits the restart delay; repeated failures back off with jitter up to the cap (`DefaultMaxRestartDelay`, 1 min, or `worker.max_restart_delay`), and a run that lasted at least the cap resets the sequence. The same value in `WithRestartDelay` and `WithMaxRestartDelay` keeps a fixed delay |
-| `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5 with the defaults) | the waits back off, so `failed` — and a `FailWhenFailed` readiness drop — comes later: roughly 48–93 s for N = 5 with the defaults |
+| every restart waits the fixed restart delay (3 s by default) | the first restart waits `Restart.MinDelay`; repeated failures back off with jitter up to `Restart.MaxDelay` (1 min by default), and a run that lasted at least the cap resets the sequence. The same value in `MinDelay` and `MaxDelay` keeps a fixed delay |
+| `WithMaxRestarts(N)` reaches `failed` after N fixed waits (15 s for N = 5 with the defaults) | the waits back off, so `failed` — and an `UnreadyWhenFailed` readiness drop — comes later: roughly 48–93 s for N = 5 with the defaults |
 
-New with it: `WithMaxRestartDelay`, `DefaultMaxRestartDelay`, the `worker.max_restart_delay` configuration key, `Config.MaxRestartDelay` (`max_restart_delay` in JSON) and the `next_restart_in` attribute of `worker run failed`. A restart delay above one minute, per worker or per pool, stays fixed unless a larger cap is configured.
+New with it: the restart cap (`Restart.MaxDelay`, `restart.max_delay` in JSON, default `DefaultMaxRestartDelay`) and the `next_restart_in` attribute of `worker run failed`. A `MinDelay` above one minute stays fixed unless a larger cap is set.
 
 ## Data access
 
