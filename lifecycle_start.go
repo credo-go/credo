@@ -248,7 +248,7 @@ func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 				}
 			}
 			starter, ok := v.(Starter)
-			if !u.Starts() || !ok {
+			if !ok || !c.ClaimStart(u) {
 				continue
 			}
 			if outcome := lm.startUnit(r, u, tier, starter.Start, true); outcome != startOK {

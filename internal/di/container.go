@@ -43,6 +43,9 @@ type Container struct {
 	// resources holds, per resource identity token, the holders whose values
 	// carry it, in registration order.
 	resources map[any][]*Unit
+	// started holds the resource keys the start walk has started, so a
+	// resource that several holders share is started once.
+	started map[any]bool
 	// frameworkProviders produces constructor parameters the framework injects
 	// without a registration (credo.Infra, Model 1). Written at setup only.
 	frameworkProviders map[reflect.Type]FrameworkProvider
@@ -100,6 +103,12 @@ type singletonEntry struct {
 	done  chan struct{}
 	value any
 	err   error
+	// rejected is a value a constructor built that the container refused,
+	// when the value is the App's alone: its identity is unusable, or no
+	// other holder carries it. The construction failed, but the drain still
+	// releases the value. A value refused because it shares a resource with
+	// other holders is that resource, released by its owner, and is not kept.
+	rejected any
 
 	buildStart    time.Time
 	buildDuration time.Duration
@@ -121,6 +130,7 @@ func New() *Container {
 		unitOf:         make(map[reflect.Type]*Unit),
 		names:          make(map[string]*Unit),
 		resources:      make(map[any][]*Unit),
+		started:        make(map[any]bool),
 
 		frameworkProviders: make(map[reflect.Type]FrameworkProvider),
 		logger:             slog.New(slog.DiscardHandler),

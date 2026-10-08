@@ -208,7 +208,7 @@ func (c *Container) launch(
 	ctx context.Context, td *teardown, n *node, results chan<- *attempt, logger *slog.Logger,
 ) *attempt {
 	c.mu.Lock()
-	value := c.valueOf(n.holder)
+	value := c.teardownValueOf(n.holder)
 	a := &attempt{
 		key:     n.key,
 		holder:  n.holder,
@@ -312,7 +312,7 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 			continue
 		}
 		switch {
-		case e.state == entryFailed:
+		case e.state == entryFailed && e.rejected == nil:
 			td.retired[u] = true
 			continue
 		case e.state == entryUnbuilt || e.late:
@@ -357,7 +357,7 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 		}
 		if !borrowed && !n.stuck {
 			for _, m := range n.members {
-				if m.teardownOf(c.valueOf(m)) != teardownNone {
+				if m.teardownOf(c.teardownValueOf(m)) != teardownNone {
 					n.holder = m
 					break
 				}
@@ -387,11 +387,15 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 			nodeOf[m] = n
 		}
 	}
+	// route holds, per node, the dependencies that only its derived holders
+	// contribute: holders that reached the resource through another holder
+	// of it.
+	route := make(map[*node]map[*node]bool)
 	for _, n := range nodes {
 		seen := map[*Unit]bool{}
 		linked := map[*node]bool{}
-		var walk func(u *Unit)
-		walk = func(u *Unit) {
+		var walk func(u *Unit, derived bool)
+		walk = func(u *Unit, derived bool) {
 			for _, d := range c.depUnitsLocked(u) {
 				if seen[d] {
 					continue
@@ -403,23 +407,108 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 					if !linked[dn] {
 						linked[dn] = true
 						n.deps = append(n.deps, dn)
-						dn.dependents = append(dn.dependents, n)
+						if derived {
+							if route[n] == nil {
+								route[n] = make(map[*node]bool)
+							}
+							route[n][dn] = true
+						}
 					}
 				default:
 					// A holder of the same resource, or a binding with no
 					// teardown: its own dependencies are this node's.
-					walk(d)
+					walk(d, derived)
 				}
 			}
 		}
 		for _, m := range n.members {
 			seen[m] = true
 		}
+		// The holders that reached the resource on their own come first, so
+		// an edge one of them contributes is never taken for a route.
+		derived := c.derivedHoldersLocked(n.members)
 		for _, m := range n.members {
-			walk(m)
+			if !derived[m] {
+				walk(m, false)
+			}
+		}
+		for _, m := range n.members {
+			if derived[m] {
+				walk(m, true)
+			}
+		}
+	}
+
+	// The construction graph has no cycle, but grouping holders can close
+	// one: a holder that obtained the resource through one of its consumers
+	// links the resource to that consumer, which uses the resource. That edge
+	// is the holder's route to a value it shares, not a dependency of the
+	// resource's teardown, so it is dropped and the consumer stops first. An
+	// edge that a holder which reached the resource on its own contributes is
+	// a real dependency and always stays.
+	drop := make(map[*node][]*node)
+	for n, routes := range route {
+		for _, d := range n.deps {
+			if routes[d] && reaches(d, n) {
+				drop[n] = append(drop[n], d)
+			}
+		}
+	}
+	for n, ds := range drop {
+		n.deps = slices.DeleteFunc(n.deps, func(d *node) bool { return slices.Contains(ds, d) })
+	}
+	for _, n := range nodes {
+		for _, d := range n.deps {
+			d.dependents = append(d.dependents, n)
 		}
 	}
 	return nodes
+}
+
+// derivedHoldersLocked returns the holders of one resource that reached it
+// through another of its holders: their construction depends, directly or
+// transitively, on another member. At least one holder of a group is not
+// derived, since the construction graph has no cycle. c.mu must be held.
+func (c *Container) derivedHoldersLocked(members []*Unit) map[*Unit]bool {
+	if len(members) < 2 {
+		return nil
+	}
+	derived := make(map[*Unit]bool)
+	for _, m := range members {
+		seen := map[*Unit]bool{m: true}
+		var visit func(u *Unit) bool
+		visit = func(u *Unit) bool {
+			for _, d := range c.depUnitsLocked(u) {
+				if seen[d] {
+					continue
+				}
+				seen[d] = true
+				if slices.Contains(members, d) || visit(d) {
+					return true
+				}
+			}
+			return false
+		}
+		derived[m] = visit(m)
+	}
+	return derived
+}
+
+// reaches reports whether from depends on to, directly or transitively.
+func reaches(from, to *node) bool {
+	seen := map[*node]bool{}
+	var visit func(n *node) bool
+	visit = func(n *node) bool {
+		if n == to {
+			return true
+		}
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+		return slices.ContainsFunc(n.deps, visit)
+	}
+	return visit(from)
 }
 
 // pendingKey keys a construction that is still running.
@@ -465,7 +554,7 @@ func (c *Container) TeardownReport(ctx context.Context) *ShutdownError {
 			e.State = ShutdownShared
 		case entry == nil || entry.state == entryUnbuilt:
 			e.State = ShutdownNeverConstructed
-		case entry.state == entryFailed:
+		case entry.state == entryFailed && entry.rejected == nil:
 			e.State = ShutdownConstructionFailed
 			e.Err = entry.err
 		case entry.state == entryBuilding:

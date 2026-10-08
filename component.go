@@ -46,8 +46,10 @@ type Component interface {
 //
 // Start is planned from the binding's type: a Start that only the built value
 // has is never called, and a type with Start but no Shutdown is not a
-// component and is never started. A Start that returns an error has released
-// what it opened; the App does not shut it down.
+// component and is never started. Holders that share a resource identity
+// start it once, and a borrowed resource is not started through any holder.
+// A Start that returns an error has released what it opened; the App does not
+// shut it down.
 type Starter interface {
 	Start(ctx context.Context) error
 }
@@ -61,9 +63,9 @@ type Readier interface {
 }
 
 // ResourceIdentifier names the resource a value holds. Values that share an
-// identity are one resource with one teardown, run when the last holder
-// retires, through the holder registered first among those that have a
-// teardown. Without the method a comparable value — a pointer, or a struct
+// identity are one resource, started once and torn down once: the teardown
+// runs when the last holder retires, through the holder registered first
+// among those that have a teardown. Without the method a comparable value — a pointer, or a struct
 // over one — is its own identity. A value that releases state of its own must
 // not share an identity: a wrapper that does holds the handle in a named
 // field instead of embedding it.
@@ -165,8 +167,8 @@ func (k optionKind) String() string {
 func Ingress() RegistrationOption { return RegistrationOption{kind: optIngress} }
 
 // Borrowed, on ProvideValue only, keeps the binding and the value's readiness
-// contribution and leaves starting and shutting the value down to the caller:
-// a pool two Apps in one process share, or a fixture a test suite reuses. A
+// contribution and leaves starting and shutting the value down to the caller,
+// through every holder of the resource: a pool two Apps in one process share, or a fixture a test suite reuses. A
 // holder of the same resource that claims its teardown panics.
 func Borrowed() RegistrationOption { return RegistrationOption{kind: optBorrowed} }
 

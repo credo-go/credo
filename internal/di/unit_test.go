@@ -450,3 +450,37 @@ func TestStartPlan_DependencyOrder(t *testing.T) {
 		t.Fatalf("plan = %v, want %v", names, want)
 	}
 }
+
+// unitMetrics is a component a holder of the pool uses.
+type unitMetrics struct{ ev *events }
+
+func (m *unitMetrics) Shutdown(context.Context) error { m.ev.add("shutdown metrics"); return nil }
+
+// unitRepoWith holds the pool, names it, and uses metrics.
+type unitRepoWith struct {
+	pool *unitPool
+	m    *unitMetrics
+}
+
+func (r unitRepoWith) ResourceIdentity() any { return r.pool }
+
+func TestTeardown_SharedResourceKeepsAHoldersOtherDependencies(t *testing.T) {
+	// Only an edge that closes a cycle is a holder's route to the resource;
+	// the metrics a holder uses stay open until the resource is shut down.
+	ev := &events{}
+	pool := &unitPool{ev: ev, name: "pool"}
+	c := di.New()
+	c.MustProvideValue[*unitPool](pool)
+	c.MustProvide[*unitMetrics](func() *unitMetrics { return &unitMetrics{ev: ev} })
+	c.MustProvide[unitRepoWith](func(p *unitPool, m *unitMetrics) unitRepoWith { return unitRepoWith{pool: p, m: m} })
+	seal(t, c)
+	if _, err := c.Resolve[unitRepoWith](); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := ev.list(); !slices.Equal(got, []string{"shutdown pool", "shutdown metrics"}) {
+		t.Fatalf("events = %v, want the pool before the metrics it may use", got)
+	}
+}

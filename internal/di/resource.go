@@ -62,6 +62,21 @@ func (c *Container) valueOf(u *Unit) any {
 	return nil
 }
 
+// teardownValueOf returns what the drain releases for u: its built value, or
+// the value its failed construction left to the App. c.mu must be held.
+func (c *Container) teardownValueOf(u *Unit) any {
+	e := c.entryOf(u)
+	switch {
+	case e == nil:
+		return nil
+	case e.state == entryBuilt:
+		return e.value
+	case e.state == entryFailed:
+		return e.rejected
+	}
+	return nil
+}
+
 // admitValueLocked checks a holder's newly known value against the other
 // holders of its resource and records it. Values that share an identity are
 // one resource with one teardown, so their holders must agree on who owns it

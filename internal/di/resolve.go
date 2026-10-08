@@ -198,10 +198,14 @@ func (c *Container) resolveEntry(
 	value, err := c.build(reg, targetType, stack)
 	var token any
 	var hasToken bool
+	// refused marks a built value the container refuses: the constructor
+	// succeeded, so the value may still need releasing.
+	refused := false
 	if err == nil && u != nil {
 		// The identity runs user code, so it is taken before the lock.
 		if token, hasToken, err = identityToken(value); err != nil {
 			err = fmt.Errorf("di: constructing %s: %w", targetType, err)
+			refused = true
 		}
 	}
 
@@ -209,12 +213,20 @@ func (c *Container) resolveEntry(
 	if err == nil && u != nil {
 		if admitErr := c.admitBuiltLocked(u, value, token, hasToken); admitErr != nil {
 			err = fmt.Errorf("di: constructing %s: %w", targetType, admitErr)
+			refused = true
 		}
 	}
 	entry.buildDuration = time.Since(entry.buildStart)
 	if err != nil {
 		entry.state = entryFailed
 		entry.err = err
+		// A refused value that no other holder carries is the App's to
+		// release; one that shares a resource belongs to that resource's
+		// owner. A refused admission records no holder, so the holders
+		// found here are the others.
+		if refused && (!hasToken || len(c.resources[token]) == 0) && u.teardownOf(value) != teardownNone {
+			entry.rejected = value
+		}
 		value = nil
 	} else {
 		entry.state = entryBuilt
@@ -231,7 +243,10 @@ func (c *Container) resolveEntry(
 	v, derr := c.deliverLocked(targetType, entry)
 	c.mu.Unlock()
 
-	if late {
+	switch {
+	case late && entry.rejected != nil:
+		go c.lateCleanup(u, targetType, entryBuilt, entry.rejected, nil)
+	case late:
 		go c.lateCleanup(u, targetType, entry.state, value, err)
 	}
 	return v, derr
