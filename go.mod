@@ -8,5 +8,5 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/sethvargo/go-limiter v1.2.0
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.42.0
 )
