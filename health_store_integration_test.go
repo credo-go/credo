@@ -61,17 +61,12 @@ func quietHealthApp(t *testing.T) *credo.App {
 func TestReadiness_RegisteredStoresRunInParallel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app := quietHealthApp(t)
-		if err := store.Register[*firstHealthStore](app, &firstHealthStore{
-			healthStoreProbe: &healthStoreProbe{delay: 5 * time.Second},
-		}, store.WithName("first")); err != nil {
-			t.Fatalf("register first: %v", err)
-		}
-		if err := store.Register[*secondHealthStore](app, &secondHealthStore{
-			healthStoreProbe: &healthStoreProbe{delay: 3 * time.Second},
-		}, store.WithName("second")); err != nil {
-			t.Fatalf("register second: %v", err)
-		}
+		app.ProvideValue(&firstHealthStore{healthStoreProbe: &healthStoreProbe{delay: 5 * time.Second}})
+		app.ProvideValue(&secondHealthStore{healthStoreProbe: &healthStoreProbe{delay: 3 * time.Second}})
+		store.Register[*firstHealthStore](app, store.WithName("first"))
+		store.Register[*secondHealthStore](app, store.WithName("second"))
 		app.UseHealth(credo.HealthConfig{CheckTimeout: 10 * time.Second})
+		startServing(t, app)
 
 		start := time.Now()
 		w := httptest.NewRecorder()
@@ -93,12 +88,10 @@ func TestReadiness_RepeatedRequestsReuseHungStoreFlight(t *testing.T) {
 		var calls atomic.Int32
 
 		app := quietHealthApp(t)
-		if err := store.Register[*hangingHealthStore](app, &hangingHealthStore{
-			healthStoreProbe: &healthStoreProbe{release: release, calls: &calls},
-		}, store.WithName("hung")); err != nil {
-			t.Fatalf("register hung store: %v", err)
-		}
+		app.ProvideValue(&hangingHealthStore{healthStoreProbe: &healthStoreProbe{release: release, calls: &calls}})
+		store.Register[*hangingHealthStore](app, store.WithName("hung"))
 		app.UseHealth(credo.HealthConfig{CheckTimeout: time.Second})
+		startServing(t, app)
 
 		for request := range 32 {
 			w := httptest.NewRecorder()
@@ -170,12 +163,10 @@ func TestReadiness_RegisteredStoreCauseContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, logs := newTestLogger(t)
 			app := mustNew(t, credo.WithLogger(logger))
-			if err := store.Register[*diagnosticHealthStore](app, &diagnosticHealthStore{
-				healthStoreProbe: &healthStoreProbe{health: tt.health},
-			}, store.WithName("diagnostic")); err != nil {
-				t.Fatalf("register diagnostic store: %v", err)
-			}
+			app.ProvideValue(&diagnosticHealthStore{healthStoreProbe: &healthStoreProbe{health: tt.health}})
+			store.Register[*diagnosticHealthStore](app, store.WithName("diagnostic"))
 			app.UseHealth(credo.HealthConfig{ExposeErrors: tt.exposeErrors})
+			startServing(t, app)
 
 			w := httptest.NewRecorder()
 			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))

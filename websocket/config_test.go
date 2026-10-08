@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,8 +108,7 @@ func TestResolveConfigValidationAndDefensiveOwnership(t *testing.T) {
 
 	origins := []string{"https://APP.example.com"}
 	protocols := []string{"events.v1", "events.v2"}
-	app := mustNewWebSocketApp(t)
-	server := Use(app, Config{AllowedOrigins: origins, Subprotocols: protocols})
+	server := New(credo.Infra{}, Config{AllowedOrigins: origins, Subprotocols: protocols})
 	origins[0] = "https://evil.example"
 	protocols[0] = "mutated"
 	if server.config.origins.allowed[0].Origin.Host != "app.example.com" {
@@ -124,31 +124,13 @@ func TestResolveConfigValidationAndDefensiveOwnership(t *testing.T) {
 	}
 }
 
-func TestUsePanicsForStartupMisuse(t *testing.T) {
+func TestNewPanicsForStartupMisuse(t *testing.T) {
 	tests := []struct {
 		name string
 		fn   func()
 	}{
-		{name: "nil app", fn: func() { Use(nil) }},
-		{
-			name: "multiple configs",
-			fn:   func() { Use(mustNewWebSocketApp(t), Config{}, Config{}) },
-		},
-		{
-			name: "invalid config",
-			fn:   func() { Use(mustNewWebSocketApp(t), Config{ReadLimit: -1}) },
-		},
-		{
-			name: "frozen app",
-			fn: func() {
-				app := mustNewWebSocketApp(t)
-				app.ServeHTTP(
-					httptest.NewRecorder(),
-					httptest.NewRequest(http.MethodGet, "/", nil),
-				)
-				Use(app)
-			},
-		},
+		{name: "multiple configs", fn: func() { New(credo.Infra{}, Config{}, Config{}) }},
+		{name: "invalid config", fn: func() { New(credo.Infra{}, Config{ReadLimit: -1}) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,17 +144,59 @@ func TestUsePanicsForStartupMisuse(t *testing.T) {
 	}
 }
 
-func TestInvalidUseDoesNotPreventLaterValidRegistration(t *testing.T) {
+func TestNewRegistersNothing(t *testing.T) {
 	app := mustNewWebSocketApp(t)
-	func() {
-		defer func() { _ = recover() }()
-		Use(app, Config{AllowedOrigins: []string{"not an origin"}})
-	}()
-	server := Use(app)
-	if server == nil {
-		t.Fatal("valid Use() returned nil after invalid config panic")
+	server := New(app.NewInfra("websocket"))
+	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
+	// Without a registration the App has no start work: it serves at once,
+	// and the server refuses the upgrade with the named error.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/ws", nil)
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	app.ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for an unregistered server", w.Code)
 	}
+}
 
+func TestServerStartOpensAdmissionOnce(t *testing.T) {
+	server := New(credo.Infra{})
+	if err := server.acquireToken(); !errors.Is(err, errNotStarted) {
+		t.Fatalf("acquireToken() before Start = %v, want errNotStarted", err)
+	}
+	if err := server.Start(t.Context()); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	if err := server.acquireToken(); err != nil {
+		t.Fatalf("acquireToken() after Start = %v", err)
+	}
+	server.releaseToken()
+	if err := server.Start(t.Context()); err == nil {
+		t.Fatal("a second Start() succeeded")
+	}
+	if err := server.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() = %v", err)
+	}
+	if err := server.Start(t.Context()); err == nil {
+		t.Fatal("Start() after Shutdown succeeded")
+	}
+}
+
+func TestNotStartedErrorNamesTheRegistration(t *testing.T) {
+	for _, want := range []string{"app.Manage(server, credo.Ingress())", "credo.Ingress()"} {
+		if !strings.Contains(errNotStarted.Error(), want) {
+			t.Errorf("errNotStarted = %q, want it to name %q", errNotStarted, want)
+		}
+	}
+}
+
+func TestServerStartedThroughTheAppDrainsInTheIngressTier(t *testing.T) {
+	app := mustNewWebSocketApp(t)
+	server := New(app.NewInfra("websocket"))
+	app.Manage(server, credo.Ingress())
 	var drainRan bool
 	app.OnStop(func(context.Context) error {
 		drainRan = true
@@ -183,7 +207,13 @@ func TestInvalidUseDoesNotPreventLaterValidRegistration(t *testing.T) {
 		t.Fatal("Run() should return the deliberate startup error")
 	}
 	if !drainRan {
-		t.Fatal("valid lifecycle registration did not survive prior config panic")
+		t.Fatal("the ingress stop hook did not run")
+	}
+	server.mu.Lock()
+	state := server.state
+	server.mu.Unlock()
+	if state != serverClosed {
+		t.Fatalf("server state after the rollback = %d, want closed", state)
 	}
 }
 
@@ -211,7 +241,7 @@ func TestConfigPanicMentionsInvalidField(t *testing.T) {
 			t.Fatalf("panic = %v, want ReadLimit diagnostic", recovered)
 		}
 	}()
-	Use(mustNewWebSocketApp(t), Config{ReadLimit: -1})
+	New(credo.Infra{}, Config{ReadLimit: -1})
 }
 
 func FuzzResolveConfig(f *testing.F) {

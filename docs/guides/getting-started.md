@@ -488,7 +488,14 @@ app.UseHealth(credo.HealthConfig{
 
 ### Store Integration
 
-When using `store.Register`, store health is automatically wired into the readiness endpoint. No extra code needed — registered stores appear in the `/ready` response:
+A store bound in DI and named with `store.Register` is wired into the readiness endpoint automatically. The start phase pings it — a failed ping fails the start — and builds its readiness probe once; `/ready` then reports it under its name without resolving anything per request. Before the App has started there are no store checks:
+
+```go
+app.ProvideValue(db) // db is a *sqldb.DB
+store.Register[*sqldb.DB](app, store.WithName("postgres"))
+```
+
+The registered store appears in the `/ready` response:
 
 ```json
 {

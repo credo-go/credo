@@ -166,17 +166,14 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
 	app.healthEngine.AddReadiness(name, checker.Check)
 }
 
-// storeHealthFunc returns the store-health collector contributed by the
-// store integration (provided into the DI container under the
-// module-internal [internalhealth.StoreFunc] type), or nil when no stores
-// are registered. Resolved lazily on each readiness check so the relative
-// order of store.Register and UseHealth does not matter.
+// storeHealthFunc returns the checks of the stores the start phase pinged,
+// or nil when there are none. The probes were built once, from the values
+// the start phase pinged; a readiness request resolves nothing.
 func (app *App) storeHealthFunc() internalhealth.StoreFunc {
-	fn, err := app.container.Resolve[internalhealth.StoreFunc]()
-	if err != nil {
+	if len(app.stores) == 0 {
 		return nil
 	}
-	return fn
+	return app.storeChecks
 }
 
 // contributedReadinessFunc returns the readiness contributions: the Ready of

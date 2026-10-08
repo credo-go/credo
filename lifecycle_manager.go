@@ -115,11 +115,28 @@ type lifecycleManager struct {
 	// finds it.
 	run *startRun
 
+	// frameworkSteps holds the framework's own start work — reading the
+	// i18n catalogs — run first in the start walk, before any component.
+	frameworkSteps []frameworkStep
+
 	// onStart holds the start hooks, run FIFO after their tier's components.
 	onStart []stageHook
 
 	// onStop holds the stop hooks, run LIFO before their tier's components.
 	onStop []stageHook
+}
+
+// frameworkStep is start work a framework feature registered: a failure is
+// a start failure reported under name.
+type frameworkStep struct {
+	name string
+	fn   func(ctx context.Context) error
+}
+
+// addFrameworkStep adds start work of a framework feature. Registration is
+// sequential, so it needs no lock.
+func (lm *lifecycleManager) addFrameworkStep(name string, fn func(ctx context.Context) error) {
+	lm.frameworkSteps = append(lm.frameworkSteps, frameworkStep{name: name, fn: fn})
 }
 
 // stageHook is a start or stop hook: an anonymous component of a tier.

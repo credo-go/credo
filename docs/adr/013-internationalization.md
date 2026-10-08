@@ -1,6 +1,6 @@
 # ADR-013: Internationalization
 
-**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-01 **Last revised:** 2026-09-05 **Depends on:** ADR-009, ADR-010
+**Status:** Accepted **Date:** 2026-03-01 **Last revised:** v0.24.0 (registration without I/O, catalogs read in the start phase) **Depends on:** ADR-009, ADR-010
 
 ## HTTP integration amendment
 
@@ -10,7 +10,7 @@
 
 First access fixes the language using the data visible then. Context-based detection permits `GetUser` but does not extend the principal's lifetime through Timeout/stdlib request restoration; applications needing the authenticated language in later errors resolve `Locale` after setting the user, before unwinding, and earlier reads still win. No detector runs on the terminal lifecycle 503.
 
-A successful `UseI18n` with missing/empty conventional discovery records configured-but-inactive state and consumes the sole registration; a second call is duplicate misuse. Real source/load/validation errors leave the slot free for repair before preparation, so successful configuration is independent of which deployment has conventional catalog files. The [HTTP feature contract](../specs/http-features.md#locale-and-transport-features) carries the full rules.
+Every `UseI18n` call consumes the sole registration; a second call is duplicate misuse. Conventional discovery that finds no catalog leaves i18n configured but inactive, so successful configuration is independent of which deployment has conventional catalog files; source errors are start failures ([Registration and the start phase](#registration-and-the-start-phase)). The [HTTP feature contract](../specs/http-features.md#locale-and-transport-features) carries the full rules.
 
 ## Context
 
@@ -62,7 +62,7 @@ type I18nConfig struct {
 }
 ```
 
-`Messages` and `Fields` represent only the effective `Default` language. They are copied and templates are compiled during setup. Multi-language catalogs belong in `Dir`/`DirFS`; this avoids rebuilding Go code for translation work and avoids a second multi-language source of truth.
+`Messages` and `Fields` represent only the effective `Default` language. They are copied and templates are compiled at the `UseI18n` call. Multi-language catalogs belong in `Dir`/`DirFS`; this avoids rebuilding Go code for translation work and avoids a second multi-language source of truth.
 
 Programmatic values are strings and populate the CLDR Other form. File-backed messages retain all plural forms. A public plural union/struct is deferred.
 
@@ -71,28 +71,26 @@ Load order is programmatic base first, external source second. Both messages and
 ### Source policy
 
 - `Messages` alone activates map-only i18n; `Messages + Fields` is field-aware.
-- `Fields` without any message source is an error.
+- `Fields` without any message source is misuse and panics at the call.
 - Supplying maps without `Dir`/`DirFS` disables implicit `./locales` discovery.
-- Explicit `Dir` or `DirFS` is strict: missing, unreadable, malformed, or message-empty is a setup error even when `Messages` could serve requests.
+- Explicit `Dir` or `DirFS` is strict: missing, unreadable, malformed, or message-empty is a start failure even when `Messages` could serve requests.
 - A RawConfig `i18n.dir` is explicit and follows the same fail-loud rule.
 - Only absent conventional `./locales` discovery from zero-config setup is an inactive warning.
 - `Dir` and `DirFS` are mutually exclusive.
-- The complete bundle is published only after all sources validate, so a failed setup exposes no partial catalog and leaves the registration free for repair; a successful setup — a conventional discovery that found nothing included — consumes the single `UseI18n` registration.
+- The complete bundle is published only after all sources validate, so a failed start exposes no partial catalog.
 
 This distinguishes an optional convention from a declared deployment dependency. Programmatic fallback prevents raw keys on individual misses; it must not hide the loss of an explicitly configured source.
 
 ### Registration and the start phase
 
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the amendment's paragraph on how a successful or failed `UseI18n` consumes its registration, and the last bullet of the source policy above.
+`UseI18n(cfg ...I18nConfig)` returns nothing and panics on misuse, like every other `Use*`. Registration performs no I/O ([ADR-022](022-bootstrap-and-di-ownership.md)); the catalogs are read in the start phase by a framework start step named `i18n`, which runs before any component starts, and a read failure is a start failure that rolls back like any other ([ADR-024](024-lifecycle-components.md)).
 
-`UseI18n(cfg ...I18nConfig)` returns nothing and panics on misuse, like every other `Use*`. Registration performs no I/O ([ADR-022](022-bootstrap-and-di-ownership.md)); the catalogs are read in the start phase, and a read failure is a start failure that rolls back like any other ([ADR-024](024-lifecycle-components.md)).
-
-- **At the call**, with the call site in the panic: more than one config, `Dir` together with `DirFS`, a second call, a call after the App is prepared or shut down, and every rule decided without reading a source — the `Default` tag, the programmatic `Messages` and `Fields` (empty keys or values, templates that do not compile), `Fields` with no `Messages` and no file source, and an `i18n` RawConfig section that does not decode.
-- **In the start phase**, as errors: conventional `./locales` discovery, the reads of `Dir`, `DirFS` or a configured `i18n.dir`, malformed or read-denied files, and an explicit source that is missing or contains no messages. The source policy above is unchanged — an explicit source still fails loud, and only absent conventional discovery is an inactive warning, now logged by the start phase. The bundle is published whole, after every source has validated and before the listener accepts; a failure publishes nothing.
-- **No repair state.** The first `UseI18n` call consumes the registration. A source error no longer leaves the slot free, since it surfaces as a start failure of a single-use App.
+- **At the call**, with the call site in the panic: more than one config, `Dir` together with `DirFS`, a second call, a call after the App is prepared or shut down, and every rule decided without reading a source — the `Default` tag, the programmatic `Messages` and `Fields` (empty keys or values, templates that do not compile), `Fields` with no `Messages` and no file source, and an `i18n` RawConfig section that does not decode. The programmatic catalog is compiled from a copy taken at the call.
+- **In the start phase**, as errors in the `*credo.LifecycleError`: conventional `./locales` discovery that finds a directory it cannot use, the reads of `Dir`, `DirFS` or a configured `i18n.dir`, malformed or read-denied files, an explicit source that is missing or contains no messages, and `Fields` left without a message after loading. Only absent conventional discovery is an inactive warning (`credo: i18n inactive, locale directory not found or empty`), logged by the start phase, which then succeeds; an active catalog logs `credo: i18n loaded`. The bundle is published whole, after every source has validated and before the listener accepts; a failure publishes nothing.
+- **No repair state.** The first `UseI18n` call consumes the registration: misuse panics before anything is installed, and a source error surfaces as a start failure of a single-use App.
 - **Serving waits for the catalogs.** An App that called `UseI18n` has something to start, so `ServeHTTP` refuses it until `App.Start` has succeeded, as for any start work ([ADR-024](024-lifecycle-components.md)). Request handling still performs no filesystem access, and the detector contract is unchanged.
 
-Rejected: keeping the error return. `UseI18n` returned an error only because it read files at the call; with the reads in the start phase that reason is gone, and a registration that both returns errors and panics on misuse gives its caller two channels for one phase. Rejected too: reading the catalogs at registration and only changing the return to a panic — a missing deployment directory is an I/O failure, not a programming mistake, and registration no longer performs I/O.
+Rejected: keeping the error return. `UseI18n` returned an error only because it read files at the call; with the reads in the start phase that reason is gone, and a registration that both returns errors and panics on misuse gives its caller two channels for one phase. The error return also needed a repair state — a failed call left the registration free for a corrected retry — that a single-use App has no use for. Rejected too: reading the catalogs at registration and only changing the return to a panic — a missing deployment directory is an I/O failure, not a programming mistake, and registration no longer performs I/O.
 
 ### Exact keys and application-owned namespaces
 

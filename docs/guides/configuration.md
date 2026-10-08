@@ -211,17 +211,19 @@ type DatabaseConfig struct {
 }
 
 func main() {
-    app, err := credo.New()
+    // Load the configuration and hand it to the App.
+    cfg, err := config.Load()
+    if err != nil {
+        log.Fatal(err)
+    }
+    app, err := credo.New(credo.WithRawConfig(cfg))
     if err != nil {
         log.Fatal(err)
     }
 
-    // Resolve the auto-loaded RawConfig from DI.
-    rc := app.MustResolve[credo.RawConfig]()
-
     // Unmarshal and register typed config.
     var dbCfg DatabaseConfig
-    if err := rc.Unmarshal("databases.default", &dbCfg); err != nil {
+    if err := cfg.Unmarshal("databases.default", &dbCfg); err != nil {
         log.Fatal(err)
     }
     app.MustProvideValue(&dbCfg)
@@ -240,7 +242,7 @@ String keys appear **once** at the module boundary. Beyond that, everything is t
 
 ### Typed Getter Shorthand
 
-`app.GetConfig[T](key)` collapses the resolve-then-unmarshal step into a single call. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
+`app.GetConfig[T](key)` reads one section of the App's configuration in a single call, the auto-loaded one included — the container hands out `RawConfig` only after `Finalize`, so the getter is how registration code reads it. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
 
 ```go
 app, err := credo.New()
@@ -248,7 +250,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-// One call replaces MustResolve[RawConfig] + var + Unmarshal.
+// One call replaces var + Unmarshal.
 dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
 if err != nil {
     log.Fatal(err)
@@ -321,23 +323,31 @@ A custom `credo.WithRawConfig` store opts into all of this by implementing `conf
 
 ## Multi-Database Config
 
-For multiple databases, keep each config section separate and unmarshal them independently at the module boundary:
+For multiple databases, keep each config section separate and read them independently at the module boundary, during registration:
 
 ```go
 func setupDatabases(app *credo.App) error {
-    rc := app.MustResolve[credo.RawConfig]()
-
-    var primaryCfg sqldb.Config
-    if err := rc.Unmarshal("databases.primary", &primaryCfg); err != nil {
+    primaryCfg, err := app.GetConfig[sqldb.Config]("databases.primary")
+    if err != nil {
+        return err
+    }
+    analyticsCfg, err := app.GetConfig[sqldb.Config]("databases.analytics")
+    if err != nil {
         return err
     }
 
-    var analyticsCfg sqldb.Config
-    if err := rc.Unmarshal("databases.analytics", &analyticsCfg); err != nil {
-        return err
-    }
+    // Each database is bound under its own wrapper type and registered by it.
+    app.Provide[PrimaryDB](func() (PrimaryDB, error) {
+        db, err := sqldb.Open(&primaryCfg)
+        return PrimaryDB{db}, err
+    })
+    store.Register[PrimaryDB](app, store.WithName("primary"))
 
-    // open/register each connection separately
+    app.Provide[AnalyticsDB](func() (AnalyticsDB, error) {
+        db, err := sqldb.Open(&analyticsCfg)
+        return AnalyticsDB{db}, err
+    })
+    store.Register[AnalyticsDB](app, store.WithName("analytics"))
     return nil
 }
 ```
@@ -363,7 +373,7 @@ Example config structure:
 }
 ```
 
-Use one section per logical connection. The [Data Access Guide](data-access.md) shows how these configs map to DI wrapper types such as `PrimaryDB` and `AnalyticsDB`.
+Use one section per logical connection. The [Data Access Guide](data-access.md#multiple-databases) shows the wrapper types `PrimaryDB` and `AnalyticsDB` (`struct{ *sqldb.DB }`) and how consumers inject them.
 
 ---
 
@@ -514,7 +524,7 @@ Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your
 
 ### Databases — `databases.<name>`
 
-User-read via `rc.Unmarshal("databases.<name>", &cfg)`.
+User-read during registration via `app.GetConfig[sqldb.Config]("databases.<name>")` (or `RawConfig.Unmarshal`).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -533,27 +543,18 @@ User-read via `rc.Unmarshal("databases.<name>", &cfg)`.
 | `ssl_mode` | string | `""` | `"disable"`, `"require"`, `"verify-full"` |
 | `options` | map | `{}` | Driver-specific params |
 
-`max_open: 0` is not a conservative production limit: it preserves
-`database/sql`'s unlimited-open behavior. The canonical `store.Register` path
-logs `sqldb.pool.max_open_unlimited` after successful registration when the
-effective pool maximum is still unlimited; choose a finite value from the
-database connection budget divided across service replicas. When both are
-explicit and `max_open > 0`, `max_idle` must not exceed `max_open`.
+`max_open: 0` is not a conservative production limit: it preserves `database/sql`'s unlimited-open behavior. A store registered with `store.Register` logs `sqldb.pool.max_open_unlimited` after its start-phase ping succeeds when the effective pool maximum is still unlimited; choose a finite value from the database connection budget divided across service replicas. When both are explicit and `max_open > 0`, `max_idle` must not exceed `max_open`.
 
 ### i18n — `i18n`
 
-Auto-read by `app.UseI18n()`.
+Auto-read by `app.UseI18n()` at the call; the locale directory itself is read in the start phase.
 
 | Key       | Type   | Default      | Description               |
 | --------- | ------ | ------------ | ------------------------- |
 | `dir`     | string | `"locales/"` | Locale file directory     |
 | `default` | string | `"en"`       | Default language (BCP 47) |
 
-An `i18n.dir` value is explicit configuration: a missing or message-empty
-directory makes `UseI18n` fail. Only absent conventional `locales/` discovery
-from zero-config setup is optional. `I18nConfig.Messages`, `Fields`, `DirFS`,
-`Detect`, and `ResolveMessageKey` are Go-only startup inputs; programmatic maps
-are copied snapshots and are not part of RawConfig or runtime reload.
+An `i18n.dir` value is explicit configuration: a missing or message-empty directory fails the start. An `i18n` section that does not decode makes `UseI18n` panic at the call. Only absent conventional `locales/` discovery from zero-config setup is optional. `I18nConfig.Messages`, `Fields`, `DirFS`, `Detect`, and `ResolveMessageKey` are Go-only startup inputs; programmatic maps are copied snapshots and are not part of RawConfig or runtime reload.
 
 ### Auth — `auth.*`
 

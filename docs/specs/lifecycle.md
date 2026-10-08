@@ -63,18 +63,16 @@ Every serve path reaches the same validated runtime model through one shared pre
 
 ### The start gate on `ServeHTTP`
 
-An App **has something to start** when it has a component with `Start` or `Ready` (planned from its binding's type, or handed to `app.Manage`), a constructor handed to `app.Manage`, or a start hook. Such an App refuses to serve until the start phase has completed successfully:
+An App **has something to start** when it has a component with `Start` or `Ready` (planned from its binding's type, or handed to `app.Manage`), a constructor handed to `app.Manage`, a start hook, a store registration ([store spec](store.md)) or `UseI18n`, whose catalogs the start phase reads ([i18n spec](i18n.md)). A WebSocket server is a component with `Start`, so an App that registers one has something to start as well ([WebSocket spec](websocket.md)). Such an App refuses to serve until the start phase has completed successfully:
 
 | When `ServeHTTP` is called | App with something to start | App with nothing to start |
 | --- | --- | --- |
-| Before `App.Start`, or while it runs | panics with `credo: ServeHTTP: the App has components or start hooks to start and has not been started; …`, naming `App.Start`, `testutil.Start`, `Run`/`RunContext`/`ServeContext` and `parent.Manage(child)` | prepares and serves, as above |
+| Before `App.Start`, or while it runs | panics with `credo: ServeHTTP: the App has start work (components, start hooks, store registrations or UseI18n) and has not been started; …`, naming `App.Start`, `testutil.Start`, `Run`/`RunContext`/`ServeContext` and `parent.Manage(child)` | prepares and serves, as above |
 | After `App.Start` succeeded (`running`, `stopping` with a prepared handler) | serves | serves |
 | `stopped` — after a failed or interrupted `App.Start`, or after shutdown — or `stopping` without a successful start | the callback-free 503 envelope, without touching DI | the 503 envelope in `stopped`, and in `stopping` without a prepared handler ([Lifecycle rejection](#lifecycle-rejection-503)) |
 | Preparation failed | panics with the stored preparation error on every request | panics with the stored preparation error on every request |
 
 The panic is the treatment a stored preparation error already gets: serving a handler against dependencies that were not started is developer misuse, not an availability outcome. After a failed `App.Start` the caller already has the error, so the stopped App answers with the 503 envelope rather than panicking. Under managed serving the gate never fires — the listener accepts only after the start walk — except for a child App mounted into a parent without [`parent.Manage(child)`](#mounted-apps), whose first request panics with the named message; the parent's recovery turns it into a 500 and logs it.
-
-**Accepted, pending implementation (v0.24.0, W5):** a store registration ([store spec](store.md)) and i18n catalogs ([i18n spec](i18n.md)) are start work too.
 
 ## API
 
@@ -263,9 +261,11 @@ Work that outlives `Start` runs on a goroutine whose context derives from `conte
 ### The start walk
 
 ```
+0. Framework start steps: UseI18n reads its catalogs (reported in the internal tier)
 1. Internal tier, in dependency order: build each component with Start or Ready that is
-   still unbuilt, and every constructor handed to app.Manage, then call its Start (when
-   its binding's type shows one)
+   still unbuilt, every constructor handed to app.Manage, and every binding a store
+   registration names; run the binding's start steps (a store registration's ping),
+   then call its Start (when its binding's type shows one)
 2. Internal OnStart hooks, FIFO
 3. Ingress tier, in dependency order: the same
 4. Ingress OnStart hooks, FIFO
@@ -275,7 +275,7 @@ Work that outlives `Start` runs on a goroutine whose context derives from `conte
 - A component's `Start` runs after the `Start` of every component it depends on. No dependency crosses the tiers backwards: an internal component that depends on an ingress one fails `Finalize` (or, for a component found only on its built value, its construction) with the path and both remedies, so the order holds across the tiers. An ingress component that depends on an internal one starts after it.
 - `Start`, `Ready` and the tier are planned from the binding's type. A `Start` that only the built value has is never called, and a type with only `Start` is not a component and is never started. A value whose binding's type shows both `Start` and `Shutdown` is started exactly once, by the walk — an `OnStart` hook that also starts it starts it a second time.
 - A component with neither `Start` nor `Ready` stays lazy: it is built when first resolved — during a request included — and shut down by the drain only if built.
-- A constructor error in step 1 or 3 is a start failure. `Start` returns once the component is usable; it never blocks for the component's lifetime.
+- A framework start step that fails, a constructor error in step 1 or 3, and a failed start step are start failures. A failed start step leaves the value it was given to the rollback, which shuts it down unless it is borrowed: the step opened nothing the value had not. `Start` returns once the component is usable; it never blocks for the component's lifetime.
 - Under managed serving the listener is bound before the walk, so `app.Addr()` is available in `Start` and in start hooks; it is nil under `App.Start`.
 
 ### A failed start
@@ -336,11 +336,11 @@ A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEnt
 
 ### Readiness
 
-`/ready` aggregates three sources and resolves nothing from the DI container per request: the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), under the components' names, from the values built when the App entered `running`; the kernel's store registry — each registered store's typed health, read from the value the start phase resolved once, after `Finalize` and every override ([store spec](store.md)); and the application's `AddReadinessCheck` checks. A borrowed value's `Ready` is aggregated although the App neither starts nor stops it. During the drain `/ready` returns 503 `shutting_down`.
+`/ready` aggregates three sources and resolves nothing from the DI container per request: the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), under the components' names, from the values built when the App entered `running`; the store registrations — each store's typed health, through a probe built once from the value the start phase built and pinged, after `Finalize` and so after every override, with no store checks before the App has started ([store spec](store.md)); and the application's `AddReadinessCheck` checks. A borrowed value's `Ready` is aggregated although the App neither starts nor stops it. During the drain `/ready` returns 503 `shutting_down`.
 
 A failure after `Start` has returned is reported through `Ready`. No component ends the App — the App's own listeners excepted — so a component that has stopped for good leaves the process alive and unready, and a failing readiness probe restarts nothing. An application that wants a restart ties a liveness check to the component itself, knowing that a liveness check failing because of a shared dependency restarts every replica.
 
-**Accepted, pending implementation (v0.24.0, W5, W6)** for the store registry and worker readiness: until W5 store health, and until W6 worker readiness, still come from the two internal seams the health engine resolves from the container on every `/ready` request.
+**Accepted, pending implementation (v0.24.0, W6)** for worker readiness: until W6 it still comes from the internal seam the health engine resolves from the container on every `/ready` request.
 
 ### `app.OnStart(fn, opts...)` and `app.OnStop(fn, opts...)`
 
@@ -400,9 +400,9 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
 
-`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([bootstrap spec](bootstrap-and-di-lifecycle.md)). `app.Manage()` also panics on a value without `Shutdown`, a duplicate name, a resource DI already holds, or a resource handed over twice.
+`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([bootstrap spec](bootstrap-and-di-lifecycle.md)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). `app.Manage()` also panics on a value without `Shutdown`, a duplicate name, a resource DI already holds, or a resource handed over twice.
 
-The same fail-fast policy governs all registration APIs: misconfiguration (nil handlers, malformed patterns, duplicates) panics at startup, while operations that touch the outside world (request handling, file I/O such as `UseI18n` locale loading) return errors. **Accepted, pending implementation (v0.24.0, W5):** `UseI18n` returns nothing and panics on misuse; its catalogs are read in the start phase, where a read failure is a start failure ([i18n spec](i18n.md)). See the package documentation's "Panics and Errors" section.
+The same fail-fast policy governs all registration APIs: misconfiguration (nil handlers, malformed patterns, duplicates) panics at startup, while operations that touch the outside world (request handling, file I/O) return errors. A registration that needs I/O defers it to the start phase, where a failure is a start failure: `UseI18n` returns nothing and panics on misuse, and its catalogs are read by the start phase ([i18n spec](i18n.md)); `store.Register` returns nothing, and the start phase pings the store ([store spec](store.md)). See the package documentation's "Panics and Errors" section.
 
 ## Thread Safety
 

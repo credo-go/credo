@@ -10,7 +10,7 @@ All locale examples in this guide use JSON.
 
 Credo's i18n support is intentionally small from the application's point of view:
 
-- `app.UseI18n(...)` initializes i18n during startup
+- `app.UseI18n(...)` registers i18n during startup; the locale files are read in the start phase
 - `ctx.Locale()` returns the resolved locale for the current request
 - `ctx.T(key, data...)` translates application messages by key
 
@@ -81,9 +81,7 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := app.UseI18n(); err != nil {
-        log.Fatal(err)
-    }
+    app.UseI18n()
 
     app.GET("/hello", func(ctx *credo.Context) error {
         return ctx.Response().JSON(http.StatusOK, map[string]string{
@@ -109,7 +107,7 @@ With no arguments, `UseI18n` reads from `RawConfig` if the `i18n` key exists. If
 For a deployment-independent default language, provide `Messages` and optional field display names in `Fields`:
 
 ```go
-if err := app.UseI18n(credo.I18nConfig{
+app.UseI18n(credo.I18nConfig{
     Default: "tr",
     Messages: credo.I18nMessages{
         "not_found":         "Kayıt bulunamadı",
@@ -119,9 +117,7 @@ if err := app.UseI18n(credo.I18nConfig{
     Fields: credo.I18nFields{
         "email": "e-posta adresi",
     },
-}); err != nil {
-    log.Fatal(err)
-}
+})
 ```
 
 These maps represent only `Default`, are copied at setup, and may be the sole source. Add an explicit `Dir` or `DirFS` to layer multi-language files over them; file values override exact collisions and map-only keys remain. Supplying maps alone intentionally does not probe `./locales`. Use `DirFS` rather than an outer language map when translations must be embedded.
@@ -147,7 +143,7 @@ Files:
 - `messages.json`: normal application messages plus validation and HTTP error keys
 - `fields.json`: optional display names for field-aware validation messages
 
-An absent conventional `locales/` directory discovered by zero-config setup is an inactive warning. An explicitly configured `Dir`, RawConfig directory, or `DirFS` is a declared deployment dependency: missing, unreadable, or empty sources return an error.
+An absent conventional `locales/` directory discovered by zero-config setup is an inactive warning. An explicitly configured `Dir`, RawConfig directory, or `DirFS` is a declared deployment dependency: a missing, unreadable, or empty source fails the start.
 
 ---
 
@@ -217,7 +213,7 @@ Template variables use Go's `text/template` syntax:
 ctx.T("messages.hello_name", map[string]any{"name": "Ada"})
 ```
 
-Template syntax is validated eagerly while locale files are loaded. Invalid templates fail startup instead of silently breaking later at request time.
+Template syntax is validated eagerly: programmatic `Messages` when `UseI18n` is called, locale files when the start phase reads them. An invalid template panics at the call or fails the start instead of silently breaking later at request time.
 
 For count-dependent messages, define CLDR plural forms as an object and use `ctx.TPlural` — it picks the right form for the detected locale and exposes the count as `{{.count}}`:
 
@@ -278,14 +274,14 @@ Important behavior:
 
 ## Enabling i18n
 
-Call `UseI18n` during startup, before the first request and before `Run()`. Treat it as a one-time setup step.
+Call `UseI18n` once, during registration, before `Run()`. It returns nothing: like every `Use*` registration, it validates the configuration and compiles a copy of the programmatic catalog at the call, performs no I/O, and panics on misuse ([Startup Errors](#startup-errors)). The locale files are read in the start phase, by a framework start step named `i18n` that runs before any component starts; a read failure fails the start, and `Run` returns a `*credo.LifecycleError` naming `i18n`. `credo: i18n loaded` is logged at Info when the catalogs are active, and the `server started` line lists `i18n` among its features only then.
+
+An App with `UseI18n` therefore has start work. An App served through `ServeHTTP` by a server you own, or by `httptest` in a test, is started first with `app.Start(ctx)` or `testutil.Start(t, app)`; until then, `ServeHTTP` panics.
 
 ### Zero-Config
 
 ```go
-if err := app.UseI18n(); err != nil {
-    log.Fatal(err)
-}
+app.UseI18n()
 ```
 
 This means:
@@ -297,12 +293,10 @@ This means:
 ### Explicit Directory
 
 ```go
-if err := app.UseI18n(credo.I18nConfig{
+app.UseI18n(credo.I18nConfig{
     Dir:     "./resources/locales",
     Default: "tr",
-}); err != nil {
-    log.Fatal(err)
-}
+})
 ```
 
 ### Config-Driven Setup
@@ -321,9 +315,7 @@ if err := app.UseI18n(credo.I18nConfig{
 `main.go`:
 
 ```go
-if err := app.UseI18n(); err != nil {
-    log.Fatal(err)
-}
+app.UseI18n()
 ```
 
 Only `dir` and `default` are config-driven. `DirFS` and `Detect` are code-only.
@@ -359,12 +351,10 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := app.UseI18n(credo.I18nConfig{
+    app.UseI18n(credo.I18nConfig{
         DirFS:   locales,
         Default: "en",
-    }); err != nil {
-        log.Fatal(err)
-    }
+    })
 }
 ```
 
@@ -389,7 +379,7 @@ and you only provide `tr/` and `en/`, Credo resolves the request locale to `tr`.
 You can override detection completely:
 
 ```go
-if err := app.UseI18n(credo.I18nConfig{
+app.UseI18n(credo.I18nConfig{
     Dir:     "locales/",
     Default: "en",
     Detect: func(ctx *credo.Context) string {
@@ -399,9 +389,7 @@ if err := app.UseI18n(credo.I18nConfig{
         }
         return r.Header.Get("X-Language")
     },
-}); err != nil {
-    log.Fatal(err)
-}
+})
 ```
 
 Your detector may return:
@@ -594,7 +582,7 @@ That is not an error.
 
 Inactive behavior is intentionally cheap:
 
-- `UseI18n(...)` returns `nil`
+- the start succeeds and logs `credo: i18n inactive, locale directory not found or empty` at Warn
 - the detector is never called
 - `ctx.Locale()` returns `""`
 - `ctx.T("messages.welcome")` returns `"messages.welcome"`
@@ -610,14 +598,23 @@ This is useful when:
 
 ## Startup Errors
 
-`UseI18n` returns an error for real configuration or data problems, for example:
+Configuration misuse panics at the `UseI18n` call, with the call named in the message:
 
-- invalid default language tag such as `"english"`
-- malformed JSON in `messages.json` or `fields.json`
-- invalid template syntax such as an unclosed `{{.name`
+- more than one `I18nConfig`, or `Dir` together with `DirFS`
 - invalid `RawConfig` data under the `i18n` key
+- an invalid default language tag such as `"english"`
+- a programmatic message whose template does not compile, such as an unclosed `{{.name`
+- `Fields` with no message source (no `Messages`, no `Dir` or `DirFS`)
+- a second `UseI18n` call, or a call after the App is prepared or shut down
 
-This is deliberate: broken locale assets should fail fast at startup.
+Every call consumes the registration, so `UseI18n` is never called again as a fallback. Problems in the locale files fail the start instead — `Run` (or `app.Start`) returns a `*credo.LifecycleError` naming `i18n`, and the App rolls back:
+
+- an explicit `Dir` or `DirFS` that is missing or contains no messages
+- malformed JSON in `messages.json` or `fields.json`, or a template that does not compile
+- a conventional `locales/` directory that exists but is invalid
+- `Fields` with no message after loading
+
+This is deliberate: broken locale assets should fail fast, before the App serves a request.
 
 ---
 
@@ -641,14 +638,20 @@ This means i18n is inactive. Common causes:
 - the directory exists but contains no valid locale folders
 - locale files were not bundled into the binary
 
-### `UseI18n()` Fails at Startup
+### `UseI18n()` Panics or the Start Fails
 
-Typical causes:
+A panic at the `UseI18n` call means misuse, typically:
+
+- invalid default locale string
+- bad config decode from `RawConfig`
+- an invalid template in programmatic `Messages`
+- a second `UseI18n` call
+
+A start failure naming `i18n` means the locale files, typically:
 
 - invalid JSON
 - invalid template syntax
-- invalid default locale string
-- bad config decode from `RawConfig`
+- an explicit directory that is missing or empty
 
 ### Validation Messages Stay in English
 
@@ -735,9 +738,7 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := app.UseI18n(); err != nil {
-        log.Fatal(err)
-    }
+    app.UseI18n()
 
     app.POST("/users", func(ctx *credo.Context) error {
         var input CreateUserInput

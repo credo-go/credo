@@ -1,12 +1,12 @@
 # ADR-016: Health Checks
 
-**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015, ADR-024
+**Status:** Accepted; v0.24.0 readiness from the kernel's registries implemented for stores and components, worker readiness pending ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-03-07 **Depends on:** ADR-006, ADR-015, ADR-024
 
 ## Context
 
 Enterprise applications deployed to Kubernetes (and similar orchestrators) require liveness and readiness probes. Liveness probes detect deadlocked or unrecoverable processes; readiness probes gate traffic until all dependencies are available.
 
-Credo's store package already tracks connection health via `Registry.HealthAll`. The health check system must integrate with this existing infrastructure while remaining usable for applications that have no stores.
+Credo's store package already tracked connection health, then through a `Registry` with a `HealthAll` view. The health check system must integrate with the stores an application registers while remaining usable for applications that have none.
 
 Options considered:
 
@@ -15,7 +15,7 @@ Options considered:
 
 ## Decision
 
-Write the health check engine from scratch. The engine is unexported in the root package (`healthEngine`); its public surface is a small set of methods on `App`, the same pattern as i18n (`internal/i18n/` + `app.UseI18n`). `internal/health/` holds the stable bounded `Probe` primitive and the module-internal seam through which store integration contributes per-entry checks — see [Store Integration](#store-integration).
+Write the health check engine from scratch. The engine is unexported in the root package (`healthEngine`); its public surface is a small set of methods on `App`, the same pattern as i18n (`internal/i18n/` + `app.UseI18n`). `internal/health/` holds the stable bounded `Probe` primitive and the check types through which stores and components contribute per-entry checks — see [Readiness from the kernel's registries](#readiness-from-the-kernels-registries).
 
 ### Engine (root package, unexported)
 
@@ -35,8 +35,7 @@ Write the health check engine from scratch. The engine is unexported in the root
 - Panics are recovered per check; one store cannot abort sibling checks or the
   readiness handler.
 - No checks registered = "up" for liveness (server responding proves alive).
-- Store health flows in through a module-internal DI seam (`internal/health.StoreFunc`), resolved lazily on each readiness check so the store package never imports the engine and store/`UseHealth` registration order does not matter.
-- Worker readiness (`worker.WithReadiness`) uses the sibling seam `internal/health.ReadinessFunc`: contributed checks are reported among the named checks (`worker:<name>`), share their name space (collisions fail closed), and are resolved lazily the same way.
+- Store, component and application checks are the three readiness sources described under [Readiness from the kernel's registries](#readiness-from-the-kernels-registries).
 
 ### Public API (root package)
 
@@ -49,7 +48,7 @@ app.AddLivenessCheck(name string, checker HealthChecker)
 app.AddReadinessCheck(name string, checker HealthChecker)
 ```
 
-There is no public store-bridge method — store health is wired through the module-internal seam below, not by user code. See godoc for the authoritative signatures.
+There is no public store-bridge method — store health comes from `store.Register`, not from user code. See godoc for the authoritative signatures.
 
 ### HealthConfig
 
@@ -88,60 +87,24 @@ Optional/critical configuration is deferred to a separate API decision.
 
 When the application begins graceful shutdown, `/ready` immediately returns 503 with `{"status": "shutting_down"}` — before in-flight requests are drained — so load balancers stop routing to the instance. Liveness (`/health`) stays 200: the process is alive and draining, and must not be killed mid-drain. See [ADR-006](006-application-lifecycle.md) for the full shutdown sequence.
 
-### Store Integration
-
-`store.Register[R]()` wires stable per-entry probes into the readiness endpoint
-through a module-internal DI seam, with no user-facing bridge API:
-
-- `StoreFunc func() []StoreCheck` returns a registry snapshot. Every
-  `StoreCheck` contains its name and the stable `*Probe` stored by the Registry;
-  it does not execute I/O while producing the snapshot. Root can therefore run
-  every store independently through the same timeout/panic/singleflight
-  scheduler as named checks.
-- `store.Health.Cause error` is the typed diagnostic source. It and the
-  module-internal result cause are marked `json:"-"`; arbitrary
-  `Health.Details["error"]` values are never promoted to causes.
-- Cause text is captured once inside the Probe worker. A custom `Error()` that
-  blocks or panics is therefore subject to the same timeout/recovery boundary;
-  HTTP rendering and slog use only the immutable captured string, while the
-  typed cause remains available internally for `errors.Is/As`.
-- Every `store.Register` idempotently re-establishes the `StoreFunc` binding
-  around the resolved Registry. This also wires a Registry supplied earlier by
-  the composition root and makes an interrupted seam publish retryable. The
-  supplied value is validated before its binding is protected and re-resolved;
-  a nil/failing binding remains replaceable for repair before Finalize. Once
-  adopted, the Registry rejects `App.Replace`, so DI and the readiness seam
-  cannot later point at different instances.
-- Registry entries are committed only after a private name/type/resource-
-  identity reservation, deadline-scoped Ping, and protected store-value
-  publication succeed. Pending/failed registrations never appear in readiness.
-  Equal identity tokens cannot produce duplicate probes within the
-  `store.Register` ledger; wrappers around another resource forward identity
-  explicitly through `LifecycleIdentityProvider`, and interface access uses
-  `Alias` rather than another registration. Publishing the same lifecycle
-  again through raw `Provide`, `ProvideValue`, `ProvideProtectedValue`, or
-  `Replace` is outside this guarantee and
-  unsupported.
-- The readiness handler resolves the `StoreFunc` lazily on each check, so a store registered after `UseHealth` is reflected automatically and a missing seam (no stores) simply yields no store entries.
-- Store status is allowlisted to `up`, `down`, or `degraded`. Unknown adapter
-  values fail closed as `down`; the raw value is logged but remains masked from
-  the default HTTP response.
-- A custom readiness/store name collision produces an explicit synthetic down
-  result and 503 instead of silently overwriting one result in the JSON map.
-
 ### Readiness from the Kernel's Registries
 
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the two seam bullets of the Engine section and the Store Integration section.
+`/ready` reads what the kernel already holds, and resolves nothing from the DI container per request for stores and components. Its sources are:
 
-`/ready` reads what the kernel already holds, and resolves nothing from the DI container per request. Its sources are:
-
-- **components' `Ready`** — each component whose binding's type shows the `Ready` capability (`credo.Readier`), under the component's name (`credo.Named`, the type name by default; a worker reports as `worker:<name>`). A nil error is up and an error is down. A borrowed value keeps its readiness contribution though the App neither starts nor shuts it down ([ADR-024](024-lifecycle-components.md)).
-- **the store registry** — each registered store's typed `Health`, taken from the value the start phase resolved and pinged, under the store's name ([ADR-015](015-data-access.md#registration-on-the-kernel)). An override of the store's binding is the value reported.
+- **components' `Ready`** — each component whose binding's type shows the `Ready` capability (`credo.Readier`), under the component's name (`credo.Named`, the type name by default). A nil error is up and an error is down. The probes are built once by the start walk from the values it built. A borrowed value keeps its readiness contribution though the App neither starts nor shuts it down ([ADR-024](024-lifecycle-components.md)).
+- **the store registry** — each registered store's typed `Health`, under the store's name ([ADR-015](015-data-access.md#registration)). Its probe is built once, when the start phase has built the store's binding and pinged it, so an override of the binding is the value reported. Before the App has started there are no store entries.
 - **the application's checks** — those added with `AddReadinessCheck`.
 
-The three sources share the engine described above: each entry owns a stable `Probe`, runs under the per-check deadline with panics isolated, and overlapping requests join one in-flight execution. The store status allowlist, cause masking unless `ExposeErrors`, and the fail-closed treatment of a name that two sources report keep their rules across all three. The registries are filled at registration and by the start phase, so registration order between `UseHealth`, stores, workers and components still does not matter.
+The three sources share the engine described above: each entry owns a stable `Probe`, runs under the per-check deadline with panics isolated, and overlapping requests join one in-flight execution. The registries are filled at registration and by the start phase, so registration order between `UseHealth`, stores and components does not matter. The rules that apply across the sources:
 
-Deleted: the `internal/health` `StoreFunc` and `ReadinessFunc` DI seams, their per-request resolution, and the `App.Replace` calls that installed them. The store registry reaches the root through an internal Go seam, not through a container binding.
+- Store status is allowlisted to `up`, `down`, or `degraded`. Unknown adapter values fail closed as `down`; the raw value is logged but remains masked from the default HTTP response.
+- `store.Health.Cause error` is the typed diagnostic source. It and the module-internal result cause are marked `json:"-"`; arbitrary `Health.Details["error"]` values are never promoted to causes. Causes are masked unless `ExposeErrors`.
+- Cause text is captured once inside the Probe worker. A custom `Error()` that blocks or panics is therefore subject to the same timeout/recovery boundary; HTTP rendering and slog use only the immutable captured string, while the typed cause remains available internally for `errors.Is/As`.
+- A name that two sources report — a custom readiness check and a store, for example — produces an explicit synthetic down result and 503 instead of silently overwriting one result in the JSON map.
+
+The store registry reaches the root through an internal Go seam between the root and `store`, not through a container binding. The former `internal/health.StoreFunc` DI seam — resolved on every readiness request and installed with `App.Replace` by each `store.Register` — is gone.
+
+**Accepted, pending implementation (v0.24.0, W6).** Worker readiness (`worker.WithReadiness`) still flows through the module-internal DI seam `internal/health.ReadinessFunc`, resolved on each readiness request: its checks are reported among the named checks (`worker:<name>`), share their name space (collisions fail closed), and a resolution error yields no entries. When workers become components, a worker reports through its component's `Ready` as `worker:<name>`, and this seam is deleted with the `App.Replace` call that installs it.
 
 During the drain `/ready` returns 503 `shutting_down` as described under Graceful Shutdown, before any component stops; `/health` stays 200.
 

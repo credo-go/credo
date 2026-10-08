@@ -215,6 +215,15 @@ func (lm *lifecycleManager) build(r *startRun, u *di.Unit) (value any, ok bool, 
 // interrupt; on success it stores running, unless an interrupt came first.
 func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 	c := lm.app.container
+	for _, s := range lm.frameworkSteps {
+		if r.isInterrupted() {
+			return startInterrupted
+		}
+		elapsed, returned, err := lm.call(r, s.name, s.fn)
+		if outcome := lm.recordCall(r, s.name, TierInternal, elapsed, returned, err); outcome != startOK {
+			return outcome
+		}
+	}
 	for _, tier := range []Tier{TierInternal, TierIngress} {
 		for _, u := range c.StartPlan(di.Tier(tier)) {
 			if r.isInterrupted() {
@@ -232,11 +241,17 @@ func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 					Outcome: outcomeOf(err), Err: err})
 				return startFailed
 			}
+			for _, step := range u.Steps() {
+				run := func(ctx context.Context) error { return step.Run(ctx, v) }
+				if outcome := lm.startUnit(r, u, tier, run, false); outcome != startOK {
+					return outcome
+				}
+			}
 			starter, ok := v.(Starter)
 			if !u.Starts() || !ok {
 				continue
 			}
-			if outcome := lm.startUnit(r, u, tier, starter); outcome != startOK {
+			if outcome := lm.startUnit(r, u, tier, starter.Start, true); outcome != startOK {
 				return outcome
 			}
 		}
@@ -251,29 +266,43 @@ func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 			elapsed, returned, err := lm.call(r, name, func(ctx context.Context) error {
 				return lm.runLifecycleHook(ctx, "OnStart", h.index, h.fn)
 			})
-			switch {
-			case !returned:
-				r.report.add(LifecycleEntry{Name: name, Tier: tier, Phase: PhaseStart, Outcome: OutcomeAbandoned,
-					Duration: elapsed})
-				r.report.setCause(r.rollbackContext().Err())
-				return startInterrupted
-			case err != nil && r.isInterrupted():
-				lm.logInterruptedStart(name, err)
-				return startInterrupted
-			case err != nil:
-				r.report.add(LifecycleEntry{Name: name, Tier: tier, Phase: PhaseStart, Outcome: outcomeOf(err),
-					Err: err})
-				return startFailed
+			if outcome := lm.recordCall(r, name, tier, elapsed, returned, err); outcome != startOK {
+				return outcome
 			}
 		}
 	}
 	return lm.enterRunning(r)
 }
 
-// startUnit calls one component's Start.
-func (lm *lifecycleManager) startUnit(r *startRun, u *di.Unit, tier Tier, starter Starter) startOutcome {
+// recordCall reports the result of a start call that belongs to no
+// component — a start hook or a framework step.
+func (lm *lifecycleManager) recordCall(
+	r *startRun, name string, tier Tier, elapsed time.Duration, returned bool, err error,
+) startOutcome {
+	switch {
+	case !returned:
+		r.report.add(LifecycleEntry{Name: name, Tier: tier, Phase: PhaseStart, Outcome: OutcomeAbandoned,
+			Duration: elapsed})
+		r.report.setCause(r.rollbackContext().Err())
+		return startInterrupted
+	case err != nil && r.isInterrupted():
+		lm.logInterruptedStart(name, err)
+		return startInterrupted
+	case err != nil:
+		r.report.add(LifecycleEntry{Name: name, Tier: tier, Phase: PhaseStart, Outcome: outcomeOf(err), Err: err})
+		return startFailed
+	}
+	return startOK
+}
+
+// startUnit runs one start call of a component — a start step, or its
+// Start. A Start that fails has released what it opened, so the rollback
+// skips it (releases); a failed start step leaves the value to the rollback.
+func (lm *lifecycleManager) startUnit(
+	r *startRun, u *di.Unit, tier Tier, fn func(ctx context.Context) error, releases bool,
+) startOutcome {
 	elapsed, returned, err := lm.call(r, u.Name(), func(ctx context.Context) error {
-		return lm.invokeStart(ctx, u, starter)
+		return lm.invokeStart(ctx, u, fn)
 	})
 	switch {
 	case !returned:
@@ -284,8 +313,10 @@ func (lm *lifecycleManager) startUnit(r *startRun, u *di.Unit, tier Tier, starte
 		r.report.setCause(r.rollbackContext().Err())
 		return startInterrupted
 	case err != nil:
-		// It released what it opened and is not shut down.
-		r.excluded = append(r.excluded, u)
+		if releases {
+			// It released what it opened and is not shut down.
+			r.excluded = append(r.excluded, u)
+		}
 		if r.isInterrupted() {
 			lm.logInterruptedStart(u.Name(), err)
 			return startInterrupted
@@ -297,8 +328,8 @@ func (lm *lifecycleManager) startUnit(r *startRun, u *di.Unit, tier Tier, starte
 	return startOK
 }
 
-// invokeStart calls Start, recovering a panic as a *DIPanicError.
-func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, starter Starter) (err error) {
+// invokeStart runs a start call, recovering a panic as a *DIPanicError.
+func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, fn func(context.Context) error) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := &di.PanicError{
@@ -314,7 +345,7 @@ func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, starter
 			err = panicErr
 		}
 	}()
-	return starter.Start(ctx)
+	return fn(ctx)
 }
 
 // enterRunning stores running once the walk has succeeded, unless an

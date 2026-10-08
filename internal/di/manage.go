@@ -115,14 +115,24 @@ func (c *Container) Units() []*Unit {
 }
 
 // HasStartWork reports whether any unit is started by the start walk, asks
-// for readiness, or is a managed constructor the walk builds.
+// for readiness, has a start step, or is a managed constructor the walk
+// builds.
 func (c *Container) HasStartWork() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if len(c.steps) > 0 {
+		return true
+	}
 	for _, u := range c.units {
-		if u.starts || u.readies || (u.managed && u.entry.state != entryBuilt) {
+		if u.plannedLocked() {
 			return true
 		}
 	}
 	return false
+}
+
+// plannedLocked reports whether the start walk visits the unit. c.mu must be
+// held.
+func (u *Unit) plannedLocked() bool {
+	return u.starts || u.readies || len(u.steps) > 0 || (u.managed && u.entry.state != entryBuilt)
 }

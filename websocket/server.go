@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -15,10 +16,16 @@ import (
 type serverState uint8
 
 const (
-	serverOpen serverState = iota
+	serverNew serverState = iota
+	serverOpen
 	serverDraining
 	serverClosed
 )
+
+// errNotStarted is the handshake's error for a server whose Start never ran:
+// the server was never registered as a component, so nothing would drain it.
+var errNotStarted = errors.New("credo/websocket: the server was never started; register it as an ingress " +
+	"component with app.Manage(server, credo.Ingress()) or bind it with credo.Ingress()")
 
 type connectionRecord struct {
 	conn             *Conn
@@ -41,7 +48,7 @@ type connectionRecord struct {
 
 // Server owns the immutable policy and managed lifecycle state for WebSocket
 // handlers registered through one Credo application. A Server must be created
-// with [Use].
+// with [New] and registered as an ingress component of the App.
 type Server struct {
 	config resolvedConfig
 	logger *slog.Logger
@@ -58,16 +65,23 @@ type Server struct {
 	drainErrors  []error
 }
 
-// Use validates and freezes a WebSocket configuration for app. It accepts zero
-// or one Config value and performs no I/O or DI publication. Invalid
-// configuration, a nil app, or registration after the app is frozen panics as
-// startup misuse.
-func Use(app *credo.App, cfg ...Config) *Server {
-	if app == nil {
-		panic("credo/websocket: Use called with a nil App")
-	}
+// New validates and freezes a WebSocket configuration and returns the server.
+// It accepts zero or one Config value, copies its slices defensively, and
+// performs no I/O; it registers nothing. The server's logger is infra's
+// logger with module=websocket added.
+//
+// The application registers the server as an ingress component, so it
+// starts with the App and drains beside the HTTP drain, before the internal
+// components its handlers use:
+//
+//	ws := websocket.New(app.NewInfra("websocket"), cfg)
+//	app.Manage(ws, credo.Ingress())
+//
+// or binds it with credo.Ingress() when controllers take it as a dependency.
+// Invalid configuration or more than one Config panics as startup misuse.
+func New(infra credo.Infra, cfg ...Config) *Server {
 	if len(cfg) > 1 {
-		panic("credo/websocket: Use accepts at most one Config")
+		panic("credo/websocket: New accepts at most one Config")
 	}
 	var value Config
 	if len(cfg) == 1 {
@@ -77,19 +91,35 @@ func Use(app *credo.App, cfg ...Config) *Server {
 	if err != nil {
 		panic(fmt.Sprintf("credo/websocket: invalid Config: %v", err))
 	}
-	server := &Server{
+	logger := infra.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{
 		config:      resolved,
-		logger:      app.Logger().With("module", "websocket"),
+		logger:      logger.With("module", "websocket"),
 		connections: make(map[*connectionRecord]struct{}),
 		changed:     make(chan struct{}),
 		drainDone:   make(chan struct{}),
 	}
-	// Register only after every mechanical validation succeeds so an invalid
-	// configuration cannot leave a partial lifecycle mutation behind. The
-	// server is an ingress component: it drains concurrently with the HTTP
-	// drain and before the internal components its handlers use.
-	app.Manage(server, credo.Ingress())
-	return server
+}
+
+// Start opens admission. The App calls it in the start phase; until it has
+// run, the handler refuses every upgrade with an error naming the missing
+// registration. Start does no I/O and starts no goroutine; it fails once
+// the server has been started or shut down.
+func (s *Server) Start(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.state {
+	case serverNew:
+		s.state = serverOpen
+		return nil
+	case serverOpen:
+		return errors.New("credo/websocket: Server.Start: the server is already started")
+	default:
+		return errors.New("credo/websocket: Server.Start: the server is shut down")
+	}
 }
 
 // Shutdown stops admitting connections, sends active peers a Going Away close,
@@ -219,15 +249,19 @@ func (e *shutdownIncompleteError) Error() string {
 
 func (e *shutdownIncompleteError) Unwrap() error { return e.cause }
 
-func (s *Server) acquireToken() bool {
+func (s *Server) acquireToken() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state != serverOpen {
-		return false
+	switch s.state {
+	case serverOpen:
+	case serverNew:
+		return errNotStarted
+	default:
+		return credo.NewHTTPError(http.StatusServiceUnavailable)
 	}
 	s.activeTokens++
 	s.notifyLocked()
-	return true
+	return nil
 }
 
 func (s *Server) attach(record *connectionRecord) bool {

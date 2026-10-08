@@ -95,9 +95,7 @@ func TestStartLine_FullListInDisplayOrder(t *testing.T) {
 		func(a *credo.App) { a.UseDecompress() },
 		func(a *credo.App) { a.UseCompress() },
 		func(a *credo.App) {
-			if err := a.UseI18n(credo.I18nConfig{Messages: credo.I18nMessages{"hello": "Hello"}}); err != nil {
-				t.Fatal(err)
-			}
+			a.UseI18n(credo.I18nConfig{Messages: credo.I18nMessages{"hello": "Hello"}})
 		},
 		func(a *credo.App) {
 			a.UseErrorRenderer(func(*credo.Context, *credo.ErrorInfo) any { return nil })
@@ -134,9 +132,7 @@ func TestStartLine_InactiveI18nIsNotListed(t *testing.T) {
 	logs := &syncBuffer{}
 	app := newJSONLoggingApp(t, logs)
 	// No locales/ directory: conventional discovery succeeds but stays inactive.
-	if err := app.UseI18n(); err != nil {
-		t.Fatal(err)
-	}
+	app.UseI18n()
 	rec := startRecord(t, app, logs)
 
 	if got := featuresOf(t, rec); !slices.Equal(got, []string{"recover"}) {

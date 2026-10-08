@@ -42,7 +42,7 @@
 //
 // Credo does not choose a workload-independent finite pool size. MaxOpen=0
 // preserves database/sql's unlimited-open behavior. If the pool is still
-// unlimited when a successful canonical store.Register inspects it, the app
+// unlimited when the start phase pings a store.Register-ed DB, the app
 // logger emits one structured warning with code sqldb.pool.max_open_unlimited.
 // Standalone users can inspect DB.StoreRegistrationWarningCodes during
 // bootstrap and route the same secret-free codes through their own logger.
@@ -63,19 +63,14 @@
 // Because all stores are currently critical, DEGRADED removes readiness and a
 // noisy universal threshold could cascade across replicas.
 //
-// # Lifecycle Identity
+// # Resource Identity
 //
-// DB implements store.LifecycleIdentityProvider. ResourceIdentity returns the
-// *DB pointer, giving store.Register a stable physical-resource token. A
-// semantic wrapper that embeds *DB inherits this method through ordinary Go
-// method promotion. A named-field wrapper that implements Lifecycle itself
-// must explicitly forward ResourceIdentity to the underlying DB; Credo does not
-// inspect wrapper fields.
-//
-// The duplicate-resource guarantee is scoped to one store.Registry and its
-// store.Register calls. Do not publish the same *DB again under another DI type
-// with raw Provide/ProvideValue/ProvideProtectedValue/Replace;
-// use App.Alias for an interface view.
+// DB is a credo.ResourceIdentifier: ResourceIdentity returns the *DB pointer.
+// A wrapper type that embeds *DB inherits it, so the App treats the *DB and
+// its wrappers as holders of one database and closes it once, after the last
+// holder retires. Only a wrapper without state of its own to release may
+// share the identity; one that releases state of its own holds the *DB in a
+// named field and does not forward ResourceIdentity.
 //
 // # Query Builder Proxies
 //

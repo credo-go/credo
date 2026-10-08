@@ -5,16 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
-	"math"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/store"
@@ -29,76 +25,146 @@ func newTestDB(lc *mockLifecycle) *testDB {
 	return &testDB{mockLifecycle: lc}
 }
 
-func newTestApp(t *testing.T, opts ...credo.Option) *credo.App {
-	t.Helper()
-	app, err := credo.New(opts...)
-	if err != nil {
-		t.Fatalf("credo.New() = %v", err)
-	}
-	return app
-}
+func up() store.Health { return store.Health{Status: store.StatusUp} }
 
-// runApp starts ServeContext on an already-bound test listener and waits until
-// it is running, so shutdown tests avoid a free-port probe race.
-func runApp(t *testing.T, app *credo.App) {
+// mustPanic runs fn and returns the panic message it raised.
+func mustPanic(t *testing.T, fn func()) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() = %v", err)
-	}
-	serveCtx, cancelServe := context.WithCancel(t.Context())
-	errCh := make(chan error, 1)
-	go func() { errCh <- app.ServeContext(serveCtx, listener) }()
-	t.Cleanup(func() {
-		cancelServe()
-		select {
-		case err := <-errCh:
-			if err != nil {
-				t.Errorf("ServeContext() = %v", err)
+	var msg string
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected a panic")
 			}
-		case <-time.After(5 * time.Second):
-			t.Error("ServeContext did not stop")
-		}
-	})
+			msg, _ = r.(string)
+			if err, ok := r.(error); ok {
+				msg = err.Error()
+			}
+		}()
+		fn()
+	}()
+	return msg
+}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for !app.IsRunning() {
-		if time.Now().After(deadline) {
-			t.Fatal("server did not reach running state")
+// readyChecks serves GET /ready and returns the status code and the checks map.
+func readyChecks(t *testing.T, app *credo.App) (int, map[string]any) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal /ready: %v (body: %s)", err, w.Body.String())
+	}
+	checks, _ := body["checks"].(map[string]any)
+	return w.Code, checks
+}
+
+// warningRecords returns the store configuration warnings logged as JSON.
+func warningRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
 		}
-		time.Sleep(time.Millisecond)
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if record["msg"] == "credo: store configuration warning" {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func TestRegister_PerformsNoIOAndPingsAtStart(t *testing.T) {
+	app := newTestApp(t)
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc))
+	store.Register[*testDB](app)
+
+	if ping, _, _ := lc.calls(); ping != 0 {
+		t.Fatalf("Ping calls after Register = %d, want 0", ping)
+	}
+	startApp(t, app)
+	if ping, _, _ := lc.calls(); ping != 1 {
+		t.Fatalf("Ping calls after Start = %d, want 1", ping)
 	}
 }
 
-func TestRegister_Success(t *testing.T) {
+func TestRegister_HealthAppearsInReadiness(t *testing.T) {
 	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
+	lc := &mockLifecycle{health: store.Health{Status: store.StatusUp, Latency: 2 * time.Millisecond}}
+	app.ProvideValue(newTestDB(lc))
+	store.Register[*testDB](app, store.WithName("pg"))
+	app.UseHealth()
+	startApp(t, app)
+
+	for range 2 {
+		code, checks := readyChecks(t, app)
+		if code != http.StatusOK {
+			t.Fatalf("/ready status = %d, want %d", code, http.StatusOK)
+		}
+		pg, ok := checks["pg"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected pg entry in checks, got %v", checks)
+		}
+		if pg["status"] != "up" {
+			t.Errorf("pg status = %v, want %q", pg["status"], "up")
+		}
+	}
+	if _, _, health := lc.calls(); health < 2 {
+		t.Fatalf("Health calls = %d, want one per readiness request", health)
+	}
+}
+
+func TestRegister_DownStoreFailsReadiness(t *testing.T) {
+	app := newTestApp(t)
+	app.ProvideValue(newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusDown}}))
+	store.Register[*testDB](app, store.WithName("pg"))
+	app.UseHealth()
+	startApp(t, app)
+
+	code, checks := readyChecks(t, app)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("/ready status = %d, want %d", code, http.StatusServiceUnavailable)
+	}
+	if pg, _ := checks["pg"].(map[string]any); pg["status"] != "down" {
+		t.Fatalf("pg check = %v, want status down", checks["pg"])
+	}
+}
+
+func TestRegister_ReadinessReportsShuttingDown(t *testing.T) {
+	app := newTestApp(t)
+	release := make(chan struct{})
+	app.ProvideValue(newTestDB(&mockLifecycle{health: up()}))
+	store.Register[*testDB](app, store.WithName("pg"))
+	app.UseHealth()
+	entered := make(chan struct{})
+	app.OnStop(func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
 	})
+	startApp(t, app)
 
-	if err := store.Register[*testDB](app, db); err != nil {
-		t.Fatalf("Register() = %v", err)
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done <- app.Shutdown(ctx)
+	}()
+	<-entered
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Shutdown() = %v", err)
 	}
-
-	// Verify the value is in DI.
-	finalize(t, app)
-	resolved, err := app.Resolve[*testDB]()
-	if err != nil {
-		t.Fatalf("Resolve() = %v", err)
-	}
-	if resolved != db {
-		t.Error("Resolve returned different instance")
-	}
-
-	// Verify the registry is in DI.
-	reg, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
-
-	health := reg.HealthAll(t.Context())
-	if len(health) != 1 {
-		t.Fatalf("HealthAll() = %d entries, want 1", len(health))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "shutting_down") {
+		t.Fatalf("/ready during shutdown = %d %s, want 503 shutting_down", w.Code, w.Body.String())
 	}
 }
 
@@ -111,105 +177,67 @@ func (db *warningDB) StoreRegistrationWarningCodes() []string {
 	return db.codes
 }
 
-func TestRegister_EmitsConfigurationWarningsAfterSuccess(t *testing.T) {
+func TestRegister_EmitsConfigurationWarningsAfterPing(t *testing.T) {
 	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	app := newTestApp(t, credo.WithLogger(logger))
-	db := &warningDB{
-		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
+	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	app.ProvideValue(&warningDB{
+		mockLifecycle: &mockLifecycle{health: up()},
 		codes:         []string{"sqldb.pool.max_open_unlimited"},
-	}
+	})
+	store.Register[*warningDB](app, store.WithName("primary"))
 
-	if err := store.Register[*warningDB](app, db, store.WithName("primary")); err != nil {
-		t.Fatalf("Register() = %v", err)
+	if records := warningRecords(t, &logs); len(records) != 0 {
+		t.Fatalf("warnings before Start = %v, want none", records)
 	}
+	startApp(t, app)
 
-	var record map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &record); err != nil {
-		t.Fatalf("decode warning log: %v\nlog: %s", err, logs.String())
+	records := warningRecords(t, &logs)
+	if len(records) != 1 {
+		t.Fatalf("warning records = %d, want 1\nlogs: %s", len(records), logs.String())
 	}
 	for key, want := range map[string]string{
 		"level":     "WARN",
-		"msg":       "credo: store configuration warning",
 		"component": "store",
 		"store":     "primary",
 		"code":      "sqldb.pool.max_open_unlimited",
 	} {
-		if got := record[key]; got != want {
+		if got := records[0][key]; got != want {
 			t.Errorf("warning %s = %#v, want %q", key, got, want)
 		}
 	}
 }
 
-type warningValue struct {
-	name string
-}
-
-func TestRegister_UsesSelectedSeparateLifecycleForConfigurationWarnings(t *testing.T) {
+func TestRegister_DoesNotEmitConfigurationWarningsOnPingFailure(t *testing.T) {
 	var logs bytes.Buffer
 	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-	lifecycle := &warningDB{
-		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
-		codes:         []string{"sqldb.pool.max_open_unlimited"},
-	}
-
-	if err := store.Register[warningValue](
-		app,
-		warningValue{name: "primary"},
-		store.WithName("separate-lifecycle"),
-		store.WithLifecycle(lifecycle),
-		store.WithCallerOwnedLifecycle(),
-	); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-
-	var record map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &record); err != nil {
-		t.Fatalf("decode warning log: %v\nlog: %s", err, logs.String())
-	}
-	if got := record["store"]; got != "separate-lifecycle" {
-		t.Errorf("warning store = %#v, want %q", got, "separate-lifecycle")
-	}
-	if got := record["code"]; got != "sqldb.pool.max_open_unlimited" {
-		t.Errorf("warning code = %#v, want %q", got, "sqldb.pool.max_open_unlimited")
-	}
-}
-
-func TestRegister_DoesNotEmitConfigurationWarningsOnFailure(t *testing.T) {
-	var logs bytes.Buffer
-	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-	db := &warningDB{
+	app.ProvideValue(&warningDB{
 		mockLifecycle: &mockLifecycle{pingErr: errors.New("unavailable")},
 		codes:         []string{"sqldb.pool.max_open_unlimited"},
-	}
+	})
+	store.Register[*warningDB](app)
 
-	if err := store.Register[*warningDB](app, db); err == nil {
-		t.Fatal("Register() should fail when Ping fails")
+	if err := app.Start(t.Context()); err == nil {
+		t.Fatal("Start() should fail when Ping fails")
 	}
-	if logs.Len() != 0 {
-		t.Fatalf("warning log on failed registration = %s, want none", logs.String())
+	if records := warningRecords(t, &logs); len(records) != 0 {
+		t.Fatalf("warnings on a failed ping = %v, want none", records)
 	}
 }
 
 func TestRegister_RejectsInvalidConfigurationWarningBeforePingWithoutLeak(t *testing.T) {
 	const secret = "super-secret-password"
 	var logs bytes.Buffer
-	lifecycle := &mockLifecycle{}
+	lc := &mockLifecycle{}
 	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-	db := &warningDB{
-		mockLifecycle: lifecycle,
-		codes:         []string{"password=" + secret},
-	}
+	app.ProvideValue(&warningDB{mockLifecycle: lc, codes: []string{"password=" + secret}})
+	store.Register[*warningDB](app)
 
-	err := store.Register[*warningDB](app, db)
+	err := app.Start(t.Context())
 	if err == nil {
-		t.Fatal("Register() should reject an invalid warning code")
+		t.Fatal("Start() should reject an invalid warning code")
 	}
-	lifecycle.mu.Lock()
-	pingCalls := lifecycle.pingCalls
-	lifecycle.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("Ping calls = %d, want 0", pingCalls)
+	if ping, _, _ := lc.calls(); ping != 0 {
+		t.Fatalf("Ping calls = %d, want 0", ping)
 	}
 	if strings.Contains(err.Error(), secret) || strings.Contains(logs.String(), secret) {
 		t.Fatalf("invalid warning code leaked secret: error=%q log=%q", err, logs.String())
@@ -219,1054 +247,283 @@ func TestRegister_RejectsInvalidConfigurationWarningBeforePingWithoutLeak(t *tes
 func TestRegister_DeduplicatesConfigurationWarningsInOrder(t *testing.T) {
 	var logs bytes.Buffer
 	app := newTestApp(t, credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-	db := &warningDB{
-		mockLifecycle: &mockLifecycle{health: store.Health{Status: store.StatusUp}},
+	app.ProvideValue(&warningDB{
+		mockLifecycle: &mockLifecycle{health: up()},
 		codes: []string{
 			"sqldb.pool.max_open_unlimited",
 			"sqldb.pool.max_open_unlimited",
 			"sqldb.pool.idle_disabled",
 		},
-	}
+	})
+	store.Register[*warningDB](app)
+	startApp(t, app)
 
-	if err := store.Register[*warningDB](app, db); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("warning records = %d, want 2\nlogs: %s", len(lines), logs.String())
-	}
+	records := warningRecords(t, &logs)
 	wantCodes := []string{"sqldb.pool.max_open_unlimited", "sqldb.pool.idle_disabled"}
-	for i, line := range lines {
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("decode warning log %d: %v", i, err)
-		}
+	if len(records) != len(wantCodes) {
+		t.Fatalf("warning records = %d, want %d\nlogs: %s", len(records), len(wantCodes), logs.String())
+	}
+	for i, record := range records {
 		if got := record["code"]; got != wantCodes[i] {
 			t.Errorf("warning %d code = %#v, want %q", i, got, wantCodes[i])
 		}
 	}
 }
 
-func TestRegister_PingFailure_Cleanup(t *testing.T) {
+func TestRegister_PingFailureFailsStartAndRollsTheStoreBack(t *testing.T) {
 	app := newTestApp(t)
-	lc := &mockLifecycle{pingErr: fmt.Errorf("connection refused")}
-	db := newTestDB(lc)
+	pingErr := errors.New("connection refused")
+	lc := &mockLifecycle{pingErr: pingErr}
+	app.ProvideValue(newTestDB(lc))
+	store.Register[*testDB](app, store.WithName("pg"))
 
-	err := store.Register[*testDB](app, db)
-	if err == nil {
-		t.Fatal("Register() should fail when ping fails")
+	err := app.Start(t.Context())
+	if !errors.Is(err, pingErr) {
+		t.Fatalf("Start() = %v, want the ping error", err)
 	}
+	if _, ok := errors.AsType[*credo.LifecycleError](err); !ok {
+		t.Fatalf("Start() = %T, want *credo.LifecycleError", err)
+	}
+	if !strings.Contains(err.Error(), `"pg"`) {
+		t.Errorf("Start() = %q, want it to name the store", err)
+	}
+	// The ping opened nothing the bound value had not: the rollback still
+	// shuts the value down.
+	if _, shut, _ := lc.calls(); shut != 1 {
+		t.Fatalf("Shutdown calls after a failed ping = %d, want 1", shut)
+	}
+}
 
-	// The caller still owns the lifecycle on registration failure.
+func TestRegister_PingHonorsTheTimeout(t *testing.T) {
+	app := newTestApp(t)
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc))
+	store.Register[*testDB](app, store.WithPingTimeout(250*time.Millisecond))
+	startApp(t, app)
+
 	lc.mu.Lock()
-	called := lc.shutCalled
+	ctx := lc.pingCtx
 	lc.mu.Unlock()
-	if called {
-		t.Error("Shutdown should not be called for caller-owned lifecycle on ping failure")
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("ping context has no deadline")
 	}
-
-	// Value should NOT be in DI.
-	finalize(t, app)
-	_, resolveErr := app.Resolve[*testDB]()
-	if resolveErr == nil {
-		t.Error("value should not be in DI after failed registration")
+	if remaining := time.Until(deadline); remaining > 250*time.Millisecond {
+		t.Fatalf("ping deadline is %s away, want at most 250ms", remaining)
 	}
 }
 
-func TestRegister_NilValue(t *testing.T) {
+// bareDB is a store that names no resource of its own.
+type bareDB struct{ store.Lifecycle }
+
+func TestRegister_NilValueFailsStart(t *testing.T) {
 	app := newTestApp(t)
-	if err := store.Register[*testDB](app, nil); err == nil {
-		t.Fatal("Register(nil value) should return error")
-	}
+	app.Provide[*bareDB](func() *bareDB { return nil })
+	store.Register[*bareDB](app)
 
-	var typedNil *testDB
-	var lifecycle store.Lifecycle = typedNil
-	if err := store.Register[store.Lifecycle](app, lifecycle); err == nil {
-		t.Fatal("Register(interface containing typed-nil value) should return error")
+	err := app.Start(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "the bound value is nil") {
+		t.Fatalf("Start() = %v, want a nil-value error", err)
 	}
 }
 
-func TestRegister_NilUnsafePointerValue(t *testing.T) {
-	var value unsafe.Pointer
-	lifecycle := &mockLifecycle{}
-	if err := store.Register[unsafe.Pointer](
-		newTestApp(t),
-		value,
-		store.WithLifecycle(lifecycle),
-		store.WithCallerOwnedLifecycle(),
-	); err == nil {
-		t.Fatal("Register should reject a nil unsafe-pointer value")
-	}
-}
-
-func TestRegister_NilMapAndSliceValues(t *testing.T) {
-	lifecycle := &mockLifecycle{}
-
-	var nilMap map[string]int
-	if err := store.Register[map[string]int](newTestApp(t), nilMap, store.WithLifecycle(lifecycle)); err == nil {
-		t.Fatal("Register(nil map) should return error")
-	}
-
-	var nilSlice []int
-	if err := store.Register[[]int](newTestApp(t), nilSlice, store.WithLifecycle(lifecycle)); err == nil {
-		t.Fatal("Register(nil slice) should return error")
-	}
-}
-
-func TestRegister_NonNilLifecycleInterface(t *testing.T) {
+func TestRegister_ConstructorBindingIsBuiltByTheStartPhase(t *testing.T) {
 	app := newTestApp(t)
-	var lifecycle store.Lifecycle = newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
+	lc := &mockLifecycle{health: up()}
+	built := 0
+	app.Provide[*testDB](func() *testDB {
+		built++
+		return newTestDB(lc)
 	})
-	if err := store.Register[store.Lifecycle](app, lifecycle, store.WithName("interface-db")); err != nil {
-		t.Fatalf("Register(non-nil Lifecycle interface) = %v", err)
+	store.Register[*testDB](app)
+	if built != 0 {
+		t.Fatalf("constructor ran %d times at registration, want 0", built)
 	}
-	finalize(t, app)
-	resolved, err := app.Resolve[store.Lifecycle]()
-	if err != nil || resolved != lifecycle {
-		t.Fatalf("Resolve[Lifecycle]() = (%v, %v), want original interface", resolved, err)
-	}
-}
-
-func TestRegister_NilApp(t *testing.T) {
-	db := newTestDB(&mockLifecycle{})
-	if err := store.Register[*testDB](nil, db); err == nil {
-		t.Fatal("Register(nil app) should return error")
+	startApp(t, app)
+	if ping, _, _ := lc.calls(); built != 1 || ping != 1 {
+		t.Fatalf("(built, pinged) = (%d, %d), want (1, 1)", built, ping)
 	}
 }
 
-func TestRegister_NoLifecycle(t *testing.T) {
+func TestRegister_PingsTheOverride(t *testing.T) {
 	app := newTestApp(t)
-	// string does not implement Lifecycle and no WithLifecycle provided.
-	if err := store.Register[string](app, "not-a-db"); err == nil {
-		t.Fatal("Register without Lifecycle should return error")
+	original := &mockLifecycle{health: up()}
+	override := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(original))
+	store.Register[*testDB](app)
+	app.ProvideValue(newTestDB(override), credo.Override())
+	startApp(t, app)
+
+	if ping, _, _ := original.calls(); ping != 0 {
+		t.Errorf("original pinged %d times, want 0", ping)
+	}
+	if ping, _, _ := override.calls(); ping != 1 {
+		t.Errorf("override pinged %d times, want 1", ping)
 	}
 }
 
-func TestRegister_WithName(t *testing.T) {
+func TestRegister_BorrowedStoreIsPingedButNotShutDown(t *testing.T) {
 	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
-	})
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc), credo.Borrowed())
+	store.Register[*testDB](app)
+	startApp(t, app)
+	shutdownApp(t, app)
 
-	if err := store.Register[*testDB](app, db, store.WithName("custom-db")); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-
-	finalize(t, app)
-	reg, _ := app.Resolve[*store.Registry]()
-	health := reg.HealthAll(t.Context())
-	if _, ok := health["custom-db"]; !ok {
-		t.Error("HealthAll should contain entry with custom name")
+	if ping, shut, _ := lc.calls(); ping != 1 || shut != 0 {
+		t.Fatalf("(ping, shutdown) = (%d, %d), want (1, 0)", ping, shut)
 	}
 }
 
-func TestRegister_DefaultNameIsOperatorFriendly(t *testing.T) {
+// Primary is a named interface a store may be registered as.
+type Primary interface{ store.Lifecycle }
+
+func TestRegister_AliasedInterface(t *testing.T) {
 	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusUp}})
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc))
+	app.Alias[Primary, *testDB]()
+	store.Register[Primary](app, store.WithName("primary"))
+	app.UseHealth()
+	startApp(t, app)
 
-	if err := store.Register[*testDB](app, db); err != nil {
-		t.Fatalf("Register() = %v", err)
+	if ping, _, _ := lc.calls(); ping != 1 {
+		t.Fatalf("Ping calls = %d, want 1", ping)
 	}
-	finalize(t, app)
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
-	if _, exists := registry.HealthAll(t.Context())["store_test.testDB"]; !exists {
-		t.Fatalf("default store name must be package-qualified without pointer syntax")
+	if _, checks := readyChecks(t, app); checks["primary"] == nil {
+		t.Fatalf("readiness checks = %v, want a primary entry", checks)
 	}
 }
 
-func TestRegister_InvalidNameFailsBeforePing(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-	}{
-		{name: "explicit empty", value: ""},
-		{name: "leading whitespace", value: " primary"},
-		{name: "trailing whitespace", value: "primary "},
-		{name: "reserved prefix", value: "credo.primary"},
-		{name: "control character", value: "primary\nreplica"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lc := &mockLifecycle{}
-			err := store.Register[*testDB](newTestApp(t), newTestDB(lc), store.WithName(tt.value))
-			if err == nil {
-				t.Fatalf("Register(WithName(%q)) should fail", tt.value)
-			}
-			lc.mu.Lock()
-			pingCalls := lc.pingCalls
-			lc.mu.Unlock()
-			if pingCalls != 0 {
-				t.Fatalf("Ping calls = %d, want 0 for invalid local input", pingCalls)
-			}
-		})
-	}
-}
-
-func TestRegister_WithPingTimeout(t *testing.T) {
+func TestRegister_MissingBindingFailsFinalize(t *testing.T) {
 	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
-	})
+	store.Register[*testDB](app)
 
-	if err := store.Register[*testDB](app, db, store.WithPingTimeout(1*time.Second)); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-}
-
-func TestRegister_InvalidPingTimeout(t *testing.T) {
-	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{})
-
-	if err := store.Register[*testDB](app, db, store.WithPingTimeout(-1*time.Second)); err == nil {
-		t.Fatal("Register with negative ping timeout should return error")
-	}
-}
-
-type unstableIdentityLifecycle struct {
-	values    []int
-	pingCalls *int
-}
-
-type nanIdentityLifecycle float64
-
-func (nanIdentityLifecycle) Ping(context.Context) error     { return nil }
-func (nanIdentityLifecycle) Shutdown(context.Context) error { return nil }
-func (nanIdentityLifecycle) Health(context.Context) store.Health {
-	return store.Health{Status: store.StatusUp}
-}
-
-func (l unstableIdentityLifecycle) Ping(context.Context) error {
-	*l.pingCalls++
-	return nil
-}
-
-func (unstableIdentityLifecycle) Shutdown(context.Context) error { return nil }
-
-func (unstableIdentityLifecycle) Health(context.Context) store.Health {
-	return store.Health{Status: store.StatusUp}
-}
-
-func TestRegister_UnstableLifecycleIdentityFailsBeforeInfrastructureOrPing(t *testing.T) {
-	app := newTestApp(t)
-	pingCalls := 0
-	value := unstableIdentityLifecycle{values: []int{1}, pingCalls: &pingCalls}
-	if err := store.Register[unstableIdentityLifecycle](app, value); err == nil {
-		t.Fatal("Register should reject a non-comparable value Lifecycle")
-	}
-	if pingCalls != 0 {
-		t.Fatalf("Ping calls = %d, want 0", pingCalls)
-	}
-	if app.Has[*store.Registry]() {
-		t.Fatal("invalid lifecycle identity should not create Registry infrastructure")
-	}
-}
-
-func TestRegister_NonReflexiveLifecycleIdentityFailsBeforeInfrastructure(t *testing.T) {
-	app := newTestApp(t)
-	if err := store.Register[nanIdentityLifecycle](app, nanIdentityLifecycle(math.NaN())); err == nil {
-		t.Fatal("Register should reject a non-reflexive NaN lifecycle identity")
-	}
-	if app.Has[*store.Registry]() {
-		t.Fatal("non-reflexive lifecycle identity should not create Registry infrastructure")
-	}
-}
-
-// wrapperDB does not implement Lifecycle — uses WithLifecycle.
-type wrapperDB struct {
-	inner *testDB
-}
-
-func TestRegister_WithLifecycleRequiresExplicitCallerOwnership(t *testing.T) {
-	app := newTestApp(t)
-	lc := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	inner := newTestDB(lc)
-	wrapper := &wrapperDB{inner: inner}
-
-	if err := store.Register[*wrapperDB](app, wrapper, store.WithLifecycle(lc)); err == nil {
-		t.Fatal("Register() should reject implicit caller-owned lifecycle")
-	}
-	lc.mu.Lock()
-	pingCalls := lc.pingCalls
-	lc.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("Ping calls = %d, want 0 for ownership conflict", pingCalls)
-	}
-}
-
-func TestRegister_WithCallerOwnedLifecycle(t *testing.T) {
-	tests := []struct {
-		name string
-		opts func(store.Lifecycle) []store.RegisterOption
-	}{
-		{
-			name: "lifecycle then ownership",
-			opts: func(lc store.Lifecycle) []store.RegisterOption {
-				return []store.RegisterOption{store.WithLifecycle(lc), store.WithCallerOwnedLifecycle()}
-			},
-		},
-		{
-			name: "ownership then lifecycle",
-			opts: func(lc store.Lifecycle) []store.RegisterOption {
-				return []store.RegisterOption{store.WithCallerOwnedLifecycle(), store.WithLifecycle(lc)}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := newTestApp(t)
-			lc := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-			wrapper := &wrapperDB{inner: newTestDB(lc)}
-			if err := store.Register[*wrapperDB](app, wrapper, tt.opts(lc)...); err != nil {
-				t.Fatalf("Register() = %v", err)
-			}
-			finalize(t, app)
-			resolved, err := app.Resolve[*wrapperDB]()
-			if err != nil || resolved != wrapper {
-				t.Fatalf("Resolve[*wrapperDB]() = (%p, %v), want original %p", resolved, err, wrapper)
-			}
-		})
-	}
-}
-
-func TestRegister_WithTypedNilLifecycle(t *testing.T) {
-	app := newTestApp(t)
-	var lifecycle *mockLifecycle
-	wrapper := &wrapperDB{}
-
-	if err := store.Register[*wrapperDB](
-		app,
-		wrapper,
-		store.WithLifecycle(lifecycle),
-		store.WithCallerOwnedLifecycle(),
-	); err == nil {
-		t.Fatal("Register with typed-nil lifecycle should return error")
-	}
-}
-
-func TestRegister_LifecycleValueRejectsExplicitLifecycle(t *testing.T) {
-	tests := []struct {
-		name     string
-		explicit func(*testDB) store.Lifecycle
-	}{
-		{name: "same", explicit: func(db *testDB) store.Lifecycle { return db }},
-		{name: "different", explicit: func(*testDB) store.Lifecycle { return &mockLifecycle{} }},
-		{name: "typed nil", explicit: func(*testDB) store.Lifecycle {
-			var lifecycle *mockLifecycle
-			return lifecycle
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			valueLifecycle := &mockLifecycle{}
-			db := newTestDB(valueLifecycle)
-			explicit := tt.explicit(db)
-			err := store.Register[*testDB](newTestApp(t), db, store.WithLifecycle(explicit))
-			if err == nil {
-				t.Fatal("Register should reject explicit lifecycle when value implements Lifecycle")
-			}
-			valueLifecycle.mu.Lock()
-			valuePingCalls := valueLifecycle.pingCalls
-			valueLifecycle.mu.Unlock()
-			if valuePingCalls != 0 {
-				t.Fatalf("value Ping calls = %d, want 0", valuePingCalls)
-			}
-			if other, ok := explicit.(*mockLifecycle); ok && other != nil {
-				other.mu.Lock()
-				otherPingCalls := other.pingCalls
-				other.mu.Unlock()
-				if otherPingCalls != 0 {
-					t.Fatalf("explicit Ping calls = %d, want 0", otherPingCalls)
-				}
-			}
-		})
-	}
-}
-
-func TestRegister_LifecycleValueRejectsCallerOwnedOptOut(t *testing.T) {
-	lc := &mockLifecycle{}
-	err := store.Register[*testDB](
-		newTestApp(t),
-		newTestDB(lc),
-		store.WithCallerOwnedLifecycle(),
-	)
+	err := app.Finalize()
 	if err == nil {
-		t.Fatal("Register should reject caller-owned opt-out for a Lifecycle value")
+		t.Fatal("Finalize() should fail for a registration without a binding")
 	}
-	if lc.pingCalled {
-		t.Fatal("ownership error must be found before Ping")
-	}
-}
-
-type shutdownOnlyDB struct {
-	shutdownCalls int
-}
-
-func (db *shutdownOnlyDB) Shutdown(context.Context) error {
-	db.shutdownCalls++
-	return nil
-}
-
-func TestRegister_RejectsSplitHealthAndShutdownObjects(t *testing.T) {
-	value := &shutdownOnlyDB{}
-	healthLifecycle := &mockLifecycle{}
-	err := store.Register[*shutdownOnlyDB](
-		newTestApp(t),
-		value,
-		store.WithLifecycle(healthLifecycle),
-		store.WithCallerOwnedLifecycle(),
-	)
-	if err == nil {
-		t.Fatal("Register should reject a component value with a separate Lifecycle")
-	}
-	if healthLifecycle.pingCalled || value.shutdownCalls != 0 {
-		t.Fatal("split ownership error must not Ping or Shutdown either object")
+	for _, want := range []string{"store.Register[*store_test.testDB]", "has no binding"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Finalize() = %q, want it to contain %q", err, want)
+		}
 	}
 }
 
-func TestRegister_ShutdownOnceViaDIWithLiveDeadline(t *testing.T) {
+func TestRegister_ShutsTheStoreDownOnce(t *testing.T) {
 	app := newTestApp(t)
-
-	var seq []string
-	lc := &mockLifecycle{name: "db", shutdownSeq: &seq, health: store.Health{Status: store.StatusUp}}
-	if err := store.Register[*testDB](app, newTestDB(lc)); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-
-	runApp(t, app)
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc))
+	store.Register[*testDB](app)
+	startApp(t, app)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := app.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
 	}
-
-	if len(seq) != 1 {
-		t.Fatalf("lifecycle Shutdown ran %d times, want exactly 1 (DI owns closing; the Registry must not close)", len(seq))
+	if _, shut, _ := lc.calls(); shut != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", shut)
 	}
 }
 
 type shutdownOrderDBA struct{ *mockLifecycle }
 type shutdownOrderDBB struct{ *mockLifecycle }
 
-func TestRegister_FrameworkOwnedStoresShutdownInReverseRegistrationOrder(t *testing.T) {
+func TestRegister_IndependentStoresShutDownInReverseRegistrationOrder(t *testing.T) {
 	app := newTestApp(t)
 	var order []string
-	first := &mockLifecycle{
-		name: "first", shutdownSeq: &order, health: store.Health{Status: store.StatusUp},
-	}
-	second := &mockLifecycle{
-		name: "second", shutdownSeq: &order, health: store.Health{Status: store.StatusUp},
-	}
-	if err := store.Register[*shutdownOrderDBA](
-		app,
-		&shutdownOrderDBA{mockLifecycle: first},
-		store.WithName("first"),
-	); err != nil {
-		t.Fatalf("Register(first) = %v", err)
-	}
-	if err := store.Register[*shutdownOrderDBB](
-		app,
-		&shutdownOrderDBB{mockLifecycle: second},
-		store.WithName("second"),
-	); err != nil {
-		t.Fatalf("Register(second) = %v", err)
-	}
+	first := &mockLifecycle{name: "first", shutdownSeq: &order, health: up()}
+	second := &mockLifecycle{name: "second", shutdownSeq: &order, health: up()}
+	app.ProvideValue(&shutdownOrderDBA{mockLifecycle: first})
+	app.ProvideValue(&shutdownOrderDBB{mockLifecycle: second})
+	store.Register[*shutdownOrderDBA](app, store.WithName("first"))
+	store.Register[*shutdownOrderDBB](app, store.WithName("second"))
+	startApp(t, app)
+	shutdownApp(t, app)
 
-	runApp(t, app)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
 	if got := strings.Join(order, ","); got != "second,first" {
 		t.Fatalf("shutdown order = %q, want %q", got, "second,first")
 	}
-	first.mu.Lock()
-	firstCalls := first.shutCalls
-	first.mu.Unlock()
-	second.mu.Lock()
-	secondCalls := second.shutCalls
-	second.mu.Unlock()
-	if firstCalls != 1 || secondCalls != 1 {
-		t.Fatalf("Shutdown calls = (%d, %d), want (1, 1)", firstCalls, secondCalls)
-	}
 }
 
-func TestRegister_WithLifecycle_CallerOwnsClosing(t *testing.T) {
+// replicaDB holds the same resource as testDB: both embed one mock.
+type replicaDB struct{ *mockLifecycle }
+
+func TestRegister_TwoHoldersOfOneResourceArePingedAndShareOneShutdown(t *testing.T) {
 	app := newTestApp(t)
+	lc := &mockLifecycle{health: up()}
+	app.ProvideValue(newTestDB(lc))
+	app.ProvideValue(&replicaDB{mockLifecycle: lc})
+	store.Register[*testDB](app, store.WithName("primary"))
+	store.Register[*replicaDB](app, store.WithName("replica"))
+	startApp(t, app)
+	shutdownApp(t, app)
 
-	lc := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	wrapper := &wrapperDB{inner: newTestDB(lc)}
-	if err := store.Register[*wrapperDB](
-		app,
-		wrapper,
-		store.WithLifecycle(lc),
-		store.WithCallerOwnedLifecycle(),
-	); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-
-	runApp(t, app)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-
-	lc.mu.Lock()
-	called := lc.shutCalled
-	lc.mu.Unlock()
-	if called {
-		t.Error("caller-owned lifecycle was closed by the framework")
-	}
-	if err := lc.Shutdown(t.Context()); err != nil {
-		t.Fatalf("caller Shutdown() = %v", err)
-	}
-	lc.mu.Lock()
-	shutdownCalls := lc.shutCalls
-	lc.mu.Unlock()
-	if shutdownCalls != 1 {
-		t.Fatalf("caller Shutdown calls = %d, want 1", shutdownCalls)
+	if ping, shut, _ := lc.calls(); ping != 2 || shut != 1 {
+		t.Fatalf("(ping, shutdown) = (%d, %d), want (2, 1)", ping, shut)
 	}
 }
 
-type callerOwnedFailureDB struct {
-	inner *testDB
-}
-
-func TestRegister_CallerOwnedPingFailureRetainsOwnershipAndCanRetry(t *testing.T) {
+func TestRegister_DefaultNameIsOperatorFriendly(t *testing.T) {
 	app := newTestApp(t)
-	lifecycle := &mockLifecycle{pingErr: fmt.Errorf("offline")}
-	wrapper := &callerOwnedFailureDB{inner: newTestDB(lifecycle)}
-	register := func() error {
-		return store.Register[*callerOwnedFailureDB](
-			app,
-			wrapper,
-			store.WithName("caller-owned-failure"),
-			store.WithLifecycle(lifecycle),
-			store.WithCallerOwnedLifecycle(),
-		)
-	}
-	if err := register(); err == nil {
-		t.Fatal("Register should fail Ping")
-	}
-	lifecycle.mu.Lock()
-	shutdownCalls := lifecycle.shutCalls
-	lifecycle.pingErr = nil
-	lifecycle.health = store.Health{Status: store.StatusUp}
-	lifecycle.mu.Unlock()
-	if shutdownCalls != 0 {
-		t.Fatalf("Shutdown calls after failed registration = %d, want 0", shutdownCalls)
-	}
-	if app.Has[*callerOwnedFailureDB]() {
-		t.Fatal("failed caller-owned registration left a DI value")
-	}
-	registry := adoptedRegistry(t, app)
-	if got := len(registry.HealthAll(t.Context())); got != 0 {
-		t.Fatalf("Registry entries after failed registration = %d, want 0", got)
-	}
-	if err := register(); err != nil {
-		t.Fatalf("retry Register() = %v", err)
-	}
-}
-
-type callerOwnedHookDB struct {
-	inner *testDB
-}
-
-func TestRegister_CallerOwnedLifecycleCanCloseThroughShutdownHook(t *testing.T) {
-	app := newTestApp(t)
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	wrapper := &callerOwnedHookDB{inner: newTestDB(lifecycle)}
-	if err := store.Register[*callerOwnedHookDB](
-		app,
-		wrapper,
-		store.WithLifecycle(lifecycle),
-		store.WithCallerOwnedLifecycle(),
-	); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-	app.OnStop(lifecycle.Shutdown)
-	runApp(t, app)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-	lifecycle.mu.Lock()
-	shutdownCalls := lifecycle.shutCalls
-	lifecycle.mu.Unlock()
-	if shutdownCalls != 1 {
-		t.Fatalf("caller-owned hook Shutdown calls = %d, want 1", shutdownCalls)
-	}
-}
-
-func TestRegister_DuplicateType(t *testing.T) {
-	app := newTestApp(t)
-	db1 := newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusUp}})
-	db2 := newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusUp}})
-
-	if err := store.Register[*testDB](app, db1, store.WithName("db1")); err != nil {
-		t.Fatalf("first Register() = %v", err)
-	}
-
-	// Second registration of same type should fail (DI already has *testDB).
-	err := store.Register[*testDB](app, db2, store.WithName("db2"))
-	if err == nil {
-		t.Fatal("second Register of same type should return error")
-	}
-	if db2.shutCalled {
-		t.Fatal("duplicate type failure should not shut down caller-owned lifecycle")
-	}
-	db2.mu.Lock()
-	pingCalls := db2.pingCalls
-	db2.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("duplicate type Ping calls = %d, want 0", pingCalls)
-	}
-}
-
-func TestRegister_RejectsSameLifecycleUnderDifferentDITypes(t *testing.T) {
-	app := newTestApp(t)
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	db := newTestDB(lifecycle)
-	if err := store.Register[*testDB](app, db, store.WithName("concrete")); err != nil {
-		t.Fatalf("Register[*testDB]() = %v", err)
-	}
-	var asInterface store.Lifecycle = db
-	if err := store.Register[store.Lifecycle](app, asInterface, store.WithName("interface")); err == nil {
-		t.Fatal("Register should reject the same lifecycle under another DI type")
-	}
-	lifecycle.mu.Lock()
-	pingCalls := lifecycle.pingCalls
-	lifecycle.mu.Unlock()
-	if pingCalls != 1 {
-		t.Fatalf("Ping calls = %d, want only the first registration's call", pingCalls)
-	}
-	app.Alias[store.Lifecycle, *testDB]()
-	finalize(t, app)
-	resolved, err := app.Resolve[store.Lifecycle]()
-	if err != nil || resolved != db {
-		t.Fatalf("Resolve[Lifecycle]() = (%v, %v), want original db", resolved, err)
-	}
-
-	runApp(t, app)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-	lifecycle.mu.Lock()
-	shutdownCalls := lifecycle.shutCalls
-	lifecycle.mu.Unlock()
-	if shutdownCalls != 1 {
-		t.Fatalf("Shutdown calls = %d, want 1", shutdownCalls)
-	}
-}
-
-type mixedOwnershipDB struct {
-	inner *testDB
-}
-
-func TestRegister_RejectsMixedOwnershipForSameLifecycle(t *testing.T) {
-	app := newTestApp(t)
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	db := newTestDB(lifecycle)
-	if err := store.Register[*testDB](app, db, store.WithName("owned")); err != nil {
-		t.Fatalf("Register(framework-owned) = %v", err)
-	}
-	wrapper := &mixedOwnershipDB{inner: db}
-	err := store.Register[*mixedOwnershipDB](
-		app,
-		wrapper,
-		store.WithName("caller-owned"),
-		store.WithLifecycle(db),
-		store.WithCallerOwnedLifecycle(),
-	)
-	if err == nil {
-		t.Fatal("Register should reject caller ownership for an already framework-owned lifecycle")
-	}
-	lifecycle.mu.Lock()
-	pingCalls := lifecycle.pingCalls
-	lifecycle.mu.Unlock()
-	if pingCalls != 1 {
-		t.Fatalf("Ping calls = %d, want only the framework-owned registration's call", pingCalls)
-	}
-}
-
-func TestRegister_ProtectsStoreAndRegistryBindingsFromReplace(t *testing.T) {
-	app := newTestApp(t)
-	original := newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusUp}})
-	if err := store.Register[*testDB](app, original, store.WithName("protected")); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-	finalize(t, app)
-	registry, err := app.Resolve[*store.Registry]()
-	if err != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", err)
-	}
-	if _, _, replaceErr := app.Replace[*testDB](newTestDB(&mockLifecycle{})); replaceErr == nil {
-		t.Fatal("Replace should reject a registered store binding")
-	}
-	if _, _, replaceErr := app.Replace[*store.Registry](&store.Registry{}); replaceErr == nil {
-		t.Fatal("Replace should reject the Registry binding")
-	}
-	resolved, err := app.Resolve[*testDB]()
-	if err != nil || resolved != original {
-		t.Fatalf("Resolve[*testDB]() = (%p, %v), want original %p", resolved, err, original)
-	}
-	resolvedRegistry, err := app.Resolve[*store.Registry]()
-	if err != nil || resolvedRegistry != registry {
-		t.Fatalf("Resolve[*Registry]() = (%p, %v), want original %p", resolvedRegistry, err, registry)
-	}
-}
-
-func TestRegister_ProtectsCallerOwnedWrapperBindingFromReplace(t *testing.T) {
-	app := newTestApp(t)
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	wrapper := &wrapperDB{inner: newTestDB(lifecycle)}
-	if err := store.Register[*wrapperDB](
-		app,
-		wrapper,
-		store.WithLifecycle(lifecycle),
-		store.WithCallerOwnedLifecycle(),
-	); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-	if _, _, err := app.Replace[*wrapperDB](&wrapperDB{}); err == nil {
-		t.Fatal("Replace should reject a registered caller-owned wrapper binding")
-	}
-}
-
-func TestRegister_PreProvidedDIValueFailsBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	app.ProvideValue[*testDB](newTestDB(&mockLifecycle{}))
-	candidate := &mockLifecycle{}
-	if err := store.Register[*testDB](app, newTestDB(candidate)); err == nil {
-		t.Fatal("Register should reject a pre-provided DI value")
-	}
-	candidate.mu.Lock()
-	pingCalls := candidate.pingCalls
-	candidate.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("pre-provided DI value Ping calls = %d, want 0", pingCalls)
-	}
-	if app.Has[*store.Registry]() {
-		t.Fatal("duplicate DI preflight must not create Registry infrastructure")
-	}
-}
-
-func TestRegister_FinalizedAppFailsBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	if err := app.Finalize(); err != nil {
-		t.Fatalf("Finalize() = %v", err)
-	}
-	lc := &mockLifecycle{}
-	if err := store.Register[*testDB](app, newTestDB(lc)); err == nil {
-		t.Fatal("Register after Finalize should fail")
-	}
-	lc.mu.Lock()
-	pingCalls := lc.pingCalls
-	lc.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("finalized app Ping calls = %d, want 0", pingCalls)
-	}
-	if _, err := app.Resolve[*store.Registry](); err == nil {
-		t.Fatal("finalized registration must not create Registry infrastructure")
-	}
-}
-
-type duplicateNameDB struct{ *mockLifecycle }
-
-func TestRegister_DuplicateNameFailsBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	if err := store.Register[*testDB](
-		app,
-		newTestDB(&mockLifecycle{health: store.Health{Status: store.StatusUp}}),
-		store.WithName("primary"),
-	); err != nil {
-		t.Fatalf("first Register() = %v", err)
-	}
-	second := &mockLifecycle{}
-	err := store.Register[*duplicateNameDB](
-		app,
-		&duplicateNameDB{mockLifecycle: second},
-		store.WithName("primary"),
-	)
-	if err == nil {
-		t.Fatal("duplicate store name should fail")
-	}
-	second.mu.Lock()
-	pingCalls := second.pingCalls
-	second.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("duplicate name Ping calls = %d, want 0", pingCalls)
-	}
-}
-
-type retryAfterPingFailureDB struct{ *mockLifecycle }
-
-func TestRegister_PingFailureReleasesReservations(t *testing.T) {
-	app := newTestApp(t)
-	failed := &mockLifecycle{pingErr: fmt.Errorf("offline")}
-	if err := store.Register[*retryAfterPingFailureDB](
-		app,
-		&retryAfterPingFailureDB{mockLifecycle: failed},
-		store.WithName("retryable"),
-	); err == nil {
-		t.Fatal("first Register should fail Ping")
-	}
-	registry := adoptedRegistry(t, app)
-	if got := len(registry.HealthAll(t.Context())); got != 0 {
-		t.Fatalf("Registry entries after failed Ping = %d, want 0", got)
-	}
-
-	failed.mu.Lock()
-	failed.pingErr = nil
-	failed.health = store.Health{Status: store.StatusUp}
-	failed.mu.Unlock()
-	if err := store.Register[*retryAfterPingFailureDB](
-		app,
-		&retryAfterPingFailureDB{mockLifecycle: failed},
-		store.WithName("retryable"),
-	); err != nil {
-		t.Fatalf("retry Register() = %v", err)
-	}
-	if got := len(registry.HealthAll(t.Context())); got != 1 {
-		t.Fatalf("Registry entries after retry = %d, want 1", got)
-	}
-}
-
-type finalizeDuringPingDB struct {
-	app           *credo.App
-	pingCalls     int
-	shutdownCalls int
-}
-
-func (db *finalizeDuringPingDB) Ping(context.Context) error {
-	db.pingCalls++
-	return db.app.Finalize()
-}
-
-func (db *finalizeDuringPingDB) Shutdown(context.Context) error {
-	db.shutdownCalls++
-	return nil
-}
-
-func (*finalizeDuringPingDB) Health(context.Context) store.Health {
-	return store.Health{Status: store.StatusUp}
-}
-
-func TestRegister_FinalPublicationFailureLeavesNoHealthEntry(t *testing.T) {
-	app := newTestApp(t)
-	db := &finalizeDuringPingDB{app: app}
-	err := store.Register[*finalizeDuringPingDB](app, db, store.WithName("finalize-race"))
-	if err == nil {
-		t.Fatal("Register should fail when Finalize wins before DI publication")
-	}
-	if db.pingCalls != 1 {
-		t.Fatalf("Ping calls = %d, want 1", db.pingCalls)
-	}
-	if db.shutdownCalls != 0 {
-		t.Fatalf("Shutdown calls = %d, want 0 for failed registration", db.shutdownCalls)
-	}
-	finalize(t, app)
-	registry, resolveErr := app.Resolve[*store.Registry]()
-	if resolveErr != nil {
-		t.Fatalf("Resolve[*Registry]() = %v", resolveErr)
-	}
-	if got := len(registry.HealthAll(t.Context())); got != 0 {
-		t.Fatalf("Registry entries after final publication failure = %d, want 0", got)
-	}
-	if _, resolveErr := app.Resolve[*finalizeDuringPingDB](); resolveErr == nil {
-		t.Fatal("failed final publication left the store value in DI")
-	}
-}
-
-func TestRegister_HealthAppearsInReadiness(t *testing.T) {
-	// End-to-end across the module-internal health seam: Register provides
-	// the store-health collector via DI, UseHealth's readiness handler
-	// resolves it lazily, and the store shows up in GET /ready.
-	app := newTestApp(t)
-	db := newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp, Latency: 2 * time.Millisecond},
-	})
-	if err := store.Register[*testDB](app, db, store.WithName("pg")); err != nil {
-		t.Fatalf("Register() = %v", err)
-	}
-
+	app.ProvideValue(newTestDB(&mockLifecycle{health: up()}))
+	store.Register[*testDB](app)
 	app.UseHealth()
+	startApp(t, app)
 
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/ready", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("/ready status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
-	}
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	checks, ok := body["checks"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected checks map in response, got: %s", w.Body.String())
-	}
-	pg, ok := checks["pg"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected pg entry in checks, got: %s", w.Body.String())
-	}
-	if pg["status"] != "up" {
-		t.Errorf("pg status = %v, want %q", pg["status"], "up")
+	if _, checks := readyChecks(t, app); checks["store_test.testDB"] == nil {
+		t.Fatalf("readiness checks = %v, want a store_test.testDB entry", checks)
 	}
 }
 
-func TestRegister_PreProvidedRegistryStillWiresReadiness(t *testing.T) {
-	app := newTestApp(t)
-	provided := &store.Registry{}
-	app.ProvideValue[*store.Registry](provided)
+type otherDB struct{ *mockLifecycle }
 
-	db := newTestDB(&mockLifecycle{
-		health: store.Health{Status: store.StatusUp},
-	})
-	if err := store.Register[*testDB](app, db, store.WithName("preprovided")); err != nil {
-		t.Fatalf("Register() = %v", err)
+func TestRegister_Misuse(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(app *credo.App)
+		want string
+	}{
+		{"nil app", func(*credo.App) { store.Register[*testDB](nil) }, "app must not be nil"},
+		{"nil option", func(app *credo.App) { store.Register[*testDB](app, nil) }, "nil RegisterOption"},
+		{"zero timeout", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithPingTimeout(0))
+		}, "ping timeout must be > 0"},
+		{"empty name", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithName(""))
+		}, "invalid store name"},
+		{"padded name", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithName(" pg "))
+		}, "invalid store name"},
+		{"reserved name", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithName("credo.pg"))
+		}, "invalid store name"},
+		{"no default name", func(app *credo.App) {
+			store.Register[interface{ store.Lifecycle }](app)
+		}, "no stable default name"},
+		{"duplicate type", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithName("a"))
+			store.Register[*testDB](app, store.WithName("b"))
+		}, "store.Register[*store_test.testDB]"},
+		{"duplicate name", func(app *credo.App) {
+			store.Register[*testDB](app, store.WithName("pg"))
+			store.Register[*otherDB](app, store.WithName("pg"))
+		}, `"pg"`},
+		{"after finalize", func(app *credo.App) {
+			if err := app.Finalize(); err != nil {
+				t.Fatalf("Finalize() = %v", err)
+			}
+			store.Register[*testDB](app)
+		}, "store.Register[*store_test.testDB]"},
 	}
-	finalize(t, app)
-	resolved, err := app.Resolve[*store.Registry]()
-	if err != nil || resolved != provided {
-		t.Fatalf("resolved Registry = (%p, %v), want pre-provided %p", resolved, err, provided)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newTestApp(t)
+			msg := mustPanic(t, func() { tt.fn(app) })
+			if !strings.Contains(msg, tt.want) {
+				t.Fatalf("panic = %q, want it to contain %q", msg, tt.want)
+			}
+		})
 	}
-	if _, _, err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
-		t.Fatal("Register should protect a pre-provided Registry from replacement")
-	}
-
-	app.UseHealth()
-	w := httptest.NewRecorder()
-	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"preprovided"`) {
-		t.Fatalf("/ready = %d %s, want wired pre-provided registry", w.Code, w.Body.String())
-	}
-}
-
-type constructorProvidedRegistryDB struct{ *mockLifecycle }
-
-func TestRegister_ConstructorProvidedRegistryIsRejectedWithoutInvocation(t *testing.T) {
-	app := newTestApp(t)
-	calls := 0
-	app.Provide[*store.Registry](func() *store.Registry {
-		calls++
-		return &store.Registry{}
-	})
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	value := &constructorProvidedRegistryDB{mockLifecycle: lifecycle}
-	err := store.Register[*constructorProvidedRegistryDB](app, value)
-	if err == nil {
-		t.Fatal("Register should reject a Registry registered through a constructor")
-	}
-	if !strings.Contains(err.Error(), "constructor") {
-		t.Fatalf("Register() = %v, want the error to identify the constructor binding", err)
-	}
-	if calls != 0 {
-		t.Fatalf("Registry constructor ran %d times during registration, want 0", calls)
-	}
-	if lifecycle.pingCalled {
-		t.Fatal("Registry rejection must happen before Ping")
-	}
-	// The unsupported binding stays repairable with a ready value.
-	replacement := &store.Registry{}
-	if _, existed, err := app.Replace[*store.Registry](replacement); err != nil || existed {
-		t.Fatalf("Replace = (existed %v, %v), want a clean replacement of the unbuilt constructor", existed, err)
-	}
-	if err := store.Register[*constructorProvidedRegistryDB](app, value); err != nil {
-		t.Fatalf("Register() after Registry repair = %v", err)
-	}
-	if _, _, err := app.Replace[*store.Registry](&store.Registry{}); err == nil {
-		t.Fatal("Register should protect the adopted Registry")
-	}
-	finalize(t, app)
-	if resolved, err := app.Resolve[*store.Registry](); err != nil || resolved != replacement {
-		t.Fatalf("Resolve[*Registry]() = (%p, %v), want repaired %p", resolved, err, replacement)
-	}
-	if calls != 0 {
-		t.Fatalf("Registry constructor ran %d times, want 0 (it was replaced before Finalize)", calls)
-	}
-}
-
-func TestRegister_TypedNilPreProvidedRegistryFailsBeforePing(t *testing.T) {
-	app := newTestApp(t)
-	app.ProvideValue[*store.Registry](nil)
-	lc := &mockLifecycle{}
-	err := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry"))
-	if err == nil {
-		t.Fatal("Register should reject a typed-nil pre-provided Registry")
-	}
-	lc.mu.Lock()
-	pingCalls := lc.pingCalls
-	lc.mu.Unlock()
-	if pingCalls != 0 {
-		t.Fatalf("typed-nil Registry Ping calls = %d, want 0", pingCalls)
-	}
-	replacement := &store.Registry{}
-	if _, _, replaceErr := app.Replace[*store.Registry](replacement); replaceErr != nil {
-		t.Fatalf("Replace valid Registry after typed-nil rejection = %v", replaceErr)
-	}
-	if registerErr := store.Register[*testDB](app, newTestDB(lc), store.WithName("nil-registry")); registerErr != nil {
-		t.Fatalf("Register() after Registry repair = %v", registerErr)
-	}
-	finalize(t, app)
-	resolved, err := app.Resolve[*store.Registry]()
-	if err != nil || resolved != replacement {
-		t.Fatalf("Resolve[*Registry]() = (%p, %v), want repaired %p", resolved, err, replacement)
-	}
-}
-
-type constructorRegistryDB struct{ *mockLifecycle }
-
-func TestRegister_FailingRegistryConstructorRemainsRepairable(t *testing.T) {
-	app := newTestApp(t)
-	app.Provide[*store.Registry](func() (*store.Registry, error) {
-		return nil, fmt.Errorf("registry unavailable")
-	})
-	lifecycle := &mockLifecycle{health: store.Health{Status: store.StatusUp}}
-	value := &constructorRegistryDB{mockLifecycle: lifecycle}
-	if err := store.Register[*constructorRegistryDB](app, value); err == nil {
-		t.Fatal("Register should fail when Registry construction fails")
-	}
-	if lifecycle.pingCalled {
-		t.Fatal("Registry construction error must happen before Ping")
-	}
-	replacement := &store.Registry{}
-	if _, _, err := app.Replace[*store.Registry](replacement); err != nil {
-		t.Fatalf("Replace valid Registry after constructor failure = %v", err)
-	}
-	if err := store.Register[*constructorRegistryDB](app, value); err != nil {
-		t.Fatalf("Register() after Registry repair = %v", err)
-	}
-}
-
-// finalize closes DI registration so Resolve becomes available. Register
-// calls must precede it.
-func finalize(t *testing.T, app *credo.App) {
-	t.Helper()
-	if err := app.Finalize(); err != nil {
-		t.Fatalf("Finalize() = %v", err)
-	}
-}
-
-// adoptedRegistry reads the protected Registry during registration, before
-// Finalize, so a test can inspect it and still register more stores.
-func adoptedRegistry(t *testing.T, app *credo.App) *store.Registry {
-	t.Helper()
-	registry, err := app.AdoptValue[*store.Registry](nil)
-	if err != nil {
-		t.Fatalf("AdoptValue[*Registry]() = %v", err)
-	}
-	return registry
 }

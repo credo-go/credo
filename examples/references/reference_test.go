@@ -1,6 +1,7 @@
 package references_test
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -100,13 +101,15 @@ func TestReferenceLocaleCatalogsLoad(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := app.UseI18n(credo.I18nConfig{Dir: "locales", Default: lang}); err != nil {
-				t.Fatalf("load reference locales: %v", err)
-			}
+			app.UseI18n(credo.I18nConfig{Dir: "locales", Default: lang})
 			app.GET("/", func(ctx *credo.Context) error {
 				welcome := ctx.T("app.welcome", map[string]any{"name": "Ada"})
 				return ctx.Response().Text(http.StatusOK, ctx.T("not_found")+"|"+ctx.T("content_type_required")+"|"+welcome)
 			})
+			t.Cleanup(func() { _ = app.Shutdown(context.WithoutCancel(t.Context())) })
+			if err := app.Start(t.Context()); err != nil {
+				t.Fatalf("load reference locales: %v", err)
+			}
 
 			response := httptest.NewRecorder()
 			app.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))

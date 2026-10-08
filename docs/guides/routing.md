@@ -287,7 +287,7 @@ app.Mount("/billing", billing)
 app.Manage(billing, credo.Named("billing"))
 ```
 
-A managed component's default name is its type name, `*credo.App` here, so a parent that manages several children names each with `credo.Named`. Without the `Manage` call, a child App that has anything to start — a component with `Start` or `Ready`, a start hook, workers — panics on its first request (the parent's recovery turns it into a 500 and logs it).
+A managed component's default name is its type name, `*credo.App` here, so a parent that manages several children names each with `credo.Named`. Without the `Manage` call, a child App that has anything to start — a component with `Start` or `Ready`, a start hook, a registered store, `UseI18n`, workers — panics on its first request (the parent's recovery turns it into a 500 and logs it).
 
 `parent.Manage(child)` composes Apps that are independent by design, each with its own configuration, container and lifecycle. The modules of one application share one App and its DI graph: give them [groups](#route-groups) and constructors, not an App each.
 

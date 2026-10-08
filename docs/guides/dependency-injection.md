@@ -300,7 +300,7 @@ if err := app.ProtectBinding[Client](client); err != nil {
 
 After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register stop hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-created singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize.
 
-An integration that must read a value the composition root registered ahead of it uses `app.AdoptValue[T](validate)`. It reads the pre-built binding, runs `validate`, and atomically protects that same binding only when validation passes, so an invalid value (a typed-nil Registry) stays repairable with `Replace`. It never runs a constructor: a `T` registered through `Provide` is rejected with an explanatory error. `store.Register` and `worker.Register` adopt their Registry and Pool this way, which is why a Registry constructor is refused at registration time. For a plain "is it registered?" question use `app.Has[T]()`; it constructs, adopts and protects nothing.
+An integration that must read a value the composition root registered ahead of it uses `app.AdoptValue[T](validate)`. It reads the pre-built binding, runs `validate`, and atomically protects that same binding only when validation passes, so an invalid value (a typed-nil pointer) stays repairable with `Replace`. It never runs a constructor: a `T` registered through `Provide` is rejected with an explanatory error. `worker.Register` adopts its Pool this way, which is why a Pool constructor is refused at registration time. For a plain "is it registered?" question use `app.Has[T]()`; it constructs, adopts and protects nothing.
 
 ### Replacing a binding
 
@@ -324,10 +324,10 @@ if existed {
 
 Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
 
-- `store.Register[*sqldb.DB](app, db)`
+- `store.Register[*sqldb.DB](app)`, which names a binding you made with `ProvideValue` or `Provide` as a data store
 - `worker.Register(app, "name", myWorker, opts...)`, or `worker.RegisterProvided[*MyWorker](app, "name", opts...)` for a worker the container provides
 
-These helpers still use the DI container under the hood, but they also attach extra framework behavior such as startup validation, lifecycle tracking, and shutdown integration. Use them before `app.Finalize()`. `RegisterProvided` records only the type, so the worker's constructor runs with the rest of the graph after `Finalize`, when the pool starts. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
+These helpers build on the DI container and attach framework behavior to it: `store.Register` adds a start-phase ping and a readiness probe to the store's binding and leaves its ownership and teardown to that binding, and the worker helpers run workers under a pool the App starts and drains. Use them before `app.Finalize()`; a `store.Register` whose type has no binding fails `Finalize`. `RegisterProvided` records only the type, so the worker's constructor runs with the rest of the graph after `Finalize`, when the pool starts. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
 
 ---
 
@@ -436,7 +436,7 @@ type PrimaryDB struct{ *sqldb.DB }
 type AnalyticsDB struct{ *sqldb.DB }
 ```
 
-Then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed. If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
+Bind each wrapper once and register it by its type with `store.Register[PrimaryDB](app, store.WithName("primary"))`, then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed; an interface view is an `Alias`, never a second binding ([Data Access Guide](data-access.md#multiple-databases)). If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
 
 ### Wrappers and resource identity
 
@@ -702,7 +702,7 @@ During graceful shutdown the full sequence is:
 
 All steps share one deadline — `WithShutdownTimeout` for a signal or a cancelled `RunContext` context, the caller's for `app.Shutdown(ctx)` — and spend it in order. A `Shutdown`, `Close` or hook that has not returned at the deadline is abandoned: the components it depends on are not stopped, since it may still use them, and it is reported with every component it kept open. A `Shutdown` that returns an error promptly is reported, and its dependencies are still stopped. Every `Start`, `Shutdown` and hook is panic-isolated. A construction still running when the drain reaches it blocks its dependencies and is shut down in order when it completes; one that completes after the deadline gets one bounded late cleanup, logged and not reported. Failures are inspectable with `errors.AsType[*credo.LifecycleError]` through the joined `Shutdown` error: each entry names the component, its tier, its phase (`start` or `shutdown`) and its outcome (`failed`, `panicked`, `abandoned`, `kept_open`).
 
-`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure. An App served through `ServeHTTP` by a server you own — an external `http.Server`, or `httptest` in a test — is started with `app.Start(ctx)` (`testutil.Start(t, app)` in tests) when it has anything to start: a component with `Start` or `Ready`, a constructor handed to `Manage`, or a start hook; until then `ServeHTTP` panics. The server's owner drains it before calling `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened.
+`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure. An App served through `ServeHTTP` by a server you own — an external `http.Server`, or `httptest` in a test — is started with `app.Start(ctx)` (`testutil.Start(t, app)` in tests) when it has anything to start: a component with `Start` or `Ready` (a WebSocket server among them), a constructor handed to `Manage`, a store registered with `store.Register`, `UseI18n`, or a start hook; until then `ServeHTTP` panics. The server's owner drains it before calling `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened.
 
 ---
 

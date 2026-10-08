@@ -17,10 +17,13 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	ws := credows.Use(app, credows.Config{
+	ws := credows.New(app.NewInfra("websocket"), credows.Config{
 		Subprotocols:       []string{"echo.v1"},
 		RequireSubprotocol: true,
 	})
+	// An ingress component: it starts with the App and drains beside the
+	// HTTP drain, before the components its handlers use.
+	app.Manage(ws, credo.Ingress())
 	app.GET("/echo", ws.Handler(func(_ *credo.Context, conn *credows.Conn) error {
 		typ, payload, readErr := conn.Read(conn.Context())
 		if readErr != nil {
@@ -29,6 +32,12 @@ func Example() {
 		return conn.Write(conn.Context(), typ, payload)
 	}))
 
+	// Served through httptest, the App is started with Start and shut down
+	// after the server it serves.
+	if startErr := app.Start(context.Background()); startErr != nil {
+		panic(startErr)
+	}
+	defer func() { _ = app.Shutdown(context.Background()) }()
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, _, err := coderwebsocket.Dial( //nolint:bodyclose // Dial owns the response body.

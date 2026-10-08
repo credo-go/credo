@@ -2,13 +2,18 @@ package store
 
 import "context"
 
-// Lifecycle manages connection health and shutdown for a data store.
-// Adapters (e.g., store/sqldb) implement this interface for use with
-// [Register]. Implementations should normally be pointer-backed so Register can
-// retain a stable physical-resource identity and reject duplicate ownership.
+// Lifecycle is the contract a data store binding meets for [Register]: the
+// start phase pings it, /ready reports its health, and the App shuts it down
+// after its consumers, as it does every component. Adapters such as
+// store/sqldb implement it. A value that cannot is registered through a
+// wrapper type that does.
+//
+// An implementation that represents a resource another value also holds —
+// a wrapper over a *sqldb.DB — shares its teardown through
+// credo.ResourceIdentifier: values with one identity are shut down once.
 type Lifecycle interface {
 	// Ping verifies the connection is alive and must honor ctx cancellation;
-	// Register invokes it synchronously with a deadline.
+	// the start phase calls it once, with a deadline.
 	Ping(ctx context.Context) error
 
 	// Shutdown gracefully closes the connection.
@@ -18,14 +23,4 @@ type Lifecycle interface {
 	// Health returns structured health information including status,
 	// latency, and adapter-specific details (pool stats, version, etc.).
 	Health(ctx context.Context) Health
-}
-
-// LifecycleIdentityProvider is an optional Lifecycle extension for semantic
-// wrappers that represent another physical resource. ResourceIdentity must
-// return a non-nil, comparable, reflexively equal token that remains stable for
-// the resource lifetime; the underlying resource pointer is the usual token.
-// Wrapper types that embed an implementation inherit this method automatically.
-type LifecycleIdentityProvider interface {
-	Lifecycle
-	ResourceIdentity() any
 }

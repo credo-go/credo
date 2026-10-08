@@ -39,6 +39,9 @@ type Container struct {
 	unitOf map[reflect.Type]*Unit
 	// names indexes managed components by name.
 	names map[string]*Unit
+	// steps holds the start steps added for binding types, in registration
+	// order; Seal hands each to the unit of its type.
+	steps []pendingStep
 	// resources holds, per resource identity token, the holders whose values
 	// carry it, in registration order.
 	resources map[any][]*Unit

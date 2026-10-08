@@ -52,7 +52,8 @@ func (app *App) prepare() *preparation {
 	app.frozen.Store(true)
 	p := &preparation{}
 	p.handler, p.err = app.buildHandler()
-	p.needsStart = p.err == nil && (app.container.HasStartWork() || len(app.lifecycle.onStart) > 0)
+	p.needsStart = p.err == nil && (app.container.HasStartWork() || len(app.lifecycle.onStart) > 0 ||
+		len(app.lifecycle.frameworkSteps) > 0)
 	if app.lifecycle.currentState() >= stateStopping {
 		// Shutdown won admission while the handler was being built: nothing
 		// may publish after it, so the drain sees an unprepared App.

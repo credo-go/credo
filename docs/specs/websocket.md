@@ -1,6 +1,6 @@
 # WebSocket Spec
 
-> Status: **Implemented (Beta)**; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **ADR:** [019-websocket-integration-and-drain](../adr/019-websocket-integration-and-drain.md) **Guide:** [WebSocket](../guides/websocket.md)
+> Status: **Implemented (Beta)** **ADR:** [019-websocket-integration-and-drain](../adr/019-websocket-integration-and-drain.md) **Guide:** [WebSocket](../guides/websocket.md)
 
 ## Scope
 
@@ -11,11 +11,12 @@ It does not provide a client, hub/room registry, broadcast, reconnect, heartbeat
 ## Canonical Registration
 
 ```go
-ws := websocket.Use(app, websocket.Config{
-    AllowedOrigins:    []string{"https://app.example.com"},
-    Subprotocols:      []string{"events.v1"},
+ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+    AllowedOrigins:     []string{"https://app.example.com"},
+    Subprotocols:       []string{"events.v1"},
     RequireSubprotocol: true,
 })
+app.Manage(ws, credo.Ingress())
 
 app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) error {
     typ, payload, err := conn.Read(conn.Context())
@@ -26,7 +27,17 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 }))
 ```
 
-`Use` must run before the App is frozen. It accepts zero or one `Config`, returns a `*Server`, and hands the server to `app.Manage(server, credo.Ingress())`, which makes it an ingress [component](lifecycle.md#components-and-the-start-phase). Invalid config, a nil App, multiple configs, late registration, or a second `Use` on one App (a duplicate component name) is startup misuse and panics.
+`New` accepts zero or one `Config`, validates it, copies its slices defensively and returns a `*Server`; it registers nothing and performs no I/O. The server's logger is `infra.Logger` (`slog.Default()` when nil) with `module=websocket` added. An invalid configuration panics (`credo/websocket: invalid Config: …`), and so does more than one `Config` (`credo/websocket: New accepts at most one Config`), as startup misuse.
+
+The application registers the server as an ingress [component](lifecycle.md#components-and-the-start-phase), by value as above, or as a binding when controllers depend on it:
+
+```go
+app.Provide[*websocket.Server](func(infra credo.Infra) *websocket.Server {
+    return websocket.New(infra, cfg)
+}, credo.Ingress())
+```
+
+A server bound with `ProvideValue` or `Provide` and `credo.Ingress()` is one component; also handing a `ProvideValue`-bound server to `Manage` panics. Without `credo.Ingress()` the server would take the internal tier and drain after the HTTP drain; the option is what places it beside the listener. `Manage` and the binding follow the App's registration rules: after `Finalize`, or once shutdown began, they panic at the call. The rationale for construction with `New` and registration as a component is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
 
 `Server.Handler(nil)` also panics as registration misuse. `Server.Shutdown(nil)` returns an error without starting the drain. Runtime handshake, network, application, cancellation, and deadline failures return errors or protocol close outcomes; they are not panics.
 
@@ -35,8 +46,9 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 ```go
 type Handler func(req *credo.Context, conn *Conn) error
 
-func Use(app *credo.App, cfg ...Config) *Server
+func New(infra credo.Infra, cfg ...Config) *Server
 func (s *Server) Handler(h Handler) credo.Handler
+func (s *Server) Start(ctx context.Context) error
 func (s *Server) Shutdown(ctx context.Context) error
 
 func (c *Conn) Context() context.Context
@@ -69,7 +81,7 @@ func CloseStatus(err error) StatusCode
 | `CompressionThreshold int` | mode default | Disabled ignores non-negative values. No-context default is 512 bytes; context-takeover default is 128 bytes; positive overrides; negative is invalid. |
 | `InsecureSkipOriginCheck bool` | `false` | Explicitly disables browser Origin authorization. Cannot be combined with `AllowedOrigins`. |
 
-Configuration slices are defensively copied during `Use`; caller mutation does not alter the server policy.
+Configuration slices are defensively copied during `New`; caller mutation does not alter the server policy.
 
 ## Origin Authorization
 
@@ -97,7 +109,7 @@ Validation occurs in this order:
 2. method, version 13, and WebSocket key;
 3. Origin authorization;
 4. subprotocol selection;
-5. server admission state;
+5. server admission state (started, not draining);
 6. Hijacker capability;
 7. upstream Accept and actual Hijack.
 
@@ -108,7 +120,8 @@ Validation occurs in this order:
 | Bad version/key | 400; bad version includes `Sec-WebSocket-Version: 13` |
 | Unauthorized Origin | 403 |
 | Invalid/required subprotocol mismatch | 400 |
-| Server draining | 503 |
+| Server never started | 500 through the centralized error pipeline (`internal_server_error` in the default envelope); the message naming the missing registration is logged, not exposed |
+| Server draining or shut down | 503 |
 | No real Hijacker | 501 |
 
 The status body is rendered by Credo's centralized error pipeline; raw upstream plain text is not exposed. If actual Hijack fails after 101 was committed, HTTP is no longer a usable error channel. The adapter records a structured transport failure and returns nil to the HTTP error renderer so no second status/body is attempted.
@@ -142,7 +155,11 @@ Every connection must have an active `Read` or `CloseRead`, otherwise pong and c
 
 ## Lifecycle
 
-`Use` registers the server as an ingress component; it has no `Start`, so it admits connections from construction. In `Run`, `RunContext`, `ServeContext` and `App.Shutdown`, the [drain in tiers](lifecycle.md#shutdown-in-tiers) orders it:
+**Start.** The start walk calls `Start` in the ingress tier. `Start` opens admission; it does no I/O and starts no goroutine, so it keeps no context — connection contexts keep deriving from the request context as described under [Handler and Connection Lifetime](#handler-and-connection-lifetime). A second `Start`, or `Start` after `Shutdown`, returns an error.
+
+**Never started.** Until `Start` has run, the handler refuses every upgrade before 101 with a plain error that names the missing registration — `credo/websocket: the server was never started; register it as an ingress component with app.Manage(server, credo.Ingress()) or bind it with credo.Ingress()` — which the centralized error pipeline renders as a 500 and logs. The check is the admission step of the handshake order, so mechanical, origin and subprotocol failures still win. A forgotten registration therefore fails at the first upgrade instead of silently skipping the drain. An App that registered the server has something to start, so an App served through `ServeHTTP` is started with `App.Start` (`testutil.Start` in tests) before it serves ([the start gate](lifecycle.md#the-start-gate-on-servehttp)).
+
+**Shutdown order.** In `Run`, `RunContext`, `ServeContext` and `App.Shutdown` after `App.Start`, the [drain in tiers](lifecycle.md#shutdown-in-tiers) orders it:
 
 ```text
 mark unready (/ready returns 503 shutting_down)
@@ -152,63 +169,17 @@ mark unready (/ready returns 503 shutting_down)
 → internal tier: internal OnStop hooks LIFO, then internal components in reverse dependency order
 ```
 
-WebSocket shutdown closes admission before new Accepts, sends 1001 to active peers, and waits for admission tokens, connection records, synchronous handlers, and tracked close tasks. The first caller owns the budget. Concurrent callers cannot replace it: they receive the owner's result when it finishes, or their own context error if their wait ends first. Calls made after the owner finishes receive its stable result.
+WebSocket shutdown closes admission before new Accepts, sends 1001 to active peers, and waits for admission tokens, connection records, synchronous handlers, and tracked close tasks. The first caller owns the budget. Concurrent callers cannot replace it: they receive the owner's result when it finishes, or their own context error if their wait ends first. Calls made after the owner finishes receive its stable result. Once `Shutdown` has begun, the handshake answers 503.
 
-If the owner context is cancelled or its deadline expires before cleanup finishes, `Server.Shutdown` returns an error that unwraps that context error and reports remaining handler/connection/close-task counts. It applies best-effort force close and remains draining until late work finishes; it does not report `closed` early. The App reports the incomplete drain in its `*credo.LifecycleError` and continues with the same absolute, possibly expired deadline, so the internal tier's stop hooks and components may receive an expired context.
+If the owner context is cancelled or its deadline expires before cleanup finishes, `Server.Shutdown` returns an error that unwraps that context error and reports remaining handler/connection/close-task counts. It applies best-effort force close and remains draining until late work finishes; it does not report `closed` early. The App reports the incomplete drain in its `*credo.LifecycleError` and continues with the same absolute, possibly expired deadline, so the internal tier's stop hooks and components may receive an expired context; the components the server depends on are treated by [ADR-024](../adr/024-lifecycle-components.md)'s deadline rule.
 
 A non-nil result does not always mean incomplete. All tracked work may finish, the server may become `closed`, and a failed close task may still be returned as a complete-with-error result. Only a nil result means error-free graceful completion.
 
-When `App` is served only as an external `http.Handler`, the owner drains its `http.Server` and then calls `App.Shutdown`. `http.Server.Shutdown` does not wait for hijacked connections, so the WebSocket server drains them in `App.Shutdown`'s ingress tier, before the internal tier stops the resources its handlers use.
-
-## Construction and Lifecycle as a Component
-
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the Canonical Registration section, `Use` in the Public API, the reference to `Use` under Configuration, and the Lifecycle section above: `Use` and its `Manage` call go, and the server gains `Start`. The rationale is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
-
-```go
-func New(infra credo.Infra, cfg ...Config) *Server
-func (s *Server) Handler(h Handler) credo.Handler
-func (s *Server) Start(ctx context.Context) error
-func (s *Server) Shutdown(ctx context.Context) error
-```
-
-`websocket.Use` is removed. `New` accepts zero or one `Config`, validates it, copies its slices defensively and returns a `*Server`; it registers nothing and performs no I/O. An invalid configuration or more than one `Config` panics as startup misuse. The server's logger is `infra`'s logger with `module=websocket` added, so the log attribute is unchanged.
-
-The application registers the server as an ingress component, by value or as a binding when controllers depend on it:
-
-```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
-    AllowedOrigins: []string{"https://app.example.com"},
-})
-app.Manage(ws, credo.Ingress())
-app.GET("/events", ws.Handler(handler))
-
-// or, injected into controllers:
-app.Provide[*websocket.Server](func(infra credo.Infra) *websocket.Server {
-    return websocket.New(infra, cfg)
-}, credo.Ingress())
-```
-
-A server bound with `ProvideValue` or `Provide` and `credo.Ingress()` is one component; also handing a `ProvideValue`-bound server to `Manage` panics. Without `credo.Ingress()` the server would take the internal tier and drain after the HTTP drain; the option is what places it beside the listener.
-
-**Start.** `Start` opens admission and derives the server's own context from `context.WithoutCancel(ctx)` with a cancel that `Shutdown` calls; it does no network I/O and returns at once. The context `Start` receives ends when `Start` returns.
-
-**Never started.** Until `Start` has run, the handler refuses every upgrade before 101 with an error that names the missing registration (`app.Manage(server, credo.Ingress())` or a binding with `credo.Ingress()`), rendered through the centralized error pipeline. The check is the admission step of the handshake order, so mechanical, origin and subprotocol failures still win. A forgotten registration therefore fails at the first upgrade instead of silently skipping the drain.
-
-**Shutdown order.** In `Run`, `RunContext`, `ServeContext` and `App.Shutdown` after `App.Start`:
-
-```text
-mark unready (/ready returns 503 shutting_down)
-→ ingress tier, concurrently: HTTP drain + WebSocket Shutdown + other unordered ingress components
-→ internal tier in reverse dependency order
-```
-
-`Shutdown`'s drain contract is unchanged: it closes admission before new Accepts, sends 1001 to active peers, and waits for admission tokens, connection records, synchronous handlers, and tracked close tasks; the first caller owns the budget, concurrent callers receive the owner's result or their own context error, and later callers receive the stable result. An incomplete drain is reported in the App's shutdown error; the components the server depends on are treated by [ADR-024](../adr/024-lifecycle-components.md)'s deadline rule.
-
 **Dependents.** An internal component that depends on the server, directly or through bindings that are not components, fails `Finalize` with the path and both remedies. A consumer that broadcasts depends on the application's own connection registry — an internal component the handlers fill and the drain empties — so what it sends after the WebSocket drain finds no peers, and it stops before the registry. Controllers that take the server are not components and add no edge.
 
-**External servers.** An App served through `ServeHTTP` by an external `http.Server` or `httptest` is started with `App.Start`. The owner drains its `http.Server` before calling `App.Shutdown`; `http.Server.Shutdown` does not wait for hijacked connections, so the WebSocket component drains them in `App.Shutdown`'s ingress tier, before the internal tier stops.
+**External servers.** An App served through `ServeHTTP` by an external `http.Server` or `httptest` is started with `App.Start`. The owner drains its `http.Server` before calling `App.Shutdown`; `http.Server.Shutdown` does not wait for hijacked connections, so the WebSocket component drains them in `App.Shutdown`'s ingress tier, before the internal tier stops the resources its handlers use.
 
-**Tests.** A server drains in the ingress tier, concurrently with the HTTP drain; a server never registered refuses an upgrade with the named error; a server bound with `ProvideValue` and `credo.Ingress()` is one component; an internal consumer that broadcasts through an application-owned connection registry finds no peers after the drain and stops before the registry; `New` misuse panics and registers nothing.
+**Tests.** A server drains in the ingress tier, concurrently with the HTTP drain; a server never started refuses an upgrade with the named error; `Start` opens admission once and fails after `Shutdown`; a server bound with `ProvideValue` and `credo.Ingress()` is one component; an internal consumer that broadcasts through an application-owned connection registry finds no peers after the drain and stops before the registry; `New` misuse panics and registers nothing.
 
 ## Observability
 

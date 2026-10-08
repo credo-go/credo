@@ -110,7 +110,7 @@ app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
 app.UseI18n(credo.I18nConfig{Dir: "locales/"})  // frozen-guarded, like SetMeta/StatusHandler
 ```
 
-Initializes i18n: loads locale files and stores the bundle on App; the request locale is resolved lazily on the first `Locale()`/translation access through `I18nConfig.Detect`. See [ADR-013](../adr/013-internationalization.md).
+Registers i18n: the call validates the configuration and returns nothing, and the start phase loads the locale files and stores the bundle on App ([i18n spec](i18n.md#registration-and-start-phase)); the request locale is resolved lazily on the first `Locale()`/translation access through `I18nConfig.Detect`. See [ADR-013](../adr/013-internationalization.md).
 
 ### 3-Tier Middleware
 
