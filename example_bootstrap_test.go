@@ -76,7 +76,7 @@ func Example_bootstrapOrder() {
 	})
 	app.UseHealth()
 	store.Register[*exampleDB](app, store.WithName("orders-db"))
-	worker.MustRegisterProvided[*exampleRelay](app, "outbox-relay")
+	worker.Use(app).ContinuousProvided[*exampleRelay]("outbox-relay")
 
 	// 4. Finalize reports every missing dependency and cycle at once.
 	if err := app.Finalize(); err != nil {

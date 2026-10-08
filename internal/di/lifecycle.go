@@ -163,10 +163,11 @@ func (c *Container) validate() error {
 			continue
 		}
 		dep := p[len(p)-1].t
+		remedy := cmp.Or(u.ingressRemedy, "credo.Ingress()")
 		findings = append(findings, finding{u.index, fmt.Errorf(
 			"di: internal component %s depends on the ingress component %s: %s; declare %s ingress with "+
-				"credo.Ingress(), or split %s so that what internal components use is an internal part it "+
-				"depends on", p[0].head(), dep, formatPath(p), p[0].head(), dep)})
+				"%s, or split %s so that what internal components use is an internal part it "+
+				"depends on", p[0].head(), dep, formatPath(p), p[0].head(), remedy, dep)})
 	}
 
 	// A start step whose type has no binding comes after the graph.

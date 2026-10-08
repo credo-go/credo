@@ -6,10 +6,9 @@ import (
 	"testing"
 )
 
-// The lifecycle acceptance scenarios pin the component contract (ADR-024).
-// A scenario written before the work item that makes it pass builds only with
-// that work item's tag — pending_w6 for the drain through a worker — and the
-// work item removes the tag when the scenario passes.
+// The lifecycle acceptance scenarios pin the component contract (ADR-024):
+// a failed start rolls back what it built, and a drain delivers the last job
+// an HTTP handler hands to a worker.
 
 // acceptanceLog records lifecycle events in the order they happen.
 type acceptanceLog struct {

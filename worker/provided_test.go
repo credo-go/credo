@@ -3,7 +3,9 @@ package worker
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,19 +13,18 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// stubWorker is a continuous worker constructed by DI in these tests. The
-// type parameter only mints distinct types, so each test case can bind its
-// own provider.
-type stubWorker[K any] struct {
+// providedStub is a worker constructed by DI in these tests. The type
+// parameter only mints distinct types, so a test can bind several.
+type providedStub[K any] struct {
 	runs    atomic.Int32
 	running chan struct{}
 }
 
-func newStubWorker[K any]() *stubWorker[K] {
-	return &stubWorker[K]{running: make(chan struct{}, 1)}
+func newProvidedStub[K any]() *providedStub[K] {
+	return &providedStub[K]{running: make(chan struct{}, 1)}
 }
 
-func (w *stubWorker[K]) Run(ctx context.Context) error {
+func (w *providedStub[K]) Run(ctx context.Context) error {
 	w.runs.Add(1)
 	select {
 	case w.running <- struct{}{}:
@@ -34,269 +35,328 @@ func (w *stubWorker[K]) Run(ctx context.Context) error {
 }
 
 type (
-	kindA struct{}
-	kindB struct{}
-	kindC struct{}
-	kindD struct{}
+	providedKindA struct{}
+	providedKindB struct{}
 )
 
-func blockingFunc() Func {
-	return func(ctx context.Context) error {
-		<-ctx.Done()
-		return nil
+// providedRegister registers T under name as kind, with RunOnStart for a
+// scheduled worker so that it runs at once.
+func providedRegister[T Worker](s *Supervisor, kind Kind, name string) {
+	if kind == KindScheduled {
+		s.ScheduledProvided[T](name, "@every 1h", ScheduledConfig{RunOnStart: true})
+		return
+	}
+	s.ContinuousProvided[T](name)
+}
+
+func providedAwaitRun[K any](t *testing.T, w *providedStub[K]) {
+	t.Helper()
+	select {
+	case <-w.running:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the DI-provided instance did not run")
 	}
 }
 
-func TestRegister_NameRules(t *testing.T) {
-	rejected := []struct {
-		name string
-		want string
-	}{
-		{"", "name must not be empty"},
-		{" job", "leading or trailing whitespace"},
-		{"job ", "leading or trailing whitespace"},
-		{"\tjob", "leading or trailing whitespace"},
-		{"job\nsync", "control characters"},
-		{"job\x00", "control characters"},
-		{"job\u0085x", "control characters"},
-	}
-	for _, tt := range rejected {
-		t.Run("rejects "+strings.ToValidUTF8(tt.name, "?"), func(t *testing.T) {
-			app := newTestApp(t)
-			requireErrContaining(t, Register(app, tt.name, blockingFunc()), tt.want)
-			requireErrContaining(t, RegisterProvided[*stubWorker[kindA]](app, tt.name), tt.want)
-			mustPanicContaining(t, tt.want, func() { MustRegister(app, tt.name, blockingFunc()) })
-			mustPanicContaining(t, tt.want, func() { MustRegisterProvided[*stubWorker[kindA]](app, tt.name) })
-		})
-	}
+func TestProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
+	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+		for _, order := range []string{"provide-first", "register-first"} {
+			t.Run(string(kind)+"/"+order, func(t *testing.T) {
+				app := newTestApp(t)
+				s := Use(app)
+				provide := func() { app.Provide[*providedStub[providedKindA]](newProvidedStub[providedKindA]) }
+				register := func() { providedRegister[*providedStub[providedKindA]](s, kind, "provided") }
+				if order == "provide-first" {
+					provide()
+					register()
+				} else {
+					register()
+					provide()
+				}
+				startApp(t, app)
 
-	accepted := []string{"invoice-worker", "credo.outbox", "report:daily", "rapor-üretici", "a b"}
-	for _, name := range accepted {
-		t.Run("accepts "+name, func(t *testing.T) {
-			app := newTestApp(t)
-			if err := Register(app, name, blockingFunc()); err != nil {
-				t.Fatalf("Register(%q) = %v", name, err)
-			}
-			// The same name with readiness is a distinct registration in a
-			// fresh app: "credo." stays valid because the readiness check is
-			// named "worker:<name>".
-			app2 := newTestApp(t)
-			if err := Register(app2, name, blockingFunc(), WithReadiness(ReadinessPolicy{FailWhenFailed: true})); err != nil {
-				t.Fatalf("Register(%q, WithReadiness) = %v", name, err)
-			}
-			finalize(t, app)
-			pool, err := app.Resolve[*Pool]()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := pool.Workers()[0].Name; got != name {
-				t.Fatalf("registered name = %q, want %q (names are never normalized)", got, name)
-			}
-		})
+				w, err := app.Resolve[*providedStub[providedKindA]]()
+				if err != nil {
+					t.Fatal(err)
+				}
+				providedAwaitRun(t, w)
+				if got := w.runs.Load(); got != 1 {
+					t.Fatalf("runs = %d, want 1 (the container's singleton ran once)", got)
+				}
+				if info, _ := s.Lookup("provided"); info.Kind != kind {
+					t.Errorf("Kind = %s, want %s", info.Kind, kind)
+				}
+			})
+		}
 	}
 }
 
-func TestRegister_RejectsNilWorkers(t *testing.T) {
-	app := newTestApp(t)
-	var nilFunc Func
-	var nilPointer *stubWorker[kindA]
-	for _, w := range []Worker{nil, nilFunc, nilPointer} {
-		requireErrContaining(t, Register(app, "nil", w), `worker "nil" must not be nil`)
-	}
-	requireErrContaining(t, Register(nil, "x", blockingFunc()), "app must not be nil")
-	requireErrContaining(t, RegisterProvided[*stubWorker[kindA]](nil, "x"), "app must not be nil")
-}
-
-func TestRegister_DuplicateNameAcrossForms(t *testing.T) {
-	app := newTestApp(t)
-	if err := Register(app, "dup", blockingFunc()); err != nil {
-		t.Fatal(err)
-	}
-	requireErrContaining(t, RegisterProvided[*stubWorker[kindA]](app, "dup"), `duplicate worker name "dup"`)
-
-	app = newTestApp(t)
-	if err := RegisterProvided[*stubWorker[kindA]](app, "dup"); err != nil {
-		t.Fatal(err)
-	}
-	requireErrContaining(t, Register(app, "dup", blockingFunc()), `duplicate worker name "dup"`)
-}
-
-func TestRegisterProvided_OrderFree(t *testing.T) {
-	for _, order := range []string{"provide-first", "register-first"} {
-		t.Run(order, func(t *testing.T) {
-			app := newTestApp(t)
-			provide := func() { app.Provide[*stubWorker[kindA]](newStubWorker[kindA]) }
-			register := func() { MustRegisterProvided[*stubWorker[kindA]](app, "provided") }
-			if order == "provide-first" {
-				provide()
-				register()
-			} else {
-				register()
-				provide()
-			}
-			finalize(t, app)
-
-			pool, err := app.Resolve[*Pool]()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = pool.Start(t.Context()); err != nil {
-				t.Fatalf("Start() = %v", err)
-			}
-			w, err := app.Resolve[*stubWorker[kindA]]()
-			if err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-w.running:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the DI-provided instance did not run")
-			}
-			shutdownPool(t, pool)
-			if got := w.runs.Load(); got != 1 {
-				t.Fatalf("runs = %d, want 1 (the container's singleton ran once)", got)
-			}
-		})
-	}
-}
-
-// aliasedWorker is an application-level interface that a concrete worker is
-// bound to through app.Alias.
-type aliasedWorker interface {
+// providedAliased is an application-level interface that a concrete worker
+// is bound to through app.Alias.
+type providedAliased interface {
 	Worker
 	aliased()
 }
 
-func (*stubWorker[K]) aliased() {}
+func (*providedStub[K]) aliased() {}
 
-func TestRegisterProvided_InterfaceThroughAlias(t *testing.T) {
-	app := newTestApp(t)
-	app.Provide[*stubWorker[kindB]](newStubWorker[kindB])
-	app.Alias[aliasedWorker, *stubWorker[kindB]]()
-	MustRegisterProvided[aliasedWorker](app, "aliased")
-	finalize(t, app)
+func TestProvided_InterfaceBoundWithAlias(t *testing.T) {
+	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+		t.Run(string(kind), func(t *testing.T) {
+			app := newTestApp(t)
+			app.Provide[*providedStub[providedKindB]](newProvidedStub[providedKindB])
+			app.Alias[providedAliased, *providedStub[providedKindB]]()
+			providedRegister[providedAliased](Use(app), kind, "aliased")
+			startApp(t, app)
 
-	pool, err := app.Resolve[*Pool]()
-	if err != nil {
-		t.Fatal(err)
+			w, err := app.Resolve[*providedStub[providedKindB]]()
+			if err != nil {
+				t.Fatal(err)
+			}
+			providedAwaitRun(t, w)
+		})
 	}
-	if err = pool.Start(t.Context()); err != nil {
-		t.Fatalf("Start() = %v", err)
-	}
-	w, err := app.Resolve[*stubWorker[kindB]]()
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-w.running:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the aliased worker did not run")
-	}
-	shutdownPool(t, pool)
 }
 
-func TestPoolStart_ResolutionFailuresStartNothing(t *testing.T) {
-	app := newTestApp(t)
+// providedOrder records lifecycle events in the order they happen.
+type providedOrder struct {
+	mu     sync.Mutex
+	events []string
+}
 
-	// A healthy worker registered by value: all-or-nothing means it must not
-	// run either.
-	var healthyRuns atomic.Int32
-	MustRegister(app, "healthy", Func(func(ctx context.Context) error {
-		healthyRuns.Add(1)
-		<-ctx.Done()
-		return nil
-	}))
-	// Not provided at all.
-	MustRegisterProvided[*stubWorker[kindA]](app, "missing")
-	// Constructor error.
-	app.Provide[*stubWorker[kindB]](func() (*stubWorker[kindB], error) {
-		return nil, errors.New("constructor failed")
-	})
-	MustRegisterProvided[*stubWorker[kindB]](app, "ctor-error")
-	// Constructor panic.
-	app.Provide[*stubWorker[kindC]](func() *stubWorker[kindC] { panic("constructor boom") })
-	MustRegisterProvided[*stubWorker[kindC]](app, "ctor-panic")
-	// Typed nil result.
-	app.Provide[*stubWorker[kindD]](func() *stubWorker[kindD] { return nil })
-	MustRegisterProvided[*stubWorker[kindD]](app, "typed-nil")
-	finalize(t, app)
+func (o *providedOrder) add(event string) {
+	o.mu.Lock()
+	o.events = append(o.events, event)
+	o.mu.Unlock()
+}
 
-	pool, err := app.Resolve[*Pool]()
-	if err != nil {
-		t.Fatal(err)
+func (o *providedOrder) get() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.events)
+}
+
+// providedDep is a component a provided worker depends on.
+type providedDep struct{ order *providedOrder }
+
+func (d *providedDep) Start(context.Context) error {
+	d.order.add("dep start")
+	return nil
+}
+
+func (d *providedDep) Shutdown(context.Context) error {
+	d.order.add("dep shutdown")
+	return nil
+}
+
+// providedOwner is a provided worker that is itself a component: the App
+// shuts it down after the worker has stopped.
+type providedOwner struct {
+	order   *providedOrder
+	running chan struct{}
+}
+
+func (w *providedOwner) Run(ctx context.Context) error {
+	w.order.add("run")
+	close(w.running)
+	<-ctx.Done()
+	w.order.add("run returned")
+	return nil
+}
+
+func (w *providedOwner) Shutdown(context.Context) error {
+	w.order.add("T shutdown")
+	return nil
+}
+
+func TestProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.T) {
+	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+		t.Run(string(kind), func(t *testing.T) {
+			app := newTestApp(t)
+			order := &providedOrder{}
+			owner := &providedOwner{order: order, running: make(chan struct{})}
+			app.Provide[*providedDep](func() *providedDep { return &providedDep{order: order} })
+			app.Provide[*providedOwner](func(*providedDep) *providedOwner {
+				order.add("T built")
+				return owner
+			})
+			providedRegister[*providedOwner](Use(app), kind, "owner")
+
+			if err := app.Start(t.Context()); err != nil {
+				t.Fatalf("App.Start() = %v", err)
+			}
+			lifecycleAwait(t, owner.running, "the worker to run")
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+			defer cancel()
+			if err := app.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown() = %v", err)
+			}
+
+			want := []string{"dep start", "T built", "run", "run returned", "T shutdown", "dep shutdown"}
+			if got := order.get(); !slices.Equal(got, want) {
+				t.Errorf("order = %q\nwant      %q", got, want)
+			}
+		})
 	}
-	err = pool.Start(t.Context())
+}
+
+func TestProvided_MissingBindingFailsFinalize(t *testing.T) {
+	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+		t.Run(string(kind), func(t *testing.T) {
+			app := newTestApp(t)
+			providedRegister[*providedStub[providedKindA]](Use(app), kind, "orphan")
+			err := app.Finalize()
+			if err == nil {
+				t.Fatal("Finalize() = nil, want the missing binding")
+			}
+			for _, want := range []string{"worker:orphan", "*worker.providedStub[", "providedKindA]"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Finalize() = %v\nwant it to contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// providedRecordingDep is a dependency the failing constructors take, so it
+// is built — and started — before they fail.
+type providedRecordingDep struct{ started, shutdowns atomic.Int32 }
+
+func (d *providedRecordingDep) Start(context.Context) error {
+	d.started.Add(1)
+	return nil
+}
+
+func (d *providedRecordingDep) Shutdown(context.Context) error {
+	d.shutdowns.Add(1)
+	return nil
+}
+
+func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
+	type stub = providedStub[providedKindA]
+	cases := []struct {
+		name    string
+		ctor    any
+		outcome credo.LifecycleOutcome
+		want    string
+	}{
+		{
+			name:    "constructor error",
+			ctor:    func(*providedRecordingDep) (*stub, error) { return nil, errors.New("constructor failed") },
+			outcome: credo.OutcomeFailed,
+			want:    "constructor failed",
+		},
+		{
+			name:    "constructor panic",
+			ctor:    func(*providedRecordingDep) *stub { panic("constructor boom") },
+			outcome: credo.OutcomePanicked,
+			want:    "constructor boom",
+		},
+		{
+			name:    "nil value",
+			ctor:    func(*providedRecordingDep) *stub { return nil },
+			outcome: credo.OutcomeFailed,
+			want:    "resolved to nil",
+		},
+	}
+	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+		for _, tc := range cases {
+			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
+				capture := newLogCapture()
+				app := newTestApp(t, credo.WithLogger(capture.logger()))
+				dep := &providedRecordingDep{}
+				app.Provide[*providedRecordingDep](func() *providedRecordingDep { return dep })
+				app.Provide[*stub](tc.ctor)
+				s := Use(app)
+				providedRegister[*stub](s, kind, "broken")
+
+				err := app.Start(t.Context())
+				lerr, ok := errors.AsType[*credo.LifecycleError](err)
+				if !ok {
+					t.Fatalf("App.Start() = %v, want a *credo.LifecycleError", err)
+				}
+				entry, n := lifecycleEntry(lerr, "worker:broken")
+				if n != 1 || entry.Phase != credo.PhaseStart || entry.Outcome != tc.outcome {
+					t.Fatalf("App.Start() = %v, want worker:broken start %s, once", err, tc.outcome)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("App.Start() = %v\nwant it to contain %q", err, tc.want)
+				}
+				if tc.outcome == credo.OutcomePanicked {
+					if _, ok := errors.AsType[*credo.DIPanicError](err); !ok {
+						t.Errorf("App.Start() = %v, want the constructor panic kept as *credo.DIPanicError", err)
+					}
+				}
+
+				// The rollback stops what was built.
+				if dep.started.Load() != 1 || dep.shutdowns.Load() != 1 {
+					t.Errorf("dependency started %d and shut down %d times, want 1 and 1 (rolled back)",
+						dep.started.Load(), dep.shutdowns.Load())
+				}
+				if got := app.State(); got != "stopped" {
+					t.Errorf("State() = %q, want stopped", got)
+				}
+				if info, _ := s.Lookup("broken"); info.Status != StatusPending {
+					t.Errorf("broken = %s, want pending (its component never started)", info.Status)
+				}
+				if lines := capture.withMessage("worker started"); len(lines) != 0 {
+					t.Errorf("worker started logged %d times, want none", len(lines))
+				}
+			})
+		}
+	}
+}
+
+// providedIngressDep is an ingress component a provided worker depends on.
+type providedIngressDep struct{}
+
+func (*providedIngressDep) Shutdown(context.Context) error { return nil }
+
+func TestProvided_InternalWorkerOnIngressComponentFailsFinalize(t *testing.T) {
+	type stub = providedStub[providedKindA]
+	newApp := func(t *testing.T) *credo.App {
+		app := newTestApp(t)
+		app.Provide[*providedIngressDep](func() *providedIngressDep { return &providedIngressDep{} }, credo.Ingress())
+		app.Provide[*stub](func(*providedIngressDep) *stub { return newProvidedStub[providedKindA]() })
+		return app
+	}
+
+	app := newApp(t)
+	Use(app).ContinuousProvided[*stub]("consumer")
+	err := app.Finalize()
 	if err == nil {
-		t.Fatal("Start() = nil, want the joined resolution errors")
+		t.Fatal("Finalize() = nil, want the internal worker's dependency on an ingress component")
 	}
 	for _, want := range []string{
-		`worker: "missing": resolve *worker.stubWorker[github.com/credo-go/credo/worker.kindA]`,
-		`worker: "ctor-error": resolve *worker.stubWorker`,
-		"constructor failed",
-		`worker: "ctor-panic": resolve *worker.stubWorker`,
-		"constructor boom",
-		`worker: "typed-nil": resolve *worker.stubWorker`,
-		"resolved to nil",
+		"worker:consumer", // the worker
+		"the ingress component *worker.providedIngressDep", // the ingress component
+		"worker:consumer) → *worker.providedStub[",         // the path, through T
+		"] → *worker.providedIngressDep",                   // ... to the ingress component
+		"split *worker.providedIngressDep",                 // remedy: split the ingress component
 	} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Start() error = %v\nwant it to contain %q", err, want)
+			t.Errorf("Finalize() = %v\nwant it to contain %q", err, want)
 		}
 	}
-	if strings.Contains(err.Error(), "healthy") {
-		t.Errorf("Start() error names the healthy worker: %v", err)
-	}
-	if _, ok := errors.AsType[*credo.DIPanicError](err); !ok {
-		t.Errorf("Start() error = %v, want the constructor panic kept as *credo.DIPanicError", err)
-	}
 
-	infos := pool.Workers()
-	if len(infos) != 5 {
-		t.Fatalf("Workers() after failed Start = %d entries, want all 5 definitions", len(infos))
-	}
-	for _, info := range infos {
-		if info.Status != StatusIdle {
-			t.Errorf("worker %q status = %q after failed Start, want idle", info.Name, info.Status)
+	// Each remedy that keeps the dependency is accepted: the worker declared
+	// ingress, and a scheduled worker, ingress by default.
+	t.Run("continuous worker declared ingress", func(t *testing.T) {
+		app := newApp(t)
+		Use(app).ContinuousProvided[*stub]("consumer", ContinuousConfig{Tier: credo.TierIngress})
+		finalize(t, app)
+	})
+	t.Run("scheduled worker", func(t *testing.T) {
+		app := newApp(t)
+		Use(app).ScheduledProvided[*stub]("report", "@every 1h")
+		finalize(t, app)
+	})
+
+	// The remedy names the worker's own setting, its Tier field: a worker
+	// registration takes no RegistrationOption.
+	t.Run("the remedy names the worker's Tier setting", func(t *testing.T) {
+		if !strings.Contains(err.Error(), "Tier: credo.TierIngress") {
+			t.Errorf("Finalize() = %v\nwant the remedy Tier: credo.TierIngress", err)
 		}
-	}
-	if err := pool.Start(t.Context()); err == nil || !strings.Contains(err.Error(), "already started") {
-		t.Errorf("second Start = %v, want refusal", err)
-	}
-	shutdownPool(t, pool)
-	if got := healthyRuns.Load(); got != 0 {
-		t.Fatalf("healthy worker ran %d times, want 0 (Start is all-or-nothing)", got)
-	}
-}
-
-func TestRegisterProvided_FailedResolutionFailsAppStartup(t *testing.T) {
-	app := newTestApp(t, credo.WithAddr("127.0.0.1", 0))
-	res := &resource{workerDone: new(atomic.Bool)}
-	app.ProvideValue(res)
-	var shutdownHooks atomic.Int32
-	app.OnStop(func(context.Context) error {
-		shutdownHooks.Add(1)
-		return nil
 	})
-	var served atomic.Bool
-	app.GET("/", func(*credo.Context) error {
-		served.Store(true)
-		return nil
-	})
-	MustRegisterProvided[*stubWorker[kindA]](app, "orphan")
-
-	err := app.RunContext(t.Context())
-	if err == nil || !strings.Contains(err.Error(), `worker: "orphan": resolve`) {
-		t.Fatalf("RunContext() = %v, want the worker resolution error", err)
-	}
-	if app.State() != "stopped" {
-		t.Fatalf("State() = %q, want stopped", app.State())
-	}
-	if !res.closed.Load() {
-		t.Error("DI teardown did not run after the failed startup")
-	}
-	if shutdownHooks.Load() != 1 {
-		t.Errorf("OnStop hooks ran %d times, want 1", shutdownHooks.Load())
-	}
-	if served.Load() {
-		t.Error("the app served a request although startup failed")
-	}
 }

@@ -30,3 +30,23 @@ type Store struct {
 // RegisterStore adds a store registration to app, a *credo.App. It panics
 // on misuse, naming the registering call. The root package sets it at init.
 var RegisterStore func(app any, s Store)
+
+// Component is a component an integration adds to an App on behalf of its
+// own registration call.
+type Component struct {
+	// Value is a component value, or a constructor over DI parameters, as
+	// App.Manage takes it.
+	Value any
+	// Name names the component in reports and readiness.
+	Name string
+	// Ingress places the component in the ingress tier.
+	Ingress bool
+	// IngressRemedy is how the integration's registration declares the
+	// component ingress, for the Finalize finding of an internal component
+	// that depends on an ingress one (e.g. a worker's Tier field).
+	IngressRemedy string
+}
+
+// Manage adds c to app, a *credo.App, as App.Manage does, and panics as it
+// does. The root package sets it at init.
+var Manage func(app any, c Component)

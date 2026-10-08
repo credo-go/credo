@@ -3,7 +3,6 @@ package credo
 import (
 	"context"
 	"net/http"
-	"slices"
 	"time"
 
 	internalhealth "github.com/credo-go/credo/internal/health"
@@ -177,28 +176,15 @@ func (app *App) storeHealthFunc() internalhealth.StoreFunc {
 }
 
 // contributedReadinessFunc returns the readiness contributions: the Ready of
-// every component that answers it, built once by the start walk, and those
-// provided by infrastructure packages (the worker pool's WithReadiness
-// bindings, under the module-internal [internalhealth.ReadinessFunc] type).
-// It returns nil when there are none.
+// every component that answers it — a worker with a readiness condition among
+// them — built once by the start walk, so a readiness request resolves
+// nothing. It returns nil before the App has started or when there are none.
 func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {
-	var components []internalhealth.ReadinessCheck
-	if app.lifecycle.started.Load() {
-		components = app.lifecycle.readiness
+	if !app.lifecycle.started.Load() || len(app.lifecycle.readiness) == 0 {
+		return nil
 	}
-	fn, err := app.container.Resolve[internalhealth.ReadinessFunc]()
-	if err != nil {
-		fn = nil
-	}
-	switch {
-	case len(components) == 0:
-		return fn
-	case fn == nil:
-		return func() []internalhealth.ReadinessCheck { return components }
-	}
-	return func() []internalhealth.ReadinessCheck {
-		return append(slices.Clip(components), fn()...)
-	}
+	components := app.lifecycle.readiness
+	return func() []internalhealth.ReadinessCheck { return components }
 }
 
 // livenessHandler returns 200/503 with a JSON status body.

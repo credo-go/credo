@@ -16,7 +16,7 @@ DI-independent HTTP setup may precede Finalize. Managed serving and direct `Serv
 
 Preparation failures remain repeatable developer errors: managed entry points return them, and `ServeHTTP` panics with the stored failure while lifecycle admission is open. Lifecycle rejection returns the callback-free default 503 response specified by ADR-009 and the lifecycle contract. A prepared stopping App retains its drain behavior; stopped always rejects new dispatch.
 
-Public Resolve belongs after Finalize, Replace before it. `AdoptValue[T]` is the shared registration operation: read an existing prebuilt binding, validate, then atomically compare-and-protect the same binding. It does not execute constructors; invalid values remain repairable and a concurrent replacement/phase change cannot publish stale adoption. A preprovided worker Pool constructor is rejected without invocation. No general early Resolve/Peek API is introduced. Successful Replace returns the previous created instance and transfers its cleanup responsibility to the caller; the boolean means an instance existed, not merely a binding. Failed replacement changes neither registration nor ownership. Add non-resolving `Has[T]`; remove factory registration and its proposed runtime-edge machinery. Constructor-captured service-locator calls are unsupported.
+Public Resolve belongs after Finalize, Replace before it. `AdoptValue[T]` is the shared registration operation: read an existing prebuilt binding, validate, then atomically compare-and-protect the same binding. It does not execute constructors; invalid values remain repairable and a concurrent replacement/phase change cannot publish stale adoption. No general early Resolve/Peek API is introduced. Successful Replace returns the previous created instance and transfers its cleanup responsibility to the caller; the boolean means an instance existed, not merely a binding. Failed replacement changes neither registration nor ownership. Add non-resolving `Has[T]`; remove factory registration and its proposed runtime-edge machinery. Constructor-captured service-locator calls are unsupported.
 
 Teardown enters closing only when the drain reaches the internal tier ([ADR-024](024-lifecycle-components.md)). Closing/closed resolution rejects with an inspectable `credo.ErrDIClosed` sentinel, including cached resolution and delivery racing teardown. Track successfully constructed instances even when caller delivery is rejected. Constructor errors and panics are terminal, shared by waiters, and never retried automatically.
 
@@ -57,16 +57,14 @@ There is no resolve-then-provide step. A value that needs a resolved dependency 
 
 Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, a misused registration option included, and `Resolve` before `Finalize` panics. A DI registration or a `Manage` call after `Finalize` panics, as does any registration after the App is prepared or shut down, each with the call site's message. A component's `Start` runs in the start phase, where its error rolls the start back.
 
-`store.Register` and `UseI18n` follow the table: they return nothing, panic on misuse, and leave the store's ping and the catalog reads to the start phase.
-
-**Accepted, pending implementation (v0.24.0, W6).** Until W6, the worker registrations return their errors instead of panicking.
+`store.Register`, `UseI18n` and the worker registrations follow the table: they return nothing, panic on misuse, and leave the store's ping, the catalog reads and a provided worker's construction to the start phase.
 
 **Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
 
 ### Removes
 
 - the statement, and the machinery, that registration is safe for concurrent use: `installFeature`'s double check around `prepMu`, and the container's freeze flags as public states;
-- the machinery whose only purpose was concurrent coordination through the container: `ensureRegistry`/`adoptRegistry` and `store.Register`'s reservation, and — **accepted, pending implementation (v0.24.0, W3, W6)** — `CanProvideValue`, `AdoptValue`, `registrationProbe` and `ensurePool`/`adoptPool`;
+- the machinery whose only purpose was concurrent coordination through the container: `ensureRegistry`/`adoptRegistry` and `store.Register`'s reservation, the worker package's `registrationProbe` and `ensurePool`/`adoptPool`, and — **accepted, pending implementation (v0.24.0, W3)** — `CanProvideValue` and `AdoptValue`, of which no framework caller remains;
 - the "not finalized" error of `Resolve`, and the errors the registration calls return;
 - the tests of concurrent registration, which are deleted rather than loosened.
 
@@ -78,7 +76,7 @@ Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing an
 
 ## Ownership through the component registry
 
-**Accepted, pending implementation (v0.24.0, W3, W6)** for the parts that remove adoption, `Replace`, protected bindings and the worker pool's binding; when they ship, this section replaces the Decision's paragraph on `AdoptValue` and `Replace`. The component registry, resource identity, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`, the teardown below and the store registration that replaced `store`'s ledger are implemented.
+**Accepted, pending implementation (v0.24.0, W3)** for the parts that remove adoption, `Replace` and protected bindings, of which no framework caller remains; when they ship, this section replaces the Decision's paragraph on `AdoptValue` and `Replace`. The component registry, resource identity, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`, the teardown below, the store registration that replaced `store`'s ledger and the worker supervisor, which binds nothing, are implemented.
 
 ### Problem
 
@@ -113,6 +111,6 @@ Rejected: protect-on-read before validation; bulk wait-for-builds before any cle
 
 Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.
 
-With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports the I/O — a component's `Start`, a store's ping and the i18n catalog reads. Applications migrate by dropping the error checks of registration calls, `store.Register` and `UseI18n` included, and by moving any registration that follows `Finalize` before it.
+With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports the I/O — a component's `Start`, a store's ping and the i18n catalog reads. Applications migrate by dropping the error checks of registration calls, `store.Register`, `UseI18n` and the worker registrations included, and by moving any registration that follows `Finalize` before it.
 
 **Accepted, pending implementation (v0.24.0, W3).** Applications drop the `Must*` registration twins.

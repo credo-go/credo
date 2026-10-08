@@ -48,6 +48,10 @@ type Options struct {
 	Override bool
 	// Name names a managed component; empty means its type name.
 	Name string
+	// IngressRemedy is how the registration that added a managed component
+	// places it in the ingress tier, for the finding of an internal component
+	// that depends on an ingress one; empty means "credo.Ingress()".
+	IngressRemedy string
 }
 
 // closeKind is the shape of the Close method a credo.Closer() binding calls.
@@ -127,6 +131,9 @@ type Unit struct {
 	borrowed  bool
 	starts    bool
 	readies   bool
+	// ingressRemedy names how to declare the unit ingress; see
+	// Options.IngressRemedy.
+	ingressRemedy string
 
 	// key is the resource identity of the built value: a comparable token,
 	// or the unit itself. nil until the value exists.

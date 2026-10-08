@@ -93,9 +93,9 @@ Kubernetes has no reload verb. Its two idioms are:
 On `SIGTERM` (or a cancelled `RunContext` context, or `app.Shutdown`), the App drains what it owns in two tiers:
 
 1. `/ready` answers 503 `shutting_down`, so load balancers stop routing; `/health` stays 200, since the process is alive and draining.
-2. The **ingress tier** — where work enters the process: the WebSocket server, the worker pool, consumers of external queues and anything registered with `credo.Ingress()` — stops concurrently with the HTTP drain: its `OnStop` hooks in reverse registration order, then its components, those that no dependency orders stopping concurrently with each other.
+2. The **ingress tier** — where work enters the process: the WebSocket server, scheduled workers, consumers of external queues (a continuous worker registered with `Tier: credo.TierIngress` among them) and anything registered with `credo.Ingress()` — stops concurrently with the HTTP drain: its `OnStop` hooks in reverse registration order, then its components, those that no dependency orders stopping concurrently with each other.
 3. A reload that overlapped the stop finishes.
-4. The **internal tier** — everything else, the database pools and clients the handlers and workers use — stops: its `OnStop` hooks in reverse registration order, then its components one at a time, each consumer before the components it depends on.
+4. The **internal tier** — everything else: continuous workers, which consume what the handlers enqueue, and the database pools and clients the handlers and workers use — stops: its `OnStop` hooks in reverse registration order, then its components one at a time, each consumer before the components it depends on.
 
 The steps share one deadline: `WithShutdownTimeout` (`server.shutdown_timeout`, 30 seconds by default) counted from the signal, or the deadline of the context passed to `app.Shutdown`. They spend it in order, so a slow HTTP or WebSocket drain leaves less for the internal tier. Size it as:
 
@@ -113,7 +113,7 @@ The listener is bound before the start phase — each component's `Start` in dep
 
 ### The limit of readiness
 
-A component reports a failure that happens after its `Start` has returned through its `Ready` method, which `/ready` aggregates under the component's name. No component ends the App — only the App's own listeners do. That is a deliberate policy, not a recovery guarantee: a failing readiness probe takes the instance out of rotation and restarts nothing, so a component that has stopped for good leaves the process alive, unready and never restarted. To have the supervisor restart the process, tie a liveness check (`app.AddLivenessCheck`) to the component itself — knowing that a check that fails because of a dependency every replica shares, such as the database, makes the orchestrator restart every replica at once, which cannot fix the database and adds a restart storm to its outage. Tie liveness only to state that a restart repairs.
+A component reports a failure that happens after its `Start` has returned through its `Ready` method, which `/ready` aggregates under the component's name. No component ends the App — only the App's own listeners do. That is a deliberate policy, not a recovery guarantee: a failing readiness probe takes the instance out of rotation and restarts nothing, so a component that has stopped for good leaves the process alive, unready and never restarted. To have the supervisor restart the process, tie a liveness check (`app.AddLivenessCheck`) to the component itself — knowing that a check that fails because of a dependency every replica shares, such as the database, makes the orchestrator restart every replica at once, which cannot fix the database and adds a restart storm to its outage. Tie liveness only to state that a restart repairs. The [worker guide](worker.md#escalating-a-terminal-failure) shows the check for a worker that has failed for good.
 
 ### An `http.Server` you own
 
