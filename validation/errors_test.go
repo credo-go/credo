@@ -213,7 +213,9 @@ func TestCollectErrors_DoesNotMutateSource(t *testing.T) {
 	}
 
 	var dst validation.Errors
-	validation.ExportCollectErrors(&dst, src, "user")
+	if internal := validation.ExportCollectErrors(&dst, src, "user"); internal != nil {
+		t.Fatalf("collectErrors = %v, want nil", internal)
+	}
 
 	// Source slice is untouched.
 	if src[0].Field != "name" || src[1].Field != "age" {

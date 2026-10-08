@@ -96,9 +96,7 @@ Invalid status/code constructor input is developer misuse and panics even when t
 
 ### An explicit status wins
 
-**Accepted, pending implementation (v0.24.0, W7).**
-
-An explicitly constructed `HTTPError` wins over a validation error wrapped inside it. `NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 with code `tenant_conflict`, not 422 `validation_failed`: the application stated the status, and a classification that searches the whole unwrap chain for `validation.Errors` first would overrule it with a cause the application chose to keep internal. The wrapped errors stay reachable through `ErrorInfo.Err` for logging and for a renderer that wants them. Validation errors that no `HTTPError` wraps still render as 422 `validation_failed`.
+An explicitly constructed `HTTPError` wins over a validation error wrapped inside it. `NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 with code `tenant_conflict`, not 422 `validation_failed`: the application stated the status, and a classification that searches the whole unwrap chain for `validation.Errors` first would overrule it with a cause the application chose to keep internal. The wrapped errors stay reachable through `ErrorInfo.Err` for logging and for a renderer that wants them. Validation errors that no `HTTPError` wraps — `validation.Errors`, or a single `*ValidationError` such as a `Validate` method may return from `validation.NewError` — still render as 422 `validation_failed`.
 
 The companion rule is in [ADR-011](011-validation-strategy.md#rule-errors-client-messages-and-internal-failures): a validation rule error that is not a `*ValidationError` is internal, leaves `Validate` as it would leave a handler, and is classified here — a plain error is a 500 whose text is logged, not rendered, and a fault keeps its mapped status. Both are the error model's final rules: later changes to the error model's status channels and message keys keep them, so the status a client receives changes once.
 

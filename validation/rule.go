@@ -54,7 +54,9 @@ func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules {
 }
 
 // ValidateStruct validates a struct by running all field rules. Returns nil
-// if all validations pass, or [Errors] containing all failures.
+// if all validations pass, or [Errors] containing all failures. A rule error
+// that is neither a *ValidationError nor [Errors] is internal: validation
+// stops at once and ValidateStruct returns that error unchanged.
 //
 // structPtr must be a non-nil pointer to a struct. Passing a nil pointer
 // returns nil (valid). Passing a non-pointer or pointer to non-struct panics.
@@ -73,7 +75,9 @@ func ValidateStruct(structPtr any, fields ...FieldRules) error {
 	var allErrors Errors
 	for _, f := range fields {
 		if err := f.validate(structPtr); err != nil {
-			collectErrors(&allErrors, err, "")
+			if internal := collectErrors(&allErrors, err, ""); internal != nil {
+				return internal
+			}
 		}
 	}
 
@@ -96,7 +100,9 @@ func (f *fieldRules[T]) validate(structPtr any) error {
 	var fieldErrors Errors
 	for _, rule := range f.rules {
 		if err := rule.Validate(value); err != nil {
-			collectErrors(&fieldErrors, err, fieldName)
+			if internal := collectErrors(&fieldErrors, err, fieldName); internal != nil {
+				return internal
+			}
 		}
 	}
 
@@ -118,7 +124,8 @@ type Validatable interface {
 }
 
 // validateNested checks if value implements Validatable and calls Validate().
-// Errors are prefixed with the field name. Handles both value and pointer
+// Failures are prefixed with the field name; an internal error is returned
+// unchanged. Handles both value and pointer
 // receivers: if the value itself doesn't implement Validatable, a pointer
 // to the value is tried.
 func validateNested(fieldName string, value any) error {

@@ -24,7 +24,7 @@ func TestBy_Valid(t *testing.T) {
 func TestBy_Invalid(t *testing.T) {
 	rule := validation.By(func(s string) error {
 		if len(s) < 2 {
-			return errors.New("too short")
+			return validation.NewError("too_short", "too short")
 		}
 		return nil
 	})
@@ -36,11 +36,19 @@ func TestBy_Invalid(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ValidationError, got %T", err)
 	}
-	if ve.Code != "invalid" {
-		t.Errorf("code = %q, want %q", ve.Code, "invalid")
+	if ve.Code != "too_short" {
+		t.Errorf("code = %q, want %q", ve.Code, "too_short")
 	}
 	if ve.Message != "too short" {
 		t.Errorf("message = %q, want %q", ve.Message, "too short")
+	}
+}
+
+func TestBy_InternalErrorPassesThrough(t *testing.T) {
+	internal := errors.New("pq: connection refused")
+	rule := validation.By(func(string) error { return internal })
+	if err := rule.Validate("a"); !errors.Is(err, internal) {
+		t.Fatalf("Validate = %v (%T), want the rule's error unchanged", err, err)
 	}
 }
 
@@ -74,7 +82,7 @@ func TestBy_WithValidateStruct(t *testing.T) {
 	err := validation.ValidateStruct(input,
 		validation.Field(&input.Code, validation.By(func(s string) error {
 			if len(s) != 2 {
-				return errors.New("must be exactly 2 characters")
+				return validation.NewError("length", "must be exactly 2 characters")
 			}
 			return nil
 		})),
@@ -84,8 +92,77 @@ func TestBy_WithValidateStruct(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected validation.Errors, got %T", err)
 	}
-	if errs[0].Field != "code" {
-		t.Errorf("field = %q, want %q", errs[0].Field, "code")
+	if errs[0].Field != "code" || errs[0].Code != "length" {
+		t.Errorf("violation = %+v, want field code, code length", errs[0])
+	}
+}
+
+// internalInput exercises the internal-error rule through every composite.
+type internalInput struct {
+	First  string   `json:"first"`
+	Tags   []string `json:"tags"`
+	Nick   *string  `json:"nick"`
+	Nested internalNested
+	Last   string `json:"last"`
+}
+
+type internalNested struct {
+	err error
+}
+
+func (n internalNested) Validate() error { return n.err }
+
+func TestValidateStruct_InternalRuleErrorStopsValidation(t *testing.T) {
+	internal := errors.New("pq: connection refused")
+	failing := validation.By(func(string) error { return internal })
+	nick := "n"
+
+	cases := map[string]func(in *internalInput, lastRan *bool) error{
+		"field rule": func(in *internalInput, lastRan *bool) error {
+			return validation.ValidateStruct(in,
+				validation.Field(&in.First, validation.Required[string](), failing, validation.Length(10, 20)),
+				validation.Field(&in.Last, validation.By(func(string) error { *lastRan = true; return nil })),
+			)
+		},
+		"Each": func(in *internalInput, lastRan *bool) error {
+			return validation.ValidateStruct(in,
+				validation.Field(&in.Tags, validation.Each(failing)),
+				validation.Field(&in.Last, validation.By(func(string) error { *lastRan = true; return nil })),
+			)
+		},
+		"When": func(in *internalInput, lastRan *bool) error {
+			return validation.ValidateStruct(in,
+				validation.Field(&in.First, validation.When(true, failing)),
+				validation.Field(&in.Last, validation.By(func(string) error { *lastRan = true; return nil })),
+			)
+		},
+		"NilSafe": func(in *internalInput, lastRan *bool) error {
+			in.Nick = &nick
+			return validation.ValidateStruct(in,
+				validation.Field(&in.Nick, validation.NilSafe(failing)),
+				validation.Field(&in.Last, validation.By(func(string) error { *lastRan = true; return nil })),
+			)
+		},
+		"nested Validate": func(in *internalInput, lastRan *bool) error {
+			in.Nested.err = internal
+			return validation.ValidateStruct(in,
+				validation.Field(&in.Nested),
+				validation.Field(&in.Last, validation.By(func(string) error { *lastRan = true; return nil })),
+			)
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := &internalInput{First: "x", Tags: []string{"a", "b"}}
+			lastRan := false
+			err := run(in, &lastRan)
+			if !errors.Is(err, internal) {
+				t.Fatalf("ValidateStruct = %v (%T), want the rule's error unchanged", err, err)
+			}
+			if lastRan {
+				t.Fatal("validation continued after an internal rule error")
+			}
+		})
 	}
 }
 

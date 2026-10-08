@@ -76,6 +76,31 @@ Bind/decode errors use 400 and top-level code `bind_failed`. The nested entry's 
 
 The array is named `violations` because it carries two kinds of entries: field-scoped validation failures and document-scoped bind failures. A bind entry's `field` may be empty when the violation concerns the whole body — a JSON syntax error, for example.
 
+### Rule errors: client messages and internal failures
+
+A custom rule tells the client what is wrong with a `*validation.ValidationError`, which `validation.NewError` builds; `Field` fills in the field path:
+
+```go
+validation.Field(&in.Country, validation.By(func(code string) error {
+    if len(code) != 2 {
+        return validation.NewError("country_code", "must be a 2-letter code")
+    }
+    return nil
+}))
+```
+
+Any other error a rule returns is internal. Validation stops, and the error leaves `Validate` and `BindBody`/`BindQuery` unchanged, so the pipeline classifies it like any error a handler returns: a plain error is a 500 with the default message and its text in the log, never in the body, and a fault keeps its status — `store`'s unavailable kind is a 503. A rule that could not reach its database therefore reports a server failure the client may retry, not a claim that the input was invalid.
+
+### An explicit status wins
+
+An `HTTPError` you construct decides the status even when it wraps validation errors:
+
+```go
+return credo.NewHTTPError(http.StatusConflict, "tenant_conflict").WithInternal(vErrs)
+```
+
+renders 409 `tenant_conflict`, not 422. The wrapped errors stay in `ErrorInfo.Err` for the log and for an `ErrorRenderer` that wants them. Validation errors that no `HTTPError` wraps still render as 422 `validation_failed`.
+
 ## Localization and message keys
 
 Credo does not invent `errors.`, `v.`, or `bind.` prefixes. An exact message key is selected in this order:

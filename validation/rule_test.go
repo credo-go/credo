@@ -2,6 +2,7 @@ package validation_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -342,8 +343,8 @@ func TestJoinFieldPath(t *testing.T) {
 func TestPrefixErrors_SingleError(t *testing.T) {
 	err := &validation.ValidationError{Field: "city", Code: "required", Message: "is required"}
 
-	result := validation.ExportPrefixErrors("address", err)
-	if len(result) != 1 {
+	result, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", err))
+	if !ok || len(result) != 1 {
 		t.Fatalf("len = %d, want 1", len(result))
 	}
 	if result[0].Field != "address.city" {
@@ -357,8 +358,8 @@ func TestPrefixErrors_MultipleErrors(t *testing.T) {
 		{Field: "city", Code: "required", Message: "is required"},
 	}
 
-	result := validation.ExportPrefixErrors("address", err)
-	if len(result) != 2 {
+	result, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", err))
+	if !ok || len(result) != 2 {
 		t.Fatalf("len = %d, want 2", len(result))
 	}
 	if result[0].Field != "address.street" {
@@ -369,31 +370,47 @@ func TestPrefixErrors_MultipleErrors(t *testing.T) {
 	}
 }
 
-func TestToValidationError_FromValidationError(t *testing.T) {
+func TestPrefixErrors_InternalErrorPassesThrough(t *testing.T) {
+	internal := errors.New("pq: connection refused")
+
+	if got := validation.ExportPrefixErrors("address", internal); !errors.Is(got, internal) {
+		t.Fatalf("prefixErrors = %v, want the internal error unchanged", got)
+	}
+	if _, isViolation := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", internal)); isViolation {
+		t.Fatal("an internal error became a violation")
+	}
+	// The chain counts, as in the error pipeline: a wrapped validation
+	// failure is still client-visible.
+	wrapped := fmt.Errorf("lookup: %w", validation.NewError("code", "message"))
+	errs, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", wrapped))
+	if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "code" {
+		t.Fatalf("prefixErrors(wrapped) = %+v, want one violation of address", errs)
+	}
+}
+
+func TestCollectErrors_KeepsParams(t *testing.T) {
 	original := &validation.ValidationError{
 		Code:    "email",
 		Message: "must be a valid email address",
 		Params:  map[string]any{"format": "RFC 5322"},
 	}
 
-	result := validation.ExportToValidationError(original)
-	if result.Code != "email" {
-		t.Errorf("code = %q, want %q", result.Code, "email")
+	var dst validation.Errors
+	if internal := validation.ExportCollectErrors(&dst, original, "email"); internal != nil {
+		t.Fatalf("collectErrors = %v, want nil", internal)
 	}
-	if result.Params["format"] != "RFC 5322" {
-		t.Errorf("params preserved incorrectly")
+	if len(dst) != 1 || dst[0].Code != "email" || dst[0].Field != "email" || dst[0].Params["format"] != "RFC 5322" {
+		t.Fatalf("dst = %+v", dst)
+	}
+	if original.Field != "" {
+		t.Fatalf("collectErrors mutated the rule's error: Field = %q", original.Field)
 	}
 }
 
-func TestToValidationError_FromPlainError(t *testing.T) {
-	plain := errors.New("something went wrong")
-
-	result := validation.ExportToValidationError(plain)
-	if result.Code != "invalid" {
-		t.Errorf("code = %q, want %q", result.Code, "invalid")
-	}
-	if result.Message != "something went wrong" {
-		t.Errorf("message = %q, want %q", result.Message, "something went wrong")
+func TestNewError(t *testing.T) {
+	err := validation.NewError("country_code", "must be a 2-letter code")
+	if err.Code != "country_code" || err.Message != "must be a 2-letter code" || err.Field != "" || err.Params != nil {
+		t.Fatalf("NewError = %+v", err)
 	}
 }
 
