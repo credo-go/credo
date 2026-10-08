@@ -14,6 +14,20 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-10-08
+
+**Bug-fix release.** Three defects in how the lifecycle components of v0.24.0 treat one resource that several bindings hold are fixed. No exported API is added, removed or renamed; each fix changes what an application can observe, and the [release notes](docs/releases/v0.24.1.md#check-this-first) list them. `store/sqldb` has no code changes; its tag follows the lockstep policy.
+
+### Fixed
+
+- **lifecycle:** a resource that several bindings hold is started once. The start walk called `Start` for every binding whose type showed it, so one pointer under two types, or a handle and a wrapper that embeds it, was started twice and shut down once; `Start` now runs through the first holder the walk reaches whose binding plans one. A resource that any holder binds with `credo.Borrowed()` is not started through any holder: a wrapper over a borrowed handle that showed `Start` through the embedding made the App start the caller's resource and never stop it ([ADR-024](docs/adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)).
+- **lifecycle:** a holder that obtains a resource through one of its consumers no longer blocks the drain. Grouping the holders of one resource took on every holder's dependencies, so an interface view that a constructor read from a service using the resource made the resource wait for the service while the service waited for the resource; `Shutdown` stopped neither and reported each as `kept_open` by the other. The dependency that would close such a cycle is dropped when only a holder that reached the resource through another holder contributes it, so the service stops first and the resource after it; every other dependency holds — a holder's own, and a real dependency between two such groups ([container spec](docs/specs/container.md#resource-identity-and-teardown)).
+- **lifecycle:** a value the container refuses after its constructor built it is released. A `ResourceIdentity` that returns an unusable token, or a component found only on its built value that depends on an ingress one, fails the construction; the value was dropped without its `Shutdown` or `Close`. When no other holder carries it, the drain now releases it in dependency order, or the late cleanup does after the deadline. A value refused because its holders disagree on the teardown's kind or owner is the shared resource and is left to its owner.
+
+### Documentation
+
+- ADR-024, the container and lifecycle specs, the `Starter`, `ResourceIdentifier` and `Borrowed` godoc and the dependency-injection guide state that a shared resource is started once, that a borrowed resource is started through no holder, how a holder's route to the resource is treated in the drain and which refused values the drain releases; ADR-024 records the rejected alternatives.
+
 ## [0.24.0] - 2026-10-08
 
 **Lifecycle components, sequential bootstrap and a seven-method DI surface.** The App has one lifecycle abstraction, the component — a value with `Shutdown(ctx) error` whose teardown the App owns, started when its binding's type shows `Start`, asked for readiness when it shows `Ready`, and stopped in two tiers after its consumers — which replaces `Shutdowner`, `OnPreDrain`, `OnDrain` and `OnShutdown` ([ADR-024](docs/adr/024-lifecycle-components.md)). Bootstrap is sequential: registration panics on misuse, `Finalize` reports the whole graph, and the start phase reports what touches the outside world. Stores, the WebSocket server, i18n and workers run on the components; the DI surface is seven methods and `Finalize`; a validation rule's plain error is internal; `StatusHandler` refuses the codes it never consults. Most breaks are compile errors, but several compile unchanged and behave differently — the [release notes](docs/releases/v0.24.0.md#check-this-first) list them first, and the [migration guide](docs/guides/pre-v1-migration.md#v0240-at-a-glance) gives every replacement. `store/sqldb` changes only in its documentation and tests; its tag follows the lockstep policy.
@@ -664,7 +678,8 @@ Initial public development baseline.
 
 Adapted open-source code is attributed in [NOTICES](NOTICES); the per-component acquisition strategy is documented in [docs/adr/002-code-acquisition-strategy.md](docs/adr/002-code-acquisition-strategy.md).
 
-[Unreleased]: https://github.com/credo-go/credo/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/credo-go/credo/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/credo-go/credo/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/credo-go/credo/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/credo-go/credo/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/credo-go/credo/compare/v0.21.1...v0.22.0
