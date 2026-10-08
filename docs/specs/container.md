@@ -207,7 +207,7 @@ Registration performs no I/O and panics on misuse known at the call site, with a
 | Any registration after the App is prepared or shut down | The call |
 | `Resolve`, `MustResolve`, `ResolveAll` or `MustResolveAll` before `Finalize` | The call |
 
-**Accepted, pending implementation (v0.24.0, W5, W6)** for the rows that name store and worker registrations: until W5 and W6, `store.Register` and the worker registrations return their errors, and `store.Register` pings its store at the call.
+**Accepted, pending implementation (v0.24.0, W6)** for the rows that name worker registrations: until W6, the worker registrations return their errors.
 
 Registration calls are not safe for concurrent use; bootstrap is sequential ([bootstrap spec](bootstrap-and-di-lifecycle.md#sequential-bootstrap)). `Finalize` returns an error, because what it reports needs the whole graph (Finalize and Container Lifecycle).
 
@@ -315,7 +315,7 @@ Protected bindings are a low-level integration facility for a DI value coupled t
 
 `ProtectBinding[T]()` protects an existing direct binding without resolving T; this no-argument form is idempotent. `ProtectBinding[T](expected)` is the CAS-style compare-and-protect form for a singleton the caller already holds. Comparison and protection are atomic with respect to `Replace`: the expected value must already be created, comparable, and equal to the current singleton. An unresolved, non-comparable, or changed value returns an error without adding protection. More than one expected value is rejected, and both forms must run before Finalize.
 
-`AdoptValue[T](validate)` is the registration-time read that framework integrations (`store.Register`, `worker.Register`) use to take ownership of a value the composition root supplied ahead of them: read the existing pre-built binding → validate → atomic compare-and-protect of the accepted instance. Protection follows successful validation, never the read itself, so a rejected instance (a typed-nil Registry, for example) stays replaceable and repairable through `Replace`. A `Replace` or `Finalize` that wins during validation makes the adoption fail instead of protecting or returning a stale instance. Constructors run only after Finalize, so a constructor binding is rejected without being invoked; there is no general early-resolve exemption. `Has[T]` is the non-adopting existence query for optional wiring (for example, "is a worker pool registered yet?"); it never constructs, protects or claims that an instance is usable.
+`AdoptValue[T](validate)` is the registration-time read that the worker integration (`worker.Register`) uses to take ownership of a value the composition root supplied ahead of it: read the existing pre-built binding → validate → atomic compare-and-protect of the accepted instance. Store registration reads nothing from the container; it names a binding ([store spec](store.md#registration)). Protection follows successful validation, never the read itself, so a rejected instance (a typed-nil value, for example) stays replaceable and repairable through `Replace`. A `Replace` or `Finalize` that wins during validation makes the adoption fail instead of protecting or returning a stale instance. Constructors run only after Finalize, so a constructor binding is rejected without being invoked; there is no general early-resolve exemption. `Has[T]` is the non-adopting existence query for optional wiring (for example, "is a worker pool registered yet?"); it never constructs, protects or claims that an instance is usable.
 
 `Replace[T]` transfers ownership explicitly. On success the container owns the new value and stops tracking the superseded one: an already-created instance (a pre-built value) is returned with `existed == true` and its cleanup — including its `Shutdown` when it is a `credo.Component` — becomes the caller's responsibility, and a Warn log (`credo: Replace superseded a component; the caller now owns its shutdown`) names the type when that instance is a component. A superseded constructor binding that never ran yields the zero value and `false`; Replace never constructs an old provider merely to return it. A rejected replacement changes neither the binding nor ownership. `MustReplace` returns the same previous-instance information and panics on error.
 
@@ -402,7 +402,7 @@ Contract rules enforced by `BindMany`, each violation a panic at the call:
 
 The container has four phases:
 
-1. **Bootstrap** --- `Provide`, `ProvideValue` and `ProvideProtectedValue` with their registration options, `ProtectBinding`, `AdoptValue`, `Replace`, `Alias`, `BindMany` and `Manage` are allowed; `Has` and `CanProvideValue` observe without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase, and the framework's registration helpers (`store.Register`, `worker.Register`) read pre-built values only through `AdoptValue`.
+1. **Bootstrap** --- `Provide`, `ProvideValue` and `ProvideProtectedValue` with their registration options, `ProtectBinding`, `AdoptValue`, `Replace`, `Alias`, `BindMany` and `Manage` are allowed; `Has` and `CanProvideValue` observe without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase, and the worker registration helpers read pre-built values only through `AdoptValue`; `store.Register` reads nothing from the container.
 2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `Alias` and `BindMany` panic at the call, and `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue` and `Replace` return an error naming the call and the phase. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error. Finalize is DI-only: routes, hooks, renderers and other HTTP registrations stay open until the App prepares to serve, so controllers built from resolved services can still be wired afterwards (see the [lifecycle spec](lifecycle.md#preparation)).
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()`, `app.RunContext()`, `app.ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly.
 4. **Closing** --- the drain freezes the container when it begins and enters closing when the internal tier's components begin to stop, after the HTTP drain, the ingress tier and the internal stop hooks ([lifecycle spec](lifecycle.md#shutdown-in-tiers)). New `Resolve` calls, cached results included, return an error wrapping `credo.ErrDIClosed`; builds already admitted are tracked for cleanup even when their caller's delivery loses to closing. The closing check precedes the failed-Finalize check, so teardown rejection wins even after a failed Seal. A never-finalized container can still be shut down (bootstrap teardown): the cleanup graph is derived from the frozen registrations and current instances without requiring successful validation.
@@ -465,7 +465,7 @@ The validation report is deterministic: the same wiring yields the same error te
 
 `Finalize` also reports an internal component that depends on an ingress one, directly or through bindings that are not components, with the path and both remedies — declare the dependent ingress, or split the ingress component so that what internal components use is an internal part. A component found only on its built value is internal and is checked when it is built: such a component that depends on an ingress one fails its construction with the same message.
 
-**Accepted, pending implementation (v0.24.0, W5).** `Finalize` also reports a store registration whose type has no binding.
+`Finalize` also reports a store registration whose type has no binding — neither a direct binding nor an interface an `Alias` names: `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` ([store spec](store.md#registration)).
 
 ### Resolution (root package)
 
@@ -679,6 +679,7 @@ internal/di/
 +-- resource.go       <- resource identity, holder agreement on owner and teardown kind
 +-- manage.go         <- Manage (values and constructors that are not bindings), HasStartWork
 +-- start.go          <- StartPlan: the start walk's order per tier
++-- step.go           <- StartStep: start work a framework registration runs on a binding's value (a store's ping); Finalize reports a step whose type has no binding
 +-- shutdown.go       <- BeginTeardown/StopTier/TeardownReport: tiers, closing, bounded calls, late cleanup
 +-- errors.go         <- ErrClosed, MisuseError, PanicError, ShutdownError/Entry/State
 +-- provider.go       <- provider strategies (constructor/value)

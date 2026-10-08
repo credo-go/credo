@@ -2,11 +2,14 @@ package credo_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/store"
 )
 
 func newTestLogger(t *testing.T) (*slog.Logger, *bytes.Buffer) {
@@ -45,4 +48,32 @@ func mustFinalize(t *testing.T, app *credo.App) {
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize() = %v", err)
 	}
+}
+
+// startServing runs the App's start phase, so it can be served through
+// ServeHTTP, and shuts it down when the test ends.
+func startServing(t *testing.T, app *credo.App) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		_ = app.Shutdown(ctx)
+	})
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("App.Start() = %v", err)
+	}
+}
+
+// readinessStore is a store whose health is fixed.
+type readinessStore struct{ health store.Health }
+
+func (*readinessStore) Ping(context.Context) error            { return nil }
+func (*readinessStore) Shutdown(context.Context) error        { return nil }
+func (s *readinessStore) Health(context.Context) store.Health { return s.health.Clone() }
+
+// registerReadinessStore binds a store with the given health and registers
+// it under name.
+func registerReadinessStore(app *credo.App, name string, health store.Health) {
+	app.ProvideValue(&readinessStore{health: health})
+	store.Register[*readinessStore](app, store.WithName(name))
 }

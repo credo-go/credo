@@ -25,50 +25,27 @@
 //
 // # Registration
 //
-// Use [Register] to register a data store connection in the DI container
-// with automatic ping, lifecycle tracking, and health aggregation:
+// A store is bound like any other component — app.ProvideValue, or
+// app.Provide with a constructor, with credo.Borrowed() for a handle the
+// caller shares — and [Register] adds that binding to the App's stores:
 //
-//	store.Register[*sqldb.DB](app, db)
+//	app.ProvideValue(db)
+//	store.Register[*sqldb.DB](app)
 //
-// A value that implements [Lifecycle] is framework-owned after Register
-// succeeds; the DI container is its sole framework shutdown owner. During one
-// teardown DI makes at most one Shutdown attempt if the still-live shutdown
-// context reaches that registration. A deadline exhausted earlier may leave it
-// uncalled. A value that cannot implement Lifecycle may supply its health
-// handle with [WithLifecycle] only together with
-// [WithCallerOwnedLifecycle]; in that explicit mode the caller remains
-// responsible for shutdown. Ownership never transfers on a failed registration.
+// Register performs no I/O. The start phase resolves the binding once, after
+// Finalize and so after every override, and pings it before the components
+// that depend on it start; a failed ping fails the start. A registration
+// whose type has no binding fails Finalize. Shutdown follows the binding: the
+// App shuts the store down after its consumers unless it is borrowed.
 //
-// Registration validates the local DI state and reserves the store name, value
-// type, and resource identity before Ping. By default the Lifecycle value
-// itself is the identity; pointer-backed implementations are recommended.
-// Semantic wrappers around another resource implement
-// [LifecycleIdentityProvider] and return the underlying pointer or another
-// stable token. Embedding a provider promotes that method through ordinary Go
-// method promotion; there is no reflective field scanning. Within one
-// Registry, the same identity cannot be registered under another type or
-// ownership mode; use credo.App.Alias for interface access to an existing
-// registration.
-// Pending reservations are invisible to [Registry] readers and readiness; the
-// health entry becomes visible only after Ping and DI publication both
-// succeed. The successful value binding and validated Registry binding are
-// protected against credo.App.Replace so DI cannot diverge from
-// lifecycle/readiness state. A composition-root Registry value is adopted
-// through credo.App.AdoptValue, which validates it and atomically protects
-// that same binding; a replacement racing the adoption fails it without
-// protecting the replacement, and a Registry registered through a constructor
-// is rejected without being invoked. [Registry] exposes [Registry.HealthAll]
-// as a read-only view and has no public mutation API.
+// Several bindings may hold one physical resource — a *sqldb.DB bound raw and
+// a wrapper type that embeds it. A value that names its resource through
+// credo.ResourceIdentifier shares one teardown with the other holders of that
+// resource, which happens once, after the last holder retires. Only a value
+// without state of its own to release may share an identity.
 //
-// Identity uniqueness covers only resources registered through [Register].
-// Publishing the same Lifecycle again through raw credo.App.Provide,
-// credo.App.ProvideValue, credo.App.ProvideProtectedValue, or
-// credo.App.Replace is unsupported and can
-// create contradictory ownership or multiple shutdown attempts. In particular,
-// a caller-owned lifecycle handle must not also be registered in DI as a
-// component.
-//
-// Registered stores contribute stable readiness probes. Named and store checks
+// Every pinged store contributes a stable readiness probe, built once at
+// start; nothing is resolved per readiness request. Named and store checks
 // run in parallel with enforced per-check deadlines and panic isolation.
 // [Health.Cause] carries typed diagnostics for logging while remaining excluded
 // from JSON; free-form Details values are never interpreted as error causes.

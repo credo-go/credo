@@ -116,17 +116,16 @@ func TestQUERY_ContentTypeRequired(t *testing.T) {
 
 func TestQUERY_ContentTypeRequiredUsesI18n(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Messages: credo.I18nMessages{
 			"content_type_required": "QUERY içeriğinin türü belirtilmelidir.",
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	app.QUERY("/search", func(*credo.Context) error {
 		t.Fatal("application handler was called")
 		return nil
 	})
+	startServing(t, app)
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest("QUERY", "/search", nil))

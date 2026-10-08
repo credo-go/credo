@@ -123,6 +123,9 @@ type App struct {
 	// setup included) so a second call is rejected.
 	i18nRegistered bool
 
+	// stores holds the store registrations in registration order.
+	stores []*storeSlot
+
 	// healthEngine holds the health check engine (nil if UseHealth not called).
 	healthEngine *internalhealth.Engine
 

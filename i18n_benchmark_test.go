@@ -1,6 +1,7 @@
 package credo_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,14 +26,22 @@ func newI18nBenchApp(b *testing.B) *credo.App {
 		},
 	}
 
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   fsys,
 		Default: "en",
-	}); err != nil {
-		b.Fatal(err)
-	}
+	})
 
 	return app
+}
+
+// startI18nBenchApp runs the start phase, which reads the catalogs, once the
+// benchmark's routes are registered.
+func startI18nBenchApp(b *testing.B, app *credo.App) {
+	b.Helper()
+	b.Cleanup(func() { _ = app.Shutdown(context.WithoutCancel(b.Context())) })
+	if err := app.Start(b.Context()); err != nil {
+		b.Fatal(err)
+	}
 }
 
 func BenchmarkUseI18n_T(b *testing.B) {
@@ -44,6 +53,7 @@ func BenchmarkUseI18n_T(b *testing.B) {
 	r := httptest.NewRequest("GET", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
 	w := newNoopResponseWriter()
+	startI18nBenchApp(b, app)
 	benchExpect(b, app, r, http.StatusOK, "zorunludur")
 
 	b.ReportAllocs()
@@ -67,6 +77,7 @@ func BenchmarkUseI18n_ValidationError(b *testing.B) {
 	r := httptest.NewRequest("POST", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
 	w := newNoopResponseWriter()
+	startI18nBenchApp(b, app)
 	benchExpect(b, app, r, http.StatusUnprocessableEntity, "zorunludur")
 
 	b.ReportAllocs()
@@ -85,6 +96,7 @@ func BenchmarkUseI18n_HTTPError(b *testing.B) {
 	r := httptest.NewRequest("GET", "/bench", nil)
 	r.Header.Set("Accept-Language", "tr")
 	w := newNoopResponseWriter()
+	startI18nBenchApp(b, app)
 	benchExpect(b, app, r, http.StatusNotFound, "Bulunamadı")
 
 	b.ReportAllocs()

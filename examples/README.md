@@ -10,12 +10,12 @@ Each runnable example is a separate Go module that replaces Credo with the repos
 
 ## Accepted pre-v1 migration
 
-**DI, router, HTTP and wire minors applied 2026-09-05.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples.
+**DI, router, HTTP and wire minors applied 2026-09-05.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples, and neither did the v0.24.0 store, WebSocket and i18n changes, since no example registers a store, a WebSocket server or i18n.
 
 | Delivery | Hello | SaaS |
 | --- | --- | --- |
-| DI minor, P1–P3 (done) | DI-independent route setup kept; Run prepares implicitly | DI writes finish before an error-checked Finalize; TenantService is resolved afterwards and its routes bound |
-| HTTP minor, P8 (done) | Minimal default profile kept: recovery enabled; request features omitted | Calls UseRequestID, UseAccessLog and UseCompress explicitly; retains UseI18n |
+| DI minor (done) | DI-independent route setup kept; Run prepares implicitly | DI writes finish before an error-checked Finalize; TenantService is resolved afterwards and its routes bound |
+| HTTP minor (done) | Minimal default profile kept: recovery enabled; request features omitted | Calls UseRequestID, UseAccessLog and UseCompress explicitly |
 | User middleware | None required by the example | Keep Secure/CORS global and authentication/authorization on their existing groups |
 | Cleanup | Keep graceful Run exit handling | Capture dependencies in hooks; bootstrap `Shutdown` is available for cleanup on setup errors |
 

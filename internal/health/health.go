@@ -2,8 +2,7 @@ package health
 
 import "time"
 
-// StoreResult holds the outcome of a store health check
-// (provided by store.Registry via [StoreFunc]).
+// StoreResult holds the outcome of a store health check.
 type StoreResult struct {
 	Name    string
 	Status  string
@@ -23,8 +22,7 @@ type StoreCheck struct {
 // StoreFunc returns an in-memory snapshot of independently executable store
 // checks for the readiness endpoint. Implementations must not perform I/O or
 // block; only each StoreCheck.Probe is executed through the bounded runner.
-// store.Register provides one into DI and root resolves it lazily, so
-// registration order does not matter.
+// The root builds the checks once, from the stores the start phase pinged.
 type StoreFunc func() []StoreCheck
 
 // ReadinessCheck is one named readiness contribution from an infrastructure

@@ -131,6 +131,9 @@ type Unit struct {
 	// key is the resource identity of the built value: a comparable token,
 	// or the unit itself. nil until the value exists.
 	key any
+
+	// steps run on the built value before Start; Seal attaches them.
+	steps []StartStep
 }
 
 // Name is the unit's name in reports: a managed component's credo.Named

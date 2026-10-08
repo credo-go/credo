@@ -1,6 +1,8 @@
 package credo
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -89,41 +91,36 @@ type i18nFeature struct {
 	resolver MessageKeyResolver
 }
 
-// UseI18n initializes i18n for the application. It loads locale files and
-// installs the bundle; the request locale is then resolved lazily through
-// [I18nConfig.Detect] on the first [Context.Locale] or translation access of
-// each request — there is no locale middleware.
+// UseI18n installs internationalization for the application. The request
+// locale is resolved lazily through [I18nConfig.Detect] on the first
+// [Context.Locale] or translation access of each request — there is no
+// locale middleware.
+//
+// Registration validates the configuration and compiles the programmatic
+// catalog; it does no I/O. The locale files are read in the start phase,
+// before any component starts, and a read failure is a start failure.
 //
 // Behavior:
 //   - No args or zero-value cfg: reads RawConfig "i18n" key; if absent, uses
 //     defaults (dir="locales/", default="en").
 //   - An implicitly discovered locales/ directory may be absent (inactive).
-//   - An explicit Dir or DirFS must exist and contain at least one message.
+//   - An explicit Dir or DirFS must exist and contain at least one message;
+//     otherwise the start fails.
 //   - Messages/Fields provide one programmatic catalog for Default; external
 //     files override it key by key.
-//   - Malformed files: returns error.
-//   - Valid files: installs the bundle.
+//   - A malformed locale file fails the start.
 //
-// Unlike registration-only setup APIs such as [App.UseHealth], UseI18n reads
-// locale files from disk or an [fs.FS] — an external operation that can fail
-// for reasons other than a programming mistake — so failures are returned as
-// errors rather than panicking. It still panics if called after preparation
-// or shutdown, like all configuration APIs, and when called twice: a
-// completed call — an inactive conventional setup included — consumes the
-// slot, while a call that returned an error leaves it free.
-func (app *App) UseI18n(cfgs ...I18nConfig) error {
+// UseI18n panics, like every Use* registration, on misuse: more than one
+// config, Dir together with DirFS, an "i18n" config section that does not
+// decode, an invalid Default, a programmatic message that does not compile,
+// Fields with no message source, a second call, and a call after preparation
+// or shutdown.
+func (app *App) UseI18n(cfgs ...I18nConfig) {
 	app.checkFrozen("App.UseI18n")
 	if app.i18nRegistered {
 		panic("credo: App.UseI18n called twice")
 	}
-	if len(cfgs) > 1 {
-		return fmt.Errorf("credo: UseI18n accepts at most one config")
-	}
-
-	var cfg I18nConfig
-	if len(cfgs) > 0 {
-		cfg = cfgs[0]
-	}
+	cfg := oneConfig("App.UseI18n", cfgs)
 	dirExplicit := cfg.Dir != ""
 	programmatic := len(cfg.Messages) > 0 || len(cfg.Fields) > 0
 
@@ -135,7 +132,7 @@ func (app *App) UseI18n(cfgs ...I18nConfig) error {
 				Default string `credo:"default"`
 			}
 			if err := app.rawConfig.Unmarshal("i18n", &rc); err != nil {
-				return fmt.Errorf("credo: invalid i18n config: %w", err)
+				panic(fmt.Sprintf("credo: App.UseI18n: invalid i18n config: %v", err))
 			}
 			if rc.Dir != "" {
 				cfg.Dir = rc.Dir
@@ -152,33 +149,44 @@ func (app *App) UseI18n(cfgs ...I18nConfig) error {
 		}
 	}
 	if cfg.Dir != "" && cfg.DirFS != nil {
-		return fmt.Errorf("credo: i18n Dir and DirFS are mutually exclusive")
+		panic("credo: App.UseI18n: Dir and DirFS are mutually exclusive")
 	}
-
+	if len(cfg.Fields) > 0 && len(cfg.Messages) == 0 && cfg.Dir == "" && cfg.DirFS == nil {
+		panic("credo: App.UseI18n: Fields require at least one message")
+	}
 	if cfg.Default == "" {
 		cfg.Default = "en"
 	}
 
-	// Build the complete bundle off to the side. Nothing is published until
-	// every source has been validated and merged successfully.
+	// Compile the programmatic catalog off to the side; the start phase
+	// merges the external source into it.
 	bundle, err := internali18n.NewBundleFromString(cfg.Default)
 	if err != nil {
-		return err
+		panic("credo: App.UseI18n: " + err.Error())
 	}
-	err = bundle.AddStringMessages(cfg.Default, map[string]string(cfg.Messages))
-	if err != nil {
-		return err
+	if err := bundle.AddStringMessages(cfg.Default, map[string]string(cfg.Messages)); err != nil {
+		panic("credo: App.UseI18n: " + err.Error())
 	}
-	err = bundle.AddFields(cfg.Default, map[string]string(cfg.Fields))
-	if err != nil {
-		return err
+	if err := bundle.AddFields(cfg.Default, map[string]string(cfg.Fields)); err != nil {
+		panic("credo: App.UseI18n: " + err.Error())
 	}
 
+	app.installFeature("App.UseI18n", func() {
+		app.i18nRegistered = true
+		app.lifecycle.addFrameworkStep("i18n", func(context.Context) error {
+			return app.loadI18n(bundle, cfg, dirExplicit)
+		})
+	})
+}
+
+// loadI18n is the start step of UseI18n: it reads the external locale
+// source into the compiled bundle and installs the feature, or leaves i18n
+// inactive when conventional discovery finds nothing.
+func (app *App) loadI18n(bundle *internali18n.Bundle, cfg I18nConfig, dirExplicit bool) error {
 	if cfg.Dir != "" && !dirExplicit {
 		if _, statErr := os.Stat(cfg.Dir); statErr != nil {
 			if os.IsNotExist(statErr) {
 				app.logger.Warn("credo: i18n inactive, locale directory not found or empty")
-				app.markI18nRegistered()
 				return nil
 			}
 			return fmt.Errorf("credo: inspect conventional i18n directory: %w", statErr)
@@ -189,16 +197,14 @@ func (app *App) UseI18n(cfgs ...I18nConfig) error {
 	if err != nil {
 		return err
 	}
-	externalExplicit := dirExplicit || cfg.DirFS != nil
-	if externalExplicit && externalMessages == 0 {
-		return fmt.Errorf("credo: explicit i18n source contains no messages")
+	if (dirExplicit || cfg.DirFS != nil) && externalMessages == 0 {
+		return errors.New("credo: explicit i18n source contains no messages")
 	}
 	if !bundle.HasMessages() {
 		if len(cfg.Fields) > 0 {
-			return fmt.Errorf("credo: i18n Fields require at least one message")
+			return errors.New("credo: i18n Fields require at least one message")
 		}
 		app.logger.Warn("credo: i18n inactive, locale directory not found or empty")
-		app.markI18nRegistered()
 		return nil
 	}
 
@@ -206,31 +212,16 @@ func (app *App) UseI18n(cfgs ...I18nConfig) error {
 	if detect == nil {
 		detect = detectAcceptLanguage
 	}
-	f := &i18nFeature{
+	// The start walk completes before the App serves a request, so the
+	// request path reads the feature without synchronization.
+	app.i18n = &i18nFeature{
 		bundle:      bundle,
 		defaultLang: cfg.Default,
 		detect:      detect,
 		resolver:    cfg.ResolveMessageKey,
 	}
-	app.installFeature("App.UseI18n", func() {
-		if app.i18nRegistered {
-			panic("credo: App.UseI18n called twice")
-		}
-		app.i18nRegistered = true
-		app.i18n = f
-	})
 	app.logger.Info("credo: i18n loaded", "default", cfg.Default)
 	return nil
-}
-
-// markI18nRegistered consumes the i18n slot for an inactive setup.
-func (app *App) markI18nRegistered() {
-	app.installFeature("App.UseI18n", func() {
-		if app.i18nRegistered {
-			panic("credo: App.UseI18n called twice")
-		}
-		app.i18nRegistered = true
-	})
 }
 
 // detectAcceptLanguage is the default locale detector.

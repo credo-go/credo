@@ -6,11 +6,11 @@ import (
 )
 
 // StartPlan returns the units of tier the start walk visits, dependencies
-// first with registration order as the tie-break: every unit the App starts
-// or asks for readiness, and every constructor handed to Manage, which the
-// walk builds. A dependency reached through bindings that are not components
-// counts as a direct one. The plan is taken from the registry as it stands;
-// callers take it after Finalize.
+// first with registration order as the tie-break: every unit the App starts,
+// asks for readiness or runs a start step on, and every constructor handed to
+// Manage, which the walk builds. A dependency reached through bindings that
+// are not components counts as a direct one. The plan is taken from the
+// registry as it stands; callers take it after Finalize.
 func (c *Container) StartPlan(tier Tier) []*Unit {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -21,7 +21,7 @@ func (c *Container) StartPlan(tier Tier) []*Unit {
 		if u.Tier() != tier {
 			continue
 		}
-		if u.starts || u.readies || (u.managed && u.entry.state != entryBuilt) {
+		if u.plannedLocked() {
 			in[u] = true
 			plan = append(plan, u)
 		}

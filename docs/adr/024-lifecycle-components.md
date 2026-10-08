@@ -1,6 +1,6 @@
 # ADR-024: Lifecycle Components
 
-**Status:** Accepted, implemented in v0.24.0; the parts by which stores and workers attach as components accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-10-07 **Depends on:** ADR-004, ADR-006, ADR-022 **Related:** ADR-015, ADR-016, ADR-019, ADR-020, ADR-023 **Specification:** [Lifecycle spec](../specs/lifecycle.md), [Container spec](../specs/container.md) **Guide:** [Deployment guide](../guides/deployment.md), [Dependency injection guide](../guides/dependency-injection.md)
+**Status:** Accepted, implemented in v0.24.0; the parts by which workers attach as components accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-10-07 **Depends on:** ADR-004, ADR-006, ADR-022 **Related:** ADR-015, ADR-016, ADR-019, ADR-020, ADR-023 **Specification:** [Lifecycle spec](../specs/lifecycle.md), [Container spec](../specs/container.md) **Guide:** [Deployment guide](../guides/deployment.md), [Dependency injection guide](../guides/dependency-injection.md)
 
 ## Problem
 
@@ -28,7 +28,7 @@ The mix produced defects that no single mechanism could fix:
 
 The App has one lifecycle abstraction, the **component**: a value whose teardown the App owns, ordered by the dependency graph, started when it says it can be started, and asked for readiness when it says it can answer. Every former teardown mechanism became a component or a hook that is one. Workers, stores, the WebSocket server and mounted child Apps attach as components ([ADR-023](023-worker-system.md), [ADR-015](015-data-access.md), [ADR-019](019-websocket-integration-and-drain.md)).
 
-**Accepted, pending implementation (v0.24.0, W5, W6)** for stores and workers. Until W5, `store.Register` keeps its own registration, ownership ledger and readiness seam; until W6, the worker pool is one ingress component, bound by the worker package, that starts every worker on a context derived from `context.WithoutCancel` of its `Start` context and stops them in its `Shutdown`, and worker readiness keeps its seam.
+**Accepted, pending implementation (v0.24.0, W6)** for workers. Until W6, the worker pool is one ingress component, bound by the worker package, that starts every worker on a context derived from `context.WithoutCancel` of its `Start` context and stops them in its `Shutdown`, and worker readiness keeps its seam.
 
 ### The type and its capabilities
 
@@ -54,7 +54,7 @@ type ResourceIdentifier interface {
 
 `Component` never gains a method: discovery is structural, so a type without a new method would leave the graph without a compile error. It grows through optional capabilities, as `database/sql/driver` grows through `Pinger` and `SessionResetter` and `net/http` through `Flusher`. Each capability has a small exported interface named after its method — `Starter`, `Readier`, `ResourceIdentifier` — and a documented default when it is absent. `Readier` follows that rule rather than `ReadinessChecker`, because `HealthChecker` already names the `Check` shape that `AddReadinessCheck` takes, and two "checker" interfaces with different methods would be confused. A capability added after v1 takes a Credo-owned type in its signature, so no method an application already has matches it by accident on an upgrade; `Start` and `Ready` keep plain signatures because they arrive with the model, and the one accidental match that costs something, a double start, is documented (Consequences). A capability reports through `error`, so a richer report — degraded readiness, once health's optional/critical policy lands — is a typed error, not a second method.
 
-`*sqldb.DB` implements `ResourceIdentifier` by returning itself, and a wrapper that embeds it inherits the method. **Accepted, pending implementation (v0.24.0, W5):** `store.LifecycleIdentityProvider`, which has the same method, gives way to `ResourceIdentifier`.
+`*sqldb.DB` implements `ResourceIdentifier` by returning itself, and a wrapper that embeds it inherits the method.
 
 The root exports `credo.Tier` with `TierIngress` and `TierInternal`, for configuration fields and reports that must spell a component's tier; the zero `Tier` is unset and means the registration's default, while `TierIngress` and `TierInternal` are non-zero and encode as the text `"ingress"` and `"internal"`.
 
@@ -82,7 +82,7 @@ The application chooses that teardown, not the order of construction:
 
 Kinds are all the registry can compare: Go does not tell a `Shutdown` that a wrapper inherits from one it declares, so refusing two holders of one kind with different types would refuse the wrapper and the handle it embeds. The choice therefore rests on a contract: only a value without state of its own to release may share an identity. A wrapper that embeds a handle which identifies itself inherits that identity, so a wrapper that releases state of its own holds the handle in a named field instead; a wrapper that forwards an identity promises that it keeps none. This is what lets several instances of one type be wrapper types ([ADR-004](004-dependency-injection-and-infra.md)) while each database is still closed exactly once.
 
-`Manage` of a value whose resource a `ProvideValue` binding holds panics (the resource is already managed through DI), and so does a resource handed to `Manage` twice. **Accepted, pending implementation (v0.24.0, W5):** this rule replaces `store`'s ledger and keeps its refusal of mixed ownership.
+`Manage` of a value whose resource a `ProvideValue` binding holds panics (the resource is already managed through DI), and so does a resource handed to `Manage` twice. This rule replaced `store`'s ledger and keeps its refusal of mixed ownership.
 
 ### Ownership and registration options
 
@@ -142,15 +142,15 @@ The drain order is the tiers' ([Two tiers](#two-tiers)), under one deadline that
 
 ### Readiness
 
-`/ready` aggregates three sources, with no DI resolution per request: the components' `Ready` capabilities, under the components' names, from the values built when the App entered running; the kernel's store registry — each registered store's typed health, from the value the start phase resolved once ([ADR-015](015-data-access.md)); and the application's checks. A borrowed value's `Ready` is aggregated although the App neither starts nor stops it. During the drain `/ready` returns 503 `shutting_down` ([ADR-016](016-health-checks.md)).
+`/ready` aggregates three sources, with no DI resolution per request: the components' `Ready` capabilities, under the components' names, from the values built when the App entered running; the kernel's store registry — each registered store's typed health, from the value the start phase built and pinged once ([ADR-015](015-data-access.md#registration)); and the application's checks. A borrowed value's `Ready` is aggregated although the App neither starts nor stops it. During the drain `/ready` returns 503 `shutting_down` ([ADR-016](016-health-checks.md)).
 
-**Accepted, pending implementation (v0.24.0, W5, W6)** for the store registry and worker readiness: until W5 store health, and until W6 worker readiness, still come from the two internal seams the health engine resolves from the container on every `/ready` request.
+**Accepted, pending implementation (v0.24.0, W6)** for worker readiness: until W6 it still comes from an internal seam the health engine resolves from the container on every `/ready` request.
 
 ### Every way of serving starts the components
 
 `Run`, `RunContext` and `ServeContext` run the start walk. `App.Start(ctx)` prepares the App and runs the start walk without a listener, for an App served through `ServeHTTP` by an external `http.Server` or in a test; `App.Shutdown` stops what it started. Its godoc opens with "Start runs the start phase without a listener; Run, RunContext and ServeContext serve.", because `Start(addr)` listens in other frameworks. `testutil.Start(tb, app)` starts the App and leaves its shutdown to the end of the test.
 
-- An App that has anything to start — a component with `Start` or `Ready`, a constructor handed to `Manage`, a start hook — refuses to serve until the start phase has completed successfully: before `App.Start` is called or while it runs, `ServeHTTP` panics with a message naming `App.Start`, `testutil.Start`, the serving entry points and `parent.Manage(child)`, as it does for a stored preparation error, so a handler never runs against dependencies that were not started. An App with nothing to start serves through `ServeHTTP` as before, preparing on its first request. **Accepted, pending implementation (v0.24.0, W5):** a store registration and i18n catalogs are start work too.
+- An App that has anything to start — a component with `Start` or `Ready`, a constructor handed to `Manage`, a start hook, a store registration, the i18n catalogs `UseI18n` reads — refuses to serve until the start phase has completed successfully: before `App.Start` is called or while it runs, `ServeHTTP` panics with a message naming `App.Start`, `testutil.Start`, the serving entry points and `parent.Manage(child)`, as it does for a stored preparation error, so a handler never runs against dependencies that were not started. An App with nothing to start serves through `ServeHTTP` as before, preparing on its first request.
 - A failed `App.Start` rolls back and leaves the App stopped; a stopped App answers with the default 503 envelope without touching DI, since the caller already has the error.
 - `App.Start` is accepted only while the App is building: a second `App.Start`, or `Run`, `RunContext` or `ServeContext` after it, returns the state error, since the App is single-use.
 - Whoever serves the App through `ServeHTTP` owns that server's admission and drain and completes them before `App.Shutdown`. The rule carries the order: the internal tier stops after the HTTP drain only if that drain has happened.
@@ -167,8 +167,8 @@ Components are start-once; restart remains a worker concern, and supervisor tree
 - `OnShutdown` and its slot after DI teardown. `OnStop` runs before its tier's components stop, under a new name, so the moved slot is a compile error rather than a silent change.
 - `Shutdowner` as a separate name: `Component` has its method set.
 - The DI container's per-binding shutdown, which calls `Shutdown` once per holder of a value. Teardown belongs to the component registry, keyed by resource identity; the container keeps the dependency graph that orders it.
-- The role of `store`'s ownership ledger — `WithCallerOwnedLifecycle` and the identity reservation — replaced by `credo.Borrowed()` and the resource-identity rule; `store.LifecycleIdentityProvider` becomes `credo.ResourceIdentifier` ([ADR-015](015-data-access.md)). **Accepted, pending implementation (v0.24.0, W5).**
-- The two internal readiness seams and their DI resolution on every `/ready` request. **Accepted, pending implementation (v0.24.0, W5, W6).**
+- The role of `store`'s ownership ledger — `WithCallerOwnedLifecycle` and the identity reservation — replaced by `credo.Borrowed()` and the resource-identity rule; `store.LifecycleIdentityProvider` became `credo.ResourceIdentifier` ([ADR-015](015-data-access.md#registration)).
+- The store readiness seam and its DI resolution on every `/ready` request. The worker readiness seam goes too: **accepted, pending implementation (v0.24.0, W6).**
 - The lifecycle context as a contract: `OnStart` receives a context that ends with the call, and the session context the App keeps for reload is internal.
 - The worker's double shutdown path ([ADR-023](023-worker-system.md)): the pool is stopped only by its `Shutdown`.
 - `Shutdown`'s refusal of an App that is starting.

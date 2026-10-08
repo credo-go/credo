@@ -1,13 +1,12 @@
-// Package health defines stable, bounded health probes and the module-internal
-// seam through which integration packages contribute store checks to the root
-// health engine.
+// Package health defines stable, bounded health probes and the readiness
+// engine the root package runs them through.
 //
-// store.Register provides a [StoreFunc] into the DI container; the root package
-// resolves it lazily and hands it to [Engine.CheckReadiness], which runs every
-// stable [Probe] through the same bounded parallel scheduler as named checks.
-// The root package owns the HTTP endpoints, the public registration API, and
-// the response/logging policy; this package owns scheduling, store-result
-// normalization, and name validation. Keeping the seam here makes the wiring
-// invisible to user code because this package cannot be imported from outside
-// the module.
+// The root package builds a [StoreCheck] for every store the start phase
+// pinged and a [ReadinessCheck] for every component that answers Ready, once,
+// and hands them to [Engine.CheckReadiness], which runs every stable [Probe]
+// through the same bounded parallel scheduler as named checks. The root
+// package owns the HTTP endpoints, the public registration API, and the
+// response/logging policy; this package owns scheduling, store-result
+// normalization, and name validation. It cannot be imported from outside the
+// module, so none of this is visible to user code.
 package health

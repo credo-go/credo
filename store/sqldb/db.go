@@ -25,7 +25,8 @@ type DB struct {
 	migratorOpts []migrate.MigratorOption
 }
 
-var _ store.LifecycleIdentityProvider = (*DB)(nil)
+// DB is a credo.ResourceIdentifier.
+var _ interface{ ResourceIdentity() any } = (*DB)(nil)
 
 const maxOpenUnlimitedWarningCode = "sqldb.pool.max_open_unlimited"
 
@@ -36,16 +37,18 @@ type poolConfigurer interface {
 	SetConnMaxIdleTime(time.Duration)
 }
 
-// ResourceIdentity returns the physical DB wrapper used for lifecycle
-// ownership. Semantic wrapper types that embed *DB inherit this method, so
-// store.Register recognizes multiple wrappers around the same DB as one
-// resource.
+// ResourceIdentity names the physical database the DB holds. Wrapper types
+// that embed *DB inherit it, so the App treats a *DB and the wrappers around
+// it as holders of one resource and closes that resource once, after its last
+// holder retires. Only a wrapper without state of its own to release may
+// share the identity; one that releases state of its own holds the *DB in a
+// named field and does not forward it.
 func (db *DB) ResourceIdentity() any {
 	return db
 }
 
 // StoreRegistrationWarningCodes returns secret-safe warning codes that the
-// store integration may emit when registering this database. It returns
+// store integration logs after pinging this database in the start phase. It returns
 // sqldb.pool.max_open_unlimited when the pool's effective maximum is unlimited
 // at inspection time. The returned slice is independent of the DB and may be
 // modified by the caller.

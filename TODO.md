@@ -14,7 +14,7 @@ Scope, sequence and acceptance live in the [delivery plan](docs/plans/components
 - [x] W1: promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
 - [x] W2: sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted (2026-10-08)
 - [x] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
-- [ ] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
+- [x] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
 - [ ] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
 - [ ] W3: the DI surface — seven methods and `Finalize`; protected bindings, `AdoptValue`, `CanProvideValue`, `Replace` and the `Must*` registration twins deleted
 - [ ] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error
@@ -535,7 +535,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 **Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-WebSocket server support is implemented as an adapter rather than copied protocol code. The canonical API stays on the existing router: `ws := websocket.Use(app, cfg)` and `app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect, heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain demand-gated follow-ups rather than MVP promises.
+WebSocket server support is implemented as an adapter rather than copied protocol code. The canonical API stays on the existing router: `ws := websocket.New(app.NewInfra("websocket"), cfg)`, `app.Manage(ws, credo.Ingress())` and `app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect, heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain demand-gated follow-ups rather than MVP promises.
 
 - [x] Credo-owned message/close/config/connection façade over coder/websocket
 - [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off

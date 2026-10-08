@@ -45,8 +45,8 @@ func (s *Server) handle(ctx *credo.Context, handler Handler) error {
 	if err != nil {
 		return err
 	}
-	if !s.acquireToken() {
-		return credo.NewHTTPError(http.StatusServiceUnavailable)
+	if admitErr := s.acquireToken(); admitErr != nil {
+		return admitErr
 	}
 	tokenAttached := false
 	defer func() {

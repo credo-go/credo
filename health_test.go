@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
-	internalhealth "github.com/credo-go/credo/internal/health"
+	"github.com/credo-go/credo/store"
 )
 
 func TestUseHealth_DefaultConfig(t *testing.T) {
@@ -357,16 +357,12 @@ func TestReadiness_ExposeErrorsOptIn(t *testing.T) {
 }
 
 func TestReadiness_StoreIntegration(t *testing.T) {
-	// Store health arrives through the module-internal DI seam, the same
-	// way store.Register provides it.
+	// Store health comes from the probe the start phase built for the
+	// registered store.
 	app := mustNew(t)
-	storeProbe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
-		return internalhealth.Result{Status: "up", Latency: 2 * time.Millisecond}
-	})
-	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
-		return []internalhealth.StoreCheck{{Name: "postgres", Probe: storeProbe}}
-	})
+	registerReadinessStore(app, "postgres", store.Health{Status: store.StatusUp, Latency: 2 * time.Millisecond})
 	app.UseHealth()
+	startServing(t, app)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/ready", nil)
@@ -408,17 +404,13 @@ func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, logs := newTestLogger(t)
 			app := mustNew(t, credo.WithLogger(logger))
-			probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
-				return internalhealth.Result{
-					Status:  "down",
-					Latency: 2 * time.Millisecond,
-					Cause:   errors.New(secret),
-				}
-			})
-			app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
-				return []internalhealth.StoreCheck{{Name: "postgres", Probe: probe}}
+			registerReadinessStore(app, "postgres", store.Health{
+				Status:  store.StatusDown,
+				Latency: 2 * time.Millisecond,
+				Cause:   errors.New(secret),
 			})
 			app.UseHealth(credo.HealthConfig{ExposeErrors: tt.exposeErrors})
+			startServing(t, app)
 
 			w := httptest.NewRecorder()
 			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
@@ -440,13 +432,9 @@ func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
 	const invalidStatus = "dial tcp 10.0.1.5:5432"
 	logger, logs := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger))
-	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
-		return internalhealth.Result{Status: invalidStatus}
-	})
-	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
-		return []internalhealth.StoreCheck{{Name: "bad-adapter", Probe: probe}}
-	})
+	registerReadinessStore(app, "bad-adapter", store.Health{Status: store.HealthStatus(invalidStatus)})
 	app.UseHealth()
+	startServing(t, app)
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
@@ -464,14 +452,10 @@ func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
 
 func TestReadiness_CustomStoreNameCollisionDoesNotOverwrite(t *testing.T) {
 	app := mustNew(t)
-	probe := internalhealth.NewProbe(func(context.Context) internalhealth.Result {
-		return internalhealth.Result{Status: "up"}
-	})
-	app.ProvideValue[internalhealth.StoreFunc](func() []internalhealth.StoreCheck {
-		return []internalhealth.StoreCheck{{Name: "database", Probe: probe}}
-	})
+	registerReadinessStore(app, "database", store.Health{Status: store.StatusUp})
 	app.UseHealth()
 	app.AddReadinessCheck("database", credo.HealthCheckFunc(func(context.Context) error { return nil }))
+	startServing(t, app)
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))

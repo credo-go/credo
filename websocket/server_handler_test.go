@@ -28,7 +28,29 @@ func newHandlerTestApp(t *testing.T, cfg ...Config) (*credo.App, *Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return app, Use(app, cfg...)
+	return app, useTestServer(app, cfg...)
+}
+
+// useTestServer builds a server on app's logger and registers it as an
+// ingress component, as an application does.
+func useTestServer(app *credo.App, cfg ...Config) *Server {
+	server := New(credo.Infra{Logger: app.Logger()}, cfg...)
+	app.Manage(server, credo.Ingress())
+	return server
+}
+
+// startTestApp runs app's start phase, which opens the server's admission,
+// and shuts the App down when the test ends.
+func startTestApp(t *testing.T, app *credo.App) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		_ = app.Shutdown(ctx)
+	})
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("App.Start() = %v", err)
+	}
 }
 
 func validHandlerTestRequest(method string) *http.Request {
@@ -74,6 +96,7 @@ func TestServerHandlerRealConnection(t *testing.T) {
 		return conn.Write(conn.Context(), typ, data)
 	})).Name("echo")
 
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	t.Cleanup(httpServer.Close)
 	client, err := dialHandlerTest(
@@ -151,6 +174,7 @@ func TestServerHandlerRouterMiddlewareAndAuthIntegration(t *testing.T) {
 		mark("route"),
 	)
 
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/legacy/events"
@@ -195,6 +219,7 @@ func TestServerHandlerTrailingSlashRedirectPrecedesUpgrade(t *testing.T) {
 		handlerRan.Store(true)
 		return nil
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 
@@ -266,6 +291,7 @@ func TestServerHandlerPreAcceptFailuresUseErrorEnvelope(t *testing.T) {
 		},
 		{name: "non hijacker", want: http.StatusNotImplemented},
 	}
+	startTestApp(t, app)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			method := http.MethodGet
@@ -315,6 +341,7 @@ func TestServerHandlerPreAcceptFailuresUseErrorEnvelope(t *testing.T) {
 func TestServerHandlerValidationPrecedesDraining(t *testing.T) {
 	app, server := newHandlerTestApp(t, Config{Subprotocols: []string{"chat"}})
 	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
+	startTestApp(t, app)
 	if err := server.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -352,6 +379,7 @@ func TestServerHandlerActualHijackFailureDoesNotPublishSecondBody(t *testing.T) 
 	wantErr := errors.New("hijack failed")
 	base := newCoderHandshakeRecorder()
 	w := &coderHijackRecorder{coderHandshakeRecorder: base, hijackErr: wantErr}
+	startTestApp(t, app)
 	app.ServeHTTP(w, validHandlerTestRequest(http.MethodGet))
 	if len(base.statuses) != 1 || base.statuses[0] != http.StatusSwitchingProtocols {
 		t.Fatalf("statuses = %v, want [101]", base.statuses)
@@ -391,6 +419,7 @@ func TestServerAdmissionTokenPrecedesAcceptAndBlocksDrainCompletion(t *testing.T
 		release:                make(chan struct{}),
 	}
 	serveDone := make(chan struct{})
+	startTestApp(t, app)
 	go func() {
 		app.ServeHTTP(w, validHandlerTestRequest(http.MethodGet))
 		close(serveDone)
@@ -447,6 +476,7 @@ func TestServerHandlerApplicationErrorAndPanicClose1011(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			app, server := newHandlerTestApp(t)
 			app.GET("/ws", server.Handler(tc.handler))
+			startTestApp(t, app)
 			httpServer := httptest.NewServer(app)
 			defer httpServer.Close()
 			client, err := dialHandlerTest(
@@ -542,6 +572,7 @@ func TestServerShutdownDrainsHandlerAndIsStable(t *testing.T) {
 		_, _, err := conn.Read(conn.Context())
 		return err
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(
@@ -583,6 +614,7 @@ func TestServerShutdownDeadlineIsIncompleteThenEventuallyClosed(t *testing.T) {
 		<-releaseHandler
 		return nil
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(
@@ -634,6 +666,7 @@ func TestServerShutdownWaiterCancellationDoesNotChangeOwner(t *testing.T) {
 		<-releaseHandler
 		return nil
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(
@@ -696,7 +729,7 @@ func TestManagedDrainFinishesHandlerBeforeInternalComponents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Use(app)
+	server := useTestServer(app)
 	resource := &handlerTestResource{}
 	resource.alive.Store(true)
 	app.ProvideValue[*handlerTestResource](resource)
@@ -750,6 +783,7 @@ func TestServerHandlerWSSAndHTTP2Negative(t *testing.T) {
 		requestProto.Store(int32(ctx.Request().ProtoMajor))
 		return nil
 	}))
+	startTestApp(t, app)
 	tlsServer := httptest.NewUnstartedServer(app)
 	tlsServer.EnableHTTP2 = true
 	tlsServer.StartTLS()
@@ -789,6 +823,7 @@ func TestServerHandlerThroughCompressionFeature(t *testing.T) {
 	app, server := newHandlerTestApp(t)
 	app.UseCompress()
 	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(
@@ -814,6 +849,7 @@ func TestServerHandlerDetachesCredoRequestTimeout(t *testing.T) {
 			return context.Cause(conn.Context())
 		}
 	})).Middleware(middleware.Timeout(middleware.TimeoutConfig{Timeout: time.Millisecond}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	client, err := dialHandlerTest(

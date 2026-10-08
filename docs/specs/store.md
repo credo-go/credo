@@ -1,6 +1,6 @@
 # Store Spec
 
-**Status**: Implemented; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Package**: `store/` (core contracts), `store/sqldb/` (Bun wrapper, separate submodule) **Sources**: GoFr (Apache-2.0, health/interface design), Goyave (MIT, connection patterns) **ADRs**: [015-data-access.md](../adr/015-data-access.md)
+**Status**: Implemented **Package**: `store/` (core contracts), `store/sqldb/` (Bun wrapper, separate submodule) **Sources**: GoFr (Apache-2.0, health/interface design), Goyave (MIT, connection patterns) **ADRs**: [015-data-access.md](../adr/015-data-access.md)
 
 ---
 
@@ -14,7 +14,7 @@ Implementation-level details for Credo's data access layer are defined in this f
 
 Credo's data access layer is split into two packages:
 
-- **`store/`** — universal contracts with zero external dependencies. Part of the main `github.com/credo-go/credo` module. Defines error sentinels, lifecycle/health interfaces, a connection registry, registration API, and context-based TX helpers.
+- **`store/`** — universal contracts with zero external dependencies. Part of the main `github.com/credo-go/credo` module. Defines error sentinels, lifecycle/health interfaces, the store registration API, and context-based TX helpers.
 - **`store/sqldb/`** — Bun SQL wrapper in a separate Go submodule (`github.com/credo-go/credo/store/sqldb`). Wraps `*bun.DB` with lifecycle management, query builder proxies, error mapping, and transaction management.
 
 Key design properties:
@@ -32,14 +32,8 @@ Key design properties:
 2. **Context-based TX**: `db.InTx` / `RunInTx` plus a per-connection `TxScope[T]` provide opt-in transaction participation without concrete/interface fallback or same-type multi-DB collisions. Repositories that don't need TX are unaffected.
 3. **3-tier Bun wrapping**: Own lifecycle, enrich queries (TX injection and error mapping), passthrough via `Client()`; DB-level tracing hooks remain planned for Phase 3.5.
 4. **Clean module boundary**: `store/` is stdlib-only in the main module. `store/sqldb/` is a separate submodule with the Bun dependency.
-5. **Unified registration**: `store.Register[R]` validates and reserves locally,
-   then commits protected DI registration and Registry visibility only after
-   Ping succeeds. Name, type, and declared resource identity are unique within
-   the store Registry ledger.
-6. **Lifecycle management**: direct `Lifecycle` values become framework-owned
-   only after successful registration; separate handles require an explicit
-   caller-owned opt-out. DI is the sole framework shutdown owner, subject to
-   the teardown deadline; the Registry aggregates health and never closes resources.
+5. **Two-call registration**: the application binds the store where its ownership is decided (`ProvideValue`, or `Provide` with a constructor, `credo.Borrowed()` for a shared handle) and `store.Register[R]` names that binding by type. Registration performs no I/O; the start phase pings the store before its consumers start, and `/ready` reports it.
+6. **Lifecycle follows the binding**: a store is a component like any other — the App shuts it down after its consumers unless it is borrowed, and the holders of one physical resource share one teardown through `credo.ResourceIdentifier`. Store registration itself never closes anything.
 7. **Escape hatches**: `DB.Conn(ctx) bun.IDB` for transaction-aware native Bun operations; `Client() *bun.DB` for model registration, migrations, and work intentionally tied to the base pool.
 8. **Migrations without a second engine**: a thin wrapper over `bun/migrate` (`RegisterMigrations` + `Migrate`) whose signature plugs straight into `app.OnStart` — no goose, no new dependency.
 
@@ -102,40 +96,17 @@ phase outcome model is deferred until reliable evidence is available.
 ### Lifecycle Interface
 
 ```go
-// Lifecycle manages connection health and shutdown.
-// Adapters implement this interface for use with Register[R].
+// Lifecycle is the contract a data store binding meets for Register[R]: the
+// start phase pings it, /ready reports its health, and the App shuts it down
+// after its consumers, as it does every component.
 type Lifecycle interface {
     Ping(ctx context.Context) error
     Shutdown(ctx context.Context) error
     Health(ctx context.Context) Health
 }
-
-// LifecycleIdentityProvider is an optional extension for a Lifecycle wrapper
-// that represents another physical resource.
-type LifecycleIdentityProvider interface {
-    Lifecycle
-    ResourceIdentity() any
-}
 ```
 
-Register needs a stable, comparable resource key to reject contradictory
-ownership inside its Registry ledger:
-
-- The default identity is the top-level Lifecycle value itself. Pointer-backed
-  implementations are the normal and recommended shape. A pointer to a
-  composite Lifecycle remains a valid identity; Credo does not inspect its
-  fields.
-- A semantic or named-field wrapper that represents another resource implements
-  `LifecycleIdentityProvider` and returns that resource's pointer or another
-  explicit token. An embedded `*sqldb.DB` inherits `ResourceIdentity` by normal
-  Go method promotion, not framework reflection.
-- A token must be non-nil, comparable, reflexively equal to itself, and stable
-  for the resource lifetime. Non-pointer values/tokens are allowed only when
-  they satisfy those rules. A slice/map-bearing value without an explicit
-  token and non-reflexive values such as NaN fail before Ping.
-
-No struct-field scanning or automatic contained-Lifecycle inference occurs.
-Correct identity forwarding is part of a semantic wrapper's contract.
+`Lifecycle` includes `Shutdown`, so every store binding is a [component](lifecycle.md#components-and-the-start-phase). An implementation that represents a resource another value also holds — a wrapper over a `*sqldb.DB` — shares its teardown through the root's identity capability `credo.ResourceIdentifier` (`ResourceIdentity() any`); see [Resource identity](#resource-identity). A value that cannot implement `Lifecycle` is registered through a wrapper type that does: the wrapper is the binding, and its `Ping`, `Health` and `Shutdown` act on one value.
 
 ### Health
 
@@ -166,202 +137,35 @@ Readiness responses do not serialize adapter `Details`; pool statistics remain
 available to application code and future metrics without becoming a public
 probe-response schema.
 
-### Registry
-
-The `Registry` tracks successfully registered data stores for health
-aggregation. It is created automatically on the first `Register` call and
-stored in the DI container; a composition root may also provide its own empty
-Registry value or constructor before registration.
-
-Behavior:
-
-- `HealthAll(ctx)` — return defensive health snapshots keyed by name (direct
-  compatibility API; the root readiness endpoint instead consumes stable
-  per-entry probes so stores can run concurrently and independently)
-- Registration privately reserves the store name, DI value type, and declared
-  resource identity. Pending entries are invisible to `HealthAll` and
-  readiness and are committed only after Ping and DI publication both succeed.
-
-The Registry has no public mutation method: bypassing `Register` would also
-bypass Ping, DI publication, and shutdown ownership. It does not close
-connections. The Registry DI binding is protected against `App.Replace` once
-store integration adopts it, so the readiness seam cannot diverge from the
-resolved Registry. For framework-owned values, DI is the sole framework
-shutdown owner: it closes singletons in dependency order (consumers before the
-resources they were constructed from) and makes at most one bounded Shutdown
-attempt per teardown when the still-live deadline reaches that entry. If the
-deadline is exhausted first, the entry may receive no attempt and is reported.
-
-```go
-// Registry exposes health snapshots for successfully registered stores.
-// It does not close connections; shutdown follows the ownership mode
-// selected by Register.
-type Registry struct { /* fields unexported */ }
-
-func (r *Registry) HealthAll(ctx context.Context) map[string]Health
-```
-
-### Registration API
+### Registration
 
 ```go
 const DefaultPingTimeout = 5 * time.Second
 
-// Register registers value as type R in DI, pings the connection,
-// and tracks it in the Registry for lifecycle and health management.
-//
-// A value that implements Lifecycle is framework-owned after success.
-// A separate Lifecycle handle requires an explicit caller-owned opt-out.
-func Register[R any](app *credo.App, value R, opts ...RegisterOption) error
-```
-
-Steps:
-
-1. **Validate locally** — validate the value, options, canonical health name,
-   lifecycle/ownership combination, and the point-in-time DI ability to
-   provide `R`. Predictable local failures happen before network I/O.
-2. **Ensure Registry** — resolve or create the Registry and idempotently bind
-   the internal readiness seam to that exact instance.
-3. **Reserve** — privately reserve the name, `R` type, and validated resource
-   identity. Existing or pending duplicates fail before Ping; the
-   reservation is not visible to readers.
-4. **Re-check DI and Ping** — re-check the point-in-time DI preflight after
-   infrastructure setup, then call Ping with a deadline-scoped context.
-   `Lifecycle.Ping` must honor `ctx`; Register calls it synchronously and cannot
-   hard-bound a non-cooperative implementation.
-5. **Publish and commit** — `ProvideProtectedValue[R]` remains authoritative
-   against an external concurrent registration/finalization and prevents a
-   later `Replace[R]` from detaching DI from lifecycle/health state. Only a
-   successful DI publication commits the Registry entry; every failure
-   releases the pending reservation.
-6. **Emit registration diagnostics** — after a successful commit, a value that
-   reports registration warning codes is logged once per code through the
-   app's structured logger. `sqldb.DB` reports
-   `sqldb.pool.max_open_unlimited` when the effective pool maximum is still
-   unlimited at inspection time; failed registrations do not emit a
-   misleading success-time warning.
-
-Shutdown ownership is explicit:
-
-- When `value` implements `Lifecycle`, that same value supplies Ping, Health,
-  and Shutdown. Ownership transfers to the framework only when `Register`
-  succeeds. The App is the sole framework shutdown owner: the binding of `R`
-  is an internal [component](lifecycle.md#components-and-the-start-phase),
-  stopped after its consumers. During one teardown it gets at most one
-  `Shutdown(ctx)` attempt if the still-live deadline reaches it; it may get
-  none when the deadline expires first.
-- A value that cannot implement `Lifecycle` may use `WithLifecycle(lc)` only
-  together with `WithCallerOwnedLifecycle()`. The handle supplies Ping and
-  Health, but the caller retains Shutdown responsibility and closes it after
-  everything that uses the store has stopped — for example after `Run`
-  returns; a value handed to `app.Manage` has no dependency edges, so the
-  drain could close it before its consumers. `WithLifecycle` alone is an
-  error.
-- A `Lifecycle` value combined with either explicit option is rejected, as is
-  a component value (Shutdown without Lifecycle) combined with a separate
-  lifecycle. Ping/Health and
-  Shutdown cannot silently target different objects.
-
-On every failure, including Ping or authoritative DI publication failure,
-ownership remains with the caller. No value binding or health entry is
-committed. The Registry/readiness seam established during infrastructure setup
-may remain as empty idempotent framework infrastructure.
-
-Identity equality is enforced only among entries and pending reservations in
-this `store.Register` Registry. The top-level Lifecycle value is the default
-identity. Concrete/interface views of the same pointer therefore collide, and
-wrappers that explicitly return the same `ResourceIdentity` token collide
-across wrapper and ownership modes. There is deliberately no field scanning:
-a named wrapper must forward identity explicitly, while an embedded
-`*sqldb.DB` inherits the adapter's method through Go promotion. A composite
-pointer Lifecycle is valid as its own resource. When another interface should
-resolve to the same store, register the concrete type once and use
-`app.Alias[I, T]()`; an alias does not create another health entry or shutdown
-owner.
-
-This is not a container-wide resource ledger. Publishing the same lifecycle
-again under another T with raw `app.Provide`, `app.ProvideValue`,
-`app.ProvideProtectedValue`, or `app.Replace` is unsupported
-and can produce contradictory ownership or multiple Shutdown attempts. A
-caller-owned handle must not also be registered in DI as a component. A
-general resource registry across store, pubsub, gRPC, workers, and other
-infrastructure remains deferred until a second concrete consumer requires it.
-
-The module-internal readiness seam is idempotently replaced around the
-adopted Registry during registration. A Registry value provided earlier by the
-composition root is read through `app.AdoptValue[*Registry]`, which validates
-that it is non-nil and atomically protects that same binding against `Replace`;
-a replacement or Finalize that wins during validation fails the adoption
-without protecting the replacement. A typed-nil value is left unprotected so
-composition can repair it with `Replace` before Finalize and retry. A Registry
-registered through a constructor is rejected with an explanatory error and the
-constructor is never invoked — constructors run only after Finalize — so the
-binding stays repairable with a ready value. An interrupted seam publish can be
-retried without creating a second Registry.
-
-`app.CanProvideValue[R]()` is a non-mutating, point-in-time preflight for the
-container's frozen and duplicate-type checks. It is not a reservation: an
-external concurrent mutation may still make the final protected publication
-fail.
-
-Both a successfully registered `R` and a validated/adopted `*Registry` direct
-binding are protected. `app.Replace[R]` and
-`app.Replace[*store.Registry]` therefore return an error after store adoption
-instead of creating an untracked resource or disconnecting readiness from the
-Registry. Invalid Registry bindings remain replaceable until adoption. The
-repair must occur before Finalize. The low-level protection APIs are documented
-in ADR-004; normal application bindings remain replaceable.
-
-```go
-type RegisterOption func(*registerOptions)
-
-// WithName sets the canonical health name. Explicit empty, padded,
-// control-character, and reserved credo.* names are rejected.
-// If omitted, the pointer-unwrapped package-qualified named type is used.
-func WithName(name string) RegisterOption
-
-// WithPingTimeout overrides the Ping context deadline (default 5s).
-// Lifecycle.Ping must honor ctx; Register invokes it synchronously.
-func WithPingTimeout(d time.Duration) RegisterOption
-
-// WithLifecycle supplies Ping and Health for a value that does not implement
-// Lifecycle. It is valid only with WithCallerOwnedLifecycle.
-func WithLifecycle(lc Lifecycle) RegisterOption
-
-// WithCallerOwnedLifecycle explicitly keeps shutdown ownership with the
-// caller. It is valid only together with WithLifecycle.
-func WithCallerOwnedLifecycle() RegisterOption
-```
-
-Names share the same validator as named liveness/readiness checks. They are
-never normalized: empty names, leading/trailing whitespace, control
-characters, and the reserved `credo.` prefix are rejected. Omitting
-`WithName` is distinct from `WithName("")`; the default unwraps pointer layers
-and uses the package-qualified name of a named type. Unnamed `R` values must
-provide `WithName`.
-
-> **Health/readiness options** (`WithCritical`, `WithTags`) remain deferred to
-> [ADR-016](../adr/016-health-checks.md). All stores are currently critical;
-> both `DOWN` and `DEGRADED` make readiness return 503.
-
-### Registration on the Kernel
-
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces goals 5 and 6, the `LifecycleIdentityProvider` part of the Lifecycle Interface section, the Registry and Registration API sections, the `registry.go` and `register.go` lines of the file layout, the Registration and Multi-Database examples, design decisions 7, 8, 10, 12 and 13, and the Registry and registration test requirements of `store/` (core). The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md#registration-on-the-kernel).
-
-```go
-const DefaultPingTimeout = 5 * time.Second
-
-// Register adds the binding of R to the App's store registry. It performs no
-// I/O and holds no value: the start phase resolves R once, pings it, and keeps
-// it for readiness. Misuse panics.
+// Register adds the binding of R to the App's store registrations. It
+// performs no I/O and holds no value: the start phase resolves R once, pings
+// it, and keeps it for readiness. Misuse panics.
 func Register[R Lifecycle](app *credo.App, opts ...RegisterOption)
 
 type RegisterOption func(*registerOptions)
 
+// WithName sets the stable identifier used in health reporting. Explicit
+// empty, padded, control-character, and reserved credo.* names are rejected.
+// If omitted, the pointer-unwrapped package-qualified named type is used.
 func WithName(name string) RegisterOption
+
+// WithPingTimeout overrides the deadline (default 5s) of the ping the start
+// phase sends the store. Lifecycle.Ping must honor ctx.
 func WithPingTimeout(d time.Duration) RegisterOption
 ```
 
-`Lifecycle` is unchanged. `LifecycleIdentityProvider` leaves `store`: it becomes the root's identity capability `credo.ResourceIdentifier` ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)) with the same method, `ResourceIdentity() any`, and `*sqldb.DB` keeps implementing it by returning itself. `WithLifecycle`, `WithCallerOwnedLifecycle`, the private reservations and the `Registry` type with its DI binding are deleted; `Registry.HealthAll` reported what `/ready` reports, and one store's health is the value's own `Health`.
+Names share the same validator as named liveness/readiness checks. They are never normalized: empty names, leading/trailing whitespace, control characters, and the reserved `credo.` prefix are rejected. Omitting `WithName` is distinct from `WithName("")`; the default unwraps pointer layers and uses the package-qualified name of a named type (`*sqldb.DB` → `sqldb.DB`). An `R` without a stable default name — an unnamed type — must provide `WithName`.
+
+There is no store registry API: `/ready` reports the registered stores, and one store's health is the value's own `Health`. The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md#registration).
+
+> **Health/readiness options** (`WithCritical`, `WithTags`) remain deferred to
+> [ADR-016](../adr/016-health-checks.md). All stores are currently critical;
+> both `DOWN` and `DEGRADED` make readiness return 503.
 
 #### Two calls
 
@@ -376,29 +180,27 @@ app.ProvideValue(db)           // owned by the App: shut down after its consumer
 store.Register[*sqldb.DB](app) // pinged at start, reported by /ready
 ```
 
-The binding may also be a constructor (`app.Provide[*sqldb.DB](openDB)`), which the start phase builds when nothing resolved it earlier, or a shared handle bound with `credo.Borrowed()` on `ProvideValue`, which is pinged and reported and never shut down by the App.
+The binding may also be a constructor (`app.Provide[*sqldb.DB](openDB)`), which the start phase builds when nothing resolved it earlier — a store constructor therefore runs in the start phase, not at registration — or a shared handle bound with `credo.Borrowed()` on `ProvideValue`, which is pinged and reported and never shut down by the App. `R` may be bound directly or be an interface an `app.Alias` names.
 
 #### Phases
 
-1. **Registration.** `Register` records `R`, its name and its ping timeout, and panics on misuse known at the call, with the call site in the message: an invalid explicit name (the named-check validator: empty, padded, control characters, the reserved `credo.` prefix), an unnamed `R` without `WithName`, a name or an `R` already registered, and any registration after `Finalize` or after the App is prepared or shut down. An `R` that does not implement `Lifecycle` does not compile. Omitting `WithName` keeps today's default: pointer layers unwrapped, the package-qualified name of a named type.
-2. **`Finalize`.** A registration whose `R` has no binding is a `Finalize` error naming the type and `store.Register`, joined with the graph's other errors in registration order.
-3. **Start.** After `Finalize`, and therefore after every override, the start phase resolves `R` once. Its ping is `R`'s start step: it runs with a context bounded by the ping timeout and by the start phase (a shutdown requested during the start cancels it), and the components that depend on `R` start after it succeeds. A constructor error while building `R` or a failed ping is a start failure, and the App rolls back as [ADR-024](../adr/024-lifecycle-components.md) describes. After a successful ping, each registration warning code the value reports (`sqldb.pool.max_open_unlimited`) is logged once through the App's structured logger.
-4. **Readiness.** The registry keeps the resolved value. `/ready` runs its `Health` through the bounded probe runner and reports the typed result under the store's name; no request resolves anything from the container ([ADR-016](../adr/016-health-checks.md)).
-5. **Teardown.** The store registry never closes anything. `Lifecycle` includes `Shutdown`, so the binding of `R` is a component: the App shuts it down after its consumers, under the drain deadline, unless it is borrowed.
+1. **Registration.** `Register` records `R`, its name and its ping timeout, and panics on misuse known at the call, with the call site (`store.Register[T]`) in the message: a nil App, a nil option, a ping timeout ≤ 0, an invalid explicit name (the named-check validator: empty, padded, control characters, the reserved `credo.` prefix), an `R` without a stable default name and no `WithName`, a name or an `R` already registered, and any registration after `Finalize` or after the App is prepared or shut down. An `R` that does not implement `Lifecycle` does not compile.
+2. **`Finalize`.** A registration whose `R` has no binding is a `Finalize` error — `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` — joined with the graph's other errors in registration order.
+3. **Start.** When the [start walk](lifecycle.md#the-start-walk) reaches the binding — in dependency order, in the internal tier unless the binding is ingress — it builds the value, after `Finalize` and therefore after every override, and runs the registration's start step before the value's own `Start`: the ping, with a context bounded by the ping timeout and by the start phase (a shutdown requested during the start cancels it). The components that depend on `R` start after it succeeds. A constructor error while building `R` or a failed ping is a start failure, reported in the `*credo.LifecycleError` under the component's name (its type name); the App rolls back as [ADR-024](../adr/024-lifecycle-components.md) describes, and the value is still rolled back — shut down unless borrowed — since the ping opened nothing the value had not. A nil bound value fails with `store: "name": the bound value is nil`, a failed ping with `store: ping "name": <err>`. After a successful ping, each secret-free registration warning code the value reports (`sqldb.pool.max_open_unlimited`) is logged once at Warn (`credo: store configuration warning`, with `component=store`, `store` and `code`); the codes are read before the ping, so an invalid code fails the start before pinging and without the code being logged, and a failed ping logs none. `Lifecycle.Ping` must honor its context: the start phase abandons a `Ping` that ignores it only at the rollback deadline.
+4. **Readiness.** Each pinged store contributes a probe built once, at start, from the value the start phase pinged. `/ready` runs its `Health` through the bounded probe runner and reports the typed result under the store's name; no request resolves anything from the container, and before the App has started there are no store checks ([ADR-016](../adr/016-health-checks.md)). A store whose name collides with a custom readiness check fails closed (`credo.store_name_conflict.*`).
+5. **Teardown.** Store registration never closes anything. `Lifecycle` includes `Shutdown`, so the binding of `R` is a component: the App shuts it down after its consumers, under the drain deadline, unless it is borrowed. Independent stores with no edges between them shut down in reverse registration order.
 
-The registry's store is the value DI hands its consumers, in tests too: an override of `R` (`credo.Override()`, `testutil.WithOverride`) is what is pinged, reported and shut down, and the original value is never pinged. The registry is reached through an internal seam between the root and `store`, not through the container.
+The registered store is the value DI hands its consumers, in tests too: an override of `R` (`credo.Override()`, `testutil.WithOverride`) is what is pinged, reported and shut down, and the original value is never pinged. The root owns the store registrations; `store` reaches them through an internal seam, not through the container.
 
 #### Resource identity
 
-Identity is the component registry's rule now, not a store ledger's ([ADR-024](../adr/024-lifecycle-components.md)): the values that share a resource identity are one resource with one teardown, shut down once when the last holder retires, after the consumers of every holder. For stores:
+Identity is the components' rule, not a store-specific one ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)): the values that share a resource identity are one resource with one teardown, shut down once when the last holder retires, after the consumers of every holder. For stores:
 
-- A wrapper that embeds `*sqldb.DB` inherits `ResourceIdentity`, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too.
+- `*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too.
 - Two store registrations of one resource are not refused: each is pinged and reported under its own name, and the resource is still shut down once.
 - Mixed ownership is still refused: a holder that claims the teardown of a borrowed resource — a component bound with `ProvideValue`, a value handed to `Manage`, a binding with `credo.Closer()` — panics at the later call or fails its construction, naming both bindings.
 - Only a value without state of its own to release may share an identity. A wrapper that releases state of its own holds the handle in a named field and does not forward its identity; a named-field wrapper without such state forwards it with one method, `ResourceIdentity() any`, which makes it a `credo.ResourceIdentifier`.
 - A token must be non-nil, comparable and equal to itself; a `ResourceIdentity()` that panics or breaks that rule panics at `ProvideValue` and fails a constructor's construction. Credo never scans wrapper fields.
-
-A value that does not implement `Lifecycle` is registered through a wrapper type that does: the wrapper is the binding, and its `Ping`, `Health` and `Shutdown` act on one value.
 
 #### Several databases
 
@@ -420,6 +222,7 @@ func NewReportRepo(db AnalyticsDB) *ReportRepo { return &ReportRepo{db: db.DB} }
 - An interface view is `app.Alias[I, T]()`, never a second binding.
 - A constructor that needs the raw handle unwraps it (`db.DB`, or `db.Client()` for Bun) instead of binding it again.
 - A generic repository is instantiated per wrapper: `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings.
+- A wrapper may also be bound through a constructor that returns it (`func NewPrimaryDB(cfg PrimaryConfig) (PrimaryDB, error)`); the start phase builds it.
 - Databases whose number comes from configuration — shards, tenants — are one binding of a collection type that owns and closes them all.
 - A read replica of one database is routing, not a second store, and is outside the rule; `sqldb` does not expose it.
 
@@ -430,6 +233,9 @@ func NewReportRepo(db AnalyticsDB) *ReportRepo { return &ReportRepo{db: db.DB} }
 - A store whose binding a test overrides is pinged, reported and shut down as the override; the original value is never pinged.
 - A store bound through a constructor is built by the start phase.
 - A registration whose type has no binding fails `Finalize` with a message naming the type and `store.Register`; registration misuse panics with the call site's message; registration performs no I/O.
+- A store bound through an interface an `Alias` names is pinged and reported; a nil bound value fails the start.
+- The ping honors `WithPingTimeout`; a failed ping fails the start and rolls the store back.
+- Independent stores shut down in reverse registration order.
 - A `*sqldb.DB` bound raw and through a wrapper that embeds it, or through two wrapper types, is shut down once, after the consumers of every binding; two store registrations of it are each pinged and reported.
 - Registration warning codes are logged once after a successful start-phase ping and never for a failed one.
 - `/ready` resolves nothing from the container per request.
@@ -497,7 +303,7 @@ func (db *DB) Client() *bun.DB
 func (db *DB) Stats() sql.DBStats
 
 // StoreRegistrationWarningCodes returns secret-free warning codes that the
-// canonical store.Register path logs after successful registration.
+// start phase logs after it has pinged a store.Register registration.
 func (db *DB) StoreRegistrationWarningCodes() []string
 
 // Lifecycle methods — satisfies store.Lifecycle.
@@ -563,8 +369,8 @@ mode supported by their selected driver.
 
 Credo deliberately has no workload-independent finite pool default.
 `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is
-still unlimited when a successful canonical `store.Register` inspects it emits
-one structured warning with code `sqldb.pool.max_open_unlimited`; standalone
+still unlimited when the start phase inspects a registered store emits, after
+a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone
 users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes
 themselves.
 
@@ -957,13 +763,12 @@ fault/
 store/
 ├── doc.go              ← package documentation
 ├── errors.go           ← structured Error, semantic sentinels, compatibility aliases
-├── lifecycle.go        ← Lifecycle + optional LifecycleIdentityProvider
+├── lifecycle.go        ← Lifecycle
 ├── health.go           ← Health, HealthStatus
-├── registry.go         ← read-only Registry + private name/type/lifecycle reservations
-├── register.go         ← Register[R], ownership/name/ping options, atomic publication
+├── register.go         ← Register[R], WithName/WithPingTimeout, start-phase ping and readiness probe
 ├── tx.go               ← TxScope[T], ErrTxMissing, scoped WithTx/GetTx/RequireTx/Conn; deprecated unscoped compatibility helpers
 ├── errors_test.go
-├── registry_test.go
+├── helpers_test.go
 ├── register_test.go
 └── tx_test.go
 
@@ -1059,19 +864,22 @@ func (s *OrderService) PlaceOrder(ctx context.Context, input OrderInput) (*Order
 ```go
 import "github.com/credo-go/credo/store/sqldb"
 
-func SetupStore(app *credo.App, rc credo.RawConfig) {
+func SetupStore(app *credo.App, rc credo.RawConfig) error {
     var cfg sqldb.Config
-    rc.Unmarshal("databases.default", &cfg)
+    if err := rc.Unmarshal("databases.default", &cfg); err != nil {
+        return err
+    }
 
     db, err := sqldb.Open(&cfg)
     if err != nil {
-        log.Fatal(err)
+        return err
     }
 
-    // Single DB — *sqldb.DB implements Lifecycle, used directly.
-    if err := store.Register[*sqldb.DB](app, db); err != nil {
-        log.Fatal(err)
-    }
+    // Single DB — *sqldb.DB implements Lifecycle. The App owns it and shuts
+    // it down after its consumers; the start phase pings it.
+    app.ProvideValue(db)
+    store.Register[*sqldb.DB](app)
+    return nil
 }
 ```
 
@@ -1084,21 +892,31 @@ import "github.com/credo-go/credo/store/sqldb"
 type PrimaryDB struct{ *sqldb.DB }
 type AnalyticsDB struct{ *sqldb.DB }
 
-func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
+func SetupMultiDB(app *credo.App, rc credo.RawConfig) error {
     var primaryCfg, analyticsCfg sqldb.Config
-    rc.Unmarshal("databases.primary", &primaryCfg)
-    rc.Unmarshal("databases.analytics", &analyticsCfg)
+    if err := rc.Unmarshal("databases.primary", &primaryCfg); err != nil {
+        return err
+    }
+    if err := rc.Unmarshal("databases.analytics", &analyticsCfg); err != nil {
+        return err
+    }
 
-    primaryDB, _ := sqldb.Open(&primaryCfg)
-    analyticsDB, _ := sqldb.Open(&analyticsCfg)
+    primaryDB, err := sqldb.Open(&primaryCfg)
+    if err != nil {
+        return err
+    }
+    analyticsDB, err := sqldb.Open(&analyticsCfg)
+    if err != nil {
+        return err
+    }
 
     // Embedding promotes *sqldb.DB's Lifecycle and ResourceIdentity methods,
-    // so each wrapper identifies its distinct underlying DB. Do not pass a
-    // second lifecycle handle.
-    store.Register[PrimaryDB](app, PrimaryDB{primaryDB},
-        store.WithName("primary"))
-    store.Register[AnalyticsDB](app, AnalyticsDB{analyticsDB},
-        store.WithName("analytics"))
+    // so each wrapper is one holder of its own database.
+    app.ProvideValue(PrimaryDB{primaryDB})
+    app.ProvideValue(AnalyticsDB{analyticsDB})
+    store.Register[PrimaryDB](app, store.WithName("primary"))
+    store.Register[AnalyticsDB](app, store.WithName("analytics"))
+    return nil
 }
 ```
 
@@ -1118,42 +936,22 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 
 6. **Config over DSN-only** — structured `Config` enables validation, env var mapping, and consistent documentation. `DSN` field is an override for advanced use cases.
 
-7. **Fail-fast at startup** — `Register[R]` rejects predictable local
-   lifecycle, name/type/resource-identity, frozen-container, and duplicate
-   conflicts before network I/O, then pings the connection. Identity defaults
-   to the top-level Lifecycle value; wrappers explicitly forward another
-   resource via `LifecycleIdentityProvider`. `CanProvideValue` is only a
-   point-in-time preflight; final DI publication remains authoritative.
+7. **Fail-fast at startup, I/O in the start phase** — `Register[R]` panics on misuse known at the call, and a registration whose type has no binding fails `Finalize` with the graph's other errors; neither touches the network. The ping runs in the start phase, after every override, before the store's consumers start, and a failed ping is a start failure that rolls the App back.
 
-8. **Explicit shutdown owner** — a directly registered `Lifecycle` value is
-   framework-owned after success and DI is its sole framework shutdown owner.
-   If the live deadline reaches the entry, DI makes at most one attempt per
-   teardown; an entry skipped after deadline exhaustion gets no attempt. A
-   separate lifecycle handle requires the explicit caller-owned opt-out. Every
-   failed registration leaves ownership with the caller. The Registry
-   aggregates health only and never shuts resources down.
+8. **Ownership follows the binding** — the store is bound where its ownership is decided: a `ProvideValue` or constructor binding is owned by the App and shut down after its consumers under the drain deadline, `credo.Borrowed()` leaves it to the caller. Registration adds a ping and a readiness probe to the binding and never owns or closes anything.
 
 9. **Health returns one struct** — status, latency, pool stats, and an optional
    typed `Cause` travel as one snapshot. The additive `Cause error` field keeps
    the `Lifecycle.Health(ctx) Health` interface stable while avoiding
    free-form `Details` parsing. It is diagnostic-only and excluded from JSON.
 
-10. **Wrapper types for multi-DB** — applications define distinct struct types (`PrimaryDB`, `AnalyticsDB`). Compile-time DI safety with zero string keys.
+10. **Wrapper types for multi-DB** — applications define distinct struct types (`PrimaryDB`, `AnalyticsDB`), each bound once and registered by its type. Compile-time DI safety with zero string keys; an embedding wrapper shares the handle's resource identity.
 
 11. **Structured, family-aware error mapping** — SQLSTATE is primary; MySQL's strict numeric envelope and SQLite's numeric code are interpreted only for that configured family. Loose arbitrary-message matching is prohibited. Unmapped errors pass through with exact identity.
 
-12. **Private, commit-after-publish Registry mutation** — callers cannot add
-    health-only entries. Register reserves name, type, and declared resource
-    identity privately, keeps pending entries invisible, and commits the entry
-    only when Ping and protected DI publication both succeed. The successful
-    store binding and Registry binding reject later `Replace` calls.
+12. **No store registry API** — registration names a binding; callers cannot add health-only entries, and there is nothing to resolve or replace. `/ready` reports the stores from probes built once at start.
 
-13. **Store-scoped identity ledger, not a general resource registry** — the
-    duplicate-resource guarantee covers only `store.Register` entries. Raw
-    `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
-    `app.Replace` publication of the same lifecycle under another type is
-    unsupported. A cross-infrastructure
-    registry remains deferred until a second concrete consumer exists.
+13. **One resource, one teardown, across every binding** — resource identity is the components' rule ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)), not a store-scoped ledger: every holder of one resource, registered as a store or not, shares one teardown after the consumers of all of them. Credo never scans wrapper fields; identity is forwarded through `credo.ResourceIdentifier`.
 
 ---
 
@@ -1175,59 +973,15 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - Nested contexts shadow a scoped transaction without mutating the parent context
 - `Conn` returns TX from context when present, fallback otherwise
 - `ConnInScope` returns scoped TX from context when present, fallback otherwise
-- `Registry.HealthAll` returns health for all entries
-- Registry exposes no public mutation method; only successful `Register`
-  commits entries
-- Pending name/type/resource-identity reservations are invisible to
-  `HealthAll` and readiness, reject concurrent duplicates, and are released on
-  every failure
-- Registry-backed readiness probes are stable across requests, run in parallel,
-  enforce per-check deadlines, isolate panics, and coalesce overlapping calls
+- Store readiness probes are built once at start, run in parallel, enforce per-check deadlines, isolate panics, and coalesce overlapping calls; `/ready` resolves nothing per request
 - `Health.Clone` preserves typed cause identity while defensively cloning the
   top-level details map
-- Typed-nil values/lifecycle handles and typed-nil pre-provided Registries are
-  rejected before ping or health execution
+- A nil or typed-nil bound value fails the start before ping or health execution
 - Store failure causes are logged and masked by default; `ExposeErrors` is the
   only response opt-in
-- `Register` preflights local DI/name/lifecycle conflicts before Ping, then
-  publishes DI before committing the Registry entry
-- Direct Lifecycle values are framework-owned only after success; the App is
-  the sole framework shutdown owner and, per teardown, attempts Shutdown at
-  most once when its live deadline reaches the component (or zero times when
-  the deadline expires first)
-- `WithLifecycle` alone fails; pairing it with
-  `WithCallerOwnedLifecycle` succeeds without framework shutdown
-- Lifecycle values with explicit lifecycle/ownership options and
-  component values without Lifecycle and with separate lifecycle handles fail
-  before Ping
-- Every failed registration, including Ping and final DI publication failure,
-  leaves ownership with the caller
-- Concurrent same-name and same-type registrations have one internally
-  consistent winner and no leaked Registry entry
-- Default identity is the top-level Lifecycle value; pointer-backed values are
-  accepted, stable comparable values/tokens work, and nil/non-comparable/
-  non-reflexive identities fail before Ping
-- `LifecycleIdentityProvider` explicitly maps semantic/named wrappers to an
-  underlying pointer/token; no struct fields are scanned, while embedding
-  `*sqldb.DB` promotes its provider method normally
-- A pointer-backed composite Lifecycle is valid as its own default identity;
-  contained Lifecycle fields are not inferred or rejected
-- Repeated identity tokens across concrete/interface views, explicit wrappers,
-  and mixed ownership are rejected inside the Register ledger; interface
-  access uses `Alias[I, T]` instead
-- Raw `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
-  `app.Replace` publication of the same lifecycle under another type is
-  documented as unsupported; caller-owned
-  handles are not also registered as components
-- Valid pre-provided Registry instances remain the resolved/readiness instance
-- Successful store and validated/adopted Registry bindings reject
-  `App.Replace`; invalid nil/failing Registry bindings remain replaceable for
-  repair, and ordinary non-protected DI bindings remain replaceable
-- Registry adoption uses expected-value compare-and-protect, so a replacement
-  raced after validation is rejected without protecting the wrong instance
-- `WithName` sets a custom name; explicit empty, padded, control-character,
-  and reserved `credo.` names fail before Ping; omitted names use the stable
-  pointer-unwrapped type default
+- Registration misuse panics: nil App, nil option, non-positive ping timeout, invalid name, no stable default name, duplicate type, duplicate name, registration after `Finalize`, preparation or shutdown
+- The App shuts a registered store down after its consumers unless it is borrowed; holders of one resource are pinged each and shut down once
+- `WithName` sets a custom name; explicit empty, padded, control-character, and reserved `credo.` names panic at registration; omitted names use the stable pointer-unwrapped type default
 - `WithPingTimeout` overrides default timeout
 
 ### store/sqldb/ (Bun wrapper)
@@ -1242,9 +996,8 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - `Ping` verifies connection
 - `Health` returns UP with latency, current pool counts, and cumulative
   wait/idle/lifetime closure counters
-- An effective unlimited maximum reports `sqldb.pool.max_open_unlimited`;
-  canonical successful registration logs it once, while failed registration
-  does not
+- An effective unlimited maximum reports `sqldb.pool.max_open_unlimited`; a registered store logs it once after a successful start-phase ping, and a failed ping logs none
+- A `*sqldb.DB` bound raw and through an embedding wrapper, both registered, is pinged twice and closed once
 - `Health` returns DOWN with a typed `Cause` when the connection is dead; it
   does not copy the cause string into `Details["error"]`
 - `Shutdown` closes connection

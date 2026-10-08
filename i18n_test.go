@@ -2,7 +2,9 @@ package credo_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -45,12 +47,10 @@ func i18nTestFS() fstest.MapFS {
 
 func TestCtx_TPlural(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/items", func(ctx *credo.Context) error {
 		parts := []string{
@@ -61,6 +61,7 @@ func TestCtx_TPlural(t *testing.T) {
 		return ctx.Response().Text(200, strings.Join(parts, "|"))
 	})
 
+	startServing(t, app)
 	tests := []struct {
 		lang string
 		want string
@@ -99,12 +100,10 @@ func TestCtx_TPlural_WithoutI18n(t *testing.T) {
 
 func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
 		return validation.Errors{
@@ -112,6 +111,7 @@ func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 		}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -138,17 +138,16 @@ func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 
 func TestUseI18n_HTTPError_Turkish(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/missing", func(ctx *credo.Context) error {
 		return credo.ErrNotFound
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/missing", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -169,12 +168,10 @@ func TestUseI18n_HTTPError_Turkish(t *testing.T) {
 
 func TestUseI18n_EnglishDefault(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
 		return validation.Errors{
@@ -182,6 +179,7 @@ func TestUseI18n_EnglishDefault(t *testing.T) {
 		}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test", nil)
 	r.Header.Set("Accept-Language", "en")
@@ -201,15 +199,13 @@ func TestUseI18n_EnglishDefault(t *testing.T) {
 
 func TestUseI18n_CustomDetect(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
 		Detect: func(ctx *credo.Context) string {
 			return ctx.Request().URL.Query().Get("lang")
 		},
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
 		return validation.Errors{
@@ -217,6 +213,7 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 		}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test?lang=tr", nil)
 	app.ServeHTTP(w, r)
@@ -232,12 +229,12 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 
 func TestUseI18n_ExplicitMissingDirErrors(t *testing.T) {
 	app := mustNew(t)
-	err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Dir:     "nonexistent_locales/",
 		Default: "en",
 	})
-	if err == nil {
-		t.Fatal("expected an explicit missing locale directory to fail")
+	if err := startErr(t, app); err == nil || !strings.Contains(err.Error(), "i18n") {
+		t.Fatalf("Start() = %v, want an explicit missing locale directory to fail the start", err)
 	}
 }
 
@@ -249,12 +246,12 @@ func TestUseI18n_MalformedTemplate_Error(t *testing.T) {
 	}
 
 	app := mustNew(t)
-	err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   badFS,
 		Default: "en",
 	})
-	if err == nil {
-		t.Error("expected error for malformed template")
+	if err := startErr(t, app); err == nil {
+		t.Error("expected a malformed template to fail the start")
 	}
 }
 
@@ -266,28 +263,27 @@ func TestUseI18n_MalformedJSON_Error(t *testing.T) {
 	}
 
 	app := mustNew(t)
-	err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   badFS,
 		Default: "en",
 	})
-	if err == nil {
-		t.Error("expected error for malformed JSON")
+	if err := startErr(t, app); err == nil {
+		t.Error("expected malformed JSON to fail the start")
 	}
 }
 
 func TestCtx_Locale_ResolvesAcceptLanguage(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, ctx.Locale())
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	// Full Accept-Language header with quality values — Locale() should
@@ -302,17 +298,16 @@ func TestCtx_Locale_ResolvesAcceptLanguage(t *testing.T) {
 
 func TestCtx_Locale(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, ctx.Locale())
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -325,17 +320,16 @@ func TestCtx_Locale(t *testing.T) {
 
 func TestCtx_T(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, ctx.T("required"))
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -365,17 +359,16 @@ func TestCtx_T_NoI18n(t *testing.T) {
 
 func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
 		return &httpStatusError{msg: "store: not found", status: 404}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -396,12 +389,10 @@ func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 
 func TestTranslateError_Immutability(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	original := validation.Errors{
 		{Field: "email", Code: "required", Message: "is required"},
@@ -411,6 +402,7 @@ func TestTranslateError_Immutability(t *testing.T) {
 		return original
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/test", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -426,20 +418,16 @@ func TestUseI18n_NoArgs_Defaults(t *testing.T) {
 	app := mustNew(t)
 	// No args — should use defaults (dir="locales/", default="en")
 	// Since locales/ doesn't exist in the test CWD, this should be inactive.
-	err := app.UseI18n()
-	if err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	app.UseI18n()
+	startServing(t, app)
 }
 
 func TestUseI18n_ZeroConfig_Defaults(t *testing.T) {
 	app := mustNew(t)
 	// Zero I18nConfig — should use the same defaults as the no-arg call.
 	// Since locales/ doesn't exist in the test CWD, this should be inactive.
-	err := app.UseI18n(credo.I18nConfig{})
-	if err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	app.UseI18n(credo.I18nConfig{})
+	startServing(t, app)
 }
 
 func TestUseI18n_ConventionalDirectoryExistsButIsInvalid(t *testing.T) {
@@ -454,7 +442,8 @@ func TestUseI18n_ConventionalDirectoryExistsButIsInvalid(t *testing.T) {
 	t.Chdir(root)
 
 	app := mustNew(t)
-	if err := app.UseI18n(); err == nil {
+	app.UseI18n()
+	if err := startErr(t, app); err == nil {
 		t.Fatal("an existing malformed conventional catalog must fail, not look absent")
 	}
 }
@@ -486,10 +475,7 @@ func TestUseI18n_InvalidRawConfig_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = app.UseI18n()
-	if err == nil {
-		t.Error("expected error for invalid i18n config in RawConfig")
-	}
+	expectPanicContaining(t, "invalid i18n config", func() { app.UseI18n() })
 }
 
 func TestUseI18n_ExplicitRawConfigDirErrors(t *testing.T) {
@@ -497,8 +483,9 @@ func TestUseI18n_ExplicitRawConfigDirErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.UseI18n(); err == nil {
-		t.Fatal("expected missing RawConfig i18n.dir to fail")
+	app.UseI18n()
+	if err := startErr(t, app); err == nil {
+		t.Fatal("expected missing RawConfig i18n.dir to fail the start")
 	}
 }
 
@@ -511,12 +498,14 @@ func TestUseI18n_LogsOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
-	}); err != nil {
-		t.Fatal(err)
+	})
+	if strings.Contains(buf.String(), "i18n loaded") {
+		t.Fatal("UseI18n read the catalogs at registration")
 	}
+	startServing(t, app)
 
 	if !strings.Contains(buf.String(), "i18n loaded") {
 		t.Errorf("expected 'i18n loaded' log, got: %q", buf.String())
@@ -532,9 +521,8 @@ func TestUseI18n_LogsWhenInactive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.UseI18n(); err != nil {
-		t.Fatal(err)
-	}
+	app.UseI18n()
+	startServing(t, app)
 
 	if !strings.Contains(buf.String(), "i18n inactive") {
 		t.Errorf("expected 'i18n inactive' log, got: %q", buf.String())
@@ -549,13 +537,11 @@ func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
 	}
 	fields := credo.I18nFields{"email": "email address"}
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Default:  "en",
 		Messages: messages,
 		Fields:   fields,
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 
 	// Setup owns snapshots, not the caller's mutable maps.
 	messages["hello"] = "mutated"
@@ -567,6 +553,7 @@ func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
 		return validation.Errors{{Field: "email", Code: "required", Message: "fallback"}}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/hello", nil))
 	if got := w.Body.String(); got != "Hello Ada" {
@@ -586,7 +573,7 @@ func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
 
 func TestUseI18n_ProgrammaticAndFileCatalogLayering(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Default: "en",
 		Messages: credo.I18nMessages{
 			"shared":   "programmatic",
@@ -600,9 +587,7 @@ func TestUseI18n_ProgrammaticAndFileCatalogLayering(t *testing.T) {
 			"en/messages.json": &fstest.MapFile{Data: []byte(`{"shared":"file"}`)},
 			"en/fields.json":   &fstest.MapFile{Data: []byte(`{"shared":"file field"}`)},
 		},
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 	app.GET("/values", func(ctx *credo.Context) error {
 		return ctx.Response().JSON(http.StatusOK, map[string]string{
 			"shared":   ctx.T("shared"),
@@ -610,6 +595,7 @@ func TestUseI18n_ProgrammaticAndFileCatalogLayering(t *testing.T) {
 		})
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/values", nil))
 	var got map[string]string
@@ -621,13 +607,35 @@ func TestUseI18n_ProgrammaticAndFileCatalogLayering(t *testing.T) {
 	}
 }
 
-func TestUseI18n_ProgrammaticSourceValidation(t *testing.T) {
+func TestUseI18n_Misuse(t *testing.T) {
+	tests := []struct {
+		name string
+		cfgs []credo.I18nConfig
+		want string
+	}{
+		{name: "fields only", cfgs: []credo.I18nConfig{{Fields: credo.I18nFields{"email": "email"}}},
+			want: "Fields require at least one message"},
+		{name: "dir and dirfs", cfgs: []credo.I18nConfig{{Dir: "locales", DirFS: fstest.MapFS{}}},
+			want: "mutually exclusive"},
+		{name: "two configs", cfgs: []credo.I18nConfig{{}, {}}, want: "at most one config"},
+		{name: "invalid default", cfgs: []credo.I18nConfig{{Default: "not a tag!"}}, want: "App.UseI18n"},
+		{name: "malformed programmatic message", cfgs: []credo.I18nConfig{{
+			Messages: credo.I18nMessages{"broken": "{{.field"},
+		}}, want: "App.UseI18n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			expectPanicContaining(t, tt.want, func() { app.UseI18n(tt.cfgs...) })
+		})
+	}
+}
+
+func TestUseI18n_ExplicitSourceFailsTheStart(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  credo.I18nConfig
 	}{
-		{name: "fields only", cfg: credo.I18nConfig{Fields: credo.I18nFields{"email": "email"}}},
-		{name: "dir and dirfs", cfg: credo.I18nConfig{Dir: "locales", DirFS: fstest.MapFS{}}},
 		{name: "empty explicit fs", cfg: credo.I18nConfig{DirFS: fstest.MapFS{}}},
 		{name: "missing explicit dir with messages", cfg: credo.I18nConfig{
 			Dir: "missing", Messages: credo.I18nMessages{"safe": "Safe"},
@@ -636,8 +644,13 @@ func TestUseI18n_ProgrammaticSourceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			app := mustNew(t)
-			if err := app.UseI18n(tt.cfg); err == nil {
-				t.Fatal("expected setup error")
+			app.UseI18n(tt.cfg)
+			err := startErr(t, app)
+			if err == nil {
+				t.Fatal("expected the start to fail")
+			}
+			if _, ok := errors.AsType[*credo.LifecycleError](err); !ok {
+				t.Fatalf("Start() = %T, want *credo.LifecycleError", err)
 			}
 		})
 	}
@@ -646,7 +659,7 @@ func TestUseI18n_ProgrammaticSourceValidation(t *testing.T) {
 func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 	var refs []credo.MessageRef
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Default: "en",
 		Messages: credo.I18nMessages{
 			"problem.not_found":         "Missing",
@@ -667,9 +680,7 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 				return "problem." + ref.Code
 			}
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	app.GET("/missing", func(*credo.Context) error { return credo.ErrNotFound })
 	app.POST("/validation", func(*credo.Context) error {
 		return validation.Errors{
@@ -681,6 +692,7 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 		return &credo.BindError{Reason: credo.BindReasonSyntax}
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
 	var body credo.ErrorResponse
@@ -720,16 +732,15 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 
 func TestUseI18n_EmptyResolvedMessageKeyFailsClosed(t *testing.T) {
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Messages: credo.I18nMessages{"not_found": "Missing"},
 		ResolveMessageKey: func(credo.MessageRef) string {
 			return ""
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	app.GET("/missing", func(*credo.Context) error { return credo.ErrNotFound })
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
 	if w.Code != http.StatusInternalServerError {
@@ -742,4 +753,12 @@ func TestUseI18n_EmptyResolvedMessageKeyFailsClosed(t *testing.T) {
 	if body.Error.Code != "internal_server_error" || body.Error.Message != "Internal Server Error" || body.Success {
 		t.Fatalf("body = %#v", body)
 	}
+}
+
+// startErr runs the App's start phase and returns its error; the App is shut
+// down when the test ends.
+func startErr(t *testing.T, app *credo.App) error {
+	t.Helper()
+	t.Cleanup(func() { _ = app.Shutdown(context.WithoutCancel(t.Context())) })
+	return app.Start(t.Context())
 }

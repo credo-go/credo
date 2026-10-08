@@ -117,7 +117,7 @@ A component reports a failure that happens after its `Start` has returned throug
 
 ### An `http.Server` you own
 
-An App served through `ServeHTTP` by a server you build yourself does not run Credo's serving lifecycle: start it with `app.Start(ctx)`, which runs the start phase without a listener, and stop it with `app.Shutdown(ctx)`. An App that has anything to start — a component with `Start` or `Ready`, a start hook, workers — panics in `ServeHTTP` until `app.Start` has succeeded; after a failed start it answers 503. The server's owner owns its admission and drain and completes them **before** `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened:
+An App served through `ServeHTTP` by a server you build yourself does not run Credo's serving lifecycle: start it with `app.Start(ctx)`, which runs the start phase without a listener, and stop it with `app.Shutdown(ctx)`. An App that has anything to start — a component with `Start` or `Ready`, a start hook, a WebSocket server, a store registered with `store.Register`, `UseI18n`, workers — panics in `ServeHTTP` until `app.Start` has succeeded; after a failed start it answers 503. The server's owner owns its admission and drain and completes them **before** `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened:
 
 ```go
 if err := app.Start(ctx); err != nil { // the start phase, without a listener

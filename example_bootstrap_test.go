@@ -64,21 +64,18 @@ func Example_bootstrapOrder() {
 	}
 
 	// 2. Provide. A misused registration panics here, at its line.
+	app.ProvideValue(&exampleDB{})
 	app.Provide[*examplePayments](func() *examplePayments { return &examplePayments{} })
 	app.Provide[*exampleOrders](newExampleOrders)
 	app.Provide[*exampleRelay](newExampleRelay)
 
 	// 3. Feature mounts and satellite registrations, in any order.
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		Default:  "en",
 		Messages: credo.I18nMessages{"orders.empty": "No orders yet"},
-	}); err != nil {
-		log.Fatal(err)
-	}
+	})
 	app.UseHealth()
-	if err := store.Register[*exampleDB](app, &exampleDB{}, store.WithName("orders-db")); err != nil {
-		log.Fatal(err)
-	}
+	store.Register[*exampleDB](app, store.WithName("orders-db"))
 	worker.MustRegisterProvided[*exampleRelay](app, "outbox-relay")
 
 	// 4. Finalize reports every missing dependency and cycle at once.

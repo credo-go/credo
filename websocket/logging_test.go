@@ -24,11 +24,12 @@ func TestConnectionAndAccessLogContract(t *testing.T) {
 	}
 	app.UseRequestID()
 	app.UseAccessLog()
-	server := Use(app, Config{Subprotocols: []string{"events.v1"}})
+	server := useTestServer(app, Config{Subprotocols: []string{"events.v1"}})
 	app.GET("/events", server.Handler(func(_ *credo.Context, conn *Conn) error {
 		_, _, readErr := conn.Read(conn.Context())
 		return readErr
 	})).Name("events")
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	// coder/websocket owns and closes the HTTP response body on every path.
@@ -117,8 +118,9 @@ func TestConnectionFailureLogsAreStructuredAndSecretSafe(t *testing.T) {
 				t.Fatal(err)
 			}
 			app.UseRequestID()
-			server := Use(app, Config{AllowedOrigins: []string{"https://allowed.example"}})
+			server := useTestServer(app, Config{AllowedOrigins: []string{"https://allowed.example"}})
 			app.GET("/ws", server.Handler(tc.handler)).Name("secret-route")
+			startTestApp(t, app)
 			httpServer := httptest.NewServer(app)
 			defer httpServer.Close()
 			headers := make(http.Header)
@@ -177,11 +179,12 @@ func TestReadLimitLogsWarnWithoutPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Use(app, Config{ReadLimit: 8})
+	server := useTestServer(app, Config{ReadLimit: 8})
 	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {
 		_, _, readErr := conn.Read(conn.Context())
 		return readErr
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	// coder/websocket owns and closes the HTTP response body on every path.
@@ -219,11 +222,12 @@ func TestPeerPolicyCloseLogsWarnWithoutRawReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Use(app)
+	server := useTestServer(app)
 	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {
 		_, _, readErr := conn.Read(conn.Context())
 		return readErr
 	}))
+	startTestApp(t, app)
 	httpServer := httptest.NewServer(app)
 	defer httpServer.Close()
 	// coder/websocket owns and closes the HTTP response body on every path.

@@ -169,6 +169,11 @@ func (c *Container) validate() error {
 				"depends on", p[0].head(), dep, formatPath(p), p[0].head(), dep)})
 	}
 
+	// A start step whose type has no binding comes after the graph.
+	for _, err := range c.stepFindingsLocked() {
+		findings = append(findings, finding{len(c.units), err})
+	}
+
 	slices.SortStableFunc(findings, func(a, b finding) int { return cmp.Compare(a.at, b.at) })
 	// A constructor that takes one type twice finds its problem twice.
 	errs := make([]error, 0, len(findings))

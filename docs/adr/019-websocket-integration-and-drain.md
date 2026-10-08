@@ -1,6 +1,6 @@
 # ADR-019: WebSocket Integration and Drain
 
-**Status:** Accepted; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Date:** 2026-07-12 **Depends on:** ADR-006, ADR-008, ADR-009, ADR-010, ADR-024
+**Status:** Accepted **Date:** 2026-07-12 **Amended:** v0.24.0 (`websocket.New` and registration as an ingress component, [ADR-024](024-lifecycle-components.md)) **Depends on:** ADR-006, ADR-008, ADR-009, ADR-010, ADR-024
 
 ## Context
 
@@ -34,11 +34,12 @@ bypass Credo's validation, normalized errors, close policy, and logging.
 The canonical API is:
 
 ```go
-ws := websocket.Use(app, cfg)
+ws := websocket.New(app.NewInfra("websocket"), cfg)
+app.Manage(ws, credo.Ingress())
 app.GET("/events", ws.Handler(handler))
 ```
 
-`Use` validates configuration and registers the server as an ingress component (below). `Server.Handler`
+`New` validates the configuration and builds the server; the application registers it as an ingress component (below). `Server.Handler`
 adapts a synchronous WebSocket handler into the one Credo route-handler type,
 so built-in, global, group, route, auth, rewrite, and other middleware retain
 their existing ordering. A second `app.WebSocket` or `Server.Handle` route API
@@ -93,43 +94,29 @@ accidentally live for the entire connection. Long-lived handlers should
 snapshot the small immutable values they need and open short repository or
 transaction scopes per operation.
 
-### Drain WebSockets before infrastructure
-
-`websocket.Use` registers the server as an ingress component with `app.Manage(server, credo.Ingress())` ([ADR-024](024-lifecycle-components.md)), so a second `Use` on one App panics with a duplicate component name. The ingress tier is where work enters the process, and a WebSocket connection is such an entry: the ingress tier stops first, concurrently with the HTTP drain and before any internal component, so every WebSocket handler, which may use repositories and clients, has returned before those stop. Hijacked connections are not tracked by `http.Server.Shutdown`, so they are the server component's to drain. The server's `Shutdown` is that drain:
-
-1. closes admission before Accept;
-2. sends active peers 1001 Going Away;
-3. cancels connection contexts and waits for every synchronous handler, connection record, and close task;
-4. returns only when DI-dependent handler cleanup is finished.
-
-The first `Server.Shutdown` caller owns the drain budget. Concurrent callers do not replace it: they wait for the owner's result unless their own context ends first. Calls made after the owner finishes return its stable result. If the owner context is cancelled or its absolute deadline expires, the server reports an incomplete error with remaining counts, cancels connections, and attempts `CloseNow`; late handlers may finish afterward. The App reports the incomplete drain in its one `*credo.LifecycleError` and continues with the internal tier under the same, possibly expired deadline; it never calls an incomplete drain graceful success. A close task may also fail after all tracked work settles; that is a closed, complete-with-error outcome rather than an incomplete drain.
-
-The server is an ordinary component of the ingress tier. This does not introduce a general restartable `Service` taxonomy, which [ADR-024](024-lifecycle-components.md) rejects.
-
 ### Construct with `New`, register as an ingress component
 
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the canonical API and the `Use` paragraph under "Keep routing explicit" and the whole "Drain WebSockets before infrastructure" section.
+`websocket.New(infra credo.Infra, cfg ...Config) *Server` validates the configuration, copies its slices, builds the server and registers nothing; it performs no I/O. Misuse — an invalid configuration or more than one — panics. It takes `credo.Infra` rather than the App because the App was needed only for its logger, which `Infra` carries. The server adds the `module=websocket` attribute to `infra.Logger` (the default logger when it is nil), so log queries are the same as before.
 
-The canonical API becomes:
-
-```go
-ws := websocket.New(app.NewInfra("websocket"), cfg)
-app.Manage(ws, credo.Ingress())
-app.GET("/events", ws.Handler(handler))
-```
-
-`websocket.New(infra credo.Infra, cfg ...Config) *Server` validates the configuration, builds the server and registers nothing; misuse — an invalid configuration or more than one — panics. It takes `credo.Infra` instead of the App because today's `Use` took the App only for its logger, which `Infra` carries. The server adds the `module=websocket` attribute to the logger it is given, so log queries do not change.
-
-**Why `New` and not `Use`.** `Use` names a call that attaches a subsystem to the App, and this one no longer does: `New` registers nothing, so the server attaches only when the application registers it. Keeping the name would promise an attachment the call no longer makes; renamed, a caller of today's `websocket.Use` gets a compile error instead of a server that silently skips its drain. `worker.Use` keeps its name, because the supervisor it returns registers each worker as a component of that App.
+**Why `New` and not `Use`.** The former `websocket.Use(app, cfg)` both built the server and attached it to the App. `Use` names a call that attaches a subsystem to the App, and `New` attaches nothing: the server attaches only when the application registers it. Keeping the name would have promised an attachment the call no longer makes; renamed, a caller of the former `websocket.Use` gets a compile error instead of a server that silently skips its drain. The planned `worker.Use` keeps the name, because the supervisor it returns registers each worker as a component of that App ([ADR-023](023-worker-system.md)).
 
 **The application registers the server as an ingress component** ([ADR-024](024-lifecycle-components.md)): the ingress tier is where work enters the process, and a WebSocket connection is such an entry. Either form works:
 
 - `app.Manage(websocket.New(app.NewInfra("websocket"), cfg), credo.Ingress())` when only routes use the server;
 - a binding with `credo.Ingress()` when controllers take the server as a dependency to mount their handlers — `ProvideValue`, or `Provide` with a constructor over `credo.Infra`. The binding is the one component; handing a server that `ProvideValue` binds to `Manage` as well panics, since DI already holds it.
 
-**Drain.** The ingress tier stops first, concurrently with the HTTP drain and with the other ingress components that no dependency orders, and before any internal component — so every WebSocket handler, which may use repositories and clients, has returned before those stop. The server's `Shutdown` is today's drain: it closes admission before Accept, sends active peers 1001 Going Away, cancels connection contexts, and returns only when every synchronous handler, connection record and close task has finished. The first caller still owns the drain budget, and concurrent callers still wait for its result. An incomplete drain is reported in the App's one shutdown error, and what the App does with the components the server depends on follows ADR-024's deadline rule.
+**Start.** The server's `Start` opens admission. It does no I/O and starts no goroutine, so it keeps no context; connection contexts derive from the request context as described under "Borrow pooled request state only synchronously". A second `Start`, or a `Start` after `Shutdown`, returns an error. A server that was never started refuses every upgrade at the admission step of the handshake — so mechanical, origin and subprotocol failures still win — with an error that names the missing registration; it goes through the centralized error pipeline as a 500, its message logged and not exposed. A forgotten `Manage` or `credo.Ingress()` binding therefore fails at the first upgrade instead of silently skipping the drain. After `Shutdown` the handshake answers 503.
 
-**Start.** The server's `Start` derives the server's own context from `context.WithoutCancel(ctx)` with its own cancel, which `Shutdown` calls; the context `Start` receives ends when `Start` returns, as every component's does. A server that was never started refuses every upgrade before 101 with an error that names the missing registration, so a forgotten `Manage` or `credo.Ingress()` binding fails at the first upgrade instead of silently skipping the drain.
+### Drain WebSockets before infrastructure
+
+The ingress tier stops first, concurrently with the HTTP drain and with the other ingress components that no dependency orders, and before any internal component, so every WebSocket handler, which may use repositories and clients, has returned before those stop. Hijacked connections are not tracked by `http.Server.Shutdown`, so they are the server component's to drain. The server's `Shutdown` is that drain:
+
+1. closes admission before Accept;
+2. sends active peers 1001 Going Away;
+3. cancels connection contexts and waits for every synchronous handler, connection record, and close task;
+4. returns only when DI-dependent handler cleanup is finished.
+
+The first `Server.Shutdown` caller owns the drain budget. Concurrent callers do not replace it: they wait for the owner's result unless their own context ends first. Calls made after the owner finishes return its stable result. If the owner context is cancelled or its absolute deadline expires, the server reports an incomplete error with remaining counts, cancels connections, and attempts `CloseNow`; late handlers may finish afterward. The App reports the incomplete drain in its one `*credo.LifecycleError` and continues with the internal tier under the same, possibly expired deadline, following ADR-024's deadline rule; it never calls an incomplete drain graceful success. A close task may also fail after all tracked work settles; that is a closed, complete-with-error outcome rather than an incomplete drain.
 
 **An internal component that depends on the server fails `Finalize`.** No dependency crosses the tiers backwards ([ADR-024](024-lifecycle-components.md)). The case that seems to need one does not: the server exports only `Handler`, `Start` and `Shutdown`, so an in-process consumer that broadcasts depends on the application's own connection registry — an internal component that the server's handlers fill and its drain empties — and what it sends after the ingress drain finds no peers. A controller that is not a component creates no edge to order, so injecting the server into controllers is unaffected.
 

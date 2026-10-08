@@ -255,16 +255,14 @@ func TestRecover_DisabledStillObservesAccessLog(t *testing.T) {
 func newLazyI18nApp(t *testing.T, calls *atomic.Int32, detect func(*credo.Context) string, opts ...credo.Option) *credo.App {
 	t.Helper()
 	app := mustNew(t, opts...)
-	if err := app.UseI18n(credo.I18nConfig{
+	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
 		Default: "en",
 		Detect: func(ctx *credo.Context) string {
 			calls.Add(1)
 			return detect(ctx)
 		},
-	}); err != nil {
-		t.Fatalf("UseI18n: %v", err)
-	}
+	})
 	return app
 }
 
@@ -277,6 +275,7 @@ func TestI18n_Lazy_UnusedLocaleDoesNotDetect(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, "plain")
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -297,6 +296,7 @@ func TestI18n_Lazy_DetectsOnceAndMemoizes(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, first+"/"+second+"/"+ctx.T("required")+"/"+ctx.TPlural("items", 1))
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -316,6 +316,7 @@ func TestI18n_Lazy_PoolReuseResetsMemo(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale())
 	})
 
+	startServing(t, app)
 	for i, lang := range []string{"tr", "en", "tr"} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -335,6 +336,7 @@ func TestI18n_Lazy_ErrorPathTriggersFirstDetection(t *testing.T) {
 	app := newLazyI18nApp(t, &calls, acceptLanguage)
 	app.GET("/", func(*credo.Context) error { return credo.ErrNotFound })
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Accept-Language", "tr")
@@ -368,6 +370,7 @@ func TestI18n_Lazy_EarlyMiddlewareReadWins(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale())
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if early != "en" || w.Body.String() != "en" || calls.Load() != 1 {
@@ -391,6 +394,7 @@ func TestI18n_Lazy_PostAuthReadSeesUser(t *testing.T) {
 	})
 	app.GET("/", func(*credo.Context) error { return credo.ErrNotFound })
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	var body credo.ErrorResponse
@@ -409,6 +413,7 @@ func TestI18n_Lazy_EmptyOrUnresolvableSelectsDefault(t *testing.T) {
 		app.GET("/", func(ctx *credo.Context) error {
 			return ctx.Response().Text(http.StatusOK, ctx.Locale())
 		})
+		startServing(t, app)
 		w := httptest.NewRecorder()
 		app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 		if w.Body.String() != "en" {
@@ -425,6 +430,7 @@ func TestI18n_Lazy_DetectorPanicRecovered(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale())
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Code != http.StatusInternalServerError {
@@ -453,6 +459,7 @@ func TestI18n_Lazy_DetectorPanicPropagatesWithoutRecover(t *testing.T) {
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale())
 	})
+	startServing(t, app)
 	expectPanicContaining(t, "detector boom", func() {
 		app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	})
@@ -473,6 +480,7 @@ func TestI18n_Lazy_ReentryPanics(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale())
 	})
 
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Code != http.StatusInternalServerError || calls.Load() != 1 {
@@ -483,18 +491,18 @@ func TestI18n_Lazy_ReentryPanics(t *testing.T) {
 func TestI18n_InactiveBundleNeverDetects(t *testing.T) {
 	var calls atomic.Int32
 	app := mustNew(t)
-	if err := app.UseI18n(credo.I18nConfig{
-		Dir: filepath_nonexistent(),
+	// No source: conventional discovery finds no locales/ directory, so the
+	// start leaves i18n inactive.
+	app.UseI18n(credo.I18nConfig{
 		Detect: func(*credo.Context) string {
 			calls.Add(1)
 			return "tr"
 		},
-	}); err == nil {
-		t.Fatal("explicit missing directory must fail")
-	}
+	})
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, ctx.Locale()+"|"+ctx.T("required"))
 	})
+	startServing(t, app)
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Body.String() != "|required" || calls.Load() != 0 {
@@ -507,29 +515,23 @@ func filepath_nonexistent() string { return "nonexistent_locales_for_lazy_test/"
 func TestUseI18n_TwicePanics(t *testing.T) {
 	t.Run("active", func(t *testing.T) {
 		app := mustNew(t)
-		if err := app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()}); err != nil {
-			t.Fatal(err)
-		}
+		app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 		expectPanicContaining(t, "App.UseI18n called twice", func() {
-			_ = app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
+			app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 		})
 	})
-	t.Run("inactive consumes the slot", func(t *testing.T) {
+	t.Run("conventional discovery consumes the slot", func(t *testing.T) {
 		app := mustNew(t)
-		if err := app.UseI18n(); err != nil {
-			t.Fatal(err)
-		}
+		app.UseI18n()
 		expectPanicContaining(t, "App.UseI18n called twice", func() {
-			_ = app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
+			app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 		})
 	})
-	t.Run("error leaves the slot free", func(t *testing.T) {
+	t.Run("misuse leaves the slot free", func(t *testing.T) {
 		app := mustNew(t)
-		if err := app.UseI18n(credo.I18nConfig{Dir: filepath_nonexistent()}); err == nil {
-			t.Fatal("expected error")
-		}
-		if err := app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()}); err != nil {
-			t.Fatalf("second UseI18n after an error: %v", err)
-		}
+		expectPanicContaining(t, "mutually exclusive", func() {
+			app.UseI18n(credo.I18nConfig{Dir: filepath_nonexistent(), DirFS: i18nTestFS()})
+		})
+		app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 	})
 }
