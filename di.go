@@ -174,7 +174,9 @@ func (app *App) BindMany[I, T any]() {
 //
 //	di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); ...
 //
-// each circular dependency, and constructors that take a context.Context.
+// each circular dependency, constructors that take a context.Context, and
+// each internal component that depends on an ingress one, with the path and
+// both remedies.
 //
 // Finalize is idempotent. If not called explicitly, the Run* entry points and
 // the first [App.ServeHTTP] call it implicitly.
