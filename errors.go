@@ -479,10 +479,12 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 // classifyError converts an error into normalized [ErrorInfo].
 //
 // Classification order:
-//  1. validation.Errors → 422 Unprocessable Entity with field violations
-//  2. *BindError → 400 Bad Request with a typed decode-reason violations entry
-//  3. *HTTPError → status/code from the error and message from exact-key
-//     resolution; invalid stored fields fail closed to a generic 500
+//  1. *HTTPError → status/code from the error and message from exact-key
+//     resolution; invalid stored fields fail closed to a generic 500. An
+//     explicit status wins over a validation or bind error wrapped inside it.
+//  2. validation.Errors or a single *validation.ValidationError → 422
+//     Unprocessable Entity with field violations
+//  3. *BindError → 400 Bad Request with a typed decode-reason violations entry
 //  4. fault.Provider → default root transport policy for the semantic kind
 //  5. HTTPStatus() int interface → legacy or explicit transport status;
 //     out-of-domain statuses fail closed to a generic 500
@@ -491,18 +493,6 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 // Every branch resolves its effective code and message through [codedErrorInfo],
 // so the default pipeline always emits a non-empty machine code.
 func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
-	if ve, ok := errors.AsType[validation.Errors](err); ok {
-		info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, "validation_failed", "")
-		info.Violations = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
-		return info
-	}
-
-	if be, ok := errors.AsType[*BindError](err); ok {
-		info := app.codedErrorInfo(ctx, http.StatusBadRequest, "bind_failed", "")
-		info.Violations = []validation.ValidationError{app.bindProblemError(ctx, be)}
-		return info
-	}
-
 	if he, ok := errors.AsType[*HTTPError](err); ok {
 		// Fail closed on invalid directly constructed values: rebuild a
 		// generic internal-server problem and publish none of the invalid
@@ -512,6 +502,19 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		}
 		info := app.codedErrorInfo(ctx, he.Status, he.Code, he.MessageKey)
 		info.Details = he.Details
+		return info
+	}
+
+	if ve, ok := errors.AsType[validation.Errors](err); ok {
+		return app.validationErrorInfo(ctx, ve)
+	}
+	if ve, ok := errors.AsType[*validation.ValidationError](err); ok {
+		return app.validationErrorInfo(ctx, validation.Errors{*ve})
+	}
+
+	if be, ok := errors.AsType[*BindError](err); ok {
+		info := app.codedErrorInfo(ctx, http.StatusBadRequest, "bind_failed", "")
+		info.Violations = []validation.ValidationError{app.bindProblemError(ctx, be)}
 		return info
 	}
 
@@ -532,6 +535,13 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 	}
 
 	return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
+}
+
+// validationErrorInfo is the 422 validation_failed classification.
+func (app *App) validationErrorInfo(ctx *Context, ve validation.Errors) *ErrorInfo {
+	info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, "validation_failed", "")
+	info.Violations = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
+	return info
 }
 
 // codedErrorInfo is the single source of the effective-code and message

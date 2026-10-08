@@ -41,24 +41,19 @@ func ExportNewRuleError(code, message string, params map[string]any) *Validation
 	return newRuleError(code, message, params)
 }
 
-// ExportToValidationError exposes toValidationError for testing.
-func ExportToValidationError(err error) *ValidationError {
-	return toValidationError(err)
-}
-
 // ExportJoinFieldPath exposes joinFieldPath for testing.
 func ExportJoinFieldPath(parent, child string) string {
 	return joinFieldPath(parent, child)
 }
 
 // ExportPrefixErrors exposes prefixErrors for testing.
-func ExportPrefixErrors(prefix string, err error) Errors {
+func ExportPrefixErrors(prefix string, err error) error {
 	return prefixErrors(prefix, err)
 }
 
 // ExportCollectErrors exposes collectErrors for testing.
-func ExportCollectErrors(dst *Errors, err error, fieldPath string) {
-	collectErrors(dst, err, fieldPath)
+func ExportCollectErrors(dst *Errors, err error, fieldPath string) error {
+	return collectErrors(dst, err, fieldPath)
 }
 
 // ResetFieldNameCache clears the field name cache for test isolation.

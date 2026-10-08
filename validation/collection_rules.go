@@ -50,7 +50,9 @@ func (r *eachRule[T]) Validate(value []T) error {
 		for _, rule := range r.rules {
 			if err := rule.Validate(elem); err != nil {
 				prefix := "[" + strconv.Itoa(i) + "]"
-				collectErrors(&allErrors, err, prefix)
+				if internal := collectErrors(&allErrors, err, prefix); internal != nil {
+					return internal
+				}
 			}
 		}
 	}
@@ -85,7 +87,9 @@ func (r *whenRule[T]) Validate(value T) error {
 	var allErrors Errors
 	for _, rule := range r.rules {
 		if err := rule.Validate(value); err != nil {
-			collectErrors(&allErrors, err, "")
+			if internal := collectErrors(&allErrors, err, ""); internal != nil {
+				return internal
+			}
 		}
 	}
 	if len(allErrors) == 0 {
@@ -118,7 +122,9 @@ func (r *nilSafeRule[T]) Validate(value *T) error {
 	var allErrors Errors
 	for _, rule := range r.rules {
 		if err := rule.Validate(*value); err != nil {
-			collectErrors(&allErrors, err, "")
+			if internal := collectErrors(&allErrors, err, ""); internal != nil {
+				return internal
+			}
 		}
 	}
 	if len(allErrors) == 0 {

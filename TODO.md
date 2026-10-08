@@ -17,7 +17,7 @@ Scope, sequence and acceptance live in the [delivery plan](docs/plans/components
 - [x] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
 - [x] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
 - [x] W3: the DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
-- [ ] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error
+- [x] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error; `validation.NewError` builds the client-visible one (2026-10-08)
 - [ ] W8: `StatusHandler` panics for any code but 404 and 405
 - [ ] W9: examples, guides and the release
 

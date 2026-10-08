@@ -83,6 +83,20 @@ func (e Errors) Unwrap() []error {
 	return out
 }
 
+// NewError returns a client-visible validation failure with the given rule
+// code and message, for a custom rule or an inline [By] function. The field
+// path is filled in by [Field], as for the built-in rules.
+//
+//	return validation.NewError("country_code", "must be a 2-letter code")
+//
+// A rule error that is neither a *ValidationError nor [Errors] is internal:
+// validation stops and the error is returned unchanged, so the error
+// pipeline classifies it like any handler error and its text never reaches
+// the client.
+func NewError(code, message string) *ValidationError {
+	return &ValidationError{Code: code, Message: message}
+}
+
 // newRuleError creates a ValidationError for a built-in rule.
 func newRuleError(code, message string, params map[string]any) *ValidationError {
 	return &ValidationError{
@@ -92,54 +106,43 @@ func newRuleError(code, message string, params map[string]any) *ValidationError 
 	}
 }
 
-// toValidationError converts any error to a *ValidationError.
-// If the error is already a *ValidationError, returns it directly.
-// Otherwise wraps it with code "invalid".
-func toValidationError(err error) *ValidationError {
-	if ve, ok := errors.AsType[*ValidationError](err); ok {
-		return ve
+// prefixErrors prepends prefix to the Field of each failure in err, an
+// [Errors] or a single *ValidationError, and returns them as Errors. If the
+// child field starts with "[", it concatenates without a dot separator (e.g.
+// "items" + "[0]" → "items[0]"). Any other error is internal and is returned
+// unchanged.
+func prefixErrors(prefix string, err error) error {
+	var result Errors
+	if internal := collectErrors(&result, err, prefix); internal != nil {
+		return internal
 	}
-	return &ValidationError{
-		Code:    "invalid",
-		Message: err.Error(),
-	}
+	return result
 }
 
-// prefixErrors takes an error (which may be Errors or a single
-// *ValidationError) and prepends the prefix to each error's Field.
-// If the child field starts with "[", concatenates without a dot separator
-// (e.g. "items" + "[0]" → "items[0]").
-func prefixErrors(prefix string, err error) Errors {
-	if errs, ok := errors.AsType[Errors](err); ok {
-		result := make(Errors, len(errs))
-		for i, ve := range errs {
-			result[i] = ve
-			result[i].Field = joinFieldPath(prefix, ve.Field)
-		}
-		return result
-	}
-
-	ve := toValidationError(err)
-	ve.Field = joinFieldPath(prefix, ve.Field)
-	return Errors{*ve}
-}
-
-// collectErrors normalizes err and appends the resulting ValidationError(s)
-// to dst, prefixing each error's Field with fieldPath. It never mutates err:
-// when err is an Errors slice, each element is copied before its Field is
-// rewritten, so a rule that retains or shares the returned slice is unaffected
-// (matching prefixErrors).
-func collectErrors(dst *Errors, err error, fieldPath string) {
+// collectErrors appends the failures in err to dst, prefixing each Field with
+// fieldPath. It never mutates err: each element of an Errors slice is copied
+// before its Field is rewritten, so a rule that retains or shares the
+// returned slice is unaffected.
+//
+// The type of err decides its meaning, found the way the error pipeline
+// finds it, through the error's chain: [Errors] or a *ValidationError is a
+// client-visible failure; any other error is internal, appends nothing and is
+// returned for the caller to stop validation with.
+func collectErrors(dst *Errors, err error, fieldPath string) error {
 	if errs, ok := errors.AsType[Errors](err); ok {
 		for _, ve := range errs {
 			ve.Field = joinFieldPath(fieldPath, ve.Field)
 			*dst = append(*dst, ve)
 		}
-		return
+		return nil
 	}
-	ve := toValidationError(err)
-	ve.Field = joinFieldPath(fieldPath, ve.Field)
-	*dst = append(*dst, *ve)
+	if e, ok := errors.AsType[*ValidationError](err); ok {
+		ve := *e
+		ve.Field = joinFieldPath(fieldPath, ve.Field)
+		*dst = append(*dst, ve)
+		return nil
+	}
+	return err
 }
 
 // joinFieldPath joins a parent and child field path.

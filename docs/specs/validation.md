@@ -121,13 +121,15 @@ v.ValidateStruct(c,
 
 ### Custom Rules
 
+A custom rule reports a client-visible failure with `validation.NewError(code, message string) *ValidationError`; the field path is filled in by `Field`, as for the built-in rules.
+
 ```go
 // Option 1: Implement Rule[T] interface
 type CountryCode struct{}
 
 func (r CountryCode) Validate(value string) error {
     if !isValidCountryCode(value) {
-        return errors.New("invalid country code")
+        return validation.NewError("country_code", "must be a valid country code")
     }
     return nil
 }
@@ -137,7 +139,7 @@ func (r CountryCode) Validate(value string) error {
 // Option 2: Inline with validation.By[T]()
 validation.Field(&c.Code, validation.By(func(code string) error {
     if len(code) != 2 {
-        return errors.New("must be a 2-letter code")
+        return validation.NewError("country_code", "must be a 2-letter code")
     }
     return nil
 }))
@@ -147,34 +149,12 @@ Note: `validation.By` uses type inference — no explicit type parameter needed 
 
 ### Rule Errors
 
-**Accepted, pending implementation (v0.24.0, W7).** When it ships, this section replaces the custom-rule examples above, which return `errors.New` as the client message, and the conversion of any rule error into an `invalid` violation carrying the error's text.
-
-The type of a rule's error decides whether the client sees it:
+The type of a rule's error decides whether the client sees it. The type is found the way the error pipeline finds it, through the error's chain, so a `*ValidationError` wrapped with `fmt.Errorf("…: %w", …)` is still a violation:
 
 | A rule returns | Validation | Response (default pipeline) |
 | --- | --- | --- |
 | `*ValidationError` or `validation.Errors` | continues; the error is a violation of the field | 422 `validation_failed`, the rule's code and message in `violations[]` |
 | any other error | stops at once; the error leaves `ValidateStruct`, `Validate` and `BindBody`/`BindQuery` unchanged | classified like any handler error ([ADR-009](../adr/009-handler-and-error-handling.md)): a plain error is a 500 with the default message, its text logged, not rendered; a fault keeps its mapped status (`store`'s unavailable kind → 503) |
-
-W7 adds the small constructor `validation.NewError(code, message string) *ValidationError` for the client-visible case; the field path is filled in by `Field`, as for the built-in rules. Both custom-rule forms use it:
-
-```go
-// Option 1: Implement Rule[T] interface
-func (r CountryCode) Validate(value string) error {
-    if !isValidCountryCode(value) {
-        return validation.NewError("country_code", "must be a valid country code")
-    }
-    return nil
-}
-
-// Option 2: Inline with validation.By[T]()
-validation.Field(&c.Code, validation.By(func(code string) error {
-    if len(code) != 2 {
-        return validation.NewError("country_code", "must be a 2-letter code")
-    }
-    return nil
-}))
-```
 
 An internal error stops validation everywhere it can arise: `ValidateStruct` returns it without collecting the remaining fields, and nested `Validatable` fields, `Each`, `When` and `NilSafe` pass it on unchanged, so a rule's internal failure never turns into a violation at any depth. A rule that does I/O despite the [stateless boundary](#validation-boundary--stateless-only) and fails therefore reports a server failure — `pq: connection to 10.1.2.3:5432 refused` reaches the log, and the client receives a server error, not a claim that its input was invalid.
 
@@ -326,7 +306,7 @@ pipeline and rendered in Credo's default error envelope (or by a configured
 }
 ```
 
-**Accepted, pending implementation (v0.24.0, W7).** An explicitly constructed `HTTPError` wins over validation errors wrapped inside it: `credo.NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 `tenant_conflict`, not 422 `validation_failed`; only validation errors that no `HTTPError` wraps take the 422 above. See [ADR-009](../adr/009-handler-and-error-handling.md#an-explicit-status-wins).
+An explicitly constructed `HTTPError` wins over validation errors wrapped inside it: `credo.NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 `tenant_conflict`, not 422 `validation_failed`; only validation errors that no `HTTPError` wraps take the 422 above. See [ADR-009](../adr/009-handler-and-error-handling.md#an-explicit-status-wins).
 
 ### Error Types
 
