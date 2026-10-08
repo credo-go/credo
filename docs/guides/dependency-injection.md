@@ -430,7 +430,7 @@ Bind each wrapper once and register it by its type with `store.Register[PrimaryD
 
 ### Wrappers and resource identity
 
-A wrapper and the handle it wraps can be one resource held through two bindings, and one resource has one teardown. The App keys components by **resource identity**: the token a value's `ResourceIdentity() any` method returns (`credo.ResourceIdentifier`); without the method, a comparable value — a pointer, or a struct over one — is its own identity. Values that share an identity are shut down once, when the last holder retires, so the consumers of every holder stop first: one pointer under several bindings, a wrapper and the handle it embeds, two wrappers over one handle.
+A wrapper and the handle it wraps can be one resource held through two bindings, and one resource has one teardown. The App keys components by **resource identity**: the token a value's `ResourceIdentity() any` method returns (`credo.ResourceIdentifier`); without the method, a comparable value — a pointer, or a struct over one — is its own identity. Values that share an identity are started once and shut down once, when the last holder retires, so the consumers of every holder stop first: one pointer under several bindings, a wrapper and the handle it embeds, two wrappers over one handle.
 
 - **A wrapper that embeds a handle which identifies itself inherits that identity.** `*sqldb.DB` returns itself from `ResourceIdentity()`, so `PrimaryDB{db}` and `db` are one database: bound both ways, it is closed once, after the consumers of both. Two wrappers over two handles are two databases, each closed once.
 - **A wrapper over a handle that does not identify itself forwards the identity with one method.** Without it, the wrapper value would be a resource of its own:
