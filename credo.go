@@ -497,15 +497,23 @@ func (app *App) Host(pattern string) *Group {
 // for that case, inside the global middleware and without a matched route
 // ([Context.HasRoute] reports false).
 //
-// Only these two codes are consulted. A handler registered for any other code
-// is accepted and never called. The handlers are not error handlers either: an
-// error that a route handler or a middleware returns — [ErrNotFound] included
-// — goes through the centralized error handling and does not reach them; use
-// [App.UseErrorRenderer] to shape error bodies.
+// Only these two codes are consulted, and StatusHandler panics for any other
+// code, so a registration that would never run fails at startup instead of
+// being silently ignored. No other code is supported: a 5xx handler would
+// re-enter application code inside error rendering. The handlers are not
+// error handlers either: an error that a route handler or a middleware
+// returns — [ErrNotFound] included — goes through the centralized error
+// handling and does not reach them; use [App.UseErrorRenderer] to shape error
+// bodies.
 //
 // Must be called before the server starts; panics if called after compile.
 func (app *App) StatusHandler(code int, h Handler) {
 	app.checkFrozen("App.StatusHandler")
+	if code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
+		panic(fmt.Sprintf("credo: App.StatusHandler(%d): only 404 (http.StatusNotFound) and "+
+			"405 (http.StatusMethodNotAllowed) are consulted; return an error from the handler "+
+			"and shape its body with App.UseErrorRenderer instead", code))
+	}
 	if app.statusHandlers == nil {
 		app.statusHandlers = make(map[int]Handler)
 	}

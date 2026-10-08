@@ -141,7 +141,7 @@ app.StatusHandler(404, func(ctx *credo.Context) error {
 
 Status handlers are app-level and consulted for these two codes only: 404 when no route matches, 405 when the path matches but no route serves the method. They are not error handlers — an error a handler returns, a 404 included, goes through the central error pipeline ([ADR-009](009-handler-and-error-handling.md)).
 
-**Accepted, pending implementation (v0.24.0, W8).** `StatusHandler(code, h)` panics at registration for any code but 404 and 405, with a message naming the two supported codes. Only those two are looked up, so a handler registered for another code would never run — a silent no-op — and supporting more codes is not the remedy: a 5xx handler would re-enter application code inside error rendering, the path that must stay safe when application code has just failed. The panic turns the no-op into a startup failure the developer sees at once. A 403 or 500 response is shaped through the error pipeline's `ErrorRenderer`, not a status handler.
+`StatusHandler(code, h)` panics at registration for any code but 404 and 405, with a message naming the two supported codes. Only those two are looked up, so a handler registered for another code would never run — a silent no-op — and supporting more codes is not the remedy: a 5xx handler would re-enter application code inside error rendering, the path that must stay safe when application code has just failed. The panic turns the no-op into a startup failure the developer sees at once. A 403 or 500 response is shaped through the error pipeline's `ErrorRenderer`, not a status handler.
 
 ### HEAD Auto-Handling
 
