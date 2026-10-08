@@ -14,7 +14,7 @@
 //   - Validation (programmatic rules, no struct tags)
 //   - Centralized error handling (Credo JSON envelope)
 //   - Health probes (/health, /ready) for container orchestration
-//   - Graceful shutdown with OnShutdown hooks
+//   - Lifecycle components and graceful shutdown with OnStop hooks
 package main
 
 import (
@@ -145,7 +145,8 @@ func (s *TenantService) List(ctx context.Context) ([]Tenant, error) {
 	}, nil
 }
 
-// Shutdown implements credo.Shutdowner for graceful cleanup.
+// Shutdown makes TenantService a credo.Component: the App shuts it down
+// after its consumers when it drains.
 func (s *TenantService) Shutdown(ctx context.Context) error {
 	s.infra.Logger.Info("TenantService shutting down")
 	return nil
@@ -385,11 +386,11 @@ func run() error {
 		logger.Info("log level reloaded", "debug", next.Debug)
 		return nil
 	})
-	app.OnStart(func(lifecycleCtx context.Context) error {
+	app.OnStart(func(context.Context) error {
 		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr())
 		return nil
 	})
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(context.Context) error {
 		logger.Info("application shutting down", "app", appCfg.Name)
 		return nil
 	})

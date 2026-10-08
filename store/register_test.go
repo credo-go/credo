@@ -621,7 +621,7 @@ func TestRegister_RejectsSplitHealthAndShutdownObjects(t *testing.T) {
 		store.WithCallerOwnedLifecycle(),
 	)
 	if err == nil {
-		t.Fatal("Register should reject Shutdowner value with a separate Lifecycle")
+		t.Fatal("Register should reject a component value with a separate Lifecycle")
 	}
 	if healthLifecycle.pingCalled || value.shutdownCalls != 0 {
 		t.Fatal("split ownership error must not Ping or Shutdown either object")
@@ -792,7 +792,7 @@ func TestRegister_CallerOwnedLifecycleCanCloseThroughShutdownHook(t *testing.T) 
 	); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
-	app.OnShutdown(lifecycle.Shutdown)
+	app.OnStop(lifecycle.Shutdown)
 	runApp(t, app)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

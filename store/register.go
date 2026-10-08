@@ -77,8 +77,11 @@ func WithLifecycle(lc Lifecycle) RegisterOption {
 
 // WithCallerOwnedLifecycle explicitly keeps lifecycle shutdown ownership with
 // the caller when [WithLifecycle] is used for a value that cannot itself
-// implement Lifecycle. The caller must arrange shutdown, for example through
-// [credo.App.OnShutdown]. The option is invalid without [WithLifecycle].
+// implement Lifecycle. The caller must arrange shutdown after everything that
+// uses the store has stopped, for example by closing it after Run returns; a
+// value handed to [credo.App.Manage] has no dependency edges, so the drain
+// could close it before its consumers. The option is invalid without
+// [WithLifecycle].
 func WithCallerOwnedLifecycle() RegisterOption {
 	return func(o *registerOptions) {
 		o.callerOwned = true
@@ -214,7 +217,7 @@ func buildRegisterPlan[R any](value R, opts ...RegisterOption) (registerPlan, er
 	if implementsLifecycle && isNilDynamicValue(valueLifecycle) {
 		implementsLifecycle = false
 	}
-	_, implementsShutdowner := any(value).(credo.Shutdowner)
+	_, implementsComponent := any(value).(credo.Component)
 
 	var lc Lifecycle
 	switch {
@@ -234,9 +237,9 @@ func buildRegisterPlan[R any](value R, opts ...RegisterOption) (registerPlan, er
 		if isNilDynamicValue(o.lifecycle) {
 			return registerPlan{}, fmt.Errorf("store: %q WithLifecycle value must not be nil", name)
 		}
-		if implementsShutdowner {
+		if implementsComponent {
 			return registerPlan{}, fmt.Errorf(
-				"store: %q implements credo.Shutdowner but not Lifecycle; Ping/Health and Shutdown cannot use different objects",
+				"store: %q implements credo.Component but not Lifecycle; Ping/Health and Shutdown cannot use different objects",
 				name,
 			)
 		}

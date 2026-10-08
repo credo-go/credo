@@ -9,7 +9,7 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// diCloser is a Shutdowner value for ownership and diagnostics tests.
+// diCloser is a component value for ownership and diagnostics tests.
 type diCloser struct {
 	name   string
 	closed bool
@@ -129,12 +129,12 @@ func TestReplace_ReturnsSupersededInstance(t *testing.T) {
 	}
 	var warned bool
 	for _, e := range parseJSONLines(t, logs.Bytes()) {
-		if e["level"] == "WARN" && strings.Contains(e["msg"].(string), "Replace superseded a Shutdowner") {
+		if e["level"] == "WARN" && strings.Contains(e["msg"].(string), "Replace superseded a component") {
 			warned = true
 		}
 	}
 	if !warned {
-		t.Fatal("replacing a Shutdowner should log a Warn diagnostic")
+		t.Fatal("replacing a component should log a Warn diagnostic")
 	}
 }
 
@@ -163,13 +163,14 @@ func TestResolve_DuringDrain_LogsDebug(t *testing.T) {
 	logger, logs := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger))
 	app.ProvideValue[*diSimpleService](&diSimpleService{Value: "v"})
-	app.OnDrain(func(context.Context) error {
+	// An ingress stop hook runs before the container enters closing.
+	app.OnStop(func(context.Context) error {
 		_, err := app.Resolve[*diSimpleService]()
 		return err
-	})
+	}, credo.Ingress())
 	mustFinalize(t, app)
 	if err := app.Shutdown(t.Context()); err != nil {
-		t.Fatalf("Shutdown = %v (DI stays live through the drain phases)", err)
+		t.Fatalf("Shutdown = %v (DI stays live through the ingress tier)", err)
 	}
 	var noted bool
 	for _, e := range parseJSONLines(t, logs.Bytes()) {

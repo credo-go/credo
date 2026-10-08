@@ -136,7 +136,7 @@ uploads, err := os.OpenRoot("./uploads")
 if err != nil {
     log.Fatal(err)
 }
-app.OnShutdown(func(context.Context) error { return uploads.Close() })
+app.OnStop(func(context.Context) error { return uploads.Close() }) // after the HTTP drain
 
 app.GET("/uploads/{name}", func(ctx *credo.Context) error {
     f, err := uploads.Open(ctx.Request().RouteParam("name"))
@@ -278,6 +278,18 @@ tenant := ctx.Request().PathValue("tenant")
 In a mounted Credo app `RouteParam` returns that app's own route parameters; the parameters of the mount prefix are reached through `PathValue`. Nested parametric mounts add up: the innermost handler sees the parameters of every prefix on the way down. A catch-all parameter does not belong in a mount pattern — it consumes the whole path, and the handler would always see `/`.
 
 Mounts cover every standard method except `CONNECT` and `TRACE`, which return 405.
+
+A mounted Credo app is an independent App, with its own DI graph and its own components. Hand it to the parent with `parent.Manage(child)`, so that it starts in the parent's start phase, before the parent's listener accepts, and stops after the parent's HTTP drain has finished the requests that reach it:
+
+```go
+billing := billingApp() // a *credo.App with its own components
+app.Mount("/billing", billing)
+app.Manage(billing, credo.Named("billing"))
+```
+
+A managed component's default name is its type name, `*credo.App` here, so a parent that manages several children names each with `credo.Named`. Without the `Manage` call, a child App that has anything to start — a component with `Start` or `Ready`, a start hook, workers — panics on its first request (the parent's recovery turns it into a 500 and logs it).
+
+`parent.Manage(child)` composes Apps that are independent by design, each with its own configuration, container and lifecycle. The modules of one application share one App and its DI graph: give them [groups](#route-groups) and constructors, not an App each.
 
 Mounted handlers run outside the per-route compiled chain, so only global middleware (and the framework features) apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).
 

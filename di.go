@@ -27,34 +27,47 @@ import (
 // dependency is invisible to graph validation, cycle detection and
 // dependency-ordered shutdown.
 //
+// A binding whose type shows Shutdown is a component: the App shuts its value
+// down after its consumers, and starts it and asks it for readiness when the
+// type also shows Start or Ready ([Component]). A value whose Shutdown only
+// the built value shows is shut down too, in the internal tier. The options
+// are [Ingress], [Closer] and [Override]; each panics on misuse at the call.
+//
 // Registration is sequential: call Provide from the goroutine that builds the
 // App, before it runs.
-func (app *App) Provide[T any](constructor any) {
-	panicOnMisuse(app.container.Provide[T](constructor))
+func (app *App) Provide[T any](constructor any, opts ...RegistrationOption) {
+	o := registrationOptions("App.Provide", opts, optIngress, optCloser, optOverride)
+	panicOnMisuse(app.container.ProvideWith[T](constructor, o))
 }
 
 // MustProvide is equivalent to [App.Provide], which panics on misuse.
-func (app *App) MustProvide[T any](constructor any) {
-	app.Provide[T](constructor)
+func (app *App) MustProvide[T any](constructor any, opts ...RegistrationOption) {
+	app.Provide[T](constructor, opts...)
 }
 
-// ProvideValue registers a pre-built value for type T as a Singleton. The
-// container owns the value from then on: if it implements [Shutdowner] it is
-// closed during teardown, unless a later successful [App.Replace] hands it
-// back to the caller. A second binding of T and a call after [App.Finalize]
-// or after shutdown began panic, like [App.Provide].
+// ProvideValue registers a pre-built value for type T as a Singleton. The App
+// owns the value from then on: if it is a [Component] it is shut down during
+// the drain, unless [Borrowed] leaves it to the caller or a later successful
+// [App.Replace] hands it back. The options are [Ingress], [Borrowed],
+// [Closer] and [Override]. A second binding of T without [Override], a call
+// after [App.Finalize] or after shutdown began, and a value whose resource
+// another holder owns differently panic, like [App.Provide].
 //
 //	app.ProvideValue[*Logger](logger)
-func (app *App) ProvideValue[T any](value T) {
-	panicOnMisuse(app.container.ProvideValue[T](value))
+func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption) {
+	o := registrationOptions("App.ProvideValue", opts, optIngress, optBorrowed, optCloser, optOverride)
+	panicOnMisuse(app.container.ProvideValueWith[T](value, o))
 }
 
 // ProvideProtectedValue registers a pre-built singleton whose binding cannot
 // later be overwritten through [App.Replace]. It is intended for integrations
 // that publish a value together with external lifecycle or health state and
-// therefore cannot safely allow the DI binding to diverge afterward.
-func (app *App) ProvideProtectedValue[T any](value T) error {
-	return app.container.ProvideProtectedValue[T](value)
+// therefore cannot safely allow the DI binding to diverge afterward. The
+// options are [Ingress] and [Closer]; an option misuse panics, while a
+// binding the container rejects is returned as an error.
+func (app *App) ProvideProtectedValue[T any](value T, opts ...RegistrationOption) error {
+	o := registrationOptions("App.ProvideProtectedValue", opts, optIngress, optCloser)
+	return app.container.ProvideProtectedValueWith[T](value, o)
 }
 
 // ProtectBinding prevents [App.Replace] from overwriting the existing direct
@@ -79,8 +92,8 @@ func (app *App) CanProvideValue[T any]() error {
 
 // MustProvideValue is equivalent to [App.ProvideValue], which panics on
 // misuse.
-func (app *App) MustProvideValue[T any](value T) {
-	app.ProvideValue[T](value)
+func (app *App) MustProvideValue[T any](value T, opts ...RegistrationOption) {
+	app.ProvideValue[T](value, opts...)
 }
 
 // Has reports whether type T is registered, directly or through [App.Alias].
@@ -118,9 +131,9 @@ func (app *App) AdoptValue[T any](validate func(T) error) (T, error) {
 // a previously created instance existed (a pre-built value), and the caller
 // assumes its cleanup responsibility. A superseded constructor binding that
 // never ran yields the zero value and false; Replace never constructs an old
-// provider merely to return it. When the returned instance implements
-// [Shutdowner] a Warn log names the type, as a reminder that the container
-// will not close it. A rejected replacement changes neither the binding nor
+// provider merely to return it. When the returned instance is a
+// [Component] a Warn log names the type, as a reminder that the App will not
+// shut it down. A rejected replacement changes neither the binding nor
 // ownership.
 //
 // Replace is intended for composition-root overrides and tests where a real
@@ -135,7 +148,7 @@ func (app *App) AdoptValue[T any](validate func(T) error) (T, error) {
 func (app *App) Replace[T any](value T) (old T, existed bool, err error) {
 	old, existed, err = app.container.Replace[T](value)
 	if err == nil && existed {
-		app.noteReplacedShutdowner(reflect.TypeFor[T](), any(old))
+		app.noteReplacedComponent(reflect.TypeFor[T](), any(old))
 	}
 	return old, existed, err
 }
@@ -150,14 +163,14 @@ func (app *App) MustReplace[T any](value T) (old T, existed bool) {
 	return old, existed
 }
 
-// noteReplacedShutdowner logs the ownership transfer of a superseded instance
+// noteReplacedComponent logs the ownership transfer of a superseded instance
 // that has a Shutdown method. It is a diagnostic, not the transfer mechanism.
-func (app *App) noteReplacedShutdowner(t reflect.Type, old any) {
-	if _, ok := old.(Shutdowner); !ok {
+func (app *App) noteReplacedComponent(t reflect.Type, old any) {
+	if _, ok := old.(Component); !ok {
 		return
 	}
 	app.Logger().LogAttrs(context.Background(), slog.LevelWarn,
-		"credo: Replace superseded a Shutdowner; the caller now owns its cleanup",
+		"credo: Replace superseded a component; the caller now owns its shutdown",
 		slog.String("type", t.String()))
 }
 
@@ -172,10 +185,10 @@ func (app *App) noteReplacedShutdowner(t reflect.Type, old any) {
 //
 // Resolve is primarily intended for bootstrap/composition-root code after
 // Finalize; runtime calls remain available, but Credo's recommended
-// application pattern is constructor injection. The shutdown hooks
-// ([App.OnPreDrain], [App.OnDrain], [App.OnShutdown]) must not resolve: take
-// their dependencies at registration time instead. [App.OnStart] hooks run
-// after Finalize and before traffic, and may resolve.
+// application pattern is constructor injection. Stop hooks ([App.OnStop])
+// must not resolve: take their dependencies at registration time instead.
+// [App.OnStart] hooks run after Finalize and before traffic, and may
+// resolve.
 //
 //	svc, err := app.Resolve[*UserService]()
 func (app *App) Resolve[T any]() (T, error) {

@@ -3,6 +3,7 @@ package credo
 import (
 	"context"
 	"net/http"
+	"slices"
 	"time"
 
 	internalhealth "github.com/credo-go/credo/internal/health"
@@ -56,7 +57,7 @@ type HealthConfig struct {
 	LogRequests bool
 }
 
-// HealthChecker checks the health of a component.
+// HealthChecker checks the health of a dependency or subsystem.
 type HealthChecker interface {
 	Check(ctx context.Context) error // nil = healthy
 }
@@ -178,16 +179,29 @@ func (app *App) storeHealthFunc() internalhealth.StoreFunc {
 	return fn
 }
 
-// contributedReadinessFunc returns the readiness contributions provided by
-// infrastructure packages (the worker pool's WithReadiness bindings, under the
-// module-internal [internalhealth.ReadinessFunc] type), or nil when none is
-// registered. Resolved lazily on each readiness check, like the store seam.
+// contributedReadinessFunc returns the readiness contributions: the Ready of
+// every component that answers it, built once by the start walk, and those
+// provided by infrastructure packages (the worker pool's WithReadiness
+// bindings, under the module-internal [internalhealth.ReadinessFunc] type).
+// It returns nil when there are none.
 func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {
+	var components []internalhealth.ReadinessCheck
+	if app.lifecycle.started.Load() {
+		components = app.lifecycle.readiness
+	}
 	fn, err := app.container.Resolve[internalhealth.ReadinessFunc]()
 	if err != nil {
-		return nil
+		fn = nil
 	}
-	return fn
+	switch {
+	case len(components) == 0:
+		return fn
+	case fn == nil:
+		return func() []internalhealth.ReadinessCheck { return components }
+	}
+	return func() []internalhealth.ReadinessCheck {
+		return append(slices.Clip(components), fn()...)
+	}
 }
 
 // livenessHandler returns 200/503 with a JSON status body.

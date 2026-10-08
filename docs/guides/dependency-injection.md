@@ -42,6 +42,8 @@ Provide / ProvideValue / Alias / BindMany
 
 - `Provide[T]`: register a constructor
 - `ProvideValue[T]`: register a pre-built singleton
+- registration options — `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`: decide a binding's tier, its owner, its teardown, or that it replaces an earlier binding ([Registration options](#registration-options))
+- `app.Manage(v, opts...)`: add a component — a value with `Shutdown`, or a constructor — that is not a binding ([Shutdown and Lifecycle](#shutdown-and-lifecycle))
 - `Has[T]`: check whether `T` is registered, without constructing anything
 - `CanProvideValue[T]`: point-in-time frozen/direct-duplicate preflight
 - `ProvideProtectedValue[T]`: low-level pre-built binding that rejects later `Replace[T]`
@@ -258,6 +260,27 @@ Typical `ProvideValue` use cases:
 - test doubles
 - values created by another bootstrap system
 
+### Registration options
+
+`Provide` and `ProvideValue` take registration options. Handing a value to DI and handing over its teardown are separate decisions, and the options make the second one explicit:
+
+```go
+app.Provide[*OrderConsumer](NewOrderConsumer, credo.Ingress())  // stops with the HTTP drain
+app.ProvideValue[*pgxpool.Pool](sharedPool, credo.Borrowed())   // the caller starts and closes it
+app.ProvideValue[*search.Client](searchClient, credo.Closer())  // the App calls Close
+app.ProvideValue[UserRepository](fakeRepo, credo.Override())    // replaces the earlier binding
+```
+
+| Option | Accepted by | Effect |
+| --- | --- | --- |
+| `credo.Ingress()` | `Provide`, `ProvideValue`, `ProvideProtectedValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.Closer()` |
+| `credo.Borrowed()` | `ProvideValue` | Keeps the binding and the value's `Ready`, and leaves starting and shutting the value down to the caller — a pool two Apps in one process share, a fixture a test suite reuses |
+| `credo.Closer()` | `Provide`, `ProvideValue`, `ProvideProtectedValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
+| `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` |
+| `credo.Named(name)` | `Manage` | Names a managed component in reports and readiness |
+
+Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.Closer()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` on a protected binding or without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.Closer()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
+
 `app.CanProvideValue[T]()` is a non-mutating preflight for helpers that should avoid work before a predictable registration failure. It checks only whether the container is finalized or `T` already has a direct registration. It does not reserve `T`: a registration made in between can still register or finalize before the real call, so the final publication remains authoritative — `ProvideValue` panics on a conflict, and `ProvideProtectedValue`'s error must still be handled.
 
 ### Protected integration bindings
@@ -275,7 +298,7 @@ if err := app.ProtectBinding[Client](client); err != nil {
 }
 ```
 
-After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register shutdown hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-created singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize.
+After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register stop hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-created singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize.
 
 An integration that must read a value the composition root registered ahead of it uses `app.AdoptValue[T](validate)`. It reads the pre-built binding, runs `validate`, and atomically protects that same binding only when validation passes, so an invalid value (a typed-nil Registry) stays repairable with `Replace`. It never runs a constructor: a `T` registered through `Provide` is rejected with an explanatory error. `store.Register` and `worker.Register` adopt their Registry and Pool this way, which is why a Registry constructor is refused at registration time. For a plain "is it registered?" question use `app.Has[T]()`; it constructs, adopts and protects nothing.
 
@@ -293,7 +316,7 @@ if existed {
 }
 ```
 
-`existed` means an already-created instance was superseded — a value registered with `ProvideValue`. Replacing a constructor registration that never ran yields the zero value and `false`; Replace never runs the old constructor just to return its result. On success the container owns the new value and stops tracking the old one, so its cleanup is yours; if the old instance implements `credo.Shutdowner`, Credo logs a warning naming the type as a reminder. A rejected replacement changes nothing. `MustReplace` returns the same `(old, existed)` pair and panics on error.
+`existed` means an already-created instance was superseded — a value registered with `ProvideValue`. Replacing a constructor registration that never ran yields the zero value and `false`; Replace never runs the old constructor just to return its result. On success the container owns the new value and stops tracking the old one, so its cleanup is yours; if the old instance is a component (it has `Shutdown`), Credo logs `credo: Replace superseded a component; the caller now owns its shutdown` at Warn, naming the type. A rejected replacement changes nothing. `MustReplace` returns the same `(old, existed)` pair and panics on error. To swap a binding during registration, before `Finalize`, prefer `credo.Override()`, which fails when there is nothing to replace.
 
 ### No factory closures
 
@@ -332,6 +355,20 @@ func NewUserService(infra credo.Infra, repo UserRepository) *UserService {
 ```
 
 `Alias` is the preferred way to program to interfaces while keeping constructor return types concrete.
+
+It is also the one recipe for a value the App should start or ask for readiness. The App plans `Start`, `Ready` and the tier at registration, from the binding's type, before any constructor runs; a `Start` or `Ready` that only the built value has is neither called nor asked. Provide the concrete type, whose method set shows them, and `Alias` the interface the application uses:
+
+```go
+type OrderEvents interface {
+    Publish(ctx context.Context, e OrderEvent) error
+}
+
+// *KafkaPublisher has Start, Ready and Shutdown.
+app.Provide[*KafkaPublisher](NewKafkaPublisher)
+app.Alias[OrderEvents, *KafkaPublisher]()
+```
+
+Registered as `app.Provide[OrderEvents](NewKafkaPublisher)` instead, the publisher would still be shut down — the App finds `Shutdown` on the value it owns ([Shutdown and Lifecycle](#shutdown-and-lifecycle)) — but never started or asked. A type with `Start` and without `Shutdown` is not a component and is never started.
 
 ---
 
@@ -401,6 +438,38 @@ type AnalyticsDB struct{ *sqldb.DB }
 
 Then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed. If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
 
+### Wrappers and resource identity
+
+A wrapper and the handle it wraps can be one resource held through two bindings, and one resource has one teardown. The App keys components by **resource identity**: the token a value's `ResourceIdentity() any` method returns (`credo.ResourceIdentifier`); without the method, a comparable value — a pointer, or a struct over one — is its own identity. Values that share an identity are shut down once, when the last holder retires, so the consumers of every holder stop first: one pointer under several bindings, a wrapper and the handle it embeds, two wrappers over one handle.
+
+- **A wrapper that embeds a handle which identifies itself inherits that identity.** `*sqldb.DB` returns itself from `ResourceIdentity()`, so `PrimaryDB{db}` and `db` are one database: bound both ways, it is closed once, after the consumers of both. Two wrappers over two handles are two databases, each closed once.
+- **A wrapper over a handle that does not identify itself forwards the identity with one method.** Without it, the wrapper value would be a resource of its own:
+
+  ```go
+  type ProductIndex struct{ *search.Client }
+
+  func (p ProductIndex) ResourceIdentity() any { return p.Client }
+
+  app.ProvideValue[*search.Client](client, credo.Closer())
+  app.ProvideValue[ProductIndex](ProductIndex{client})
+  ```
+
+  The client is closed once, after the consumers of `*search.Client` and of `ProductIndex`.
+- **A wrapper that releases state of its own shares nothing.** Only a value without state of its own to release may share an identity, because the App runs one teardown for the resource, and Go cannot tell a `Shutdown` that a wrapper inherits from one it declares. Such a wrapper holds the handle in a named field, so it neither inherits the handle's identity nor its methods; its own `Shutdown` releases its state and the handle, which is then the wrapper's alone:
+
+  ```go
+  type ReportingDB struct {
+      db     *sqldb.DB // named field: no shared identity
+      buffer *AuditBuffer
+  }
+
+  func (r *ReportingDB) Shutdown(ctx context.Context) error {
+      return errors.Join(r.buffer.Flush(ctx), r.db.Shutdown(ctx))
+  }
+  ```
+
+The holders of one resource that have a teardown agree on its kind: `Shutdown`, or `Close` through `credo.Closer()`. A client bound with `credo.Closer()` beside a holder whose teardown is `Shutdown` is refused — the later `ProvideValue` panics when both values are given, and otherwise the construction of the holder built later fails — with both bindings and both remedies named: drop `credo.Closer()`, or bind the holder that has `Shutdown` under a type that shows `Close` and not `Shutdown`, with `credo.Closer()`. Among holders of one kind, the one registered first runs the teardown, whichever is built first. A holder without a teardown, such as `ProductIndex` above, takes no part in the choice, and the resource still waits for its consumers. A resource handed to `app.Manage` that a `ProvideValue` binding already holds, or handed to `Manage` twice, panics; a `ResourceIdentity()` that panics or returns nil or a non-comparable token panics at `ProvideValue` and `Manage` and fails a constructor's construction.
+
 For the full multi-database pattern, see the [Data Access Guide](data-access.md).
 
 ---
@@ -414,7 +483,7 @@ For the full multi-database pattern, see the [Data Access Guide](data-access.md)
 
 After `Finalize`:
 
-- `Provide`, `ProvideValue`, `Alias` and `BindMany` panic at the call
+- `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call
 - `Replace` and `AdoptValue` return an error
 - `Resolve` and `ResolveAll` become available (before `Finalize` they panic and run no constructor; after a failed `Finalize` they return its error)
 
@@ -425,6 +494,7 @@ Validation catches startup problems early and reports all of them at once, joine
 - missing dependencies, each with its whole path from the registration that needs it
 - dependency cycles, every one of them
 - constructors that take a `context.Context`
+- internal components that depend on an ingress one, each with its path
 
 `Run()` and `RunContext()` call `Finalize()` implicitly, but that safeguard cannot precede a `Resolve` your composition root has already executed. Explicit, error-checked finalize between the last registration and the first `Resolve` is the recommended pattern:
 
@@ -453,9 +523,9 @@ Credo's **recommended** use of `Resolve` is bootstrap/composition-root code:
 - resolving a controller before route registration
 - resolving a top-level service in `main()`
 
-Runtime `Resolve` is technically allowed because the API is public, but it is not Credo's primary application pattern. Shutdown hooks (`OnPreDrain`, `OnDrain`, `OnShutdown`) must not resolve at all: capture the dependency in the hook closure at registration time.
+Runtime `Resolve` is technically allowed because the API is public, but it is not Credo's primary application pattern. Stop hooks (`OnStop`) and `Shutdown` methods must not resolve at all: capture the dependency in the hook closure at registration time, or take it as a constructor parameter so that the dependency order stops the component first.
 
-A constructor runs exactly once, at first resolution, and its outcome is final. If it panics, every caller receives the same `*credo.DIPanicError` (constructor type, original panic value, stack), and `MustResolve` panics with that error as its payload — do not recover and retry. Once shutdown has reached DI teardown, `Resolve` returns an error matching `credo.ErrDIClosed`.
+A constructor runs exactly once, at first resolution, and its outcome is final. If it panics, every caller receives the same `*credo.DIPanicError` (constructor type, original panic value, stack), and `MustResolve` panics with that error as its payload — do not recover and retry. Once the drain begins stopping the internal tier's components, `Resolve` returns an error matching `credo.ErrDIClosed`. A panic in a component's `Start` or `Shutdown` is a `*credo.DIPanicError` too, with the phase `credo.DIPanicStart` or `credo.DIPanicShutdown`.
 
 `ResolveAll[I]` follows the same guidance: use it mainly in bootstrap/setup code when you explicitly need the whole ordered collection. Inside normal application code, prefer constructor injection of `[]I`.
 
@@ -549,50 +619,90 @@ Use `app.NewInfra(name)` to get a scoped Infra with Logger from the app's base i
 
 ## Shutdown and Lifecycle
 
-All DI-managed objects are singletons. If a singleton needs cleanup, implement `credo.Shutdowner`:
+All DI-managed objects are singletons. A singleton that needs cleanup is a **component**: it has a `Shutdown` method, the one method of `credo.Component`:
 
 ```go
-type Cache struct{}
+type Cache struct{ /* ... */ }
 
 func (c *Cache) Shutdown(ctx context.Context) error {
-    _ = ctx
-    return nil
+    return c.flush(ctx) // ctx carries the drain deadline
 }
 ```
 
-Credo closes DI singletons in dependency order: a consumer is shut down before the singletons it received as constructor parameters, whatever the registration order, and registration order (reversed) decides only where the graph does not. Dependencies hidden inside a pre-built value are invisible, so a value that wraps another registered resource gets no ordering guarantee relative to it. Each `Shutdowner` receives at most one `Shutdown(ctx)` attempt bounded by the shared shutdown deadline. A callback that ignores the deadline keeps the singletons it depends on blocked — the container never closes a dependency underneath a live consumer — and the returned `*credo.DIShutdownError` reports every entry's state, blockers and failure so you can see what did not finish.
+The App shuts a component down after its consumers: a consumer stops before the singletons it received as constructor parameters, whatever the registration order, and values without edges stop in reverse registration order. A component with neither `Start` nor `Ready` stays lazy and is shut down only if it was built. Two optional capabilities, planned from the binding's type at registration, let the App do more:
 
-This is useful for:
+- **`Start(ctx) error`** (`credo.Starter`): the start phase builds the component and calls `Start` after the `Start` of everything it depends on, before the App accepts requests. `Start` returns once the component is usable and never blocks for its lifetime; its context ends when it returns, so work that outlives it runs on a goroutine whose context derives from `context.WithoutCancel(ctx)`, stopped by `Shutdown`. A `Start` that returns an error has released what it opened and is not shut down.
+- **`Ready(ctx) error`** (`credo.Readier`): `/ready` asks it under the component's name, from the value the start phase built, with no DI resolution per probe. A failure after `Start` has returned is reported here; no component ends the App.
 
-- database pools
-- caches
-- message clients
-- background worker coordinators
+```go
+type Consumer struct{ /* ... */ }
 
-### Shutdowner vs OnPreDrain vs OnDrain vs OnShutdown
+func NewConsumer(infra credo.Infra, orders *OrderService) *Consumer { /* ... */ }
 
-Credo offers four shutdown mechanisms. Choose based on ownership and when the component must stop:
+func (c *Consumer) Start(ctx context.Context) error {
+    if err := c.client.Connect(ctx); err != nil {
+        return err
+    }
+    loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+    c.cancel = cancel
+    c.done = make(chan struct{})
+    go c.loop(loopCtx) // closes c.done when it returns
+    return nil
+}
+
+func (c *Consumer) Ready(ctx context.Context) error { return c.client.Ping(ctx) }
+
+func (c *Consumer) Shutdown(ctx context.Context) error {
+    if c.cancel != nil {
+        c.cancel()
+        select {
+        case <-c.done:
+        case <-ctx.Done():
+            return ctx.Err()
+        }
+    }
+    return c.client.Close()
+}
+
+app.Provide[*Consumer](NewConsumer, credo.Ingress())
+```
+
+`Shutdown` runs on a component that was built but never started — the rollback of a failed start stops it too — so it tolerates a `Start` that never ran.
+
+### Two tiers
+
+Every component belongs to a tier. The **ingress** tier is where work enters the process — the WebSocket server, the worker pool, a consumer of an external queue — and is chosen with `credo.Ingress()`. Everything else is **internal**, the default. The start phase starts the internal tier in dependency order, then the ingress tier, then the listener accepts. The drain mirrors it: the ingress tier stops first, concurrently with the HTTP drain, with its components that no edge orders stopping concurrently; the internal tier then stops one component at a time in reverse dependency order.
+
+No dependency crosses the tiers backwards: an internal component that depends on an ingress one, directly or through bindings that are not components, fails `Finalize` with the path and both remedies — declare the dependent ingress, or split the ingress component so that what internal components use is an internal part. A producer that hands work to a consumer component takes the consumer (or a handle it owns) as a constructor parameter, and "consumers before dependencies" then stops the producer first; there is no separate ordering API.
+
+### A value whose binding's type does not show `Shutdown`
+
+Ownership, not the view consumers take, decides the teardown. A value the App owns whose `Shutdown` only the built value has — bound as an interface without the method, say — is still a component and is shut down after its consumers. Because `Finalize` cannot see it, it is internal, and if it depends on an ingress component its construction fails with the path and the remedies. Its `Start` and `Ready` are neither called nor asked, since they are planned from the binding's type: to have the App start or ask it, provide the concrete type and `Alias` the interface ([Interface Wiring with `Alias`](#interface-wiring-with-alias)). To keep the teardown of a value you built with yourself, bind it with `app.ProvideValue[T](v, credo.Borrowed())`.
+
+A value that a constructor builds over a borrowed resource stays the caller's as well, even when it has `Shutdown`, unless its binding carries `credo.Closer()`. A teardown that is neither `Shutdown` nor a `Close` — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges.
+
+### Components that are not bindings, and hooks
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
-| `credo.Shutdowner` interface | DI-managed singletons registered through `Provide`, `ProvideValue`, or the protected variant | Dependency order (consumers first, reverse registration as tie-break) while the deadline remains live; blocked or unreached entries are reported |
-| `app.OnPreDrain(fn)` | Narrow coordination that must finish while lifecycle-bound workers and DI remain live | Concurrent with other `OnPreDrain` hooks; before lifecycle cancellation; remains a hard teardown barrier |
-| `app.OnDrain(fn)` | Subsystems that must stop admission and finish DI-dependent handlers before infrastructure closes | Concurrent with HTTP and other `OnDrain` hooks; after lifecycle cancellation and before container shutdown |
-| `app.OnShutdown(fn)` | Components created outside DI and safe to close after infrastructure teardown | LIFO after container shutdown |
+| A DI singleton with `Shutdown` (optionally `Start`, `Ready`) | Anything the application wires through DI that holds a resource | Its tier, after its consumers; started before them |
+| `credo.Closer()` on a binding | A client whose teardown is `Close` | Like a component with `Shutdown` |
+| `app.Manage(v, opts...)` | A value with `Shutdown` built outside DI, a constructor over DI parameters that should not be injectable, a mounted child App | Its tier; a value has no edges and stops in reverse registration order, a constructor has its parameters' edges |
+| `app.OnStart(fn, opts...)` | A leaf action at startup, such as warming a cache | FIFO after its tier's components have started |
+| `app.OnStop(fn, opts...)` | A leaf action at shutdown that may still use its tier's components | LIFO before its tier's components stop |
+
+`Manage` names a component with `credo.Named` (default: its type name; a duplicate name panics). A hook is an anonymous component of a tier, internal unless `credo.Ingress()` says otherwise; anything with a teardown of its own is a component, not a hook, and process-level cleanup that must outlive every component belongs after `Run` returns.
 
 During graceful shutdown the full sequence is:
 
-1. Withdraw readiness and run every `OnPreDrain` hook concurrently.
-2. Cancel the lifecycle context.
-3. Drain HTTP and every `OnDrain` subsystem in parallel.
-4. Shut down DI singletons in dependency order, attempting each ready `Shutdowner` once while the deadline remains live.
-5. Run `OnShutdown` hooks in LIFO order.
+1. Withdraw readiness (`/ready` answers 503 `shutting_down`).
+2. Concurrently with the HTTP drain, stop the ingress tier: ingress `OnStop` hooks in LIFO order, then ingress components.
+3. Wait for an in-flight reload.
+4. Stop the internal tier: internal `OnStop` hooks in LIFO order, then internal components in reverse dependency order. Once the internal components begin to stop, `Resolve` returns an error matching `credo.ErrDIClosed`.
 
-All phases receive the same absolute shutdown deadline. An over-deadline `OnPreDrain` hook is reported but remains a hard barrier until it returns; later phases then receive the same, possibly expired context. HTTP or `OnDrain` work that remains incomplete at the deadline is reported and teardown proceeds. Deadline exhaustion may leave DI entries unattempted or blocked behind a hung consumer, so DI ownership guarantees one framework owner and at most one bounded attempt when reached — not successful closure of every resource. Teardown failures are inspectable with `errors.AsType[*credo.DIShutdownError]` through the joined `Shutdown` error.
+All steps share one deadline — `WithShutdownTimeout` for a signal or a cancelled `RunContext` context, the caller's for `app.Shutdown(ctx)` — and spend it in order. A `Shutdown`, `Close` or hook that has not returned at the deadline is abandoned: the components it depends on are not stopped, since it may still use them, and it is reported with every component it kept open. A `Shutdown` that returns an error promptly is reported, and its dependencies are still stopped. Every `Start`, `Shutdown` and hook is panic-isolated. A construction still running when the drain reaches it blocks its dependencies and is shut down in order when it completes; one that completes after the deadline gets one bounded late cleanup, logged and not reported. Failures are inspectable with `errors.AsType[*credo.LifecycleError]` through the joined `Shutdown` error: each entry names the component, its tier, its phase (`start` or `shutdown`) and its outcome (`failed`, `panicked`, `abandoned`, `kept_open`).
 
-`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown chain without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure, and a test that only used `ServeHTTP` can release them.
-
-Prefer `Shutdowner` for ordinary cleanup of a DI-owned service. Use `OnPreDrain` only when lifecycle cancellation would stop a dependency before required coordination can finish. Use `OnDrain` when a subsystem must quiesce DI-dependent work before container cleanup. Use `OnShutdown` for non-DI resources safe to close last.
+`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure. An App served through `ServeHTTP` by a server you own — an external `http.Server`, or `httptest` in a test — is started with `app.Start(ctx)` (`testutil.Start(t, app)` in tests) when it has anything to start: a component with `Start` or `Ready`, a constructor handed to `Manage`, or a start hook; until then `ServeHTTP` panics. The server's owner drains it before calling `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened.
 
 ---
 
@@ -653,6 +763,15 @@ svc := app.MustResolve[*UserService]()
 _ = svc
 ```
 
+The `testutil` package builds a hermetic test App: `testutil.NewApp(t, testutil.WithWiring(wire), testutil.WithOverride[UserRepository](fakeRepo))`. `WithOverride` replaces a binding through `credo.Override()` and panics when the wiring has no earlier binding of that type; adding a binding is `WithWiring`'s job. An App served through `httptest` that has anything to start is started with `testutil.Start(t, app)`, which shuts it down when the test ends:
+
+```go
+app := testutil.NewApp(t, testutil.WithWiring(wire))
+testutil.Start(t, app)
+srv := httptest.NewServer(app)
+t.Cleanup(srv.Close) // drained before the components stop
+```
+
 Good rule:
 
 - test behavior with direct construction
@@ -674,9 +793,13 @@ RawConfig should be unmarshaled into typed structs and registered with `ProvideV
 
 `Resolve` panics until `app.Finalize()` has run; a composition root that resolves controllers before `Run` must finalize first, and reads configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`. `Run()` finalizes implicitly only as a safeguard, and explicit `app.Finalize()` gives earlier feedback and clearer startup failures.
 
-### Resolving inside shutdown hooks
+### Resolving inside stop hooks
 
-Hooks run during teardown, when construction is the last thing you want. Resolve during bootstrap and capture the value in the hook closure.
+Stop hooks and `Shutdown` methods run during teardown, when construction is the last thing you want. Resolve during bootstrap and capture the value in the hook closure, or make the dependency a constructor parameter.
+
+### Starting work in a constructor or an `OnStart` goroutine
+
+A constructor wires; it never relies on a dependency having started, because the bootstrap order resolves controllers — and most of the graph with them — before `Run`. I/O that needs a running dependency belongs in `Start`. A goroutine launched from an `OnStart` hook on the hook's context stops as soon as the hook returns: background work belongs to a component whose `Start` launches it and whose `Shutdown` stops it, or to a [worker](worker.md).
 
 ### Overusing `Resolve`
 
@@ -713,3 +836,5 @@ This keeps dependency graphs explicit, startup failures early, and runtime behav
 - [DI Container Spec](../specs/container.md)
 - [ADR-004](../adr/004-dependency-injection-and-infra.md)
 - [ADR-005](../adr/005-configuration-architecture.md)
+- [Lifecycle Spec](../specs/lifecycle.md)
+- [ADR-024: Lifecycle Components](../adr/024-lifecycle-components.md)

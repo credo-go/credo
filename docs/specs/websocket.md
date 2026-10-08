@@ -26,7 +26,7 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 }))
 ```
 
-`Use` must run before the App is frozen. It accepts zero or one `Config`, returns a `*Server`, and registers App start/drain hooks. Invalid config, a nil App, multiple configs, or late registration is startup misuse and panics.
+`Use` must run before the App is frozen. It accepts zero or one `Config`, returns a `*Server`, and hands the server to `app.Manage(server, credo.Ingress())`, which makes it an ingress [component](lifecycle.md#components-and-the-start-phase). Invalid config, a nil App, multiple configs, late registration, or a second `Use` on one App (a duplicate component name) is startup misuse and panics.
 
 `Server.Handler(nil)` also panics as registration misuse. `Server.Shutdown(nil)` returns an error without starting the drain. Runtime handshake, network, application, cancellation, and deadline failures return errors or protocol close outcomes; they are not panics.
 
@@ -142,28 +142,27 @@ Every connection must have an active `Read` or `CloseRead`, otherwise pong and c
 
 ## Lifecycle
 
-`Use` registers `OnStart` and `OnDrain` hooks. In App-managed `Run`, `RunContext`, or `ServeContext` operation, shutdown ordering is:
+`Use` registers the server as an ingress component; it has no `Start`, so it admits connections from construction. In `Run`, `RunContext`, `ServeContext` and `App.Shutdown`, the [drain in tiers](lifecycle.md#shutdown-in-tiers) orders it:
 
 ```text
-mark unready
-→ run all OnPreDrain hooks (hard barrier)
-→ cancel lifecycle context
-→ in parallel: HTTP drain + all OnDrain hooks (including WebSocket)
-→ DI singleton shutdown
-→ LIFO OnShutdown hooks
+mark unready (/ready returns 503 shutting_down)
+→ concurrently: HTTP drain + ingress tier (ingress OnStop hooks LIFO, then WebSocket Shutdown
+  and the other ingress components)
+→ wait for an in-flight Reload
+→ internal tier: internal OnStop hooks LIFO, then internal components in reverse dependency order
 ```
 
 WebSocket shutdown closes admission before new Accepts, sends 1001 to active peers, and waits for admission tokens, connection records, synchronous handlers, and tracked close tasks. The first caller owns the budget. Concurrent callers cannot replace it: they receive the owner's result when it finishes, or their own context error if their wait ends first. Calls made after the owner finishes receive its stable result.
 
-If the owner context is cancelled or its deadline expires before cleanup finishes, `Server.Shutdown` returns an error that unwraps that context error and reports remaining handler/connection/close-task counts. It applies best-effort force close and remains draining until late work finishes; it does not report `closed` early. App teardown continues with the same absolute, possibly expired context, so DI and `OnShutdown` may receive an expired context.
+If the owner context is cancelled or its deadline expires before cleanup finishes, `Server.Shutdown` returns an error that unwraps that context error and reports remaining handler/connection/close-task counts. It applies best-effort force close and remains draining until late work finishes; it does not report `closed` early. The App reports the incomplete drain in its `*credo.LifecycleError` and continues with the same absolute, possibly expired deadline, so the internal tier's stop hooks and components may receive an expired context.
 
 A non-nil result does not always mean incomplete. All tracked work may finish, the server may become `closed`, and a failed close task may still be returned as a complete-with-error result. Only a nil result means error-free graceful completion.
 
-When `App` is mounted only as an external `http.Handler`, its lifecycle state does not run. The owner must call the external `http.Server.Shutdown` and `websocket.Server.Shutdown` in parallel before tearing down shared resources.
+When `App` is served only as an external `http.Handler`, the owner drains its `http.Server` and then calls `App.Shutdown`. `http.Server.Shutdown` does not wait for hijacked connections, so the WebSocket server drains them in `App.Shutdown`'s ingress tier, before the internal tier stops the resources its handlers use.
 
 ## Construction and Lifecycle as a Component
 
-**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the Canonical Registration section, `Use` in the Public API, the reference to `Use` under Configuration, and the Lifecycle section above. The rationale is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
+**Accepted, pending implementation (v0.24.0, W5).** When it ships, this section replaces the Canonical Registration section, `Use` in the Public API, the reference to `Use` under Configuration, and the Lifecycle section above: `Use` and its `Manage` call go, and the server gains `Start`. The rationale is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
 
 ```go
 func New(infra credo.Infra, cfg ...Config) *Server

@@ -17,6 +17,15 @@ import (
 // serving during the managed drain. Direct ServeHTTP never claims the managed
 // server's start slot; an external http.Server stays its owner's job to drain
 // before [App.Shutdown].
+//
+// An App with something to start — a component with Start or Ready, a start
+// hook, or a constructor handed to [App.Manage] — refuses to serve until the
+// start phase has succeeded: before [App.Start] (or while it runs) every
+// request panics with a message naming App.Start and testutil.Start, and
+// after a failed or interrupted App.Start the stopped App answers with the
+// 503 envelope. Under Run, RunContext and ServeContext the listener accepts
+// only after the start phase, so the gate never fires; a child App mounted
+// into a parent is handed to the parent with Manage for the same reason.
 func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	state := app.lifecycle.currentState()
 	if state == stateStopped {
@@ -37,6 +46,13 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.err != nil {
 		panic(p.err)
 	}
+	if p.needsStart && !app.lifecycle.started.Load() {
+		if state = app.lifecycle.currentState(); state >= stateStopping {
+			app.rejectUnavailable(w, r, state)
+			return
+		}
+		panic(errNotStarted)
+	}
 	// http.NoBody (every bodyless request the stdlib server delivers) has
 	// nothing to limit; skipping the wrap saves an allocation per request.
 	if app.serverCfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
@@ -49,11 +65,14 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	app.execute(c, p.handler)
 }
 
-// Run starts the HTTP server and blocks until an interrupt (Ctrl+C) or
-// SIGTERM is received, then performs graceful shutdown using the deadline set
-// by [WithShutdownTimeout]. An [App.OnPreDrain] hook that ignores that deadline
-// remains a hard teardown barrier and may delay return. A second signal during
-// shutdown force-kills the process. Returns nil on graceful shutdown.
+// Run binds the listener, runs the start phase — each component's Start in
+// dependency order, then the start hooks — serves, and blocks until an
+// interrupt (Ctrl+C) or SIGTERM is received, then drains in tiers under the
+// deadline set by [WithShutdownTimeout]. A signal during the start phase
+// interrupts it: nothing further starts, what was built is rolled back, and
+// Run returns nil after a clean rollback. A second signal force-kills the
+// process. Returns nil on graceful shutdown, and a *LifecycleError when the
+// start fails or a drain or rollback does not complete.
 //
 // On Unix, Run also handles SIGHUP: each signal triggers [App.Reload] under
 // the [WithReloadTimeout] budget (systemctl reload, logrotate postrotate).
@@ -83,17 +102,17 @@ func (app *App) Run() error {
 // server stops, or a programmatic [App.Shutdown]. Unlike [App.Run] it installs
 // no signal handler; cancellation is entirely the caller's. On ctx
 // cancellation the drain keeps ctx's values but drops its cancellation and
-// applies the [WithShutdownTimeout] deadline. An [App.OnPreDrain] hook that
-// ignores that deadline remains a hard teardown barrier and may delay return.
-// Returns nil on graceful shutdown.
+// applies the [WithShutdownTimeout] deadline. Returns nil on graceful
+// shutdown.
 //
 // Like [App.Run], RunContext serves HTTPS when TLS is configured (via
 // [WithTLSFiles], [WithTLSConfig], or server.tls.*) and plaintext otherwise,
 // with the same fail-fast certificate validation.
 //
-// Cancelling ctx during startup does not abort an in-progress [App.OnStart]
-// hook: hooks receive the lifecycle context, not ctx, so the cancellation takes
-// effect only after all hooks complete.
+// Cancelling ctx during the start phase interrupts it: the running Start's or
+// start hook's context is cancelled, nothing further starts, what was built
+// is rolled back, the listener never accepts, and RunContext returns nil
+// after a clean rollback.
 func (app *App) RunContext(ctx context.Context) error {
 	preflight, serveFn := app.serveFuncs()
 	return app.lifecycle.serve(ctx, "RunContext", preflight, tcpListen, serveFn, app.httpRedirectAddr)
@@ -129,14 +148,16 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 	)
 }
 
-// Shutdown gracefully shuts down the server: it withdraws readiness, runs
-// [App.OnPreDrain], cancels the lifecycle context, drains in-flight HTTP
-// requests and [App.OnDrain] subsystem hooks in parallel, tears down DI
-// singletons in dependency order, then runs OnShutdown hooks (LIFO). The
-// caller's ctx carries the shared absolute deadline; [WithShutdownTimeout]
-// does not replace it. An OnPreDrain hook that ignores ctx remains a hard
-// teardown barrier and may delay return beyond that deadline. Returns an error
-// if any shutdown step fails or remains incomplete (joined via errors.Join).
+// Shutdown gracefully shuts down the App: it withdraws readiness; drains
+// in-flight HTTP requests concurrently with the ingress tier (ingress stop
+// hooks LIFO, then ingress components); waits for an in-flight reload; then
+// stops the internal tier — internal stop hooks LIFO, then internal
+// components in reverse dependency order. The caller's ctx carries the one
+// deadline the steps share; [WithShutdownTimeout] does not replace it. A
+// component or hook that has not returned at the deadline is abandoned and
+// the components it depends on stay open. Returns the HTTP drain's error, the
+// reload's and a *LifecycleError, joined, when a step fails or remains
+// incomplete.
 //
 // Shutdown is also accepted on an App that was never run: bootstrap teardown
 // closes route and DI registration, runs the same drain with no managed
@@ -145,10 +166,14 @@ func (app *App) ServeContext(ctx context.Context, l net.Listener) error {
 // This is the cleanup path for tests and for Apps served through an external
 // http.Server; that server's admission and drain remain its owner's job and
 // must complete before Shutdown. The App is single-use: the terminal state is
-// stopped even when cleanup was incomplete. Shutdown returns an error when the
-// App is starting, or has already stopped; a managed start that reaches
-// running (or rolls back to building) while Shutdown is deciding is claimed by
-// the same call rather than refused with a stale state.
+// stopped even when cleanup was incomplete.
+//
+// Shutdown on a starting App interrupts the start phase and waits, within
+// ctx, for the rollback; it returns the rollback's lifecycle error, nil when
+// the rollback was clean. Shutdown returns an error when the App is already
+// stopping or stopped; a start that reaches running (or rolls back to
+// building) while Shutdown is deciding is claimed by the same call rather
+// than refused with a stale state.
 func (app *App) Shutdown(ctx context.Context) error {
 	lm := app.lifecycle
 	for {
@@ -162,12 +187,48 @@ func (app *App) Shutdown(ctx context.Context) error {
 		// Both claims lost. The state read here decides the outcome: a live
 		// state means a transition landed between the two attempts (starting
 		// became running, or a start rolled back to building), so claim
-		// again; anything else is a genuine refusal.
-		state := lm.currentState()
-		if state == stateRunning || state == stateBuilding {
+		// again; starting is interrupted; anything else is a genuine refusal.
+		lm.serverMu.Lock()
+		state, run := lm.currentState(), lm.run
+		lm.serverMu.Unlock()
+		switch state {
+		case stateRunning, stateBuilding:
+			continue
+		case stateStarting:
+			if retry, err := lm.interruptStart(ctx, run); !retry {
+				return err
+			}
 			continue
 		}
-		return fmt.Errorf("credo: Shutdown: server in state %q, expected %q or %q",
-			state, stateBuilding, stateRunning)
+		return fmt.Errorf("credo: Shutdown: server in state %q, expected %q, %q or %q",
+			state, stateBuilding, stateStarting, stateRunning)
+	}
+}
+
+// errNotStarted is the ServeHTTP panic of an App with something to start that
+// has not been started.
+var errNotStarted = errors.New("credo: ServeHTTP: the App has components or start hooks to start and " +
+	"has not been started; call App.Start before serving it through ServeHTTP (testutil.Start in " +
+	"tests), serve it with Run, RunContext or ServeContext, or, for a mounted child App, hand it to " +
+	"the parent with parent.Manage(child)")
+
+// interruptStart interrupts the start phase run on behalf of Shutdown and
+// waits, within ctx, for its rollback. retry is true when the start phase
+// ended before the interrupt landed — it reached running, or rolled back to
+// building — so the caller claims the new state.
+func (lm *lifecycleManager) interruptStart(ctx context.Context, run *startRun) (retry bool, err error) {
+	if !run.interrupt(ctx, nil, errShutdownWhileStarting) {
+		select {
+		case <-run.done:
+			return true, nil
+		case <-ctx.Done():
+			return false, fmt.Errorf("credo: Shutdown: the start phase is still ending: %w", ctx.Err())
+		}
+	}
+	select {
+	case <-run.done:
+		return false, run.err
+	case <-ctx.Done():
+		return false, fmt.Errorf("credo: Shutdown: the start phase is still rolling back: %w", ctx.Err())
 	}
 }

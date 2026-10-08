@@ -422,9 +422,10 @@ func WithMaxBodyBytes(n int64) Option {
 }
 
 // WithShutdownTimeout sets the graceful-shutdown drain budget used by the
-// signal-aware Run and by context-cancellation-triggered RunContext. The
-// parallel HTTP/OnDrain phase, DI singleton cleanup, and OnShutdown hooks must
-// complete within this single absolute budget. Zero (the default) applies a
+// signal-aware Run and by context-cancellation-triggered RunContext, and for
+// the rollback of a failed or interrupted start. The HTTP drain, the ingress
+// tier and the internal tier share this one absolute budget, spent in order;
+// a component or hook that has not returned by its end is abandoned. Zero (the default) applies a
 // 30s budget. An explicit Shutdown(ctx) call ignores this and honours the
 // caller's context deadline instead. Can also be set via the
 // server.shutdown_timeout config key.

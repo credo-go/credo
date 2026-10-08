@@ -244,16 +244,21 @@ Shutdown ownership is explicit:
 
 - When `value` implements `Lifecycle`, that same value supplies Ping, Health,
   and Shutdown. Ownership transfers to the framework only when `Register`
-  succeeds. DI is the sole framework shutdown owner. During one teardown it
-  makes at most one `Shutdown(ctx)` attempt if the still-live deadline reaches
-  the registration in dependency order; it may make zero attempts when the
-  deadline expires first.
+  succeeds. The App is the sole framework shutdown owner: the binding of `R`
+  is an internal [component](lifecycle.md#components-and-the-start-phase),
+  stopped after its consumers. During one teardown it gets at most one
+  `Shutdown(ctx)` attempt if the still-live deadline reaches it; it may get
+  none when the deadline expires first.
 - A value that cannot implement `Lifecycle` may use `WithLifecycle(lc)` only
   together with `WithCallerOwnedLifecycle()`. The handle supplies Ping and
-  Health, but the caller retains Shutdown responsibility (for example through
-  `app.OnShutdown(lc.Shutdown)`). `WithLifecycle` alone is an error.
+  Health, but the caller retains Shutdown responsibility and closes it after
+  everything that uses the store has stopped — for example after `Run`
+  returns; a value handed to `app.Manage` has no dependency edges, so the
+  drain could close it before its consumers. `WithLifecycle` alone is an
+  error.
 - A `Lifecycle` value combined with either explicit option is rejected, as is
-  a Shutdowner-only value combined with a separate lifecycle. Ping/Health and
+  a component value (Shutdown without Lifecycle) combined with a separate
+  lifecycle. Ping/Health and
   Shutdown cannot silently target different objects.
 
 On every failure, including Ping or authoritative DI publication failure,
@@ -277,7 +282,7 @@ This is not a container-wide resource ledger. Publishing the same lifecycle
 again under another T with raw `app.Provide`, `app.ProvideValue`,
 `app.ProvideProtectedValue`, or `app.Replace` is unsupported
 and can produce contradictory ownership or multiple Shutdown attempts. A
-caller-owned handle must not also be registered in DI as a Shutdowner. A
+caller-owned handle must not also be registered in DI as a component. A
 general resource registry across store, pubsub, gRPC, workers, and other
 infrastructure remains deferred until a second concrete consumer requires it.
 
@@ -1186,14 +1191,15 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
   only response opt-in
 - `Register` preflights local DI/name/lifecycle conflicts before Ping, then
   publishes DI before committing the Registry entry
-- Direct Lifecycle values are framework-owned only after success; DI is the
-  sole framework shutdown owner and, per teardown, attempts Shutdown at most
-  once when its live deadline reaches the registration (or zero times when the
-  deadline expires first)
+- Direct Lifecycle values are framework-owned only after success; the App is
+  the sole framework shutdown owner and, per teardown, attempts Shutdown at
+  most once when its live deadline reaches the component (or zero times when
+  the deadline expires first)
 - `WithLifecycle` alone fails; pairing it with
   `WithCallerOwnedLifecycle` succeeds without framework shutdown
 - Lifecycle values with explicit lifecycle/ownership options and
-  Shutdowner-only values with separate lifecycle handles fail before Ping
+  component values without Lifecycle and with separate lifecycle handles fail
+  before Ping
 - Every failed registration, including Ping and final DI publication failure,
   leaves ownership with the caller
 - Concurrent same-name and same-type registrations have one internally
@@ -1212,7 +1218,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) {
 - Raw `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
   `app.Replace` publication of the same lifecycle under another type is
   documented as unsupported; caller-owned
-  handles are not also registered as Shutdowners
+  handles are not also registered as components
 - Valid pre-provided Registry instances remain the resolved/readiness instance
 - Successful store and validated/adopted Registry bindings reject
   `App.Replace`; invalid nil/failing Registry bindings remain replaceable for

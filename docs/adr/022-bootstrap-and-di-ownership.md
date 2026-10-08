@@ -18,13 +18,13 @@ Preparation failures remain repeatable developer errors: managed entry points re
 
 Public Resolve belongs after Finalize, Replace before it. `AdoptValue[T]` is the shared registration operation: read an existing prebuilt binding, validate, then atomically compare-and-protect the same binding. It does not execute constructors; invalid values remain repairable and a concurrent replacement/phase change cannot publish stale adoption. A preprovided Registry constructor is rejected without invocation. No general early Resolve/Peek API is introduced. Successful Replace returns the previous created instance and transfers its cleanup responsibility to the caller; the boolean means an instance existed, not merely a binding. Failed replacement changes neither registration nor ownership. Add non-resolving `Has[T]`; remove factory registration and its proposed runtime-edge machinery. Constructor-captured service-locator calls are unsupported.
 
-Teardown enters closing only at the DI stage. Closing/closed resolution rejects with an inspectable `credo.ErrDIClosed` sentinel, including cached resolution and delivery racing teardown. Track successfully constructed instances even when caller delivery is rejected. Constructor errors and panics are terminal, shared by waiters, and never retried automatically.
+Teardown enters closing only when the drain reaches the internal tier ([ADR-024](024-lifecycle-components.md)). Closing/closed resolution rejects with an inspectable `credo.ErrDIClosed` sentinel, including cached resolution and delivery racing teardown. Track successfully constructed instances even when caller delivery is rejected. Constructor errors and panics are terminal, shared by waiters, and never retried automatically.
 
-Use a Kahn ready queue with reverse-registration tie breaking over canonical singleton vertices. Aliases and collection edges participate; hidden dependencies inside prebuilt values do not. Pending builds block their dependencies while independent ready vertices can close. Retiring an intermediate non-Shutdowner preserves transitive order. Report graph inconsistencies; never fall back to closing blocked dependencies out of order.
+Use a Kahn ready queue with reverse-registration tie breaking over the component registry's resources, each keyed by resource identity ([ADR-024](024-lifecycle-components.md)). Aliases and collection edges participate; hidden dependencies inside prebuilt values do not. Pending builds block their dependencies while independent ready vertices can close. Retiring an intermediate binding that is not a component preserves transitive order. Report graph inconsistencies; never fall back to closing blocked dependencies out of order.
 
-Normal Shutdowner calls remain sequential, with helper-based completion-or-context waiting under one shared budget. Recover on the invoking goroutine. A timed-out helper is still incomplete and keeps dependencies blocked; error/panic completion retires the vertex. Only construction completing after the shutdown context ends gets one separate, fixed five-second best-effort cleanup attempt. This budget has no configuration option and does not apply to normal shutdown callbacks. No ordinary skipped or still-running callback receives that new budget.
+Teardown calls use helper-based completion-or-context waiting under one shared budget: sequential in the internal tier, concurrent in the ingress tier for resources no edge orders. Recover on the invoking goroutine. A timed-out helper is still incomplete and keeps dependencies blocked; error/panic completion retires the vertex. Only construction completing after the shutdown context ends gets one separate, fixed five-second best-effort cleanup attempt. This budget has no configuration option and does not apply to normal teardown calls. No ordinary skipped or still-running callback receives that new budget.
 
-Keep `Shutdown(ctx) error`; failures expose `*credo.DIShutdownError`, a deterministic immutable snapshot with per-vertex state, blockers, failures and timing, plus `Unwrap() []error`. `*credo.DIPanicError` retains type, phase, original value and stack, and unwraps error-valued panics. Late completion is logged and cannot mutate the returned report. Hooks capture dependencies; resolving from drain hooks is unsupported. A stopping-state Debug diagnostic must not misclassify active HTTP work as a hook violation.
+Keep `Shutdown(ctx) error`; failures expose `*credo.LifecycleError` ([ADR-024](024-lifecycle-components.md#one-error)), a deterministic immutable snapshot naming each component that failed, panicked, was abandoned or was kept open, with its tier, phase, blockers and timing, plus `Unwrap() []error`; it generalizes the `*credo.DIShutdownError` this decision first introduced. `*credo.DIPanicError` retains type, phase, original value and stack, and unwraps error-valued panics. Late completion is logged and cannot mutate the returned report. Stop hooks capture dependencies; resolving from them is unsupported. A stopping-state Debug diagnostic must not misclassify active HTTP work as a hook violation.
 
 ## Sequential bootstrap and three error phases
 
@@ -52,12 +52,12 @@ There is no resolve-then-provide step. A value that needs a resolved dependency 
 | Phase | Reports | How |
 | --- | --- | --- |
 | Registration | Misuse known at the call site: a constructor of the wrong shape, a duplicate binding, a misused registration option, a call in the wrong phase | Panics with the call site's message; registration performs no I/O |
-| `Finalize` | What only the whole graph reveals: missing dependencies, each with its whole path (`OrderService → PaymentClient → *http.Client (not registered)`), cycles, and, with W4, an internal component that depends on an ingress one | Returns the errors joined in registration order |
+| `Finalize` | What only the whole graph reveals: missing dependencies, each with its whole path (`OrderService → PaymentClient → *http.Client (not registered)`), cycles, and an internal component that depends on an ingress one | Returns the errors joined in registration order |
 | `Start` | I/O: a store's ping, i18n catalog reads, a component's `Start` | Returns the error; the start rolls back ([ADR-024](024-lifecycle-components.md)) |
 
-Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, and `Resolve` before `Finalize` panics. A DI registration after `Finalize` panics, as does any registration after the App is prepared or shut down, each with the call site's message.
+Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, a misused registration option included, and `Resolve` before `Finalize` panics. A DI registration or a `Manage` call after `Finalize` panics, as does any registration after the App is prepared or shut down, each with the call site's message. A component's `Start` runs in the start phase, where its error rolls the start back.
 
-**Accepted, pending implementation (v0.24.0, W4–W6)** for the parts that name components: `Manage`, the registration options, `App.Start` and the check of an internal component that depends on an ingress one arrive with W4, and `Manage` after `Finalize` panics like a DI registration; until W5, `store.Register` pings its store and `UseI18n` reads its catalogs at the call and return those errors; until W6, the worker registrations return their errors instead of panicking.
+**Accepted, pending implementation (v0.24.0, W5, W6).** Until W5, `store.Register` pings its store and `UseI18n` reads its catalogs at the call and return those errors; until W6, the worker registrations return their errors instead of panicking.
 
 **Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
 
@@ -76,7 +76,7 @@ Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing an
 
 ## Ownership through the component registry
 
-**Accepted, pending implementation (v0.24.0, W3, W4, W5).** When it ships, this section replaces the Decision's paragraph on `AdoptValue` and `Replace`, and the teardown paragraphs that state for `Shutdowner`s the rules [ADR-024](024-lifecycle-components.md) states for every component.
+**Accepted, pending implementation (v0.24.0, W3, W5, W6)** for the parts that remove adoption, `Replace`, protected bindings, `store`'s ledger and the framework's own bindings; when they ship, this section replaces the Decision's paragraph on `AdoptValue` and `Replace`. The component registry, resource identity, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()` and the teardown below are implemented.
 
 ### Problem
 
@@ -91,7 +91,7 @@ Ownership is decided where a value is registered, and the kernel's component reg
 - Nothing framework-owned is bound in the container, so nothing is adopted or protected. A store registration names a binding by type and the start phase resolves it once, after `Finalize` and every override ([ADR-015](015-data-access.md)); the worker supervisor is not bound at all ([ADR-023](023-worker-system.md)).
 - `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built, and `Replace`'s ownership transfer has nothing left to transfer.
 
-Teardown keeps this ADR's mechanics, now stated for every component in [ADR-024](024-lifecycle-components.md): the Kahn order over the static graph with reverse registration as the tie-break, one bounded attempt per component under the shared deadline, an abandoned teardown that keeps its dependencies open and is reported, panic isolation, the single fixed five-second late attempt for a construction completing after the deadline, and one immutable report that unwraps its causes, `*credo.LifecycleError`, which generalizes `*credo.DIShutdownError`. The DI closing boundary, `ErrDIClosed` and `DIPanicError` for construction are unchanged.
+Teardown keeps this ADR's mechanics, now stated for every component in [ADR-024](024-lifecycle-components.md): the Kahn order over the static graph with reverse registration as the tie-break, one bounded attempt per component under the shared deadline, an abandoned teardown that keeps its dependencies open and is reported, panic isolation, the single fixed five-second late attempt for a construction completing after the deadline, and one immutable report that unwraps its causes, `*credo.LifecycleError`. `ErrDIClosed` and `DIPanicError` for construction are unchanged; the closing boundary is the start of the internal tier.
 
 ### Removes
 
@@ -99,7 +99,7 @@ Teardown keeps this ADR's mechanics, now stated for every component in [ADR-024]
 
 ## Decision closure
 
-G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration, use one AdoptValue operation, expose ErrDIClosed/DIShutdownError/DIPanicError, and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions closed the design gates; the DI minor implements them with the regression tests the specification requires.
+G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration, use one AdoptValue operation, expose ErrDIClosed/DIShutdownError/DIPanicError (`DIShutdownError` since generalized into `LifecycleError`), and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions closed the design gates; the DI minor implements them with the regression tests the specification requires.
 
 ## Adaptation and alternatives
 
@@ -111,6 +111,6 @@ Rejected: protect-on-read before validation; bulk wait-for-builds before any cle
 
 Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.
 
-With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics and `Finalize` reports the whole graph at once. Applications migrate by dropping the error checks of registration calls and by moving any registration that follows `Finalize` before it.
+With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports a component's I/O. Applications migrate by dropping the error checks of registration calls and by moving any registration that follows `Finalize` before it.
 
-**Accepted, pending implementation (v0.24.0, W3–W5).** `Start` reports I/O as the third phase, and applications drop the `Must*` registration twins.
+**Accepted, pending implementation (v0.24.0, W3, W5).** `Start` also reports a store's ping and i18n catalog reads, and applications drop the `Must*` registration twins.

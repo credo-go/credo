@@ -325,7 +325,7 @@ func TestApp_Shutdown_GracefulDrain(t *testing.T) {
 	<-errCh
 }
 
-func TestApp_Shutdown_OnShutdownHooks(t *testing.T) {
+func TestApp_Shutdown_OnStopHooks(t *testing.T) {
 	host, port, _ := freePort(t)
 
 	app := mustNew(t, credo.WithAddr(host, port))
@@ -344,9 +344,9 @@ func TestApp_Shutdown_OnShutdownHooks(t *testing.T) {
 		}
 	}
 
-	app.OnShutdown(record(1))
-	app.OnShutdown(record(2))
-	app.OnShutdown(record(3))
+	app.OnStop(record(1))
+	app.OnStop(record(2))
+	app.OnStop(record(3))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.Run() }()
@@ -391,9 +391,9 @@ func TestApp_Shutdown_HookErrors(t *testing.T) {
 	errA := fmt.Errorf("hook-a failed")
 	errB := fmt.Errorf("hook-b failed")
 
-	app.OnShutdown(func(ctx context.Context) error { return errA })
-	app.OnShutdown(func(ctx context.Context) error { return nil }) // succeeds
-	app.OnShutdown(func(ctx context.Context) error { return errB })
+	app.OnStop(func(ctx context.Context) error { return errA })
+	app.OnStop(func(ctx context.Context) error { return nil }) // succeeds
+	app.OnStop(func(ctx context.Context) error { return errB })
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.Run() }()
@@ -560,7 +560,7 @@ func TestApp_FrozenPanic_SetMeta(t *testing.T) {
 	app.SetMeta("key", "value")
 }
 
-func TestApp_FrozenPanic_OnShutdown(t *testing.T) {
+func TestApp_FrozenPanic_OnStop(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/x", func(ctx *credo.Context) error { return nil })
 
@@ -570,10 +570,10 @@ func TestApp_FrozenPanic_OnShutdown(t *testing.T) {
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic from OnShutdown after compile")
+			t.Fatal("expected panic from OnStop after compile")
 		}
 	}()
-	app.OnShutdown(func(ctx context.Context) error { return nil })
+	app.OnStop(func(ctx context.Context) error { return nil })
 }
 
 func TestApp_FrozenPanic_RouteName(t *testing.T) {
@@ -675,9 +675,9 @@ func TestApp_Run_ListenFailure_RollsBackState(t *testing.T) {
 
 // --- Container integration pattern ---
 
-func TestApp_OnShutdown_IntegrationPattern(t *testing.T) {
+func TestApp_OnStop_IntegrationPattern(t *testing.T) {
 	// Simulate a service that implements a Shutdown method,
-	// registered via OnShutdown for lifecycle integration.
+	// registered via OnStop for lifecycle integration.
 	type mockDB struct {
 		closed atomic.Bool
 	}
@@ -690,7 +690,7 @@ func TestApp_OnShutdown_IntegrationPattern(t *testing.T) {
 		return ctx.Response().Text(200, "pong")
 	})
 
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(ctx context.Context) error {
 		db.closed.Store(true)
 		return nil
 	})
@@ -736,20 +736,22 @@ func waitRunning(t *testing.T, app *credo.App) {
 	t.Fatal("server did not reach running state")
 }
 
-// TestApp_OnStart_ContextCancelledOnShutdown verifies the app lifecycle
-// context — handed to OnStart hooks — is live while running and cancelled when
-// shutdown begins. This is the behaviour background services rely on now that
-// the public App.Context() accessor is gone.
-func TestApp_OnStart_ContextCancelledOnShutdown(t *testing.T) {
+// TestApp_OnStart_ContextEndsWithTheCall verifies the context handed to an
+// OnStart hook is live while the hook runs and cancelled once it returns:
+// work that outlives the start phase belongs to a component, which owns its
+// own lifetime and stops in OnStop or Shutdown.
+func TestApp_OnStart_ContextEndsWithTheCall(t *testing.T) {
 	host, port, _ := freePort(t)
 	app := mustNew(t, credo.WithAddr(host, port))
 	app.GET("/ping", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "pong")
 	})
 
-	var lifecycleCtx context.Context
+	var hookCtx context.Context
+	var liveDuringCall bool
 	app.OnStart(func(ctx context.Context) error {
-		lifecycleCtx = ctx
+		hookCtx = ctx
+		liveDuringCall = ctx.Err() == nil
 		return nil
 	})
 
@@ -757,13 +759,16 @@ func TestApp_OnStart_ContextCancelledOnShutdown(t *testing.T) {
 	go func() { errCh <- app.RunContext(context.Background()) }()
 	waitRunning(t, app)
 
-	if lifecycleCtx == nil {
+	if hookCtx == nil {
 		t.Fatal("OnStart hook did not capture a context")
 	}
+	if !liveDuringCall {
+		t.Error("the OnStart context should be live while the hook runs")
+	}
 	select {
-	case <-lifecycleCtx.Done():
-		t.Fatal("lifecycle context should not be cancelled while running")
+	case <-hookCtx.Done():
 	default:
+		t.Error("the OnStart context should be cancelled once the hook returned")
 	}
 
 	stopCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -772,13 +777,6 @@ func TestApp_OnStart_ContextCancelledOnShutdown(t *testing.T) {
 		t.Fatalf("Shutdown() error: %v", err)
 	}
 	<-errCh
-
-	select {
-	case <-lifecycleCtx.Done():
-		// good — cancelled during shutdown, after OnPreDrain
-	default:
-		t.Fatal("lifecycle context should be cancelled after shutdown")
-	}
 }
 
 // TestApp_RunContext_CancelTriggersShutdown verifies cancelling the run
@@ -826,7 +824,7 @@ func TestApp_RunContext_DrainContextDerivation(t *testing.T) {
 		remaining   time.Duration
 		hasDeadline bool
 	)
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(ctx context.Context) error {
 		hookVal = ctx.Value(lifecycleCtxKey{})
 		select {
 		case <-ctx.Done():
@@ -948,7 +946,7 @@ func TestApp_ServeContext_ServeError_RunsTeardown(t *testing.T) {
 	})
 
 	var shutdownCalled atomic.Bool
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(ctx context.Context) error {
 		shutdownCalled.Store(true)
 		return nil
 	})
@@ -980,7 +978,7 @@ func TestApp_ServeContext_ServeError_RunsTeardown(t *testing.T) {
 
 	// Full teardown ran and the App is terminal.
 	if !shutdownCalled.Load() {
-		t.Error("OnShutdown hook should run on a serve-failure teardown")
+		t.Error("OnStop hook should run on a serve-failure teardown")
 	}
 	if got := app.State(); got != "stopped" {
 		t.Errorf("State() = %q after serve failure, want %q", got, "stopped")
@@ -995,7 +993,7 @@ func TestApp_Shutdown_HookReceivesContext(t *testing.T) {
 	})
 
 	var hookCtx context.Context
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(ctx context.Context) error {
 		hookCtx = ctx
 		return nil
 	})
@@ -1133,9 +1131,9 @@ func TestApp_OnStart_ErrorStopsAtFirst(t *testing.T) {
 }
 
 // TestApp_OnStart_Failure_RunsTeardown verifies that when an OnStart hook fails
-// after an earlier hook has run, the App runs the full teardown chain — DI
-// Shutdowners are torn down and the lifecycle context is cancelled — rather than a
-// bare local rollback, and reaches the terminal stopped state (ADR-006).
+// after an earlier hook has run, the App rolls back what the start phase
+// built — stop hooks run and components are shut down — rather than a bare
+// local rollback, and reaches the terminal stopped state (ADR-006).
 func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
 	host, port, _ := freePort(t)
 	app := mustNew(t, credo.WithAddr(host, port))
@@ -1146,23 +1144,21 @@ func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
 	var order []string
 	app.ProvideValue[*diShutdownTracker](&diShutdownTracker{order: &order, name: "di:svc"})
 
-	var hookCtx context.Context
-	app.OnStart(func(ctx context.Context) error { hookCtx = ctx; return nil }) // hook 0: ok, captures lifecycle context
+	app.OnStart(func(ctx context.Context) error { return nil }) // hook 0: ok
 	hookErr := fmt.Errorf("boom")
-	app.OnStart(func(ctx context.Context) error { return hookErr })                                     // hook 1: fails
-	app.OnShutdown(func(ctx context.Context) error { order = append(order, "onShutdown"); return nil }) // must still run
+	app.OnStart(func(ctx context.Context) error { return hookErr })                             // hook 1: fails
+	app.OnStop(func(ctx context.Context) error { order = append(order, "onStop"); return nil }) // must still run
 
 	err := app.Run()
 	if !errors.Is(err, hookErr) {
 		t.Fatalf("Run() error should wrap hookErr, got %v", err)
 	}
 
-	// Full teardown ran on the failure path, in shutdown order: DI container
-	// shutdown (step 3) then OnShutdown hooks (step 4). The OnShutdown hook must
-	// run even though startup failed — it is the session teardown point (ADR-006),
-	// which is the crux of the decision and not implied by the DI step alone.
-	if len(order) != 2 || order[0] != "di:svc" || order[1] != "onShutdown" {
-		t.Errorf("teardown order = %v, want [di:svc onShutdown]", order)
+	// The rollback ran in shutdown order: the internal stop hook, then the
+	// internal component it may use. The stop hook must run even though the
+	// start phase failed — it is the session teardown point (ADR-006).
+	if len(order) != 2 || order[0] != "onStop" || order[1] != "di:svc" {
+		t.Errorf("teardown order = %v, want [onStop di:svc]", order)
 	}
 
 	// Session failure → terminal stopped, not building.
@@ -1170,63 +1166,10 @@ func TestApp_OnStart_Failure_RunsTeardown(t *testing.T) {
 		t.Errorf("State() = %q after failed OnStart, want %q", got, "stopped")
 	}
 
-	// The lifecycle context handed to earlier hooks was cancelled by teardown.
-	if hookCtx == nil {
-		t.Fatal("hook 0 did not capture the lifecycle context")
-	}
-	select {
-	case <-hookCtx.Done():
-	default:
-		t.Error("lifecycle context should be cancelled after teardown")
-	}
-
 	// Single-use: a terminally stopped App cannot be run again.
 	if err := app.Run(); err == nil {
 		t.Error("second Run() after terminal stopped should error")
 	}
-}
-
-func TestApp_OnStart_ReceivesAppContext(t *testing.T) {
-	host, port, _ := freePort(t)
-
-	app := mustNew(t, credo.WithAddr(host, port))
-	app.GET("/ping", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "pong")
-	})
-
-	var hookCtx context.Context
-	app.OnStart(func(ctx context.Context) error {
-		hookCtx = ctx
-		return nil
-	})
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- app.Run() }()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if app.IsRunning() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if hookCtx == nil {
-		t.Fatal("OnStart hook did not receive a context")
-	}
-	// The context should not be cancelled (app is running).
-	select {
-	case <-hookCtx.Done():
-		t.Fatal("OnStart hook context should not be cancelled")
-	default:
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() error: %v", err)
-	}
-	<-errCh
 }
 
 func TestApp_OnStart_AddrAvailable(t *testing.T) {
@@ -1307,7 +1250,7 @@ func TestApp_OnStart_IntegrationPattern(t *testing.T) {
 		reg.registered.Store(true)
 		return nil
 	})
-	app.OnShutdown(func(ctx context.Context) error {
+	app.OnStop(func(ctx context.Context) error {
 		reg.deregistered.Store(true)
 		return nil
 	})

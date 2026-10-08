@@ -63,8 +63,8 @@
 //     [App.UseI18n], [App.UseAccessLog], [App.UseErrorRenderer]).
 //   - Set<X> / Remove<X> — imperative mutators for a single request-state or
 //     route value (e.g. [Context.SetUser], [Route.SetMeta]).
-//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnPreDrain],
-//     [App.OnDrain], [App.OnShutdown]).
+//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnStop],
+//     [App.OnReload]).
 //
 // Panic recovery is on by default; request IDs, access logging, response
 // compression and request decompression are explicit ([App.UseRequestID],

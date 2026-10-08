@@ -689,7 +689,7 @@ func (r *handlerTestResource) Shutdown(context.Context) error {
 	return nil
 }
 
-func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
+func TestManagedDrainFinishesHandlerBeforeInternalComponents(t *testing.T) {
 	app, err := credo.New(
 		credo.WithAddr("127.0.0.1", 0),
 	)
@@ -740,12 +740,6 @@ func TestManagedOnDrainFinishesHandlerBeforeDIShutdown(t *testing.T) {
 	}
 	if resource.alive.Load() {
 		t.Fatal("DI resource remained alive after App drain")
-	}
-	server.mu.Lock()
-	managedCtx := server.managedCtx
-	server.mu.Unlock()
-	if managedCtx == nil || managedCtx.Err() == nil {
-		t.Fatal("managed lifecycle context was not captured and cancelled")
 	}
 }
 

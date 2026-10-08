@@ -1,11 +1,16 @@
 package testutil_test
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,14 +63,123 @@ func TestWithOverride_ReplacesWiredDep(t *testing.T) {
 	}
 }
 
-func TestWithOverride_AddsWhenAbsent(t *testing.T) {
-	// WithOverride works even when nothing wired T, because Replace adds the
-	// binding when it is absent.
-	app := testutil.NewApp(t, testutil.WithOverride[*greeter](&greeter{msg: "only"}))
+func TestWithOverride_PanicsWithoutBinding(t *testing.T) {
+	// An override that no longer matches the wiring fails instead of adding a
+	// binding nothing resolves.
+	defer func() {
+		r := recover()
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "credo.Override() replaces an earlier binding") {
+			t.Fatalf("panic = %v, want the Override misuse", r)
+		}
+	}()
+	testutil.NewApp(t, testutil.WithOverride[*greeter](&greeter{msg: "only"}))
+	t.Fatal("WithOverride without a binding did not panic")
+}
+
+func TestWithWiring_AddsBinding(t *testing.T) {
+	app := testutil.NewApp(t, testutil.WithWiring(func(app *credo.App) {
+		app.ProvideValue[*greeter](&greeter{msg: "only"})
+	}))
 
 	finalize(t, app)
 	if got := app.MustResolve[*greeter](); got.msg != "only" {
 		t.Errorf("greeter.msg = %q, want %q", got.msg, "only")
+	}
+}
+
+// emptyRawConfig is a hermetic RawConfig for an App built without NewApp.
+type emptyRawConfig struct{}
+
+func (emptyRawConfig) Unmarshal(string, any) error { return nil }
+func (emptyRawConfig) Exists(string) bool          { return false }
+
+// startedComponent records its start, and its stop with whether the test
+// server had been closed by then.
+type startedComponent struct {
+	mu        sync.Mutex
+	events    []string
+	srvClosed *atomic.Bool
+}
+
+func (c *startedComponent) Start(context.Context) error {
+	c.add("start")
+	return nil
+}
+
+func (c *startedComponent) Shutdown(context.Context) error {
+	if c.srvClosed.Load() {
+		c.add("stop after server closed")
+	} else {
+		c.add("stop before server closed")
+	}
+	return nil
+}
+
+func (c *startedComponent) add(e string) {
+	c.mu.Lock()
+	c.events = append(c.events, e)
+	c.mu.Unlock()
+}
+
+func (c *startedComponent) list() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.events)
+}
+
+func TestStart_ServesThroughHTTPTestAndStopsAfterTheServer(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		newApp      func(t *testing.T) *credo.App
+		serverFirst bool
+	}{
+		{name: "NewApp, server after Start", newApp: func(t *testing.T) *credo.App { return testutil.NewApp(t) }},
+		{name: "NewApp, server before Start", newApp: func(t *testing.T) *credo.App { return testutil.NewApp(t) },
+			serverFirst: true},
+		{name: "credo.New, server after Start", newApp: func(t *testing.T) *credo.App {
+			app, err := credo.New(credo.WithRawConfig(emptyRawConfig{}), credo.WithLogger(slog.New(slog.DiscardHandler)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return app
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := &atomic.Bool{}
+			comp := &startedComponent{srvClosed: closed}
+			t.Run("inner", func(t *testing.T) {
+				app := tc.newApp(t)
+				app.ProvideValue[*startedComponent](comp)
+				app.GET("/ping", func(c *credo.Context) error {
+					return c.Response().Text(http.StatusOK, "pong")
+				})
+				var srv *httptest.Server
+				open := func() {
+					srv = httptest.NewServer(app)
+					t.Cleanup(func() { srv.Close(); closed.Store(true) })
+				}
+				if tc.serverFirst {
+					open()
+				}
+				testutil.Start(t, app)
+				if !tc.serverFirst {
+					open()
+				}
+				resp, err := http.Get(srv.URL + "/ping")
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("GET /ping = %d", resp.StatusCode)
+				}
+			})
+			want := []string{"start", "stop after server closed"}
+			if got := comp.list(); !slices.Equal(got, want) {
+				t.Fatalf("events = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

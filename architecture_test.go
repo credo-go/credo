@@ -62,7 +62,7 @@ var modulePolicies = map[string]importPolicy{
 	"websocket":  {credo: []string{"", "internal/httpwriter", "internal/origin"}, external: []string{"github.com/coder/websocket"}},
 	"worker":     {credo: []string{"", "internal/health"}},
 
-	"internal/di":          {credo: []string{"internal/observe"}},
+	"internal/di":          {credo: []string{"internal/observe", "internal/resourceid"}},
 	"internal/faultstatus": {credo: []string{"fault"}},
 	"internal/health":      {},
 	"internal/host":        {},

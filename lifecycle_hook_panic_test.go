@@ -79,13 +79,13 @@ func TestApp_OnStart_Panic_IsTheHooksError(t *testing.T) {
 	app.OnStart(func(context.Context) error { return nil })
 	app.OnStart(func(context.Context) error { panic("start boom") })
 	app.OnStart(func(context.Context) error { laterRan.Store(true); return nil })
-	app.OnShutdown(func(context.Context) error { order = append(order, "onShutdown"); return nil })
+	app.OnStop(func(context.Context) error { order = append(order, "onStop"); return nil })
 
 	err := callRecovering(t, "Run", app.Run)
 	if err == nil {
 		t.Fatal("Run() = nil, want the panicking hook's error")
 	}
-	for _, want := range []string{"OnStart hook [1]", "start boom"} {
+	for _, want := range []string{"OnStart[1]", "start boom"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Run() error %q does not contain %q", err, want)
 		}
@@ -93,7 +93,8 @@ func TestApp_OnStart_Panic_IsTheHooksError(t *testing.T) {
 	if laterRan.Load() {
 		t.Error("a later OnStart hook ran after the panic")
 	}
-	if want := []string{"di:svc", "onShutdown"}; !slices.Equal(order, want) {
+	// An internal stop hook runs before the internal components it may use.
+	if want := []string{"onStop", "di:svc"}; !slices.Equal(order, want) {
 		t.Errorf("teardown order = %v, want %v", order, want)
 	}
 	if got := app.State(); got != "stopped" {
@@ -108,10 +109,10 @@ func TestApp_OnStart_Panic_IsTheHooksError(t *testing.T) {
 	assertHookPanicRecord(t, logs, "credo: OnStart hook panic", 1, "start boom")
 }
 
-// TestApp_OnShutdown_Panic_DoesNotSkipTheRemainingHooks: a panic in an
-// OnShutdown hook is that hook's error. The remaining hooks still run, the
+// TestApp_OnStop_Panic_DoesNotSkipTheRemainingHooks: a panic in an OnStop
+// hook is that hook's error. The remaining hooks still run, the
 // App reaches stopped and Shutdown returns the joined error.
-func TestApp_OnShutdown_Panic_DoesNotSkipTheRemainingHooks(t *testing.T) {
+func TestApp_OnStop_Panic_DoesNotSkipTheRemainingHooks(t *testing.T) {
 	host, port, _ := freePort(t)
 	logs := &syncBuffer{}
 	app := mustNew(t, credo.WithAddr(host, port),
@@ -130,9 +131,9 @@ func TestApp_OnShutdown_Panic_DoesNotSkipTheRemainingHooks(t *testing.T) {
 		}
 	}
 	errBoom := errors.New("shutdown boom")
-	app.OnShutdown(record("registered first"))
-	app.OnShutdown(func(context.Context) error { panic(errBoom) })
-	app.OnShutdown(record("registered last"))
+	app.OnStop(record("registered first"))
+	app.OnStop(func(context.Context) error { panic(errBoom) })
+	app.OnStop(record("registered last"))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- app.Run() }()
@@ -161,5 +162,5 @@ func TestApp_OnShutdown_Panic_DoesNotSkipTheRemainingHooks(t *testing.T) {
 		t.Errorf("State() = %q, want %q", state, "stopped")
 	}
 
-	assertHookPanicRecord(t, logs, "credo: OnShutdown hook panic", 1, "shutdown boom")
+	assertHookPanicRecord(t, logs, "credo: OnStop hook panic", 1, "shutdown boom")
 }

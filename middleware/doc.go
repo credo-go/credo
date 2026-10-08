@@ -55,12 +55,12 @@
 //
 // # RateLimit Lifecycle
 //
-// For explicit lifecycle control, use [NewRateLimiter] and register
-// limiter.Shutdown with app.OnShutdown:
+// For explicit lifecycle control, use [NewRateLimiter] and hand the limiter
+// to app.Manage, which shuts it down after the HTTP drain:
 //
 //	ratelimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
 //	app.GlobalMiddleware(ratelimiter.Middleware())
-//	app.OnShutdown(ratelimiter.Shutdown)
+//	app.Manage(ratelimiter, credo.Named("ratelimiter"))
 //
 // Maturity: beta
 package middleware

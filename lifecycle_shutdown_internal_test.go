@@ -40,7 +40,7 @@ func TestInitiateShutdown_FromRunning_Drains(t *testing.T) {
 		t.Fatal(err)
 	}
 	var shutdownHookCalls int
-	app.OnShutdown(func(context.Context) error { shutdownHookCalls++; return nil })
+	app.OnStop(func(context.Context) error { shutdownHookCalls++; return nil })
 	app.lifecycle.state.Store(uint32(stateRunning))
 
 	if err := app.lifecycle.initiateShutdown(t.Context()); err != nil {
@@ -50,7 +50,7 @@ func TestInitiateShutdown_FromRunning_Drains(t *testing.T) {
 		t.Errorf("state after drain = %s, want %s", got, stateStopped)
 	}
 	if shutdownHookCalls != 1 {
-		t.Errorf("OnShutdown hook ran %d times, want 1", shutdownHookCalls)
+		t.Errorf("OnStop hook ran %d times, want 1", shutdownHookCalls)
 	}
 }
 
@@ -64,7 +64,7 @@ func TestInitiateShutdown_ConcurrentCallers_SingleDrain(t *testing.T) {
 	}
 	var mu sync.Mutex
 	drainRuns := 0
-	app.OnShutdown(func(context.Context) error {
+	app.OnStop(func(context.Context) error {
 		mu.Lock()
 		drainRuns++
 		mu.Unlock()

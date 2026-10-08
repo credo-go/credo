@@ -66,7 +66,7 @@
 // credo.App.Replace is unsupported and can
 // create contradictory ownership or multiple shutdown attempts. In particular,
 // a caller-owned lifecycle handle must not also be registered in DI as a
-// Shutdowner.
+// component.
 //
 // Registered stores contribute stable readiness probes. Named and store checks
 // run in parallel with enforced per-check deadlines and panic isolation.

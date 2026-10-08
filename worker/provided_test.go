@@ -272,7 +272,7 @@ func TestRegisterProvided_FailedResolutionFailsAppStartup(t *testing.T) {
 	res := &resource{workerDone: new(atomic.Bool)}
 	app.ProvideValue(res)
 	var shutdownHooks atomic.Int32
-	app.OnShutdown(func(context.Context) error {
+	app.OnStop(func(context.Context) error {
 		shutdownHooks.Add(1)
 		return nil
 	})
@@ -294,7 +294,7 @@ func TestRegisterProvided_FailedResolutionFailsAppStartup(t *testing.T) {
 		t.Error("DI teardown did not run after the failed startup")
 	}
 	if shutdownHooks.Load() != 1 {
-		t.Errorf("OnShutdown hooks ran %d times, want 1", shutdownHooks.Load())
+		t.Errorf("OnStop hooks ran %d times, want 1", shutdownHooks.Load())
 	}
 	if served.Load() {
 		t.Error("the app served a request although startup failed")

@@ -183,16 +183,18 @@ A method value works too: `worker.Func(reports.Send)`.
 
 1. validates the name and the options, and parses the schedule
 2. creates the worker pool on first registration and publishes it in DI as a protected binding (`Replace[*Pool]` is rejected)
-3. attaches pool startup to `app.OnStart` and pool drain to `app.OnDrain`, so workers finish before any DI resource is shut down
+3. binds the pool as an ingress component of the App: the start phase starts it, and it stops with the ingress tier, concurrently with the HTTP drain and before the internal components its workers use
 
 The normal lifecycle is:
 
 ```text
-worker.Register(...) -> app.Run() -> workers start (after the port is bound, before traffic)
-app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit -> DI resources close
+worker.Register(...) -> app.Run() -> workers start in the start phase (after the port is bound, before traffic)
+app.Shutdown(ctx) -> worker contexts cancel -> pool waits for exit -> internal components shut down
 ```
 
-A worker's bounded cleanup after cancellation — flushing a last batch, acknowledging in-flight messages — therefore always runs against still-open resources, whatever order the worker and the resource were registered in. A worker that ignores cancellation past the shutdown deadline is reported as an incomplete drain task and teardown proceeds.
+A worker's bounded cleanup after cancellation — flushing a last batch, acknowledging in-flight messages — therefore always runs against still-open resources, whatever order the worker and the resource were registered in, because every component of the internal tier stops after the ingress tier. A worker that ignores cancellation past the shutdown deadline leaves the pool abandoned at the deadline and reported in the `*credo.LifecycleError`; the drain starts no teardown after its deadline, so the resources the worker uses are not closed under it.
+
+An App with registered workers has something to start, so an App served through `ServeHTTP` by an external `http.Server` or in a test is started first with `app.Start(ctx)` or `testutil.Start(t, app)`; until then, `ServeHTTP` panics.
 
 **Names.** The name identifies the registration: it appears in every log line, in `pool.Workers()`, and in the readiness check `worker:<name>`, and `worker.WorkerName(ctx)` returns it inside `Run`. It must be unique, non-empty, and free of surrounding whitespace and control characters; names are never trimmed for you. Keep names stable — dashboards and alerts will key on them.
 
@@ -232,10 +234,10 @@ func bootstrap(app *credo.App) error {
 How it fits together:
 
 - `RegisterProvided` records the type, not an instance, so it works before `Finalize` — exactly when registration is open — and may come before or after the matching `Provide`.
-- The worker is resolved once, in the `OnStart` phase: after `Finalize`, before the server accepts traffic.
+- The worker is resolved once, when the start phase starts the pool: after `Finalize`, before the server accepts traffic.
 - If the type is not provided, or its constructor fails or panics, startup fails with an error naming the worker and the type, and no worker is started.
 - The type argument may be an interface bound with `app.Alias`.
-- If the worker implements `credo.Shutdowner`, the container closes it after the pool has drained.
+- If the worker has a `Shutdown` method, it is a component of the internal tier: the App shuts it down after the pool, which stops with the ingress tier, has drained.
 
 Use `worker.Register` with a value when the worker has no DI dependencies or is assembled by hand. See the [Dependency Injection Guide](dependency-injection.md) for broader DI patterns.
 

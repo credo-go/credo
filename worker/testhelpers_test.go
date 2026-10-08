@@ -59,6 +59,22 @@ func newTestPool() *Pool {
 	return newPool(slog.New(slog.DiscardHandler), poolConfig{})
 }
 
+// startApp runs the App's start phase — which starts its worker pool — and
+// shuts the App down when the test ends.
+func startApp(t *testing.T, app *credo.App) {
+	t.Helper()
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("App.Start() = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 2*time.Second)
+		defer cancel()
+		if err := app.Shutdown(ctx); err != nil {
+			t.Errorf("App.Shutdown() = %v", err)
+		}
+	})
+}
+
 func shutdownPool(t *testing.T, p *Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)

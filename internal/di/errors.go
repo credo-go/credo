@@ -48,12 +48,14 @@ type PanicPhase uint8
 const (
 	// PhaseConstruction: a constructor panicked while building a singleton.
 	PhaseConstruction PanicPhase = iota + 1
-	// PhaseShutdown: a Shutdowner panicked during the dependency-ordered
-	// shutdown pass.
+	// PhaseShutdown: a component's teardown panicked during the
+	// dependency-ordered shutdown pass.
 	PhaseShutdown
-	// PhaseLateCleanup: a Shutdowner panicked during the best-effort cleanup of
+	// PhaseLateCleanup: a teardown panicked during the best-effort cleanup of
 	// an instance constructed after the shutdown context ended.
 	PhaseLateCleanup
+	// PhaseStart: a component's Start panicked during the start walk.
+	PhaseStart
 )
 
 // String returns the phase name used in error text and logs.
@@ -65,17 +67,19 @@ func (p PanicPhase) String() string {
 		return "shutdown"
 	case PhaseLateCleanup:
 		return "late cleanup"
+	case PhaseStart:
+		return "start"
 	default:
 		return "unknown"
 	}
 }
 
-// PanicError is the recovered panic of a constructor or Shutdowner. The
+// PanicError is the recovered panic of a constructor, Start or teardown. The
 // original panic value is preserved as Value; when it is an error it is also
 // exposed through Unwrap so errors.Is/As keep working. Stack is the goroutine
 // stack captured where the panic occurred.
 type PanicError struct {
-	// Type is the registered type whose constructor or Shutdowner panicked.
+	// Type is the registered type whose constructor, Start or teardown panicked.
 	Type reflect.Type
 	// Phase says whether the panic occurred during construction, the shutdown
 	// pass, or late cleanup.
@@ -131,20 +135,34 @@ const (
 	// context ended and received the separate best-effort cleanup attempt; its
 	// outcome is logged, not reported.
 	ShutdownLateCleanup ShutdownState = "late_cleanup"
+	// ShutdownShared: another holder of the same resource ran its teardown,
+	// or is the one to run it.
+	ShutdownShared ShutdownState = "shared"
+	// ShutdownStartFailed: the component's Start failed; it released what it
+	// had opened and is never shut down.
+	ShutdownStartFailed ShutdownState = "start_failed"
+	// ShutdownStartRunning: the component's Start was abandoned at the
+	// deadline and was still running; it kept its dependencies open.
+	ShutdownStartRunning ShutdownState = "start_running"
 )
 
-// ShutdownEntry is one registration's teardown record.
+// ShutdownEntry is one unit's teardown record.
 type ShutdownEntry struct {
-	// Type is the registered (canonical) type.
+	// Type is the registered (canonical) type, or a managed component's type.
 	Type reflect.Type
+	// Name names the unit: a managed component's name, otherwise its type.
+	Name string
+	// Tier is the unit's planned tier.
+	Tier Tier
 	// State is the outcome.
 	State ShutdownState
 	// Err is the failure for ShutdownFailed, ShutdownPanicked and
 	// ShutdownConstructionFailed; nil otherwise.
 	Err error
 	// Blockers lists the live dependents that kept a ShutdownBlocked entry
-	// from retiring.
-	Blockers []reflect.Type
+	// from retiring, and BlockerNames names them.
+	Blockers     []reflect.Type
+	BlockerNames []string
 	// Duration is the completed attempt's duration for terminal states, and the
 	// elapsed time at the reporting boundary for ShutdownRunning and
 	// ShutdownConstructing.
@@ -153,7 +171,11 @@ type ShutdownEntry struct {
 
 func (e ShutdownEntry) String() string {
 	var b strings.Builder
-	b.WriteString(e.Type.String())
+	if e.Name != "" {
+		b.WriteString(e.Name)
+	} else {
+		b.WriteString(e.Type.String())
+	}
 	b.WriteString(" ")
 	b.WriteString(string(e.State))
 	if e.Duration > 0 {
@@ -165,7 +187,11 @@ func (e ShutdownEntry) String() string {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(t.String())
+			if i < len(e.BlockerNames) && e.BlockerNames[i] != "" {
+				b.WriteString(e.BlockerNames[i])
+			} else {
+				b.WriteString(t.String())
+			}
 		}
 	}
 	if e.Err != nil {
@@ -177,7 +203,7 @@ func (e ShutdownEntry) String() string {
 
 // ShutdownError reports a failed or incomplete container shutdown. It is an
 // immutable snapshot taken when Shutdown returned: entries are in registration
-// order and later completions (a Shutdowner returning after the boundary, a
+// order and later completions (a teardown returning after the boundary, a
 // late-cleanup result) are logged, never written back.
 //
 // A fully successful shutdown returns nil, not an empty report.
@@ -202,7 +228,8 @@ func (e *ShutdownError) Error() string {
 	sep := ": "
 	for _, entry := range e.Entries {
 		switch entry.State {
-		case ShutdownSucceeded, ShutdownRetired, ShutdownNeverConstructed, ShutdownConstructionFailed:
+		case ShutdownSucceeded, ShutdownRetired, ShutdownNeverConstructed, ShutdownConstructionFailed,
+			ShutdownShared, ShutdownStartFailed:
 			continue
 		}
 		b.WriteString(sep)
@@ -223,7 +250,8 @@ func (e *ShutdownError) Unwrap() []error {
 func (e *ShutdownError) Incomplete() bool {
 	for _, entry := range e.Entries {
 		switch entry.State {
-		case ShutdownRunning, ShutdownConstructing, ShutdownBlocked, ShutdownUnattempted, ShutdownLateCleanup:
+		case ShutdownRunning, ShutdownConstructing, ShutdownBlocked, ShutdownUnattempted, ShutdownLateCleanup,
+			ShutdownStartRunning:
 			return true
 		}
 	}

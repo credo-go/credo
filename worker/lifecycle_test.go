@@ -151,11 +151,15 @@ func TestLifecycle_ShutdownReportsWorkerThatOutlivesTheDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Shutdown() = %v, want deadline exceeded", err)
 	}
-	if !strings.Contains(err.Error(), "OnDrain hook") {
-		t.Errorf("Shutdown() = %v, want the worker reported as an incomplete OnDrain task", err)
+	// The pool's Shutdown honours its context and returns the deadline error
+	// at the boundary, so it races the boundary itself: the report reads
+	// either outcome, always in the ingress tier.
+	if msg := err.Error(); !strings.Contains(msg, "*worker.Pool (ingress) shutdown abandoned") &&
+		!strings.Contains(msg, "*worker.Pool (ingress) shutdown failed") {
+		t.Errorf("Shutdown() = %v, want the pool reported in the ingress tier", err)
 	}
-	if strings.Contains(err.Error(), "shutting down *worker.Pool") {
-		t.Errorf("Shutdown() = %v, want no duplicate report from the DI pass", err)
+	if n := strings.Count(err.Error(), "*worker.Pool"); n != 1 {
+		t.Errorf("Shutdown() = %v, want the pool reported once, got %d", err, n)
 	}
 	close(release)
 	if err := <-done; err != nil {

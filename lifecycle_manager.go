@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
 // appState represents the lifecycle state of an App.
@@ -23,19 +26,19 @@ const (
 	// stateBuilding is the initial state. Route and middleware registration is allowed.
 	stateBuilding appState = iota
 
-	// stateStarting is a transient state entered after the state CAS but before
-	// the lifecycle context and *http.Server are written. Shutdown cannot operate
-	// in this state, closing the race window between the CAS and the serverMu writes.
+	// stateStarting is the start phase: preparation, the listener bind under
+	// managed serving, then the start walk. Shutdown interrupts it.
 	stateStarting
 
-	// stateRunning means the server is listening. Registration is frozen.
-	// Shutdown may only be called in this state.
+	// stateRunning means the start walk succeeded. Under managed serving the
+	// server is accepting; after App.Start the App's owner serves it.
 	stateRunning
 
-	// stateStopping means the server is draining in-flight requests.
+	// stateStopping means the drain in tiers, or the rollback of a failed or
+	// interrupted start, is running.
 	stateStopping
 
-	// stateStopped means the server has fully stopped.
+	// stateStopped means the App has fully stopped.
 	stateStopped
 )
 
@@ -57,63 +60,74 @@ func (s appState) String() string {
 	}
 }
 
-// lifecycleManager owns the App's server-session lifecycle: the state machine,
-// the bound *http.Server and lifecycle context, the lifecycle hooks, and the
-// graceful-drain sequence shared by every Run* entry point and Shutdown.
+// lifecycleManager owns the App's lifecycle: the state machine, the start
+// phase and its interruption, the bound *http.Server, the start and stop
+// hooks, and the drain in tiers shared by every Run* entry point, App.Start
+// and Shutdown.
 //
 // It is held by exactly one App and references it back through app for the
 // cross-cutting pieces it needs (the compiled handler, DI container, server
-// config, logger). Keeping these fields and the concurrency-sensitive
-// drain logic in one type — rather than spread across the App struct — is the
-// whole point of the split; the public Run/Shutdown/State/Addr/OnStart/
-// OnPreDrain/OnDrain/OnShutdown methods on App stay as thin delegates onto this
-// engine.
+// config, logger). The public Run/Start/Shutdown/State/Addr/OnStart/OnStop
+// methods on App stay thin delegates onto this engine.
 type lifecycleManager struct {
-	// app is the owning application, used for compile, DI finalize/shutdown,
-	// server config, and logging. Never nil for an App built by New.
+	// app is the owning application. Never nil for an App built by New.
 	app *App
 
 	// state tracks the lifecycle: building → starting → running → stopping → stopped.
 	state atomic.Uint32
 
-	// draining reports that graceful shutdown has begun. Set once at the start
-	// of shutdown and read by the readiness handler, which then reports the
-	// instance as unready so load balancers stop routing before the HTTP drain.
+	// draining reports that the drain or a start rollback has begun. The
+	// readiness handler then reports the instance as unready.
 	draining atomic.Bool
 
-	// serverMu protects server, ctx, cancel, and boundAddr.
+	// started reports that the start walk completed; it opens the ServeHTTP
+	// gate of an App with something to start.
+	started atomic.Bool
+
+	// readiness holds the readiness checks of the components that answer
+	// Ready, built once when the start walk completes and published by
+	// started.
+	readiness []internalhealth.ReadinessCheck
+
+	// serverMu protects server, redirectServer, ctx, cancel, boundAddr and run.
 	serverMu sync.Mutex
 
-	// server holds the *http.Server created by serve.
+	// server holds the *http.Server created by serve; nil under App.Start.
 	server *http.Server
 
 	// redirectServer holds the optional HTTP→HTTPS redirect server created by
 	// serve when WithHTTPRedirect is set. nil when no redirect listener runs.
-	// Protected by serverMu; drained alongside server.
 	redirectServer *http.Server
 
-	// ctx is the lifecycle context, created at Run() time. Cancelled during
-	// Shutdown(), after OnPreDrain. Background services select on ctx.Done().
+	// ctx is the session context, created when the start phase opens a
+	// session and cancelled when the drain or a rollback begins. Only reload
+	// observes it.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// boundAddr is the actual address from net.Listener.Addr(). Set after listen
-	// succeeds, cleared on shutdown. Protected by serverMu.
+	// boundAddr is the actual address from net.Listener.Addr(). Set after
+	// listen succeeds, cleared on shutdown.
 	boundAddr net.Addr
 
-	// onStart holds hooks called during startup after the port is bound (FIFO order).
-	onStart []func(ctx context.Context) error
+	// run is the start phase in progress; nil outside it. It is set with the
+	// building → starting claim and cleared after the start phase's final
+	// state is stored, so a state read as starting under serverMu always
+	// finds it.
+	run *startRun
 
-	// onPreDrain holds early hooks run before lifecycle cancellation. Registration
-	// order is identity only, not execution order.
-	onPreDrain []drainHook
+	// onStart holds the start hooks, run FIFO after their tier's components.
+	onStart []stageHook
 
-	// onDrain holds subsystem hooks run concurrently with HTTP drain and before
-	// DI teardown. Registration order is identity only, not execution order.
-	onDrain []drainHook
+	// onStop holds the stop hooks, run LIFO before their tier's components.
+	onStop []stageHook
+}
 
-	// onShutdown holds hooks called during graceful shutdown (LIFO order).
-	onShutdown []func(ctx context.Context) error
+// stageHook is a start or stop hook: an anonymous component of a tier.
+type stageHook struct {
+	// index is the hook's registration index among hooks of its kind.
+	index int
+	tier  Tier
+	fn    func(ctx context.Context) error
 }
 
 // currentState returns the current lifecycle state.
@@ -330,21 +344,13 @@ func (lm *lifecycleManager) signalLoop(
 	}
 }
 
-// lifecycleContext returns the current session's lifecycle context, or nil
-// outside a session.
-func (lm *lifecycleManager) lifecycleContext() context.Context {
-	lm.serverMu.Lock()
-	defer lm.serverMu.Unlock()
-	return lm.ctx
-}
-
 // awaitReloadQuiescence takes the reload slot and keeps it: a reload that was
-// in flight when shutdown began has already seen its context cancelled (drain
-// step 2), and its participants, subscribers, and hooks may still be using DI
-// infrastructure, so teardown waits for it to return. Holding the slot
+// in flight when shutdown began has already seen its context cancelled with
+// the session, and its participants, subscribers, and hooks may still be
+// using internal components, so the internal tier waits for it to return. Holding the slot
 // afterwards means no later reload can start. If ctx ends first, the reload is
 // reported as incomplete and teardown proceeds with the expired context, the
-// same contract as an over-deadline OnDrain hook.
+// same contract as an abandoned stop hook.
 func (lm *lifecycleManager) awaitReloadQuiescence(ctx context.Context) error {
 	token := lm.app.reload.token()
 	select {
@@ -395,24 +401,32 @@ func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
 // user-facing error (Shutdown) or a no-op (a drain that lost the race).
 var errShutdownNotRunning = errors.New("credo: shutdown: server not running")
 
-// serve contains the shared lifecycle for every entry point: single-use
-// state claim, preparation (DI finalize, compile, publish), optional
-// preflight, listen, startup hooks, serve, and graceful drain on context
-// cancellation.
+// lifecycleContext returns the current session's context, or nil outside a
+// session.
+func (lm *lifecycleManager) lifecycleContext() context.Context {
+	lm.serverMu.Lock()
+	defer lm.serverMu.Unlock()
+	return lm.ctx
+}
+
+// serve contains the shared lifecycle for every serving entry point:
+// single-use state claim, preparation (DI finalize, compile, publish),
+// optional preflight, listen, the start walk, serve, and graceful drain on
+// context cancellation.
 //
 // State machine: building → starting → running → stopping → stopped
 //
-//	↘ pre-session failure (preparation/preflight/listen)  → building (may run again)
-//	↘ session failure (OnStart hook / post-running serve) → drain → stopped (terminal)
+//	↘ pre-session failure (preparation/preflight/listen) → building (may run again)
+//	↘ start failure or interruption → rollback → stopped (terminal)
+//	↘ post-running serve failure → drain → stopped (terminal)
 //
-// A pre-session failure rolls back to building because nothing has started; a
-// session failure runs the full teardown and the App is terminal (ADR-006).
+// A pre-session failure rolls back to building because nothing has started.
 // A preparation failure is stored: returning to building permits bootstrap
 // Shutdown, not a retry of the frozen, failed plan.
 //
-// Race safety: stateStarting prevents Shutdown from reading nil ctx/server.
-// stateRunning is stored only after the listener is bound and OnStart hooks
-// pass, so IsRunning() truly means "accepting connections".
+// ctx interrupts the start phase at whatever point it has reached; after
+// running, its cancellation drains. The listener accepts only after the start
+// walk: running is stored, then Serve begins.
 func (lm *lifecycleManager) serve(
 	ctx context.Context,
 	label string,
@@ -424,42 +438,44 @@ func (lm *lifecycleManager) serve(
 	app := lm.app
 
 	// Phase 1: claim the start slot. Holding starting keeps a bootstrap
-	// Shutdown out while the App is prepared.
-	if err := lm.claimStartSlot(label); err != nil {
+	// Shutdown out while the App is prepared; a Shutdown now interrupts.
+	run, err := lm.claimStartSlot(label)
+	if err != nil {
 		return err
 	}
+	run.watch(ctx, lm.shutdownTimeout())
 
 	// Phase 1b: prepare — implicit DI finalize, compile, publish. The result is
 	// stored once; a failure releases the slot but stays terminal.
 	p := app.prepare()
 	if p == nil {
-		lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+		lm.abortClaim(run)
 		return fmt.Errorf("credo: %s: preparation rejected: app is shutting down", label)
 	}
 	if p.err != nil {
-		lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+		lm.abortClaim(run)
 		return fmt.Errorf("credo: %s: %w", label, p.err)
 	}
 
-	// Phase 2: preflight checks that must fail before stateRunning (e.g. TLS
-	// key-pair load), rolling back from stateStarting like a listen error.
+	// Phase 2: preflight checks that must fail before the start walk (e.g. TLS
+	// key-pair load), rolling back to building like a listen error.
 	if preflight != nil {
-		if err := preflight(); err != nil {
-			lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+		if err = preflight(); err != nil {
+			lm.abortClaim(run)
 			return fmt.Errorf("credo: %s: %w", label, err)
 		}
 	}
 
-	// Phase 3: build the server and publish the session.
+	// Phase 3: build the server and open the session.
 	srv := buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
-	lm.publishSession(srv)
+	lm.openSession(srv)
 
-	// Phase 4: obtain the listener. Fail fast before stateRunning so a listen
-	// error rolls back from stateStarting and Shutdown is never given a
-	// partially-initialised server.
+	// Phase 4: obtain the listener. Fail fast before the start walk so a listen
+	// error rolls back to building.
 	l, err := listen(srv)
 	if err != nil {
-		lm.rollbackSession()
+		lm.closeSession()
+		lm.abortClaim(run)
 		return err
 	}
 	defer l.Close() // safety net; Serve/ServeTLS close l themselves on return
@@ -471,40 +487,66 @@ func (lm *lifecycleManager) serve(
 	// Phase 4b: optional HTTP→HTTPS redirect listener.
 	redirectErrCh, err := lm.startRedirectListener(label, redirectAddr, l.Addr())
 	if err != nil {
-		lm.rollbackSession()
+		lm.closeSession()
 		l.Close()
+		lm.abortClaim(run)
 		return err
 	}
 
-	// Phase 5: startup hooks.
-	if err := lm.runStartHooks(label, l); err != nil {
-		return err
+	// Phase 5: the start walk. The listener is bound, so Addr() is available
+	// to Start and start hooks, but nothing accepts until it succeeds.
+	if outcome := lm.startWalk(run); outcome != startOK {
+		l.Close()
+		return lm.endStart(run, outcome, false)
 	}
 
-	// Phase 6: open the Shutdown gate and serve until something ends the session.
-	lm.state.Store(uint32(stateRunning))
+	// Phase 6: serve until something ends the session.
 	app.logger.Info("credo: server started",
 		"label", label, "addr", l.Addr().String(), "features", app.effectiveFeatures())
 	return lm.awaitServe(ctx, label, srv, l, serveFn, redirectErrCh)
 }
 
-// claimStartSlot moves building → starting. An App is single-use — once it
-// has shut down it cannot run again; callers must create a fresh App.
-func (lm *lifecycleManager) claimStartSlot(label string) error {
+// claimStartSlot moves building → starting and publishes the start phase.
+// An App is single-use — once it has started or shut down it cannot start
+// again; callers must create a fresh App.
+func (lm *lifecycleManager) claimStartSlot(label string) (*startRun, error) {
+	lm.serverMu.Lock()
 	if lm.state.CompareAndSwap(uint32(stateBuilding), uint32(stateStarting)) {
-		return nil
+		run := newStartRun()
+		lm.run = run
+		lm.serverMu.Unlock()
+		return run, nil
 	}
+	lm.serverMu.Unlock()
 	switch lm.currentState() {
 	case stateStopping, stateStopped:
-		return fmt.Errorf("credo: %s: app cannot be run after shutdown; create a new App", label)
+		return nil, fmt.Errorf("credo: %s: app cannot be run after shutdown; create a new App", label)
 	default:
-		return fmt.Errorf("credo: %s: server already in state %q", label, lm.currentState())
+		return nil, fmt.Errorf("credo: %s: server already in state %q", label, lm.currentState())
 	}
 }
 
-// publishSession creates the lifecycle context and stores ctx/cancel/server
-// under serverMu while Shutdown cannot proceed (stateStarting blocks it).
-func (lm *lifecycleManager) publishSession(srv *http.Server) {
+// abortClaim ends a start phase that failed before anything started — a
+// preparation, preflight or listen failure — returning the App to building.
+func (lm *lifecycleManager) abortClaim(run *startRun) {
+	lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+	lm.finishRun(run, nil)
+}
+
+// finishRun ends the start phase once its final state is stored, waking a
+// Shutdown that waits on it.
+func (lm *lifecycleManager) finishRun(run *startRun, err error) {
+	lm.serverMu.Lock()
+	if lm.run == run {
+		lm.run = nil
+	}
+	lm.serverMu.Unlock()
+	run.finish(err)
+}
+
+// openSession creates the session context and stores the server, nil under
+// App.Start.
+func (lm *lifecycleManager) openSession(srv *http.Server) {
 	appCtx, appCancel := context.WithCancel(context.Background())
 	lm.serverMu.Lock()
 	lm.ctx = appCtx
@@ -513,19 +555,30 @@ func (lm *lifecycleManager) publishSession(srv *http.Server) {
 	lm.serverMu.Unlock()
 }
 
-// rollbackSession undoes publishSession for a pre-session failure (a listen
-// error): nothing has started, so there is nothing to drain and the App
-// returns to building, free to run again. Session failures (OnStart/serve)
-// instead run the full drain — see runStartHooks and awaitServe.
-func (lm *lifecycleManager) rollbackSession() {
+// closeSession undoes openSession for a pre-session failure: nothing has
+// started, so there is nothing to drain.
+func (lm *lifecycleManager) closeSession() {
+	lm.cancelSession()
+	lm.clearSession()
+}
+
+// cancelSession cancels the session context: an in-flight reload stops.
+func (lm *lifecycleManager) cancelSession() {
 	lm.serverMu.Lock()
 	cancel := lm.cancel
-	lm.ctx, lm.cancel, lm.server, lm.boundAddr = nil, nil, nil, nil
 	lm.serverMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	lm.state.CompareAndSwap(uint32(stateStarting), uint32(stateBuilding))
+}
+
+// clearSession releases the session references. The App is single-use, so
+// nothing reads them after stopped; dropping them lets the closed server and
+// cancelled context be collected.
+func (lm *lifecycleManager) clearSession() {
+	lm.serverMu.Lock()
+	lm.ctx, lm.cancel, lm.server, lm.redirectServer, lm.boundAddr = nil, nil, nil, nil, nil
+	lm.serverMu.Unlock()
 }
 
 // startRedirectListener binds and serves the optional HTTP→HTTPS redirect
@@ -564,46 +617,6 @@ func (lm *lifecycleManager) startRedirectListener(label, redirectAddr string, ma
 		}
 	}()
 	return redirectErrCh, nil
-}
-
-// runStartHooks runs the OnStart hooks (FIFO) before stateRunning to avoid
-// racing Shutdown. Hooks receive the lifecycle context, cancelled after
-// OnPreDrain.
-//
-// A hook failure here is a session failure, not a pre-session one: an earlier
-// hook may have produced externally visible side effects (started workers,
-// acquired a migration lock, opened a subscription). So we run the full
-// teardown chain — the same one a graceful shutdown runs — and the App becomes
-// terminally stopped (ADR-006), rather than rolling back to building. State is
-// stateStarting, so a concurrent Shutdown (which requires stateRunning) cannot
-// race this drain; we store stateStopping and drain directly instead of going
-// through initiateShutdown's CAS.
-//
-// A hook that panics fails the same way: runLifecycleHook turns the panic into
-// that hook's error, so the teardown below still runs.
-func (lm *lifecycleManager) runStartHooks(label string, l net.Listener) error {
-	for i, fn := range lm.onStart {
-		startErr := lm.runLifecycleHook(lm.ctx, "OnStart", i, fn)
-		if startErr == nil {
-			continue
-		}
-		lm.state.Store(uint32(stateStopping))
-		// Serve never started, so drain's srv.Shutdown cannot close the bound
-		// listener. Close it now — before the possibly slow DI/OnShutdown
-		// teardown — so the port is released promptly, matching the graceful path
-		// where srv.Shutdown closes the listener before those steps. serve's
-		// deferred l.Close() then no-ops.
-		l.Close()
-		drainCtx, drainCancel := context.WithTimeout(context.Background(), lm.shutdownTimeout())
-		teardownErr := lm.drain(drainCtx)
-		drainCancel()
-		err := fmt.Errorf("credo: %s: OnStart hook [%d]: %w", label, i, startErr)
-		if teardownErr != nil {
-			err = errors.Join(err, teardownErr)
-		}
-		return err
-	}
-	return nil
 }
 
 // awaitServe runs serveFn and blocks until the session ends: a serve failure,
@@ -676,8 +689,7 @@ func (lm *lifecycleManager) awaitServe(
 // running → stopping CAS is the sole source of truth for shutdown-once:
 // concurrent callers (a cancelled context, a serve failure, and a programmatic
 // Shutdown racing each other) cannot run the sequence twice. The loser receives
-// errShutdownNotRunning. The startup-failure path does not go through here — it
-// is in stateStarting, where no Shutdown can race it, so it calls drain directly.
+// errShutdownNotRunning.
 func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 	if !lm.state.CompareAndSwap(uint32(stateRunning), uint32(stateStopping)) {
 		return errShutdownNotRunning
@@ -687,7 +699,7 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 
 // initiateBootstrapShutdown is the counterpart of claimStartSlot for an App
 // that was never run: the building → stopping CAS picks exactly one owner
-// between a concurrent managed start and Shutdown. At admission it closes HTTP
+// between a concurrent start and Shutdown. At admission it closes HTTP
 // registration (app.frozen) and DI writes (container.Freeze, a validation-free
 // freeze that neither finalizes nor enters closing), waiting for any
 // preparation in flight so no handler is published afterwards. It then runs
@@ -705,90 +717,95 @@ func (lm *lifecycleManager) initiateBootstrapShutdown(ctx context.Context) (bool
 	return true, lm.drain(ctx)
 }
 
-// drain runs the teardown chain shared by every shutdown path — graceful
-// Shutdown, context cancellation, a runtime serve failure, a failed startup,
-// and bootstrap Shutdown of a never-run App:
-// mark unready, run OnPreDrain hooks, cancel the lifecycle context, drain HTTP
-// and OnDrain hooks in parallel, tear down DI singletons (dependency order), run
-// OnShutdown hooks (LIFO), release the server-session references, and store
-// stateStopped.
+// drain runs the teardown shared by graceful Shutdown, context cancellation,
+// a runtime serve failure, and bootstrap Shutdown of a never-run App:
 //
-// The caller must have already moved the state out of the live states
-// (running/starting) so drain runs exactly once: initiateShutdown does this via
-// its running → stopping CAS; the startup-failure path stores stateStopping
-// directly (a non-running app cannot be reached by Shutdown).
+//  1. mark unready and cancel the session context (an in-flight reload stops);
+//  2. concurrently, the HTTP drain (redirect before main) and the ingress
+//     tier — ingress stop hooks LIFO, then ingress components;
+//  3. wait for an in-flight reload, keeping the reload slot;
+//  4. the internal tier — internal stop hooks LIFO, then the container
+//     enters closing and stops internal components in reverse dependency
+//     order;
+//  5. release the session and store stopped.
 //
-// OnPreDrain, OnDrain, and OnShutdown hooks run on *every* teardown, including
-// a failed startup. They are session teardown points, not OnStart mirrors, so
-// they must be idempotent and must not assume any particular OnStart hook
-// completed.
+// One deadline, ctx's, is spent in order across the steps. The caller must
+// have moved the state to stopping, so drain runs exactly once.
 func (lm *lifecycleManager) drain(ctx context.Context) error {
-	// Phase 0: stop reporting ready so load balancers drain this instance
-	// before it stops accepting connections. Liveness stays up — the process
-	// is alive, just no longer taking new work.
 	lm.draining.Store(true)
+	lm.cancelSession()
 
-	var errs []error
-
-	// Read cancel and servers under the same lock that serve() wrote them.
 	lm.serverMu.Lock()
-	cancelFn := lm.cancel
 	srv := lm.server
 	redirectSrv := lm.redirectServer
 	lm.serverMu.Unlock()
 
-	// 1. Drain the narrow class of subsystems that must finish while lifecycle
-	// workers and DI infrastructure are still live. Hooks share the absolute
-	// shutdown deadline and have no ordering contract. Deadline expiry is
-	// reported, but this phase remains a hard barrier until every hook returns.
-	if err := lm.runPreDrainPhase(ctx); err != nil {
-		errs = append(errs, err)
+	report := &lifecycleReport{}
+	httpErr, reloadErr := lm.stopTiers(ctx, nil, nil, report, func() error {
+		return drainHTTPServers(ctx, redirectSrv, srv)
+	})
+
+	lm.clearSession()
+	lm.state.Store(uint32(stateStopped))
+	return errors.Join(httpErr, reloadErr, report.err())
+}
+
+// stopTiers is the teardown of the components, shared by the drain and the
+// rollback of a start: the ingress tier beside httpDrain (nil for a rollback
+// or bootstrap teardown, which have no server to drain), the reload barrier,
+// then the internal tier. excluded are the components whose Start failed and
+// stuck those whose Start was abandoned; neither is shut down, and the
+// latter keep their dependencies open. Component and stop-hook outcomes go
+// to report.
+func (lm *lifecycleManager) stopTiers(
+	ctx context.Context,
+	excluded, stuck []*di.Unit,
+	report *lifecycleReport,
+	httpDrain func() error,
+) (httpErr, reloadErr error) {
+	c := lm.app.container
+	if err := c.BeginTeardown(excluded, stuck); err != nil {
+		// The container was already torn down: nothing of it remains to stop.
+		lm.app.logger.LogAttrs(context.Background(), slog.LevelDebug, "credo: teardown already ran",
+			slog.Any("error", err))
 	}
 
-	// 2. Cancel the lifecycle context — signals background services, and the context
-	// handed to OnStart hooks, to begin stopping. This deliberately follows
-	// OnPreDrain, even when that phase returned an error or exhausted the budget;
-	// an over-deadline hook has still completed before cancellation reaches here.
-	if cancelFn != nil {
-		cancelFn()
+	var wg sync.WaitGroup
+	if httpDrain != nil {
+		wg.Go(func() { httpErr = httpDrain() })
 	}
+	lm.runStopHooks(ctx, TierIngress, report)
+	c.StopTier(ctx, di.TierIngress)
+	wg.Wait()
 
-	// 3. Drain HTTP and subsystem handlers in parallel under the same absolute
-	// deadline. The HTTP branch preserves redirect-before-main ordering.
-	if err := lm.drainBeforeInfrastructure(ctx, redirectSrv, srv); err != nil {
-		errs = append(errs, err)
+	// Wait for a reload that overlapped the shutdown: its context was
+	// cancelled with the session and its callbacks may still use internal
+	// components. The slot stays held so no later reload can start.
+	reloadErr = lm.awaitReloadQuiescence(ctx)
+
+	lm.runStopHooks(ctx, TierInternal, report)
+	c.StopTier(ctx, di.TierInternal)
+	if teardown := c.TeardownReport(ctx); teardown != nil {
+		report.addShutdown(teardown)
 	}
+	return httpErr, reloadErr
+}
 
-	// 3b. Wait for a reload that overlapped the shutdown: its callbacks were
-	// cancelled in step 2 and may still be using DI infrastructure. The slot
-	// stays held so no later reload can start.
-	if err := lm.awaitReloadQuiescence(ctx); err != nil {
-		errs = append(errs, err)
-	}
-
-	// 4. Tear down infrastructure — dependency-ordered DI singleton cleanup
-	// (consumers before the singletons they were built from).
-	if err := lm.app.container.Shutdown(ctx); err != nil {
-		errs = append(errs, err)
-	}
-
-	// 5. User shutdown hooks (LIFO) — ctx carries the drain deadline. A hook
-	// that panics is recorded as that hook's error and the remaining hooks
-	// still run, so the App always reaches stopped.
-	for i := len(lm.onShutdown) - 1; i >= 0; i-- {
-		if err := lm.runLifecycleHook(ctx, "OnShutdown", i, lm.onShutdown[i]); err != nil {
-			errs = append(errs, err)
+// drainHTTPServers shuts the redirect server down before the main server, so
+// clients are not redirected to a main listener that has already stopped
+// accepting connections.
+func drainHTTPServers(ctx context.Context, redirectSrv, srv *http.Server) error {
+	var errs []error
+	if redirectSrv != nil {
+		if err := redirectSrv.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("credo: HTTP redirect drain: %w", err))
 		}
 	}
-
-	// Release the server-session references, mirroring the pre-session cleanup
-	// in serve(). The App is single-use, so nothing reads these after stopped;
-	// dropping them lets the closed server and cancelled context be collected.
-	lm.serverMu.Lock()
-	lm.ctx, lm.cancel, lm.server, lm.redirectServer, lm.boundAddr = nil, nil, nil, nil, nil
-	lm.serverMu.Unlock()
-
-	lm.state.Store(uint32(stateStopped))
+	if srv != nil {
+		if err := srv.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("credo: server drain: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 

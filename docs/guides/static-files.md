@@ -60,7 +60,8 @@ root, err := os.OpenRoot("./public")
 if err != nil {
     log.Fatal(err)
 }
-app.OnShutdown(func(ctx context.Context) error {
+// A stop hook runs after the HTTP drain, so no request still reads from root.
+app.OnStop(func(ctx context.Context) error {
     return root.Close()
 })
 
