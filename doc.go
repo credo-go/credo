@@ -57,10 +57,10 @@
 //     matter (e.g. [WithLogger], [WithRecoverConfig], [WithoutRecover]).
 //   - Use<X> — post-construction setup that installs a subsystem or an HTTP
 //     feature once: it registers routes, an engine or a feature configuration
-//     and may read files. It therefore can fail — panicking on developer
-//     misuse (duplicate or late registration, invalid config), or returning an
-//     error when it touches the outside world (e.g. [App.UseHealth],
-//     [App.UseI18n], [App.UseAccessLog], [App.UseErrorRenderer]).
+//     and performs no I/O; what reads the outside world, such as locale files,
+//     runs in the start phase. It panics on developer misuse — duplicate or
+//     late registration, invalid config (e.g. [App.UseHealth], [App.UseI18n],
+//     [App.UseAccessLog], [App.UseErrorRenderer]).
 //   - Set<X> / Remove<X> — imperative mutators for a single request-state or
 //     route value (e.g. [Context.SetUser], [Route.SetMeta]).
 //   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnStop],
@@ -116,9 +116,9 @@
 //     text on every run.
 //   - Starting and serving return errors for what touches the outside world.
 //
-// This is why [App.UseHealth] panics on misuse (it only registers in-process
-// state) while [App.UseI18n] returns an error (it loads locale files). The
-// same split applies to reload: registering [App.OnConfigChange] on a store
+// This is why [App.UseI18n] panics on misuse at the call while a missing or
+// malformed locale file fails the start: the files are read in the start
+// phase. The same split applies to reload: registering [App.OnConfigChange] on a store
 // that cannot reload panics, while [App.Reload] itself — which re-reads files
 // and runs user hooks — returns an error.
 //
