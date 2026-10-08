@@ -254,8 +254,8 @@ func TestShutdown_ClosingRejectsResolve(t *testing.T) {
 	if err := c.Shutdown(t.Context()); !errors.Is(err, di.ErrClosed) {
 		t.Fatalf("second Shutdown = %v, want ErrClosed", err)
 	}
-	if _, _, err := c.Replace[*nodeDB](&nodeDB{}); err == nil {
-		t.Fatal("Replace after shutdown should be rejected")
+	if err := c.ProvideValueWith[*nodeDB](&nodeDB{}, di.Options{Override: true}); err == nil {
+		t.Fatal("an override after shutdown should be rejected")
 	}
 }
 

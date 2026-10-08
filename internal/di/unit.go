@@ -121,8 +121,7 @@ type Unit struct {
 	// Container.registrations and Container.singletons.
 	prov  provider
 	entry *singletonEntry
-	// valueBinding marks a binding made with a value (ProvideValue,
-	// ProvideProtectedValue, Replace).
+	// valueBinding marks a binding made with a value (ProvideValue).
 	valueBinding bool
 
 	component bool

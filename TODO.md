@@ -16,7 +16,7 @@ Scope, sequence and acceptance live in the [delivery plan](docs/plans/components
 - [x] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
 - [x] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
 - [x] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
-- [ ] W3: the DI surface — seven methods and `Finalize`; protected bindings, `AdoptValue`, `CanProvideValue`, `Replace` and the `Must*` registration twins deleted
+- [x] W3: the DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
 - [ ] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error
 - [ ] W8: `StatusHandler` panics for any code but 404 and 405
 - [ ] W9: examples, guides and the release
@@ -35,7 +35,7 @@ Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](do
 The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
-- [x] Close G1/G2 (2026-09-05): AdoptValue, Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
+- [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
 - [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
 - [x] P4 router minor (2026-09-05): endpoint-owned path parameter names; strict duplicate/structural conflicts retained
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
@@ -166,12 +166,11 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 - [x] Adapt samber/do core: container, lifecycle types
   - [x] **Key divergence**: typed constructor params (not `func(Injector)` signature)
-  - [x] `app.Provide[T](constructor)` — register with typed constructor
-  - [x] `app.ProvideValue[T](value)` — register pre-built value
-  - [x] `app.CanProvideValue[T]()` — read-only point-in-time frozen/direct-duplicate preflight for integrations that must validate before I/O; final normal/protected value publication remains authoritative
-  - [x] `app.ProvideProtectedValue[T]()` / `app.ProtectBinding[T](expected ...T)` — low-level Replace protection for DI values coupled to external lifecycle/health state; the optional expected value atomically compares the resolved singleton before protection, and ordinary bindings remain replaceable
-  - [x] `app.AdoptValue[T](validate)` — registration-time read → validate → atomic compare-and-protect; never constructs (constructor bindings rejected) (2026-09-05); no framework caller remains since stores and workers moved onto the components
-  - [x] `app.Replace[T]` returns `(old, existed, err)` — caller owns the superseded instance; Warn log for a superseded Shutdowner (2026-09-05)
+  - [x] `app.Provide[T](constructor, opts...)` — register with typed constructor; panics on misuse
+  - [x] `app.ProvideValue[T](value, opts...)` — register pre-built value; panics on misuse
+  - [x] `app.Has[T]()` — the one non-resolving presence probe; never constructs, reserves nothing
+  - [x] `credo.Override()` on `Provide`/`ProvideValue` — replaces an earlier binding before `Finalize`; the replaced value never becomes the App's (v0.24.0; it replaced `app.Replace[T]`/`MustReplace`)
+  - [x] v0.24.0: the surface is seven methods and `Finalize`; `CanProvideValue`, `ProvideProtectedValue`/`ProtectBinding`, `AdoptValue` and the `Must*` registration twins removed, since nothing framework-owned is bound in the container
 - [x] `app.Resolve[T]()` — retrieve instance (admitted only after `Finalize`; terminal per-singleton completion, `DIPanicError` on constructor panic, `ErrDIClosed` once teardown begins)
 - [x] `app.MustResolve[T]()` — panics if not found
 - [x] Lifecycle support: `Singleton` (only — RequestScoped removed)
@@ -346,11 +345,10 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 **Phase 3.3a — Core Package** (`store/`):
 
 - [x] Semantic store error model: transport-neutral `fault.Kind`/`store.Kind`, structured `store.Error`, exact sentinels (`AlreadyExists`, `Constraint`, `Serialization`, `Deadlock`, `Contention`, `Timeout`, `Unavailable`, `ReadOnly`), deprecated `ErrDuplicate` alias, and deprecated `ErrConflict` umbrella
-- [x] `Lifecycle` interface (Ping, Shutdown, Health) + optional explicit `LifecycleIdentityProvider` (`ResourceIdentity() any`; pointer-backed default recommended, token comparable/reflexive/stable)
+- [x] `Lifecycle` interface (Ping, Shutdown, Health); resource identity through the root's `credo.ResourceIdentifier` (`ResourceIdentity() any`, v0.24.0; `store.LifecycleIdentityProvider` before)
 - [x] `Health` / `HealthStatus` types
-- [x] `Registry` — read-only `HealthAll` facade; private name+type+declared-resource-identity reservation prevents incomplete/bypass/duplicate entries inside the `store.Register` ledger; no public mutation/shutdown path
-- [x] `Register[R]()` — local preflight + private reservation + deadline-scoped ping + protected DI publication/health commit; R and validated/adopted Registry bindings reject Replace, while invalid Registry bindings remain repairable before Finalize
-- [x] `RegisterOption`: `WithName`, `WithPingTimeout`, `WithLifecycle`, explicit `WithCallerOwnedLifecycle` opt-out (`WithCritical`, `WithTags` deferred to health package)
+- [x] `Register[R](app, opts...)` (v0.24.0) — names an existing binding of `R` as a store: no I/O and no value at the call, misuse panics, a missing binding fails `Finalize`, the ping runs in the start phase and its readiness probe is built once there; the binding stays an ordinary one that `credo.Override()` replaces. The former `Registry`/`HealthAll` facade, the identity ledger and the protected binding are removed
+- [x] `RegisterOption`: `WithName`, `WithPingTimeout` (`WithLifecycle`/`WithCallerOwnedLifecycle` removed in v0.24.0: a wrapper type implementing `Lifecycle`, with `credo.Borrowed()` for caller ownership)
 - [x] Typed TX scope: `TxScope[T]` + `WithTx` / `GetTx` / `RequireTx` / `Conn`; per-scope type binding, nil/typed-nil rejection, and same-type multi-connection isolation (`WithTx[T]` / `GetTx[T]` / `Conn[T]` retained only as deprecated compatibility helpers)
 - [x] Tests (errors, registry, register, tx context)
 - [x] `store/doc.go`
@@ -477,7 +475,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 - [x] `testutil.NewApp(tb, opts...) *credo.App` — hermetic test app factory (empty `RawConfig`, `slog.DiscardHandler` logger, best-effort cleanup shutdown)
 - [x] `WithWiring(fns...)` — dependency setup; runs before overrides
-- [x] `WithOverride[T](v)` — DI override built on `app.Replace[T]` / `app.MustReplace[T]` (the public replace primitives were added as its enabling API)
+- [x] `WithOverride[T](v)` — DI override built on `credo.Override()`; panics without an earlier binding of `T` (v0.24.0; built on `app.Replace[T]` before)
 - [x] `WithConfig(key, val)` — dotted-key config injection through the real loader (nested map → JSON → `config.LoadBytes`)
 - [x] `LogBuffer` — injectable slog capture: `Handler()`, `Entries()`, `Reset()`, `AssertHas(tb, LogEntry)` (string levels, subset attribute matching, JSON-normalized numbers)
 - [x] Tests + testable examples (`app_test.go`, `internal_test.go`, `example_test.go`; 95.5% coverage)
@@ -664,7 +662,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
 - [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
-  - [ ] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) is **deleted in v0.24.0** rather than kept or batched ([plan](docs/plans/components-and-sequential-bootstrap.md), W3): framework infrastructure moves to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
+  - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) was **deleted in v0.24.0** rather than kept or batched ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#the-public-surface)): framework infrastructure moved to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
   - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide, and if flipped announce one minor ahead

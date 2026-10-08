@@ -40,18 +40,15 @@ func (app *App) Provide[T any](constructor any, opts ...RegistrationOption) {
 	panicOnMisuse(app.container.ProvideWith[T](constructor, o))
 }
 
-// MustProvide is equivalent to [App.Provide], which panics on misuse.
-func (app *App) MustProvide[T any](constructor any, opts ...RegistrationOption) {
-	app.Provide[T](constructor, opts...)
-}
-
 // ProvideValue registers a pre-built value for type T as a Singleton. The App
 // owns the value from then on: if it is a [Component] it is shut down during
-// the drain, unless [Borrowed] leaves it to the caller or a later successful
-// [App.Replace] hands it back. The options are [Ingress], [Borrowed],
-// [Closer] and [Override]. A second binding of T without [Override], a call
-// after [App.Finalize] or after shutdown began, and a value whose resource
-// another holder owns differently panic, like [App.Provide].
+// the drain, unless [Borrowed] leaves it to the caller. The options are
+// [Ingress], [Borrowed], [Closer] and [Override]; [Override] is how a
+// composition root or a test swaps an earlier binding for a stub, and the
+// value it replaces never becomes the App's. A second binding of T without
+// [Override], a call after [App.Finalize] or after shutdown began, and a
+// value whose resource another holder owns differently panic, like
+// [App.Provide].
 //
 //	app.ProvideValue[*Logger](logger)
 func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption) {
@@ -59,119 +56,14 @@ func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption) {
 	panicOnMisuse(app.container.ProvideValueWith[T](value, o))
 }
 
-// ProvideProtectedValue registers a pre-built singleton whose binding cannot
-// later be overwritten through [App.Replace]. It is intended for integrations
-// that publish a value together with external lifecycle or health state and
-// therefore cannot safely allow the DI binding to diverge afterward. The
-// options are [Ingress] and [Closer]; an option misuse panics, while a
-// binding the container rejects is returned as an error.
-func (app *App) ProvideProtectedValue[T any](value T, opts ...RegistrationOption) error {
-	o := registrationOptions("App.ProvideProtectedValue", opts, optIngress, optCloser)
-	return app.container.ProvideProtectedValueWith[T](value, o)
-}
-
-// ProtectBinding prevents [App.Replace] from overwriting the existing direct
-// registration for T. It is idempotent and rejected after Finalize. The method
-// does not resolve or otherwise instantiate T. When one expected value is
-// supplied, protection is a compare-and-protect operation: it succeeds only if
-// the bound prebuilt value is still that same comparable value. Integrations
-// that need to read, validate and protect in one step use [App.AdoptValue].
-func (app *App) ProtectBinding[T any](expected ...T) error {
-	return app.container.ProtectBinding[T](expected...)
-}
-
-// CanProvideValue reports whether [App.ProvideValue] could currently register
-// type T. It checks only whether the DI container is finalized or T already has
-// a direct registration, and does not mutate or reserve the registration.
-//
-// The result is a point-in-time preflight. A later ProvideValue call can still
-// fail if another registration or finalization occurs in between.
-func (app *App) CanProvideValue[T any]() error {
-	return app.container.CanProvideValue[T]()
-}
-
-// MustProvideValue is equivalent to [App.ProvideValue], which panics on
-// misuse.
-func (app *App) MustProvideValue[T any](value T, opts ...RegistrationOption) {
-	app.ProvideValue[T](value, opts...)
-}
-
 // Has reports whether type T is registered, directly or through [App.Alias].
-// It never constructs, adopts or protects anything and makes no claim that
-// the instance is healthy or usable; the result is a snapshot, not a
-// reservation for a later registration.
+// It is the one non-resolving presence probe: it never runs a constructor and
+// makes no claim that the instance is healthy or usable, and the result is a
+// snapshot of the registrations made so far, not a reservation for a later
+// one. Use it in a composition root to ask whether an optional module was
+// wired.
 func (app *App) Has[T any]() bool {
 	return app.container.Has[T]()
-}
-
-// AdoptValue reads the pre-built value bound to T during the registration
-// phase, validates it, and atomically protects that same binding against
-// [App.Replace] before returning it. It is the one registration-time read
-// Credo supports: constructors run only after [App.Finalize], so a constructor
-// binding for T is rejected with an explanatory error without being invoked.
-//
-// A nil validate accepts every value. Validation failure leaves the binding
-// unprotected and repairable through Replace; a Replace or Finalize that
-// wins while validation runs makes the adoption fail rather than protecting
-// or returning a stale instance. Framework integrations (store, worker) use
-// it to take ownership of a value the composition root supplied ahead of
-// them. Use [App.Has] for a plain existence check.
-func (app *App) AdoptValue[T any](validate func(T) error) (T, error) {
-	return app.container.AdoptValue[T](validate)
-}
-
-// Replace registers a pre-built value for type T, overwriting any existing
-// unprotected registration. Unlike [App.ProvideValue], a duplicate T is
-// normally replaced. Bindings published by [App.ProvideProtectedValue], locked
-// through [App.ProtectBinding] or adopted through [App.AdoptValue] reject
-// replacement because external lifecycle state depends on their identity.
-//
-// On success the container owns the new value and no longer tracks the
-// superseded instance: Replace returns that instance with existed == true when
-// a previously created instance existed (a pre-built value), and the caller
-// assumes its cleanup responsibility. A superseded constructor binding that
-// never ran yields the zero value and false; Replace never constructs an old
-// provider merely to return it. When the returned instance is a
-// [Component] a Warn log names the type, as a reminder that the App will not
-// shut it down. A rejected replacement changes neither the binding nor
-// ownership.
-//
-// Replace is intended for composition-root overrides and tests where a real
-// binding is swapped for a stub or fake. Because the replacement is a value,
-// it carries no dependencies and stays valid during [App.Finalize]. Replace is
-// rejected after the container is finalized or shut down.
-//
-// In tests, the github.com/credo-go/credo/testutil package builds on Replace
-// through its WithOverride option.
-//
-//	old, existed, err := app.Replace[UserRepo](mockRepo)
-func (app *App) Replace[T any](value T) (old T, existed bool, err error) {
-	old, existed, err = app.container.Replace[T](value)
-	if err == nil && existed {
-		app.noteReplacedComponent(reflect.TypeFor[T](), any(old))
-	}
-	return old, existed, err
-}
-
-// MustReplace is like [App.Replace] but panics on error. It returns the same
-// previous-instance information.
-func (app *App) MustReplace[T any](value T) (old T, existed bool) {
-	old, existed, err := app.Replace[T](value)
-	if err != nil {
-		panic(err)
-	}
-	return old, existed
-}
-
-// noteReplacedComponent logs the ownership transfer of a superseded instance
-// that has a Shutdown method. It is a diagnostic, not the transfer mechanism.
-func (app *App) noteReplacedComponent(t reflect.Type, old any) {
-	if _, ok := old.(Component); !ok {
-		return
-	}
-	app.Logger().LogAttrs(context.Background(), slog.LevelWarn,
-		"credo: Replace superseded a component; the caller now owns its shutdown",
-		slog.String("type", t.String()))
 }
 
 // Resolve retrieves an instance of type T from the application's DI
@@ -261,11 +153,6 @@ func (app *App) Alias[I, T any]() {
 	panicOnMisuse(app.container.Alias[I, T]())
 }
 
-// MustAlias is equivalent to [App.Alias], which panics on misuse.
-func (app *App) MustAlias[I, T any]() {
-	app.Alias[I, T]()
-}
-
 // BindMany adds concrete type T to the ordered collection for interface I.
 // I must be an interface, T must be a registered concrete type that
 // implements I, and the pair must be new; otherwise BindMany panics, as it
@@ -274,15 +161,9 @@ func (app *App) BindMany[I, T any]() {
 	panicOnMisuse(app.container.BindMany[I, T]())
 }
 
-// MustBindMany is equivalent to [App.BindMany], which panics on misuse.
-func (app *App) MustBindMany[I, T any]() {
-	app.BindMany[I, T]()
-}
-
 // Finalize freezes the DI container and validates the dependency graph.
-// After Finalize, a Provide, ProvideValue, Alias or BindMany call panics,
-// ProvideProtectedValue, ProtectBinding, AdoptValue and Replace are rejected,
-// and [App.Resolve] becomes available. Finalize is DI-only: routes, hooks,
+// After Finalize, a Provide, ProvideValue, Alias or BindMany call panics, and
+// [App.Resolve] becomes available. Finalize is DI-only: routes, hooks,
 // renderers and other HTTP registrations stay open until the App prepares to
 // serve, so controllers built from resolved services can still be wired
 // afterwards.

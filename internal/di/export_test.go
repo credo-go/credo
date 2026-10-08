@@ -33,13 +33,3 @@ func (c *Container) HasRegistration[T any]() bool {
 	_, ok := c.registrations[t]
 	return ok
 }
-
-// IsProtected reports whether T's binding rejects Replace.
-// Exported for testing only.
-func (c *Container) IsProtected[T any]() bool {
-	t := reflect.TypeFor[T]()
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, ok := c.protected[t]
-	return ok
-}
