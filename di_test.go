@@ -43,9 +43,9 @@ func TestProvide_Resolve(t *testing.T) {
 	}
 }
 
-func TestMustProvide_MustResolve(t *testing.T) {
+func TestMustResolve(t *testing.T) {
 	app := mustNew(t)
-	app.MustProvide[*diSimpleService](newDISimpleService)
+	app.Provide[*diSimpleService](newDISimpleService)
 
 	mustFinalize(t, app)
 	svc := app.MustResolve[*diSimpleService]()
@@ -66,81 +66,6 @@ func TestProvideValue_Resolve(t *testing.T) {
 	}
 	if svc != original {
 		t.Error("ProvideValue should return the exact same instance")
-	}
-}
-
-func TestCanProvideValue(t *testing.T) {
-	t.Run("available then duplicate", func(t *testing.T) {
-		app := mustNew(t)
-		if err := app.CanProvideValue[*diSimpleService](); err != nil {
-			t.Fatalf("CanProvideValue() = %v, want nil", err)
-		}
-
-		app.ProvideValue[*diSimpleService](&diSimpleService{})
-		preflightErr := app.CanProvideValue[*diSimpleService]()
-		if preflightErr == nil {
-			t.Fatal("CanProvideValue = nil, want the duplicate error")
-		}
-		// The preflight reports the reason the call it previews panics with.
-		reason := strings.TrimPrefix(preflightErr.Error(), "di: ")
-		expectPanicContaining(t, "credo: App."+reason, func() {
-			app.ProvideValue[*diSimpleService](&diSimpleService{})
-		})
-	})
-
-	t.Run("finalized", func(t *testing.T) {
-		app := mustNew(t)
-		if err := app.Finalize(); err != nil {
-			t.Fatalf("Finalize() = %v", err)
-		}
-
-		preflightErr := app.CanProvideValue[*diSimpleService]()
-		if preflightErr == nil {
-			t.Fatal("CanProvideValue = nil, want the after-Finalize error")
-		}
-		reason := strings.TrimPrefix(preflightErr.Error(), "di: ")
-		expectPanicContaining(t, "credo: App."+reason, func() {
-			app.ProvideValue[*diSimpleService](&diSimpleService{})
-		})
-	})
-}
-
-func TestProtectedValueBinding(t *testing.T) {
-	app := mustNew(t)
-	original := &diSimpleService{Value: "original"}
-	if err := app.ProvideProtectedValue[*diSimpleService](original); err != nil {
-		t.Fatalf("ProvideProtectedValue() = %v", err)
-	}
-	if _, _, err := app.Replace[*diSimpleService](&diSimpleService{Value: "replacement"}); err == nil {
-		t.Fatal("Replace should reject a protected binding")
-	}
-	mustFinalize(t, app)
-	resolved, err := app.Resolve[*diSimpleService]()
-	if err != nil || resolved != original {
-		t.Fatalf("Resolve() = (%p, %v), want original %p", resolved, err, original)
-	}
-}
-
-func TestProtectBinding(t *testing.T) {
-	app := mustNew(t)
-	original := &diSimpleService{Value: "original"}
-	app.ProvideValue[*diSimpleService](original)
-	if err := app.ProtectBinding[*diSimpleService](original); err != nil {
-		t.Fatalf("ProtectBinding() = %v", err)
-	}
-	if _, _, err := app.Replace[*diSimpleService](&diSimpleService{}); err == nil {
-		t.Fatal("Replace should reject a protected existing binding")
-	}
-}
-
-func TestMustProvideValue(t *testing.T) {
-	app := mustNew(t)
-	app.MustProvideValue[*diSimpleService](&diSimpleService{Value: "v"})
-
-	mustFinalize(t, app)
-	svc := app.MustResolve[*diSimpleService]()
-	if svc.Value != "v" {
-		t.Errorf("Value = %q, want %q", svc.Value, "v")
 	}
 }
 

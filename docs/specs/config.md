@@ -203,7 +203,7 @@ db := app.MustGetConfig[DatabaseConfig]("database")
 - `T` may be a struct, map, slice, or primitive — same decode rules, weak typing, and `Validate()` hook as `Unmarshal`.
 - `App.GetConfig` decodes through the registered `RawConfig.Unmarshal`, so it behaves identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
 - These are **bootstrap/composition-root** sugar, not a runtime service locator: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach `GetConfig` through the request. Read config here; inject typed structs into services via DI (next section).
-- `MustGet`/`MustGetConfig` mirror the `MustProvide`/`MustResolve` family — panic for fail-fast startup wiring. There is no `MustLoad` (the load step performs I/O; its error must be handled).
+- `MustGet`/`MustGetConfig` mirror `MustResolve` — panic for fail-fast startup wiring, as the registration calls do on misuse. There is no `MustLoad` (the load step performs I/O; its error must be handled).
 
 ### Typed Config via DI — Primary Pattern
 

@@ -16,15 +16,13 @@ import (
 // All services use the Singleton lifecycle.
 //
 // The container moves through three phases. During registration, bindings are
-// written and prebuilt values may be adopted; nothing is constructed. Seal
-// freezes the registrations and validates the graph; Resolve is admitted only
-// from then on. Shutdown enters the closing phase: Resolve is rejected with
-// [ErrClosed], admitted builds are accounted for, and instances are shut down
-// consumers-before-dependencies.
+// written and nothing is constructed. Seal freezes the registrations and
+// validates the graph; Resolve is admitted only from then on. Shutdown enters
+// the closing phase: Resolve is rejected with [ErrClosed], admitted builds are
+// accounted for, and instances are shut down consumers-before-dependencies.
 type Container struct {
 	mu             sync.RWMutex
 	registrations  map[reflect.Type]provider
-	protected      map[reflect.Type]struct{} // bindings Replace must not overwrite
 	singletons     map[reflect.Type]*singletonEntry
 	aliases        map[reflect.Type]reflect.Type // interface → concrete type (Alias)
 	manyBindings   map[reflect.Type][]reflect.Type
@@ -116,7 +114,6 @@ type singletonEntry struct {
 func New() *Container {
 	return &Container{
 		registrations:  make(map[reflect.Type]provider),
-		protected:      make(map[reflect.Type]struct{}),
 		singletons:     make(map[reflect.Type]*singletonEntry),
 		aliases:        make(map[reflect.Type]reflect.Type),
 		manyBindings:   make(map[reflect.Type][]reflect.Type),
@@ -152,6 +149,14 @@ func (c *Container) Freeze() {
 	c.mu.Lock()
 	c.frozen = true
 	c.mu.Unlock()
+}
+
+// Has reports whether type T is registered, directly or through an alias. It
+// never constructs anything and says nothing about the instance's health. The
+// result is a snapshot of the registrations made so far.
+func (c *Container) Has[T any]() bool {
+	_, _, ok := c.findRegistration(reflect.TypeFor[T]())
+	return ok
 }
 
 // findRegistration searches for a registration by type, following aliases.

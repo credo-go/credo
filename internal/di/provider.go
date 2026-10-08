@@ -10,8 +10,7 @@ import (
 // provider is one registered type's construction strategy. The container
 // holds exactly one provider per type; the strategy decides how the singleton
 // is built and which dependencies the graph validator, cycle detector and
-// teardown scheduler see. Replace protection is not part of the provider: it
-// lives in Container.protected, keyed by type.
+// teardown scheduler see.
 type provider interface {
 	// deps returns the constructor parameter types the container must satisfy
 	// (validated at Seal, walked for cycles, ordered at teardown). Pre-built
@@ -58,8 +57,8 @@ func (p *constructorProvider) build(c *Container, stack []reflect.Type) (any, er
 	return instance, nil
 }
 
-// valueProvider returns a pre-built value (ProvideValue, ProvideProtectedValue,
-// Replace). It has no dependencies and is always valid during Seal.
+// valueProvider returns a pre-built value (ProvideValue). It has no
+// dependencies and is always valid during Seal.
 type valueProvider struct {
 	value any
 }

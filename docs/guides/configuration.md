@@ -226,10 +226,10 @@ func main() {
     if err := cfg.Unmarshal("databases.default", &dbCfg); err != nil {
         log.Fatal(err)
     }
-    app.MustProvideValue(&dbCfg)
+    app.ProvideValue(&dbCfg)
 
     // Services receive *DatabaseConfig via constructor injection.
-    app.MustProvide[*MyService](NewMyService)
+    app.Provide[*MyService](NewMyService)
 }
 
 func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
@@ -255,10 +255,10 @@ dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
 if err != nil {
     log.Fatal(err)
 }
-app.MustProvideValue(&dbCfg)
+app.ProvideValue(&dbCfg)
 ```
 
-Use `MustGetConfig[T]` (or `cfg.MustGet[T]`) to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustProvide`/`MustResolve`. These getters are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed structs via DI.
+Use `MustGetConfig[T]` (or `cfg.MustGet[T]`) to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustResolve`. These getters are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed structs via DI.
 
 ---
 

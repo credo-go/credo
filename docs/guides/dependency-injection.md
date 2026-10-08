@@ -44,17 +44,14 @@ Provide / ProvideValue / Alias / BindMany
 - `ProvideValue[T]`: register a pre-built singleton
 - registration options — `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`: decide a binding's tier, its owner, its teardown, or that it replaces an earlier binding ([Registration options](#registration-options))
 - `app.Manage(v, opts...)`: add a component — a value with `Shutdown`, or a constructor — that is not a binding ([Shutdown and Lifecycle](#shutdown-and-lifecycle))
-- `Has[T]`: check whether `T` is registered, without constructing anything
-- `CanProvideValue[T]`: point-in-time frozen/direct-duplicate preflight
-- `ProvideProtectedValue[T]`: low-level pre-built binding that rejects later `Replace[T]`
-- `ProtectBinding[T](expected ...T)`: low-level blind or CAS-style protection for an existing direct binding
-- `AdoptValue[T](validate)`: low-level registration-time read that validates a pre-built value and protects its binding
-- `Replace[T]`: overwrite an ordinary pre-built binding and receive the superseded instance; protected bindings reject it
+- `Has[T]`: check whether `T` is registered, without constructing anything ([Checking for an optional binding](#checking-for-an-optional-binding))
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
 - `app.Finalize()`: freeze registrations and validate the dependency graph
 - `Resolve[T]`: retrieve a fully wired singleton (available after `Finalize`)
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
+
+That is the whole DI surface: registration calls return nothing and panic on misuse, so there are no `Must*` registration twins, and `MustResolve`/`MustResolveAll` are the resolve conveniences for a composition root that cannot continue without the value.
 
 Constructors never run before `Finalize`, and `Resolve` panics until then. `Run()` and `RunContext()` call `Finalize()` implicitly as a safeguard, but a composition root that resolves services before running must call it explicitly, and explicit `app.Finalize()` is recommended in any case so dependency errors fail fast during startup.
 
@@ -273,50 +270,36 @@ app.ProvideValue[UserRepository](fakeRepo, credo.Override())    // replaces the 
 
 | Option | Accepted by | Effect |
 | --- | --- | --- |
-| `credo.Ingress()` | `Provide`, `ProvideValue`, `ProvideProtectedValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.Closer()` |
+| `credo.Ingress()` | `Provide`, `ProvideValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.Closer()` |
 | `credo.Borrowed()` | `ProvideValue` | Keeps the binding and the value's `Ready`, and leaves starting and shutting the value down to the caller — a pool two Apps in one process share, a fixture a test suite reuses |
-| `credo.Closer()` | `Provide`, `ProvideValue`, `ProvideProtectedValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
+| `credo.Closer()` | `Provide`, `ProvideValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
 | `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` |
 | `credo.Named(name)` | `Manage` | Names a managed component in reports and readiness |
 
-Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.Closer()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` on a protected binding or without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.Closer()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
-
-`app.CanProvideValue[T]()` is a non-mutating preflight for helpers that should avoid work before a predictable registration failure. It checks only whether the container is finalized or `T` already has a direct registration. It does not reserve `T`: a registration made in between can still register or finalize before the real call, so the final publication remains authoritative — `ProvideValue` panics on a conflict, and `ProvideProtectedValue`'s error must still be handled.
-
-### Protected integration bindings
-
-Most application values should stay replaceable: use `ProvideValue`, especially when tests use overrides. A framework integration may also publish lifecycle or health state that must keep referring to the exact DI value. For that narrow case Credo exposes:
-
-```go
-if err := app.ProvideProtectedValue[Client](client); err != nil {
-    return err
-}
-
-// Or atomically verify and protect a value resolved by the composition root.
-if err := app.ProtectBinding[Client](client); err != nil {
-    return err
-}
-```
-
-After either path, `app.Replace[Client](other)` returns an error. Protection is about binding consistency only: it does not register stop hooks, health checks, aliases, or collection membership. `ProtectBinding[T]()` blindly protects an existing direct binding without resolving it and is idempotent. `ProtectBinding[T](expected)` is the CAS-style form: it atomically verifies, against `Replace`, that the already-created singleton is comparable and still equals expected before protecting it. An unresolved, non-comparable, changed, or multiply supplied expected value returns an error without adding protection. Both forms require an existing binding and must run before Finalize.
-
-An integration that must read a value the composition root registered ahead of it uses `app.AdoptValue[T](validate)`. It reads the pre-built binding, runs `validate`, and atomically protects that same binding only when validation passes, so an invalid value (a typed-nil pointer) stays repairable with `Replace`. It never runs a constructor: a `T` registered through `Provide` is rejected with an explanatory error. No framework caller remains: stores and workers no longer bind anything into the container. For a plain "is it registered?" question use `app.Has[T]()`; it constructs, adopts and protects nothing.
+Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.Closer()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.Closer()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
 
 ### Replacing a binding
 
-`Replace` overwrites an ordinary pre-built binding and hands the superseded instance back to you:
+A binding is replaced at registration, before `Finalize`, with `credo.Override()` on `Provide` or `ProvideValue` — in a composition root that swaps one implementation for another, or in a module that lets the application substitute a default:
 
 ```go
-old, existed, err := app.Replace[*sql.DB](newDB)
-if err != nil {
-    return err // protected binding, or container already finalized
-}
-if existed {
-    defer old.Close() // the container no longer tracks or closes old
-}
+app.Provide[*sql.DB](NewDB)                                  // the default wiring
+app.ProvideValue[*sql.DB](replicaDB, credo.Override())       // replaces it; NewDB never runs
 ```
 
-`existed` means an already-created instance was superseded — a value registered with `ProvideValue`. Replacing a constructor registration that never ran yields the zero value and `false`; Replace never runs the old constructor just to return its result. On success the container owns the new value and stops tracking the old one, so its cleanup is yours; if the old instance is a component (it has `Shutdown`), Credo logs `credo: Replace superseded a component; the caller now owns its shutdown` at Warn, naming the type. A rejected replacement changes nothing. `MustReplace` returns the same `(old, existed)` pair and panics on error. To swap a binding during registration, before `Finalize`, prefer `credo.Override()`, which fails when there is nothing to replace.
+The override panics when there is no earlier binding of the type, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Since constructors run only after `Finalize`, an override never supersedes an instance the App built, and the value it replaces never becomes the App's: the App neither starts nor shuts it down. A value you built, bound and then overrode is yours to release. In tests, `testutil.WithOverride[T](v)` applies `credo.Override()` to the App the test builds and is equally strict ([Testing](#testing)).
+
+There is no runtime replacement: after `Finalize` the graph is fixed, and every binding the App resolves is the one it validated.
+
+### Checking for an optional binding
+
+`app.Has[T]()` reports whether `T` is registered, directly or through `Alias`, for a composition root that asks whether an optional module was wired. It never runs a constructor, says nothing about whether the instance is healthy or usable, and reserves nothing: its result is a snapshot of the registrations made so far, and an override after it still replaces the binding.
+
+```go
+if !app.Has[*AuditLog]() {
+    app.Provide[*AuditLog](NewNoopAuditLog)
+}
+```
 
 ### No factory closures
 
@@ -483,8 +466,7 @@ For the full multi-database pattern, see the [Data Access Guide](data-access.md)
 
 After `Finalize`:
 
-- `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call
-- `Replace` and `AdoptValue` return an error
+- `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call, a `credo.Override()` included
 - `Resolve` and `ResolveAll` become available (before `Finalize` they panic and run no constructor; after a failed `Finalize` they return its error)
 
 `Finalize` is DI-only. Routes, middleware, hooks and renderers stay open until the App prepares to serve (the first request or `Run`), so you can resolve a controller after `Finalize` and still bind its routes.

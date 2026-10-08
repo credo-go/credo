@@ -62,10 +62,6 @@ func (c *Container) checkOverrideLocked(op string, t reflect.Type, override bool
 		return misuse(op, []reflect.Type{t}, "credo.Override() replaces an earlier binding, but %s has none; "+
 			"bind %s first, or drop credo.Override()", t, t)
 	}
-	if _, protected := c.protected[t]; protected && override {
-		return misuse(op, []reflect.Type{t}, "the binding of %s is protected — an integration adopted it — "+
-			"and credo.Override() cannot replace it", t)
-	}
 	return nil
 }
 
@@ -94,43 +90,18 @@ func (c *Container) MustProvide[T any](constructor any) {
 	}
 }
 
-// CanProvideValue reports whether [Container.ProvideValue] could currently
-// register type T. It performs only the frozen-container and direct duplicate-T
-// checks, without registering or reserving the type.
-//
-// The result is a point-in-time preflight. A later ProvideValue call can still
-// fail if another registration or container sealing occurs in between.
-func (c *Container) CanProvideValue[T any]() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.canProvideValueLocked("ProvideValue", reflect.TypeFor[T]())
-}
-
 // ProvideValue registers a pre-built value for type T as a Singleton.
 // The value is cached immediately. Every rejection is a [*MisuseError].
 func (c *Container) ProvideValue[T any](value T) error {
-	return c.provideValue("ProvideValue", value, Options{}, false)
+	return c.provideValue("ProvideValue", value, Options{})
 }
 
 // ProvideValueWith is [Container.ProvideValue] with registration options.
 func (c *Container) ProvideValueWith[T any](value T, o Options) error {
-	return c.provideValue("ProvideValue", value, o, false)
+	return c.provideValue("ProvideValue", value, o)
 }
 
-// ProvideProtectedValue registers a pre-built singleton whose binding cannot
-// later be overwritten through [Container.Replace].
-func (c *Container) ProvideProtectedValue[T any](value T) error {
-	return c.provideValue("ProvideProtectedValue", value, Options{}, true)
-}
-
-// ProvideProtectedValueWith is [Container.ProvideProtectedValue] with
-// registration options.
-func (c *Container) ProvideProtectedValueWith[T any](value T, o Options) error {
-	return c.provideValue("ProvideProtectedValue", value, o, true)
-}
-
-func (c *Container) provideValue[T any](op string, value T, o Options, protected bool) error {
+func (c *Container) provideValue[T any](op string, value T, o Options) error {
 	targetType := reflect.TypeFor[T]()
 	types := []reflect.Type{targetType}
 	// The identity runs user code, so it is taken before the lock.
@@ -160,74 +131,6 @@ func (c *Container) provideValue[T any](op string, value T, o Options, protected
 	}
 
 	c.bindLocked(u, valueProvider{value: value}, &singletonEntry{state: entryBuilt, value: value})
-	if protected {
-		c.protected[targetType] = struct{}{}
-	}
-	return nil
-}
-
-// ProtectBinding prevents Replace from overwriting the existing direct
-// registration for T. Calling it repeatedly is safe. When one expected value
-// is supplied, protection succeeds only if the bound prebuilt value is the
-// same comparable value. A mismatch adds no protection; protection already
-// present on the binding remains in effect. [Container.AdoptValue] is the
-// read-validate-protect form for integrations.
-func (c *Container) ProtectBinding[T any](expected ...T) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	targetType := reflect.TypeFor[T]()
-	if err := c.closedLocked("ProtectBinding", targetType); err != nil {
-		return err
-	}
-	if _, exists := c.registrations[targetType]; !exists {
-		return fmt.Errorf("di: ProtectBinding[%s]: type is not registered", targetType)
-	}
-	if len(expected) > 1 {
-		return fmt.Errorf("di: ProtectBinding[%s]: accepts at most one expected value", targetType)
-	}
-	if len(expected) == 1 {
-		entry, exists := c.singletons[targetType]
-		if !exists || entry.state != entryBuilt {
-			return fmt.Errorf("di: ProtectBinding[%s]: expected value is not resolved", targetType)
-		}
-		matches, comparable := sameComparableValue(entry.value, any(expected[0]))
-		if !comparable {
-			return fmt.Errorf("di: ProtectBinding[%s]: expected value is not comparable", targetType)
-		}
-		if !matches {
-			return fmt.Errorf("di: ProtectBinding[%s]: resolved value changed", targetType)
-		}
-	}
-	c.protected[targetType] = struct{}{}
-	return nil
-}
-
-func sameComparableValue(left, right any) (matches bool, comparable bool) {
-	leftValue := reflect.ValueOf(left)
-	rightValue := reflect.ValueOf(right)
-	if !leftValue.IsValid() || !rightValue.IsValid() {
-		return !leftValue.IsValid() && !rightValue.IsValid(), true
-	}
-	if !leftValue.Comparable() || !rightValue.Comparable() {
-		return false, false
-	}
-	if leftValue.Type() != rightValue.Type() {
-		return false, true
-	}
-	return leftValue.Equal(rightValue), true
-}
-
-// canProvideValueLocked reports why a value binding for targetType cannot be
-// made now. CanProvideValue reports it under ProvideValue's name, so the
-// preflight and the call it previews fail with the same text.
-func (c *Container) canProvideValueLocked(op string, targetType reflect.Type) error {
-	if err := c.closedLocked(op, targetType); err != nil {
-		return err
-	}
-	if _, exists := c.registrations[targetType]; exists {
-		return duplicateError(op, targetType)
-	}
 	return nil
 }
 

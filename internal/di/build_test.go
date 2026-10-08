@@ -189,8 +189,8 @@ func TestFreeze_ClosesRegistrationWithoutSeal(t *testing.T) {
 	if err := c.Provide[*ServiceWithDep](NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "called after shutdown began") {
 		t.Fatalf("Provide after Freeze = %v, want after-shutdown error", err)
 	}
-	if _, _, err := c.Replace[*SimpleService](&SimpleService{}); err == nil {
-		t.Fatal("Replace after Freeze should be rejected")
+	if err := c.ProvideValueWith[*SimpleService](&SimpleService{}, di.Options{Override: true}); err == nil {
+		t.Fatal("an override after Freeze should be rejected")
 	}
 	// Freeze neither validates nor admits resolution.
 	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {

@@ -1,12 +1,12 @@
 # DI Container & credo.Infra Spec
 
-**Status**: Approved; v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md)) **Implementation**: `internal/di/` (private), Root package API (`app.Provide[T]`, `app.Resolve[T]`, `app.BindMany[I, T]`, `app.ResolveAll[I]`) **Sources**: samber/do (MIT) **Depends on**: --- **ADRs**: [004-dependency-injection-and-infra](../adr/004-dependency-injection-and-infra.md) **Roadmap**: [`TODO.md` Phase 2.1, 2.2](../../TODO.md)
+**Status**: Approved; the v0.24.0 surface, registration options and component teardown implemented **Implementation**: `internal/di/` (private), Root package API (`app.Provide[T]`, `app.Resolve[T]`, `app.BindMany[I, T]`, `app.ResolveAll[I]`) **Sources**: samber/do (MIT) **Depends on**: --- **ADRs**: [004-dependency-injection-and-infra](../adr/004-dependency-injection-and-infra.md) **Roadmap**: [`TODO.md` Phase 2.1, 2.2](../../TODO.md)
 
 ---
 
 ## Canonical Source
 
-Implementation-level details for Credo's dependency injection system are defined in this file. Other documents should keep only high-level references and link here. The phase, ownership and teardown rules — post-Finalize resolution, registration-time adoption, ownership-transferring `Replace`, dependency-ordered shutdown, closing admission and the teardown/panic diagnostics — are specified in the [bootstrap and DI lifecycle contract](bootstrap-and-di-lifecycle.md) ([ADR-022](../adr/022-bootstrap-and-di-ownership.md)); this document states the same behavior in API terms.
+Implementation-level details for Credo's dependency injection system are defined in this file. Other documents should keep only high-level references and link here. The phase, ownership and teardown rules — post-Finalize resolution, overrides before Finalize, dependency-ordered shutdown, closing admission and the teardown/panic diagnostics — are specified in the [bootstrap and DI lifecycle contract](bootstrap-and-di-lifecycle.md) ([ADR-022](../adr/022-bootstrap-and-di-ownership.md)); this document states the same behavior in API terms.
 
 ---
 
@@ -158,8 +158,6 @@ This is a type check on the cold path --- no extra reflection beyond what the co
 
 ### The Surface
 
-**Accepted, pending implementation (v0.24.0, W3).** When it ships, this section replaces the Registration listing below and its paragraphs on `CanProvideValue`, protected bindings, `AdoptValue` and `Replace`; the `MustAlias`/`MustBindMany` listings, the `Must*` registration calls in the examples and the files `adopt.go` and `replace.go` go with them. The registration options (Registration Options) are already shipped, and no framework caller of the methods W3 deletes remains.
-
 The container's public surface is seven methods and the phase verb ([ADR-004](../adr/004-dependency-injection-and-infra.md)):
 
 ```text
@@ -180,18 +178,19 @@ app.ResolveAll[I]() ([]I, error)
 app.Finalize() error
 ```
 
-`options` are the registration options below. `Has[T]` reports whether T is registered, directly or through `Alias`, without constructing; it stays as the one non-resolving presence probe for a composition root that asks whether an optional module is present. `MustResolve` and `MustResolveAll` stay until the pre-v1 pruning judges them.
+`options` are the registration options below. `Has[T]` reports whether T is registered, directly or through `Alias`, without constructing; it is the one non-resolving presence probe, for a composition root that asks whether an optional module is present. It reserves nothing, and its result is a snapshot of the registrations made so far: an override after `Has` still replaces the binding. `MustResolve` and `MustResolveAll` remain beside the surface as resolve conveniences for the composition root (Resolution); they are not registration twins. After `Finalize`, a `Provide`, `ProvideValue`, `Alias` or `BindMany` call panics and `Resolve` becomes available.
 
-Deleted, with what replaces each:
+Removed in v0.24.0, with what replaces each ([migration guide](../guides/pre-v1-migration.md#di-surface)):
 
-| Deleted | Replacement |
+| Removed | Replacement |
 | --- | --- |
 | `Replace`, `MustReplace` and the Warn log for a superseded component | `credo.Override()` on `Provide` or `ProvideValue`, or `testutil.WithOverride` in tests — both before `Finalize` |
 | `ProvideProtectedValue`, `ProtectBinding` | None: nothing framework-owned is bound, so nothing needs protecting |
-| `AdoptValue`, `CanProvideValue` | None: the store registrations are kernel-owned and the worker supervisor binds nothing; neither reads the container during registration |
+| `AdoptValue` | None: the store registrations are kernel-owned and the worker supervisor binds nothing; neither reads the container during registration |
+| `CanProvideValue` | `Has` for presence, or simply `ProvideValue`, which panics on a duplicate |
 | `MustProvide`, `MustProvideValue`, `MustAlias`, `MustBindMany` | The plain call, which panics on misuse |
 
-What protection guaranteed — that no integration monitors or shuts down one value while DI resolves another — holds because the framework's registrations name bindings, not values: a component is its binding (Registration Options), the store registry names the store's binding by type and resolves it once in the start phase, after every override ([store spec](store.md)), and a DI-provided worker's component is a constructor over its binding, built by the start walk ([worker spec](worker.md#provided-workers)).
+What protection guaranteed — that no integration monitors or shuts down one value while DI resolves another — holds by construction, because the framework's registrations name bindings, not values: a component is its binding (Registration Options), the store registry names the store's binding by type and resolves it once in the start phase, after every override ([store spec](store.md)), and a DI-provided worker's component is a constructor over its binding, built by the start walk ([worker spec](worker.md#provided-workers)).
 
 ### Registration Misuse
 
@@ -220,7 +219,7 @@ Registration calls are not safe for concurrent use; bootstrap is sequential ([bo
 | `credo.Ingress()` | `Provide`, `ProvideValue`, `Manage`, `OnStart`, `OnStop` | Places the component, or the hook, in the ingress tier | On a binding that is not a component at registration — whose type shows no `Shutdown` and that carries no `credo.Closer()` — since the tier is planned before the value exists |
 | `credo.Borrowed()` | `ProvideValue` only | Keeps the binding and the value's readiness contribution; starting and shutting down stay with the caller | On `Provide`; beside `credo.Closer()`; at the later call, or the later construction, of a holder of the same resource that claims its teardown (Resource Identity) |
 | `credo.Closer()` | `Provide`, `ProvideValue` | Makes a binding whose type has a `Close` method a component that the App closes after its consumers | On a type with none of the three `Close` shapes; on a type that is already a component; beside `credo.Borrowed()` |
-| `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` | When there is no earlier binding of the type; on a protected binding; after `Finalize` |
+| `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` | When there is no earlier binding of the type; after `Finalize` |
 | `credo.Named(name)` | `Manage` only | Names the managed component in reports and readiness (default: its type name) | On an empty name; on a name another managed component has |
 
 - **`Borrowed`** is for a pool that two Apps in one process share, or a fixture a test suite reuses across the Apps it builds; resource identity is unique only inside one App, so it cannot tell two Apps that one of them owns the value. It is accepted on a binding whose type does not show `Shutdown`: that is how a caller keeps the teardown of a value that has the method behind an interface.
@@ -261,61 +260,18 @@ The order in which components stop — the tiers, reverse dependency order, the 
 // panics on misuse (Registration Misuse).
 func (app *App) Provide[T any](constructor any, opts ...RegistrationOption)
 
-// MustProvide is equivalent to Provide, which panics on misuse.
-func (app *App) MustProvide[T any](constructor any, opts ...RegistrationOption)
-
 // ProvideValue registers a pre-built value as a Singleton. It accepts
 // credo.Ingress(), credo.Borrowed(), credo.Closer() and credo.Override(),
 // and panics on misuse, like Provide.
 func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption)
 
-// ProvideProtectedValue registers a pre-built Singleton whose direct binding
-// cannot later be overwritten by Replace. It accepts credo.Ingress() and
-// credo.Closer().
-func (app *App) ProvideProtectedValue[T any](value T, opts ...RegistrationOption) error
-
-// ProtectBinding prevents Replace from overwriting an existing direct binding.
-// With one expected value it atomically compares the already-resolved,
-// comparable singleton and protects only when that value still matches.
-func (app *App) ProtectBinding[T any](expected ...T) error
-
-// CanProvideValue performs a non-mutating point-in-time check for a frozen
-// container or an existing direct T registration. It does not reserve T.
-func (app *App) CanProvideValue[T any]() error
-
-// MustProvideValue is equivalent to ProvideValue, which panics on misuse.
-func (app *App) MustProvideValue[T any](value T, opts ...RegistrationOption)
-
 // Has reports whether T is registered (directly or through Alias). It never
-// constructs, adopts or protects; the result is a snapshot, not a reservation.
+// constructs and reserves nothing; the result is a snapshot of the
+// registrations made so far.
 func (app *App) Has[T any]() bool
-
-// AdoptValue reads the pre-built value bound to T during registration,
-// validates it and atomically compare-and-protects that same binding. It never
-// runs a constructor: a constructor binding is rejected with an explanatory
-// error. Validation failure leaves the binding unprotected and repairable.
-func (app *App) AdoptValue[T any](validate func(T) error) (T, error)
-
-// Replace overwrites an ordinary direct binding with a pre-built value and
-// returns the superseded, already-created instance (existed == true) whose
-// cleanup now belongs to the caller. An unbuilt constructor yields zero, false.
-// It returns an error when the existing binding is protected or the container
-// is finalized.
-func (app *App) Replace[T any](value T) (old T, existed bool, err error)
-
-// MustReplace is like Replace but panics on error.
-func (app *App) MustReplace[T any](value T) (old T, existed bool)
 ```
 
-`CanProvideValue` is a preflight, not a success guarantee: a registration made in between can register T or finalize the container before the real publication. The final `ProvideValue` or `ProvideProtectedValue` call remains authoritative.
-
-Protected bindings are a low-level integration facility for a DI value coupled to external lifecycle, health, or registration state. `Replace` rejecting such a binding prevents DI from resolving a different value than the integration continues to monitor or shut down. Protection does not itself create lifecycle ownership, aliases, health checks, or collection membership. Ordinary application/test bindings should remain override-friendly with `ProvideValue`.
-
-`ProtectBinding[T]()` protects an existing direct binding without resolving T; this no-argument form is idempotent. `ProtectBinding[T](expected)` is the CAS-style compare-and-protect form for a singleton the caller already holds. Comparison and protection are atomic with respect to `Replace`: the expected value must already be created, comparable, and equal to the current singleton. An unresolved, non-comparable, or changed value returns an error without adding protection. More than one expected value is rejected, and both forms must run before Finalize.
-
-`AdoptValue[T](validate)` is a registration-time read for an integration that takes ownership of a value the composition root supplied ahead of it: read the existing pre-built binding → validate → atomic compare-and-protect of the accepted instance. No framework caller remains: store registration names a binding ([store spec](store.md#registration)), and the worker supervisor binds and reads nothing ([worker spec](worker.md)). Protection follows successful validation, never the read itself, so a rejected instance (a typed-nil value, for example) stays replaceable and repairable through `Replace`. A `Replace` or `Finalize` that wins during validation makes the adoption fail instead of protecting or returning a stale instance. Constructors run only after Finalize, so a constructor binding is rejected without being invoked; there is no general early-resolve exemption. `Has[T]` is the non-adopting existence query for optional wiring (for example, "is the optional module registered?"); it never constructs, protects or claims that an instance is usable.
-
-`Replace[T]` transfers ownership explicitly. On success the container owns the new value and stops tracking the superseded one: an already-created instance (a pre-built value) is returned with `existed == true` and its cleanup — including its `Shutdown` when it is a `credo.Component` — becomes the caller's responsibility, and a Warn log (`credo: Replace superseded a component; the caller now owns its shutdown`) names the type when that instance is a component. A superseded constructor binding that never ran yields the zero value and `false`; Replace never constructs an old provider merely to return it. A rejected replacement changes neither the binding nor ownership. `MustReplace` returns the same previous-instance information and panics on error.
+Constructors run only after Finalize, so the registration phase has no read of a bound value and no early-resolve exemption: `Has[T]` is its one query, for optional wiring ("is the optional module registered?"), and it never claims that an instance is usable. A binding is replaced with `credo.Override()` (Registration Options), never after the fact.
 
 The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
 
@@ -339,19 +295,16 @@ Because `constructor` is typed `any`, a signature mistake (wrong return type, no
 // for concrete type T. I must be an interface, T must implement I, and T
 // must already be registered. It panics on misuse.
 func (app *App) Alias[I, T any]()
-
-// MustAlias is equivalent to Alias, which panics on misuse.
-func (app *App) MustAlias[I, T any]()
 ```
 
 Alias enables resolving by interface without requiring the constructor to return the interface type:
 
 ```go
 // Register the concrete type.
-app.MustProvide[*PgUserRepo](NewPgUserRepo)
+app.Provide[*PgUserRepo](NewPgUserRepo)
 
 // Alias interface to concrete type.
-app.MustAlias[UserRepo, *PgUserRepo]()
+app.Alias[UserRepo, *PgUserRepo]()
 
 // Now resolving by interface returns the *PgUserRepo singleton.
 repo := app.MustResolve[UserRepo]()
@@ -372,19 +325,16 @@ Contract rules enforced by `Alias`, each violation a panic at the call:
 // I must be an interface, T must be registered already, T must be concrete,
 // and T must implement I. It panics on misuse.
 func (app *App) BindMany[I, T any]()
-
-// MustBindMany is equivalent to BindMany, which panics on misuse.
-func (app *App) MustBindMany[I, T any]()
 ```
 
 `BindMany[I, T]` is collection wiring, not default resolution. It does not change `Resolve[I]`; it only affects `ResolveAll[I]` and constructor injection of `[]I`.
 
 ```go
-app.MustProvide[*EmailSender](NewEmailSender)
-app.MustProvide[*InAppSender](NewInAppSender)
+app.Provide[*EmailSender](NewEmailSender)
+app.Provide[*InAppSender](NewInAppSender)
 
-app.MustBindMany[Sender, *EmailSender]()
-app.MustBindMany[Sender, *InAppSender]()
+app.BindMany[Sender, *EmailSender]()
+app.BindMany[Sender, *InAppSender]()
 ```
 
 Contract rules enforced by `BindMany`, each violation a panic at the call:
@@ -400,19 +350,16 @@ Contract rules enforced by `BindMany`, each violation a panic at the call:
 
 The container has four phases:
 
-1. **Bootstrap** --- `Provide`, `ProvideValue` and `ProvideProtectedValue` with their registration options, `ProtectBinding`, `AdoptValue`, `Replace`, `Alias`, `BindMany` and `Manage` are allowed; `Has` and `CanProvideValue` observe without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase; neither `store.Register` nor the worker registrations read the container.
-2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `Alias` and `BindMany` panic at the call, and `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue` and `Replace` return an error naming the call and the phase. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error. Finalize is DI-only: routes, hooks, renderers and other HTTP registrations stay open until the App prepares to serve, so controllers built from resolved services can still be wired afterwards (see the [lifecycle spec](lifecycle.md#preparation)).
+1. **Bootstrap** --- `Provide` and `ProvideValue` with their registration options, `Alias`, `BindMany` and `Manage` are allowed; `Has` observes without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase; neither `store.Register` nor the worker registrations read the container.
+2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call, naming the call and the phase. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error. Finalize is DI-only: routes, hooks, renderers and other HTTP registrations stay open until the App prepares to serve, so controllers built from resolved services can still be wired afterwards (see the [lifecycle spec](lifecycle.md#preparation)).
 3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()`, `app.RunContext()`, `app.ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly.
 4. **Closing** --- the drain freezes the container when it begins and enters closing when the internal tier's components begin to stop, after the HTTP drain, the ingress tier and the internal stop hooks ([lifecycle spec](lifecycle.md#shutdown-in-tiers)). New `Resolve` calls, cached results included, return an error wrapping `credo.ErrDIClosed`; builds already admitted are tracked for cleanup even when their caller's delivery loses to closing. The closing check precedes the failed-Finalize check, so teardown rejection wins even after a failed Seal. A never-finalized container can still be shut down (bootstrap teardown): the cleanup graph is derived from the frozen registrations and current instances without requiring successful validation.
 
-**Concurrency**: Registration is sequential ([bootstrap spec](bootstrap-and-di-lifecycle.md#sequential-bootstrap)): it comes from the goroutine that builds the App, before it runs, and is not safe for concurrent use. `CanProvideValue` and `Has` are deliberately point-in-time; their results do not reserve T against a concurrent publication or Finalize. `AdoptValue`, `Replace` and `Finalize` are serialized against each other so an adoption cannot protect a binding that a concurrent replacement changed.
-
-**Accepted, pending implementation (v0.24.0, W3).** When it ships, the bootstrap phase admits `Provide`, `ProvideValue`, `Alias` and `BindMany` with their registration options, and `Has`; `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue`, `Replace` and `CanProvideValue` go, and with them the last sentence of the concurrency paragraph above.
+**Concurrency**: Registration is sequential ([bootstrap spec](bootstrap-and-di-lifecycle.md#sequential-bootstrap)): it comes from the goroutine that builds the App, before it runs, and is not safe for concurrent use. `Has` is deliberately point-in-time; its result does not reserve T against a later registration.
 
 ```go
 // Finalize freezes the container and validates the dependency graph.
 // After Finalize, a Provide, ProvideValue, Alias or BindMany call panics,
-// ProvideProtectedValue, ProtectBinding, AdoptValue and Replace are rejected,
 // and Resolve becomes available. Finalize returns every problem the graph
 // holds, joined in registration order.
 // Finalize is idempotent --- subsequent calls return the same result via sync.Once.
@@ -429,14 +376,14 @@ func (app *App) Finalize() error
 
 ```go
 // Registration phase
-app.MustProvide[*sql.DB](NewDB)
-app.MustProvide[*UserRepo](NewUserRepo)
-app.MustProvide[*UserService](NewUserService)
-app.MustAlias[UserRepo, *PgUserRepo]()
+app.Provide[*sql.DB](NewDB)
+app.Provide[*PgUserRepo](NewPgUserRepo)
+app.Alias[UserRepo, *PgUserRepo]()
+app.Provide[*UserService](NewUserService)
 
 // Finalize phase --- freeze + validate
 if err := app.Finalize(); err != nil {
-    log.Fatal(err) // "di: missing dependency: *UserService → *UserRepo (not registered); ..."
+    log.Fatal(err) // e.g. "di: missing dependency: *UserService → *Mailer (not registered); ..."
 }
 
 // Runtime phase --- safe to resolve
@@ -554,13 +501,10 @@ The App reports a failed or incomplete drain as one `*credo.LifecycleError`, an 
 ### Concurrency and Lifecycle
 
 - **Registration** (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Manage`): sequential, from the goroutine that builds the App, before it runs; not safe for concurrent use and not serialized against `Finalize`. A call out of phase panics.
-- **Protection, `AdoptValue` and `Replace`**: made during the same sequential bootstrap. Adoption, replacement and Finalize are mutually serialized, so a concurrent winner makes the loser fail rather than publish a stale result.
-- **`Has` / `CanProvideValue`**: non-mutating point-in-time observations made during the same sequential bootstrap; neither reserves T.
+- **`Has`**: a non-mutating point-in-time observation made during the same sequential bootstrap; it reserves nothing.
 - **`Finalize`**: Idempotent via `sync.Once`. Safe to call from multiple goroutines but typically called once at startup.
 - **`Resolve` / `MustResolve` / `ResolveAll` / `MustResolveAll`**: Panic before Finalize. Safe for concurrent use afterwards: per-singleton completion ensures each constructor runs exactly once and every waiter receives the same terminal result (value, error or `DIPanicError`). Different singletons resolve concurrently without blocking each other.
 - **Teardown**: the internal tier enters closing atomically with respect to resolution admission and result delivery, then runs the dependency-ordered pass described above; the ingress tier, before it, still admits resolutions. Ordinary attempts share the drain context; only late construction gets the separate five-second attempt.
-
-**Accepted, pending implementation (v0.24.0, W3).** The protection, `AdoptValue`, `Replace` and `CanProvideValue` rules above go with those methods.
 
 ---
 
@@ -588,11 +532,11 @@ The App reports a failed or incomplete drain as one `*credo.LifecycleError`, an 
 
 11. **Ordered collections via BindMany** --- `BindMany[I, T]()` and `ResolveAll[I]` support plugin-style composition while keeping single resolution explicit. Credo intentionally does not introduce named/keyed bindings for this use case.
 
-12. **Protected bindings are opt-in integration state** --- ordinary bindings stay replaceable for composition overrides and tests. Integrations that publish matching lifecycle/health state may protect the direct binding so `Replace` cannot make DI diverge from that external state.
+12. **No protected bindings** --- every binding stays replaceable for composition overrides and tests, through `credo.Override()` before `Finalize`. Rejected, and removed in v0.24.0: protected bindings (`ProvideProtectedValue`, `ProtectBinding`), which let an integration that published lifecycle or health state about a bound value stop `Replace` from making DI diverge from that state. No integration binds such a value any more, and registrations that name bindings rather than values keep DI and that state in agreement by construction.
 
-13. **Resolution only after Finalize** --- constructors never run in the registration phase, so a validated graph is the only graph that ever executes and registration helpers cannot trigger construction as a side effect. Rejected: a general early Resolve/Peek exemption and protect-on-read, which would freeze an invalid binding before validation. Registration-time reads are `AdoptValue` (validate, then atomically protect) and `Has` (observe only).
+13. **Resolution only after Finalize** --- constructors never run in the registration phase, so a validated graph is the only graph that ever executes and registration helpers cannot trigger construction as a side effect. Rejected: a general early Resolve/Peek exemption and protect-on-read, which would freeze an invalid binding before validation, and registration-time adoption (`AdoptValue`, removed in v0.24.0). The registration phase's one read is `Has`, which observes only.
 
-14. **Replace transfers ownership explicitly** --- a successful replacement returns the superseded created instance and its cleanup responsibility to the caller; the container never closes a value it no longer hands out. The Warn log for a superseded component is a diagnostic, not the transfer mechanism. Rejected: silently abandoning the old instance, and automatically closing it (the caller may still hold it).
+14. **Overrides happen before construction** --- `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built; the value it replaces never becomes the App's and stays with whoever built it. The container never closes a value it does not hand out. Rejected: a runtime `Replace` that returned the superseded instance and its cleanup to the caller (removed in v0.24.0), silently abandoning the old instance, and automatically closing it (the caller may still hold it).
 
 15. **Dependency-ordered shutdown with bounded waiting** --- consumers close before the singletons they were built from, using a ready queue with reverse-registration tie-break over the static graph (adapted from samber/do v2.1.0's batched dependent bookkeeping). Every ordinary call is bounded by the shared context via helper goroutines; a runaway callback is abandoned, keeps its dependencies open and is reported rather than skipped around. Rejected: reverse registration order alone, a bulk wait-for-builds phase before any cleanup, an unbounded construction barrier, and do v2's out-of-order fallback.
 
@@ -606,9 +550,7 @@ The App reports a failed or incomplete drain as one `*credo.LifecycleError`, an 
 
 20. **A wrapper type per instance** --- several instances of one type are several wrapper types, so the signature names the instance. Rejected: named bindings, a qualifier type in the container, scoped child containers and wiring outside the container ([ADR-004](../adr/004-dependency-injection-and-infra.md#several-instances-of-one-type)).
 
-**Accepted, pending implementation (v0.24.0, W3).** When it ships, decision 12 is reversed, decisions 13 and 14 lose their `AdoptValue` and `Replace` halves, and this decision joins the list:
-
-21. **Seven methods and `Finalize`** --- the container holds only the application's bindings, so no method exists for a framework integration. Rejected: keeping protected bindings, adoption and preflights, which defended framework state that no longer lives in the container.
+21. **Seven methods and `Finalize`** --- the container holds only the application's bindings, so no method exists for a framework integration, and registration has one form, which panics on misuse. Rejected: keeping protected bindings, adoption and preflights, which defended framework state that no longer lives in the container, and the `Must*` registration twins, which duplicated calls that already panic.
 
 ---
 
@@ -665,10 +607,8 @@ The container inspects the constructor's parameter types via reflection at regis
 ```text
 internal/di/
 +-- doc.go            <- package documentation (samber/do attribution)
-+-- container.go      <- Container struct, New(), findRegistration (alias-aware)
-+-- provide.go        <- Provide/ProvideValue registration, protection + preflight
-+-- adopt.go          <- Has, AdoptValue (validate + atomic compare-and-protect)
-+-- replace.go        <- Replace with ownership transfer
++-- container.go      <- Container struct, New(), Has, findRegistration (alias-aware)
++-- provide.go        <- Provide/ProvideValue registration, override check
 +-- resolve.go        <- Resolve[T], ResolveAll[I], phase/closing admission, completion
 +-- bind.go           <- Alias[I,T], BindMany[I,T], binding management
 +-- build.go          <- Seal(), freeze + validate via sync.Once
@@ -690,7 +630,7 @@ Root package:
 +-- component.go      <- Component, Starter, Readier, ResourceIdentifier, Tier, registration options, Manage
 +-- lifecycle_error.go <- LifecycleError, LifecycleEntry, phases and outcomes
 +-- interfaces.go     <- RawConfig alias
-+-- di.go             <- root registration/preflight/protection/adoption/resolve/alias APIs
++-- di.go             <- root registration, Has, resolve, alias and collection APIs
 +-- dierrors.go       <- ErrDIClosed, DIPanicError aliases
 +-- infra_test.go
 ```
@@ -714,9 +654,9 @@ func main() {
     }
 
     // Register services (all Singleton)
-    app.MustProvide[*sql.DB](NewDB)
-    app.MustProvide[*UserRepo](NewUserRepo)
-    app.MustProvide[*UserService](NewUserService)
+    app.Provide[*sql.DB](NewDB)
+    app.Provide[*UserRepo](NewUserRepo)
+    app.Provide[*UserService](NewUserService)
 
     // Finalize: freeze container + validate dependency graph
     if err := app.Finalize(); err != nil {
@@ -772,10 +712,10 @@ type UserRepo interface {
 }
 
 // Register the concrete implementation.
-app.MustProvide[*PgUserRepo](NewPgUserRepo)
+app.Provide[*PgUserRepo](NewPgUserRepo)
 
 // Alias interface to concrete type.
-app.MustAlias[UserRepo, *PgUserRepo]()
+app.Alias[UserRepo, *PgUserRepo]()
 
 // Services depend on the interface, resolved via the alias.
 func NewUserService(infra credo.Infra, repo UserRepo) *UserService {
@@ -798,13 +738,17 @@ func NewSenderRegistry(senders []Sender) *SenderRegistry {
     return &SenderRegistry{senders: senders}
 }
 
-app.MustProvide[*EmailSender](NewEmailSender)
-app.MustProvide[*InAppSender](NewInAppSender)
+app.Provide[*EmailSender](NewEmailSender)
+app.Provide[*InAppSender](NewInAppSender)
 
-app.MustBindMany[Sender, *EmailSender]()
-app.MustBindMany[Sender, *InAppSender]()
+app.BindMany[Sender, *EmailSender]()
+app.BindMany[Sender, *InAppSender]()
 
-app.MustProvide[*SenderRegistry](NewSenderRegistry)
+app.Provide[*SenderRegistry](NewSenderRegistry)
+
+if err := app.Finalize(); err != nil {
+    log.Fatal(err)
+}
 
 registry := app.MustResolve[*SenderRegistry]()
 allSenders := app.MustResolveAll[Sender]()
@@ -840,19 +784,10 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 - `Provide[T]` with valid constructor succeeds
 - `Provide[T]` with non-function constructor panics with the call site's message
 - `Provide[T]` with nil constructor panics with the call site's message
-- `MustProvide[T]` panics on invalid constructor
 - Duplicate `Provide[T]` for same type panics
 - `ProvideValue[T]` registers value as Singleton
-- `CanProvideValue[T]` reports frozen/direct-duplicate conflicts without mutating or reserving T; final publication remains authoritative
-- `ProvideProtectedValue[T]` registers a Singleton that `Replace[T]` cannot overwrite
-- `ProtectBinding[T]()` is idempotent for an existing direct registration, rejects missing/frozen bindings, does not resolve T, and makes Replace fail
-- `ProtectBinding[T](expected)` atomically compare-and-protects only an already-resolved, comparable, matching singleton; unresolved, non-comparable, changed, or multiple expected values fail without adding protection
-- Ordinary `ProvideValue[T]` bindings remain replaceable
 - `Provide[T]`, `ProvideValue[T]`, `Alias[I, T]` and `BindMany[I, T]` after `Finalize()`, and after shutdown began, panic with the call site's message
-- `ProvideProtectedValue[T]` and `ProtectBinding[T]` after Finalize return errors
-- `Has[T]` reports constructor, value and alias registrations without constructing, adopting or protecting
-- `AdoptValue[T]` returns and protects a validated pre-built value; validation failure leaves the binding repairable; a constructor binding is rejected without being invoked; missing/frozen bindings error; a concurrent `Replace` or `Finalize` during validation aborts the adoption
-- `Replace[T]` returns the superseded created instance with `existed == true`, zero/false for an unbuilt constructor, and never constructs the old provider; the container no longer closes the returned instance; `MustReplace` mirrors the result
+- `Has[T]` reports constructor, value and alias registrations without constructing; it reserves nothing, so an override after `Has` still replaces the binding
 - `Manage` after `Finalize` panics with the call site's message
 - Option misuse panics: `Borrowed` on `Provide`; `Closer` on a type without `Close`, on a component, beside `Borrowed`; `Override` without an earlier binding; `Ingress` on a binding that is not a component at registration
 - `Override` replaces before `Finalize`; `testutil.WithOverride` panics without an earlier binding, and a test that relied on its old upsert moves to `WithWiring`
@@ -944,10 +879,3 @@ Infra is a plain struct --- construct it directly, no ceremony. Set the Logger y
 
 - `Resolve[T]` is safe for concurrent use after Finalize
 - Concurrent `Resolve` of same Singleton returns same instance (no double-init)
-- Concurrent `AdoptValue`/`Replace`/`Finalize` never protect a stale or replaced instance
-
-### v0.24.0
-
-**Accepted, pending implementation (v0.24.0, W3).** When the work item ships, this requirement joins the lists above, and the tests of `CanProvideValue`, `ProvideProtectedValue`, `ProtectBinding`, `AdoptValue` and `Replace` are deleted with the methods, not rewritten against something else.
-
-- `Has` reports presence without constructing (W3).
