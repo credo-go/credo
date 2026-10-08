@@ -46,8 +46,10 @@ server:
 
 # ---------------------------------------------------------------------------
 # Databases [user-read]
-# Named database connections using sqldb.Config (store/sqldb package).
-# Each entry is unmarshalled into sqldb.Config and registered via store.Register.
+# Named database connections. main.go reads "databases.default" into its own
+# DatabaseConfig for an in-memory stand-in store. With store/sqldb, each entry
+# is unmarshalled into sqldb.Config, the opened *sqldb.DB is bound with
+# app.Provide, and store.Register names the binding.
 # Usage:  rawCfg.Unmarshal("databases.default", &cfg)
 # ---------------------------------------------------------------------------
 databases:

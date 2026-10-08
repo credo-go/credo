@@ -193,6 +193,16 @@ return ctx.Render(http.StatusOK, user)
 return ctx.Response().JSON(http.StatusOK, webhookPayload)
 ```
 
+## Custom 404 and 405 responses
+
+`app.StatusHandler(code, h)` replaces the router's own answer when no route matches (404) or when routes match the path but none serves the method (405, with `Allow` already set). Only those two codes are consulted, so any other code panics at registration — a handler for 403 or 500 would never run. A status handler is not an error handler: an error a handler or middleware returns, `credo.ErrNotFound` included, goes through the pipeline above, and `UseErrorRenderer` shapes its body.
+
+```go
+app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
+    return ctx.Response().HTML(http.StatusNotFound, notFoundPage)
+})
+```
+
 ## What the pipeline cannot cover
 
 `net/http` may reject a connection before invoking Credo: oversized headers (431), malformed request/Host (400), and unsupported transfer encoding (501). Those responses are standard-library plain text, carry no Credo request ID or access log, and never call `ErrorRenderer`. Clients should inspect Content-Type, or a front proxy should normalize these boundary errors.

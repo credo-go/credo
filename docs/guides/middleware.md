@@ -898,7 +898,7 @@ app.Mount("/legacy", legacyApp)
 
 ### Custom 404/405 Handlers Lack Route Context
 
-Custom status handlers registered via `app.StatusHandler()` execute when no route matches. In this context:
+Custom status handlers registered via `app.StatusHandler()` execute when no route matches (404) or no route serves the method (405); those are the only two codes it accepts, and any other code panics at registration. In this context:
 
 - `ctx.Route()` is **nil** — there is no matched route.
 - Group and route middleware have not run (no route to attach them to).

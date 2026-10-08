@@ -123,8 +123,7 @@ type Config struct {
 }
 ```
 
-Example production config file (capacity values are illustrative; size them
-against the database's connection budget and the service's replica count):
+Example production config file (capacity values are illustrative; size them against the database's connection budget and the service's replica count):
 
 ```json
 {
@@ -147,55 +146,17 @@ against the database's connection budget and the service's replica count):
 }
 ```
 
-`redacted` is a placeholder; load the real password through the application's
-environment or secret-backed configuration source.
+`redacted` is a placeholder; load the real password through the application's environment or secret-backed configuration source.
 
-If `DSN` is set, it is used as-is; structured connection fields are not merged
-into it. For generated PostgreSQL/MySQL DSNs, set `port` explicitly in the
-`1..65535` range. Credo rejects zero instead of producing `:0`, and correctly
-brackets IPv6 hosts. Driver detection recognizes only the exact aliases
-`postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`; a custom
-registered name uses its native `Config.DSN` plus `sqldb.WithDialect`, while a
-custom connector uses `sqldb.WithConnector` plus `sqldb.WithDialect`. Explicit
-nil values and known driver/dialect family mismatches fail at startup.
+If `DSN` is set, it is used as-is; structured connection fields are not merged into it. For generated PostgreSQL/MySQL DSNs, set `port` explicitly in the `1..65535` range. Credo rejects zero instead of producing `:0`, and correctly brackets IPv6 hosts. Driver detection recognizes only the exact aliases `postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`; a custom registered name uses its native `Config.DSN` plus `sqldb.WithDialect`, while a custom connector uses `sqldb.WithConnector` plus `sqldb.WithDialect`. Explicit nil values and known driver/dialect family mismatches fail at startup.
 
-PostgreSQL represents `connect_timeout` in whole seconds, so Credo rounds any
-positive fractional value up rather than silently truncating it to disabled.
-`Options` may add driver parameters but cannot override core PostgreSQL
-endpoint/credential keys, MySQL's required `parseTime=true`, or a simultaneously
-set `SSLMode`/`ConnectTimeout`; ambiguous values fail without being echoed in
-the error. `SSLMode` itself is driver-specific (`sslmode` for PostgreSQL, `tls`
-for MySQL). Credo sets no universal TLS default—production configuration must
-choose a verified mode and trust setup supported by the selected driver. See
-the canonical [store specification](../specs/store.md#config) for the complete
-precedence and escape-hatch contract.
+PostgreSQL represents `connect_timeout` in whole seconds, so Credo rounds any positive fractional value up rather than silently truncating it to disabled. `Options` may add driver parameters but cannot override core PostgreSQL endpoint/credential keys, MySQL's required `parseTime=true`, or a simultaneously set `SSLMode`/`ConnectTimeout`; ambiguous values fail without being echoed in the error. `SSLMode` itself is driver-specific (`sslmode` for PostgreSQL, `tls` for MySQL). Credo sets no universal TLS default—production configuration must choose a verified mode and trust setup supported by the selected driver. See the canonical [store specification](../specs/store.md#config) for the complete precedence and escape-hatch contract.
 
-There is intentionally no universal finite pool default. `max_open: 0` (and an
-omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A store
-registered with `store.Register` logs one structured warning with code
-`sqldb.pool.max_open_unlimited` after its start-phase ping succeeds when the
-effective pool maximum is still unlimited; it never silently changes the value.
-Services that open a DB without `store.Register` can inspect
-`db.StoreRegistrationWarningCodes()` during bootstrap and send the returned
-secret-free codes to their own logger.
+There is intentionally no universal finite pool default. `max_open: 0` (and an omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A store registered with `store.Register` logs one structured warning with code `sqldb.pool.max_open_unlimited` after its start-phase ping succeeds when the effective pool maximum is still unlimited; it never silently changes the value. Services that open a DB without `store.Register` can inspect `db.StoreRegistrationWarningCodes()` during bootstrap and send the returned secret-free codes to their own logger.
 
-`max_idle` distinguishes omission from an explicit zero. Omit it to leave the
-idle setter to `database/sql` (its effective default remains subject to
-`max_open`), set it to `0` to retain no idle connections, or set a positive
-limit. With a finite `max_open`, `max_idle` must not be greater than `max_open`;
-`sqldb.Open` rejects that combination rather than accepting the stdlib's
-silent clamp. `max_idle_time: 0` disables idle-age expiry, while
-`max_lifetime: 0` disables connection-lifetime expiry. Explicit positive values
-are applied unchanged; Credo does not overwrite them with defaults.
+`max_idle` distinguishes omission from an explicit zero. Omit it to leave the idle setter to `database/sql` (its effective default remains subject to `max_open`), set it to `0` to retain no idle connections, or set a positive limit. With a finite `max_open`, `max_idle` must not be greater than `max_open`; `sqldb.Open` rejects that combination rather than accepting the stdlib's silent clamp. `max_idle_time: 0` disables idle-age expiry, while `max_lifetime: 0` disables connection-lifetime expiry. Explicit positive values are applied unchanged; Credo does not overwrite them with defaults.
 
-For operational telemetry, `db.Stats()` returns the complete `sql.DBStats`
-snapshot. Track at least `InUse`, `Idle`, `WaitCount`, `WaitDuration`,
-`MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed`. Wait and closure
-counters are cumulative: alert on windowed rates/deltas tied to an SLO, not on
-raw totals. Credo does not mark a pool `DEGRADED` from a universal saturation
-threshold. Such a policy needs explicit opt-in thresholds and hysteresis;
-today `DEGRADED` removes readiness for every store and a noisy threshold could
-cause cascading traffic shifts.
+For operational telemetry, `db.Stats()` returns the complete `sql.DBStats` snapshot. Track at least `InUse`, `Idle`, `WaitCount`, `WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed`. Wait and closure counters are cumulative: alert on windowed rates/deltas tied to an SLO, not on raw totals. Credo does not mark a pool `DEGRADED` from a universal saturation threshold. Such a policy needs explicit opt-in thresholds and hysteresis; today `DEGRADED` removes readiness for every store and a noisy threshold could cause cascading traffic shifts.
 
 Nested savepoint operations are bounded separately from query/callback execution. The default is five seconds of caller wait for each savepoint creation/release/rollback and fail-safe ambient abort; override it at construction when driver/network characteristics require a different budget:
 
@@ -279,26 +240,11 @@ if errors.Is(err, store.ErrNotFound) {
 | Read-only transaction/server | `store.ErrReadOnly` |
 | Verified deadline/statement timeout | `store.ErrTimeout` |
 
-Mapped values are `*store.Error`: the original driver cause and code remain in
-the error chain, while Credo's default HTTP response sees only the semantic
-kind. Use `store.KindOf(err)` when a switch is clearer than several
-`errors.Is` checks. `store.IsTransient(err)` means only that the condition may
-clear; it does **not** mean replaying the statement, transaction callback, or
-external side effects is safe.
+Mapped values are `*store.Error`: the original driver cause and code remain in the error chain, while Credo's default HTTP response sees only the semantic kind. Use `store.KindOf(err)` when a switch is clearer than several `errors.Is` checks. `store.IsTransient(err)` means only that the condition may clear; it does **not** mean replaying the statement, transaction callback, or external side effects is safe.
 
-Classification is family-scoped and depends on the driver being recognized.
-PostgreSQL mapping is SQLSTATE-based and works with any driver exposing it
-(pgx, lib/pq); MySQL parses the strict server error envelope; SQLite code
-extraction recognizes the modernc, mattn, and ncruces drivers (matched
-structurally, so none becomes a Credo dependency). Errors from an unrecognized
-driver pass through unmapped — `errors.Is` branches against `store.Err*`
-silently stop matching — so verify mapping coverage before adopting a
-different driver.
+Classification is family-scoped and depends on the driver being recognized. PostgreSQL mapping is SQLSTATE-based and works with any driver exposing it (pgx, lib/pq); MySQL parses the strict server error envelope; SQLite code extraction recognizes the modernc, mattn, and ncruces drivers (matched structurally, so none becomes a Credo dependency). Errors from an unrecognized driver pass through unmapped — `errors.Is` branches against `store.Err*` silently stop matching — so verify mapping coverage before adopting a different driver.
 
-`store.ErrDuplicate` remains an alias of `ErrAlreadyExists`. The deprecated
-`ErrConflict` remains an umbrella match for constraint, serialization,
-deadlock, and contention during migration, but new code should branch on the
-exact sentinel or kind.
+`store.ErrDuplicate` remains an alias of `ErrAlreadyExists`. The deprecated `ErrConflict` remains an umbrella match for constraint, serialization, deadlock, and contention during migration, but new code should branch on the exact sentinel or kind.
 
 ### NUL bytes in strings
 
@@ -429,10 +375,7 @@ When COUNT reports zero rows, SELECT is skipped and the page comes back with a n
 
 #### What `Total` counts
 
-`Page.Total` is the number of complete logical projection rows before ordering
-and the Page-owned LIMIT/OFFSET window. Credo removes root
-ORDER/LIMIT/OFFSET/FOR state and counts a universal outer
-`_credo_count_source` derived table:
+`Page.Total` is the number of complete logical projection rows before ordering and the Page-owned LIMIT/OFFSET window. Credo removes root ORDER/LIMIT/OFFSET/FOR state and counts a universal outer `_credo_count_source` derived table:
 
 | Query | Total |
 | --- | --- |
@@ -442,9 +385,7 @@ ORDER/LIMIT/OFFSET/FOR state and counts a universal outer
 | `GroupExpr(...)` | Groups |
 | `GroupExpr(...).Having(...)` | Groups left after `Having` |
 
-Credo pins both the outer SQL shape and its behavior with conformance tests. Two
-shapes are rejected before database I/O because their Count+window semantics
-are not safe:
+Credo pins both the outer SQL shape and its behavior with conformance tests. Two shapes are rejected before database I/O because their Count+window semantics are not safe:
 
 ```go
 _, err := db.Select((*User)(nil)).
@@ -460,20 +401,9 @@ _, err = db.Select().
 // errors.Is(err, sqldb.ErrUnsupportedCountQuery) == true
 ```
 
-For a compound query, place the compound SELECT behind an outer derived-table
-or CTE count source. If the data side also needs a custom source or destination,
-run an explicit count query and data query, then call
-`pagination.NewPage(records, int64(total), req.Page, req.PerPage)`. Typed
-`Page[T]` remains a model-owned terminal; wrapping a projection does not turn it
-into a general projection API.
+For a compound query, place the compound SELECT behind an outer derived-table or CTE count source. If the data side also needs a custom source or destination, run an explicit count query and data query, then call `pagination.NewPage(records, int64(total), req.Page, req.PerPage)`. Typed `Page[T]` remains a model-owned terminal; wrapping a projection does not turn it into a general projection API.
 
-MySQL requires unique derived-table output names. Credo renders the logical
-count source once and lets the server apply its actual naming and `sql_mode`
-rules, so wildcard and implicit/unaliased expressions are accepted when their
-derived names are unique. If MySQL returns `ER_DUP_FIELDNAME` (1060) while
-executing Count/Page's COUNT statement, Credo wraps
-`sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause. Give
-colliding projections explicit unique aliases:
+MySQL requires unique derived-table output names. Credo renders the logical count source once and lets the server apply its actual naming and `sql_mode` rules, so wildcard and implicit/unaliased expressions are accepted when their derived names are unique. If MySQL returns `ER_DUP_FIELDNAME` (1060) while executing Count/Page's COUNT statement, Credo wraps `sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause. Give colliding projections explicit unique aliases:
 
 ```go
 total, err := db.Select((*User)(nil)).
@@ -481,58 +411,23 @@ total, err := db.Select((*User)(nil)).
     Count(ctx)
 ```
 
-The wrapper is local to the logical count execution point. A raw query, `Scan`,
-`Exists`, or other non-count operation returning MySQL 1060 remains the original
-driver error. Because the server does not identify which derived-table level
-failed, an indistinguishable 1060 from a caller-supplied nested source during
-Count/Page is wrapped too. Keep the retained cause for logs and diagnostics;
-never render raw driver messages directly to HTTP clients. Real conformance
-covers normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's
-[derived-table rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
+The wrapper is local to the logical count execution point. A raw query, `Scan`, `Exists`, or other non-count operation returning MySQL 1060 remains the original driver error. Because the server does not identify which derived-table level failed, an indistinguishable 1060 from a caller-supplied nested source during Count/Page is wrapped too. Keep the retained cause for logs and diagnostics; never render raw driver messages directly to HTTP clients. Real conformance covers normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's [derived-table rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
-Relation callbacks are evaluated once while Credo renders the count source.
-They may add predicates or relation projections. Do not use them to replace the
-root model or add root ORDER/LIMIT/OFFSET/FOR, standalone `Having`, or a direct
-compound query; those mutations return `sqldb.ErrUnsupportedCountQuery` before
-I/O.
+Relation callbacks are evaluated once while Credo renders the count source. They may add predicates or relation projections. Do not use them to replace the root model or add root ORDER/LIMIT/OFFSET/FOR, standalone `Having`, or a direct compound query; those mutations return `sqldb.ErrUnsupportedCountQuery` before I/O.
 
-The universal count source evaluates the complete projection. This is what
-makes aggregate and set-returning cardinality exact, but a costly or volatile
-expression may run once for COUNT and again for the data SELECT.
+The universal count source evaluates the complete projection. This is what makes aggregate and set-returning cardinality exact, but a costly or volatile expression may run once for COUNT and again for the data SELECT.
 
-Model SELECT hooks are not bypassed by the logical count. Credo runs
-`BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect` on the
-private count source; when Page also runs its data SELECT, the normal Bun scan
-invokes them again. A hook-added tenant predicate or projection therefore
-contributes to both `Total` and `Records`. Query hooks still receive the model
-through `QueryEvent.Model`; soft-delete filtering is kept inside the
-derived source so it is applied once rather than again by the outer count.
-Count does not scan or change a bound model, so its successful `AfterSelect`
-observes the value that existed before Count.
+Model SELECT hooks are not bypassed by the logical count. Credo runs `BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect` on the private count source; when Page also runs its data SELECT, the normal Bun scan invokes them again. A hook-added tenant predicate or projection therefore contributes to both `Total` and `Records`. Query hooks still receive the model through `QueryEvent.Model`; soft-delete filtering is kept inside the derived source so it is applied once rather than again by the outer count. Count does not scan or change a bound model, so its successful `AfterSelect` observes the value that existed before Count.
 
-Keep query-shaping hooks deterministic. Repeatable Read can stabilize rows seen
-by the database, but it cannot make a volatile expression or an
-application-side hook decision produce the same result in COUNT and SELECT.
+Keep query-shaping hooks deterministic. Repeatable Read can stabilize rows seen by the database, but it cannot make a volatile expression or an application-side hook decision produce the same result in COUNT and SELECT.
 
-There is no custom-count callback/strategy on `Page`. For an expensive or
-volatile projection, reuse common predicates between a deliberately cheaper
-count builder and the data builder with `ApplyQueryBuilder`; use `Apply` for
-Bun-specific builder features, execute both explicitly, and construct
-`pagination.NewPage`. The repository owns query equivalence,
-PageRequest/window validation, and the shared transaction context. A
-first-class strategy waits until two real consumers repeat the same
-abstraction.
+There is no custom-count callback/strategy on `Page`. For an expensive or volatile projection, reuse common predicates between a deliberately cheaper count builder and the data builder with `ApplyQueryBuilder`; use `Apply` for Bun-specific builder features, execute both explicitly, and construct `pagination.NewPage`. The repository owns query equivalence, PageRequest/window validation, and the shared transaction context. A first-class strategy waits until two real consumers repeat the same abstraction.
 
 #### Keeping COUNT and SELECT on one database snapshot
 
-COUNT and SELECT are separate statements. `Page` never starts an implicit
-transaction, and without an explicit transaction the pool can run them on
-different connections and snapshots. Even inside a transaction, the guarantee
-depends on the database and isolation level.
+COUNT and SELECT are separate statements. `Page` never starts an implicit transaction, and without an explicit transaction the pool can run them on different connections and snapshots. Even inside a transaction, the guarantee depends on the database and isolation level.
 
-For PostgreSQL or InnoDB, request Repeatable Read on the **outermost**
-transaction when a shared snapshot is required, and pass the callback's
-`txCtx`—not the outer `ctx`—to `Page`:
+For PostgreSQL or InnoDB, request Repeatable Read on the **outermost** transaction when a shared snapshot is required, and pass the callback's `txCtx`—not the outer `ctx`—to `Page`:
 
 ```go
 var page *pagination.Page[User]
@@ -549,9 +444,7 @@ err := db.InTxWith(ctx, &sql.TxOptions{
 })
 ```
 
-Credo rejects non-default transaction options on a nested savepoint with
-`sqldb.ErrNestedTxOptions`; a nested call cannot upgrade an outer transaction's
-isolation.
+Credo rejects non-default transaction options on a nested savepoint with `sqldb.ErrNestedTxOptions`; a nested call cannot upgrade an outer transaction's isolation.
 
 | Database | COUNT/SELECT visibility |
 | --- | --- |
@@ -559,41 +452,17 @@ isolation.
 | MySQL/InnoDB | Default Repeatable Read makes ordinary nonlocking consistent reads share the first-read snapshot. Server configuration may change the default; other engines, locking reads, and Read Committed differ, so request Repeatable Read explicitly. |
 | SQLite | A plain explicit transaction keeps its first-read snapshot. WAL permits another connection to commit while the reader keeps that snapshot; rollback-journal mode may block the writer. Shared cache with `PRAGMA read_uncommitted=ON` is the exception. |
 
-The pinned modernc SQLite driver does not reliably enforce
-`sql.TxOptions.Isolation` or `ReadOnly`; for SQLite, use plain `db.InTx` as the
-explicit snapshot boundary instead of presenting those options as a guarantee.
-Fail-loud driver-capability validation is deferred. See
-[PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html),
-[InnoDB transaction isolation](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html),
-[InnoDB consistent reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html),
-[SQLite isolation](https://www.sqlite.org/isolation.html), and
-[SQLite transactions](https://www.sqlite.org/lang_transaction.html).
+The pinned modernc SQLite driver does not reliably enforce `sql.TxOptions.Isolation` or `ReadOnly`; for SQLite, use plain `db.InTx` as the explicit snapshot boundary instead of presenting those options as a guarantee. Fail-loud driver-capability validation is deferred. See [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html), [InnoDB transaction isolation](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html), [InnoDB consistent reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html), [SQLite isolation](https://www.sqlite.org/isolation.html), and [SQLite transactions](https://www.sqlite.org/lang_transaction.html).
 
 #### Why there is no `WithCount(false)`
 
-`Page` always has exact `Total`/`TotalPages` metadata, and `HasNext` derives
-from it. An unknown total is not encoded as zero, `-1`, a pointer, or an omitted
-field. Total-free offset pagination uses `Slice[T]` as a working name pending
-its own design gate;
-keyset pagination keeps the separate `CursorPage[T]` name. Neither changes the
-meaning or JSON contract of `Page`.
+`Page` always has exact `Total`/`TotalPages` metadata, and `HasNext` derives from it. An unknown total is not encoded as zero, `-1`, a pointer, or an omitted field. Total-free offset pagination uses `Slice[T]` as a working name pending its own design gate; keyset pagination keeps the separate `CursorPage[T]` name. Neither changes the meaning or JSON contract of `Page`.
 
-The cursor design is accepted but intentionally not exported yet. Its first
-delivery is forward-only (`after` + `per_page`), fetches one extra row, returns
-`per_page`/`has_next`/nullable `next_cursor`, and never runs COUNT. It requires
-terminal-owned stable ordering with immutable non-null keys and an explicit
-unique tie-breaker. Public HTTP cursors require an explicit signing keyring;
-signing prevents tampering but does not hide key values.
+The cursor design is accepted but intentionally not exported yet. Its first delivery is forward-only (`after` + `per_page`), fetches one extra row, returns `per_page`/`has_next`/nullable `next_cursor`, and never runs COUNT. It requires terminal-owned stable ordering with immutable non-null keys and an explicit unique tie-breaker. Public HTTP cursors require an explicit signing keyring; signing prevents tampering but does not hide key values.
 
-A cursor never replaces authorization. Each request must re-apply its normal
-authentication, tenant, permission, and filter predicates; signed scope binding
-only prevents a token from being replayed under a different query.
+A cursor never replaces authorization. Each request must re-apply its normal authentication, tenant, permission, and filter predicates; signed scope binding only prevents a token from being replayed under a different query.
 
-Implementation waits for a concrete consumer, a fail-loud boundary for Bun
-hooks that mutate cursor-owned ordering/window state, and real
-PostgreSQL/MySQL/SQLite conformance. Until then, repositories that need keyset
-pagination own the query and token codec explicitly. See the
-[cursor design gate](../specs/pagination.md#cursorkeyset-design-gate).
+Implementation waits for a concrete consumer, a fail-loud boundary for Bun hooks that mutate cursor-owned ordering/window state, and real PostgreSQL/MySQL/SQLite conformance. Until then, repositories that need keyset pagination own the query and token codec explicitly. See the [cursor design gate](../specs/pagination.md#cursorkeyset-design-gate).
 
 ### Mapping models to DTOs with `Page.Map`
 

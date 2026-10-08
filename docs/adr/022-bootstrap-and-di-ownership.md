@@ -59,6 +59,8 @@ Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing an
 
 `store.Register`, `UseI18n` and the worker registrations follow the table: they return nothing, panic on misuse, and leave the store's ping, the catalog reads and a provided worker's construction to the start phase.
 
+**Messages are part of the API.** Every error and panic of the three phases names what failed — the component, binding or call — the phase and the remedy: a missing dependency with its path, an internal component with the ingress path it depends on and both fixes, `ServeHTTP`'s refusal with `App.Start` and `testutil.Start`, a misused option with the call that misused it, two holders of one resource that disagree on its owner or its teardown with both bindings and the remedies, a failed start with each component's phase and outcome. The test that triggers one asserts those parts of its message, so a message changes only on purpose.
+
 **Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
 
 ### Removes

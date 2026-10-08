@@ -19,7 +19,8 @@ import (
 // before [App.Shutdown].
 //
 // An App with something to start — a component with Start or Ready, a start
-// hook, or a constructor handed to [App.Manage] — refuses to serve until the
+// hook, a constructor handed to [App.Manage], a store registration or
+// [App.UseI18n] catalogs — refuses to serve until the
 // start phase has succeeded: before [App.Start] (or while it runs) every
 // request panics with a message naming App.Start and testutil.Start, and
 // after a failed or interrupted App.Start the stopped App answers with the

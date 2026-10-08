@@ -231,8 +231,8 @@ Middleware wraps handlers. Three tiers, evaluated in order:
 3. **Route** — single route
 
 ```go
-// Global middleware you add yourself.
-// Request IDs, access logging, and panic recovery are already built in.
+// Global middleware you add yourself. Panic recovery is on by default;
+// request IDs and access logs are features you enable (see below).
 app.GlobalMiddleware(
     middleware.CORS(),
     middleware.Secure(),
@@ -373,7 +373,7 @@ You can replace the error renderer to customize the body. It returns the shape w
 ```go
 app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
-    // info.Status / Code / MessageKey / Message / Details / Errors — normalized
+    // info.Status / Code / MessageKey / Message / Details / Violations — normalized
     return myFormat(info)
 })
 ```
@@ -384,10 +384,9 @@ Its success-side mirror is `UseSuccessRenderer` + `ctx.Render(status, data)` —
 
 ## Dependency Injection
 
-Credo's DI is singleton-only with constructor injection:
+Credo's DI is singleton-only with constructor injection. A service declares what it needs in its constructor:
 
 ```go
-// 1. Define a service
 type UserService struct {
     infra credo.Infra
     repo  *UserRepository
@@ -397,31 +396,50 @@ func NewUserService(infra credo.Infra, repo *UserRepository) *UserService {
     infra.Logger.Info("UserService initialized")
     return &UserService{infra: infra, repo: repo}
 }
+```
 
-// 2. Register
+`credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
+
+A Credo application is built in one order — `New`, the registrations, `Run` — with `Finalize` and `Resolve` in between when routes need a service from the container:
+
+```go
+app, err := credo.New() // 1. configuration
+if err != nil {
+    log.Fatal(err)
+}
+
+// 2. Provide: constructors and values, in any order.
 app.Provide[*UserRepository](NewUserRepository)
 app.Provide[*UserService](NewUserService)
 
-// 3. Finalize (catches missing deps, cycles)
+// 3. Feature mounts and satellite registrations.
+app.UseHealth()
+
+// 4. Finalize reports every missing dependency and cycle at once.
 if err := app.Finalize(); err != nil {
     log.Fatal(err)
 }
 
-// 4. Resolve for route wiring
+// 5. Resolve what the routes need, then register them.
 svc := app.MustResolve[*UserService]()
 app.GET("/users/{id}", svc.GetUser)
-```
 
-`credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
+// 6. Run starts what the App owns, serves, and drains on SIGINT/SIGTERM.
+if err := app.Run(); err != nil {
+    log.Fatal(err)
+}
+```
 
 Bootstrap is sequential: every registration call comes from the goroutine that builds the App, before it runs, and none is safe for concurrent use. A bootstrap that follows this order meets no ordering panic:
 
 1. configuration — `credo.New()`;
 2. `Provide` and `ProvideValue`;
-3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers, `Manage`;
 4. `Finalize`, handling its error;
 5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
 6. `Run`.
+
+An application that resolves nothing before `Run`, such as [Hello, Credo](#hello-credo), needs no explicit `Finalize`: `Run` finalizes implicitly. Once routes come from a resolved service, call it yourself, because `Resolve` before `Finalize` panics.
 
 A misused registration — a constructor of the wrong shape, a duplicate binding, a dependency registration after `Finalize`, `Resolve` before it — panics at its line. `Finalize` returns every missing dependency, each with its whole path, and every cycle at once.
 
@@ -656,34 +674,36 @@ func (s *ItemService) List(ctx *credo.Context) error {
 }
 
 func main() {
+    // 1. Configuration.
     app, err := credo.New()
     if err != nil {
         log.Fatal(err)
     }
 
-    // DI
+    // 2. Provide.
     app.Provide[*ItemService](NewItemService)
 
-    // Health
+    // 3. Feature mounts: health probes, request IDs and access logs.
+    // Panic recovery is on by default.
     app.UseHealth()
+    app.UseRequestID()
+    app.UseAccessLog()
 
+    // 4. Finalize.
     if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
-    svc := app.MustResolve[*ItemService]()
 
-    // Global middleware you add yourself.
-    // Request IDs, access logging, and panic recovery are already built in.
+    // 5. Resolve, middleware and routes.
+    svc := app.MustResolve[*ItemService]()
     app.GlobalMiddleware(
         middleware.CORS(),
         middleware.Secure(),
     )
-
-    // Routes
     app.GET("/items", svc.List)
     app.POST("/items", svc.Create)
 
-    // Run blocks until SIGINT/SIGTERM, then drains gracefully.
+    // 6. Run blocks until SIGINT/SIGTERM, then drains gracefully.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }

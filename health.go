@@ -70,11 +70,9 @@ func (f HealthCheckFunc) Check(ctx context.Context) error { return f(ctx) }
 // UseHealth initializes health check endpoints on the application.
 // With no arguments, it registers both /health (liveness) and /ready (readiness).
 //
-// UseHealth performs no I/O — it only registers in-process state — so misuse
-// panics like every other registration API (contrast [App.UseI18n], which
-// reads locale files and therefore returns an error). Panics if called more
-// than once, if called after compile, or if cfg.Group belongs to a
-// different App.
+// UseHealth performs no I/O — it only registers in-process state — and misuse
+// panics like every other registration API. Panics if called more than once,
+// if called after compile, or if cfg.Group belongs to a different App.
 func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.checkFrozen("App.UseHealth")
 	if app.healthEngine != nil {

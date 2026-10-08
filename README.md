@@ -47,7 +47,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 
 ## Accepted Pre-v1 Changes
 
-**Bootstrap/DI (DI minor), router parameter-name (router minor), built-in HTTP feature (HTTP minor) and URL round-trip (wire minor) changes implemented 2026-09-05.** All contracts are recorded in the [migration guide](docs/guides/pre-v1-migration.md) and the ADRs and specs it links; progress lives in [TODO.md](TODO.md#pre-v1-contract-migration). The quick start and examples below use the shipped APIs, and the [example migration notes](examples/README.md) explain what changed in them.
+**v0.24.0: lifecycle components, sequential bootstrap and a seven-method DI surface.** Everything the App starts and stops is a component, stopped in two tiers after its consumers; registration panics on misuse and `Finalize` reports the whole graph; stores, the WebSocket server, i18n and workers run on the components. Earlier pre-v1 changes — bootstrap/DI, router parameter names, built-in HTTP features, URL round trips — shipped 2026-09-05. Every change is recorded in the [migration guide](docs/guides/pre-v1-migration.md), with [what an application keeps](docs/guides/pre-v1-migration.md#what-an-application-keeps-v0240) after v0.24.0, and in the ADRs and specs it links. The quick start and examples below use the shipped APIs, and the [example migration notes](examples/README.md) explain what changed in them.
 
 ## Installation
 
@@ -150,6 +150,52 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 }
 ```
 
+Bootstrap is sequential and follows one order — configuration, `Provide`, feature mounts and satellite registrations, `Finalize`, `Resolve` and routes, `Run`:
+
+```go
+app, err := credo.New() // 1. configuration
+if err != nil {
+    log.Fatal(err)
+}
+
+app.ProvideValue(db)                          // 2. Provide (db is a *sqldb.DB)
+app.Provide[*PgOrderRepo](NewPgOrderRepo)
+app.Alias[OrderRepo, *PgOrderRepo]()
+app.Provide[*OrderService](NewOrderService)
+app.Provide[*OrderController](NewOrderController)
+app.Provide[*OutboxRelay](NewOutboxRelay)
+
+app.UseHealth()                               // 3. feature mounts and satellites
+store.Register[*sqldb.DB](app)                //    pinged at start, reported by /ready
+worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
+
+if err := app.Finalize(); err != nil {        // 4. every missing dependency and cycle
+    log.Fatal(err)
+}
+
+orders := app.MustResolve[*OrderController]() // 5. resolve and route
+app.GET("/orders/{id}", orders.Show)
+
+if err := app.Run(); err != nil {             // 6. start, serve, drain
+    log.Fatal(err)
+}
+```
+
+| API | Purpose |
+| --- | --- |
+| `Provide[T]`, `ProvideValue[T]` | Register a constructor or a built value; misuse panics at the call |
+| `Alias[I, T]`, `BindMany[I, T]` | Resolve an interface as `T`'s singleton; build an ordered `[]I` collection |
+| `Has[T]` | Ask whether `T` is registered, without constructing it |
+| `Finalize` | Freeze registrations and report every missing dependency (with its path) and cycle |
+| `Resolve[T]`, `ResolveAll[I]` (`MustResolve`, `MustResolveAll`) | Retrieve singletons after `Finalize`; before it they panic |
+| `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()` | Registration options: the drain tier, a caller-owned value, a `Close`-based teardown, replacing an earlier binding |
+| `credo.Component`, `credo.Starter`, `credo.Readier` | A value with `Shutdown` is a component the App stops after its consumers; `Start` and `Ready` on its binding's type are called in the start phase and by `/ready` |
+| `app.Manage(v, opts...)` | A component that is not a binding, such as a WebSocket server or a mounted child App |
+| `app.OnStart`, `app.OnStop` | Leaf start and stop actions, run in their tier |
+| `app.Start(ctx)`, `testutil.Start(t, app)` | Run the start phase without a listener, for an external `http.Server` or a test |
+
+A value the App should start or ask for readiness is provided as its concrete type, with `Alias` for the interface the application uses. See the [dependency-injection guide](docs/guides/dependency-injection.md).
+
 ## Documentation
 
 - User guide: `docs/guides/getting-started.md`
@@ -165,6 +211,7 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 - User guide: `docs/guides/static-files.md`
 - User guide: `docs/guides/worker.md`
 - User guide: `docs/guides/websocket.md`
+- Migration guide: `docs/guides/pre-v1-migration.md`
 - Architecture decisions: `docs/adr/`
 - Detailed specs: `docs/specs/`
 

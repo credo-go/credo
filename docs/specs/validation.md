@@ -1,6 +1,6 @@
 # Validation Spec
 
-**Status**: Approved **Package**: `validation/` **Sources**: ozzo-validation (MIT, API design), Goyave (MIT, organization), govy (architecture inspiration only, no code adapted) **Depends on**: Root package (`Validatable` interface) **ADR**: [011-validation-strategy](../adr/011-validation-strategy.md) — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status**: Approved **Package**: `validation/` **Sources**: ozzo-validation (MIT, API design), Goyave (MIT, organization), govy (architecture inspiration only, no code adapted) **Depends on**: Root package (`Validatable` interface) **ADR**: [011-validation-strategy](../adr/011-validation-strategy.md) — rule errors are internal unless they are violations; an explicit status wins over a wrapped validation error (v0.24.0)
 
 ---
 

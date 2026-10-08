@@ -1,6 +1,6 @@
 # ADR-011: Validation Strategy
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 — rule errors are internal unless they are violations (v0.24.0)
 
 ## Context
 
