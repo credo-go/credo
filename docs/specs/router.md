@@ -100,9 +100,7 @@ app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
 })
 ```
 
-`StatusHandler` is consulted for two codes only: 404, when no route matches the request, and 405, when routes match the path but none of them serves the method (the `Allow` header is set before the handler runs). The handler answers in place of the default error response, inside the global middleware and without a matched route. With no custom handler registered, the two outcomes are the `ErrNotFound` and `ErrMethodNotAllowed` errors of the central error pipeline. A handler registered for any other code is accepted and never called — there is no status handler for 500 or any other status. Status handlers are not error handlers either: an error a route handler or middleware returns, `ErrNotFound` from a route handler included, goes through the central error pipeline, whose body an `ErrorRenderer` shapes, and does not reach the custom 404 handler. StatusHandler is set on the `App` only; group-level overrides are not supported.
-
-**Accepted, pending implementation (v0.24.0, W8).** When it ships, this paragraph replaces the sentence above that accepts a handler for any other code: `StatusHandler(code, h)` panics at registration for any code but 404 and 405, with a message naming the two supported codes, so a registration that would never be consulted fails at startup instead of being silently ignored. A 5xx handler would re-enter application code inside error rendering, so no other code is consulted. 404 and 405 register and are consulted as described above. An application that registered a handler for another code — 403 is the likely one — deletes that registration rather than porting it, and shapes that response through `UseErrorRenderer`; a 404 or 405 handler that only returns the matching sentinel (`ErrNotFound`, `ErrMethodNotAllowed`) equals the default and can go as well. See [ADR-007](../adr/007-router-and-routing.md#status-handlers).
+`StatusHandler` is consulted for two codes only: 404, when no route matches the request, and 405, when routes match the path but none of them serves the method (the `Allow` header is set before the handler runs). The handler answers in place of the default error response, inside the global middleware and without a matched route. With no custom handler registered, the two outcomes are the `ErrNotFound` and `ErrMethodNotAllowed` errors of the central error pipeline. `StatusHandler(code, h)` panics at registration for any other code, with a message naming the two supported codes, so a registration that would never be consulted fails at startup instead of being silently ignored; there is no status handler for 403, 500 or any other status, because a 5xx handler would re-enter application code inside error rendering, and those responses are shaped through `UseErrorRenderer` ([ADR-007](../adr/007-router-and-routing.md#status-handlers)). Status handlers are not error handlers either: an error a route handler or middleware returns, `ErrNotFound` from a route handler included, goes through the central error pipeline, whose body an `ErrorRenderer` shapes, and does not reach the custom 404 handler. StatusHandler is set on the `App` only; group-level overrides are not supported.
 
 ### UseI18n (i18n integration)
 
@@ -429,7 +427,7 @@ app.StatusHandler(404, func(ctx *credo.Context) error {
     return ctx.Response().HTML(404, "<h1>Page Not Found</h1>")
 })
 
-// StatusHandler is app-level only and consulted for 404 and 405;
-// groups inherit the app's handlers.
+// StatusHandler is app-level only and accepts 404 and 405 (any other code
+// panics); groups inherit the app's handlers.
 // Use middleware with route meta for group-specific error responses.
 ```
