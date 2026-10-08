@@ -1,10 +1,6 @@
 package credo
 
-import (
-	"context"
-
-	"github.com/credo-go/credo/config"
-)
+import "github.com/credo-go/credo/config"
 
 // RawConfig is an alias for [config.RawConfig].
 // The interface is defined in the config package to avoid circular imports
@@ -23,10 +19,3 @@ import (
 //	var dbCfg DatabaseConfig
 //	rawCfg.Unmarshal("databases.default", &dbCfg)
 type RawConfig = config.RawConfig
-
-// Shutdowner is implemented by services that need cleanup on shutdown.
-// The context carries a deadline from the application's graceful shutdown
-// timeout; implementations should respect ctx.Done() for timely cleanup.
-type Shutdowner interface {
-	Shutdown(ctx context.Context) error
-}

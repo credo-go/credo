@@ -38,7 +38,7 @@ type Infra struct {
 // The Logger is tagged with "service"=name and falls back to the
 // framework default logger when the application has none configured.
 //
-// Use NewInfra for components that live outside the DI container
+// Use NewInfra for code that lives outside the DI container
 // (middleware factories, startup helpers, workers created manually).
 // For DI-managed services, Infra is injected automatically.
 func (app *App) NewInfra(name string) Infra {

@@ -1,6 +1,6 @@
 // Package testutil provides helpers for testing Credo applications: building a
-// hermetic test App, overriding dependencies with fakes, injecting config, and
-// asserting on structured log output.
+// hermetic test App, overriding dependencies with fakes, starting an App served
+// through ServeHTTP, injecting config, and asserting on structured log output.
 //
 // # Building a test App
 //
@@ -21,9 +21,10 @@
 // # Overriding dependencies
 //
 // Use [WithWiring] to register the dependencies under test and [WithOverride]
-// to swap any of them for a fake. Overrides run after wiring, so they win;
-// [WithOverride] also adds a binding when none was wired. It is built on
-// [credo.App.Replace].
+// to swap any of them for a fake. Overrides run after wiring, so they win.
+// [WithOverride] is built on [credo.Override]: it replaces an earlier binding
+// and panics when there is none, so an override that no longer matches the
+// wiring fails loudly; adding a binding is [WithWiring]'s job.
 //
 //	app := testutil.NewApp(t,
 //		testutil.WithWiring(func(app *credo.App) {
@@ -33,6 +34,19 @@
 //		testutil.WithOverride[UserRepo](fakeRepo),
 //	)
 //	svc := app.MustResolve[*UserService]() // built with fakeRepo
+//
+// # Starting an App
+//
+// An App with something to start — a component with Start or Ready, a start
+// hook — refuses ServeHTTP until its start phase has run. [Start] runs it with
+// [credo.App.Start] and shuts the App down when the test ends; for an App
+// built by [NewApp] that shutdown runs after every cleanup the test adds, so a
+// test server closed through t.Cleanup is drained first:
+//
+//	app := testutil.NewApp(t, testutil.WithWiring(wire))
+//	testutil.Start(t, app)
+//	srv := httptest.NewServer(app)
+//	t.Cleanup(srv.Close)
 //
 // # Injecting config
 //

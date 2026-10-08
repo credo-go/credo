@@ -12,7 +12,7 @@ The [HTTP features contract](http-features.md) keeps Context pooled and synchron
 
 `credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and a key-value store. It exposes the underlying `http.Request`'s `context.Context` via `Context()`; it deliberately does **not** itself implement `context.Context`, because the struct is pooled and reused across requests.
 
-Lifecycle hooks such as `app.OnStart` and `app.OnShutdown` receive a standard `context.Context`, not `*credo.Context`. That lifecycle/shutdown context is used for cancellation, deadlines, and values across application startup and teardown; `credo.Context` exists only for an HTTP request.
+Lifecycle hooks such as `app.OnStart` and `app.OnStop`, and a component's `Start` and `Shutdown`, receive a standard `context.Context`, not `*credo.Context`. That context lives as long as its call and carries the cancellation and the deadline of the start phase or the drain; `credo.Context` exists only for an HTTP request.
 
 In addition to request/response accessors, Context tracks rewrite lifecycle: the original client path, internal re-dispatch requests (`ctx.Rewrite()`), and whether the current dispatch round is about to rewrite.
 

@@ -621,10 +621,10 @@ rl := middleware.NewRateLimiter(middleware.RateLimitConfig{
     Interval: time.Minute,
 })
 app.GlobalMiddleware(rl.Middleware())
-app.OnShutdown(rl.Shutdown)
+app.Manage(rl, credo.Named("ratelimiter"))
 ```
 
-`RateLimiter` implements `credo.Shutdowner`, so it can also be registered in the DI container for automatic cleanup.
+`RateLimiter` is a `credo.Component` (it has `Shutdown`), so `app.Manage` makes the App shut it down after the HTTP drain. A limiter registered in the DI container instead is shut down the same way, after its consumers.
 
 ---
 

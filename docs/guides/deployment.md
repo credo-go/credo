@@ -1,8 +1,8 @@
 # Deployment Guide
 
-> Audience: operators and developers running a Credo service under a process supervisor or container runtime. **Related:** [Getting Started](getting-started.md), [Configuration Guide](configuration.md), [Lifecycle Spec](../specs/lifecycle.md), [ADR-006](../adr/006-application-lifecycle.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md)
+> Audience: operators and developers running a Credo service under a process supervisor or container runtime. **Related:** [Getting Started](getting-started.md), [Configuration Guide](configuration.md), [Lifecycle Spec](../specs/lifecycle.md), [ADR-006](../adr/006-application-lifecycle.md), [ADR-024](../adr/024-lifecycle-components.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md)
 
-This guide covers what a Credo process expects from the environment that runs it: which signals it handles, how shutdown and reload map onto systemd and containers, and how to wire certificate rotation.
+This guide covers what a Credo process expects from the environment that runs it: which signals it handles, how shutdown and reload map onto systemd and containers, what a stop does to the components the App owns, and how to wire certificate rotation.
 
 ---
 
@@ -51,7 +51,7 @@ WantedBy=multi-user.target
 Points worth matching to your app:
 
 - **`ExecReload=/bin/kill -HUP $MAINPID`** makes `systemctl reload example` trigger `app.Reload`. systemd reports the reload as successful as soon as the signal is delivered; the reload's own outcome is in the service log (`credo: reload complete` with an `errors` count, or `credo: reload aborted before publish`). If you need `systemctl reload` itself to fail on a bad reload, use an admin endpoint instead — see below.
-- **`TimeoutStopSec` must exceed `WithShutdownTimeout`** (or `server.shutdown_timeout`). The drain budget is Credo's; `TimeoutStopSec` is the point at which systemd escalates to `SIGKILL`. Leave a few seconds of headroom so an `OnPreDrain` or `OnShutdown` hook that runs to the deadline is not killed mid-flight.
+- **`TimeoutStopSec` must exceed `WithShutdownTimeout`** (or `server.shutdown_timeout`). The drain budget is Credo's; `TimeoutStopSec` is the point at which systemd escalates to `SIGKILL`. Leave a few seconds of headroom so a component or stop hook that runs to the deadline is not killed mid-flight ([Shutdown and Readiness](#shutdown-and-readiness)).
 - **`KillSignal=SIGTERM`** (the default) is what `Run` handles. Do not set `KillSignal=SIGHUP` — that turns stop into reload.
 - **`EnvironmentFile=` is read once at process start.** A reload re-reads config files, `.env`, and the process environment, but the process environment is what systemd handed the process at `ExecStart`; editing the environment file and running `systemctl reload` changes nothing until the next restart. Keep values you want to change at runtime in the config file.
 
@@ -83,6 +83,64 @@ Kubernetes has no reload verb. Its two idioms are:
 
 - **Rolling restart** (`kubectl rollout restart deployment/example`) — the default answer for config and certificate changes delivered through ConfigMaps, Secrets, and image updates. A Credo pod drains gracefully on `SIGTERM`; set `terminationGracePeriodSeconds` above `WithShutdownTimeout`.
 - **In-place reload** — only when a restart is too disruptive. Mounted ConfigMap/Secret files update in place (with a delay, and not when mounted via `subPath`), so a sidecar or an operator action can trigger `app.Reload` through an admin endpoint; `kubectl exec example -- kill -HUP 1` works for one-off use.
+
+---
+
+## Shutdown and Readiness
+
+### What a stop does
+
+On `SIGTERM` (or a cancelled `RunContext` context, or `app.Shutdown`), the App drains what it owns in two tiers:
+
+1. `/ready` answers 503 `shutting_down`, so load balancers stop routing; `/health` stays 200, since the process is alive and draining.
+2. The **ingress tier** — where work enters the process: the WebSocket server, the worker pool, consumers of external queues and anything registered with `credo.Ingress()` — stops concurrently with the HTTP drain: its `OnStop` hooks in reverse registration order, then its components, those that no dependency orders stopping concurrently with each other.
+3. A reload that overlapped the stop finishes.
+4. The **internal tier** — everything else, the database pools and clients the handlers and workers use — stops: its `OnStop` hooks in reverse registration order, then its components one at a time, each consumer before the components it depends on.
+
+The steps share one deadline: `WithShutdownTimeout` (`server.shutdown_timeout`, 30 seconds by default) counted from the signal, or the deadline of the context passed to `app.Shutdown`. They spend it in order, so a slow HTTP or WebSocket drain leaves less for the internal tier. Size it as:
+
+```text
+max(slowest in-flight request, WebSocket drain, slowest ingress component)
++ internal stop hooks and components
++ safety margin
+```
+
+A component or hook that has not returned at the deadline is abandoned: the components it depends on are not stopped — nothing closes a database under a consumer that may still use it — and `Run` returns a `*credo.LifecycleError` naming it and every component it kept open. Raise the timeout or fix the component; the supervisor's `SIGKILL` (`TimeoutStopSec`, `terminationGracePeriodSeconds`, `docker stop --time`) must come after it.
+
+### A stop during start-up
+
+The listener is bound before the start phase — each component's `Start` in dependency order, then the start hooks — but serves no request until it has completed, so a probe sent during a long start waits for it; give it a `startupProbe` (or an initial delay) that covers the start. A signal during the start phase interrupts it: the running `Start` sees its context cancelled, nothing further starts, what was built is rolled back under the same shutdown timeout counted from the signal, and `Run` returns nil after a clean rollback. "server started" is never logged and the listener never accepts. A `Start` that ignores the cancellation is abandoned at the deadline and reported, and a second signal still kills the process. A start that fails on its own rolls back the same way and makes `Run` return a `*credo.LifecycleError`, so the process exits non-zero and the supervisor restarts it.
+
+### The limit of readiness
+
+A component reports a failure that happens after its `Start` has returned through its `Ready` method, which `/ready` aggregates under the component's name. No component ends the App — only the App's own listeners do. That is a deliberate policy, not a recovery guarantee: a failing readiness probe takes the instance out of rotation and restarts nothing, so a component that has stopped for good leaves the process alive, unready and never restarted. To have the supervisor restart the process, tie a liveness check (`app.AddLivenessCheck`) to the component itself — knowing that a check that fails because of a dependency every replica shares, such as the database, makes the orchestrator restart every replica at once, which cannot fix the database and adds a restart storm to its outage. Tie liveness only to state that a restart repairs.
+
+### An `http.Server` you own
+
+An App served through `ServeHTTP` by a server you build yourself does not run Credo's serving lifecycle: start it with `app.Start(ctx)`, which runs the start phase without a listener, and stop it with `app.Shutdown(ctx)`. An App that has anything to start — a component with `Start` or `Ready`, a start hook, workers — panics in `ServeHTTP` until `app.Start` has succeeded; after a failed start it answers 503. The server's owner owns its admission and drain and completes them **before** `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened:
+
+```go
+if err := app.Start(ctx); err != nil { // the start phase, without a listener
+    log.Fatal(err)
+}
+srv := &http.Server{Addr: ":8080", Handler: app}
+go func() {
+    if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+        log.Print(err)
+    }
+}()
+
+<-stop // the owner's shutdown signal
+
+drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+_ = srv.Shutdown(drainCtx)                     // first: the owner drains HTTP
+if err := app.Shutdown(drainCtx); err != nil { // then: the App stops its tiers
+    log.Print(err)
+}
+```
+
+`app.Start` is accepted once, on an App that has not started; `Run`, `RunContext` or `ServeContext` after it return an error, since the App is single-use. A WebSocket server needs its drain alongside the HTTP drain ([WebSocket guide](websocket.md#external-httpserver)).
 
 ---
 
@@ -157,3 +215,6 @@ Bind the admin group to a Unix socket or an internal host via `app.Host` / `Serv
 - Every section you expect to change at runtime has an `OnConfigChange[T]` subscriber; watch the log for `restart required` to find the ones that do not.
 - ACME deploy hooks call `systemctl reload` (file-based TLS) or your own rotation (`WithTLSConfig`).
 - Health probes: `/ready` returns 503 as soon as shutdown starts, so load balancers stop routing before the drain completes ([Getting Started: Health Checks](getting-started.md#health-checks)).
+- `WithShutdownTimeout` covers the HTTP drain, the ingress tier and the internal tier together; a component that misses it is abandoned and reported ([Shutdown and Readiness](#shutdown-and-readiness)).
+- Liveness checks depend only on state a restart repairs, never on a dependency every replica shares.
+- An App served by your own `http.Server` is started with `app.Start` and stopped with `app.Shutdown` after that server has drained.

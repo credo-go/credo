@@ -1,10 +1,10 @@
 # ADR-006: Application Lifecycle
 
-**Status:** Accepted **Date:** 2026-03-01 **Amended:** 2026-09-05 by [ADR-022](022-bootstrap-and-di-ownership.md) (shared preparation, bootstrap Shutdown, lifecycle 503, dependency-ordered DI teardown) **Depends on:** ADR-001 **Related:** [ADR-024](024-lifecycle-components.md) (lifecycle components) — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status:** Accepted **Date:** 2026-03-01 **Amended:** 2026-09-05 by [ADR-022](022-bootstrap-and-di-ownership.md) (shared preparation, bootstrap Shutdown, lifecycle 503, dependency-ordered DI teardown); v0.24.0 by [ADR-024](024-lifecycle-components.md) (lifecycle components: an interruptible start phase, `App.Start`, `OnStart`/`OnStop`, the drain in tiers, call-scoped contexts) **Depends on:** ADR-001 **Related:** [ADR-024](024-lifecycle-components.md)
 
 ## Context
 
-An enterprise framework (ADR-001) must provide a well-defined application lifecycle: startup, runtime, and graceful shutdown. Background services (workers, pub/sub subscribers, gRPC servers) need a signal to stop accepting work. In-flight HTTP requests need time to complete. Shutdown hooks must release resources (DB connections, caches, file handles) in a deterministic order.
+An enterprise framework (ADR-001) must provide a well-defined application lifecycle: startup, runtime, and graceful shutdown. Background services (workers, pub/sub subscribers, gRPC servers) need a signal to stop accepting work. In-flight HTTP requests need time to complete. Resources (DB connections, caches, file handles) must be released in a deterministic order, after the work that uses them.
 
 Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but has no concept of application-level context, lifecycle state, or shutdown hooks. Credo fills this gap.
 
@@ -13,49 +13,33 @@ Go's stdlib `*http.Server` provides `Shutdown(ctx)` for HTTP drain but has no co
 ### Lifecycle State Machine
 
 ```
-building → starting → running → stopping → stopped
-building → stopping → stopped                (bootstrap Shutdown of a never-run App)
-
-Failure transitions:
-  prepare / preflight / listen error → building   (pre-session: nothing started; a failed
-                                                   preparation is stored and never retried)
-  OnStart hook error                 → stopped    (session: full teardown, terminal)
-  serve error (after running)        → stopped    (session: full teardown, terminal)
-```
-
-A failure is classed by how far startup progressed. **Pre-session** failures (preparation, TLS preflight, listener bind) happen before any OnStart hook runs, so they roll back to `building` and the App may run again — with one exception: a preparation failure (DI finalize error, compile panic) is a stored terminal developer error, so `building` then permits bootstrap cleanup through `Shutdown`, not a retry. **Session** failures — any error once the OnStart phase has begun (a hook returning an error, regardless of position) or a non-`ErrServerClosed` error from `Serve` after the app reached `running` — run the full teardown chain (the same one a graceful shutdown runs) and the App becomes terminally `stopped`; retry means a new App.
-
-| State | Meaning |
-| --- | --- |
-| `building` | Initial. Route/middleware registration allowed until preparation. `Shutdown` accepted (bootstrap teardown) |
-| `starting` | Transient. CAS claimed, preparation running, ctx/server being written. Shutdown blocked |
-| `running` | Port bound, server accepting. Registration frozen. Shutdown allowed |
-| `stopping` | Draining HTTP and pre-infrastructure subsystems, then DI/hooks |
-| `stopped` | Fully stopped |
-
-State is stored as `atomic.Uint32` with `CompareAndSwap` transitions — no mutex on the hot path.
-
-### The start phase as a state
-
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this section replaces the failure transitions above and the `starting` row of the state table.
-
-The states keep their names; what changes is what `starting` means and who may enter and leave it. `starting` is the **start phase**: preparation, listener bind and the start walk of [ADR-024](024-lifecycle-components.md) — the internal tier's components in dependency order and its start hooks, then the ingress tier's — before the listener accepts.
-
-```
 building → starting → running → stopping → stopped      (Run, RunContext, ServeContext, App.Start)
 building → stopping → stopped                           (bootstrap Shutdown of a never-run App)
 
 Failure and interruption:
-  prepare / preflight / listen error   → building   (nothing started; a failed preparation is stored)
+  prepare / preflight / listen error   → building   (nothing started; a failed preparation is
+                                                     stored and never retried)
   start failure (Start, start hook,
     constructor in the start walk)     → stopped    (rollback of what was built, terminal)
   shutdown requested while starting    → stopped    (start interrupted, rollback, terminal)
   serve error (after running)          → stopped    (full drain, terminal)
 ```
 
+`starting` is the **start phase**: preparation, listener bind and the start walk of [ADR-024](024-lifecycle-components.md) — the internal tier's components in dependency order and its start hooks, then the ingress tier's — before the listener accepts. A failure is classed by how far the phase progressed. **Pre-session** failures (preparation, TLS preflight, listener bind) happen before the start walk, so they roll back to `building` and the App may run again — with one exception: a preparation failure (DI finalize error, compile panic) is a stored terminal developer error, so `building` then permits bootstrap cleanup through `Shutdown`, not a retry. A **start failure** — a component's `Start`, a start hook or a constructor in the start walk that returns an error or panics — and a non-`ErrServerClosed` error from `Serve` after the App reached `running` leave the App terminally `stopped`; retry means a new App.
+
 - `App.Start(ctx)` enters the same phase without a listener: it claims `building → starting`, prepares, runs the start walk and enters `running`; the App is then served through `ServeHTTP` by a server its owner runs and drains. It is accepted only in `building`, so a second `App.Start`, or a serve entry point after it, returns the state error.
 - `Shutdown` is accepted in `starting`. A shutdown requested during the start phase — `Shutdown`, the first signal in `Run`, or the context of `RunContext` or `ServeContext` — interrupts it: the running `Start` sees its context cancelled, nothing further starts, and what was built is rolled back under the drain deadline counted from the request. `Shutdown` waits for that rollback within its own context. The App ends `stopped`.
-- A start failure rolls back rather than draining a session that never served: every built component is stopped in reverse dependency order except the one whose `Start` failed, which has released what it opened. The App ends `stopped`, as a failed `OnStart` hook leaves it today, so the single-use rule is unchanged.
+- A start failure rolls back rather than draining a session that never served: every built component is stopped in reverse dependency order except the one whose `Start` failed, which has released what it opened, and the stop hooks run. The App ends `stopped`, so the single-use rule holds.
+
+| State | Meaning |
+| --- | --- |
+| `building` | Initial. Route/middleware registration allowed until preparation. `Shutdown` accepted (bootstrap teardown) |
+| `starting` | The start phase: preparation, listener bind, the start walk. A shutdown request interrupts it and rolls back |
+| `running` | Start phase complete; a managed listener accepts. Registration frozen. Shutdown allowed |
+| `stopping` | Draining: HTTP beside the ingress tier, then the internal tier |
+| `stopped` | Fully stopped |
+
+State is stored as `atomic.Uint32` with `CompareAndSwap` transitions — no mutex on the hot path.
 
 ### API
 
@@ -63,14 +47,14 @@ Failure and interruption:
 app.Run()                                  // Serve HTTP/HTTPS; block on SIGINT/SIGTERM, then drain
 app.RunContext(ctx)                        // Serve HTTP/HTTPS; caller-driven cancellation, no signals
 app.ServeContext(ctx, l)                   // Serve on a caller-provided net.Listener (TLS-exempt)
+app.Start(ctx)                             // Run the start phase without a listener
 app.Shutdown(ctx)                          // Graceful shutdown with deadline
 app.State() string                         // Current state name
 app.IsRunning() bool                       // Convenience check
 app.Addr() net.Addr                        // Actual bound address (nil before Run)
-app.OnStart(fn func(ctx context.Context) error)     // FIFO startup hook
-app.OnPreDrain(fn func(ctx context.Context) error)  // Parallel pre-cancellation drain
-app.OnDrain(fn func(ctx context.Context) error)     // Parallel pre-DI subsystem drain
-app.OnShutdown(fn func(ctx context.Context) error)  // LIFO shutdown hook
+app.Manage(v, opts...)                     // Add a component that is not a DI binding (ADR-024)
+app.OnStart(fn func(ctx context.Context) error, opts...) // Start hook: FIFO, after its tier's components start
+app.OnStop(fn func(ctx context.Context) error, opts...)  // Stop hook: LIFO, before its tier's components stop
 app.Reload(ctx)                            // Trigger-driven partial reload (ADR-020)
 app.OnReload(fn func(ctx context.Context) error)    // FIFO reload hook
 app.OnConfigChange[T](key, fn)             // Typed per-section config subscriber
@@ -88,16 +72,7 @@ credo.WithHTTPRedirect(addr)               // Second listener: redirect HTTP→H
 
 #### The hook set and `App.Start`
 
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this section replaces the `OnStart`, `OnPreDrain`, `OnDrain` and `OnShutdown` lines of the API block above.
-
-```go
-app.Start(ctx)                                        // Run the start phase without a listener
-app.Manage(v, opts...)                                // Add a component that is not a DI binding (ADR-024)
-app.OnStart(fn func(ctx context.Context) error, opts...) // Start hook: FIFO, after its tier's components start
-app.OnStop(fn func(ctx context.Context) error, opts...)  // Stop hook: LIFO, before its tier's components stop
-```
-
-The lifecycle has two hooks, `OnStart` and `OnStop`, and both are anonymous components of a tier — internal unless `credo.Ingress()` says otherwise ([ADR-024](024-lifecycle-components.md)). `OnPreDrain`, `OnDrain` and `OnShutdown` are removed: what they drained is a component, ordered by its edges and its tier, and `OnStop` takes `OnShutdown`'s place under a new name because its slot moves from after DI teardown to before its tier's components, which must be a compile error rather than a silent change. `App.Start` exists so that an App served through `ServeHTTP` — by an external `http.Server` or in a test — starts its components too; its godoc opens with "Start runs the start phase without a listener; Run, RunContext and ServeContext serve.", because `Start(addr)` listens in other frameworks.
+The lifecycle has two hooks, `OnStart` and `OnStop`, and both are anonymous components of a tier — internal unless `credo.Ingress()` says otherwise ([ADR-024](024-lifecycle-components.md)). What the former drain hooks (`OnPreDrain`, `OnDrain`) drained is a component, ordered by its edges and its tier. `OnStop` did not keep the name of the former `OnShutdown` hook, which ran after DI teardown: its slot is before its tier's components, and a moved slot under an unchanged name would have been a silent change rather than a compile error. `App.Start` exists so that an App served through `ServeHTTP` — by an external `http.Server` or in a test — starts its components too; its godoc opens with "Start runs the start phase without a listener; Run, RunContext and ServeContext serve.", because `Start(addr)` listens in other frameworks.
 
 ### TLS
 
@@ -139,186 +114,95 @@ The `WithHTTPRedirect` listener is deliberately excluded. It is a fixed-function
 
 `server.max_header_value_count` is the one Go 1.27 field that also gets a config key, for parity with `max_header_bytes`: it is an operational limit an operator tunes per environment, and both are ordinary integers. Zero means "apply net/http's own default" (500) rather than a number Credo freezes into itself; a negative value is rejected at `New`, because net/http reads every value below 1 as the default and a typo would otherwise silently do nothing. `Protocols` and `DisableClientPriority` get no keys — they are Go values, and a stringly-typed subset would be a second, weaker API. Everything the callback sets is restart-only: the server is constructed once per session, so a reload cannot change it.
 
-### Lifecycle Context
+### Call-Scoped Contexts
 
-The lifecycle context is created at `Run()`/`RunContext()` and cancelled during `Shutdown()`, after readiness is withdrawn and `OnPreDrain` completes. Credo deliberately exposes **no** public `Context()` accessor: a nullable accessor would have to return `context.Background()` before `Run`, a silent dead zone for any goroutine that captured it too early. Background services receive the context through their `OnStart` hook's `lifecycleCtx` parameter and select on `lifecycleCtx.Done()` to detect shutdown:
+Every context the lifecycle hands out lives as long as the call it is handed to: an `OnStart` hook's and a component's `Start` context is cancelled when the call returns, or earlier when a shutdown is requested during the start phase; a `Shutdown` or `OnStop` context carries the drain deadline; a `Ready` context belongs to the probe request. A background loop is therefore a component ([ADR-024](024-lifecycle-components.md)): its `Start` launches the loop on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, and its `Shutdown` calls that cancel and waits for the loop:
 
 ```go
-app.OnStart(func(lifecycleCtx context.Context) error {
+func (s *Subscriber) Start(ctx context.Context) error {
+    loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+    s.cancel, s.done = cancel, make(chan struct{})
     go func() {
+        defer close(s.done)
         for {
             select {
-            case <-lifecycleCtx.Done():
+            case <-loopCtx.Done():
                 return
-            case msg := <-subscriber.Messages():
+            case msg := <-s.messages:
                 process(msg)
             }
         }
     }()
     return nil
-})
+}
+
+func (s *Subscriber) Shutdown(ctx context.Context) error {
+    s.cancel()
+    select {
+    case <-s.done:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
 ```
 
-Without an accessor the dead zone is structurally unreachable: there is no pre-`Run` context to capture. (A dedicated background-service abstraction that receives this context directly is planned.)
+`Shutdown` is the one stop signal, and it arrives in the component's turn of the drain rather than before the HTTP drain begins — which is why a component handed work by the last requests does not stop before they finish. A loop that keeps `Start`'s context stops as soon as `Start` returns, so the mistake shows in the first test rather than as a broken drain order in production.
 
-### Call-Scoped Contexts
+The session context the App keeps internally still exists: it is created when the start phase opens a session and cancelled as the drain begins, and reload observes it ([ADR-020](020-reload-and-partial-config-reload.md)). It is not delivered to application code, and Credo exposes **no** public `Context()` accessor: a nullable accessor would have to return `context.Background()` before `Run`, a silent dead zone for any goroutine that captured it too early.
 
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this section replaces the Lifecycle Context section above.
-
-The lifecycle context ends as a contract. Every context the lifecycle hands out lives as long as the call it is handed to: an `OnStart` hook's and a component's `Start` context is cancelled when the call returns, or earlier when a shutdown is requested during the start phase; a `Shutdown` or `OnStop` context carries the drain deadline; a `Ready` context belongs to the probe request. The background loop the example above launches therefore becomes a component ([ADR-024](024-lifecycle-components.md)): its `Start` launches the loop on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, and its `Shutdown` calls that cancel and waits for the loop. `Shutdown` is the one stop signal, and it arrives in the component's turn of the drain rather than before the HTTP drain begins — which is why a worker handed a job by the last requests no longer stops before they finish.
-
-The session context the App keeps internally still exists: reload observes it ([ADR-020](020-reload-and-partial-config-reload.md)). It is no longer delivered to application code.
-
-Rejected: keeping the lifecycle context and handing it to `Start` — every component that watched it would stop at once when it is cancelled, out of order; and a per-component lifetime context, which gives one resource two stop signals and cannot bound the start work. ADR-024 records both.
-
-### Startup Sequence
-
-```
-1. CAS building → starting (claims the start slot)
-2. Prepare: DI Finalize (idempotent) → compile → publish; one stored result shared with ServeHTTP
-   (failure: state back to building, error returned, result stored and never retried)
-3. Create lifecycle context
-4. Bind port (net.Listen)
-5. Store bound address (app.Addr() now returns the real address)
-6. OnStart hooks in FIFO order (first registered, first called)
-7. Store state = running
-```
-
-Managed serving, direct `ServeHTTP` and an external `http.Server` all reach the same validated runtime model through step 2. A direct `ServeHTTP` call prepares on its first request without claiming the start slot and panics with the stored preparation error while lifecycle admission is open. Preparation admission — not DI `Finalize` — freezes HTTP registration, so a composition root can `Finalize`, resolve controllers and bind their routes before serving.
-
-If any OnStart hook returns an error, startup aborts and the App runs the full teardown chain (mark unready → OnPreDrain → cancel lifecycle context → parallel HTTP + OnDrain subsystem drain → DI container shutdown → OnShutdown hooks), then the bound listener is closed and `Run` returns the hook error (joined with any teardown error). The App ends in the terminal `stopped` state — an earlier hook may already have produced externally visible side effects (started workers, acquired a migration lock), so a session that began must tear down rather than roll back. State is `stateStarting` during the hooks, where a concurrent `Shutdown` (accepted only in `running` or `building`) cannot race the drain.
+Rejected: an application-lifetime context handed to `OnStart` hooks and cancelled when the drain begins, which the lifecycle offered before the component model — every goroutine that watched it stopped at once, before the HTTP drain, so a worker lost the work the last requests handed it; handing that context to `Start`, which would stop every component that watched it at once, out of order; and a per-component lifetime context, which gives one resource two stop signals and cannot bound the start work. ADR-024 records the last two.
 
 ### Start Phase and Its Interruption
-
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this section replaces the Startup Sequence above and the paragraph on an `OnStart` hook error.
 
 ```
 1. CAS building → starting (claims the start slot; App.Start claims the same slot)
 2. Prepare: DI Finalize (idempotent) → compile → publish; one stored result shared with ServeHTTP
    (failure: state back to building, error returned, result stored and never retried)
-3. Bind port and store the bound address (managed serving only)
-4. Internal tier: build what has Start or Ready and is still unbuilt, Start in dependency
-   order, then internal OnStart hooks FIFO
+3. TLS preflight, then bind the port and store the bound address — app.Addr() now returns
+   the real address (managed serving only; failure: state back to building)
+4. Internal tier: build what has Start or Ready and is still unbuilt, and every constructor
+   handed to Manage; Start in dependency order; then internal OnStart hooks FIFO
 5. Ingress tier: the same, then ingress OnStart hooks FIFO
 6. Store state = running; log "server started" (managed serving only); accept
 ```
 
-Every step from 2 onward can be interrupted. A shutdown requested during the phase — `Shutdown`, the first signal in `Run`, the context of `RunContext` or `ServeContext` — cancels the running `Start`'s context, starts nothing further and rolls back under the drain deadline counted from the request; a `Start` that ignores the cancellation is abandoned and reported like a `Shutdown` that misses the deadline. A requested shutdown is not a start failure: `Run` returns nil after a clean rollback and logs the interrupted `Start`'s error, "server started" is never logged, and the listener never accepts.
+Managed serving, `App.Start`, direct `ServeHTTP` and an external `http.Server` all reach the same validated runtime model through step 2. A direct `ServeHTTP` call on an App with nothing to start prepares on its first request without claiming the start slot and panics with the stored preparation error while lifecycle admission is open; an App with anything to start is started first ([Every way of serving starts the components](024-lifecycle-components.md#every-way-of-serving-starts-the-components)). Preparation admission — not DI `Finalize` — freezes HTTP registration, so a composition root can `Finalize`, resolve controllers and bind their routes before serving. The listener is bound before the start walk, so `Start` and start hooks can read `app.Addr()`, but it accepts nothing until the walk has succeeded.
 
-A start failure — a `Start` or start hook that returns an error or panics, or a constructor that fails in the start walk — stops every built component in reverse dependency order except the one whose `Start` failed, runs the stop hooks, closes the listener and returns the failure as the one lifecycle error ([ADR-024](024-lifecycle-components.md#one-error)). The App ends terminally `stopped`, as before.
+Every step from 2 onward can be interrupted. A shutdown requested during the phase — `Shutdown`, the first signal in `Run`, the context of `RunContext` or `ServeContext` — cancels the running `Start`'s context, starts nothing further and rolls back under the drain deadline counted from the request; a `Start` that ignores the cancellation is abandoned and reported like a `Shutdown` that misses the deadline. A requested shutdown is not a start failure: `Run` returns nil after a clean rollback and logs the interrupted `Start`'s error, "server started" is never logged, and the listener never accepts. An interrupted `App.Start` returns the interruption's cause — its context's error, or an error saying that `Shutdown` interrupted it — joined with the lifecycle error when the rollback was not clean, because its caller goes on to serve the App and must not mistake an interrupted start for a started one.
+
+A start failure — a `Start` or start hook that returns an error or panics, or a constructor that fails in the start walk — closes the listener, stops every built component in reverse dependency order except the one whose `Start` failed, runs the stop hooks under the shutdown timeout, and returns the failure as the one lifecycle error ([ADR-024](024-lifecycle-components.md#one-error)). The App ends terminally `stopped`: a component that started may already have produced externally visible side effects, so a session that began never returns to `building`.
 
 Rejected: a start that no shutdown can interrupt. An orchestrator kills the process after its grace period anyway, so the guarantee never held, and a cancelled start rolls back where a killed one cannot; a step that must finish says so with `context.WithoutCancel`, and migrations already require transactional or idempotent work.
 
-### Shutdown Sequence
-
-```
-1. CAS running → stopping (or building → stopping: bootstrap teardown, which freezes
-   HTTP and DI writes without validating DI and runs the chain with no servers)
-2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
-3. Run every OnPreDrain hook concurrently (lifecycle workers and DI remain live)
-4. Cancel lifecycle context (signals background services)
-5. In parallel: HTTP server drain and every OnDrain subsystem hook
-6. DI container shutdown (dependency-ordered singleton cleanup: consumers before
-   the singletons they were built from; DI enters closing only here)
-7. OnShutdown hooks in LIFO order (last registered, first called)
-8. Clear bound address
-9. Store state = stopped
-```
-
-After `stopped`, `ServeHTTP` answers every request with the framework's default 503 envelope through a callback-free branch (no preparation, resolution, dispatch, custom renderer or locale detection), so a rejected request can never touch a singleton that has already been shut down. An App that was prepared before the drain keeps serving during `stopping` — that is what the HTTP drain and the readiness/liveness probes need.
-
-OnPreDrain, HTTP drain, and OnDrain receive one absolute deadline. Hook execution order within each hook phase is intentionally unspecified. An OnPreDrain hook returns successfully only after work requiring live lifecycle workers or DI has finished; an OnDrain hook must guarantee its subsystem can no longer execute handlers that depend on DI infrastructure. At deadline expiry, Credo immediately logs that OnPreDrain work is still pending but does not abandon it: the lifecycle context and DI stay live until every OnPreDrain hook actually returns. The hook's completion timestamp then determines its final identified incomplete error. Later phases continue with the same, possibly ended context. HTTP or OnDrain work still follows the ordinary deadline-incomplete contract and is not a hard barrier. All errors are collected via `errors.Join` — no false graceful-success result.
-
 ### Drain in Tiers
 
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this section replaces the Shutdown Sequence above and the paragraph on its deadline.
-
 ```
-1. CAS running → stopping (or building → stopping: bootstrap teardown; or, while starting,
-   interrupt the start phase and roll back)
-2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up)
-3. Concurrently: the HTTP drain, and the ingress tier — ingress OnStop hooks LIFO, then
-   ingress components, those that no edge orders concurrently with each other
+1. CAS running → stopping (or building → stopping: bootstrap teardown, which freezes HTTP
+   and DI writes without validating DI and runs the chain with no servers; or, while
+   starting, interrupt the start phase and roll back)
+2. Mark unready — /ready returns 503 so load balancers stop routing (liveness stays up) —
+   and cancel the session context (an in-flight reload stops)
+3. Concurrently: the HTTP drain (redirect listener before the main server), and the ingress
+   tier — ingress OnStop hooks LIFO, then ingress components, those that no edge orders
+   concurrently with each other
 4. Wait for an in-flight reload (ADR-020)
-5. Internal tier: internal OnStop hooks LIFO, then internal components in reverse
-   dependency order, values with no edges in reverse registration order
+5. Internal tier: internal OnStop hooks LIFO, then DI enters closing and the internal
+   components stop in reverse dependency order, values with no edges in reverse
+   registration order
 6. Clear bound address
 7. Store state = stopped
 ```
 
-The tiers are [ADR-024](024-lifecycle-components.md)'s: ingress is where work enters the process, internal is everything else, and no dependency crosses them backwards, so the dependency order holds for every component and the tiers order only components that no dependency path connects. One deadline serves the whole drain and is spent in order: a long HTTP drain leaves less for the internal tier. Every phase follows the same deadline rule — there is no hard barrier: a `Shutdown` or stop hook that misses the deadline is abandoned and reported, the dependencies of an abandoned component stay open, and a `Shutdown` that returns an error promptly is reported while its dependencies are still stopped. A start or shutdown failure is reported as one error naming each component, its phase and its outcome.
+The tiers are [ADR-024](024-lifecycle-components.md)'s: ingress is where work enters the process, internal is everything else, and no dependency crosses them backwards, so the dependency order holds for every component and the tiers order only components that no dependency path connects. One deadline — `WithShutdownTimeout` (default 30s) for a signal- or cancellation-triggered drain, the caller's context for an explicit `Shutdown(ctx)` — serves the whole drain and is spent in order: a long HTTP drain leaves less for the internal tier. Every phase follows the same deadline rule — there is no hard barrier: a `Shutdown` or stop hook that misses the deadline is abandoned and reported, the dependencies of an abandoned component stay open, and a `Shutdown` that returns an error promptly is reported while its dependencies are still stopped. A start or shutdown failure is reported as one `*LifecycleError` naming each component, its phase and its outcome; the HTTP drain's and an overrunning reload's errors are joined with it — no false graceful-success result.
 
-`OnPreDrain`'s hard barrier is removed with the hook. The barrier existed because lifecycle cancellation would tear down lifecycle-bound workers and DI before coordination work finished; with call-scoped contexts nothing is cancelled ahead of its turn, and a component that needs live dependencies while it stops has them, because they stop after it. Abandoning a hook at the deadline, which the `OnPreDrain` design decision below rejects, is accepted instead: a hook is a component, and it is abandoned like one. A component that truly needs a barrier documents that as its own property.
+After `stopped`, `ServeHTTP` answers every request with the framework's default 503 envelope through a callback-free branch (no preparation, resolution, dispatch, custom renderer or locale detection), so a rejected request can never touch a component that has already been shut down. An App that was prepared before the drain keeps serving during `stopping` — that is what the HTTP drain and the readiness/liveness probes need.
+
+Rejected: a hard barrier that is never abandoned, as the former `OnPreDrain` hook provided. It existed because the lifecycle context's cancellation tore down lifecycle-bound workers before coordination work finished; with call-scoped contexts nothing is cancelled ahead of its turn, and a component that needs live dependencies while it stops has them, because they stop after it. A hook is a component and is abandoned at the deadline like one; a component that truly needs a barrier documents that as its own property.
 
 ### Lifecycle Hooks
 
-**OnStart** — called after the port is bound, before the server accepts connections:
-
-```go
-app.OnStart(func(lifecycleCtx context.Context) error {
-    log.Println("server ready on", app.Addr())
-    return consul.Register(lifecycleCtx, app.Addr())
-})
-```
-
-- FIFO order (first registered, first called)
-- Receives the lifecycle context (created at `Run` time)
-- Fail-fast: the first error aborts startup, remaining hooks are skipped, the full teardown chain runs, and the App ends terminally `stopped` (a session that began tears down rather than rolling back)
-- Must be called before `Run()`; panics after compile (frozen guard)
-
-**OnPreDrain** — called after state enters stopping and readiness is withdrawn, but before lifecycle cancellation:
-
-```go
-app.OnPreDrain(func(ctx context.Context) error {
-    return coordinator.FlushWhileWorkersAreLive(ctx)
-})
-```
-
-- No ordering guarantee between hooks; registration index/source identify errors only
-- Receives the shared absolute shutdown deadline
-- Must finish work that specifically requires live lifecycle workers or DI before returning nil
-- Runs on every teardown, including an OnStart failure; must be idempotent and tolerate partial startup
-- Panic is isolated and joined as an identified hook error; other hooks and later teardown phases continue
-- Deadline-ignoring work emits a waiting diagnostic at the deadline; after it returns, its completion timestamp produces the final identified incomplete error, while lifecycle cancellation and teardown wait throughout
-- Must be registered before compile; nil or late registration panics
-
-Most subsystems should use OnDrain. OnPreDrain is deliberately narrower: it is only for cases where lifecycle cancellation itself would tear down a dependency before the subsystem can finish its drain.
-
-**OnDrain** — called after lifecycle cancellation, concurrently with HTTP drain and with every other OnDrain hook, before DI teardown:
-
-```go
-app.OnDrain(func(ctx context.Context) error {
-    return subsystem.Shutdown(ctx)
-})
-```
-
-- No ordering guarantee between hooks; registration index/source identify errors only
-- Receives the shared absolute shutdown deadline
-- Must stop admission and wait for DI-dependent handlers/cleanup before returning nil
-- Runs on every teardown, including an OnStart failure; must be idempotent and tolerate partial startup
-- Panic is isolated and joined as an identified hook error; other drain work continues
-- Deadline-ignoring work is reported as incomplete and may return later, while teardown proceeds
-- Must be registered before compile; nil or late registration panics
-
-WebSocket is the first in-tree consumer: `websocket.Use` registers its connection registry drain here. A completed drain proves that handlers finish before their DI repositories are closed; an incomplete drain is identified and teardown continues. Future gRPC or pubsub servers may use the same narrow seam, but OnDrain is not a general startup/restartable Service abstraction.
-
-**OnShutdown** — called after DI teardown during every teardown:
-
-```go
-app.OnShutdown(func(ctx context.Context) error {
-    return externalClient.Shutdown(ctx)
-})
-```
-
-- Hooks receive the shutdown deadline context from `Shutdown(ctx)`
-- LIFO order (reverse registration order) — resources opened last are closed first
-- Run on **every** teardown, including a failed startup — OnShutdown is the session teardown point, not an OnStart mirror, so hooks must be idempotent and must not assume any particular OnStart hook completed
-- Must be called before `Run()`; panics after compile (frozen guard)
-- Sequential execution — for parallel shutdown, wrap in a single hook with `errgroup`
-
-**OnStart and OnStop under the component model**
-
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, this part replaces the OnStart, OnPreDrain, OnDrain and OnShutdown entries above.
+**OnStart** and **OnStop**:
 
 ```go
 app.OnStart(func(ctx context.Context) error {
@@ -329,11 +213,12 @@ app.OnStop(func(ctx context.Context) error {
 })
 ```
 
-- Both are anonymous components of a tier, internal unless `credo.Ingress()` says otherwise. Within a tier, start hooks run FIFO after the tier's components have started, and stop hooks run LIFO before they stop, so a hook can use what the components provide and never outlives it.
-- A start hook's context ends with the call. A start hook that returns an error or panics is a start failure: the start rolls back ([Start Phase and Its Interruption](#start-phase-and-its-interruption)).
-- A stop hook receives the drain deadline, runs on every teardown — the rollback of a failed or interrupted start included — and must tolerate a start that never reached its counterpart. A stop hook that misses the deadline is abandoned and reported like a component's `Shutdown`; a panic is isolated and reported.
-- A hook is a leaf action. Anything with its own teardown is a component ([ADR-024](024-lifecycle-components.md)) — a value built outside DI with `app.Manage`, a resource whose teardown is `Close` with `credo.Closer()` on its binding — and process-level cleanup that must outlive every component, such as flushing a log sink, belongs after `Run` returns. A hook that closed a resource from `OnShutdown`, safe only because it ran last, would run before that resource's consumers in `OnStop`'s slot.
-- Registration follows the bootstrap order ([ADR-022](022-bootstrap-and-di-ownership.md)); a nil hook or a late registration panics.
+- Both are anonymous components of a tier, internal unless `credo.Ingress()` says otherwise. Within a tier, start hooks run FIFO after the tier's components have started, and stop hooks run LIFO before they stop, so a hook can use what the components provide and never outlives it. Under managed serving the listener is already bound when start hooks run, so `app.Addr()` is available.
+- A start hook's context ends with the call, or earlier when a shutdown is requested during the start phase. A start hook that returns an error or panics is a start failure: nothing further starts and the start rolls back ([Start Phase and Its Interruption](#start-phase-and-its-interruption)).
+- A stop hook receives the drain deadline, runs on every teardown — the drain, bootstrap teardown, and the rollback of a failed or interrupted start — and must tolerate a start that never reached its counterpart. A stop hook that misses the deadline is abandoned and reported like a component's `Shutdown`; an error or a panic is reported without stopping the drain.
+- A panicking hook is that hook's error: the record `credo: OnStart hook panic` or `credo: OnStop hook panic` carries the hook's index and the stack, and the lifecycle error names the hook `OnStart[i]` or `OnStop[i]`.
+- A hook is a leaf action. Anything with its own teardown is a component ([ADR-024](024-lifecycle-components.md)) — a value built outside DI with `app.Manage`, a resource whose teardown is `Close` with `credo.Closer()` on its binding — and process-level cleanup that must outlive every component, such as flushing a log sink, belongs after `Run` returns. A stop hook that closed a resource would run before that resource's consumers, because its slot precedes its tier's components.
+- Registration follows the bootstrap order ([ADR-022](022-bootstrap-and-di-ownership.md)) and happens before the App is prepared; a nil hook, an option other than `credo.Ingress()` or a late registration panics.
 
 **OnReload** — called by a trigger-driven reload (`SIGHUP` under `Run`, or `app.Reload`) after the config snapshot has been re-published and typed `OnConfigChange[T]` subscribers have run. FIFO; errors are joined and logged but never terminate the process; registration is frozen with the other hooks. The full model (partial config reload, validate-before-publish, file-based TLS rotation) is [ADR-020](020-reload-and-partial-config-reload.md).
 
@@ -359,55 +244,40 @@ At preparation admission (the first `ServeHTTP` request or a managed serve entry
 | HTTP→HTTPS via redirect listener, not dual-serve | `WithHTTPRedirect` adds a redirect-only second listener (301/308 to HTTPS), requiring TLS; its runtime failure tears the app down like the main listener (a requested redirect must not silently die while the app reports healthy), and on drain it closes before the main server. Rejected: a second listener serving the _app_ over plaintext (HTTP-without-TLS invites accidental cleartext traffic — not a supported mode) and auto-HSTS (a near-permanent client-side commitment — opt-in via `middleware.Secure` only, never automatic) |
 | `http.Server` escape hatch as a callback | `WithHTTPServer(fn func(*http.Server))` sees the fully-built server and adjusts it, ending the "the standard library added a field, Credo needs a release" treadmill. Rejected: a `WithHTTPServer(*http.Server)` value form, which would force a per-field merge policy against everything Credo populates from config; and one `With…` option per stdlib field, which is the treadmill itself |
 | Callback last, three fields re-imposed | Running the callback after every framework-set field makes it the last word for the fields Credo merely maps, which is what an escape hatch is for. `Handler`, `Addr`, and `TLSConfig` are re-imposed because the lifecycle, the bound address, and the TLS precedence chain depend on them — silently honouring a callback-set `TLSConfig` would let a plaintext-configured listener serve TLS with no trace in the configuration |
-| Readiness unready on shutdown | Drain step 0 flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
-| Narrow `OnPreDrain` before lifecycle cancellation | A small class of coordination work must finish while lifecycle-bound workers and DI are still live. Unordered hooks provide a hard teardown barrier after readiness withdrawal: deadline expiry is reported, but cancellation and infrastructure teardown cannot race an unfinished hook. Rejected: abandoning a hook at the deadline, which breaks the live-dependency guarantee; moving lifecycle cancellation after all HTTP/OnDrain work, which would keep unrelated workers live for the whole drain; and using `OnDrain`, whose established contract begins after cancellation. |
-| Narrow `OnDrain`, lifecycle-`Service` still deferred | On completed drains, `OnDrain` provides the handlers-before-DI proof; incomplete drains are identified and teardown proceeds. The unordered pre-infrastructure hook is concrete and public for WebSocket. `worker.Pool` drains through the same hook (workers' bounded cleanup must precede DI teardown regardless of registration order; its `Shutdowner` pass then finds the stop sequence complete), while a general `Service` taxonomy with startup/restart semantics waits for multiple concrete consumers. Future gRPC/pubsub may use OnDrain without implying restart support. |
+| Readiness unready on shutdown | The drain's first step flips `/ready` to 503 so load balancers stop routing before the HTTP drain; liveness stays up so orchestrators don't kill the draining process |
+| One lifecycle abstraction | The five former teardown mechanisms — the `OnPreDrain` and `OnDrain` hooks, DI `Shutdowner`s, `OnShutdown` hooks after DI teardown, and the lifecycle context's cancellation — are graph-ordered components ([ADR-024](024-lifecycle-components.md)). Rejected: the deferred lifecycle `Service`, whose `Run(ctx)` blocks for the lifetime and whose restart taxonomy is a worker concern; components are start-once |
+| Two hooks, each a component | `OnStart` (FIFO) and `OnStop` (LIFO) run within their tier, after its components start and before they stop. `OnStop` has its own name because its slot precedes the tier's components, where the former `OnShutdown` ran after DI teardown. Rejected: moving `OnShutdown` before DI teardown in a patch — the order would have changed twice |
+| No hard barrier | With call-scoped contexts nothing stops before its turn. Every hook and component is abandoned at the deadline, and what an abandoned component kept open is reported instead of closed under it. Rejected: a pre-cancellation hook that is never abandoned, which existed only because the lifecycle context's cancellation stopped workers out of order |
 | No post-compile hook registration | Frozen guard prevents race conditions |
-| Sequential LIFO shutdown hooks | Deterministic, debuggable. Parallel via user `errgroup` in single hook |
-| FIFO for OnStart | Natural execution order — symmetric with LIFO shutdown |
-| OnStart fail-fast | Startup hooks are sequential and dependent — the first error aborts the rest and triggers full teardown |
-| OnStart before stateRunning | Hooks run in `stateStarting`, where `Shutdown()` is refused — avoids racing the drain |
-| `stateStarting` transient state | Closes race window between CAS and server field writes — Shutdown cannot read nil fields |
+| Start hooks fail fast | Start hooks are sequential and may depend on each other — the first error, like a component's failed `Start`, aborts the rest and rolls back |
+| Interruptible start, accepted while starting | `Shutdown` is accepted in `starting`, and every shutdown request cancels the running `Start` and rolls back. Rejected: a start no shutdown can interrupt (see [Start Phase and Its Interruption](#start-phase-and-its-interruption)) |
+| `stateStarting` as the start phase | Claiming the slot before preparation and the server field writes keeps a concurrent claim out; a `Shutdown` arriving then interrupts the start phase and waits for its rollback instead of draining fields that may still be nil |
 | `http.ErrServerClosed` → nil | Graceful shutdown is not an error condition |
 | Pre-session failure → building | Preflight/listen errors start nothing — rolling back to `building` keeps the App retryable |
-| Session failure → terminal stopped | An OnStart-hook error or a post-running serve error runs the full teardown (OnPreDrain → lifecycle cancellation → HTTP/OnDrain → DI shutdown → OnShutdown) and ends `stopped`; a session that began may hold side effects, and `building` is unsound once `container.Shutdown` has run. Rejected: uniform rollback to `building`, which skipped teardown and leaked started resources |
-
-#### Design decisions under the component model
-
-**Accepted, pending implementation (v0.24.0, W4).** When it ships, these rows replace the rows above for the narrow `OnPreDrain`, the narrow `OnDrain` with the deferred `Service`, sequential LIFO shutdown hooks, `OnStart` fail-fast, `OnStart` before `stateRunning`, and session failure.
-
-| Decision | Rationale |
-| --- | --- |
-| One lifecycle abstraction | Five teardown mechanisms — `OnPreDrain`, `OnDrain`, DI `Shutdowner`s, `OnShutdown` and the lifecycle context's cancellation — become graph-ordered components ([ADR-024](024-lifecycle-components.md)). The deferred lifecycle `Service` is not adopted: its `Run(ctx)` blocks for the lifetime and its restart taxonomy is a worker concern; components are start-once |
-| Two hooks, each a component | `OnStart` and `OnStop` keep today's FIFO/LIFO order within their tier. `OnStop` takes a new name because its slot moved before the tier's components. Rejected: moving `OnShutdown` before DI teardown in a patch — the order would change twice |
-| No hard barrier | `OnPreDrain` is removed: with call-scoped contexts nothing stops before its turn. Every hook and component is abandoned at the deadline, and what an abandoned component kept open is reported instead of closed under it |
-| Interruptible start, accepted while starting | `Shutdown` is accepted in `starting`, and every shutdown request cancels the running `Start` and rolls back. Rejected: a start no shutdown can interrupt (see [Start Phase and Its Interruption](#start-phase-and-its-interruption)) |
-| Start failure → rollback → terminal stopped | Every built component stops in reverse dependency order except the one whose `Start` failed, which has released what it opened; the App stays single-use |
+| Start failure → rollback → terminal stopped | Every built component stops in reverse dependency order except the one whose `Start` failed, which has released what it opened; a component that started may hold side effects, so the App ends `stopped` and stays single-use. Rejected: uniform rollback to `building`, which would skip teardown and leak started resources |
+| Serve failure → terminal stopped | A post-running serve error, or a runtime failure of the redirect listener, runs the full drain and ends `stopped` |
 | Every way of serving starts the components | `App.Start` runs the start phase for an App served through `ServeHTTP`; an App with anything to start refuses `ServeHTTP` until the phase has succeeded, and an external server's owner drains it before `App.Shutdown` |
 
 ## Consequences
 
 **Positive:**
 
-- Zero-boilerplate graceful shutdown: `Run` handles signals and applies the `WithShutdownTimeout` deadline (except that a cancellation-ignoring `OnPreDrain` remains a hard safety barrier until it returns)
+- Zero-boilerplate graceful shutdown: `Run` handles signals and applies the `WithShutdownTimeout` deadline, which bounds every phase, since no hook is a hard barrier
 - Readiness flips to 503 at shutdown start, so load balancers drain the instance before it stops accepting
-- Deterministic startup/shutdown sequence
-- Background services get clean shutdown signal via lifecycle context (delivered through `OnStart`)
-- Narrow coordination work can finish while lifecycle workers and DI are still live through `OnPreDrain`
-- Successfully drained subsystems can prove their active handlers stop before DI infrastructure through `OnDrain`
-- LIFO hooks ensure correct resource cleanup order
+- Deterministic start and drain order: components start in dependency order and stop in reverse, the ingress tier beside the HTTP drain and the internal tier after it
+- A component fed by HTTP handlers stops after the HTTP drain and before the database it writes to, and a stop hook can use every component of its tier
+- Background work has one stop signal, its component's `Shutdown`, delivered in the component's turn
+- A shutdown during startup interrupts the start and rolls back what was built
 - Frozen guard catches registration bugs at development time
 - State machine prevents double-run and double-shutdown
-- Startup and runtime serve failures enter the same teardown chain as graceful shutdown, so cleanup of started resources is attempted instead of skipped; shared deadline semantics still apply
+- A start failure rolls back what was built and a runtime serve failure enters the same drain as graceful shutdown, so cleanup of started resources is attempted instead of skipped; shared deadline semantics still apply
 - A never-run App has the same cleanup path, so bootstrap failures after resource registration do not leak
-- DI teardown follows the dependency graph and reports what did not complete instead of closing a dependency underneath a live consumer
+- Teardown follows the dependency graph and reports what did not complete instead of closing a dependency underneath a live consumer
 
 **Negative:**
 
 - Advanced signal needs (custom signal sets, multi-server coordination) use `RunContext` with the caller's own `signal.NotifyContext` — the default `Run` covers SIGINT/SIGTERM
-- A cancellation-ignoring `OnPreDrain` hook can delay shutdown beyond its deadline; Credo reports the breach but preserves the teardown barrier because cancelling workers or DI early would violate the hook's purpose
-- Sequential hooks may slow shutdown if a hook is slow (mitigate: deadline ctx)
+- One deadline is spent in order across the tiers: a long HTTP drain leaves less for the internal tier
+- The costs [ADR-024](024-lifecycle-components.md#consequences) records: a double start for a value an `OnStart` hook starts when its binding's type shows `Start` and `Shutdown`, a readiness probe that restarts nothing, and behavior changes that compile unchanged — `OnStart`'s context ends with the call, and a shutdown during startup interrupts the start
 - No restart capability — must create new App after shutdown
 - A failed preparation cannot be repaired in place; the App's remaining use is cleanup
-
-**Under the component model.** **Accepted, pending implementation (v0.24.0, W4).** When it ships, this paragraph replaces the consequences above that name `OnPreDrain`, `OnDrain`, the lifecycle context and LIFO hooks. A worker fed by HTTP handlers stops after the HTTP drain and before the database it writes to, and a stop hook can use every component of its tier. Shutdown is bounded by its deadline in every phase, since no hook is a hard barrier. The costs are [ADR-024](024-lifecycle-components.md#consequences)'s: one deadline spent in order across the tiers, a double start for a value an `OnStart` hook starts when its binding's type shows `Start` and `Shutdown`, a readiness probe that restarts nothing, and behavior changes that compile unchanged — `OnStart`'s context ends with the call, and a shutdown during startup interrupts the start.

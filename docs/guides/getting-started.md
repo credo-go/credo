@@ -512,21 +512,21 @@ For multi-database wiring and transaction behavior, see the [Data Access Guide](
 
 ---
 
-## Lifecycle Hooks
+## Lifecycle Hooks and Components
 
-Credo provides `OnStart`, `OnPreDrain`, `OnDrain`, and `OnShutdown` hooks for startup and shutdown logic:
+An App starts and stops what it owns in one start phase and one drain. A value with a `Shutdown(ctx) error` method is a **component** (`credo.Component`): a DI singleton that has the method, or a value handed to `app.Manage`. The App shuts it down after the code that uses it, and starts it before serving when its binding's type also has `Start(ctx) error`. `OnStart` and `OnStop` hooks are anonymous components for leaf actions:
 
 ```go
 func main() {
     app, _ := credo.New()
 
-    app.OnStart(func(lifecycleCtx context.Context) error {
+    app.OnStart(func(ctx context.Context) error {
         log.Println("server ready on", app.Addr())
         return nil
     })
 
-    app.OnShutdown(func(ctx context.Context) error {
-        log.Println("cleaning up...")
+    app.OnStop(func(ctx context.Context) error {
+        log.Println("stopping...")
         return nil
     })
 
@@ -538,13 +538,13 @@ func main() {
 }
 ```
 
-OnStart hooks run after the port is bound (FIFO order). If any hook fails, the server does not start: the App runs the same teardown as a graceful shutdown — so cleanup of resources an earlier hook started is attempted — and ends terminally stopped, so create a new App to retry. `app.Addr()` is available inside hooks — useful when using port 0.
+`Run` binds the port, then runs the start phase — internal tier first, then ingress; in each, the components with `Start` in dependency order, then the tier's `OnStart` hooks in registration order — and accepts requests only once it has completed. `app.Addr()` is available inside hooks — useful when using port 0. A hook's `ctx` ends when the hook returns, or earlier when a shutdown is requested during the start phase, so work that outlives the hook belongs to a component whose `Start` launches it and whose `Shutdown` stops it, or to a [worker](worker.md).
 
-`OnPreDrain` is an early, narrow seam for work that must finish while lifecycle-bound workers and DI infrastructure are still live. Its hooks run without an ordering guarantee after readiness is withdrawn but before the lifecycle context is cancelled. Most subsystems should use `OnDrain`; choose `OnPreDrain` only when cancellation itself would tear down a required dependency too early. Deadline expiry is reported, but cannot abandon a running `OnPreDrain` hook: cancellation and teardown wait until every hook returns.
+If a `Start` or a start hook fails, nothing further starts: every component that was built is stopped — except the one whose `Start` failed, which has released what it opened — the stop hooks run, and `Run` returns a `*credo.LifecycleError` naming what failed. The App ends stopped, so create a new App to retry. A signal during the start phase interrupts it the same way, and `Run` returns nil after a clean rollback; "server started" is logged only once the start phase has completed.
 
-`OnDrain` is the pre-infrastructure seam for a subsystem that must stop admission and wait for active DI-dependent handlers or cleanup. Its hooks run without an ordering guarantee, concurrently with one another and with HTTP drain. A hook may return `nil` only after its subsystem is safe for DI teardown.
+`OnStop` hooks run on every teardown — the drain, the rollback of a failed or interrupted start, and the teardown of an App that never ran — so a stop hook must tolerate a start that never reached its counterpart. A hook is a leaf action: a resource with its own teardown is a component, and process-level cleanup that must outlive every component, such as flushing a log sink, belongs after `Run` returns.
 
-For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain with the deadline set by `WithShutdownTimeout` (subject to the `OnPreDrain` hard-barrier rule above):
+For full control over signal handling — a custom signal set, or coordinating shutdown across several servers — use `RunContext`, which installs **no** signal handler of its own. Cancel the context to trigger the same graceful drain with the deadline set by `WithShutdownTimeout`:
 
 ```go
 func main() {
@@ -566,15 +566,13 @@ For programmatic shutdown — a test, or an admin endpoint — call `app.Shutdow
 Shutdown sequence:
 
 1. Readiness flips to 503 (`/ready`) so load balancers stop routing — liveness (`/health`) stays up, since the process is alive and draining
-2. Run all `OnPreDrain` hooks while lifecycle workers and DI remain live
-3. Cancel lifecycle context (signals background services)
-4. In parallel, drain in-flight HTTP requests and all `OnDrain` subsystems
-5. DI Container shutdown (dependency-ordered singleton cleanup: consumers before the singletons they were built from)
-6. OnShutdown hooks (LIFO)
+2. The **ingress tier** — where work enters the process — stops concurrently with the drain of in-flight HTTP requests: ingress `OnStop` hooks in reverse registration order, then ingress components such as the WebSocket server and the worker pool
+3. An in-flight reload finishes
+4. The **internal tier** stops: internal `OnStop` hooks in reverse registration order, then internal components in reverse dependency order — each consumer before the components it was built from
 
-These phases receive one absolute shutdown budget. A slow `OnPreDrain` hook emits a waiting diagnostic when the budget ends, but remains a hard barrier so live workers and DI cannot be torn down underneath it. Once every pre-drain hook returns, its completion timestamp determines the final incomplete error and later phases advance with the same possibly-expired context. HTTP and `OnDrain` work keep the ordinary deadline-incomplete behavior.
+The steps share one deadline (`WithShutdownTimeout`, 30 seconds by default) and spend it in order, so a long HTTP drain leaves less time for the internal tier. A `Shutdown` or stop hook that has not returned at the deadline is abandoned: the components it depends on stay open, and the returned `*credo.LifecycleError` names it and every component it kept open.
 
-Services that implement `credo.Shutdowner` participate automatically in dependency-ordered DI cleanup while the shared deadline remains live; an entry not reached before deadline exhaustion, or blocked behind a consumer that ignores it, receives no attempt and is reported. Use `app.OnPreDrain(fn)` only when work must finish before lifecycle cancellation, use `app.OnDrain(fn)` when subsystem handlers must stop before DI cleanup, and use `app.OnShutdown(fn)` for final non-DI cleanup that is safe after infrastructure teardown. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for a detailed comparison.
+DI singletons that have `Shutdown` take part automatically; components are internal unless registered with `credo.Ingress()`. Prefer a component for anything with its own teardown, and an `OnStop` hook for a leaf action. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for components, tiers and the registration options, and the [Deployment guide](deployment.md#shutdown-and-readiness) for sizing the deadline.
 
 If you need managed background tasks, use `worker.Register(...)` or `worker.RegisterProvided[T](...)` instead of manually starting goroutines in `main()`. Registered workers receive the app shutdown signal automatically and the worker pool waits for them during shutdown. See the [Worker Guide](worker.md).
 

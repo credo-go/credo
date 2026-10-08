@@ -26,33 +26,38 @@ import (
 // is a value (no constructor), so it has no dependencies and is always valid
 // during Seal. Replace is rejected once the container is frozen.
 func (c *Container) Replace[T any](value T) (old T, existed bool, err error) {
+	targetType := reflect.TypeFor[T]()
+	token, hasToken, idErr := identityToken(any(value))
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	targetType := reflect.TypeFor[T]()
 	if err := c.closedLocked("Replace", targetType); err != nil {
 		return old, false, err
 	}
 	if _, protected := c.protected[targetType]; protected {
 		return old, false, fmt.Errorf("di: Replace[%s]: binding is protected", targetType)
 	}
-
-	// Preserve registration order: only append when this type is new, so
-	// repeated replacements never create duplicate teardown-order entries.
-	if _, exists := c.registrations[targetType]; !exists {
-		c.order = append(c.order, targetType)
+	if idErr != nil {
+		return old, false, fmt.Errorf("di: Replace[%s]: %w", targetType, idErr)
 	}
-	c.registrations[targetType] = valueProvider{value: value}
 
-	// Detach the superseded instance, if one was ever created, and cache the
-	// new value immediately. Builds happen only after Seal, so the previous
-	// entry is either prebuilt/built or never started; never in flight.
+	u := &Unit{t: targetType, name: targetType.String(), valueBinding: true}
+	planUnit(u, Options{})
+	c.forgetHolderLocked(c.unitOf[targetType])
+	if err := c.admitValueLocked(u, any(value), token, hasToken); err != nil {
+		return old, false, fmt.Errorf("di: Replace[%s]: %w", targetType, err)
+	}
+
+	// Detach the superseded instance, if one was ever created. Builds happen
+	// only after Seal, so the previous entry is either prebuilt/built or never
+	// started; never in flight.
 	if previous, ok := c.singletons[targetType]; ok && previous.state == entryBuilt {
 		if typed, ok := previous.value.(T); ok {
 			old, existed = typed, true
 		}
 	}
-	c.singletons[targetType] = &singletonEntry{state: entryBuilt, value: value}
+	c.bindLocked(u, valueProvider{value: value}, &singletonEntry{state: entryBuilt, value: value})
 
 	return old, existed, nil
 }

@@ -38,7 +38,7 @@ ws := websocket.Use(app, cfg)
 app.GET("/events", ws.Handler(handler))
 ```
 
-`Use` validates configuration and registers lifecycle hooks. `Server.Handler`
+`Use` validates configuration and registers the server as an ingress component (below). `Server.Handler`
 adapts a synchronous WebSocket handler into the one Credo route-handler type,
 so built-in, global, group, route, auth, rewrite, and other middleware retain
 their existing ordering. A second `app.WebSocket` or `Server.Handle` route API
@@ -95,33 +95,16 @@ transaction scopes per operation.
 
 ### Drain WebSockets before infrastructure
 
-ADR-006's `App.OnDrain` is the canonical pre-infrastructure subsystem seam.
-`websocket.Use` registers `Server.Shutdown` there and captures the lifecycle
-context in `OnStart`. After readiness is withdrawn and every `OnPreDrain` hook
-returns, the App cancels its lifecycle context, then drains HTTP servers and
-all `OnDrain` hooks concurrently. WebSocket drain:
+`websocket.Use` registers the server as an ingress component with `app.Manage(server, credo.Ingress())` ([ADR-024](024-lifecycle-components.md)), so a second `Use` on one App panics with a duplicate component name. The ingress tier is where work enters the process, and a WebSocket connection is such an entry: the ingress tier stops first, concurrently with the HTTP drain and before any internal component, so every WebSocket handler, which may use repositories and clients, has returned before those stop. Hijacked connections are not tracked by `http.Server.Shutdown`, so they are the server component's to drain. The server's `Shutdown` is that drain:
 
 1. closes admission before Accept;
 2. sends active peers 1001 Going Away;
-3. cancels connection contexts and waits for every synchronous handler,
-   connection record, and close task;
+3. cancels connection contexts and waits for every synchronous handler, connection record, and close task;
 4. returns only when DI-dependent handler cleanup is finished.
 
-The first `Server.Shutdown` caller owns the drain budget. Concurrent callers do
-not replace it: they wait for the owner's result unless their own context ends
-first. Calls made after the owner finishes return its stable result. If the
-owner context is cancelled or its absolute deadline expires, the server reports
-an incomplete error with remaining counts, cancels connections, and attempts
-`CloseNow`; late handlers may finish afterward. The App continues DI and
-`OnShutdown` with the same, possibly expired context. It never calls an
-incomplete drain graceful success. A close task may also fail after all tracked
-work settles; that is a closed, complete-with-error outcome rather than an
-incomplete drain.
+The first `Server.Shutdown` caller owns the drain budget. Concurrent callers do not replace it: they wait for the owner's result unless their own context ends first. Calls made after the owner finishes return its stable result. If the owner context is cancelled or its absolute deadline expires, the server reports an incomplete error with remaining counts, cancels connections, and attempts `CloseNow`; late handlers may finish afterward. The App reports the incomplete drain in its one `*credo.LifecycleError` and continues with the internal tier under the same, possibly expired deadline; it never calls an incomplete drain graceful success. A close task may also fail after all tracked work settles; that is a closed, complete-with-error outcome rather than an incomplete drain.
 
-WebSocket is the first concrete `OnDrain` consumer. This does not introduce a
-general restartable `Service` taxonomy: workers continue to use lifecycle
-context plus DI `Shutdowner`; future gRPC/pubsub consumers may use `OnDrain`
-without implying restartability.
+The server is an ordinary component of the ingress tier. This does not introduce a general restartable `Service` taxonomy, which [ADR-024](024-lifecycle-components.md) rejects.
 
 ### Construct with `New`, register as an ingress component
 
@@ -137,7 +120,7 @@ app.GET("/events", ws.Handler(handler))
 
 `websocket.New(infra credo.Infra, cfg ...Config) *Server` validates the configuration, builds the server and registers nothing; misuse — an invalid configuration or more than one — panics. It takes `credo.Infra` instead of the App because today's `Use` took the App only for its logger, which `Infra` carries. The server adds the `module=websocket` attribute to the logger it is given, so log queries do not change.
 
-**Why `New` and not `Use`.** `Use` names a call that attaches a subsystem to the App, and this one no longer does: with the start and drain hooks gone, the server attaches only when the application registers it. Keeping the name would promise an attachment the call no longer makes; renamed, a caller of today's `websocket.Use` gets a compile error instead of a server that silently skips its drain. `worker.Use` keeps its name, because the supervisor it returns registers each worker as a component of that App.
+**Why `New` and not `Use`.** `Use` names a call that attaches a subsystem to the App, and this one no longer does: `New` registers nothing, so the server attaches only when the application registers it. Keeping the name would promise an attachment the call no longer makes; renamed, a caller of today's `websocket.Use` gets a compile error instead of a server that silently skips its drain. `worker.Use` keeps its name, because the supervisor it returns registers each worker as a component of that App.
 
 **The application registers the server as an ingress component** ([ADR-024](024-lifecycle-components.md)): the ingress tier is where work enters the process, and a WebSocket connection is such an entry. Either form works:
 
@@ -152,7 +135,7 @@ app.GET("/events", ws.Handler(handler))
 
 **Served through `ServeHTTP`.** An App served by an external `http.Server` or by `httptest` is started with `App.Start`; its owner drains that server before calling `App.Shutdown`, which then stops the WebSocket server in the ingress tier — hijacked connections are not tracked by `http.Server.Shutdown`, so they are the server component's to drain.
 
-WebSocket thus leaves the hook-based lifecycle entirely, and with it the role of first `OnDrain` consumer; the restartable `Service` taxonomy stays out of scope, as ADR-024 records.
+The restartable `Service` taxonomy stays out of scope, as ADR-024 records.
 
 ### Keep defaults bounded and observable
 

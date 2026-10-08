@@ -47,14 +47,13 @@ type Pool struct {
 	// every definition as idle.
 	published bool
 
-	// managed marks a pool built by ensurePool. Only such a pool carries the
-	// OnStart/OnDrain wiring and the protected DI binding; a *Pool published
-	// into the container by other means is rejected by Register.
+	// managed marks a pool built by ensurePool. Only such a pool is the App's
+	// ingress component with the protected DI binding; a *Pool published into
+	// the container by other means is rejected by Register.
 	managed bool
 
-	// stopOnce starts the single stop sequence (cancel + wait). Shutdown is
-	// reached twice on every teardown — from the OnDrain hook and again from
-	// the container's Shutdowner pass — and both callers observe one result.
+	// stopOnce starts the single stop sequence (cancel + wait); every
+	// Shutdown call observes its one result.
 	stopOnce sync.Once
 	// stopping is set under mu by the first Shutdown; Start refuses afterwards
 	// so no goroutine can be added to wg once the wait has begun.
@@ -323,10 +322,13 @@ func ensurePool(app *credo.App) (*Pool, error) {
 
 	p := newPool(app.Logger().With("module", "worker"), cfg)
 	p.managed = true
-	// The binding is protected: the pool wired into OnStart/OnDrain and the
-	// readiness seam must stay the pool the container hands out, so a later
-	// Replace[*Pool] is rejected rather than silently splitting the two.
-	if err := app.ProvideProtectedValue[*Pool](p); err != nil {
+	// The pool is an ingress component: the start walk calls its Start, and
+	// it stops with the ingress tier, concurrently with the HTTP drain and
+	// before the internal components its workers use. The binding is
+	// protected: the pool the App starts and the readiness seam must stay the
+	// pool the container hands out, so a later Replace[*Pool] is rejected
+	// rather than silently splitting the two.
+	if err := app.ProvideProtectedValue[*Pool](p, credo.Ingress()); err != nil {
 		// Lost a registration race: the winner published (and wired) its pool.
 		adopted, adoptErr := adoptPool(app)
 		if adoptErr != nil {
@@ -341,16 +343,6 @@ func ensurePool(app *credo.App) (*Pool, error) {
 	if _, _, err := app.Replace[internalhealth.ReadinessFunc](p.readinessChecks); err != nil {
 		return nil, fmt.Errorf("worker: register readiness seam: %w", err)
 	}
-
-	app.OnStart(func(lifecycleCtx context.Context) error {
-		return p.Start(lifecycleCtx)
-	})
-	// Workers finish in the OnDrain phase — after lifecycle cancellation,
-	// concurrently with the HTTP drain, and before DI singletons are torn
-	// down — so a worker's final batch never races the resources it uses.
-	// Pool also implements credo.Shutdowner; that later container pass finds
-	// the stop sequence already complete and returns its result.
-	app.OnDrain(p.Shutdown)
 
 	return p, nil
 }
@@ -448,6 +440,9 @@ func (p *Pool) addDefinition(def *definition) error {
 // pool lock: it claims the pool (refusing further registrations), resolves the
 // workers outside the lock, then publishes the runners — unless a Shutdown
 // arrived meanwhile, which wins.
+//
+// The workers outlive Start: they run on a context derived from
+// context.WithoutCancel(ctx), which only Shutdown cancels.
 func (p *Pool) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -491,7 +486,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		return fmt.Errorf("worker: pool already shut down")
 	}
 
-	poolCtx, cancel := context.WithCancel(ctx)
+	poolCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	p.cancel = cancel
 
 	runners := make([]*runner, 0, len(defs))

@@ -168,20 +168,19 @@ When a reverse proxy terminates TLS, forward the original scheme/host using a tr
 
 ## Managed Shutdown
 
-`websocket.Use` integrates automatically with `app.Run`, `RunContext`, and `ServeContext`. At shutdown, Credo marks readiness down, completes every `OnPreDrain` hook, cancels the lifecycle context, and drains HTTP plus WebSocket concurrently. WebSocket admission closes and peers receive 1001 Going Away. On a completed drain, every synchronous handler finishes before DI resources are shut down; an incomplete drain is reported explicitly and teardown continues.
+`websocket.Use` hands the server to the App as an ingress component (`app.Manage(server, credo.Ingress())`), so it integrates automatically with `app.Run`, `RunContext`, and `ServeContext`; call `Use` once per App, since a second call registers a second component under the same name and panics. At shutdown, Credo marks readiness down and stops the ingress tier — the WebSocket server among it — concurrently with the HTTP drain. WebSocket admission closes and peers receive 1001 Going Away. On a completed drain, every synchronous handler finishes before the internal tier, where the application's repositories and clients live, is shut down; an incomplete drain is reported explicitly in the `*credo.LifecycleError`.
 
 Size `WithShutdownTimeout` for the whole shared absolute deadline:
 
 ```text
-slowest OnPreDrain hook + max(HTTP drain, slowest OnDrain/WebSocket drain)
-+ DI cleanup
-+ OnShutdown hooks
+max(HTTP drain, WebSocket drain, slowest other ingress component)
++ internal stop hooks and components
 + safety margin
 ```
 
-If OnPreDrain is negligible, HTTP and WebSocket can take 20 seconds, DI takes 3 seconds, hooks take 2 seconds, and the deployment needs 5 seconds of margin, use at least 30 seconds. Add the slowest expected OnPreDrain duration when that phase performs material work.
+If HTTP and WebSocket can take 20 seconds, the internal tier takes 5 seconds, and the deployment needs 5 seconds of margin, use at least 30 seconds.
 
-An `OnDrain` hook that consumes the whole budget leaves DI and `OnShutdown` an expired context. Explicit `app.Shutdown(ctx)` ignores `WithShutdownTimeout` and uses the caller's deadline exactly.
+A WebSocket drain that consumes the whole budget leaves the internal tier an expired deadline: no teardown starts after it, and the built components it did not reach are reported. Explicit `app.Shutdown(ctx)` ignores `WithShutdownTimeout` and uses the caller's deadline exactly.
 
 A nil result is error-free graceful completion. A non-nil result has two possible shapes: teardown may have completed with a close or hook error, or the owner context may have ended while work was still pending. Only the latter is an incomplete drain:
 
@@ -191,7 +190,7 @@ defer cancel()
 
 if err := app.Shutdown(shutdownCtx); err != nil {
     if shutdownCtx.Err() != nil && errors.Is(err, shutdownCtx.Err()) {
-        // The joined error identifies pending HTTP/OnDrain work; WebSocket
+        // The joined error identifies pending HTTP and component work; WebSocket
         // diagnostics include remaining handler, connection, and close-task
         // counts.
         logger.Error("shutdown incomplete", "error", err)
@@ -202,30 +201,37 @@ if err := app.Shutdown(shutdownCtx); err != nil {
 }
 ```
 
-On an incomplete drain, Credo makes a best-effort force close and continues infrastructure teardown with the same deadline. It does not pretend late handlers have stopped. Fix handlers that ignore cancellation; do not hide the error with retries.
+On an incomplete drain, Credo makes a best-effort force close and, its deadline having ended, starts no further teardown, so nothing is closed under a late handler. It does not pretend late handlers have stopped. Fix handlers that ignore cancellation; do not hide the error with retries.
 
 ## External `http.Server`
 
-Using `app` only as an `http.Handler` freezes routes but does not run Credo's App lifecycle. The owner must drain HTTP and WebSocket in parallel, then close application resources:
+Using `app` as the `http.Handler` of a server you own leaves that server's admission and drain to you. Start the App with `app.Start(ctx)` before serving it when it has anything to start — components with `Start` or `Ready`, start hooks, workers — and, at shutdown, drain HTTP and WebSocket in parallel before `app.Shutdown` stops the components:
 
 ```go
+if err := app.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 httpServer := &http.Server{Addr: ":8080", Handler: app}
 
 // ... serve httpServer and wait for the owner's shutdown signal ...
 
-ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
 httpDone := make(chan error, 1)
 wsDone := make(chan error, 1)
-go func() { httpDone <- httpServer.Shutdown(ctx) }()
-go func() { wsDone <- ws.Shutdown(ctx) }()
+go func() { httpDone <- httpServer.Shutdown(drainCtx) }()
+go func() { wsDone <- ws.Shutdown(drainCtx) }()
 
 if err := errors.Join(<-httpDone, <-wsDone); err != nil {
     logger.Error("network drain failed", "error", err)
 }
 
-// Only now close repositories, clients, and other shared infrastructure.
+// Only now stop the components: repositories, clients and other shared
+// infrastructure. The WebSocket server's Shutdown returns its stored result.
+if err := app.Shutdown(drainCtx); err != nil {
+    logger.Error("shutdown failed", "error", err)
+}
 ```
 
 Do not call the two drains sequentially: either side can wait for work owned by the other and consume the entire deadline.

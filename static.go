@@ -210,15 +210,16 @@ func (sr *StaticRoute) BuildURI(filePath ...string) string {
 // dir are refused — closing a common path-traversal hole when serving files from
 // disk. Prefer it over os.DirFS for disk-backed static serving.
 //
-// The FS holds an open directory handle until the closer is called. Register the
-// closer for graceful shutdown so the handle is released cleanly:
+// The FS holds an open directory handle until the closer is called. Close it in
+// a stop hook, which runs after the HTTP drain, so the handle is released
+// cleanly:
 //
 //	fsys, closer, err := credo.DirFS("./public")
 //	if err != nil {
 //		return err
 //	}
 //	app.Static("/assets", fsys)
-//	app.OnShutdown(func(context.Context) error { return closer.Close() })
+//	app.OnStop(func(context.Context) error { return closer.Close() })
 //
 // It returns an error if dir cannot be opened.
 func DirFS(dir string) (fs.FS, io.Closer, error) {

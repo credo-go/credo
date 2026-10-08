@@ -13,5 +13,5 @@ func ExampleNewRateLimiter() {
 
 	limiter := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
 	app.GlobalMiddleware(limiter.Middleware())
-	app.OnShutdown(limiter.Shutdown)
+	app.Manage(limiter, credo.Named("ratelimiter"))
 }

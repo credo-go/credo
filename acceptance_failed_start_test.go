@@ -1,5 +1,3 @@
-//go:build pending_w4
-
 package credo_test
 
 import (

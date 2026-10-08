@@ -48,7 +48,6 @@ type Server struct {
 
 	mu           sync.Mutex
 	state        serverState
-	managedCtx   context.Context
 	connections  map[*connectionRecord]struct{}
 	activeTokens int
 	closeTasks   int
@@ -86,17 +85,11 @@ func Use(app *credo.App, cfg ...Config) *Server {
 		drainDone:   make(chan struct{}),
 	}
 	// Register only after every mechanical validation succeeds so an invalid
-	// configuration cannot leave a partial lifecycle mutation behind.
-	app.OnStart(server.onStart)
-	app.OnDrain(server.Shutdown)
+	// configuration cannot leave a partial lifecycle mutation behind. The
+	// server is an ingress component: it drains concurrently with the HTTP
+	// drain and before the internal components its handlers use.
+	app.Manage(server, credo.Ingress())
 	return server
-}
-
-func (s *Server) onStart(ctx context.Context) error {
-	s.mu.Lock()
-	s.managedCtx = ctx
-	s.mu.Unlock()
-	return nil
 }
 
 // Shutdown stops admitting connections, sends active peers a Going Away close,

@@ -72,10 +72,10 @@ type App struct {
 	// state — the user may manage their own *http.Server.
 	frozen atomic.Bool
 
-	// lifecycle owns the server-session state machine, the bound server and app
-	// context, the lifecycle hooks, and the graceful-drain sequence. The public
-	// Run/Shutdown/State/Addr/OnStart/OnPreDrain/OnDrain/OnShutdown methods
-	// delegate to it.
+	// lifecycle owns the state machine, the start phase, the bound server and
+	// session context, the start and stop hooks, and the drain in tiers. The
+	// public Run/Start/Shutdown/State/Addr/OnStart/OnStop methods delegate to
+	// it.
 	lifecycle *lifecycleManager
 
 	// rawConfig holds the RawConfig passed via WithRawConfig option.

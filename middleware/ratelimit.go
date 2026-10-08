@@ -71,13 +71,13 @@ type RateLimiter struct {
 	closeOnce sync.Once
 }
 
-var _ credo.Shutdowner = (*RateLimiter)(nil)
+var _ credo.Component = (*RateLimiter)(nil)
 
 // NewRateLimiter creates a reusable rate limiter instance.
 //
 // If cfg.Store is nil, NewRateLimiter creates an internal in-memory store and
-// owns its lifecycle. Call Close/Shutdown during app shutdown to release
-// resources when using this constructor directly.
+// owns its lifecycle. Hand the limiter to app.Manage so the App shuts it down
+// after the HTTP drain, or call Close yourself when using it outside an App.
 func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 	cfg = normalizeRateLimitConfig(cfg)
 
@@ -153,7 +153,7 @@ func (r *RateLimiter) Close(ctx context.Context) error {
 	return closeErr
 }
 
-// Shutdown implements credo.Shutdowner.
+// Shutdown implements credo.Component.
 func (r *RateLimiter) Shutdown(ctx context.Context) error {
 	return r.Close(ctx)
 }
@@ -165,8 +165,8 @@ func (r *RateLimiter) Shutdown(ctx context.Context) error {
 // expired buckets are swept inline during Take — so there is nothing that
 // must be stopped at shutdown; closing it would only release memory early.
 // For deterministic store release (short-lived middleware, tests) or a
-// custom store lifecycle, use [NewRateLimiter] and register
-// [RateLimiter.Shutdown] with app.OnShutdown.
+// custom store lifecycle, use [NewRateLimiter] and hand the limiter to
+// app.Manage.
 func RateLimit(cfg ...RateLimitConfig) credo.Middleware {
 	config := resolveConfig(cfg, DefaultRateLimitConfig(), normalizeRateLimitConfig)
 	if config.Store == nil {

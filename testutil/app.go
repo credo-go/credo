@@ -5,6 +5,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,16 +39,19 @@ func WithWiring(fns ...func(*credo.App)) Option {
 	return func(o *options) { o.wiring = append(o.wiring, fns...) }
 }
 
-// WithOverride replaces the binding for type T with value v via [credo.App.Replace].
-// Overrides run after [WithWiring], making them the right tool for swapping a
-// real dependency for a stub or fake. Because Replace adds the binding when it
-// is absent, WithOverride works whether or not T was previously wired.
+// WithOverride replaces the binding for type T with value v, through
+// [credo.App.ProvideValue] with [credo.Override]. Overrides run after
+// [WithWiring], making them the right tool for swapping a real dependency for
+// a stub or fake. An override needs an earlier binding of T and panics without
+// one, so an override that no longer matches the wiring fails instead of
+// adding a binding nothing resolves; adding a binding is [WithWiring]'s job.
+// The replaced value never becomes the App's: whoever built it releases it.
 //
 //	testutil.WithOverride[UserRepo](fakeRepo)
 func WithOverride[T any](v T) Option {
 	return func(o *options) {
 		o.overrides = append(o.overrides, func(app *credo.App) {
-			app.MustReplace[T](v)
+			app.ProvideValue[T](v, credo.Override())
 		})
 	}
 }
@@ -122,16 +126,54 @@ func NewApp(tb testing.TB, opts ...Option) *credo.App {
 		fn(app)
 	}
 
+	// Registered first, this cleanup runs after every cleanup the test adds
+	// later — a test server closed through tb.Cleanup is drained before the
+	// components stop — so Start adds none for this App.
+	builtApps.Store(app, struct{}{})
 	tb.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		// Best-effort: a never-run App takes the bootstrap teardown path; an App
-		// that was Run drains in-flight requests first. Either way registered
-		// singletons are shut down. A state error (already stopped) is fine.
-		_ = app.Shutdown(ctx)
+		builtApps.Delete(app)
+		shutdown(app)
 	})
 
 	return app
+}
+
+// builtApps holds the Apps NewApp built whose shutdown cleanup is registered.
+var builtApps sync.Map
+
+// shutdown is the best-effort cleanup shutdown: a never-run App takes the
+// bootstrap teardown path; a started App drains first. Either way the
+// components that exist are shut down. A state error (already stopped) is
+// fine.
+func shutdown(app *credo.App) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	_ = app.Shutdown(ctx)
+}
+
+// Start runs app's start phase with [credo.App.Start] — each component's
+// Start in dependency order, then the start hooks — so the App can be served
+// through ServeHTTP, by httptest or a recorder, and fails the test when the
+// start fails. The App is shut down when the test ends.
+//
+// An App built by [NewApp] already has its shutdown cleanup registered first,
+// so it runs after every cleanup the test adds later: a test server closed
+// through tb.Cleanup is drained before the components stop, whether it was
+// created before or after Start. Any other App gets a shutdown cleanup here,
+// so its test server is created after Start or closed with defer.
+//
+//	app := testutil.NewApp(t, testutil.WithWiring(wire))
+//	testutil.Start(t, app)
+//	srv := httptest.NewServer(app)
+//	t.Cleanup(srv.Close)
+func Start(tb testing.TB, app *credo.App) {
+	tb.Helper()
+	if _, built := builtApps.Load(app); !built {
+		tb.Cleanup(func() { shutdown(app) })
+	}
+	if err := app.Start(tb.Context()); err != nil {
+		tb.Fatalf("testutil: start app: %v", err)
+	}
 }
 
 // buildConfig returns the RawConfig for a test App. With no pairs it is an

@@ -30,7 +30,7 @@ Supported sources:
 - `os.DirFS()` — development convenience (no symlink protection)
 - Custom `fs.FS` — testing, CDN backends, etc.
 
-`credo.DirFS` is the recommended convenience for disk serving: it opens an `os.Root` and returns its FS together with an `io.Closer` for the directory handle, so symlink escapes are refused without the caller wiring up `os.Root` by hand. Register the closer with `OnShutdown` to release the handle on graceful shutdown. The framework does not auto-manage the root — the caller still owns its lifecycle — keeping the security decision explicit; the framework never silently swaps in a sandbox behind the user's back.
+`credo.DirFS` is the recommended convenience for disk serving: it opens an `os.Root` and returns its FS together with an `io.Closer` for the directory handle, so symlink escapes are refused without the caller wiring up `os.Root` by hand. Close it in an `OnStop` hook — an internal stop hook runs after the HTTP drain — to release the handle on graceful shutdown. The framework does not auto-manage the root — the caller still owns its lifecycle — keeping the security decision explicit; the framework never silently swaps in a sandbox behind the user's back.
 
 ### Static Method
 

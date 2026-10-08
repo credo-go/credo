@@ -101,9 +101,7 @@ Important points:
 - rejects local name/lifecycle/DI conflicts before network I/O
 - pings the connection at startup
 - tracks it in the store registry for health reporting
-- makes DI the sole framework shutdown owner: `*sqldb.DB` implements
-  `credo.Shutdowner`, so a live teardown deadline allows the container to
-  attempt it after the services constructed from it have shut down
+- makes the App the sole shutdown owner: `*sqldb.DB` is a `credo.Component` (it has `Shutdown`), so the drain shuts it down in the internal tier, after the components constructed from it, while the shared deadline remains
 
 Ownership transfers only when `Register` succeeds. If it returns an error,
 including a Ping error, close `db` yourself before returning from composition.
@@ -764,7 +762,7 @@ again under another T with raw `app.Provide`, `app.ProvideValue`,
 `app.ProvideProtectedValue`, or `app.Replace` is unsupported
 and may give DI duplicate or contradictory shutdown ownership. Likewise, a
 handle declared caller-owned must not also be registered in DI as a
-`Shutdowner`. Use `Alias` for interface access. A general cross-infrastructure
+component. Use `Alias` for interface access. A general cross-infrastructure
 resource registry remains deferred until a second concrete subsystem needs it.
 
 Successful store value bindings and the adopted `*store.Registry` binding are
@@ -805,14 +803,20 @@ if err := store.Register[ReportingDB](
     return errors.Join(err, db.Shutdown(context.Background()))
 }
 
-// Register intentionally did not transfer shutdown ownership.
-app.OnShutdown(db.Shutdown)
+// Register intentionally did not transfer shutdown ownership: close the
+// client once the App has stopped every component that may use it.
+runErr := app.Run()
+if err := errors.Join(runErr, db.Shutdown(context.Background())); err != nil {
+    log.Fatal(err)
+}
 ```
+
+A value handed to `app.Manage` has no dependency edges, so the App would not order its shutdown after the services that use the wrapper; closing the client after `Run` returns keeps it open until every component has stopped.
 
 `WithLifecycle` by itself is an error; warning-only implicit caller ownership
 is no longer supported. A value that already implements `Lifecycle` must not
 also receive `WithLifecycle` or `WithCallerOwnedLifecycle`. A value that only
-implements `credo.Shutdowner` cannot use a different object for Ping/Health;
+implements `credo.Component` cannot use a different object for Ping/Health;
 implement the complete Lifecycle contract on the wrapper instead.
 
 ---
@@ -1016,7 +1020,7 @@ if err := db.Migrate(migrationCtx); err != nil {
 }
 ```
 
-The job and `OnStart` forms share the same registration and migration behavior; only the deployment owner differs. Do not also register `app.OnStart(db.Migrate)` in every production replica. `OnStart` receives Credo's independently-created lifecycle context, has no migration-specific deadline, and is not interrupted merely because the caller's `RunContext` context is cancelled during startup.
+The job and `OnStart` forms share the same registration and migration behavior; only the deployment owner differs. Do not also register `app.OnStart(db.Migrate)` in every production replica. An `OnStart` hook's context carries no values from the caller and has no migration-specific deadline; it ends when the hook returns, and a shutdown requested during the start phase — a signal under `Run`, the cancelled context of `RunContext` or `ServeContext`, or `app.Shutdown` — cancels it, so `Migrate` is interrupted like any other start step and the App rolls back what it built. A hook that ignores the cancellation is abandoned when the rollback's deadline ends. The pre-deploy job gives the migration its own deadline and is never interrupted by an application replica's shutdown.
 
 What the wrapper does on each `Migrate` call:
 

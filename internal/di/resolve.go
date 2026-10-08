@@ -145,10 +145,7 @@ func (c *Container) resolveMany(targetType reflect.Type, stack []reflect.Type) (
 	return result, nil
 }
 
-// resolveSingleton resolves a Singleton service. Each type has one entry whose
-// state moves unbuilt → building → built|failed exactly once; concurrent
-// callers of a building entry wait for that single completion. State changes
-// happen under c.mu, the constructor runs outside it.
+// resolveSingleton resolves a binding's singleton.
 func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stack []reflect.Type) (any, error) {
 	c.mu.Lock()
 	entry, ok := c.singletons[targetType]
@@ -157,6 +154,22 @@ func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stac
 		entry = &singletonEntry{}
 		c.singletons[targetType] = entry
 	}
+	u := c.unitOf[targetType]
+	c.mu.Unlock()
+	return c.resolveEntry(reg, targetType, u, entry, stack)
+}
+
+// resolveEntry resolves one singleton entry. Each entry's state moves
+// unbuilt → building → built|failed exactly once; concurrent callers of a
+// building entry wait for that single completion. State changes happen under
+// c.mu, the constructor runs outside it. A freshly built value is checked
+// against the component registry — its resource's other holders, and the
+// tier of a component found only on its value — before anyone receives it;
+// a refusal is the construction's terminal failure.
+func (c *Container) resolveEntry(
+	reg provider, targetType reflect.Type, u *Unit, entry *singletonEntry, stack []reflect.Type,
+) (any, error) {
+	c.mu.Lock()
 	switch entry.state {
 	case entryBuilt, entryFailed:
 		v, err := c.deliverLocked(targetType, entry)
@@ -183,12 +196,26 @@ func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stac
 	c.mu.Unlock()
 
 	value, err := c.build(reg, targetType, stack)
+	var token any
+	var hasToken bool
+	if err == nil && u != nil {
+		// The identity runs user code, so it is taken before the lock.
+		if token, hasToken, err = identityToken(value); err != nil {
+			err = fmt.Errorf("di: constructing %s: %w", targetType, err)
+		}
+	}
 
 	c.mu.Lock()
+	if err == nil && u != nil {
+		if admitErr := c.admitBuiltLocked(u, value, token, hasToken); admitErr != nil {
+			err = fmt.Errorf("di: constructing %s: %w", targetType, admitErr)
+		}
+	}
 	entry.buildDuration = time.Since(entry.buildStart)
 	if err != nil {
 		entry.state = entryFailed
 		entry.err = err
+		value = nil
 	} else {
 		entry.state = entryBuilt
 		entry.value = value
@@ -205,7 +232,7 @@ func (c *Container) resolveSingleton(reg provider, targetType reflect.Type, stac
 	c.mu.Unlock()
 
 	if late {
-		go c.lateCleanup(targetType, entry.state, value, err)
+		go c.lateCleanup(u, targetType, entry.state, value, err)
 	}
 	return v, derr
 }

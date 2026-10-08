@@ -28,8 +28,10 @@
 // worker's Run performs one activation: activations
 // never overlap, those that come due during a run are skipped, and
 // [WithRunTimeout] bounds each run cooperatively. Panics are recovered and
-// recorded as failures. Workers start in the application's OnStart phase and
-// drain in OnDrain, before DI teardown. [Pool.Workers] reports each worker's
+// recorded as failures. The pool is an ingress component of the App: its
+// workers start in the start walk, before the App accepts requests, and stop
+// with the ingress tier, concurrently with the HTTP drain and before the
+// internal components they use. [Pool.Workers] reports each worker's
 // effective [Config] and live state.
 //
 // # Adapted From

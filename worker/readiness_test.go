@@ -169,13 +169,23 @@ func TestReadiness_AppIntegration_OrderIndependent(t *testing.T) {
 	app := newTestApp(t)
 
 	// Register before UseHealth: the seam is resolved lazily, so order is free.
-	err := Register(app, "warmup", Func(func(context.Context) error { return nil }),
-		WithSchedule("@every 1h"), WithStartImmediately(),
+	// The first run waits for release, so the App is running before the
+	// worker's first success.
+	release := make(chan struct{})
+	err := Register(app, "warmup", Func(func(ctx context.Context) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}), WithSchedule("@every 1h"), WithStartImmediately(),
 		WithReadiness(ReadinessPolicy{RequireFirstSuccess: true}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	app.UseHealth()
+	startApp(t, app)
 
 	ready := func() (int, string) {
 		w := httptest.NewRecorder()
@@ -183,23 +193,14 @@ func TestReadiness_AppIntegration_OrderIndependent(t *testing.T) {
 		return w.Code, w.Body.String()
 	}
 	if code, body := ready(); code != http.StatusServiceUnavailable || !strings.Contains(body, "worker:warmup") {
-		t.Fatalf("before Start: /ready = %d %s, want 503 with worker:warmup", code, body)
+		t.Fatalf("before the first success: /ready = %d %s, want 503 with worker:warmup", code, body)
 	}
 
-	pool, err := app.Resolve[*Pool]()
-	if err != nil {
-		t.Fatalf("Resolve[*Pool]: %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	if err := pool.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	close(release)
 	awaitCondition(t, "/ready to turn 200", func() bool {
 		code, _ := ready()
 		return code == http.StatusOK
 	})
-	shutdownPool(t, pool)
 }
 
 func TestRegister_ReadinessNameCollisionFailsClosed(t *testing.T) {
@@ -210,6 +211,7 @@ func TestRegister_ReadinessNameCollisionFailsClosed(t *testing.T) {
 		WithReadiness(ReadinessPolicy{FailWhenFailed: true})); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	startApp(t, app)
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))

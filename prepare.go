@@ -18,6 +18,9 @@ import (
 type preparation struct {
 	handler Handler
 	err     error
+	// needsStart reports that the App has something to start, so ServeHTTP
+	// serves only once the start phase has succeeded.
+	needsStart bool
 }
 
 // preparationPanicStackSize bounds the stack captured when compile panics.
@@ -49,6 +52,7 @@ func (app *App) prepare() *preparation {
 	app.frozen.Store(true)
 	p := &preparation{}
 	p.handler, p.err = app.buildHandler()
+	p.needsStart = p.err == nil && (app.container.HasStartWork() || len(app.lifecycle.onStart) > 0)
 	if app.lifecycle.currentState() >= stateStopping {
 		// Shutdown won admission while the handler was being built: nothing
 		// may publish after it, so the drain sees an unprepared App.

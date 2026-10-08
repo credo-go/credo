@@ -15,31 +15,76 @@ import (
 //
 //	c.Provide[MyService](NewMyService)
 func (c *Container) Provide[T any](constructor any) error {
+	return c.ProvideWith[T](constructor, Options{})
+}
+
+// ProvideWith is [Container.Provide] with registration options.
+func (c *Container) ProvideWith[T any](constructor any, o Options) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	targetType := reflect.TypeFor[T]()
+	types := []reflect.Type{targetType}
 	if err := c.closedLocked("Provide", targetType); err != nil {
 		return err
 	}
 
 	reg, err := inspectConstructor(constructor, targetType)
 	if err != nil {
-		return misuse("Provide", []reflect.Type{targetType}, "%v; want func(dependencies...) %s or "+
+		return misuse("Provide", types, "%v; want func(dependencies...) %s or "+
 			"func(dependencies...) (%s, error)", err, targetType, targetType)
 	}
-
-	if _, exists := c.registrations[targetType]; exists {
-		return duplicateError("Provide", targetType)
+	if o.Borrowed {
+		return misuse("Provide", types, "credo.Borrowed() is accepted on ProvideValue only: a value a "+
+			"constructor builds belongs to the App")
+	}
+	if err := c.checkOverrideLocked("Provide", targetType, o.Override); err != nil {
+		return err
+	}
+	u := &Unit{t: targetType, name: targetType.String()}
+	if reason := planUnit(u, o); reason != "" {
+		return misuse("Provide", types, "%s", reason)
 	}
 
-	c.registrations[targetType] = reg
-	c.order = append(c.order, targetType)
-
 	// Pre-create singleton entry for later lazy resolution.
-	c.singletons[targetType] = &singletonEntry{}
-
+	c.bindLocked(u, reg, &singletonEntry{})
 	return nil
+}
+
+// checkOverrideLocked enforces that a second binding of one type is an
+// override and that an override has a binding to replace.
+func (c *Container) checkOverrideLocked(op string, t reflect.Type, override bool) error {
+	_, exists := c.registrations[t]
+	switch {
+	case exists && !override:
+		return duplicateError(op, t)
+	case !exists && override:
+		return misuse(op, []reflect.Type{t}, "credo.Override() replaces an earlier binding, but %s has none; "+
+			"bind %s first, or drop credo.Override()", t, t)
+	}
+	if _, protected := c.protected[t]; protected && override {
+		return misuse(op, []reflect.Type{t}, "the binding of %s is protected — an integration adopted it — "+
+			"and credo.Override() cannot replace it", t)
+	}
+	return nil
+}
+
+// bindLocked publishes a binding unit. An override takes the replaced
+// binding's place in registration order, and the value it replaces never
+// becomes the App's. c.mu must be held.
+func (c *Container) bindLocked(u *Unit, reg provider, entry *singletonEntry) {
+	if old, ok := c.unitOf[u.t]; ok {
+		u.index = old.index
+		c.units[old.index] = u
+		c.forgetHolderLocked(old)
+	} else {
+		u.index = len(c.units)
+		c.units = append(c.units, u)
+		c.order = append(c.order, u.t)
+	}
+	c.unitOf[u.t] = u
+	c.registrations[u.t] = reg
+	c.singletons[u.t] = entry
 }
 
 // MustProvide is like Provide but panics on error.
@@ -65,33 +110,59 @@ func (c *Container) CanProvideValue[T any]() error {
 // ProvideValue registers a pre-built value for type T as a Singleton.
 // The value is cached immediately. Every rejection is a [*MisuseError].
 func (c *Container) ProvideValue[T any](value T) error {
-	return c.provideValue("ProvideValue", value, false)
+	return c.provideValue("ProvideValue", value, Options{}, false)
+}
+
+// ProvideValueWith is [Container.ProvideValue] with registration options.
+func (c *Container) ProvideValueWith[T any](value T, o Options) error {
+	return c.provideValue("ProvideValue", value, o, false)
 }
 
 // ProvideProtectedValue registers a pre-built singleton whose binding cannot
 // later be overwritten through [Container.Replace].
 func (c *Container) ProvideProtectedValue[T any](value T) error {
-	return c.provideValue("ProvideProtectedValue", value, true)
+	return c.provideValue("ProvideProtectedValue", value, Options{}, true)
 }
 
-func (c *Container) provideValue[T any](op string, value T, protected bool) error {
+// ProvideProtectedValueWith is [Container.ProvideProtectedValue] with
+// registration options.
+func (c *Container) ProvideProtectedValueWith[T any](value T, o Options) error {
+	return c.provideValue("ProvideProtectedValue", value, o, true)
+}
+
+func (c *Container) provideValue[T any](op string, value T, o Options, protected bool) error {
+	targetType := reflect.TypeFor[T]()
+	types := []reflect.Type{targetType}
+	// The identity runs user code, so it is taken before the lock.
+	token, hasToken, idErr := identityToken(any(value))
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	targetType := reflect.TypeFor[T]()
-	if err := c.canProvideValueLocked(op, targetType); err != nil {
+	if err := c.closedLocked(op, targetType); err != nil {
 		return err
 	}
+	if err := c.checkOverrideLocked(op, targetType, o.Override); err != nil {
+		return err
+	}
+	u := &Unit{t: targetType, name: targetType.String(), valueBinding: true}
+	if reason := planUnit(u, o); reason != "" {
+		return misuse(op, types, "%s", reason)
+	}
+	if idErr != nil {
+		return misuse(op, types, "%v", idErr)
+	}
+	if o.Override {
+		c.forgetHolderLocked(c.unitOf[targetType])
+	}
+	if err := c.admitValueLocked(u, any(value), token, hasToken); err != nil {
+		return misuse(op, types, "%v", err)
+	}
 
-	c.registrations[targetType] = valueProvider{value: value}
+	c.bindLocked(u, valueProvider{value: value}, &singletonEntry{state: entryBuilt, value: value})
 	if protected {
 		c.protected[targetType] = struct{}{}
 	}
-	c.order = append(c.order, targetType)
-
-	// Cache in singletons immediately.
-	c.singletons[targetType] = &singletonEntry{state: entryBuilt, value: value}
-
 	return nil
 }
 

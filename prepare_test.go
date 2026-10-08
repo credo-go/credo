@@ -110,7 +110,7 @@ func TestFinalize_IsDIOnly_RoutesStayOpen(t *testing.T) {
 		}
 		return ctx.Response().Text(http.StatusOK, "ok")
 	})
-	app.OnShutdown(func(context.Context) error { return nil })
+	app.OnStop(func(context.Context) error { return nil })
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
@@ -438,20 +438,20 @@ func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 		return &prepDep{}
 	})
 	var drained, shut atomic.Bool
-	app.OnDrain(func(context.Context) error { drained.Store(true); return nil })
-	app.OnShutdown(func(context.Context) error { shut.Store(true); return nil })
+	app.OnStop(func(context.Context) error { drained.Store(true); return nil }, credo.Ingress())
+	app.OnStop(func(context.Context) error { shut.Store(true); return nil })
 
 	if err := app.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown = %v", err)
 	}
 	if !value.closed.Load() {
-		t.Fatal("a ProvideValue Shutdowner must be closed by bootstrap teardown")
+		t.Fatal("a ProvideValue component must be shut down by bootstrap teardown")
 	}
 	if built.Load() != 0 {
 		t.Fatal("teardown must not construct an unbuilt singleton")
 	}
 	if !drained.Load() || !shut.Load() {
-		t.Fatalf("hook phases ran: OnDrain=%v OnShutdown=%v, want both", drained.Load(), shut.Load())
+		t.Fatalf("stop hooks ran: ingress=%v internal=%v, want both", drained.Load(), shut.Load())
 	}
 	if got := app.State(); got != "stopped" {
 		t.Fatalf("State() = %q, want stopped", got)
@@ -487,21 +487,21 @@ func TestShutdown_Bootstrap_WorksAfterFailedFinalize(t *testing.T) {
 	}
 }
 
-func TestShutdown_Bootstrap_ReportsShutdownerFailure(t *testing.T) {
+func TestShutdown_Bootstrap_ReportsComponentFailure(t *testing.T) {
 	app := mustNew(t)
 	cause := errors.New("flush failed")
 	app.ProvideValue[*prepCloser](&prepCloser{err: cause})
 	err := app.Shutdown(t.Context())
 	if !errors.Is(err, cause) {
-		t.Fatalf("Shutdown = %v, want the Shutdowner error in the chain", err)
+		t.Fatalf("Shutdown = %v, want the component's error in the chain", err)
 	}
-	report, ok := errors.AsType[*credo.DIShutdownError](err)
+	report, ok := errors.AsType[*credo.LifecycleError](err)
 	if !ok {
-		t.Fatalf("Shutdown = %v, want a DIShutdownError", err)
+		t.Fatalf("Shutdown = %v, want a LifecycleError", err)
 	}
 	var failed int
 	for _, e := range report.Entries {
-		if e.State == credo.DIShutdownFailed && errors.Is(e.Err, cause) {
+		if e.Phase == credo.PhaseShutdown && e.Outcome == credo.OutcomeFailed && errors.Is(e.Err, cause) {
 			failed++
 		}
 	}

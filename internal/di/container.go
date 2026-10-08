@@ -30,9 +30,18 @@ type Container struct {
 	manyBindings   map[reflect.Type][]reflect.Type
 	manyBindingSet map[reflect.Type]map[reflect.Type]struct{}
 	// order holds the keys of registrations in registration order. Validation
-	// walks it instead of the map, so its report reads the same on every run;
-	// it is also the teardown tie-break.
+	// walks it instead of the map, so its report reads the same on every run.
 	order []reflect.Type
+	// units is the component registry: every binding and every component
+	// handed to Manage, in registration order — the teardown tie-break.
+	units []*Unit
+	// unitOf indexes the binding units by type.
+	unitOf map[reflect.Type]*Unit
+	// names indexes managed components by name.
+	names map[string]*Unit
+	// resources holds, per resource identity token, the holders whose values
+	// carry it, in registration order.
+	resources map[any][]*Unit
 	// frameworkProviders produces constructor parameters the framework injects
 	// without a registration (credo.Infra, Model 1). Written at setup only.
 	frameworkProviders map[reflect.Type]FrameworkProvider
@@ -61,6 +70,8 @@ type Container struct {
 	// buildDone is a capacity-one wake-up for the shutdown pass: every build
 	// completion performs a non-blocking send.
 	buildDone chan struct{}
+	// td is the drain's state from BeginTeardown on; nil before it.
+	td *teardown
 }
 
 // entryState is the construction state of one singleton.
@@ -107,6 +118,9 @@ func New() *Container {
 		aliases:        make(map[reflect.Type]reflect.Type),
 		manyBindings:   make(map[reflect.Type][]reflect.Type),
 		manyBindingSet: make(map[reflect.Type]map[reflect.Type]struct{}),
+		unitOf:         make(map[reflect.Type]*Unit),
+		names:          make(map[string]*Unit),
+		resources:      make(map[any][]*Unit),
 
 		frameworkProviders: make(map[reflect.Type]FrameworkProvider),
 		logger:             slog.New(slog.DiscardHandler),

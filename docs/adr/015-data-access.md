@@ -130,9 +130,10 @@ readiness, such noise could also trigger a replica-wide traffic cascade.
 Its ownership and publication boundary is the successful return:
 
 - If `value` implements `Lifecycle`, that same object supplies Ping, Health,
-  and Shutdown. A successful registration makes it framework-owned; the DI
-  container is its sole framework shutdown owner. During one teardown DI makes
-  at most one Shutdown attempt if the still-live deadline reaches the
+  and Shutdown. A successful registration makes it framework-owned: its
+  binding is a component of the App ([ADR-024](024-lifecycle-components.md)),
+  whose teardown is its sole framework shutdown owner. During one teardown the
+  App makes at most one Shutdown attempt if the still-live deadline reaches the
   registration in dependency order; deadline exhaustion may skip it entirely.
 - If `value` cannot implement `Lifecycle`, a separate `WithLifecycle(lc)`
   handle is accepted only with `WithCallerOwnedLifecycle()`. The handle
@@ -140,9 +141,9 @@ Its ownership and publication boundary is the successful return:
   `WithLifecycle` by itself is an error rather than an implicit warning-only
   ownership transfer.
 - A Lifecycle value with an explicit lifecycle or caller-owned option is
-  rejected. A Shutdowner-only value cannot be paired with a separate lifecycle
-  either. These checks prevent Ping/Health and Shutdown from silently targeting
-  different objects.
+  rejected. A value that is a `credo.Component` but not a `Lifecycle` cannot
+  be paired with a separate lifecycle either. These checks prevent Ping/Health
+  and Shutdown from silently targeting different objects.
 - Every failure, including Ping and final DI publication failure, leaves
   ownership with the caller.
 
@@ -189,11 +190,12 @@ shutdown owner.
 This uniqueness guarantee is store-ledger-scoped, not container-wide. Raw
 `app.Provide`, `app.ProvideValue`, `app.ProvideProtectedValue`, or
 `app.Replace` under another T can bypass it and
-publishing the same Lifecycle that way is unsupported: DI may acquire
-contradictory ownership or attempt Shutdown more than once through distinct
-registrations. A caller-owned handle must not also be registered in DI as a
-Shutdowner. A general resource registry is deferred until a second concrete
-infrastructure subsystem needs the same primitive.
+publishing the same Lifecycle that way is unsupported: the ledger does not see
+the second binding. The App's component registry still shuts one resource down
+once, through its holder registered first
+([ADR-024](024-lifecycle-components.md#resource-identity-one-resource-one-teardown)).
+A caller-owned handle must not also be bound in DI as a component, which would
+hand its teardown to the App.
 
 Store names share the named-health validator. Explicit empty, padded,
 control-character, and reserved `credo.` names are rejected rather than
@@ -286,11 +288,11 @@ The framework ships a single SQL adapter (Bun). Other ORMs work via raw DI regis
 - `store/` contracts remain ORM-agnostic — custom adapters possible
 - Separate submodule keeps Bun dependency out of core
 - `Client()` escape hatch prevents the wrapper from becoming a bottleneck
-- Registration has an explicit ownership-transfer boundary: DI is the sole
-  framework shutdown owner for successful direct Lifecycle values, making at
-  most one attempt per teardown when the live deadline reaches each entry;
-  explicit caller-owned values remain outside DI shutdown and failures remain
-  caller-owned
+- Registration has an explicit ownership-transfer boundary: the App's
+  component teardown is the sole framework shutdown owner for successful direct
+  Lifecycle values, making at most one attempt per teardown when the live
+  deadline reaches each entry; explicit caller-owned values remain outside the
+  App's teardown and failures remain caller-owned
 - Private name/type/resource-identity reservations prevent duplicate
   concurrent registration from leaking pending health entries
 - Protected store and Registry bindings prevent later Replace calls from

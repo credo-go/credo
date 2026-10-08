@@ -180,7 +180,8 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    app.OnShutdown(func(ctx context.Context) error {
+    // An internal stop hook runs after the HTTP drain.
+    app.OnStop(func(ctx context.Context) error {
         return root.Close()
     })
 

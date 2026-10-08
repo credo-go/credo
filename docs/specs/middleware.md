@@ -285,12 +285,12 @@ CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cro
 
 ### RateLimit Lifecycle
 
-`RateLimit()` is a convenience constructor. For explicit lifecycle management, use `NewRateLimiter(...)` and register shutdown on app stop:
+`RateLimit()` is a convenience constructor. For explicit lifecycle management, use `NewRateLimiter(...)`: the limiter is a `credo.Component`, so hand it to `app.Manage` and the App shuts it down after the HTTP drain, in the internal tier:
 
 ```go
 rl := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
 app.GlobalMiddleware(rl.Middleware())
-app.OnShutdown(rl.Shutdown)
+app.Manage(rl, credo.Named("ratelimiter"))
 ```
 
 ---

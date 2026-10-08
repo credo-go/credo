@@ -174,10 +174,10 @@ func TestInvalidUseDoesNotPreventLaterValidRegistration(t *testing.T) {
 	}
 
 	var drainRan bool
-	app.OnDrain(func(context.Context) error {
+	app.OnStop(func(context.Context) error {
 		drainRan = true
 		return nil
-	})
+	}, credo.Ingress())
 	app.OnStart(func(context.Context) error { return errConfigStartupStop })
 	if err := app.Run(); err == nil {
 		t.Fatal("Run() should return the deliberate startup error")

@@ -24,7 +24,7 @@ import (
 // context.Context for context-taking APIs.
 //
 // Context is Credo's HTTP request context. Lifecycle hooks such as
-// [App.OnStart] and [App.OnShutdown] receive a standard context.Context,
+// [App.OnStart] and [App.OnStop] receive a standard context.Context,
 // not *Context.
 type Context struct {
 	app      *App
