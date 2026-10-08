@@ -1,6 +1,6 @@
 # ADR-007: Router & Routing
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001 — `StatusHandler` accepts 404 and 405 only (v0.24.0)
 
 ## URL round-trip amendment
 

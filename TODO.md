@@ -8,18 +8,18 @@
 
 ## Components, Kernel Registries and Sequential Bootstrap
 
-Scope, sequence and acceptance live in the [delivery plan](docs/plans/components-and-sequential-bootstrap.md); these boxes are the only progress tracker. Accepted contracts are not shipped behavior until their box is checked. All of it ships in v0.24.0; the boxes follow the plan's dependency order.
+All of it ships in v0.24.0. The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle-components.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-006](docs/adr/006-application-lifecycle.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-013](docs/adr/013-internationalization.md), [ADR-023](docs/adr/023-worker-system.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-009](docs/adr/009-handler-and-error-handling.md) and [ADR-007](docs/adr/007-router-and-routing.md), the [lifecycle](docs/specs/lifecycle.md), [container](docs/specs/container.md), [bootstrap and DI lifecycle](docs/specs/bootstrap-and-di-lifecycle.md), [store](docs/specs/store.md), [WebSocket](docs/specs/websocket.md), [i18n](docs/specs/i18n.md), [worker](docs/specs/worker.md), [validation](docs/specs/validation.md) and [router](docs/specs/router.md) specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-10-08; only the release remains. These boxes are the only progress tracker.
 
-- [x] W0: the header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
-- [x] W1: promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
-- [x] W2: sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted (2026-10-08)
-- [x] W4: lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override`
-- [x] W5: stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error)
-- [x] W6: workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration)
-- [x] W3: the DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
-- [x] W7: a rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error; `validation.NewError` builds the client-visible one (2026-10-08)
-- [x] W8: `StatusHandler` panics for any code but 404 and 405 (2026-10-08)
-- [ ] W9: examples, guides and the release
+- [x] The header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
+- [x] Promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
+- [x] Sequential bootstrap and the three error phases — registration panics on misuse, `Finalize` returns what only the whole graph reveals, `Start` returns I/O errors; the concurrent-registration machinery deleted (2026-10-08)
+- [x] Lifecycle components (`Component`, `Starter`, two tiers, `App.Start`, `Manage`, `OnStart`/`OnStop`, one teardown per resource) and the registration options `Ingress`, `Borrowed`, `Closer` and `Override` (2026-10-08)
+- [x] Stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error) (2026-10-08)
+- [x] Workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration) (2026-10-08)
+- [x] The DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
+- [x] A rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error; `validation.NewError` builds the client-visible one (2026-10-08)
+- [x] `StatusHandler` panics for any code but 404 and 405 (2026-10-08)
+- [ ] Examples, guides and the release
 
 ## Restart Backoff and Startup Features
 
@@ -666,7 +666,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
   - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide, and if flipped announce one minor ahead
-- [ ] **Lifecycle acceptance scenarios** (proposed with v0.24.0, W4) stay pinned by tests: the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
+- [ ] **Lifecycle acceptance scenarios** ([ADR-024](docs/adr/024-lifecycle-components.md#consequences), added in v0.24.0) stay pinned by tests (`TestAcceptance_DrainDeliversLastJob`, `TestAcceptance_FailedStartStopsWhatWasBuilt`): the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
 - [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.
@@ -680,6 +680,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable` — `// Maturity: <label>` closes every public package doc; `maturity_test.go` enforces the line and its agreement with the README table
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
+- [ ] **Decisions left outside v0.24.0**, each taken on its own and none reopening the component model: exporting `App`'s parts and giving the satellite packages narrow interfaces instead of `*credo.App`; an observer over the final response and a post-match middleware tier; `Context` pooling — kept or dropped on a measurement whose metric is fixed in advance — and typed context keys; the rest of the error model (one error channel, message keys separate from messages, fault codes); `store/sqldb`'s private-field layer and its count rule; typed configuration sections and reload's mechanisms, which stay outside the component model ([ADR-024](docs/adr/024-lifecycle-components.md#scope)); a pre-v1 pruning of the public surface (`MustResolve`/`MustResolveAll` included) and a split of the specs v1 freezes into a normative contract and informative notes. Typed endpoints and the strict-decoding default are tracked in the [v1 Gate](#v1-gate).
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
   - [ ] Routes with `Scope` meta must have auth middleware registered
   - [ ] Routes with `Accept` meta must have ContractGuard middleware

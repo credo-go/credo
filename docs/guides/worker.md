@@ -692,7 +692,7 @@ func TestBillingRegistration(t *testing.T) {
 }
 ```
 
-To run the workers inside the App, start it without a listener. `app.Start` runs the start phase — the workers' loops included — and `app.Shutdown` stops them, so a test can assert that every worker stops within the deadline:
+To run the workers inside the App, start it without a listener. `testutil.Start` runs the start phase — the workers' loops included — and fails the test when it fails; an explicit `app.Shutdown` stops them, so a test can assert that every worker stops within the deadline:
 
 ```go
 func TestBillingWorkersStop(t *testing.T) {
@@ -700,9 +700,7 @@ func TestBillingWorkersStop(t *testing.T) {
     workers := worker.Use(app)
     RegisterBilling(app, workers)
 
-    if err := app.Start(t.Context()); err != nil {
-        t.Fatal(err)
-    }
+    testutil.Start(t, app)
     ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
     defer cancel()
     if err := app.Shutdown(ctx); err != nil {

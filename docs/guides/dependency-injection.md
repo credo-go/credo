@@ -59,7 +59,7 @@ Bootstrap is sequential: registration calls come from the goroutine that builds 
 
 1. configuration — `credo.New()`, or `credo.New(credo.WithRawConfig(raw))`;
 2. `Provide` and `ProvideValue`, with `Alias` and `BindMany`;
-3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers, `Manage`;
 4. `Finalize`, handling its error;
 5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
 6. `Run`.
@@ -156,6 +156,7 @@ func (c *UserController) Show(ctx *credo.Context) error {
 }
 
 func main() {
+    // 1. Configuration.
     app, err := credo.New()
     if err != nil {
         log.Fatal(err)
@@ -167,6 +168,7 @@ func main() {
         log.Fatal(err)
     }
 
+    // 2. Provide, with Alias for the interface consumers take.
     app.ProvideValue(&dbCfg)
     app.Provide[*DB](NewDB)
     app.Provide[*PgUserRepository](NewPgUserRepository)
@@ -174,13 +176,18 @@ func main() {
     app.Provide[*UserService](NewUserService)
     app.Provide[*UserController](NewUserController)
 
+    // 3. Feature mounts and satellites would go here (UseHealth, stores, workers).
+
+    // 4. Finalize validates the whole graph.
     if err := app.Finalize(); err != nil {
         log.Fatal(err)
     }
 
+    // 5. Resolve the controller and bind its routes.
     users := app.MustResolve[*UserController]()
     app.GET("/users/{id}", users.Show)
 
+    // 6. Run.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
@@ -230,7 +237,7 @@ Important rules:
 - the logger is scoped per service automatically
 - services can still be tested by constructing `credo.Infra` directly or by using `app.NewInfra(name)` outside DI
 
-Tracing and metrics carriers are planned for the observability release. They are not part of the v0.1 `Infra` surface.
+Tracing and metrics carriers are planned for the observability release. They are not part of the current `Infra` surface.
 
 ---
 
@@ -729,15 +736,12 @@ svc := NewUserService(credo.Infra{Logger: slog.Default()}, repo)
 Use the container in tests when you want to verify wiring:
 
 ```go
-app, err := credo.New()
-if err != nil {
-    t.Fatal(err)
-}
+app := testutil.NewApp(t) // hermetic: reads no configuration from disk or the environment
 
-app.ProvideValue(&DatabaseConfig{DSN: "test"})
+app.ProvideValue[UserRepository](&FakeUserRepository{})
 app.Provide[*UserService](NewUserService)
 
-if err := app.Finalize(); err != nil {
+if err := app.Finalize(); err != nil { // a missing dependency fails here, with its path
     t.Fatal(err)
 }
 
@@ -802,10 +806,10 @@ For medium and large Credo applications, the default shape should be:
 3. register config with `ProvideValue`
 4. register concrete constructors with `Provide`
 5. connect single implementations with `Alias` and collections with `BindMany` when needed
-6. mount features and register satellites — `UseI18n`, `UseHealth`, stores, workers
-7. call `app.Finalize()`
-8. resolve top-level controllers/services needed for startup wiring
-9. start the app
+6. mount features and register satellites — `UseI18n`, `UseHealth`, stores, workers, `Manage`
+7. call `app.Finalize()` and handle its error
+8. resolve top-level controllers/services and register the routes built from them
+9. `app.Run()`
 
 This keeps dependency graphs explicit, startup failures early, and runtime behavior simple.
 

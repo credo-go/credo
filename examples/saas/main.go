@@ -1,5 +1,15 @@
 // Package main demonstrates a full SaaS application built with the Credo framework.
 //
+// run() follows the documented bootstrap order, every satellite included:
+//
+//  1. Configuration: config.Load, typed sections, the logger and credo.New
+//  2. Provide: typed config values and constructors, Infra first
+//  3. Feature mounts and satellite registrations: request features, i18n,
+//     health, the store, a scheduled worker, the WebSocket server and hooks
+//  4. Finalize: the whole graph is validated before anything is built
+//  5. Resolve, middleware and routes, built from resolved values
+//  6. Run: signal-aware serving with a graceful drain
+//
 // Features shown:
 //   - Configuration loading (config.Load with YAML + .env + env overrides)
 //   - Typed config at the module boundary, injected via DI
@@ -8,11 +18,17 @@
 //   - Framework HTTP features (recovery on by default; request ID, access
 //     log and compression enabled explicitly) plus global CORS and secure
 //     headers middleware
+//   - Localization from a programmatic catalog (error, validation and
+//     handler messages, field display names)
 //   - Authentication (JWT bearer tokens)
 //   - Route groups (public, authenticated, admin)
 //   - Dependency injection (Provide/Resolve with typed constructors)
-//   - Validation (programmatic rules, no struct tags)
+//   - Validation (programmatic rules and one custom rule, no struct tags)
 //   - Centralized error handling (Credo JSON envelope)
+//   - A data store registered with store.Register: pinged at start,
+//     reported by /ready, shut down after its consumers
+//   - A scheduled worker built from the container
+//   - A WebSocket echo endpoint served by an ingress component
 //   - Health probes (/health, /ready) for container orchestration
 //   - Lifecycle components and graceful shutdown with OnStop hooks
 package main
@@ -24,6 +40,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -32,7 +50,10 @@ import (
 	"github.com/credo-go/credo/auth"
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/middleware"
+	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/validation"
+	"github.com/credo-go/credo/websocket"
+	"github.com/credo-go/credo/worker"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,10 +112,26 @@ type CreateTenantRequest struct {
 func (r *CreateTenantRequest) Validate() error {
 	return validation.ValidateStruct(r,
 		validation.Field(&r.Name, validation.Required[string](), validation.Length(2, 100)),
-		validation.Field(&r.Domain, validation.Required[string](), validation.Length(3, 253)),
+		validation.Field(&r.Domain,
+			validation.Required[string](),
+			validation.Length(3, 253),
+			validation.By(notReservedDomain),
+		),
 		validation.Field(&r.PlanID, validation.Required[string](), validation.UUID()),
 		validation.Field(&r.OwnerID, validation.Required[string](), validation.UUID()),
 	)
+}
+
+// notReservedDomain is a custom rule. A client-visible failure is a
+// validation.NewError; any other error a rule returns is an internal (500)
+// failure whose text is only logged.
+func notReservedDomain(domain string) error {
+	for _, suffix := range []string{".invalid", ".localhost", ".test"} {
+		if strings.HasSuffix(domain, suffix) {
+			return validation.NewError("domain_reserved", "must not use a reserved domain")
+		}
+	}
+	return nil
 }
 
 // Tenant is the response type for tenant operations.
@@ -108,47 +145,124 @@ type Tenant struct {
 }
 
 // ---------------------------------------------------------------------------
+// Data store (stand-in for a *sqldb.DB)
+// ---------------------------------------------------------------------------
+
+// TenantStore stands in for a database handle such as *sqldb.DB, which an
+// application builds from DatabaseConfig with sqldb.Open. It implements
+// store.Lifecycle, so store.Register can name its binding: the start phase
+// pings it, /ready reports its health, and the App shuts it down after the
+// services that use it.
+type TenantStore struct {
+	infra   credo.Infra
+	mu      sync.Mutex
+	tenants map[string]Tenant
+}
+
+// NewTenantStore is a DI constructor. A real constructor opens the
+// connection pool from cfg; it does no I/O beyond that, since the start
+// phase pings the store.
+func NewTenantStore(infra credo.Infra, cfg *DatabaseConfig) *TenantStore {
+	infra.Logger.Debug("tenant store configured", "db_host", cfg.Host, "db_name", cfg.Name)
+	return &TenantStore{infra: infra, tenants: make(map[string]Tenant)}
+}
+
+// Ping implements store.Lifecycle; the start phase calls it once.
+func (s *TenantStore) Ping(context.Context) error { return nil }
+
+// Health implements store.Lifecycle; /ready reports it under the store's name.
+func (s *TenantStore) Health(context.Context) store.Health {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return store.Health{Status: store.StatusUp, Details: map[string]any{"tenants": len(s.tenants)}}
+}
+
+// Shutdown implements store.Lifecycle and makes the store a component.
+func (s *TenantStore) Shutdown(context.Context) error {
+	s.infra.Logger.Info("tenant store closed")
+	return nil
+}
+
+// Save stores a tenant.
+func (s *TenantStore) Save(t Tenant) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tenants[t.ID] = t
+}
+
+// All returns every stored tenant.
+func (s *TenantStore) All() []Tenant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Tenant, 0, len(s.tenants))
+	for _, t := range s.tenants {
+		out = append(out, t)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // Service layer (DI-managed)
 // ---------------------------------------------------------------------------
 
 // TenantService handles tenant business logic.
 type TenantService struct {
 	infra credo.Infra
-	cfg   *DatabaseConfig
+	store *TenantStore
 }
 
-// NewTenantService is a DI constructor (Model 1: Infra as first parameter).
-func NewTenantService(infra credo.Infra, cfg *DatabaseConfig) *TenantService {
-	infra.Logger.Info("TenantService initialized", "db_host", cfg.Host)
-	return &TenantService{infra: infra, cfg: cfg}
+// NewTenantService is a DI constructor (Infra as first parameter).
+func NewTenantService(infra credo.Infra, store *TenantStore) *TenantService {
+	return &TenantService{infra: infra, store: store}
 }
 
-// Create creates a new tenant (stub — returns mock data).
+// Create creates a new tenant.
 func (s *TenantService) Create(ctx context.Context, req *CreateTenantRequest) (*Tenant, error) {
-	s.infra.Logger.Info("creating tenant", "name", req.Name, "domain", req.Domain)
-	return &Tenant{
+	tenant := Tenant{
 		ID:        "tnnt_" + req.Domain,
 		Name:      req.Name,
 		Domain:    req.Domain,
 		PlanID:    req.PlanID,
 		OwnerID:   req.OwnerID,
 		CreatedAt: time.Now(),
-	}, nil
+	}
+	s.store.Save(tenant)
+	s.infra.Logger.InfoContext(ctx, "tenant created", "tenant_id", tenant.ID)
+	return &tenant, nil
 }
 
-// List returns all tenants (stub — returns mock data).
-func (s *TenantService) List(ctx context.Context) ([]Tenant, error) {
-	s.infra.Logger.Info("listing tenants")
-	return []Tenant{
-		{ID: "tnnt_acme", Name: "Acme Corp", Domain: "acme.example.com", CreatedAt: time.Now()},
-		{ID: "tnnt_globex", Name: "Globex Inc", Domain: "globex.example.com", CreatedAt: time.Now()},
-	}, nil
+// List returns all tenants.
+func (s *TenantService) List(context.Context) ([]Tenant, error) {
+	return s.store.All(), nil
 }
 
 // Shutdown makes TenantService a credo.Component: the App shuts it down
-// after its consumers when it drains.
-func (s *TenantService) Shutdown(ctx context.Context) error {
+// after its consumers (the HTTP drain) and before the store it uses.
+func (s *TenantService) Shutdown(context.Context) error {
 	s.infra.Logger.Info("TenantService shutting down")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Background work (DI-managed scheduled worker)
+// ---------------------------------------------------------------------------
+
+// UsageReporter is a scheduled worker: each activation performs one run and
+// returns. The container builds it in the start walk, after the store it
+// depends on, and the App stops it with the HTTP drain.
+type UsageReporter struct {
+	infra credo.Infra
+	store *TenantStore
+}
+
+// NewUsageReporter is a DI constructor.
+func NewUsageReporter(infra credo.Infra, store *TenantStore) *UsageReporter {
+	return &UsageReporter{infra: infra, store: store}
+}
+
+// Run implements worker.Worker.
+func (r *UsageReporter) Run(ctx context.Context) error {
+	r.infra.Logger.InfoContext(ctx, "usage report", "tenants", len(r.store.All()))
 	return nil
 }
 
@@ -178,6 +292,37 @@ func newJWTAuthenticator() *auth.JWTAuthenticator[User] {
 }
 
 // ---------------------------------------------------------------------------
+// Localization
+// ---------------------------------------------------------------------------
+
+// i18nConfig is a programmatic English catalog. Error and validation codes
+// are message keys as they are, with no prefix; a code with no entry falls
+// back to Credo's built-in text. Bigger applications keep the catalogs in
+// locales/<lang>/messages.json and fields.json (see ../references/locales).
+func i18nConfig() credo.I18nConfig {
+	return credo.I18nConfig{
+		Default: "en",
+		Messages: credo.I18nMessages{
+			"admin.welcome":        "Welcome to the admin dashboard, {{.email}}",
+			"required":             "{{.field}} is required",
+			"length":               "{{.field}} must be between {{.min}} and {{.max}} characters",
+			"uuid":                 "{{.field}} must be a valid UUID",
+			"domain_reserved":      "{{.field}} must not use a reserved domain",
+			"role_required":        "Your role does not allow this action",
+			"token_signing_failed": "The token could not be issued",
+			"tenant_create_failed": "The tenant could not be created",
+			"tenant_list_failed":   "The tenants could not be listed",
+		},
+		Fields: credo.I18nFields{
+			"name":     "Name",
+			"domain":   "Domain",
+			"plan_id":  "Plan",
+			"owner_id": "Owner",
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -194,7 +339,7 @@ func loginHandler(ctx *credo.Context) error {
 	signed, err := token.SignedString(jwtSigningKey)
 	if err != nil {
 		return credo.NewHTTPError(http.StatusInternalServerError, "token_signing_failed").
-			WithMessageKey("failed to sign token").WithInternal(err)
+			WithInternal(err)
 	}
 	return ctx.Response().JSON(http.StatusOK, map[string]string{
 		"token": signed,
@@ -220,7 +365,7 @@ func createTenantHandler(svc *TenantService) credo.Handler {
 		tenant, err := svc.Create(ctx.Context(), &req)
 		if err != nil {
 			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_create_failed").
-				WithMessageKey("failed to create tenant").WithInternal(err)
+				WithInternal(err)
 		}
 
 		return ctx.Response().JSON(http.StatusCreated, tenant)
@@ -232,7 +377,7 @@ func listTenantsHandler(svc *TenantService) credo.Handler {
 		tenants, err := svc.List(ctx.Context())
 		if err != nil {
 			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_list_failed").
-				WithMessageKey("failed to list tenants").WithInternal(err)
+				WithInternal(err)
 		}
 		return ctx.Response().JSON(http.StatusOK, tenants)
 	}
@@ -241,7 +386,7 @@ func listTenantsHandler(svc *TenantService) credo.Handler {
 func adminDashboardHandler(ctx *credo.Context) error {
 	user, _ := ctx.GetUser[User]()
 	return ctx.Response().JSON(http.StatusOK, map[string]any{
-		"message": "Welcome to the admin dashboard",
+		"message": ctx.T("admin.welcome", map[string]any{"email": user.Email}),
 		"user":    user,
 		"stats": map[string]int{
 			"total_tenants":  42,
@@ -251,7 +396,20 @@ func adminDashboardHandler(ctx *credo.Context) error {
 	})
 }
 
-// requireRole creates middleware that checks the user's role via route meta.
+// echoHandler echoes every WebSocket message back until the client closes.
+func echoHandler(_ *credo.Context, conn *websocket.Conn) error {
+	for {
+		typ, payload, err := conn.Read(conn.Context())
+		if err != nil {
+			return err
+		}
+		if err := conn.Write(conn.Context(), typ, payload); err != nil {
+			return err
+		}
+	}
+}
+
+// requireRole creates middleware that checks the user's role.
 func requireRole(role string) credo.Middleware {
 	return func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
@@ -261,7 +419,7 @@ func requireRole(role string) credo.Middleware {
 			}
 			if user.Role != role {
 				return credo.NewHTTPError(http.StatusForbidden, "role_required").
-					WithMessageKey(fmt.Sprintf("role %q required, got %q", role, user.Role))
+					WithDetails(map[string]string{"required_role": role})
 			}
 			return next(ctx)
 		}
@@ -273,33 +431,30 @@ func requireRole(role string) credo.Middleware {
 // ---------------------------------------------------------------------------
 
 func run() error {
-	// 1. Load configuration (YAML/JSON file + .env + env vars)
+	// 1. Configuration. Load the YAML/JSON file + .env + env vars, read the
+	// application's typed sections at the module boundary, build the logger
+	// and create the App. The log level lives in a slog.LevelVar so a config
+	// reload (SIGHUP / app.Reload) can change it without a restart.
 	rawCfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
 	}
 
-	// 2. Extract typed configs at module boundary
 	var appCfg AppConfig
-	if err := rawCfg.Unmarshal("app", &appCfg); err != nil {
+	if err = rawCfg.Unmarshal("app", &appCfg); err != nil {
 		return fmt.Errorf("unmarshal app config: %w", err)
 	}
-
 	var dbCfg DatabaseConfig
-	if err := rawCfg.Unmarshal("databases.default", &dbCfg); err != nil {
+	if err = rawCfg.Unmarshal("databases.default", &dbCfg); err != nil {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 
-	// 3. Configure logger. The level lives in a slog.LevelVar so a config
-	// reload (SIGHUP / app.Reload) can change it without a restart — see the
-	// OnConfigChange subscriber below.
 	var logLevel slog.LevelVar
 	if appCfg.Debug {
 		logLevel.Set(slog.LevelDebug)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel}))
 
-	// 4. Create app with config and logger
 	app, err := credo.New(
 		credo.WithRawConfig(rawCfg),
 		credo.WithLogger(logger),
@@ -309,74 +464,42 @@ func run() error {
 		return fmt.Errorf("credo.New: %w", err)
 	}
 
-	// 5. Register typed configs in DI container
+	// 2. Provide. Typed config values and the constructors that use them.
+	// Nothing is built yet; a misused registration panics at its line.
 	app.ProvideValue(&appCfg)
 	app.ProvideValue(&dbCfg)
-
-	// 6. Register services via DI
+	app.Provide[*TenantStore](NewTenantStore)
 	app.Provide[*TenantService](NewTenantService)
+	app.Provide[*UsageReporter](NewUsageReporter)
 
-	// 7. Finalize DI container (freeze + validate: catches missing deps,
-	// cycles). Constructors run only after this point.
-	if err := app.Finalize(); err != nil {
-		return fmt.Errorf("DI finalize: %w", err)
-	}
-
-	// 8. Resolve services for handler wiring
-	tenantSvc := app.MustResolve[*TenantService]()
-
-	// 9. Framework HTTP features. Panic recovery is on by default; request
-	// correlation, access logging and response compression are installed
-	// once per app and run around every request, including 404/405.
+	// 3. Feature mounts and satellite registrations, in any order.
+	//
+	// Framework HTTP features: panic recovery is on by default; request
+	// correlation, access logging and response compression are installed once
+	// and run around every request, including 404/405.
 	app.UseRequestID()
 	app.UseAccessLog()
 	app.UseCompress()
+	app.UseI18n(i18nConfig())
+	app.UseHealth() // /health (liveness) and /ready (readiness)
 
-	// 10. Global middleware you add yourself (applied to all requests,
-	// including 404/405).
-	app.GlobalMiddleware(
-		middleware.Secure(),
-		middleware.CORS(middleware.CORSConfig{
-			AllowOrigins:     []string{"https://app.example.com", "https://*.example.com"},
-			AllowCredentials: true,
-		}),
-	)
+	// The store binding is named for the start-phase ping and /ready.
+	store.Register[*TenantStore](app, store.WithName("tenants-db"))
 
-	// 11. Health endpoints (K8s liveness + readiness probes)
-	app.UseHealth()
+	// A scheduled worker built from the container: one run per hour.
+	workers := worker.Use(app)
+	workers.ScheduledProvided[*UsageReporter]("usage-report", "@every 1h")
 
-	// 12. Public routes (no auth required)
-	app.POST("/auth/login", loginHandler).Name("auth.login")
+	// The WebSocket server is an ingress component: it starts with the App
+	// and drains beside the HTTP drain, before the services its handlers use.
+	ws := websocket.New(app.NewInfra("websocket"))
+	app.Manage(ws, credo.Ingress())
 
-	// 13. Authenticated routes (JWT required)
-	jwtAuth := newJWTAuthenticator()
-	authenticated := app.Group("/api/v1")
-	authenticated.Middleware(
-		auth.Middleware[User](jwtAuth, nil),
-	)
-
-	authenticated.GET("/me", meHandler).Name("user.me")
-	authenticated.GET("/tenants", listTenantsHandler(tenantSvc)).Name("tenants.list")
-	authenticated.POST("/tenants", createTenantHandler(tenantSvc)).Name("tenants.create")
-
-	// 14. Admin routes (JWT + admin role required)
-	admin := authenticated.Group("/admin")
-	admin.Middleware(requireRole("admin"))
-
-	admin.GET("/dashboard", adminDashboardHandler).Name("admin.dashboard")
-
-	// 15. Custom 404 handler
-	app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
-		return ctx.Response().JSON(http.StatusNotFound, map[string]string{
-			"error":   "not_found",
-			"message": fmt.Sprintf("No route matches %s %s", ctx.Request().Method, ctx.Request().URL.Path),
-		})
-	})
-
-	// 16. Lifecycle hooks. OnConfigChange makes the "app" section reloadable:
-	// flip app.debug in the config file and `systemctl reload` (SIGHUP) or
-	// app.Reload switches the log level in place. The new value is decoded and
-	// published atomically before this runs; nothing else in "app" is live.
+	// Hooks. OnConfigChange makes the "app" section reloadable: flip
+	// app.debug in the config file and `systemctl reload` (SIGHUP) or
+	// app.Reload switches the log level in place. The new value is decoded
+	// and published atomically before this runs; nothing else in "app" is
+	// live.
 	app.OnConfigChange("app", func(ctx context.Context, next AppConfig) error {
 		if next.Debug {
 			logLevel.Set(slog.LevelDebug)
@@ -387,7 +510,7 @@ func run() error {
 		return nil
 	})
 	app.OnStart(func(context.Context) error {
-		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr())
+		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr().String())
 		return nil
 	})
 	app.OnStop(func(context.Context) error {
@@ -395,9 +518,62 @@ func run() error {
 		return nil
 	})
 
-	// 17. Start the server. Run blocks until SIGINT/SIGTERM, then drains
-	// gracefully within the configured 15s shutdown timeout. A second signal
-	// during shutdown force-kills the process.
+	// 4. Finalize validates the whole graph — missing dependencies, cycles —
+	// and reports every problem at once. Constructors run only after this.
+	if err := app.Finalize(); err != nil {
+		return fmt.Errorf("DI finalize: %w", err)
+	}
+
+	// 5. Resolve, middleware and routes, built from resolved values.
+	tenantSvc := app.MustResolve[*TenantService]()
+
+	// Global middleware you add yourself (applied to all requests,
+	// including 404/405).
+	app.GlobalMiddleware(
+		middleware.Secure(),
+		middleware.CORS(middleware.CORSConfig{
+			AllowOrigins:     []string{"https://app.example.com", "https://*.example.com"},
+			AllowCredentials: true,
+		}),
+	)
+
+	// Public routes (no auth required).
+	app.POST("/auth/login", loginHandler).Name("auth.login")
+	app.GET("/ws/echo", ws.Handler(echoHandler)).Name("ws.echo")
+
+	// Authenticated routes (JWT required).
+	jwtAuth := newJWTAuthenticator()
+	authenticated := app.Group("/api/v1")
+	authenticated.Middleware(
+		auth.Middleware[User](jwtAuth, nil),
+	)
+
+	authenticated.GET("/me", meHandler).Name("user.me")
+	authenticated.GET("/tenants", listTenantsHandler(tenantSvc)).Name("tenants.list")
+	authenticated.POST("/tenants", createTenantHandler(tenantSvc)).Name("tenants.create")
+
+	// Admin routes (JWT + admin role required).
+	admin := authenticated.Group("/admin")
+	admin.Middleware(requireRole("admin"))
+
+	admin.GET("/dashboard", adminDashboardHandler).Name("admin.dashboard")
+
+	// Custom answer for the router's own 404 (StatusHandler accepts 404 and
+	// 405 only).
+	app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
+		return ctx.Response().JSON(http.StatusNotFound, map[string]string{
+			"error":   "not_found",
+			"message": fmt.Sprintf("No route matches %s %s", ctx.Request().Method, ctx.Request().URL.Path),
+		})
+	})
+
+	// 6. Run. The start phase pings the store, builds and starts the
+	// components — the worker and the WebSocket server among them — and runs
+	// the start hooks before the App accepts requests. Run blocks until
+	// SIGINT/SIGTERM, then drains gracefully within the configured 15s
+	// shutdown timeout: the listener, the WebSocket server and the scheduled
+	// worker first, then the services, then the store. A second signal during
+	// shutdown force-kills the process.
 	logger.Info("starting application",
 		"app", appCfg.Name,
 		"env", appCfg.Environment,

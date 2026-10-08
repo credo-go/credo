@@ -113,10 +113,7 @@ Strict mode applies to every decode from that store: `Unmarshal`/`Get`, reload v
 
 ## Environment-Based Config
 
-Complete, equivalent YAML and JSON starter files plus an `.env.example` are
-available under [`examples/references/config`](../../examples/references/config/).
-They are versioned copyable references; choose one base format unless layered
-file merging is intentional.
+Complete, equivalent YAML and JSON starter files plus an `.env.example` are available under [`examples/references/config`](../../examples/references/config/). They are versioned copyable references; choose one base format unless layered file merging is intentional.
 
 Set `CREDO_ENV` to load environment-specific overrides automatically:
 

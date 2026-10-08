@@ -1,6 +1,6 @@
 # Router Spec
 
-**Status**: Approved **Package**: Root (`github.com/credo-go/credo`), `internal/radix/` **Sources**: Chi (MIT, primary), Goyave (MIT), httprouter (BSD-3, reference) **Depends on**: — **ADRs**: [007-router-and-routing](../adr/007-router-and-routing.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md) — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status**: Approved **Package**: Root (`github.com/credo-go/credo`), `internal/radix/` **Sources**: Chi (MIT, primary), Goyave (MIT), httprouter (BSD-3, reference) **Depends on**: — **ADRs**: [007-router-and-routing](../adr/007-router-and-routing.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md) — `StatusHandler` accepts 404 and 405 only (v0.24.0)
 
 ---
 

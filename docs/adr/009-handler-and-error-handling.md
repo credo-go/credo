@@ -1,6 +1,6 @@
 # ADR-009: Handler and Error Handling
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-008, ADR-013 — v0.24.0 decisions accepted, pending implementation ([plan](../plans/components-and-sequential-bootstrap.md))
+**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-08-26 **Depends on:** ADR-008, ADR-013 — an explicit status wins over a wrapped validation error (v0.24.0)
 
 ## Pre-v1 amendments
 
