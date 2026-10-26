@@ -1,125 +1,54 @@
 # ADR-013: Internationalization
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** v0.24.0 (registration without I/O, catalogs read in the start phase) **Depends on:** ADR-009, ADR-010
-
-## HTTP integration amendment
-
-**2026-09-05 (HTTP minor):** i18n remains explicitly installed through `UseI18n` and is a framework-owned HTTP feature under [ADR-010](010-middleware-architecture.md#built-in-http-feature-configuration-criterion); its former hidden `GlobalMiddleware` registration is gone. Catalog/source validation, exact keys, field catalogs and plural semantics are unchanged.
-
-**Detector contract:** `I18nConfig.Detect func(*Context) string` is the sole callback. It resolves on the first `Locale`/translation access, including automatic error/field translation, and memoizes one result per request in state that is reset with the pooled Context. The default detector reads Accept-Language; empty/unresolvable results use the configured default. Inactive or unused i18n does not call the detector. Recursive `Locale`/translation from `Detect` is a programming panic; a detector panic retains the default fallback and never detects again for that request, so error rendering uses the cached default without recursing. Recovery-enabled requests take the 500 path; disabled recovery propagates the panic after cleanup.
-
-First access fixes the language using the data visible then. Context-based detection permits `GetUser` but does not extend the principal's lifetime through Timeout/stdlib request restoration; applications needing the authenticated language in later errors resolve `Locale` after setting the user, before unwinding, and earlier reads still win. No detector runs on the terminal lifecycle 503.
-
-Every `UseI18n` call consumes the sole registration; a second call is duplicate misuse. Conventional discovery that finds no catalog leaves i18n configured but inactive, so successful configuration is independent of which deployment has conventional catalog files; source errors are start failures ([Registration and the start phase](#registration-and-the-start-phase)). The [HTTP feature contract](../specs/http-features.md#locale-and-transport-features) carries the full rules.
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-009, ADR-010, ADR-022, ADR-024 **Related:** ADR-011 **Specification:** [i18n spec](../specs/i18n.md) **Guide:** [Internationalization guide](../guides/localization.md)
 
 ## Context
 
 Credo must localize application text, HTTP/domain errors, validation failures, bind failures, and optional field display names without making machine error codes presentation-dependent. Applications also need a safe default-language catalog that does not depend on deployment files.
 
+The request's language may depend on state that exists only after routing or authentication, and a request that never translates should not pay for detecting it. A catalog that a deployment declares must not silently vanish, while a conventional directory that a deployment does not ship must not break the start.
+
 ## Decision
 
 ### Architecture and public API
 
-The root package owns setup and request APIs; `internal/i18n` remains a root- independent message engine:
+The root package owns setup and request APIs (`app.UseI18n`, `ctx.Locale`, `ctx.T`, `ctx.TPlural`); `internal/i18n` is a root-independent message engine. i18n is a framework-owned HTTP feature installed through `UseI18n` ([ADR-010](010-middleware-architecture.md#built-in-http-feature-configuration-criterion)). The signatures and `I18nConfig` are in the [i18n spec](../specs/i18n.md#public-api).
 
-```go
-app.UseI18n(credo.I18nConfig{...})
-ctx.Locale()
-ctx.T("welcome", data)
-ctx.TPlural("items", count, data)
-```
+### Locale detection
 
-`Accept-Language` detection is the default. `I18nConfig.Detect func(*Context) string` may replace it. Detection is lazy: it runs on the first `Locale`/translation access of a request (the error pipeline's automatic translation included), the selected canonical tag is memoized on the request Context, and requests that never touch locale or translation do not invoke the detector.
+Detection is lazy and Context-based. `I18nConfig.Detect func(*Context) string` (`Accept-Language` by default) runs on the first `Locale` or translation access of a request, the error pipeline's automatic translation included, and its result is memoized for the request. A request that never translates pays nothing, and a detector that takes `*Context` sees the request as it stands at first use — the matched route once routing has run, the user once authentication has. A locale middleware is deliberately not used: it would detect on every request, before the route and the user are known. The [detector contract](../specs/i18n.md#detector-contract) — memo reset, re-entry, detector panics, principal lifetime — is in the spec.
 
 ### Two catalogs, not one namespace
 
 `messages.json` contains message templates. `fields.json` maps exact technical field paths to display names. They stay separate because fields have different lookup/fallback semantics and should not require an artificial `field.` prefix.
 
-```text
-locales/
-  en/messages.json
-  en/fields.json
-  tr/messages.json
-  tr/fields.json
-```
-
-`ValidationError.Field` remains the stable technical path on the wire. The display name is injected only as template data (`{{.field}}`). Lookup uses the exact full path (`address.city`, `items[0]`). If the selected locale lacks a field name, Credo uses the raw path; it does not borrow the default language's field name and produce a mixed-language sentence.
+`ValidationError.Field` stays the stable technical path on the wire. The display name is injected only as template data (`{{.field}}`). Lookup uses the exact full path (`address.city`, `items[0]`). If the selected locale lacks a field name, Credo uses the raw path; it does not borrow the default language's field name and produce a mixed-language sentence.
 
 ### Programmatic default-language base
 
-```go
-type I18nMessages map[string]string
-type I18nFields map[string]string
-
-type I18nConfig struct {
-    Dir      string
-    DirFS    fs.FS
-    Default  string
-    Detect   func(*Context) string
-    Messages I18nMessages
-    Fields   I18nFields
-    ResolveMessageKey MessageKeyResolver
-}
-```
-
-`Messages` and `Fields` represent only the effective `Default` language. They are copied and templates are compiled at the `UseI18n` call. Multi-language catalogs belong in `Dir`/`DirFS`; this avoids rebuilding Go code for translation work and avoids a second multi-language source of truth.
-
-Programmatic values are strings and populate the CLDR Other form. File-backed messages retain all plural forms. A public plural union/struct is deferred.
-
-Load order is programmatic base first, external source second. Both messages and fields merge by canonical language tag and exact key; external values override collisions while programmatic-only keys remain. No caller map is retained.
+`I18nConfig.Messages` and `Fields` represent only the effective `Default` language. They are copied and their templates compiled at the `UseI18n` call. Multi-language catalogs belong in `Dir`/`DirFS`; this avoids rebuilding Go code for translation work and avoids a second multi-language source of truth. Programmatic values are strings and populate the CLDR Other form; file-backed messages retain all plural forms. File catalogs layer over the programmatic base by canonical language tag and exact key, so programmatic-only keys survive ([sources and precedence](../specs/i18n.md#sources-and-precedence)).
 
 ### Source policy
 
-- `Messages` alone activates map-only i18n; `Messages + Fields` is field-aware.
-- `Fields` without any message source is misuse and panics at the call.
-- Supplying maps without `Dir`/`DirFS` disables implicit `./locales` discovery.
-- Explicit `Dir` or `DirFS` is strict: missing, unreadable, malformed, or message-empty is a start failure even when `Messages` could serve requests.
-- A RawConfig `i18n.dir` is explicit and follows the same fail-loud rule.
-- Only absent conventional `./locales` discovery from zero-config setup is an inactive warning.
-- `Dir` and `DirFS` are mutually exclusive.
-- The complete bundle is published only after all sources validate, so a failed start exposes no partial catalog.
+An explicit source — `Dir`, `DirFS`, or a configured `i18n.dir` — fails the start when it is missing, unreadable, malformed or message-empty, even when programmatic maps could serve requests. Only conventional `./locales` discovery that finds nothing leaves i18n inactive, and programmatic maps without an explicit source turn that discovery off. The bundle is published whole or not at all, so a failed start exposes no partial catalog.
 
-This distinguishes an optional convention from a declared deployment dependency. Programmatic fallback prevents raw keys on individual misses; it must not hide the loss of an explicitly configured source.
+This distinguishes an optional convention from a declared deployment dependency. Programmatic fallback prevents raw keys on individual misses; it must not hide the loss of an explicitly configured source. Each condition and where it fails is in the [i18n spec](../specs/i18n.md#registration-and-start-phase).
 
 ### Registration and the start phase
 
-`UseI18n(cfg ...I18nConfig)` returns nothing and panics on misuse, like every other `Use*`. Registration performs no I/O ([ADR-022](022-bootstrap-and-di-ownership.md)); the catalogs are read in the start phase by a framework start step named `i18n`, which runs before any component starts, and a read failure is a start failure that rolls back like any other ([ADR-024](024-lifecycle-components.md)).
+`UseI18n(cfg ...I18nConfig)` returns nothing and panics on misuse, like every other `Use*`. Registration performs no I/O ([ADR-022](022-bootstrap-and-di-ownership.md)): misuse that needs no I/O panics at the call, with the call site in the panic, and the catalogs are read in the start phase by a framework start step named `i18n`, which runs before any component starts; a read failure is a start failure that rolls back like any other ([ADR-024](024-lifecycle-components.md)).
 
-- **At the call**, with the call site in the panic: more than one config, `Dir` together with `DirFS`, a second call, a call after the App is prepared or shut down, and every rule decided without reading a source — the `Default` tag, the programmatic `Messages` and `Fields` (empty keys or values, templates that do not compile), `Fields` with no `Messages` and no file source, and an `i18n` RawConfig section that does not decode. The programmatic catalog is compiled from a copy taken at the call.
-- **In the start phase**, as errors in the `*credo.LifecycleError`: conventional `./locales` discovery that finds a directory it cannot use, the reads of `Dir`, `DirFS` or a configured `i18n.dir`, malformed or read-denied files, an explicit source that is missing or contains no messages, and `Fields` left without a message after loading. Only absent conventional discovery is an inactive warning (`credo: i18n inactive, locale directory not found or empty`), logged by the start phase, which then succeeds; an active catalog logs `credo: i18n loaded`. The bundle is published whole, after every source has validated and before the listener accepts; a failure publishes nothing.
-- **No repair state.** The first `UseI18n` call consumes the registration: misuse panics before anything is installed, and a source error surfaces as a start failure of a single-use App.
-- **Serving waits for the catalogs.** An App that called `UseI18n` has something to start, so `ServeHTTP` refuses it until `App.Start` has succeeded, as for any start work ([ADR-024](024-lifecycle-components.md)). Request handling still performs no filesystem access, and the detector contract is unchanged.
+The first call consumes the registration, so a second call panics even when the start phase later finds no conventional catalogs and leaves i18n inactive: whether the App is configured does not depend on which deployment ships catalog files. An App that called `UseI18n` has something to start, so `ServeHTTP` refuses it until `App.Start` has succeeded ([ADR-024](024-lifecycle-components.md)); request handling performs no filesystem access.
 
-Rejected: keeping the error return. `UseI18n` returned an error only because it read files at the call; with the reads in the start phase that reason is gone, and a registration that both returns errors and panics on misuse gives its caller two channels for one phase. The error return also needed a repair state — a failed call left the registration free for a corrected retry — that a single-use App has no use for. Rejected too: reading the catalogs at registration and only changing the return to a panic — a missing deployment directory is an I/O failure, not a programming mistake, and registration no longer performs I/O.
+Rejected: an error return. A registration that both returns errors and panics on misuse gives its caller two channels for one phase, and an error result implies a retry state that a single-use App has no use for. Rejected too: reading the catalogs at registration and panicking on a read failure — a missing deployment directory is an I/O failure, not a programming mistake, and registration performs no I/O.
 
 ### Exact keys and application-owned namespaces
 
-Credo never generates prefixes such as `errors.`, `http.`, `v.`, or `bind.`. For framework error flows, key selection is:
-
-1. an explicit value-level `MessageKey` (exact);
-2. optional `ResolveMessageKey(MessageRef{Scope, Code})`;
-3. bare code/reason.
-
-`MessageScopeError`, `MessageScopeValidation`, and `MessageScopeBind` let an application apply namespaces without hidden string rules:
-
-```go
-ResolveMessageKey: func(ref credo.MessageRef) string {
-    switch ref.Scope {
-    case credo.MessageScopeValidation:
-        return "validation." + ref.Code
-    case credo.MessageScopeBind:
-        return "request." + ref.Code
-    default:
-        return "problem." + ref.Code
-    }
-},
-```
-
-Prefixes are recommended for large catalogs but optional. Explicit `HTTPError.MessageKey` and `ValidationError.MessageKey` bypass the resolver. The selected exact key is visible to `ErrorRenderer` as `ErrorInfo.MessageKey`; resolved text is `ErrorInfo.Message`.
+Credo adds no namespace prefix to a code. A framework error flow looks up an exact key: an explicit value-level `MessageKey`, else the application's optional `ResolveMessageKey(MessageRef{Scope, Code})`, else the bare code or reason. `MessageScopeError`, `MessageScopeValidation`, and `MessageScopeBind` let an application apply namespaces without hidden string rules; prefixes are recommended for large catalogs but optional. The key a renderer sees as `ErrorInfo.MessageKey` is exactly the key that was looked up. The [resolution rules](../specs/i18n.md#message-key-resolution), with an example resolver and the fallbacks on a miss, are in the spec.
 
 ### Plurals and templates
 
-Plural selection uses `golang.org/x/text/feature/plural` CLDR data. `ctx.T` always renders Other. `ctx.TPlural` selects zero/one/two/few/many/other for file catalogs and uses Other for programmatic strings. Templates use `text/template`; locale sources are trusted application artifacts and must be reviewed like code. HTML escaping belongs at the HTML rendering boundary.
+Plural selection uses CLDR data from `golang.org/x/text/feature/plural` ([plurals and lookup](../specs/i18n.md#plurals-and-lookup)). Templates use `text/template`; locale sources are trusted application artifacts and must be reviewed like code. HTML escaping belongs at the HTML rendering boundary.
 
 ## Consequences
 
@@ -127,4 +56,5 @@ Plural selection uses `golang.org/x/text/feature/plural` CLDR data. `ctx.T` alwa
 - Message and field catalogs retain clear, independent responsibilities.
 - Machine codes remain stable when presentation namespaces change.
 - Strict explicit-source handling catches deployment mistakes at startup.
-- Programmatic multi-language and plural-form APIs remain intentionally out of scope; `DirFS` covers those uses.
+- Requests that never translate never run the detector.
+- Programmatic multi-language and plural-form APIs (a public plural union or struct) are deliberately out of scope; `DirFS` covers those uses by embedding the catalog files in the binary.

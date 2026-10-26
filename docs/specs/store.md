@@ -1,49 +1,20 @@
 # Store Spec
 
-**Status**: Implemented **Package**: `store/` (core contracts), `store/sqldb/` (Bun wrapper, separate submodule) **Sources**: GoFr (Apache-2.0, health/interface design), Goyave (MIT, connection patterns) **ADRs**: [015-data-access.md](../adr/015-data-access.md)
+**Status:** Implemented (beta) **Package:** `store/`, `store/sqldb/` **ADR:** [ADR-015](../adr/015-data-access.md), [ADR-016](../adr/016-health-checks.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Data access guide](../guides/data-access.md) **Sources:** GoFr (Apache-2.0), Goyave (MIT)
 
----
-
-## Canonical Source
-
-Implementation-level details for Credo's data access layer are defined in this file. Other documents should keep only high-level references and link here.
-
----
+This spec owns the data access contracts: semantic errors, the store registration, transactions, and the `sqldb` Bun wrapper with its query proxies, typed terminals, migrations, and error mapping. Offset pagination — `Page[T]`'s request validation, total semantics, and snapshot consistency — and the cursor/keyset design gate live in the [pagination spec](pagination.md); the general resource-identity rule lives in the [container spec](container.md#resource-identity-and-teardown). The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md).
 
 ## Overview
 
-Credo's data access layer is split into two packages:
-
-- **`store/`** — universal contracts with zero external dependencies. Part of the main `github.com/credo-go/credo` module. Defines error sentinels, lifecycle/health interfaces, the store registration API, and context-based TX helpers.
-- **`store/sqldb/`** — Bun SQL wrapper in a separate Go submodule (`github.com/credo-go/credo/store/sqldb`). Wraps `*bun.DB` with lifecycle management, query builder proxies, error mapping, and transaction management.
-
-Key design properties:
-
-- **Semantic errors** — transport-neutral `fault.Kind` / `store.Kind`, structured `store.Error`, exact constraint/concurrency/unavailable sentinels, the deprecated `ErrDuplicate` alias, and deprecated `ErrConflict` umbrella.
-- **Context-based TX** — a transaction type is fixed by `TxScope[T]`; each logical connection owns a distinct scope. `store/sqldb` hides that scope behind `InTx` and exposes `DB.Conn(ctx)` / `DB.RequireTx(ctx)` for transaction-aware native Bun work.
-- **3-tier wrapping** — own (lifecycle), enrich (query proxies), passthrough (`Client()` escape hatch).
-- **Single ORM focus** — deep Bun integration. Other ORMs via raw DI.
-
----
-
-## Goals
-
-1. **Universal semantic errors**: adapters classify driver failures as transport-neutral `Kind` values while preserving cause and safe diagnostic metadata. Root HTTP policy and future gRPC policy consume the shared stdlib-only `fault.Provider` seam without importing `store/`.
-2. **Context-based TX**: `db.InTx` / `RunInTx` plus a per-connection `TxScope[T]` provide opt-in transaction participation without concrete/interface fallback or same-type multi-DB collisions. Repositories that don't need TX are unaffected.
-3. **3-tier Bun wrapping**: Own lifecycle, enrich queries (TX injection and error mapping), passthrough via `Client()`; DB-level tracing hooks remain planned for Phase 3.5.
-4. **Clean module boundary**: `store/` is stdlib-only in the main module. `store/sqldb/` is a separate submodule with the Bun dependency.
-5. **Two-call registration**: the application binds the store where its ownership is decided (`ProvideValue`, or `Provide` with a constructor, `credo.Borrowed()` for a shared handle) and `store.Register[R]` names that binding by type. Registration performs no I/O; the start phase pings the store before its consumers start, and `/ready` reports it.
-6. **Lifecycle follows the binding**: a store is a component like any other — the App shuts it down after its consumers unless it is borrowed, and the holders of one physical resource share one teardown through `credo.ResourceIdentifier`. Store registration itself never closes anything.
-7. **Escape hatches**: `DB.Conn(ctx) bun.IDB` for transaction-aware native Bun operations; `Client() *bun.DB` for model registration, migrations, and work intentionally tied to the base pool.
-8. **Migrations without a second engine**: a thin wrapper over `bun/migrate` (`RegisterMigrations` + `Migrate`) whose signature plugs straight into `app.OnStart` — no goose, no new dependency.
-
----
+- **`store/`** — universal contracts with no external dependencies, part of the main `github.com/credo-go/credo` module: [semantic errors](#semantic-errors) over the stdlib-only `fault` leaf package, the [`Lifecycle` interface](#lifecycle-interface) and [`Health`](#health), the [store registration](#registration), and the typed [TX scope](#tx-context). Applications on another ORM register their client directly in DI and still use these contracts.
+- **`store/sqldb/`** — the Bun wrapper, a separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in: the [`DB` type](#db-type) that owns the pool, [query proxies](#query-builders) that inject this DB's ambient transaction and map driver errors, [transactions](#tx-management), the [transaction-aware native connection](#transaction-aware-bun-connection), [migrations](#migrations-bunmigrate-wrapper), and [error mapping](#error-mapping).
+- **Escape hatches** — `Apply` and `ApplyQueryBuilder` keep both proxy guarantees; `DB.Conn(ctx)` joins the ambient transaction without error mapping; `Unwrap` and `Client()` opt out of both.
 
 ## Core Package: store/
 
 ### Semantic Errors
 
-The stdlib-only `fault` package owns transport-neutral kinds and the provider contract. `store.Kind` aliases `fault.Kind`; root HTTP policy imports only the leaf package, so the existing `store → credo` registration dependency does not form a cycle.
+The stdlib-only `fault` package owns transport-neutral kinds and the provider contract. `store.Kind` aliases `fault.Kind`; root HTTP policy imports only the leaf package, so the `store → credo` registration dependency does not form a cycle.
 
 ```go
 type Error struct {
@@ -56,11 +27,17 @@ type Error struct {
     Cause      error
 }
 
+// KindOf finds the first store Kind in err's unwrap/join tree.
 func KindOf(err error) (Kind, bool)
 func IsTransient(err error) bool
+
+// Wrap classifies cause with a store sentinel's kind as a *Error whose
+// Transient flag is the kind's default. A nil cause returns nil; a nil or
+// non-store kind, or a cause that already matches it, returns cause unchanged.
+func Wrap(kind error, cause error) error
 ```
 
-`Error.Unwrap` preserves the original cause. `Code`, `Constraint`, `Resource`, and `Cause` are diagnostic metadata and are never emitted by Credo's default error renderer. `Transient` says a condition may clear; it is not a promise that replaying a statement, transaction callback, or externally visible operation is safe.
+`Error.Unwrap` preserves the original cause. `Code`, `Constraint`, `Resource`, and `Cause` are diagnostic metadata and are never emitted by Credo's default error renderer. `Transient` says a condition may clear; it is not a promise that replaying a statement, transaction callback, or externally visible operation is safe, and Credo never treats it as blind-retry permission. Outcome ambiguity is not a cause kind: a commit failure may leave the outcome unknown, Credo does not infer that from a connection or transient flag, and an operation-phase outcome model is deferred until reliable evidence is available.
 
 | Exact sentinel | Kind | Transient default | Root HTTP default |
 | --- | --- | --: | --: |
@@ -74,9 +51,7 @@ func IsTransient(err error) bool
 | `ErrUnavailable` | `KindUnavailable` | yes | 503 |
 | `ErrReadOnly` | `KindReadOnly` | no | 503 |
 
-`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` continue to match it through `errors.Is`. Their exact kind is not lost. Store errors retain `HTTPStatus()` only as a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` remains the service/domain override and preserves the internal store cause.
-
-Outcome ambiguity is not a cause kind. A commit failure may leave the operation outcome unknown, but Credo does not infer that from a connection/transient flag and never treats `Transient` as blind-retry permission. A separate operation- phase outcome model is deferred until reliable evidence is available.
+`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` match it through `errors.Is` without losing their exact kind. The store errors' `HTTPStatus()` is a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` is the service/domain override and preserves the internal store cause.
 
 ### Lifecycle Interface
 
@@ -114,7 +89,7 @@ type Health struct {
 }
 ```
 
-`Cause` is preserved by `Health.Clone` and never encoded by `encoding/json`. The root readiness policy logs it and includes its text only when `HealthConfig.ExposeErrors` is explicitly enabled. Free-form `Details["error"]` values are adapter metadata, not a trusted error contract. Readiness responses do not serialize adapter `Details`; pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
+Status, latency, details, and the typed cause travel as one snapshot, so a caller never parses free-form `Details` for the reason: `Details["error"]` values are adapter metadata, not a trusted error contract. `Health.Clone` preserves the `Cause` identity and copies the top-level `Details` map (nested values stay shared). `Cause` is never encoded by `encoding/json`. `/ready` logs the cause, includes its text only under `HealthConfig.ExposeErrors`, and never serializes `Details` ([health spec](health.md#readiness-aggregation)), so pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
 
 ### Registration
 
@@ -128,9 +103,7 @@ func Register[R Lifecycle](app *credo.App, opts ...RegisterOption)
 
 type RegisterOption func(*registerOptions)
 
-// WithName sets the stable identifier used in health reporting. Explicit
-// empty, padded, control-character, and reserved credo.* names are rejected.
-// If omitted, the pointer-unwrapped package-qualified named type is used.
+// WithName sets the stable identifier used in health reporting.
 func WithName(name string) RegisterOption
 
 // WithPingTimeout overrides the deadline (default 5s) of the ping the start
@@ -142,7 +115,7 @@ Names share the same validator as named liveness/readiness checks. They are neve
 
 There is no store registry API: `/ready` reports the registered stores, and one store's health is the value's own `Health`. The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md#registration).
 
-> **Health/readiness options** (`WithCritical`, `WithTags`) remain deferred to [ADR-016](../adr/016-health-checks.md). All stores are currently critical; both `DOWN` and `DEGRADED` make readiness return 503.
+> Every store is critical: both `DOWN` and `DEGRADED` make readiness return 503, and a per-store optional/critical policy is deferred ([health spec](health.md#readiness-aggregation)).
 
 #### Two calls
 
@@ -161,23 +134,17 @@ The binding may also be a constructor (`app.Provide[*sqldb.DB](openDB)`), which 
 
 #### Phases
 
-1. **Registration.** `Register` records `R`, its name and its ping timeout, and panics on misuse known at the call, with the call site (`store.Register[T]`) in the message: a nil App, a nil option, a ping timeout ≤ 0, an invalid explicit name (the named-check validator: empty, padded, control characters, the reserved `credo.` prefix), an `R` without a stable default name and no `WithName`, a name or an `R` already registered, and any registration after `Finalize` or after the App is prepared or shut down. An `R` that does not implement `Lifecycle` does not compile.
-2. **`Finalize`.** A registration whose `R` has no binding is a `Finalize` error — `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` — joined with the graph's other errors in registration order.
-3. **Start.** When the [start walk](lifecycle.md#the-start-walk) reaches the binding — in dependency order, in the internal tier unless the binding is ingress — it builds the value, after `Finalize` and therefore after every override, and runs the registration's start step before the value's own `Start`: the ping, with a context bounded by the ping timeout and by the start phase (a shutdown requested during the start cancels it). The components that depend on `R` start after it succeeds. A constructor error while building `R` or a failed ping is a start failure, reported in the `*credo.LifecycleError` under the component's name (its type name); the App rolls back as [ADR-024](../adr/024-lifecycle-components.md) describes, and the value is still rolled back — shut down unless borrowed — since the ping opened nothing the value had not. A nil bound value fails with `store: "name": the bound value is nil`, a failed ping with `store: ping "name": <err>`. After a successful ping, each secret-free registration warning code the value reports (`sqldb.pool.max_open_unlimited`) is logged once at Warn (`credo: store configuration warning`, with `component=store`, `store` and `code`); the codes are read before the ping, so an invalid code fails the start before pinging and without the code being logged, and a failed ping logs none. `Lifecycle.Ping` must honor its context: the start phase abandons a `Ping` that ignores it only at the rollback deadline.
-4. **Readiness.** Each pinged store contributes a probe built once, at start, from the value the start phase pinged. `/ready` runs its `Health` through the bounded probe runner and reports the typed result under the store's name; no request resolves anything from the container, and before the App has started there are no store checks ([ADR-016](../adr/016-health-checks.md)). A store whose name collides with a custom readiness check fails closed (`credo.store_name_conflict.*`).
+1. **Registration.** `Register` records `R`, its name and its ping timeout, and panics on misuse known at the call, with the call site (`store.Register[T]`) in the message: a nil App, a nil option, a ping timeout ≤ 0, an invalid explicit name (the name rules above), an `R` without a stable default name and no `WithName`, a name or an `R` already registered, and any registration after `Finalize` or after the App is prepared or shut down. An `R` that does not implement `Lifecycle` does not compile.
+2. **`Finalize`.** A registration whose `R` has no binding is a `Finalize` error naming the type and `store.Register` ([container spec](container.md#finalize-and-container-lifecycle)), joined with the graph's other errors in registration order.
+3. **Start.** When the [start walk](lifecycle.md#the-start-walk) reaches the binding — in dependency order, in the internal tier unless the binding is ingress — it builds the value, after `Finalize` and therefore after every override, and runs the registration's start step before the value's own `Start`: the ping, with a context bounded by the ping timeout and by the start phase (a shutdown requested during the start cancels it). The components that depend on `R` start after it succeeds. A constructor error while building `R` or a failed ping is a start failure, reported in the `*credo.LifecycleError` under the component's name (its type name); the App rolls back as [ADR-024](../adr/024-lifecycle-components.md) describes, and the value is still rolled back — shut down unless borrowed — since the ping opened nothing the value had not. A nil or typed-nil bound value fails with `store: "name": the bound value is nil`, a failed ping with `store: ping "name": <err>`. After a successful ping, each secret-free registration warning code the value reports (`sqldb.pool.max_open_unlimited`) is logged once at Warn (`credo: store configuration warning`, with `component=store`, `store` and `code`); the codes are read before the ping, so an invalid code fails the start before pinging and without the code being logged, and a failed ping logs none. `Lifecycle.Ping` must honor its context: the start phase abandons a `Ping` that ignores it only at the rollback deadline.
+4. **Readiness.** Each pinged store contributes one `/ready` entry under its name, whose probe is built once at start from the value the start phase pinged and reports its typed `Health`; the [health spec](health.md#readiness-aggregation) holds the aggregation rules, name conflicts and status handling included.
 5. **Teardown.** Store registration never closes anything. `Lifecycle` includes `Shutdown`, so the binding of `R` is a component: the App shuts it down after its consumers, under the drain deadline, unless it is borrowed. Independent stores with no edges between them shut down in reverse registration order.
 
 The registered store is the value DI hands its consumers, in tests too: an override of `R` (`credo.Override()`, `testutil.WithOverride`) is what is pinged, reported and shut down, and the original value is never pinged. The root owns the store registrations; `store` reaches them through an internal seam, not through the container.
 
 #### Resource identity
 
-Identity is the components' rule, not a store-specific one ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)): the values that share a resource identity are one resource with one teardown, shut down once when the last holder retires, after the consumers of every holder. For stores:
-
-- `*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too.
-- Two store registrations of one resource are not refused: each is pinged and reported under its own name, and the resource is still shut down once.
-- Mixed ownership is still refused: a holder that claims the teardown of a borrowed resource — a component bound with `ProvideValue`, a value handed to `Manage`, a binding with `credo.Closer()` — panics at the later call or fails its construction, naming both bindings.
-- Only a value without state of its own to release may share an identity. A wrapper that releases state of its own holds the handle in a named field and does not forward its identity; a named-field wrapper without such state forwards it with one method, `ResourceIdentity() any`, which makes it a `credo.ResourceIdentifier`.
-- A token must be non-nil, comparable and equal to itself; a `ResourceIdentity()` that panics or breaks that rule panics at `ProvideValue` and fails a constructor's construction. Credo never scans wrapper fields.
+`*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too: shut down once, when the last holder retires, after the consumers of every holder. Two store registrations of one resource are not refused: each is pinged and reported under its own name, and the resource is still shut down once. The rule itself — mixed ownership, named-field wrappers, token validity — is the [container spec's](container.md#resource-identity-and-teardown), with its rationale in [ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown).
 
 #### Several databases
 
@@ -202,20 +169,6 @@ func NewReportRepo(db AnalyticsDB) *ReportRepo { return &ReportRepo{db: db.DB} }
 - A wrapper may also be bound through a constructor that returns it (`func NewPrimaryDB(cfg PrimaryConfig) (PrimaryDB, error)`); the start phase builds it.
 - Databases whose number comes from configuration — shards, tenants — are one binding of a collection type that owns and closes them all.
 - A read replica of one database is routing, not a second store, and is outside the rule; `sqldb` does not expose it.
-
-#### Test requirements
-
-- A bound and registered store is pinged at start — a failing ping fails the start and rolls back — reported by `/ready` with its typed health, and shut down after its consumers.
-- A borrowed store is pinged and reported but never shut down.
-- A store whose binding a test overrides is pinged, reported and shut down as the override; the original value is never pinged.
-- A store bound through a constructor is built by the start phase.
-- A registration whose type has no binding fails `Finalize` with a message naming the type and `store.Register`; registration misuse panics with the call site's message; registration performs no I/O.
-- A store bound through an interface an `Alias` names is pinged and reported; a nil bound value fails the start.
-- The ping honors `WithPingTimeout`; a failed ping fails the start and rolls the store back.
-- Independent stores shut down in reverse registration order.
-- A `*sqldb.DB` bound raw and through a wrapper that embeds it, or through two wrapper types, is shut down once, after the consumers of every binding; two store registrations of it are each pinged and reported.
-- Registration warning codes are logged once after a successful start-phase ping and never for a failed one.
-- `/ready` resolves nothing from the container per request.
 
 ### TX Context
 
@@ -248,9 +201,7 @@ func (s *TxScope[T]) Conn(ctx context.Context, fallback T) T
 
 `TxScope[T]` deliberately binds the type at construction. For example, `NewTxScope[bun.IDB]()` accepts a concrete `bun.Tx` through the `bun.IDB` contract and reads it back with the same context key; a later call cannot accidentally select `bun.Tx` as a different `T`. Distinct scopes still isolate two databases that share `bun.IDB`. `WithTx` rejects nil values — including a typed-nil pointer held by an interface `T` — as a programming error, so `RequireTx` cannot report a nil handle as present. `RequireTx` is for operations where fallback would violate correctness.
 
-The older unscoped `WithTx[T]` / `GetTx[T]` / `Conn[T]` functions remain source-compatible but are deprecated: separate call sites can choose different concrete/interface forms, and the type-only context key cannot isolate two logical connections that share `T`. New adapters must use a typed scope.
-
----
+The unscoped `WithTx[T]`, `GetTx[T]` and `Conn[T]` functions are deprecated: separate call sites can choose different concrete/interface forms, and the type-only context key cannot isolate two logical connections that share `T`. New adapters must use a typed scope.
 
 ## Bun Wrapper: store/sqldb/
 
@@ -272,12 +223,17 @@ type DB struct { /* unexported: db *bun.DB */ }
 // Open creates a DB from Config.
 func Open(cfg *Config, opts ...Option) (*DB, error)
 
-// Client returns the underlying *bun.DB for raw SQL, migrations,
-// model registration, and features not covered by proxies.
+// Client returns the underlying *bun.DB for model registration, migration
+// operations beyond Migrate, and work tied to the base pool. It bypasses TX
+// injection and error mapping; raw SQL uses DB.Exec, Query, and QueryRow.
 func (db *DB) Client() *bun.DB
 
 // Stats returns the current database/sql pool statistics snapshot.
 func (db *DB) Stats() sql.DBStats
+
+// ResourceIdentity makes *DB a credo.ResourceIdentifier; wrappers that embed
+// *DB inherit it.
+func (db *DB) ResourceIdentity() any
 
 // StoreRegistrationWarningCodes returns secret-free warning codes that the
 // start phase logs after it has pinged a store.Register registration.
@@ -288,6 +244,8 @@ func (db *DB) Ping(ctx context.Context) error
 func (db *DB) Shutdown(ctx context.Context) error
 func (db *DB) Health(ctx context.Context) store.Health
 ```
+
+`Shutdown` closes the pool even when its context is already done: `sql.DB.Close` is a fast local operation, and leaving the pool open would leak connections.
 
 ### Config
 
@@ -309,11 +267,9 @@ type Config struct {
     SSLMode        string        // driver-specific: PostgreSQL sslmode / MySQL tls
     Options        map[string]string // driver-specific connection params
 }
-
-// WithTxCleanupTimeout bounds caller wait for each nested savepoint create,
-// release, rollback, and fail-safe ambient rollback. Default: 5s; d must be > 0.
-func WithTxCleanupTimeout(d time.Duration) Option
 ```
+
+A structured `Config` lets `Open` validate the connection settings and lets applications decode them from configuration; `DSN` is the override for full driver-native control.
 
 Driver-family detection is an exact, case-insensitive allowlist: `postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`. Names such as `postgres-proxy` or `notmysql` are custom drivers, not implicit aliases; combine their registered driver name and native DSN with `WithDialect`. Connectors do not undergo concrete-type guessing. An explicitly nil `WithDialect` or `WithConnector` (including typed-nil values) makes `Open` fail. A known explicit dialect that conflicts with a known driver family also fails; Credo will not build one family's DSN, emit another family's SQL, and classify errors as the first family.
 
@@ -321,13 +277,29 @@ When Credo constructs a PostgreSQL or MySQL DSN, `Port` must be in `1..65535`; z
 
 `Options` is for additional driver parameters, not a second source for core PostgreSQL endpoint/credential keys. It may supply `sslmode`/`connect_timeout` or MySQL `tls`/`timeout` only when the corresponding structured field is unset; MySQL `parseTime` is fixed to `true`. Ambiguous duplicates fail and their values are not included in the error. A raw `DSN` is used as-is when full driver-native control is needed. TLS values are deliberately driver-specific: `SSLMode` maps to PostgreSQL `sslmode` and MySQL `tls`. Credo does not impose a universal TLS default; production deployments explicitly choose and provision a verified mode supported by their selected driver.
 
-Credo deliberately has no workload-independent finite pool default. `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is still unlimited when the start phase inspects a registered store emits, after a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes themselves.
+There is no workload-independent finite pool default ([ADR-015](../adr/015-data-access.md#connection-pool-policy)). `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is still unlimited when the start phase inspects a registered store emits, after a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes themselves.
 
 `MaxIdle` is a pointer because omission and zero have different stdlib semantics: `nil` does not call `SetMaxIdleConns` (the effective stdlib default remains subject to `MaxOpen`), `new(0)` explicitly disables idle retention, and a positive value is applied exactly. If `MaxOpen > 0`, an explicit `MaxIdle > MaxOpen` fails `Open` instead of relying on `database/sql`'s silent clamp. Negative pool counts or durations fail validation. A zero `MaxIdleTime` or `MaxLifetime` disables that expiry policy; positive values are passed to `SetConnMaxIdleTime` and `SetConnMaxLifetime`.
 
-`DB.Stats()` returns the complete `sql.DBStats` snapshot. `DB.Health` includes the current open/in-use/idle counts and the cumulative `WaitCount`, `WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed` counters in adapter details. These counters are cumulative, so production saturation policy must use time-window deltas rather than raw totals.
+`DB.Stats()` returns the complete `sql.DBStats` snapshot. `DB.Health` pings the database and reports its latency and these `Details` keys: the gauges `max_open`, `open_connections`, `in_use`, and `idle`, and the cumulative `wait_count`, `wait_duration`, `max_idle_closed`, `max_idle_time_closed`, and `max_lifetime_closed`. Cumulative counters require time-window deltas for any saturation policy. A failed ping reports `DOWN` with the error as its typed `Cause`, not copied into `Details`. Pool saturation does not produce `StatusDegraded` ([ADR-015](../adr/015-data-access.md#connection-pool-policy) gives the reasons).
 
-Pool saturation does not automatically produce `StatusDegraded`. Such a policy is deferred until production metrics and an explicit SLO justify opt-in thresholds, windowed deltas, and hysteresis. Today all stores are critical and `DEGRADED` removes readiness; a universal threshold could therefore cause a cascading traffic shift.
+### Options
+
+```go
+// Option configures an Open call.
+type Option func(*options)
+
+// WithDialect overrides the dialect derived from Config.Driver.
+func WithDialect(dialect schema.Dialect) Option
+
+// WithConnector opens through a custom driver.Connector; Config.DSN and the
+// DSN built from Config fields are not used.
+func WithConnector(connector driver.Connector) Option
+
+// WithTxCleanupTimeout bounds caller wait for each nested savepoint create,
+// release, rollback, and fail-safe ambient rollback. Default: 5s; d must be > 0.
+func WithTxCleanupTimeout(d time.Duration) Option
+```
 
 ### Query Builders
 
@@ -350,31 +322,20 @@ Each proxy type:
 
 **Visibility policy: Credo does not hide Bun — it integrates it.** The proxy exists to attach the two terminal guarantees above, not to abstract Bun away; bun types appear in proxy signatures by design. A missing builder method is reached via `Apply`/`ApplyQueryBuilder` (guarantees preserved); a missing _terminal_ method is a request to extend the curated set — the guarantees live in the terminals, so terminals must be on the proxy. `Unwrap` and `Client()` are deliberate opt-outs from both guarantees.
 
-**SelectQuery proxy methods** (~20): `Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`, `Join`, `JoinOn`, `JoinOnOr`, `Where`, `WhereOr`, `WherePK`, `OrderExpr`, `Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`, `Clone`, `Conn`.
+Curated builder methods:
+
+- **`SelectQuery`**: `Model`, `Column`, `ColumnExpr`, `ExcludeColumn`, `TableExpr`, `Join`, `JoinOn`, `JoinOnOr`, `Where`, `WhereOr`, `WherePK`, `OrderExpr`, `Limit`, `Offset`, `Relation`, `Distinct`, `GroupExpr`, `Having`, `Clone`, `Conn`.
+- **`InsertQuery`**: `Model`, `Column`, `Value`, `On`, `Set`, `Returning`, `Conn`.
+- **`UpdateQuery`**: `Model`, `Column`, `Set`, `Where`, `WherePK`, `Returning`, `OmitZero`, `Conn`.
+- **`DeleteQuery`**: `Model`, `Where`, `WherePK`, `Returning`, `Conn`.
+
+Every proxy also has `Apply` and `Unwrap`, and `SelectQuery`, `UpdateQuery`, and `DeleteQuery` have `ApplyQueryBuilder` ([escape hatches](#escape-hatches)). Any other builder method — `WhereOr` on an update or a delete, for example — goes through `Apply` or `ApplyQueryBuilder`.
 
 The curated `Limit(int)` and `Offset(int)` methods forward every value to Bun, which takes and stores both as `int64`. Zero and negative values keep Bun's semantics: the clause is omitted. Calling raw Bun through `Apply` or `Unwrap` is an explicit escape hatch whose `Limit` and `Offset` take `int64`.
 
-**Terminal methods** (Scan, Exec, Count, Exists, plus the generic `One[T]`/`All[T]`/`Page[T]` below) execute the query and return mapped errors. Driver errors are translated to `store.Err*` sentinels before returning, so callers can branch with `errors.Is` without importing `database/sql` or driver-specific packages:
+**Terminal methods** — `Scan`, `Count`, `Exists` and the generic `One[T]`/`All[T]`/`Page[T]` on `SelectQuery`, `Exec` on the write proxies — execute the query and return mapped errors. Driver errors become `store.Err*` sentinels as listed in [Error Mapping](#error-mapping), so callers branch with `errors.Is` without importing `database/sql` or driver-specific packages. `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
 
-| Driver error | Exact mapped sentinel |
-| --- | --- |
-| `sql.ErrNoRows` | `store.ErrNotFound` |
-| Unique/primary-key violation | `store.ErrAlreadyExists` |
-| Other integrity constraint | `store.ErrConstraint` |
-| Serialization / deadlock / lock contention | `store.ErrSerialization` / `ErrDeadlock` / `ErrContention` |
-| Bad connection / DB unavailable | `store.ErrUnavailable` |
-| Read-only transaction/server | `store.ErrReadOnly` |
-| Verified deadline/statement timeout | `store.ErrTimeout` |
-
-`Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
-
-`SelectQuery.Count` reports complete logical projection-row cardinality. Credo removes root ORDER/LIMIT/OFFSET/FOR state and counts a universal outer `_credo_count_source` derived table. A normal projection counts its rows; an ungrouped aggregate normally counts as one result row; `Distinct` counts selected projection tuples; `GroupExpr` counts groups; and `GroupExpr` + `Having` counts the groups left after the filter. Behavioral and SQL conformance tests pin this Credo wrapper. Standalone `Having` and a direct compound root introduced through `Apply` (`UNION`/`INTERSECT`/`EXCEPT`, including their variants) return `sqldb.ErrUnsupportedCountQuery` before database I/O. Put the compound source behind an outer derived table/CTE when it must be counted.
-
-MySQL requires unique derived-table output names. Credo renders the post-hook count source once and lets the server apply its real naming and `sql_mode` rules. Wildcards, implicit aliases, and unaliased expressions are accepted when their server-derived output names are unique. If logical COUNT returns `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps `sqldb.ErrUnsupportedCountQuery` after I/O while preserving the driver cause; use explicit unique aliases to resolve the collision. The wrapper is local to logical COUNT, so raw and other non-count 1060 errors pass through unchanged. Real MySQL tests pin normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's [derived-table contract](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
-
-Relation callbacks run during Bun SQL rendering. The count source is rendered once, then its post-render state is validated and those exact bytes execute. Predicates/projections are allowed; replacing the model, reintroducing root ORDER/LIMIT/OFFSET/FOR, or adding standalone `Having`/a compound root fails before I/O with `sqldb.ErrUnsupportedCountQuery`.
-
-Logical Count runs the model SELECT hook lifecycle on its private source: `BeforeSelect`, `BeforeAppendModel`, then `AfterSelect` after a successful query. If Page proceeds to its data statement, normal Bun scanning runs the same lifecycle a second time. Filters or projections added by hooks therefore affect both `Total` and `Records`. The outer count keeps the model identity in `QueryEvent.Model` for observability, but soft-delete policy remains on the inner source and is not duplicated outside it. Count does not scan or mutate a bound model, so successful `AfterSelect` observes its pre-count value. Hook logic must be deterministic: transaction isolation cannot stabilize volatile SQL or an application-side decision across COUNT and SELECT.
+`SelectQuery.Count` returns the number of complete logical projection rows, the count `Page.Total` reports; the [pagination spec](pagination.md#logical-total-and-supported-count-shapes) is its contract, including the shapes that return `sqldb.ErrUnsupportedCountQuery`, the MySQL output-name rule, relation callbacks, and model SELECT hooks.
 
 **Typed terminals: `One[T]` / `All[T]`.** Two generic terminals (Go 1.27 concrete-type generic methods) return the queried type directly instead of scanning into a caller-provided destination. `T` drives both the table and the scan destination, so the query is built model-less and the terminal owns the destination:
 
@@ -392,47 +353,15 @@ var users []User
 err := db.Select(&users).Relation("Orders").Scan(ctx)
 ```
 
-**Pagination terminal: `Page[T]`.** The third typed terminal runs COUNT + a LIMIT/OFFSET SELECT and assembles a ready `*pagination.Page[T]`, completing the result-shape naming (`One → T`, `All → []T`, `Page → *Page[T]`):
+**Pagination terminal: `Page[T]`.** The third typed terminal runs COUNT and a LIMIT/OFFSET SELECT and returns a `*pagination.Page[T]`:
 
 ```go
 page, err := db.Select().Where("active = ?", true).OrderExpr("id").Page[User](ctx, req)
 ```
 
-`BindQuery` applies `PageRequest.Validate`, which retains the forgiving input policy: absent/zero/negative values receive defaults and `PerPage` is clamped to the configured cap. `Page` does not repeat that policy. It takes a value snapshot of `req` and strictly validates the snapshot before touching the database: nil, non-positive values or native `int` offset overflow wrap `pagination.ErrInvalidPageRequest`. The terminal never mutates the caller's request, and it does not clamp a valid custom page size above `pagination.MaxPerPage` (for example, `PerPage: 100`). The query must be model-less; a bound model returns `sqldb.ErrTypedTerminalModel` before either statement executes. COUNT-shape validation also runs pre-I/O: standalone `Having` and direct compound roots return `sqldb.ErrUnsupportedCountQuery`. On zero rows SELECT is skipped and the page keeps the snapshot's page/per-page with a non-nil empty slice. COUNT and SELECT use separate internal execution snapshots and both join the ambient transaction, so the query receiver is never mutated.
+It is model-less like `One` and `All`; the [pagination spec](pagination.md#adapter-selectquerypaget) is its contract: request validation, the unique tie-breaker the order needs, the total, snapshot consistency, and model→DTO mapping. Cursor/keyset pagination is designed but not exported ([design gate](pagination.md#cursorkeyset-design-gate)).
 
-`Page.Total` is the number of complete logical projection rows before ordering and the Page-owned LIMIT/OFFSET window, with the same ungrouped-aggregate/distinct/group/post-`Having` semantics as `Count`. Repositories must add a stable total order and a unique tie-breaker—for example `OrderExpr("created_at DESC, id DESC")`—so equal primary sort values cannot move nondeterministically between offset pages.
-
-The two statements can drift under concurrent writes. `Page` does not open an implicit transaction, and a normal PostgreSQL/MySQL Read Committed transaction still takes statement-level snapshots. For PostgreSQL and InnoDB, callers that need one snapshot establish a read-only Repeatable Read transaction at the outermost boundary and pass its `txCtx` to `Page`:
-
-```go
-err := db.InTxWith(ctx, &sql.TxOptions{
-    Isolation: sql.LevelRepeatableRead,
-    ReadOnly:  true,
-}, func(txCtx context.Context) error {
-    var err error
-    page, err = db.Select().
-        Where("active = ?", true).
-        OrderExpr("created_at DESC, id DESC").
-        Page[User](txCtx, req)
-    return err
-})
-```
-
-PostgreSQL defaults to statement-snapshot Read Committed. InnoDB defaults to Repeatable Read and ordinary nonlocking reads share the first-read snapshot, but server configuration, storage engine, and locking reads can change that behavior, so portable code requests the level explicitly. SQLite keeps its first-read snapshot in a plain explicit `InTx`; WAL permits a concurrent writer while rollback-journal mode may serialize it, and shared-cache `read_uncommitted` is an exception. The pinned modernc SQLite driver does not reliably enforce the isolation/read-only fields in `sql.TxOptions`, so those options are not presented as SQLite guarantees. Non-default options belong on the outer transaction—nested use returns `ErrNestedTxOptions`. See the detailed database matrix and primary sources in [ADR-015](../adr/015-data-access.md).
-
-`Page` answers with the queried type directly; for a model→DTO response run `Page[Model]` and map it with `Page.Map`, which carries the metadata over (`q.Page[Model](ctx, req)` then `modelPage.Map(func(m Model) DTO { return toDTO(m) })`). When the conversion itself can fail, map the records from `Page[Model]` with ordinary error handling and construct `pagination.NewPage(dtos, modelPage.Total, modelPage.Page, modelPage.PerPage)`. `NewPage` calculates `TotalPages` as quotient plus remainder, avoiding ceiling-division overflow near `math.MaxInt64`.
-
-The universal count source evaluates the projection, which is necessary for exact aggregate and set-returning cardinality. A costly or volatile expression can consequently run once for COUNT and again for the page SELECT. There is deliberately no custom-count strategy on `Page`: advanced repositories share predicates with `ApplyQueryBuilder`, run a deliberately equivalent cheaper `Count` (or count an outer derived-table/CTE source), execute their data query, and call `pagination.NewPage`; a first-class abstraction waits for two real consumers. Likewise, `Page` never represents an unknown total. Total-free offset pagination uses the separate working name `Slice[T]` and gets its own design gate rather than changing `Page`/`Meta` JSON or navigation semantics.
-
-**Cursor/keyset implementation is gated.** The accepted first shape is a forward-only `CursorPage[T]`; `Slice[T]` remains only the working name for total-free offset pagination. A cursor response has `per_page`, `has_next`, and nullable `next_cursor`, never Page totals or a previous cursor, and its terminal performs no COUNT. Ordering belongs to an immutable adapter spec with non-null immutable keys and an explicit unique final tie-breaker. The terminal will reject an existing root ORDER/LIMIT/OFFSET/lock and non-row-shaped queries rather than silently composing incompatible state, then use a portable lexicographic OR-of-AND predicate plus `per_page + 1`. Joins are also excluded initially: they can multiply a root row and invalidate a root-id uniqueness assertion. Only a model-less default full-model SELECT plus curated predicates is accepted; custom projections/tables, raw `Apply`, and hook-capable models fail before I/O. Top-level `WhereOr` also fails; OR filters must be enclosed in one `WhereGroup` that joins the root with AND before the cursor predicate is appended.
-
-The public HTTP token policy requires an explicit rotatable HMAC-SHA256 keyring; there is no generated secret or implicit unsigned fallback. Signing binds the endpoint/query, canonical order, normalized filters, and tenant/authorization scope, but does not hide cursor values. Sensitive keys, encryption, backward navigation, optional totals, and nullable ordering remain outside the first delivery.
-
-The cursor is not authorization. Every request re-applies the normal auth, tenant, and filter predicates; signed scope binding only prevents replay under a different query.
-
-No symbols ship yet. The gate opens only with a concrete consumer, a fail-loud answer for Bun model hooks that can mutate terminal-owned order/window state, invalid-argument transport mapping, canonical wire-format vectors, and real PostgreSQL/MySQL/SQLite SQL, mutation, and typed-value conformance. The terminal must retain existing model-less, execution-snapshot, receiver-reuse, explicit connection/ambient-transaction, and store-error-mapping invariants. The canonical reserved contract and mutation semantics live in the [pagination spec](pagination.md#cursorkeyset-design-gate); the decision rationale is in [ADR-015](../adr/015-data-access.md).
-
-**Escape hatches** on each query type:
+#### Escape hatches
 
 ```go
 // Apply delegates to Bun's native Apply for advanced builder methods.
@@ -451,15 +380,15 @@ func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuild
 func (q *SelectQuery) Unwrap() *bun.SelectQuery
 ```
 
-### 8 Implemented Guardrails
+### Proxy Guardrails
 
-1. **TX inject: snapshot, don't mutate** — terminal methods copy the underlying query before applying the TX connection. `SelectQuery` uses an internal execution snapshot that preserves the explicit connection, builder error, `WherePK` fields, soft-delete flags, and model/relation state. `InsertQuery`, `UpdateQuery`, and `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`) since Bun does not provide `Clone()` on these types — this isolates the `conn` field without affecting shared slices; it suffices because Bun reads, never mutates, the builder while generating SQL. The original `q.raw` is never modified, so query builders can be reused safely — including executing the same builder inside a transaction and again after that transaction finished (pinned by the `Test*Exec_BuilderReusableAfterTxRollback` tests in `query_copy_test.go`). Write-query wrappers track `.Conn()` explicitly. Select reads the actual raw connection after `Conn`/`Apply`: a non-nil explicit connection wins, while clearing or replacing it with a connection-less query re-enables ambient TX injection.
+1. **TX inject: snapshot, don't mutate** — terminal methods copy the underlying query before applying the TX connection. `SelectQuery` uses an internal execution snapshot that preserves the explicit connection, builder error, `WherePK` fields, soft-delete flags, and model/relation state. `InsertQuery`, `UpdateQuery`, and `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`) since Bun does not provide `Clone()` on these types — this isolates the `conn` field without affecting shared slices; it suffices because Bun reads, never mutates, the builder while generating SQL. The original `q.raw` is never modified, so query builders can be reused safely — including executing the same builder inside a transaction and again after that transaction finished. Write-query wrappers track `.Conn()` explicitly. Select reads the actual raw connection after `Conn`/`Apply`: a non-nil explicit connection wins, while clearing or replacing it with a connection-less query re-enables ambient TX injection.
 
-2. **Public `Clone`: top-level builder fork, nested sharing** — `SelectQuery.Clone` restores the execution fields that Bun's `Clone` omitted before v1.3.0 (v1.3.0 copies them itself; the compatibility layer stays until its removal) and otherwise retains Bun's clone semantics. It is not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared. Source and clone must not mutate or scan shared values concurrently.
+2. **Public `Clone`: top-level builder fork, nested sharing** — `SelectQuery.Clone` keeps the execution state (explicit connection, builder error, `WherePK` fields, soft-delete and CTE materialization flags) and otherwise follows Bun's clone semantics. It is not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared. Source and clone must not mutate or scan shared values concurrently.
 
-3. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery) *bun.XQuery)` matches Bun's own varargs signature. Delegates directly via `q.raw.Apply(fns...)`. Nil functions are filtered out to prevent panics.
+3. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery) *bun.XQuery)` matches Bun's own varargs signature and delegates to `q.raw.Apply(fns...)`. Nil functions are filtered out. Terminals keep their interceptors.
 
-4. **Unwrap: builder-only escape** — `Unwrap()` returns the underlying `bun.*Query` for use as a subquery or parameter to other Bun methods. Calling terminal methods on the unwrapped query bypasses all Credo interceptors (TX injection, error mapping). Documented as advanced-only. `Apply` is the primary escape hatch (interceptors preserved).
+4. **Unwrap: builder-only escape** — `Unwrap()` returns the underlying `bun.*Query` for use as a subquery or parameter to other Bun methods. Terminal methods called on the unwrapped query bypass TX injection and error mapping.
 
 5. **Raw terminal wrappers** — `DB` exposes `Exec`, `QueryRow`, and `Query` methods for raw SQL that go through the same TX inject and error mapping pipeline as query builder terminals. Without these, error mapping behavior would split between wrapped and raw queries.
 
@@ -470,11 +399,11 @@ func (db *DB) QueryRow(ctx context.Context, dest any, query string, args ...any)
 func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) error
 ```
 
-6. **ApplyQueryBuilder: cross-type filter reuse** — `Apply` is typed per query type, so a WHERE predicate shared across read and write had to be duplicated three times. `ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder)` on `SelectQuery`/`UpdateQuery`/`DeleteQuery` surfaces Bun's shared `bun.QueryBuilder` so one predicate (tenant scope, soft-delete filter, ownership check) applies to all three. It is implemented as `q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.XQuery)`, mirroring Bun's own `ApplyQueryBuilder`. Conditions land on the proxied query, so terminal methods still apply TX injection and error mapping — interceptors are preserved, exactly like `Apply`. A nil fn is a no-op. The form is preferred over a raw `QueryBuilder()` accessor: it stays in the proxy fluent chain and contains the bun type inside a function boundary, whereas `QueryBuilder()` would break the chain and act as a second `Unwrap` (the interface carries `Unwrap() any`). `InsertQuery` is excluded — no WHERE clause.
+6. **ApplyQueryBuilder: predicates land on the proxied query** — `q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.XQuery)`, mirroring Bun's own `ApplyQueryBuilder`, so terminals keep TX injection and error mapping exactly as with `Apply`. A nil fn is a no-op. Why it is a function rather than a `QueryBuilder()` accessor is in [ADR-015](../adr/015-data-access.md#query-proxies).
 
-7. **Count shape fails loud and logical rows stay aligned** — `Count` and `Page` count a Credo-owned outer `_credo_count_source` after removing root ORDER/LIMIT/OFFSET/FOR, so plain projections, ungrouped aggregates, distinct tuples, groups, and post-`Having` groups use one logical-row contract. Model SELECT hooks run on the private source and the outer `QueryEvent.Model` remains populated without duplicating soft-delete policy. Standalone `Having` and direct compound roots are rejected with `ErrUnsupportedCountQuery` before I/O. MySQL is the oracle for derived output names: logical-count 1060 is wrapped with the same sentinel after I/O and its cause is retained, while non-count 1060 passes through. `Apply` remains inside this guard because the proxy terminal inspects its resulting builder; executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
+7. **The count-shape guard sees `Apply`** — `Count` and `Page` inspect the builder that `Apply` produced, so `Apply` stays inside the [count-shape guard](pagination.md#logical-total-and-supported-count-shapes); executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
 
-**Planned observability:** automatic tracing via a DB-level `bun.QueryHook` belongs to Phase 3.5 and is not installed by `Open()` today. Attaching it at the Bun DB boundary will eventually cover proxy queries, native `Client()`/`Conn()` builders, raw SQL, and migrations without duplicating instrumentation in terminal wrappers.
+**Planned observability:** automatic tracing via a DB-level `bun.QueryHook` belongs to the observability release ([ADR-014](../adr/014-observability.md)) and is not installed by `Open()` today. Attaching it at the Bun DB boundary will cover proxy queries, native `Client()`/`Conn()` builders, raw SQL, and migrations without duplicating instrumentation in terminal wrappers.
 
 ### TX Management
 
@@ -515,7 +444,7 @@ The callback is the transaction lifetime boundary: it must not retain its transa
 
 **Commit outcome:** a commit error does not universally prove that the transaction was not applied. The mapped error describes the driver cause, not a definite rollback result. Calling code must not retry blindly from the mere presence of a commit error; retry policy requires a driver/state classification whose outcome is known.
 
-**Nested TX:** When `RunInTx` is called within an existing transaction for the same `DB`, Bun creates a `SAVEPOINT`. Bun's savepoint implementation cannot change isolation or read-only mode. A nil or zero-valued `TxOptions` is accepted; a nested non-default option returns `ErrNestedTxOptions` before the savepoint and callback rather than being silently ignored. Bun also stores the context used to create a savepoint and reuses it for `RELEASE` / `ROLLBACK TO SAVEPOINT`; Credo therefore controls a cancellation-detached savepoint context while callback queries keep the original context. Savepoint creation observes callback cancellation and the cleanup budget; the callback does not run if creation becomes uncertain. If a callback returns nil after cancellation, Credo rolls back and returns the context error. Creation, release/rollback, and fail-safe ambient abort each have a five-second default wait budget, configurable with `WithTxCleanupTimeout`; callback execution time is not counted. Before an uncertain savepoint operation starts its asynchronous ambient abort, Credo synchronously marks shared transaction state rollback-only. Every outer level checks that state before commit; a level that would otherwise commit returns `ErrTxRollbackOnly`, while an existing callback or context error remains the more specific rollback result. This prevents abort goroutine scheduling from creating a commit race, and further nested calls fail immediately without invoking their callback. Panic cleanup follows the same fail-safe path while re-raising the original panic value. A driver that ignores cancellation can retain its goroutine/connection until it returns, but the caller path is bounded and the transaction remains fail-closed.
+**Nested TX:** When `RunInTx` is called within an existing transaction for the same `DB`, Bun creates a `SAVEPOINT`. Bun's savepoint implementation cannot change isolation or read-only mode. A nil or zero-valued `TxOptions` is accepted; a nested non-default option returns `ErrNestedTxOptions` before the savepoint and callback rather than being silently ignored. Bun also stores the context used to create a savepoint and reuses it for `RELEASE` / `ROLLBACK TO SAVEPOINT`; Credo therefore controls a cancellation-detached savepoint context while callback queries keep the original context. Savepoint creation observes callback cancellation and the cleanup budget; the callback does not run if creation becomes uncertain. If a callback returns nil after cancellation, Credo rolls back and returns the context error; a canceled nested callback rolls back only its savepoint, and a healthy outer transaction stays usable. Creation, release/rollback, and fail-safe ambient abort each have a five-second default wait budget, configurable with `WithTxCleanupTimeout`; callback execution time is not counted. Before an uncertain savepoint operation starts its asynchronous ambient abort, Credo synchronously marks shared transaction state rollback-only. Every outer level checks that state before commit; a level that would otherwise commit returns `ErrTxRollbackOnly`, while an existing callback or context error remains the more specific rollback result. This prevents abort goroutine scheduling from creating a commit race, and further nested calls fail immediately without invoking their callback. Panic cleanup follows the same fail-safe path while re-raising the original panic value. A driver that ignores cancellation can retain its goroutine/connection until it returns, but the caller path is bounded and the transaction remains fail-closed.
 
 ### Transaction-Aware Bun Connection
 
@@ -561,7 +490,7 @@ func (db *DB) RegisterMigrations(m *migrate.Migrations, opts ...migrate.Migrator
 func (db *DB) Migrate(ctx context.Context) error
 ```
 
-**Design points:**
+`Migrate` without a registered set returns an error. The design rationale — one pre-deploy job, no lock wait, mark-on-success — is in [ADR-015](../adr/015-data-access.md#migrations).
 
 - **Thin wrapper**: the `*migrate.Migrations` set is Bun's own type — populated via `Discover(fsys)` for SQL files (works with `embed.FS`) or `MustRegister` for Go migrations. Credo does not re-wrap it.
 - **Mark-applied-on-success by default**: the wrapper passes `migrate.WithMarkAppliedOnSuccess(true)`. An Up error surfaced by Bun leaves the migration unapplied, so the next run attempts it again. This is at-least-once bookkeeping, not an atomicity guarantee: non-transactional effects can be partial, successful body execution and marker insertion are separate operations, and a migration group is not all-or-nothing. Migrations must be transactional where supported or idempotent/reconcilable. Users can pass `WithMarkAppliedOnSuccess(false)` to choose Bun's record-before-running recovery tradeoff explicitly.
@@ -569,12 +498,12 @@ func (db *DB) Migrate(ctx context.Context) error
 - **Production topology**: multi-replica production runs one deadline-bounded pre-deploy job that calls the same `DB.Migrate` path before rollout. `app.OnStart(db.Migrate)` is for local/dev/test, single replicas, or a consciously accepted small-deployment tradeoff. Running it on every replica can make lock losers fail startup and crash-loop while the winner is still migrating. Expand → compatible deploy/backfill → later contract is the default destructive-change strategy.
 - **Transaction boundary**: ordinary `.up.sql` files are not transactional; `.tx.up.sql` runs in one transaction, whose COMMIT or ROLLBACK error reaches `Migrate` and leaves the migration unapplied (pinned by a conformance test on SQLite and PostgreSQL). Database DDL support still applies, and replay/repair must stay safe even then.
 - **Seeding** is a plain migration file (e.g. `2_seed_plans.up.sql`) — no separate mechanism.
-- **No CLI here**: `credo migrate:*` (Phase 5.1) is optional sugar over this wrapper. Rollback/status/file generation stay on Bun's migrator, but a directly constructed migrator does not inherit `RegisterMigrations` options. Read-only status and file generation repeat only relevant options; DB-mutating apply/rollback paths also own Init, Lock, and bounded cancellation-detached Unlock.
-- **OnStart integration is signature compatibility**, not coupling: `sqldb` still imports only `credo/store`, never the root framework package.
+- **No CLI here**: the planned `credo migrate:*` commands are optional sugar over this wrapper. Rollback/status/file generation stay on Bun's migrator, but a directly constructed migrator does not inherit `RegisterMigrations` options. Read-only status and file generation repeat only relevant options; DB-mutating apply/rollback paths also own Init, Lock, and bounded cancellation-detached Unlock.
+- **OnStart integration is signature compatibility**, not coupling: `sqldb` imports only `credo/store`, never the root framework package.
 
 ### Error Mapping
 
-The mapper receives the operation context and the `DB`'s driver family (derived from the driver name, or from the configured Bun dialect for custom connectors). SQLSTATE is the structured cross-driver path; when MySQL provides both a number and a broad SQLSTATE class, its more specific number wins. Strict MySQL error envelopes are parsed only for MySQL, and SQLite numeric codes only for SQLite (`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn, typed `ExtendedCode()`/`Code()` methods for ncruces — the latter two matched by package path via reflection, so no driver becomes a dependency). Unmapped errors pass through with exact identity. Loose message matching is forbidden because a scanner/query hook/domain error may legitimately contain text such as “duplicate key validation”.
+The mapper receives the operation context and the `DB`'s driver family (derived from the driver name, or from the configured Bun dialect for custom connectors). An error that already carries a `fault` kind passes through unchanged. SQLSTATE is the structured cross-driver path; when MySQL provides both a number and a broad SQLSTATE class, its more specific number wins. Strict MySQL error envelopes are parsed only for MySQL, and SQLite numeric codes only for SQLite (`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn, typed `ExtendedCode()`/`Code()` methods for ncruces — the latter two matched by package path via reflection, so no driver becomes a dependency). Unmapped errors pass through with exact identity. Loose message matching is forbidden because a scanner/query hook/domain error may legitimately contain text such as “duplicate key validation”.
 
 | Source | Codes / condition | Semantic result |
 | --- | --- | --- |
@@ -582,89 +511,41 @@ The mapper receives the operation context and the `DB`'s driver family (derived 
 | PostgreSQL | `23505` | `ErrAlreadyExists` |
 | PostgreSQL | other class `23` | `ErrConstraint` |
 | PostgreSQL | `40001` / `40P01` / `55P03` | `ErrSerialization` / `ErrDeadlock` / `ErrContention` |
+| PostgreSQL | `25006` | `ErrReadOnly` |
 | PostgreSQL | class `08`, `57P01-3`, `53300` | `ErrUnavailable` |
 | MySQL | 1022/1062 | `ErrAlreadyExists` |
 | MySQL | 1048, 1216/1217, 1451/1452, 3819 | `ErrConstraint` |
 | MySQL | 1213 / 1205 or 3572 | `ErrDeadlock` / `ErrContention` |
 | MySQL | 1792/1836 | `ErrReadOnly` |
+| MySQL | 1040 | `ErrUnavailable` |
 | SQLite | UNIQUE/PRIMARYKEY/ROWID extended codes | `ErrAlreadyExists` |
 | SQLite | other constraint codes | `ErrConstraint` |
 | SQLite | BUSY_SNAPSHOT | `ErrSerialization` |
 | SQLite | BUSY/LOCKED (including extended codes) | `ErrContention` |
+| SQLite | READONLY (including extended codes) | `ErrReadOnly` |
+| SQLite | IOERR, CANTOPEN (including extended codes) | `ErrUnavailable` |
 | generic | `context.DeadlineExceeded` | `ErrTimeout` |
 | generic | `driver.ErrBadConn`, `sql.ErrConnDone` | `ErrUnavailable` |
 
-PostgreSQL `57014` is `query_canceled`, not intrinsically timeout. A canceled context is returned as cancellation; a deadline maps to timeout; a live context maps only a structured driver error that explicitly identifies statement timeout. MySQL 1290 is deliberately not treated as read-only because it is a generic option-prevents-statement code. Each mapped error is `*store.Error` and preserves the original cause plus driver `Code`. Driver-family-specific classifier registration and a public normalizer remain deferred until a real custom-driver consumer appears.
+The SQLSTATE rows apply to any driver that exposes SQLSTATE, not only PostgreSQL's. PostgreSQL `57014` is `query_canceled`, not intrinsically timeout. A canceled context is returned as cancellation; a deadline maps to timeout; a live context maps only a structured driver error that explicitly identifies statement timeout. SQLite `INTERRUPT` follows the same context rule and otherwise passes through unchanged. MySQL 1290 is deliberately not treated as read-only because it is a generic option-prevents-statement code. Each mapped error is `*store.Error` and preserves the original cause plus driver `Code`. Driver-family-specific classifier registration and a public normalizer are deferred until a real custom-driver consumer appears.
 
 ### Client Escape Hatch
 
-```go
-// Client returns the underlying *bun.DB.
-// Use for raw SQL, model registration, advanced migration operations,
-// and any Bun feature not covered by the proxy layer.
-db.Client() *bun.DB
-```
+**Warning**: queries executed via the `*bun.DB` that `Client()` returns bypass the proxy interceptors. There is no automatic TX injection from context (so `InTx` / `RunInTx` will not affect them) and no error mapping to `store.Err*` sentinels. Use `DB.Exec`, `Query`, and `QueryRow` for raw SQL and `DB.Conn(ctx)` for a native Bun operation that must join the ambient transaction. Reserve `Client()` for model registration, work intentionally tied to the base pool, and migration operations beyond `Migrate` (rollback, status, file generation); use the proxy layer for normal repository code.
 
-**Warning**: queries executed via the returned `*bun.DB` bypass the proxy interceptors. There is no automatic TX injection from context (so `InTx` / `RunInTx` will not affect them) and no error mapping to `store.Err*` sentinels. Use `DB.Conn(ctx)` for a native Bun operation that must join the ambient transaction. Reserve `Client()` for model registration, work intentionally tied to the base pool, and migration operations beyond `Migrate` (rollback, status, file generation); use the proxy layer for normal repository code.
-
-Credo deliberately does not install a Bun `ConnResolver` in this phase. Bun has one owned resolver slot, closes it from `bun.DB.Close`, and uses it for query builders but not direct `Client().ExecContext`, `QueryContext`, `QueryRowContext`, or `BeginTx`. Moreover, current proxy terminals bind an explicit connection, which takes priority over a resolver. Making `Client()` appear automatically transaction-aware would therefore be partial and would pre-empt future read-replica resolver composition. The explicit `DB.Conn(ctx)` boundary is complete and visible; terminal-level injection remains the default. Revisit a composite resolver only when automatic native-builder routing or replicas provide a concrete requirement.
-
----
-
-## File Layout
-
-```text
-fault/
-├── doc.go              ← package contract and transport-neutral rationale
-└── kind.go             ← Kind, Provider, KindOf
-
-store/
-├── doc.go              ← package documentation
-├── errors.go           ← structured Error, semantic sentinels, compatibility aliases
-├── lifecycle.go        ← Lifecycle
-├── health.go           ← Health, HealthStatus
-├── register.go         ← Register[R], WithName/WithPingTimeout, start-phase ping and readiness probe
-├── tx.go               ← TxScope[T], ErrTxMissing, scoped WithTx/GetTx/RequireTx/Conn; deprecated unscoped compatibility helpers
-├── errors_test.go
-├── helpers_test.go
-├── register_test.go
-└── tx_test.go
-
-# Separate Go submodule: github.com/credo-go/credo/store/sqldb
-store/sqldb/
-├── go.mod              ← depends on github.com/uptrace/bun + github.com/credo-go/credo
-├── doc.go
-├── db.go               ← DB type, Open, Client, Lifecycle methods
-├── config.go           ← Config struct, DSN builders
-├── driver.go           ← driver family detection (postgres/mysql/sqlite)
-├── query_common.go     ← shared query state (TX binding, error mapping)
-├── query_select.go     ← SelectQuery proxy (incl. One/All/Page typed terminals)
-├── query_errors.go     ← typed-terminal, Limit/Offset, and Page precondition errors
-├── query_insert.go     ← InsertQuery proxy
-├── query_update.go     ← UpdateQuery proxy
-├── query_delete.go     ← DeleteQuery proxy
-├── tx.go               ← RunInTx, RunInTxWith + method forms InTx, InTxWith
-├── migrate.go          ← RegisterMigrations, Migrate (bun/migrate wrapper)
-├── errors.go           ← context/family-aware driver → semantic store mapper
-├── options.go          ← Option, WithDialect, WithConnector, WithTxCleanupTimeout
-├── raw.go              ← Exec, QueryRow, Query (raw SQL with TX inject + error map)
-├── config_test.go
-├── db_test.go
-├── errors_test.go
-├── integration_test.go  ← TX, query proxy, nested savepoint, raw SQL, pagination tests
-├── migrate_test.go      ← migration wrapper tests (incl. cancellation + embed.FS)
-├── migrate_internal_test.go ← deterministic bounded-unlock tests
-└── testdata/migrations/ ← SQL migration fixtures for embed.FS tests
-```
-
----
+Credo installs no Bun `ConnResolver`; `DB.Conn(ctx)` is the explicit transaction-aware native path ([ADR-015](../adr/015-data-access.md#context-based-tx)).
 
 ## Examples
 
 ### Basic Repository
 
 ```go
-import "github.com/credo-go/credo/store/sqldb"
+import (
+    "context"
+    "fmt"
+
+    "github.com/credo-go/credo/store/sqldb"
+)
 
 type UserRepo struct {
     db *sqldb.DB
@@ -674,26 +555,30 @@ func NewUserRepo(db *sqldb.DB) *UserRepo {
     return &UserRepo{db: db}
 }
 
-func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
-    var user User
-    err := r.db.Select(&user).Where("id = ?", id).Scan(ctx)
+func (r *UserRepo) GetByID(ctx context.Context, id int64) (*User, error) {
+    user, err := r.db.Select().Where("id = ?", id).One[User](ctx)
     if err != nil {
-        return nil, fmt.Errorf("user get by id: %w", err)
         // err is already mapped: sql.ErrNoRows → store.ErrNotFound
+        return nil, fmt.Errorf("user get by id: %w", err)
     }
     return &user, nil
 }
 
 func (r *UserRepo) Create(ctx context.Context, user *User) error {
     _, err := r.db.Insert(user).Exec(ctx)
-    return err // unique violation → store.ErrAlreadyExists (ErrDuplicate compatible)
+    return err // unique violation → store.ErrAlreadyExists
 }
 ```
 
 ### Service with TX
 
 ```go
-import "github.com/credo-go/credo/store/sqldb"
+import (
+    "context"
+
+    "github.com/credo-go/credo"
+    "github.com/credo-go/credo/store/sqldb"
+)
 
 type OrderService struct {
     infra     credo.Infra
@@ -717,181 +602,15 @@ func (s *OrderService) PlaceOrder(ctx context.Context, input OrderInput) (*Order
 }
 ```
 
-### Registration
-
-```go
-import "github.com/credo-go/credo/store/sqldb"
-
-func SetupStore(app *credo.App, rc credo.RawConfig) error {
-    var cfg sqldb.Config
-    if err := rc.Unmarshal("databases.default", &cfg); err != nil {
-        return err
-    }
-
-    db, err := sqldb.Open(&cfg)
-    if err != nil {
-        return err
-    }
-
-    // Single DB — *sqldb.DB implements Lifecycle. The App owns it and shuts
-    // it down after its consumers; the start phase pings it.
-    app.ProvideValue(db)
-    store.Register[*sqldb.DB](app)
-    return nil
-}
-```
-
-### Multi-Database
-
-```go
-import "github.com/credo-go/credo/store/sqldb"
-
-// Define wrapper types for compile-time safety.
-type PrimaryDB struct{ *sqldb.DB }
-type AnalyticsDB struct{ *sqldb.DB }
-
-func SetupMultiDB(app *credo.App, rc credo.RawConfig) error {
-    var primaryCfg, analyticsCfg sqldb.Config
-    if err := rc.Unmarshal("databases.primary", &primaryCfg); err != nil {
-        return err
-    }
-    if err := rc.Unmarshal("databases.analytics", &analyticsCfg); err != nil {
-        return err
-    }
-
-    primaryDB, err := sqldb.Open(&primaryCfg)
-    if err != nil {
-        return err
-    }
-    analyticsDB, err := sqldb.Open(&analyticsCfg)
-    if err != nil {
-        return err
-    }
-
-    // Embedding promotes *sqldb.DB's Lifecycle and ResourceIdentity methods,
-    // so each wrapper is one holder of its own database.
-    app.ProvideValue(PrimaryDB{primaryDB})
-    app.ProvideValue(AnalyticsDB{analyticsDB})
-    store.Register[PrimaryDB](app, store.WithName("primary"))
-    store.Register[AnalyticsDB](app, store.WithName("analytics"))
-    return nil
-}
-```
-
----
-
 ## Design Decisions
 
-1. **Single ORM (Bun) over multi-ORM adapters** — deep integration (query proxies, error mapping, pagination) is more valuable than shallow generic interfaces. Escape hatch for other ORMs via raw DI.
+The rationale and the rejected alternatives are in ADR-015:
 
-2. **Semantic fault contract over transport methods** — the stdlib-only `fault` leaf package breaks the dependency cycle. Store errors expose a `Kind`; root HTTP and future gRPC policy consume the same provider. `HTTPStatus()` remains only as a deprecated compatibility seam.
-
-3. **Context-based TX over explicit TX passing** — a per-connection `TxScope[T]` is opt-in and keeps repository method signatures clean; `store/sqldb` owns it behind its proxies and `DB.Conn(ctx)`. Trade-off: TX participation is less visible in function signatures. See [ADR-015](../adr/015-data-access.md) for rationale.
-
-4. **Query builder proxies over raw pass-through** — proxies inject TX and map errors; DB-level query-hook tracing is planned for Phase 3.5. `Client()` and `Conn(ctx)` escape hatches prevent the proxy from becoming a bottleneck.
-
-5. **Separate submodule for store/sqldb/** — Bun dependency is opt-in. Applications not using SQL don't pull in Bun.
-
-6. **Config over DSN-only** — structured `Config` enables validation, env var mapping, and consistent documentation. `DSN` field is an override for advanced use cases.
-
-7. **Fail-fast at startup, I/O in the start phase** — `Register[R]` panics on misuse known at the call, and a registration whose type has no binding fails `Finalize` with the graph's other errors; neither touches the network. The ping runs in the start phase, after every override, before the store's consumers start, and a failed ping is a start failure that rolls the App back.
-
-8. **Ownership follows the binding** — the store is bound where its ownership is decided: a `ProvideValue` or constructor binding is owned by the App and shut down after its consumers under the drain deadline, `credo.Borrowed()` leaves it to the caller. Registration adds a ping and a readiness probe to the binding and never owns or closes anything.
-
-9. **Health returns one struct** — status, latency, pool stats, and an optional typed `Cause` travel as one snapshot. The additive `Cause error` field keeps the `Lifecycle.Health(ctx) Health` interface stable while avoiding free-form `Details` parsing. It is diagnostic-only and excluded from JSON.
-
-10. **Wrapper types for multi-DB** — applications define distinct struct types (`PrimaryDB`, `AnalyticsDB`), each bound once and registered by its type. Compile-time DI safety with zero string keys; an embedding wrapper shares the handle's resource identity.
-
-11. **Structured, family-aware error mapping** — SQLSTATE is primary; MySQL's strict numeric envelope and SQLite's numeric code are interpreted only for that configured family. Loose arbitrary-message matching is prohibited. Unmapped errors pass through with exact identity.
-
-12. **No store registry API** — registration names a binding; callers cannot add health-only entries, and there is nothing to resolve or replace. `/ready` reports the stores from probes built once at start.
-
-13. **One resource, one teardown, across every binding** — resource identity is the components' rule ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)), not a store-scoped ledger: every holder of one resource, registered as a store or not, shares one teardown after the consumers of all of them. Credo never scans wrapper fields; identity is forwarded through `credo.ResourceIdentifier`.
-
----
-
-## Test Requirements
-
-### store/ (core)
-
-- Every semantic sentinel works through `errors.Is`, `KindOf`, and wrapping/join traversal
-- `ErrDuplicate` aliases `ErrAlreadyExists`; exact constraint/concurrency sentinels retain the legacy `ErrConflict` match
-- Structured errors preserve cause/code/metadata; constraint metadata does not enter default HTTP responses
-- Constraint/duplicate errors are not transient; serialization/deadlock/contention are transient without promising retry safety
-- Deprecated `HTTPStatus()` compatibility remains stable while root semantic policy takes precedence
-- `WithTx` / `GetTx` round-trip
-- `TxScope[T]` round-trips a concrete value through an interface-typed scope without fallback
-- `WithTx` panics for nil pointers and typed-nil interface values before storing them
-- `WithTxInScope` / `GetTxInScope` isolate same-type transactions by scope
-- `(*TxScope[T]).WithTx` / `GetTx` / `RequireTx` / `Conn` round-trip identically to the matching `*InScope` free functions and isolate distinct scopes/types
-- `RequireTx` returns `ErrTxMissing` outside a transaction and never falls back
-- Nested contexts shadow a scoped transaction without mutating the parent context
-- `Conn` returns TX from context when present, fallback otherwise
-- `ConnInScope` returns scoped TX from context when present, fallback otherwise
-- Store readiness probes are built once at start, run in parallel, enforce per-check deadlines, isolate panics, and coalesce overlapping calls; `/ready` resolves nothing per request
-- `Health.Clone` preserves typed cause identity while defensively cloning the top-level details map
-- A nil or typed-nil bound value fails the start before ping or health execution
-- Store failure causes are logged and masked by default; `ExposeErrors` is the only response opt-in
-- Registration misuse panics: nil App, nil option, non-positive ping timeout, invalid name, no stable default name, duplicate type, duplicate name, registration after `Finalize`, preparation or shutdown
-- The App shuts a registered store down after its consumers unless it is borrowed; holders of one resource are pinged each and shut down once
-- `WithName` sets a custom name; explicit empty, padded, control-character, and reserved `credo.` names panic at registration; omitted names use the stable pointer-unwrapped type default
-- `WithPingTimeout` overrides default timeout
-
-### store/sqldb/ (Bun wrapper)
-
-- `Open` creates a working connection
-- `Open` returns error on invalid Config
-- Pool config applies finite `MaxOpen`, nil/zero/positive `MaxIdle`, `MaxLifetime`, and `MaxIdleTime` exactly; negative values and explicit `MaxIdle > MaxOpen` fail before connection use
-- `Client()` returns `*bun.DB`
-- `Stats()` returns the underlying complete `sql.DBStats` snapshot
-- `Ping` verifies connection
-- `Health` returns UP with latency, current pool counts, and cumulative wait/idle/lifetime closure counters
-- An effective unlimited maximum reports `sqldb.pool.max_open_unlimited`; a registered store logs it once after a successful start-phase ping, and a failed ping logs none
-- A `*sqldb.DB` bound raw and through an embedding wrapper, both registered, is pinged twice and closed once
-- `Health` returns DOWN with a typed `Cause` when the connection is dead; it does not copy the cause string into `Details["error"]`
-- `Shutdown` closes connection
-- Query proxies (`Select`, `Insert`, `Update`, `Delete`):
-  - Execute queries correctly
-  - Reject more than one optional model argument through the terminal builder error without executing
-  - Forward curated Select `Limit`/`Offset` values above the int32 range to Bun, which stores them as `int64`; zero and negative values omit the clause
-  - Inject TX from context
-  - Map errors to structured semantic store values
-  - `ApplyQueryBuilder` reuses one predicate across Select/Update/Delete, preserves error mapping, treats a nil fn as a no-op, and reaches `WhereGroup` (not in the curated set)
-  - Select execution snapshots preserve explicit connection, builder errors, `WherePK`, soft-delete flags, and model/relation state
-  - Public Select `Clone` preserves the documented top-level execution fields and documents nested destination/CTE/relation sharing
-- `One[T]`, `All[T]`, and `Page[T]` reject models bound through `Select`, `Model`, or `Apply` with `sqldb.ErrTypedTerminalModel` before execution
-- `Count` and `Page` use `_credo_count_source` to align plain projection, ungrouped aggregate, distinct tuple, group, and post-`Having` cardinality; root ORDER/LIMIT/OFFSET/FOR does not constrain the total
-- Logical Count runs `BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect` on the private source; Page runs the hooks again for its data statement, keeps `QueryEvent.Model`, and applies soft-delete policy only inside the source
-- Standalone `Having` and direct UNION/UNION ALL/INTERSECT/EXCEPT roots return `ErrUnsupportedCountQuery` before database I/O; an outer derived-table source remains countable
-- Real MySQL normal and `NO_BACKSLASH_ESCAPES` sessions pin Count/Page 1060 wrapping with the driver cause, bind-secret-free messages, accepted wildcard/implicit-expression projections, and unsentinelled raw 1060; relation callback single-render behavior remains a local structural test
-- Model-bound `Relation(...).Scan()` loads relations without losing relation callbacks or state
-- `RunInTx` commits on nil return
-- `RunInTxWith` commits on nil return
-- `RunInTx` returns the exact callback error after successful rollback and never reclassifies domain text as a SQL error
-- Callback + rollback failure preserves both causes and maps only the rollback side
-- `RunInTx` re-panics the exact panic value after attempting rollback
-- A nil callback returns `ErrNilTxCallback` before BEGIN
-- Nested calls use savepoints; zero options work and non-default nested options return `ErrNestedTxOptions` before executing
-- Nested callback cancellation rolls back inner work for error/nil/panic exits while leaving a healthy outer transaction usable
-- Savepoint rollback/release failures attempt an ambient SQL transaction abort and preserve operation causes
-- Nested savepoint creation/cleanup and ambient abort respect the default/custom `WithTxCleanupTimeout` wait budget without counting callback duration
-- An uncertain nested operation synchronously marks shared state rollback-only; an outer callback that swallows the nested error still returns `ErrTxRollbackOnly` instead of committing
-- `RunInTx` stores TX in context with per-DB scoping
-- `DB.Conn(ctx)` and `DB.RequireTx(ctx)` expose the correct native Bun connection, including same-type multi-DB isolation
-- `InTx` / `InTxWith` method forms commit on nil, roll back on error
-- `Migrate` applies pending migrations; a re-run with none pending executes no Up body, while Init, Lock, and bounded Unlock still run
-- An Up error surfaced by Bun remains unapplied and is attempted on the next `Migrate`; tests do not treat that at-least-once behavior as proof of atomic or automatically safe retry
-- A non-transactional migration that persists a side effect and then errors is replayed on the next attempt; the regression test observes both effects, pinning the idempotency/repair requirement
-- `Migrate` attempts bounded unlock with a fresh context after parent cancellation; a context-ignoring unlock cannot hold caller wait beyond the internal budget
-- `Migrate` discovers SQL migrations from `embed.FS` (incl. a seed file)
-- `Migrate` without registration returns an error
-- `RegisterMigrations` panics on nil set or double registration
-- `Migrate` satisfies the `App.OnStart` hook signature (compile-time check)
-- PostgreSQL, MySQL, and SQLite classifier tables preserve exact kinds, driver code, cause, and transient metadata
-- Context cancellation, deadline, PostgreSQL 57014, and SQLite interrupt are distinguished
-- `driver.ErrBadConn`, SQL connection closure, and SQLSTATE class 08 map unavailable
-- Arbitrary scanner/hook/domain messages containing duplicate/foreign-key/read-only text pass through unchanged
-- Real SQLite unique, constraint, and lock-contention integrations match the documented kinds
-- `Config.DSN` override takes precedence
-- `Page[T]` snapshots its `PageRequest`, rejects nil/non-positive/native-overflow violations with `pagination.ErrInvalidPageRequest` before COUNT, never normalizes or mutates the caller's request, preserves valid custom page sizes above 50, skips SELECT on zero rows with a non-nil empty slice, and runs COUNT + SELECT on the ambient transaction
-- SQLite WAL conformance deterministically demonstrates transaction-free COUNT/SELECT drift and one stable first-read snapshot inside explicit `InTx`
+- One ORM, Bun, integrated deeply; other ORMs through raw DI — [Why Single-ORM (Bun)?](../adr/015-data-access.md#why-single-orm-bun)
+- A transport-neutral `fault` kind with structural, family-scoped classification — [Semantic Error Types](../adr/015-data-access.md#semantic-error-types)
+- An opt-in, per-database typed transaction scope that fails loud rather than falling back — [Context-Based TX](../adr/015-data-access.md#context-based-tx)
+- Proxies that carry the terminal guarantees, with explicit escape hatches — [3-Tier Bun Wrapping](../adr/015-data-access.md#3-tier-bun-wrapping), [Query Proxies](../adr/015-data-access.md#query-proxies)
+- Typed terminals named for their return shape — [Typed Terminals](../adr/015-data-access.md#typed-terminals)
+- No finite pool default and no automatic `DEGRADED` — [Connection-Pool Policy](../adr/015-data-access.md#connection-pool-policy)
+- A thin `bun/migrate` wrapper run as a pre-deploy job — [Migrations](../adr/015-data-access.md#migrations)
+- Ownership follows the binding; registration pings and reports but never closes — [Registration](../adr/015-data-access.md#registration)

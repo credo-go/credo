@@ -1,86 +1,48 @@
 # Pagination Spec
 
-**Status**: Offset pagination implemented; cursor design accepted with implementation gate deferred **Package**: `pagination/` (core), typed terminal in `store/sqldb/` **Depends on**: Root package (`BindQuery` tag support), `store/sqldb/` (adapter layer)
+**Status:** Implemented (beta); cursor/keyset pagination deferred **Package:** `pagination/`, `store/sqldb/` (`SelectQuery.Page[T]`) **ADR:** [ADR-015](../adr/015-data-access.md) **Guide:** [Data access guide](../guides/data-access.md)
 
----
-
-## Canonical Source
-
-Implementation-level details for Credo's pagination abstraction are defined in this file. Other documents should keep only high-level references and link here.
-
----
+This spec owns offset pagination (the `pagination` core and the `SelectQuery.Page[T]` terminal), the logical-count contract that `SelectQuery.Count` and `Page.Total` share, and the cursor/keyset design gate. Query builders, transactions and error mapping are in the [store spec](store.md).
 
 ## Overview
 
-The `pagination/` package provides generic, ORM-agnostic types and utilities for paginated API responses. Actual query execution (COUNT + LIMIT/OFFSET) lives in the ORM-specific adapter (the `SelectQuery.Page[T]` terminal in `store/sqldb/`), keeping the core free of external dependencies.
+The `pagination/` package provides generic, ORM-agnostic types and utilities for paginated API responses. Query execution (COUNT + LIMIT/OFFSET) lives in the ORM-specific adapter: the `SelectQuery.Page[T]` terminal in `store/sqldb/` (which imports `pagination`) runs both queries via Bun and returns a ready `*Page[T]`.
 
 Key design properties:
 
-- **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest` have zero ORM dependencies. Only types, normalization, and sort validation.
-- **Adapter-level execution** — the `SelectQuery.Page[T]` terminal in `store/sqldb/` runs the COUNT + LIMIT/OFFSET queries via Bun and returns a ready `*Page[T]`.
-- **Exact logical totals** — `Page.Total` is the number of complete logical projection rows before ordering and the page window: plain projection rows, ungrouped aggregate rows, distinct projection tuples, groups, or groups left after `Having`. Unknown totals are not encoded in `Page`.
+- **ORM-agnostic core** — `Page[T]`, `Meta`, `PageRequest`, `SortRequest` and `SortConfig` import only the standard library: types, normalization, and sort validation.
+- **Exact logical totals** — `Page.Total` is the number of complete logical projection rows before ordering and the page window ([logical total](#logical-total-and-supported-count-shapes)). Unknown totals are not encoded in `Page`.
 - **Metadata computed once, carried across mapping** — a `Page[T]`'s pagination metadata (`Total`, `Page`, `PerPage`, `TotalPages`) is computed once, by `Page[T]` or `NewPage`, and never recomputed or hand-copied. When the response carries the queried type, `Page[T]` returns it directly; for a model→DTO response, build `Page[Model]` and `Map` it to `Page[DTO]` — `Page.Map` carries the metadata over.
-- **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `BindQuery` via `query:"..."` tags.
-- **SQL injection prevention** — `SortRequest.ValidateSort` whitelist-based sort field validation. Only pre-approved DB columns can appear in ORDER BY.
+- **Forgiving input policy, strict execution** — `Normalize()` converts zero/negative values to defaults and caps `PerPage` at `MaxPerPage` (50); `NormalizeWithMax(n)` applies a custom cap per endpoint. Both mutate the request. `Offset()` and adapter terminals are strict, non-mutating execution boundaries: invalid values return `ErrInvalidPageRequest` rather than being silently normalized into a different query, and a valid custom `PerPage` above 50 is kept.
+- **Request binding** — `PageRequest` and `SortRequest` are embeddable structs that work with `ctx.Request().BindQuery(&filter)` via `query:"..."` tags.
+- **SQL injection prevention** — `SortRequest.ValidateSort` validates sort fields against a whitelist. Only pre-approved DB columns can appear in ORDER BY; unknown fields fall back to the configured default silently.
 - **Cursor API not exported yet** — the forward-only contract is designed below, but its consumer, Bun-hook, and real-database gates remain open.
-
----
-
-## Goals
-
-1. **ORM-agnostic types**: `Page[T]`, `Meta`, `PageRequest` import only stdlib. No GORM, Bun, or other ORM types leak into the core.
-2. **Metadata computed once, preserved across mapping**: a `Page`'s metadata (`Total`, `Page`, `PerPage`, `TotalPages`) is computed once — by `SelectQuery.Page[T]` or `NewPage` — and never recomputed or hand-copied. When the queried type is the response type, `Page[T]` returns it directly; for a model→DTO response, build `Page[Model]` then `Map` it to `Page[DTO]`, which carries the metadata over mechanically. (This replaces the earlier "single construction, never an intermediate `Page[Model]`" rule: the invariant being protected was always _metadata is computed once, never hand-juggled_ — `Map` enforces it by construction, so building an intermediate `Page[Model]` is now safe and idiomatic.)
-3. **BindQuery integration**: `PageRequest` and `SortRequest` use `query:"..."` tags for automatic request binding via `ctx.Request().BindQuery(&filter)`.
-4. **Defaults and execution safety are separate**: `Normalize()` converts zero/negative values to defaults and caps `PerPage` at `MaxPerPage` (50). `NormalizeWithMax(n)` applies a custom cap per endpoint (shadow `Validate` on the embedding struct to use it with BindQuery). These are forgiving, mutating input-policy operations. `Offset()` and adapter terminals are strict, non-mutating execution boundaries: invalid values return `ErrInvalidPageRequest` rather than being silently normalized into a different query.
-5. **Sort safety**: `SortRequest.ValidateSort` rejects unknown sort fields, preventing SQL injection via ORDER BY. Falls back to configured defaults silently.
-
----
 
 ## Architecture
 
 ### Two Layers
 
 ```text
-┌───────────────────────────────────────────────────────┐
-│  Application Code                                      │
-│                                                        │
-│  Controller: ctx.Request().BindQuery(&filter)          │
-│  Repository: query.Page[Model](ctx, &filter.PageReq)   │
-│  Service:    modelPage.Map(toResponseDTO)              │
-│  Controller: page.ToDataMeta() → JSON response         │
-└────────────────────┬──────────────────────────────────┘
-                     │ uses types
-┌────────────────────▼──────────────────────────────────┐
-│  pagination/  (core — zero dependencies)              │
-│  Page[T], Meta, PageRequest, SortRequest              │
-│  NewPage(), Normalize(), ValidateSort(), Offset()     │
-└───────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Application code                                        │
+│                                                          │
+│  Controller: ctx.Request().BindQuery(&filter)            │
+│  Repository: query.Page[Model](ctx, &filter.PageRequest) │
+│  Service:    modelPage.Map(toResponseDTO)                │
+│  Controller: page.ToDataMeta() → JSON response           │
+└────────────────────────────┬─────────────────────────────┘
+                             │ uses types
+┌────────────────────────────▼─────────────────────────────┐
+│  pagination/  (core, stdlib only)                        │
+│  Page[T], Meta, PageRequest, SortRequest, SortConfig     │
+│  NewPage(), Normalize(), Offset(), ValidateSort(), Map() │
+└──────────────────────────────────────────────────────────┘
 
-┌───────────────────────────────────────────────────────┐
-│  Adapter  (ORM-specific query execution)              │
-│  (*SelectQuery).Page[T](ctx, req) → *Page[T]          │
-│  (queried-type flows; model→DTO: Page[Model].Map)     │
-└───────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  store/sqldb  (adapter, ORM-specific execution)          │
+│  (*SelectQuery).Page[T](ctx, req) → *Page[T]             │
+└──────────────────────────────────────────────────────────┘
 ```
-
-### Data Flow
-
-```text
-HTTP Request                Repository              Service                 Controller
-────────────                ──────────              ───────                 ──────────
-GET /products               ListByFilter()          ListByFilter()          List()
-?page=2&per_page=20         │                       │                       │
-?sort_by=name               │                       │                       │
-                            │                       │                       │
-BindQuery(&filter)          │                       │                       │
-  ↓                         │                       │                       │
-PageRequest{2, 20}    ───►  query.Page[Product]()   │                       │
-SortRequest{"name","asc"}   → *Page[Product]   ───► page.Map(toDTO)         │
-                            │                       → *Page[DTO]       ───► ToDataMeta()
-                            │                       │                       → JSON response
-```
-
----
 
 ## Core Package: `pagination/`
 
@@ -131,33 +93,40 @@ type SortConfig struct {
 ### Functions
 
 ```go
-// ErrInvalidPageRequest identifies a request that cannot safely produce a
-// pagination window.
+// ErrInvalidPageRequest reports page/per-page values that cannot safely
+// produce a pagination window.
 var ErrInvalidPageRequest = errors.New("pagination: invalid page request")
 
-// NewPage creates a Page from raw values. Its ceiling division does not
-// overflow when total is near math.MaxInt64.
+// NewPage creates a Page from raw values; a nil records slice becomes an
+// empty slice. TotalPages is the quotient plus one for a non-zero
+// remainder, so it does not overflow when total is near math.MaxInt64.
 func NewPage[T any](records []T, total int64, page, perPage int) *Page[T]
 
 // NewEmpty creates an empty Page with default pagination values.
 func NewEmpty[T any]() *Page[T]
 
 // Normalize applies forgiving pagination defaults and limits in place.
-// Zero/negative → defaults, PerPage capped at max.
+// Zero/negative → defaults, PerPage clamped to [MinPerPage, MaxPerPage].
 func (r *PageRequest) Normalize()
 
+// NormalizeWithMax is Normalize with a custom PerPage cap; values <= 0
+// fall back to MaxPerPage.
+func (r *PageRequest) NormalizeWithMax(maxPerPage int)
+
 // Validate implements validation.Validatable so that BindQuery
-// automatically applies the same normalization policy after decoding.
+// automatically applies Normalize after decoding.
 func (r *PageRequest) Validate() error
 
 // Offset strictly computes the zero-based offset without mutating, defaulting,
 // or clamping. Non-positive values and native-int overflow wrap
-// ErrInvalidPageRequest.
+// ErrInvalidPageRequest. The overflow guard divides before it multiplies,
+// so it is safe on 32-bit and 64-bit targets.
 func (r PageRequest) Offset() (int, error)
 
-// ValidateSort validates sort parameters against allowed fields.
-// Returns (dbColumn, order). Invalid input → defaults silently.
-// A nil receiver is safe to call.
+// ValidateSort validates sort parameters against allowed fields and
+// returns (dbColumn, order) with order uppercased. Invalid input falls back
+// to the configured defaults silently. A nil cfg returns "", ""; a nil
+// receiver is safe to call.
 func (r *SortRequest) ValidateSort(cfg *SortConfig) (column, order string)
 
 // HasNext reports whether there is a page after the current one.
@@ -185,75 +154,28 @@ MinPerPage     = 1
 MaxPerPage     = 50
 ```
 
----
-
 ## Adapter: `SelectQuery.Page[T]`
 
-Lives in `store/sqldb/` — the Bun wrapper package. `Page[T]` is a typed terminal alongside `One[T]` / `All[T]` (see the [store spec](store.md)), so `T` drives both the table and the result and the query is built model-less. `T` must be the actual table model; `TableExpr` is not a typed projection override. A model bound through `Select`, `Model`, or `Apply` returns `sqldb.ErrTypedTerminalModel` before COUNT or SELECT executes. Use `TableExpr(...).Scan(ctx, &dest)` for projections and the model-bound `Model(&dest).Relation(...).Scan(ctx)` form for relation loading. Add a stable `ORDER BY` with a unique tie-breaker whenever page membership must be deterministic, for example `created_at DESC, id DESC` rather than `created_at DESC` alone.
+`Page[T]` lives in `store/sqldb/` and is a typed terminal alongside `One[T]` / `All[T]`, with the same model-less rules (see the [store spec](store.md#query-builders)): `T` drives both the table and the result, a model bound through `Select`, `Model`, or `Apply` returns `sqldb.ErrTypedTerminalModel` before COUNT or SELECT executes, and `T` must be the actual table model (`TableExpr` is not a typed projection override; projections and relations use an explicit-destination `Scan`). Offset pagination requires a stable total order: repositories must end `ORDER BY` with a unique tie-breaker, for example `created_at DESC, id DESC` rather than `created_at DESC` alone, so rows with equal sort values cannot move between pages.
 
 ```go
 // Page runs COUNT + a LIMIT/OFFSET SELECT and assembles a *pagination.Page[T].
-// BindQuery can apply Validate's forgiving defaults/clamp policy. Page does not
-// repeat that policy: it snapshots req and strictly validates nil, positivity
-// and native offset overflow before COUNT. Violations wrap pagination.ErrInvalidPageRequest. On zero rows
-// SELECT is skipped and the page keeps the snapshot's page/per-page. The caller's
-// request and query receiver are not mutated. COUNT and SELECT remain separate
-// statements; database visibility is determined by the caller's transaction
-// and database-specific isolation. Total is complete logical projection-row
-// cardinality: an ungrouped aggregate normally contributes one row, Distinct
-// counts selected tuples, Group counts groups, and Group+Having counts the
-// remaining groups. Standalone Having and direct compound roots return
-// sqldb.ErrUnsupportedCountQuery before database I/O.
+// req is copied once; neither req nor the query receiver is mutated. Before
+// any I/O, nil, non-positive values or offset overflow wrap
+// pagination.ErrInvalidPageRequest, a bound model returns
+// ErrTypedTerminalModel, and an unsupported count shape returns
+// ErrUnsupportedCountQuery. A zero total skips the SELECT and keeps the
+// requested page and per-page with a non-nil empty Records slice.
 func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error)
 ```
 
-### Implementation
+`Page` does not repeat the forgiving input policy: its strict check is `PageRequest.Offset()`, run before COUNT. No narrower adapter bound applies, since Bun v1.3.0 stores LIMIT and OFFSET as `int64`.
 
-```go
-func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error) {
-    if req == nil {
-        return nil, fmt.Errorf("%w: request must not be nil", pagination.ErrInvalidPageRequest)
-    }
-    request := *req
-    offset, err := request.Offset() // positivity + int overflow
-    if err != nil {
-        return nil, fmt.Errorf("sqldb: Page: %w", err)
-    }
-    if err := q.validateTypedTerminal("Page"); err != nil {
-        return nil, err
-    }
-    if err := validateCountQueryShape(q.raw); err != nil {
-        return nil, err
-    }
-
-    // COUNT complete logical projection rows with T's table on the source.
-    var model []T
-    total, err := q.countLogicalRows(ctx, &model)
-    if err != nil {
-        return nil, q.state.db.mapError(ctx, err)
-    }
-
-    // No rows — skip the SELECT, preserving the requested page/per-page.
-    if total == 0 {
-        return pagination.NewPage([]T{}, 0, request.Page, request.PerPage), nil
-    }
-
-    // SELECT on a private structural copy so Offset/Limit do not leak.
-    records, err := q.cloneQuery().Offset(offset).Limit(request.PerPage).All[T](ctx)
-    if err != nil {
-        return nil, err
-    }
-    return pagination.NewPage(records, int64(total), request.Page, request.PerPage), nil
-}
-```
-
-`Page` calls the strict `PageRequest.Offset()` contract before COUNT. Its division guard runs before multiplication, so the check is safe on both 32-bit and 64-bit Go targets. No adapter bound follows: Bun v1.3.0 stores LIMIT and OFFSET as `int64`, so every `int` page size and offset is representable.
-
-The curated `SelectQuery.Limit(int)` and `Offset(int)` methods forward every value the same way; zero and negative values keep Bun's semantics and omit the clause. `Apply` and `Unwrap` expose raw Bun builders, whose `Limit` and `Offset` take `int64`.
+`ErrInvalidPageRequest` has no HTTP classification: returned unchanged from a handler, it renders as 500 and is logged as a server error. `BindQuery` does not rule it out, because `Normalize` does not cap `Page`: a client-supplied `page` large enough that the offset overflows `int` passes binding and fails in `Page`. A handler that serves client input maps it to 400 itself, as the [Controller](#controller) example does.
 
 ### Logical total and supported count shapes
 
-`Page.Total` counts complete projection rows in the logical query result before `ORDER BY` and the Page-owned LIMIT/OFFSET window. Credo clones the query, removes root ORDER/LIMIT/OFFSET/FOR state, and counts the universal outer `_credo_count_source` derived table:
+`SelectQuery.Count` and `Page.Total` count complete projection rows in the logical query result before `ORDER BY` and the LIMIT/OFFSET window. Credo clones the query, removes root ORDER/LIMIT/OFFSET/FOR state, and counts the universal outer `_credo_count_source` derived table:
 
 | Query shape | `Total` |
 | --- | --- |
@@ -270,7 +192,7 @@ Both the behavior and generated outer SQL are pinned by conformance tests. Two r
 
 `Count` and `Page` reject both with `sqldb.ErrUnsupportedCountQuery` before any database operation. To count a compound query, use it as the source of an outer derived-table/CTE query. When that source also requires custom result scanning, compose an explicit count query and data query, then construct `pagination.NewPage`; typed `Page[T]` does not become a general custom-source or projection terminal.
 
-MySQL also requires every output name in a derived table to be unique. After model hooks run, Credo renders the count source once and lets the server apply its real naming and `sql_mode` rules. Wildcards, implicit aliases, and unaliased expressions are valid when MySQL derives unique names. If the logical COUNT returns `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps `sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause; add explicit unique aliases to fix the collision. The mapping is Count/Page-local, so raw and other non-count 1060 errors pass through unchanged. Real tests cover normal mode and `NO_BACKSLASH_ESCAPES`. PostgreSQL and SQLite are not narrowed. This follows MySQL's [derived-table output-name rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
+MySQL also requires every output name in a derived table to be unique. After model hooks run, Credo renders the count source once and lets the server apply its real naming and `sql_mode` rules. Wildcards, implicit aliases, and unaliased expressions are valid when MySQL derives unique names. If the logical COUNT returns `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps `sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause; add explicit unique aliases to fix the collision. The server does not say which derived-table level produced the error, so a 1060 from a caller-supplied nested derived table inside the count source is wrapped the same way. The retained driver cause is diagnostic and must not be rendered directly to HTTP. The mapping is Count/Page-local, so raw and other non-count 1060 errors pass through unchanged. Real MySQL tests cover normal mode and `NO_BACKSLASH_ESCAPES`. PostgreSQL and SQLite are not narrowed. This follows MySQL's [derived-table output-name rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
 Bun applies relation callbacks while rendering SQL. Credo therefore renders the private count source exactly once, rechecks the post-render builder, and executes those validated bytes. Relation predicates/projections are supported; a callback that replaces the model, reintroduces root ORDER/LIMIT/OFFSET/FOR, or creates standalone `Having`/a compound root returns `sqldb.ErrUnsupportedCountQuery` before I/O.
 
@@ -312,23 +234,9 @@ Non-default options cannot be introduced by a nested savepoint; `InTxWith` retur
 
 The pinned modernc SQLite driver does not reliably enforce `sql.TxOptions.Isolation` or `ReadOnly`; use plain `InTx` for SQLite's explicit snapshot boundary. Fail-loud driver capability validation is deferred. Primary references: [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html), [InnoDB transaction isolation](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html), [InnoDB consistent reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html), [SQLite isolation](https://www.sqlite.org/isolation.html), and [SQLite transactions](https://www.sqlite.org/lang_transaction.html).
 
-### Exact-total `Page` versus a total-free slice
-
-`Page` always carries an exact `Total` and `TotalPages`; `HasNext` derives from that metadata. Unknown totals are not represented as zero, `-1`, a pointer, or an omitted JSON field. A total-free offset query can fetch `PerPage+1` records to determine `HasNext`, but its response uses the separate working name `Slice[T]` until its own design gate. Keyset pagination uses the distinct reserved `CursorPage[T]` shape described below. There is no `WithCount(false)` mode that changes the meaning of an existing `Page`.
-
 ### Model→DTO responses
 
-`Page[T]` answers with the queried type directly. When records must be mapped to a response DTO, run the query as `Page[Model]` and map it with `Page.Map` — the metadata is carried over, so the intermediate `Page[Model]` needs no hand-juggling:
-
-```go
-modelPage, err := q.Page[Model](ctx, req)
-if err != nil {
-    return nil, err
-}
-dtoPage := modelPage.Map(func(m Model) DTO { return toDTO(m) }) // *Page[DTO]
-```
-
-`Map` takes a pure `func(Model) DTO`. When the conversion itself can fail, fetch a model page first, map its records with ordinary error handling, and build the DTO page with `NewPage`. The query remains model-less and public `Clone` is not needed:
+`Page[T]` answers with the queried type directly. When records must be mapped to a response DTO, run the query as `Page[Model]` and map it with `Page.Map`, which carries the metadata over. `Map` takes a pure `func(Model) DTO`; when the conversion itself can fail, map the model page's records with ordinary error handling and build the DTO page with `NewPage`:
 
 ```go
 modelPage, err := q.Page[Model](ctx, req)
@@ -347,15 +255,13 @@ page := pagination.NewPage(
 )
 ```
 
----
-
 ## Usage Example
 
-This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `sqldb` typed terminals into the canonical Controller → Service → Repository layout. Because the response is a DTO (`ProductResponse`, not the `Product` table model), the repository returns `Page[*Product]` from the `Page[T]` terminal and the service maps it to `Page[*ProductResponse]` with `Page.Map`; when the response carries the queried type, return `Page[T]` directly without the map. Domain types (`Product`, `ProductResponse`) and column names are illustrative; only the Credo imports are framework APIs.
+This end-to-end walkthrough wires `BindQuery`, the `pagination/` core, and the `Page[T]` terminal into the Controller → Service → Repository layout: the repository returns `Page[*Product]` and the service maps it to `Page[*ProductResponse]` with `Page.Map`. Domain types (`Product`, `ProductResponse`), `toProductResponse` and column names are illustrative; only the Credo imports are framework APIs. Registering the three types and routing `GET /products` to `ProductHandler.List` is ordinary composition (see the [dependency injection guide](../guides/dependency-injection.md)).
 
 ### Filter struct
 
-Embed `PageRequest` and `SortRequest` so a single `BindQuery` call decodes pagination, sort, and filter parameters at once. `PageRequest.Validate()` applies forgiving page / per_page defaults and clamping because it implements `validation.Validatable` — `BindQuery` invokes it after decode, so no manual `Normalize()` call is needed. This does not replace the terminal's strict, non-mutating execution validation.
+Embed `PageRequest` and `SortRequest` so a single `BindQuery` call decodes pagination, sort, and filter parameters at once. `PageRequest.Validate()` applies the page / per_page defaults and the cap because it implements `validation.Validatable` — `BindQuery` invokes it after decode, so no manual `Normalize()` call is needed. A filter that defines its own `Validate` shadows the promoted `PageRequest.Validate`, so it calls `f.PageRequest.Validate()` — or `f.NormalizeWithMax(n)` for a per-endpoint cap — itself.
 
 ```go
 type ProductFilter struct {
@@ -396,7 +302,7 @@ func (r *productRepo) ListByFilter(ctx context.Context, filter *ProductFilter) (
     }
 
     column, order := filter.SortRequest.ValidateSort(productSortConfig)
-    query = query.OrderExpr(column + " " + order)
+    query = query.OrderExpr(column + " " + order).OrderExpr("id " + order) // unique tie-breaker
 
     page, err := query.Page[*Product](ctx, &filter.PageRequest)
     if err != nil {
@@ -432,10 +338,13 @@ type ProductHandler struct {
 func (h *ProductHandler) List(ctx *credo.Context) error {
     var filter ProductFilter
     if err := ctx.Request().BindQuery(&filter); err != nil {
-        return err // centralized envelope on bind/validation failure
+        return err // default error envelope on bind/validation failure
     }
 
     page, err := h.service.ListByFilter(ctx.Context(), &filter)
+    if errors.Is(err, pagination.ErrInvalidPageRequest) {
+        return credo.ErrBadRequest.WithInternal(err) // e.g. a page whose offset overflows int
+    }
     if err != nil {
         return err // framework classifies, logs, and renders the response
     }
@@ -448,32 +357,9 @@ func (h *ProductHandler) List(ctx *credo.Context) error {
 }
 ```
 
-### Wiring
-
-Register the repo, service, and handler in the DI container; the constructor parameters drive resolution.
-
-```go
-app.Provide[*productRepo](func(infra credo.Infra, db *sqldb.DB) *productRepo {
-    return &productRepo{db: db}
-})
-app.Provide[*productService](func(infra credo.Infra, repo *productRepo) *productService {
-    return &productService{repo: repo}
-})
-app.Provide[*ProductHandler](func(infra credo.Infra, svc *productService) *ProductHandler {
-    return &ProductHandler{service: svc}
-})
-
-handler := app.Resolve[*ProductHandler]()
-app.GET("/products", handler.List)
-```
-
-`Product`, `ProductResponse`, and `toProductResponse` are deliberately left to the application — pagination is orthogonal to domain modelling.
-
----
-
 ## Cursor/Keyset Design Gate
 
-The design direction is accepted, but no cursor types or terminals are exported yet. `CursorPage[T]` is reserved for keyset pagination; `Slice[T]` is only the working name for a future total-free **offset** window and gets its own design gate before export. They do not weaken `Page[T]`'s exact total contract and are not aliases of one another.
+The design direction is accepted, but no cursor types or terminals are exported yet. `Page` always carries an exact `Total` and `TotalPages`, and `HasNext` derives from that metadata: an unknown total is not represented as zero, `-1`, a pointer, or an omitted JSON field, and there is no `WithCount(false)` mode that changes the meaning of an existing `Page`. Total-free responses therefore get their own types. `CursorPage[T]` is reserved for keyset pagination; `Slice[T]` is only the working name for a future total-free **offset** window (which can fetch `PerPage+1` records to determine `HasNext`) and gets its own design gate before export. They do not weaken `Page[T]`'s exact total contract and are not aliases of one another.
 
 ### Reserved forward-only shape
 
@@ -524,26 +410,24 @@ OR (a = :a AND b = :b AND id > :id)
 
 The complete ladder is appended to the already-validated filter root as one parenthesized AND condition. Column identifiers are quoted, and decoded values go through Bun's typed SQL formatter; token bytes are never concatenated into SQL. Bun v1.3.0 renders the final SQL rather than passing driver bind parameters, so the contract is formatter safety, not a claim about driver placeholders.
 
-The terminal fetches `per_page + 1`, trims the extra row, derives `has_next`, and encodes the last included record as `next_cursor`. It never uses OFFSET. The expanded predicate is preferred over a row constructor because it handles mixed directions uniformly and follows MySQL's documented optimization advice for fuller composite-index use. See [MySQL row-constructor optimization](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html). NULL keys are excluded: comparison truth and default NULL placement differ across supported databases. See [PostgreSQL ordering](https://www.postgresql.org/docs/current/queries-order.html), [MySQL NULL ordering](https://dev.mysql.com/doc/refman/8.0/en/null-values.html), and [SQLite type ordering](https://www.sqlite.org/datatype3.html).
+The terminal fetches `per_page + 1`, trims the extra row, derives `has_next`, and encodes the last included record as `next_cursor`. It never uses OFFSET. The expanded predicate is preferred over a row constructor because it handles mixed directions uniformly and follows MySQL's documented optimization advice for fuller composite-index use. See [MySQL row-constructor optimization](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html). NULL keys are excluded: row comparisons become unknown around NULL ([PostgreSQL row comparison](https://www.postgresql.org/docs/current/functions-comparisons.html)), and default NULL placement differs across supported databases — PostgreSQL places NULL last for ascending order by default, while MySQL and SQLite place it first. See [PostgreSQL ordering](https://www.postgresql.org/docs/current/queries-order.html), [MySQL NULL ordering](https://dev.mysql.com/doc/refman/8.0/en/null-values.html), and [SQLite type ordering](https://www.sqlite.org/datatype3.html).
 
 ### Cursor integrity and privacy
 
-There is no implicit unsigned or process-local-secret default. The planned public-HTTP codec requires an explicit HMAC-SHA256 keyring. Each key is at least 32 cryptographically random bytes generated by a CSPRNG; the constructor can enforce length, while entropy remains a deployment/configuration contract. Exactly one key signs, older keys are verify-only, key-id lookup is direct, and MAC comparison is constant-time. The first delivery caps the ring at eight keys, the key tuple at eight components, the decoded payload at 1 KiB, and the complete token at 2 KiB before parsing. Rotation retention is fixed only together with the consumer's expiry policy; without an expiry horizon, a verification key cannot be retired safely. Its signed input binds the following; the construction follows [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104.html):
+There is no implicit unsigned or process-local-secret default. The planned public-HTTP codec requires an explicit HMAC-SHA256 keyring. Each key is at least 32 cryptographically random bytes generated by a CSPRNG; the constructor can enforce length, while entropy remains a deployment/configuration contract. Exactly one key signs, older keys are verify-only, key-id lookup is direct, and MAC comparison is constant-time. The first delivery caps the ring at eight keys, the key tuple at eight components, the decoded payload at 1 KiB, and the complete token at 2 KiB before parsing; decoding then requires the exact version, arity and types, accepts no unknown fields or trailing data, and its errors never echo token contents or key values. Rotation retention is fixed only together with the consumer's expiry policy; without an expiry horizon, a verification key cannot be retired safely. Its signed input binds the following; the construction follows [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104.html):
 
 - token-format version;
 - endpoint/query identity and canonical keyset order;
 - normalized filter scope; and
 - tenant/authorization scope.
 
-The wire format is versioned, key-id-addressed, base64url-safe, and integrity-protected, but its exact byte framing is deliberately not frozen yet. Before implementation, the consumer must drive canonical tuple encoding, key-id grammar, padding rules, external-scope canonicalization, MAC framing, and cross-implementation golden vectors. The MAC uses a fixed Credo cursor domain separator and covers the version, key id, payload, and external scope binding. Key material is copied into the codec, never serialized, logged, or included in an error. Tuple members retain explicit types and fixed arity; decoding does not coerce JSON numbers into a generic floating-point value. Expiry and rotation-retention durations are intentionally not fixed without a consumer's request-lifetime requirements.
+A token from one scope therefore fails closed in another.
 
-A token from one scope therefore fails closed in another. Decode has a strict size limit, exact version/arity/type validation, no unknown fields or trailing data, and errors never echo token contents or key values.
+The wire format is versioned, key-id-addressed, base64url-safe, and integrity-protected, but its exact byte framing is deliberately not frozen yet. Before implementation, the consumer must drive canonical tuple encoding, key-id grammar, padding rules, external-scope canonicalization, MAC framing, and cross-implementation golden vectors. The MAC uses a fixed Credo cursor domain separator, which prevents cross-protocol MAC reuse, and covers the version, key id, payload, and external scope binding. Key material is copied into the codec, never serialized, logged, or included in an error. Tuple members retain explicit types and fixed arity; decoding does not coerce JSON numbers into a generic floating-point value.
 
 Malformed, tampered, unknown-key, scope-mismatched, and—when an expiry policy is configured—expired client tokens share one public invalid-cursor error and map to HTTP 400 without revealing the reason. Configuration or cursor-encoding failures are internal errors; database failures keep the existing `store.Error` mapping. Shipping this distinction also requires the framework's transport-neutral taxonomy to gain a general invalid-argument kind rather than teaching the HTTP layer about pagination.
 
-A cursor is not an authorization capability. Every request re-runs normal authentication, authorization, tenant predicates, and normalized filters; signed scope binding is defense in depth against cross-query replay, not a replacement for those checks. “Opaque” means clients must not interpret or construct the token. Its signed payload is still visible and therefore not confidential.
-
-Signing provides integrity, not confidentiality. The payload remains visible, so the first delivery permits only non-sensitive keys. Encryption (AEAD), server-side cursors, expiry policy, and a deliberately named trusted-only unsigned codec remain separate decisions driven by a real consumer.
+A cursor is not an authorization capability. Every request re-runs normal authentication, authorization, tenant predicates, and normalized filters; signed scope binding is defense in depth against cross-query replay, not a replacement for those checks. “Opaque” means clients must not interpret or construct the token. Its signed payload is still visible: signing provides integrity, not confidentiality, so the first delivery permits only non-sensitive keys. Encryption (AEAD), server-side cursors, expiry policy, and a deliberately named trusted-only unsigned codec remain separate decisions driven by a real consumer.
 
 ### Mutation contract
 
@@ -561,32 +445,21 @@ The conformance suite must demonstrate these cases and the corresponding offset 
 Implementation remains deferred until all of these are true:
 
 1. a concrete consumer contributes its real model, filters, order, tenant binding, and key-rotation requirements;
-2. sqldb either pre-I/O rejects hook-capable models or can prove model, query shape, order/window, scanned key values, and token values remain aligned across every Bun model/scan hook;
+2. sqldb rejects hook-capable models before I/O, as [Terminal-owned keyset](#terminal-owned-keyset) requires;
 3. real PostgreSQL, MySQL, and SQLite jobs pass generated-SQL, NULL/collation, index-plan, insert/delete, and typed-value round-trip tests—including signed integers above 2^53, timestamp precision/timezone, deterministic string collation, and consumer-specific UUID/decimal types; floats/NaN have no default support;
-4. the transport-neutral fault taxonomy maps invalid cursor input through the root renderer, built-in observer, and access-log middleware as HTTP 400; and
+4. the transport-neutral fault taxonomy (`fault.Kind`) gains an invalid-argument kind that the error pipeline classifies as HTTP 400, so the rendered response and the access-log status agree; and
 5. canonical wire framing and cross-implementation golden vectors are fixed.
 
 Until then, a repository may own its keyset SQL and cursor codec explicitly, but Credo will not freeze a speculative public generic abstraction.
 
----
-
 ## Design Decisions
 
-| Decision | Rationale |
-| --- | --- |
-| Core has zero ORM deps | Consistent with store adapter pattern |
-| `Page[T]` terminal returns `*Page[T]`; model→DTO maps via `Page.Map` | The all-in-one terminal is ergonomic when the response is the queried type. For a DTO mapping, run `Page[Model]` and `Map` to `Page[DTO]`; `Map` carries the metadata over, so the intermediate `Page[Model]` costs only a slice transform, not hand-copied metadata |
-| Typed Page queries are model-less and `T` is the table model | The terminal owns model selection. A pre-bound model returns `sqldb.ErrTypedTerminalModel`; projections and relations use explicit-destination `Scan` |
-| COUNT and SELECT are separate statements | `Page` starts no implicit transaction. Database visibility comes from the caller's outer transaction and database-specific isolation; PostgreSQL Read Committed can drift, while an appropriate first-read snapshot can keep both statements stable |
-| `Total` is complete logical projection cardinality | Credo counts a universal outer source after removing root ORDER/LIMIT/OFFSET/FOR, covering ungrouped aggregates, distinct tuples, groups, and post-`Having` groups; model SELECT hooks run on the private source; unsafe standalone `Having` and direct compound roots fail pre-I/O, while MySQL logical-count 1060 is wrapped with `ErrUnsupportedCountQuery` after I/O and preserves its driver cause |
-| No custom-count strategy yet | Existing explicit count + data query + `NewPage` composition covers advanced sources; wait for two real consumers before committing another public API |
-| No unknown total in `Page` | Total-free offset/cursor responses have different metadata and remain separate future types |
-| Cursor and total-free offset names stay separate | `CursorPage[T]` is the reserved keyset result; `Slice[T]` is only the working name for a future total-free offset result with its own design gate |
-| Cursor implementation gate remains closed | A real consumer, a fail-loud Bun hook boundary, invalid-argument transport mapping, canonical wire vectors, and PostgreSQL/MySQL/SQLite conformance are required before public symbols ship |
-| Normalize policy is separate from execution validation | `Normalize`/`Validate` mutate the input to apply defaults and caps. `Offset` and `SelectQuery.Page` never normalize or clamp: they reject unsafe values with `ErrInvalidPageRequest`, preserving a valid custom `PerPage` above 50 |
-| `Offset()` returns `(int, error)` | A plain `int` result could silently wrap. The pre-v1 signature break makes arithmetic failure explicit and keeps invalid LIMIT/OFFSET state from reaching adapters |
-| `PageRequest` uses non-pointer `int` | `Normalize()` handles absence/zero as the default-input policy. Strict execution validation runs only after policy has been applied; callers constructing requests manually must supply positive values |
-| `NewPage` uses quotient + remainder ceiling division | `(total + perPage - 1) / perPage` can overflow near `math.MaxInt64`; quotient plus a non-zero-remainder increment produces the same ceiling safely |
-| `ValidateSort` as method on `SortRequest` | SQL injection prevention is ORM-agnostic logic; method is more idiomatic than free function |
-| `Page.Map[U]` for model→DTO (Go 1.27 generic method) | Reverses the earlier "no convert function" stance: the metadata-integrity invariant that justified it (compute once, never hand-copy) is now _enforced_ by `Map` rather than by forbidding intermediate pages. A generic method (not a free function) keeps the call fluent on the page the caller already holds, and stays in the ORM-agnostic core |
-| `SortConfig` whitelist approach | Only pre-approved fields can reach ORDER BY. Safer than blacklist or regex |
+The rationale for the adapter, count, snapshot and cursor decisions is in [ADR-015](../adr/015-data-access.md) and in the sections above. The core decisions:
+
+- **Core has zero ORM dependencies**, consistent with the store adapter pattern.
+- **`Offset()` returns `(int, error)`**: a plain `int` result could silently wrap; returning the error makes arithmetic failure explicit and keeps invalid LIMIT/OFFSET state from reaching adapters.
+- **`PageRequest` uses non-pointer `int`**: `Normalize()` handles absence/zero as the default-input policy. Strict execution validation runs only after policy has been applied; callers constructing requests manually must supply positive values.
+- **`NewPage` uses quotient + remainder ceiling division**: `(total + perPage - 1) / perPage` can overflow near `math.MaxInt64`; quotient plus a non-zero-remainder increment produces the same ceiling safely.
+- **`ValidateSort` is a method on `SortRequest`**: SQL injection prevention is ORM-agnostic logic, and a method is more idiomatic than a free function.
+- **`Page.Map[U]` is a generic method** (Go 1.27): `Map` enforces compute-once metadata by construction. A generic method (not a free function) keeps the call fluent on the page the caller holds and stays in the ORM-agnostic core.
+- **`SortConfig` is a whitelist**: only pre-approved fields can reach ORDER BY, which is safer than a blacklist or a regex.

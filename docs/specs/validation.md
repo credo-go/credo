@@ -1,36 +1,23 @@
 # Validation Spec
 
-**Status**: Approved **Package**: `validation/` **Sources**: ozzo-validation (MIT, API design), Goyave (MIT, organization), govy (architecture inspiration only, no code adapted) **Depends on**: Root package (`Validatable` interface) **ADR**: [011-validation-strategy](../adr/011-validation-strategy.md) — rule errors are internal unless they are violations; an explicit status wins over a wrapped validation error (v0.24.0)
-
----
+**Status:** Implemented (beta) **Package:** `validation/` **ADR:** [ADR-011](../adr/011-validation-strategy.md) **Guide:** [Getting started](../guides/getting-started.md#validation), [Error handling guide](../guides/error-handling.md#validation-and-bind-failures) **Sources:** ozzo-validation (MIT), Goyave (MIT, topic-based file grouping), govy (design inspiration only, no code adapted)
 
 ## Overview
 
 Credo uses **programmatic-only** validation with **generic type-safe rules** and compile-time safe pointer-based field references. No struct tags for rule definition. Reflection limited to field name extraction (cached). Integrated with Context via the "Parse, don't validate" pattern.
 
----
+This spec owns the `validation` package contract: the rule interface, the built-in rules, the rule-error contract and the error types. Package `validation` depends only on the standard library; the root package depends on it. The error pipeline that classifies a validation error as 422 is [ADR-009](../adr/009-handler-and-error-handling.md)'s; message-key resolution is in the [i18n spec](i18n.md).
 
 ## Philosophy: Parse, Don't Validate
 
-Validation is NOT a separate step. It is part of parsing:
-
-```
-Request → BindBody(&input) → [decode] → [validate] → guaranteed valid output
-                                                    ↘ error → Credo envelope
-```
-
-The `Validatable` interface is the bridge between binding and validation:
+Validation is part of parsing, not a separate step. When the target of `ctx.Request().BindBody(&input)` or `BindQuery` implements `Validatable`, `Validate()` runs right after decoding, so the handler only receives data that has already been validated ([ADR-008](../adr/008-context-design.md#parse-dont-validate)):
 
 ```go
-// Root package
+// package validation
 type Validatable interface {
     Validate() error
 }
 ```
-
-When `ctx.Request().BindBody(&input)` is called and `input` implements `Validatable`, `Validate()` is called automatically after decoding. The handler only receives data that has already been validated.
-
----
 
 ## API Surface
 
@@ -65,6 +52,8 @@ func ValidateStruct(structPtr any, fields ...FieldRules) error
 func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules
 ```
 
+`ValidateStruct` treats a nil pointer as valid and panics on a non-pointer or a pointer to a non-struct (a programming error).
+
 **Two layers of compile-time safety**:
 
 1. `&c.Name` — Go compiler checks the field exists on the struct.
@@ -94,16 +83,18 @@ validation.Field(&c.Age, validation.Email())    // ✗ *int ≠ Rule[string]
 
 ```
 validation/
-├── rule.go             Rule[T] interface, FieldRules, ValidateStruct, Field[T]
-├── errors.go           ValidationError, Errors type, envelope serialization
+├── rule.go             Rule[T] interface, FieldRules, ValidateStruct, Field[T], Validatable
+├── errors.go           ValidationError, Errors (JSON marshaling, Unwrap), NewError
 ├── string_rules.go     Required[T], Email, URL, UUID, Regex, Length
 ├── numeric_rules.go    Min, Max, Between
 ├── collection_rules.go NotEmptySlice, NotEmptyMap, Each, When, NilSafe
-├── date_rules.go       Date, DateBefore, DateAfter
+├── date_rules.go       DateBefore, DateAfter
 ├── file_rules.go       MaxFileSize, AllowedMimeTypes, AllowedExtensions
 ├── common_rules.go     In, NotNil, By (inline custom)
 └── doc.go
 ```
+
+**Rule semantics**: the format rules (`Email`, `URL`, `UUID`, `Regex`) and `Length` pass an empty string, the date rules pass the zero time, and the file rules pass a nil file header, so presence comes from `Required` (or `NotEmptySlice`/`NotEmptyMap`, `NotNil`). `Min`, `Max` and `Between` compare every value, zero included. `Length` counts runes, not bytes. Every rule of a field runs, and each failure is a separate violation: in the `CreateUserInput` example above, an age of 0 yields both `required` and `min`. Per-rule detail is in the godoc.
 
 **Single package model**: All types, functions, and rules live in the `validation` package. There is no `validation/rule` sub-package. For concise examples, use an import alias:
 
@@ -115,9 +106,7 @@ v.ValidateStruct(c,
 )
 ```
 
-**Note**: `Required[T]` lives in `string_rules.go` because it is most commonly used with strings, but it is generic and works with any comparable type.
-
-**Required vs NotEmpty**: `Required[T]`'s `comparable` constraint excludes slices and maps by language rules. `NotEmptySlice[E]()` and `NotEmptyMap[K, V]()` are their counterparts: they fail when the collection is nil or has length zero (error code `not_empty`). The check is `len`-based — no reflection, consistent with the zero-reflection rule execution policy.
+**Required vs NotEmpty**: `Required[T]` accepts any comparable type and fails on its zero value. Its `comparable` constraint excludes slices and maps by language rules. `NotEmptySlice[E]()` and `NotEmptyMap[K, V]()` are their counterparts: they fail when the collection is nil or has length zero (error code `not_empty`). The check is `len`-based — no reflection, consistent with the zero-reflection rule execution policy.
 
 ### Custom Rules
 
@@ -145,8 +134,6 @@ validation.Field(&c.Code, validation.By(func(code string) error {
 }))
 ```
 
-Note: `validation.By` uses type inference — no explicit type parameter needed when the closure signature makes the type clear.
-
 ### Rule Errors
 
 The type of a rule's error decides whether the client sees it. The type is found the way the error pipeline finds it, through the error's chain, so a `*ValidationError` wrapped with `fmt.Errorf("…: %w", …)` is still a violation:
@@ -156,9 +143,7 @@ The type of a rule's error decides whether the client sees it. The type is found
 | `*ValidationError` or `validation.Errors` | continues; the error is a violation of the field | 422 `validation_failed`, the rule's code and message in `violations[]` |
 | any other error | stops at once; the error leaves `ValidateStruct`, `Validate` and `BindBody`/`BindQuery` unchanged | classified like any handler error ([ADR-009](../adr/009-handler-and-error-handling.md)): a plain error is a 500 with the default message, its text logged, not rendered; a fault keeps its mapped status (`store`'s unavailable kind → 503) |
 
-An internal error stops validation everywhere it can arise: `ValidateStruct` returns it without collecting the remaining fields, and nested `Validatable` fields, `Each`, `When` and `NilSafe` pass it on unchanged, so a rule's internal failure never turns into a violation at any depth. A rule that does I/O despite the [stateless boundary](#validation-boundary--stateless-only) and fails therefore reports a server failure — `pq: connection to 10.1.2.3:5432 refused` reaches the log, and the client receives a server error, not a claim that its input was invalid.
-
-Rejected: rendering an internal rule error as a generic 422 violation with a fixed message. It tells the client its input was wrong when the server failed, and a client that trusts the status does not retry. This is one of the error model's final rules ([ADR-011](../adr/011-validation-strategy.md#rule-errors-client-messages-and-internal-failures)).
+An internal error stops validation everywhere it can arise: `ValidateStruct` returns it without collecting the remaining fields, and nested `Validatable` fields, `Each`, `When` and `NilSafe` pass it on unchanged, so a rule's internal failure never turns into a violation at any depth. Rationale and the rejected alternative: [ADR-011](../adr/011-validation-strategy.md#rule-errors-client-messages-and-internal-failures).
 
 ### Validation Boundary — Stateless Only
 
@@ -190,25 +175,32 @@ func (c *CreateUserInput) Validate() error {
 }
 
 // ✓ CORRECT — stateless validation in Validate()
+type Order struct {
+    Email     string    `json:"email"`
+    Quantity  int       `json:"quantity"`
+    StartDate time.Time `json:"start_date"`
+    EndDate   time.Time `json:"end_date"`
+}
+
 func (o *Order) Validate() error {
     return validation.ValidateStruct(o,
         validation.Field(&o.Email, validation.Required[string](), validation.Email()),
-        validation.Field(&o.Quantity, validation.Required[int](), validation.Min(1)),
+        validation.Field(&o.Quantity, validation.Min(1)),
         // Cross-field business rule — pure, no I/O
         validation.Field(&o.EndDate,
-            validation.When(o.StartDate != nil, validation.DateAfter(*o.StartDate)),
-        ),
-        validation.Field(&o.CardNumber,
-            validation.When(o.PaymentMethod == "card", validation.Required[string]()),
+            validation.When(!o.StartDate.IsZero(), validation.DateAfter(o.StartDate)),
         ),
     )
 }
 
 // Stateful checks belong in the service layer
 func (s *OrderService) Create(ctx context.Context, input Order) error {
-    if exists, _ := s.repo.EmailExists(ctx, input.Email); exists {
-        return credo.NewHTTPError(409, "email_exists").
-            WithMessageKey("email already in use")
+    exists, err := s.repo.EmailExists(ctx, input.Email)
+    if err != nil {
+        return fmt.Errorf("check email: %w", err)
+    }
+    if exists {
+        return credo.NewHTTPError(http.StatusConflict, "email_exists")
     }
     // ...
 }
@@ -217,21 +209,23 @@ func (s *OrderService) Create(ctx context.Context, input Order) error {
 ### Conditional Validation
 
 ```go
-func (o *Order) Validate() error {
-    return validation.ValidateStruct(o,
-        validation.Field(&o.CardNumber,
-            validation.When(o.PaymentMethod == "card",
+func (p *Payment) Validate() error {
+    return validation.ValidateStruct(p,
+        validation.Field(&p.CardNumber,
+            validation.When(p.Method == "card",
                 validation.Required[string](), validation.Length(13, 19),
             ),
         ),
-        validation.Field(&o.IBAN,
-            validation.When(o.PaymentMethod == "bank",
+        validation.Field(&p.IBAN,
+            validation.When(p.Method == "bank",
                 validation.Required[string](), validation.Length(15, 34),
             ),
         ),
     )
 }
 ```
+
+`When`'s rules are built eagerly: Go evaluates them before `When` sees its condition, so a rule argument must not dereference what the condition guards (`When(o.StartDate != nil, DateAfter(*o.StartDate))` panics on a nil `StartDate`); use a value field or check inside a `validation.By` closure.
 
 ### PATCH / Partial Update Support
 
@@ -283,11 +277,9 @@ func (c *CreateUserInput) Validate() error {
 
 When a field has no rules but implements `Validatable`, `ValidateStruct` auto-calls `Validate()` on it, enabling recursive nested validation.
 
----
-
 ## Error Format
 
-Validation errors are classified as 422 by the framework's internal error pipeline and rendered in Credo's default error envelope (or by a configured `ErrorRenderer`):
+Validation errors are classified as 422 by the framework's internal error pipeline and rendered in the [default error envelope](../adr/009-handler-and-error-handling.md#default-error-envelope) (or by a configured `ErrorRenderer`):
 
 ```json
 {
@@ -317,65 +309,30 @@ type ValidationError struct {
     Code       string         `json:"code"`
     Message    string         `json:"message"`
     MessageKey string         `json:"-"`              // optional exact presentation key
-    Params     map[string]any `json:"params,omitempty"`
+    Params     map[string]any `json:"params,omitempty"` // sent to clients
 }
+
+func (e *ValidationError) Error() string
+
+// NewError builds a client-visible failure for a custom rule or a By function.
+func NewError(code, message string) *ValidationError
 
 // Errors is a collection of validation errors.
 type Errors []ValidationError
 
 func (e Errors) Error() string  // implements error interface
 func (e Errors) MarshalJSON() ([]byte, error)
+func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error
+func (e Errors) Unwrap() []error
 ```
 
-`Code` is the stable rule identity. `MessageKey`, when present, is an exact presentation key and is never serialized. `Params` provides template data.
+`Code` is the stable rule identity. `MessageKey`, when present, is an exact presentation key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Errors.Unwrap` returns the individual failures, which lets `errors.As` find a single `*ValidationError` through any wrapping.
 
-`Field` is always a stable technical identifier for frontend form-input matching. An optional Fields catalog may provide a display name only to the message template as `{{.field}}`; it never changes the wire `field` value.
-
-**Translation trigger** — Translation happens in the framework's error pipeline when i18n is configured, never inside the validation engine. An explicit `MessageKey` wins; otherwise the optional scope-aware resolver is used; otherwise the bare `Code` is the exact key. Credo adds no prefix. See [ADR-013](../adr/013-internationalization.md).
-
----
+`Field` is the stable technical path on the wire, for frontend form-input matching: the field's `json` tag name, or the Go field name when the tag gives none; nested fields join with `.` and `Each` adds `[i]` (`address.city`, `items[0]`). Translation happens in the error pipeline, never in the validation engine, and never changes the wire `field`; see the i18n spec's [message-key resolution](i18n.md#message-key-resolution) and [field display names](i18n.md#validation-bind-and-fields).
 
 ## Design Decisions
 
-1. **Programmatic only — no struct tags** — Struct tags for validation require reflection and are not compile-time safe. See [ADR-011](../adr/011-validation-strategy.md).
+Rationale for programmatic-only rules, generic `Rule[T]`, pointer field references, auto-validation through `Validatable`, topic-based grouping and the absence of `ValidateBody`/`ValidateQuery` on Route is in [ADR-011](../adr/011-validation-strategy.md).
 
-2. **Generic `Rule[T]` over non-generic `Rule`** — ozzo's `Rule.Validate(any)` loses type information. Generic rules catch type mismatches at compile time. See [ADR-011](../adr/011-validation-strategy.md).
-
-3. **Pointer field refs (ozzo-style)** — `validation.Field(&c.Name, ...)` is familiar and compile-time safe for field existence. Reflection is used only for field name extraction and is cached per struct type.
-
-4. **Validatable interface for auto-validation** — `Bind*` methods auto-call `Validate()` on target structs. Handlers never need a separate validation step.
-
-5. **No `ValidateBody`/`ValidateQuery` on Route** — The Bind pattern handles this cleanly in the handler.
-
-6. **Topic-based rule grouping** — Rules grouped by domain (`string_rules.go`, `numeric_rules.go`, etc.) rather than one file per rule. Reduces file count while keeping related rules together.
-
-7. **i18n-ready `ValidationError`** — `Code` + `Params` fields enable translation without breaking changes. Default English messages work out of the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
-
-8. **NilSafe for PATCH support** — `NilSafe[T]` wrapper provides first-class partial update support via pointer fields, without requiring separate rule sets for create vs update.
-
-9. **Fluent API targeted at v1 (Go 1.27)** — the long-term direction is a fluent builder built on generic methods (golang/go#77273, Go 1.27). The current rule set is the substrate that any fluent shape will wrap, so v0 additions stay deliberately small and fully portable (`NotEmptySlice`/`NotEmptyMap` are `len`-based rules the fluent layer can reuse as-is). Convenience helpers that a fluent API would obsolete (e.g. a `RequiredField` shorthand) are intentionally not added — shipping an API that is born deprecated helps no one.
-
----
-
-## Comparison with Alternatives
-
-| Criteria | go-playground | ozzo | govy | Goyave | **Credo** |
-| --- | --- | --- | --- | --- | --- |
-| Rule definition | Tag strings | Programmatic | Programmatic | Programmatic | **Programmatic** |
-| Field reference | Reflection | Pointer | Getter func | Path string | **Pointer** |
-| Compile-time safe | No | Partial | Full | No | **Full (per field)** |
-| Generics | No | No | Yes (core) | No | **Yes (Rule[T])** |
-| Auto-validate | No | No | No | Route MW | **BindBody/Query** |
-| Custom rules | Tag func | `Rule` interface | `Rule[T]` | Validator | **`Rule[T]`** |
-| PATCH support | Awkward | Good (nil ptr) | OmitEmpty | Separate rules | **NilSafe[T]** |
-| Error format | Custom | map[string]error | Structured | Nested JSON | **Credo envelope; RFC 9457 opt-in** |
-| i18n | Translator | No | Templates | Built-in | **Code + Params** |
-| Reflection | Heavy (cached) | Moderate | None | Minimal | **Minimal (cached)** |
-
----
-
-## Implementation Phase
-
-- **Phase 2.3**: Core validation engine (`validation/` package)
-- **Phase 2.4**: centralized error integration with `ErrorRenderer`
-- **Phase 1.3** (completed): `Validatable` interface + `BindBody`/`BindQuery` (Context methods, auto-call Validate)
+- **i18n-ready `ValidationError`** — `Code` + `Params` fields enable translation without breaking changes. Default English messages work out of the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
+- **No fluent builder** — `Rule[T]` is the substrate; helpers a fluent layer would make obsolete (such as a `RequiredField` shorthand) are not added ([ADR-011](../adr/011-validation-strategy.md#no-fluent-builder-deferred)).

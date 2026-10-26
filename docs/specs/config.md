@@ -1,14 +1,8 @@
 # Configuration Spec
 
-**Status**: Approved **Package**: `config/` **Sources**: koanf (MIT) **Depends on**: — **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md) **Roadmap**: [`TODO.md` Phase 1.5](../../TODO.md)
+**Status:** Implemented (beta) **Package:** `config/` **ADR:** [ADR-005](../adr/005-configuration-architecture.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md) **Guide:** [Configuration guide](../guides/configuration.md) **Sources:** koanf (MIT)
 
----
-
-## Canonical Source
-
-Implementation-level details for Credo configuration are defined in this file. Other documents should keep only high-level references and link here.
-
----
+This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, the typed getters, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
 
 ## Overview
 
@@ -20,31 +14,30 @@ The primary pattern is:
 2. **`rc.Unmarshal("section", &typed)`** — typed config at module boundary
 3. **`app.ProvideValue(&typed)`** — register typed config in DI
 
-Business code accesses config as typed structs via DI. String keys in business code are an explicit anti-pattern.
+String keys appear **once**, at the module boundary; business code accesses config as typed structs via DI, and string keys in business code are an explicit anti-pattern. Examples: [Configuration Guide — Typed Config + DI](../guides/configuration.md#typed-config--di).
 
----
+```
+RawConfig ──Unmarshal──→ *DatabaseConfig ──DI──→ Service
+                ↑                                   ↑
+          string key (1x)                  typed (compile-time)
+```
 
 ## Goals
 
-1. **Struct-Centric**: Encourage users to define their own config structs for compile-time safety. Typed config via DI is the primary access pattern.
+1. **Typed access**: applications define their own config structs and receive them through DI.
 2. **Deterministic precedence**: Later sources always override earlier ones.
-3. **Zero-Config Local DX**: Automatic file discovery and silent `.env` ignore if missing.
-4. **Explicit Production Intent**: Surface errors if a custom `CREDO_ENV_FILE` is specified but missing.
-5. **Tagless by Default**: `MapFieldName` auto-converts PascalCase field names to snake_case, so config structs need no tags for standard names. The `credo` struct tag is an escape hatch for non-standard mappings — used only when the desired key differs from the field's snake_case name.
-6. **Source-appropriate normalization**: `.env` files and process env vars share the same key normalization (lowercase + `__` → `.`), but `.env` files do not require a prefix — they are project-scoped and need no namespace isolation. Process env vars are prefix-filtered to avoid collisions with system variables.
-
----
+3. **Zero-config locally, fail-loud for explicit intent**: discovered files, env-specific overlays and the default `.env` are optional; an explicit `WithFiles` list none of whose files exists, or an explicitly named `.env` path that is missing (unless `WithDotenvOptional()`), is an error.
 
 ## Source Precedence & Discovery
 
 Configuration merges in this order (lowest to highest priority):
 
-1. **Base config files**: All found among `config.json`, `config.yaml`, `config.yml` are loaded and merged in order (later files override earlier ones for overlapping keys). Users can override the candidate list via `WithFiles()`.
+1. **Base config files**: All found among `config.json`, `config.yaml`, `config.yml` are loaded and merged in order (later files override earlier ones for overlapping keys). `WithFiles(paths...)` replaces this candidate list with an explicit one: at least one listed file must exist or `Load` fails, and `WithFiles()` with no arguments disables file loading.
 2. **Env-specific config files**: When `CREDO_ENV` is set (e.g., `production`), env-specific files are loaded and merged on top of base files. This applies in both discovery mode and explicit mode (`WithFiles()`).
    - **Discovery mode**: fixed pattern `config.{env}.json`, `config.{env}.yaml`, `config.{env}.yml`.
    - **Explicit mode**: derived from each specified file by inserting `.{env}` before the extension (e.g., `myapp.yaml` → `myapp.production.yaml`). Derived files are optional — missing files are silently skipped.
-   - `CREDO_ENV` can be set via process environment variable or in the `.env` file. Process env takes precedence.
-3. **.env file**: Resolved via `CREDO_ENV_FILE` or default `.env`. All entries are loaded (no prefix filtering). Keys are normalized using the same lowercase + `__` → `.` pipeline (see [Key Model & Env Normalization](#key-model--env-normalization)). Disabled entirely by `WithoutDotenv()`.
+   - `CREDO_ENV` can be set via process environment variable or in the `.env` file. Process env takes precedence, unless `WithoutProcessEnv()` is set.
+3. **.env file**: Resolved per the [.env Resolution Policy](#env-resolution-policy). All entries are loaded without prefix filtering ([.env Prefix Policy](#env-prefix-policy)); keys are normalized using the same lowercase + `__` → `.` pipeline (see [Key Model & Env Normalization](#key-model--env-normalization)). Disabled entirely by `WithoutDotenv()`.
 4. **Process environment variables**: Prefixed (default `CREDO_*`, overridable via `WithPrefix()`). Only variables matching the active prefix are loaded. Bootstrap environment variables (`CREDO_ENV_FILE`, `CREDO_ENV`) are always excluded from the merged configuration. Disabled entirely by `WithoutProcessEnv()`.
 
 Later sources override earlier sources on key conflicts.
@@ -73,19 +66,20 @@ config.{env}.json        ← env-specific (only when CREDO_ENV is set)
 config.{env}.yaml/.yml   ← env-specific (merged on top)
 ```
 
-When `CREDO_ENV` is set (e.g., `CREDO_ENV=production`), env-specific files are automatically derived and merged after base files. This allows environment-based overrides without code changes.
-
-To load specific files (bypassing discovery), use `WithFiles("path/to/myconfig.json")`. Env-specific derivation still applies when `CREDO_ENV` is set — each listed file derives a `name.{env}.ext` overlay.
-
----
+`WithFiles(...)` bypasses discovery; explicit files and their env-specific derivation follow items 1–2 above.
 
 ## .env Resolution Policy
 
-- **Case 0: `WithoutDotenv()` is set**: No `.env` file is read at all — `CREDO_ENV_FILE` is not consulted and the default `.env` is not probed.
-- **Case 1: `CREDO_ENV_FILE` is set**: Credo attempts to load the file from the specified path. If the file is missing, `config.Load` returns an error (explicit intent). Under `WithoutProcessEnv()` the variable is not consulted (resolution falls through to the default `.env`).
-- **Case 2: `CREDO_ENV_FILE` is NOT set**: Credo attempts to load `.env` from the current working directory. If missing, it is silently ignored (zero-config local DX).
+The `.env` path resolves in this order; the first rule that applies wins:
+
+1. **`WithoutDotenv()`**: no `.env` file is read at all — `CREDO_ENV_FILE` is not consulted and the default `.env` is not probed.
+2. **`WithDotenvPath(path)`**: the explicit path.
+3. **`CREDO_ENV_FILE`** (process environment): the explicit path. Not consulted under `WithoutProcessEnv()`.
+4. **Default**: `.env` in the current working directory. If missing, it is silently ignored (zero-config local DX).
+
+- **Missing explicit file**: when rule 2 or 3 names a file that does not exist, `Load`/`LoadBytes` return an error (explicit intent), unless `WithDotenvOptional()` is set, which logs a Warn (through `WithLogger`) and continues without `.env`. An unreadable or unparsable `.env` is always an error.
 - **Bootstrap key stability**: `CREDO_ENV_FILE` and `CREDO_ENV` are fixed bootstrap key names. They are intentionally not affected by `WithPrefix()` — bootstrap behavior is Credo's own concern, not the application's. They control loading behavior only and are never merged into the config tree.
-- **Single-pass `.env` read**: The `.env` file is read and parsed exactly once per `Load`. `CREDO_ENV` is taken from the parsed pairs _before_ config files load (enabling `.env`-based environment selection), while the pairs themselves are merged into the config tree _after_ config files — so the precedence chain is unchanged. Process env var `CREDO_ENV` always takes precedence over the `.env` value. Because the read happens up front, `.env` errors (missing explicit file, parse failure) surface before config-file errors.
+- **Single-pass `.env` read**: The `.env` file is read and parsed exactly once per `Load`. `CREDO_ENV` is taken from the parsed pairs _before_ config files load (enabling `.env`-based environment selection), while the pairs themselves are merged into the config tree _after_ config files — so the precedence chain is unchanged. Because the read happens up front, `.env` errors (missing explicit file, parse failure) surface before config-file errors.
 
 ### .env Prefix Policy
 
@@ -106,9 +100,7 @@ export CREDO_DB__DSN=postgres://localhost/mydb
 export CREDO_DEBUG=true
 ```
 
-> **Rationale**: `.env` files are project-scoped — they live in the project root and are not shared with other processes. Namespace isolation via prefix is unnecessary and adds verbosity. Process env vars, by contrast, share a global namespace with the OS and other tools, making prefix filtering essential. This matches the convention used by virtually all frameworks (Laravel, Django, Express, GoFr).
-
----
+Rationale: [ADR-005](../adr/005-configuration-architecture.md#env-entries-are-not-prefix-filtered).
 
 ## API
 
@@ -120,9 +112,9 @@ cfg, err := config.Load(opts...) // returns (*config.Config, error)
 
 - Loads all sources (files, `.env`, env vars) and merges them.
 - Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
-- Returns error on I/O failure, parse error, or invalid config. Never panics. There is no `MustLoad` — a filesystem-touching load surfaces its error.
+- Returns an error for an I/O failure, a parse error, conflicting options, an explicit file list none of whose files exists, a missing explicit `.env` file, or an unsupported file format ([Error Handling Contract](#error-handling-contract)). Never panics. A section's `Validate()` error is returned by `Unmarshal`/`Get`, not by `Load`. There is no `MustLoad`.
 - No package-global instance — each call produces an independent `Config`.
-- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithStrictDecoding()`. `.env` file path resolution: `WithDotenvPath` > `CREDO_ENV_FILE` env var > default `".env"`. A missing explicit path is an error unless `WithDotenvOptional()` is set (downgrades to a warning). `WithoutDotenv` + `WithDotenvPath` is a contradiction and returns an error.
+- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithStrictDecoding()`, `WithLogger(*slog.Logger)` (load-time warnings such as a missing optional explicit `.env`; default `slog.Default()`). `.env` path rules: [.env Resolution Policy](#env-resolution-policy).
 
 ### config.RawConfig Interface
 
@@ -136,13 +128,12 @@ type RawConfig interface {
 }
 ```
 
-Limited to 2 methods by design — no scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. The ergonomic typed-snapshot getter `Get[T]`/`GetConfig[T]` (below) is a generic method on the concrete `*config.Config` and `*App`, not on this interface — a generic method cannot live on an interface, and keeping `RawConfig` at two methods keeps custom implementations trivial. For design rationale and rejected alternatives, see [ADR-005](../adr/005-configuration-architecture.md).
+Limited to 2 methods — no scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. The typed-snapshot getter `Get[T]`/`GetConfig[T]` (below) is a generic method on the concrete `*config.Config` and `*App`, not on this interface. Rationale and rejected alternatives: [ADR-005](../adr/005-configuration-architecture.md).
 
 Behavior contract:
 
-- `Unmarshal(key, &dst)` decodes a config sub-tree into `dst`; returns error if the key is missing or decoding fails.
-- `Exists(key)` checks both leaf and intermediate keys.
-- Empty key `""` represents the root of the config tree.
+- `Unmarshal(key, &dst)` decodes a config sub-tree into `dst` (a pointer to a struct, map, slice, or primitive); returns error if the key is missing or decoding fails. The empty key `""` decodes the whole tree and returns an error when the configuration is empty. A key present with a null value leaves `dst` unchanged and returns no error.
+- `Exists(key)` checks both leaf and intermediate keys, and reports a key whose value is null as present. `Exists("")` is false.
 
 ### Reload — Partial Reload (ADR-020)
 
@@ -153,14 +144,12 @@ type Staged interface { RawConfig; Changes() Changes; Commit() }
 
 func (c *Config) Reload() (Changes, error)   // Stage + Commit
 func (c *Config) Stage() (Staged, error)
-func (c Changes) Affects(prefix string) bool
-func (c Changes) Keys() []string
-func (c Changes) Empty() bool
+func (c Changes) Affects(prefix string) bool  // a changed key equals prefix or lies under "prefix."; "" matches any change
+func (c Changes) Keys() []string              // sorted copy of the changed leaf key paths
+func (c Changes) Empty() bool                 // nothing changed
 ```
 
-> Status: **Implemented** (Phase 3.8).
-
-`*Config` implements both `Reloader` and `Stager`. `Stage` re-runs the load pipeline with the options captured by the original `Load` — the same files, prefix, and `.env` path, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — into a candidate returned as a `Staged` handle: a `RawConfig` over the candidate, `Changes()` — the sorted symmetric difference of leaf key paths against the snapshot current at stage time (values are never retained) — and `Commit()`, which swaps the internal snapshot atomically so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. An uncommitted candidate is discarded. `Reload` is `Stage` followed by `Commit`. Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader` (one-shot) or, to get validate-before-publish, `Stager`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). Process environment is re-read, but a supervisor's `EnvironmentFile=` is applied only at process start, so env-sourced changes still require a restart.
+`*Config` implements both `Reloader` and `Stager`. `Stage` re-runs the load pipeline with the options captured by the original `Load` — the same files (or the same `LoadBytes` document), prefix, `.env` path and source opt-outs, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — into a candidate returned as a `Staged` handle: a `RawConfig` over the candidate, `Changes()` — the sorted symmetric difference of leaf key paths against the snapshot current at stage time (values are never retained) — and `Commit()`, which swaps the internal snapshot atomically so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. An uncommitted candidate is discarded. `Reload` is `Stage` followed by `Commit`. Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader` (one-shot: atomic for readers, previous snapshot untouched on error) or, to get validate-before-publish, `Stager`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). The process environment is re-read on every stage; what a supervisor hands the process stays fixed until restart ([Deployment Guide](../guides/deployment.md#systemd)).
 
 ### credo.New() Config Integration
 
@@ -168,7 +157,7 @@ func (c Changes) Empty() bool
 
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
-Framework-read server keys include listen settings, debug mode, routing behavior, and `server.trusted_proxies` for reverse-proxy metadata trust. `credo.WithTrustedProxies(...)` is the explicit option form and overrides the config value when both are present.
+The framework reads its own settings from the `server` section when present (listen address, timeouts, header and body limits, trailing-slash redirect, debug mode, strict bodies, trusted proxies, TLS files); the key list with types, defaults and reloadability is in the [Configuration Guide](../guides/configuration.md#server--server). An explicit `With*` option replaces its key: `WithAddr` (host and port), `WithShutdownTimeout`, `WithReloadTimeout`, `WithMaxBodyBytes`, `WithRedirectTrailingSlash`, `WithTrustedProxies`, and `WithTLSFiles` (cert and key as one pair). `WithDebug` and `WithStrictBodies` are OR'd with `server.debug` and `server.strict_bodies`.
 
 ### config.LoadBytes() — Embedded Config
 
@@ -176,7 +165,12 @@ Framework-read server keys include listen settings, debug mode, routing behavior
 rc, err := config.LoadBytes(data, config.FormatJSON, opts...)
 ```
 
-Creates a Config from raw bytes. After parsing, `.env` and env var layers are applied on top (same precedence as `Load`). Useful with `go:embed`.
+Creates a Config from one raw document. Useful with `go:embed`.
+
+- `format` is `config.FormatJSON` or `config.FormatYAML` (also `"yml"` or a file extension such as `".yaml"`, case-insensitive); any other format is an error.
+- The document is parsed first, so a malformed document fails before any `.env` I/O. The `.env` and process-environment layers then merge on top with the same rules and options as `Load`.
+- `CREDO_ENV` selects no env-specific overlay: there is no file to derive one from.
+- The bytes are copied: `Reload`/`Stage` re-parse the same document and re-read only `.env` and the process environment.
 
 ### Typed Snapshot Getter — Get[T] / GetConfig[T]
 
@@ -189,8 +183,8 @@ db, err := cfg.Get[DatabaseConfig]("database")   // (*config.Config).Get[T]
 port := cfg.MustGet[int]("server.port")           // MustGet panics on error
 
 // Or straight from the App, over its registered RawConfig:
-db, err := app.GetConfig[DatabaseConfig]("database")
-db := app.MustGetConfig[DatabaseConfig]("database")
+db, err = app.GetConfig[DatabaseConfig]("database")
+db = app.MustGetConfig[DatabaseConfig]("database")
 ```
 
 | Method | Signature | On error |
@@ -199,25 +193,12 @@ db := app.MustGetConfig[DatabaseConfig]("database")
 | `(*config.Config).MustGet[T]` | `(key string) T` | panics |
 | `(*App).GetConfig[T]` | `(key string) (T, error)` | returns zero `T` + error |
 | `(*App).MustGetConfig[T]` | `(key string) T` | panics |
+| `(*App).ConfigExists` | `(key string) bool` | — (mirrors `RawConfig.Exists`; a presence check during registration, before `Resolve` is available) |
 
-- `T` may be a struct, map, slice, or primitive — same decode rules, weak typing, and `Validate()` hook as `Unmarshal`.
+- `T` may be a struct, map, slice, or primitive — the same decode rules (weak by default, strict under `WithStrictDecoding`) and `Validate()` hook as `Unmarshal`.
 - `App.GetConfig` decodes through the registered `RawConfig.Unmarshal`, so it behaves identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
-- These are **bootstrap/composition-root** sugar, not a runtime service locator: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach `GetConfig` through the request. Read config here; inject typed structs into services via DI (next section).
-- `MustGet`/`MustGetConfig` mirror `MustResolve` — panic for fail-fast startup wiring, as the registration calls do on misuse. There is no `MustLoad` (the load step performs I/O; its error must be handled).
-
-### Typed Config via DI — Primary Pattern
-
-String keys appear **once** at the module boundary. Beyond this point, everything is typed:
-
-```
-RawConfig ──Unmarshal──→ *DatabaseConfig ──DI──→ Service
-                ↑                                   ↑
-          string key (1x)                  typed (compile-time)
-```
-
-For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-configuration-architecture.md#config--typed-snapshot-via-di) and [Configuration Guide — Typed Config + DI](../guides/configuration.md#typed-config--di).
-
----
+- These are **bootstrap/composition-root** helpers: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request ([ADR-005](../adr/005-configuration-architecture.md#typed-snapshot-getter-gett--getconfigt)).
+- `MustGet`/`MustGetConfig` panic with the error `Get`/`GetConfig` would return.
 
 ## Key Model & Env Normalization
 
@@ -243,7 +224,7 @@ For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-c
   }
   ```
 
-- **Env Prefix**: Defaults to `CREDO_`, but can be changed via `WithPrefix()` option. Applies to **process env vars only** — `.env` files are not prefix-filtered.
+- **Env Prefix**: Defaults to `CREDO_`, but can be changed via `WithPrefix()` option. Applies to **process env vars only** ([.env Prefix Policy](#env-prefix-policy)).
 - **Env Normalization Rules**:
   - **Process env vars**: Strip prefix (e.g., `CREDO_`) → lowercase → `__` → `.`
   - **.env entries**: Lowercase → `__` → `.` (no prefix stripping)
@@ -254,13 +235,10 @@ For code examples, see [ADR-005 — Config = Typed Snapshot via DI](../adr/005-c
   - **.env example**: `SERVER__READ_TIMEOUT` → `server.read_timeout`
   - Both sources map to the same config keys; only the prefix handling differs.
 - **Dotted Keys**: Internal config tree uses dotted notation for nested lookups.
-- **Map Key Constraint**: Map keys in `map[string]T` fields must **not** contain double underscores (`__`), as `__` is the nesting delimiter. A key like `my__db` would be misinterpreted as two nesting levels instead of a single map key. Use `_` or `-` instead (e.g., `my_db`, `read-replica`).
-
----
 
 ## Strict Decoding
 
-`WithStrictDecoding()` switches every typed decode from the Config to strict mode. Default (weak) mode is unchanged and remains the default.
+`WithStrictDecoding()` switches every typed decode from the Config to strict mode. Weak mode remains the default.
 
 | Aspect | Default (weak) | Strict |
 | --- | --- | --- |
@@ -277,10 +255,6 @@ Consequences to design for:
 - **Typed sources only**: env vars and `.env` entries are always strings, so string overrides on typed fields fail to decode under strict mode. Pair with `WithoutProcessEnv()`/`WithoutDotenv()`, or stay on weak decoding when env overrides are needed.
 - **Complete typed views**: every struct that decodes a section — including narrow `OnConfigChange[T]` subscribers and full-tree decodes — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
 - **Error hygiene scope**: unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
-
-Whether strict becomes the default at v1 is tracked in `TODO.md` (v1 Gate breaking batch).
-
----
 
 ## Default Values
 
@@ -311,8 +285,6 @@ rc.Unmarshal("databases.default", &dbCfg)
 
 **Recommendation**: Always define a `Default*Config()` factory for production applications. This makes defaults visible, testable, and independent of config file presence — critical for env-var-only deployments (containers, serverless).
 
----
-
 ## Validatable Integration
 
 If the struct passed to `Unmarshal` implements the following interface, `Validate()` is called automatically after the struct is populated:
@@ -323,7 +295,7 @@ interface {
 }
 ```
 
-A non-nil error from `Validate()` is wrapped and returned by `Unmarshal`:
+A non-nil error from `Validate()` is returned by `Unmarshal`, wrapped as `config: validation: <err>`:
 
 ```go
 type DatabaseConfig struct {
@@ -347,19 +319,15 @@ if err := rc.Unmarshal("databases.default", &dbCfg); err != nil {
 
 The `config` package does not import `credo/validation`. The interface is checked via a local inline type assertion, keeping the dependency graph clean.
 
----
-
 ## Map[string]T Support (Dynamic Keys)
 
 Fields of type `map[string]T` are fully supported from all sources — config files, `.env`, and process env vars. The `__` delimiter creates nesting in the internal config tree, and map keys are resolved at the unmarshal step via mapstructure.
 
 **How it works**: Env vars like `CREDO_DATABASES__DEFAULT__HOST` are normalized to dotted keys (`databases.default.host`), unflattened into a nested `map[string]any`, and finally unmarshaled into `map[string]T` by mapstructure.
 
-> **Map key constraint**: Map keys must not contain `__`, as it is the nesting delimiter. Use `_` or `-` instead (e.g., `read_replica`, `read-replica`).
+> **Map key constraint**: Map keys must not contain `__`, as it is the nesting delimiter — a key like `my__db` would be read as two nesting levels. Use `_` or `-` instead (e.g., `read_replica`, `read-replica`).
 
 For practical examples (JSON config, env var overrides, Go struct), see [Configuration Guide — Multi-Database Config](../guides/configuration.md#multi-database-config).
-
----
 
 ## Single-Pass Loader Model
 
@@ -371,98 +339,29 @@ There are no provider/parser interfaces: sources are internal functions that eac
 
 Key lookup walks the nested map directly (`lookup`); there is no flattened key index. Dots in keys always act as path separators.
 
----
-
 ## Error Handling Contract
 
 - **Config File Error**: I/O or syntax error in JSON/YAML (only if found), including a YAML file with more than one document (`yaml: a config file holds one document; found another after the first`).
-- **Explicit .env Error**: `CREDO_ENV_FILE` points to a missing/unreadable file.
-- **Type Conversion**: Failing to map a string env var to a struct's `int` field.
-- **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling.
-- All errors are returned, never panicked. Invalid config from `config.Load()` returns error.
-- **Reload Error**: any of the above during `Reload()` is returned and the previous snapshot stays current.
-
----
+- **Missing Explicit Config Files**: `WithFiles` lists files of which none exists (`none of the specified config files were found: …`).
+- **Unsupported Format**: a config file whose extension, or a `LoadBytes` format, is neither JSON nor YAML (`unsupported format: …`).
+- **Conflicting Options**: `WithoutDotenv` + `WithDotenvPath`, rejected before any I/O.
+- **Explicit .env Error**: an explicit `.env` path (`WithDotenvPath` or `CREDO_ENV_FILE`) is missing (a Warn instead under `WithDotenvOptional()`) or unreadable, or a `.env` file fails to parse.
+- **Key Not Found**: `Unmarshal`/`Get` on a key that does not exist (`config: key "…" not found`).
+- **Empty Configuration**: a full-tree `Unmarshal("", &dst)` of an empty configuration (`config: configuration is empty`).
+- **Type Conversion**: Failing to map a string env var to a struct's `int` field; under `WithStrictDecoding`, also an unknown key or a weak coercion.
+- **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling (`config: validation: …`).
+- All errors are returned, never panicked; only `MustGet`/`MustGetConfig` panic.
+- **Reload Error**: any load error during `Reload()`/`Stage()` is returned and the previous snapshot stays current.
 
 ## Redacted Formatting
 
 `*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the `Changes` doctrine (key paths only, never values, safe to log). The state lives behind one private pointer and the formatting methods are declared on the value type, so a dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`.
 
----
-
 ## Koanf Adaptation Scope
 
-Credo forks koanf and trims aggressively. Only what Credo needs is kept; everything else is deleted at copy time. This keeps the dependency graph clean and the codebase small.
+`config/maps.go` derives from koanf's `maps/maps.go` (`unflatten`, `mergeMaps`, `copyMap`, `intfaceKeysToStrings`; attribution in [NOTICES](../../NOTICES)). Nothing else is adapted:
 
-### What We Keep
-
-| koanf source | Credo file | Notes |
-| --- | --- | --- |
-| `maps/maps.go` (partial) | `config/maps.go` | `unflatten`, `mergeMaps`, `copyMap`, `intfaceKeysToStrings`; `lookup` replaces flatten-based key index |
-
-The provider/parser architecture, the byte/map provider interfaces, and the per-format parser wrappers were initially adapted and later removed when the loader became single-pass (no external use, ~400 lines). Env/dotenv reading is now a Credo-written internal function set in `load.go`/`dotenv.go`.
-
-### What We Cut
-
-| koanf source | Reason |
-| --- | --- |
-| `getters.go` (~15KB, ~40 functions) | Pre-generics scalar getters; `Unmarshal` with primitive support and the generic `Get[T]` replace them all |
-| `koanf.Conf.StrictMerge` | Credo always uses loose merge; complexity not needed |
-| `koanf.NewWithConf()` | `New()` with options is sufficient; `Conf` becomes internal |
-| `koanf.Sprint()`, `Print()` | Debug utilities, not part of Credo's public API |
-| `koanf.KeyMap()` (public) | Internal use only |
-| `koanf.All()` | `Raw()` is sufficient |
-| `koanf.Delete()`, `koanf.Set()` | No in-place runtime mutation; reload is a trigger-driven atomic re-load of the whole snapshot with a per-section subscription model (ADR-020), not key-level writes |
-| `koanf.Slices()` | Edge case not in spec |
-| `maps.MergeStrict()` | Cut with `StrictMerge` |
-| `providers/consul`, `etcd`, `vault`, etc. | Remote/cloud config — out of scope |
-| `providers/basicflag`, `posflag`, `cliflag*` | CLI flag parsing — not Credo's concern |
-| `providers/confmap`, `structs`, `rawbytes` | Redundant given Credo's `config.Load()` API |
-| `parsers/toml`, `hcl`, `hjson`, etc. | Only JSON and YAML are supported |
-| `providers/fs/` | `embed.FS` replaced by `config.LoadBytes()` |
-
----
-
-## File Layout
-
-```text
-config/
-├── doc.go
-├── config.go   ← RawConfig, Config, Option types, Unmarshal/Exists/Get, decoder
-├── load.go     ← Load()/LoadBytes(), file/.env/env source loading and merging
-├── dotenv.go   ← .env line parser (parseDotenv)
-├── maps.go     ← internal maps helpers (lookup, unflatten, merge, copy)
-└── *_test.go
-```
-
----
-
-## Test Requirements
-
-- Unit tests for each source merger (`mergeEnv`, `mergeDotenv`, `parseDotenv`)
-- Parser tests for JSON and YAML inputs (`parseConfig`)
-- `Unmarshal` tests for nested structures and primitives
-- Integration tests with temp files and controlled env vars
-- Precedence tests proving `env > .env > file`
-- `.env` loads all entries (no prefix filtering)
-- Cascade merge: multiple config files loaded and merged correctly
-- Env-specific files loaded when CREDO_ENV is set
-- `MapFieldName`: fields without `credo` tag use auto-converted snake_case name
-- `Validatable` integration: `Validate()` is called and its error is propagated
-- `config.Load()` returns independent `*config.Config` instances (no shared state)
-- `Get[T]`/`GetConfig[T]`: typed snapshot decode for struct and primitive, missing key returns error + zero value, `MustGet`/`MustGetConfig` panic on missing key
-- `Unmarshal` with empty key `""` returns full config tree
-- `Unmarshal` with primitive types (`int`, `string`, `bool`) works correctly
-- `Exists` returns correct values for leaf and intermediate keys
-
----
-
-## Cross-Document Alignment
-
-This spec defines configuration **mechanisms and rationale**. The [Configuration Guide](../guides/configuration.md) owns usage examples and quick-reference tables.
-
-Related documents:
-
-- [ADR-005](../adr/005-configuration-architecture.md) — config architecture decision
-- [ADR-004](../adr/004-dependency-injection-and-infra.md) — config's relationship with DI
-- `TODO.md` — task tracker
+- **Provider/parser architecture** (`providers/*`, `parsers/*`): the loader is single-pass, and file, `.env` and environment reading is Credo's own (`load.go`, `dotenv.go`). A single embedded document goes through `LoadBytes`; an `fs.FS` source with discovery and env-specific overlays is deferred. Remote (consul, etcd, vault) and CLI-flag providers are out of scope, and only JSON and YAML are supported.
+- **Scalar getters, `All()`, `KeyMap()`**: `Unmarshal` and `Get[T]` decode typed values, `Unmarshal("", &dst)` decodes the whole tree, and lookup walks the nested map (no flattened key index).
+- **`Set()`/`Delete()`**: no in-place mutation; reload re-loads the whole snapshot ([Reload](#reload--partial-reload-adr-020)).
+- **`StrictMerge`/`MergeStrict`**: merges are always loose.

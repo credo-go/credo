@@ -1,6 +1,6 @@
 # ADR-011: Validation Strategy
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 — rule errors are internal unless they are violations (v0.24.0)
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008, ADR-009 **Related:** ADR-001, ADR-002, ADR-013 **Specification:** [Validation spec](../specs/validation.md) **Guide:** [Getting started](../guides/getting-started.md#validation), [Error handling guide](../guides/error-handling.md#validation-and-bind-failures)
 
 ## Context
 
@@ -43,13 +43,7 @@ type CreateUserRequest struct {
 
 ### Generic Rule[T] Interface
 
-```go
-type Rule[T any] interface {
-    Validate(value T) error
-}
-```
-
-Rules are type-parameterized. `Required[string]()` only accepts string fields. `Min[int](18)` only accepts numeric fields. Type mismatches are caught at compile time.
+Rules are generic over the field type: a rule is a `Rule[T]` whose single method validates a `T` ([API surface](../specs/validation.md#api-surface)). `Required[string]()` only accepts a string field, and `Min(18)` yields a `Rule[int]` that only an int field accepts, so a type mismatch is a compile error. Unlike ozzo's `Rule.Validate(any)`, which loses the type, rule execution needs neither a type assertion nor reflection.
 
 ### Pointer Field References (ozzo-style)
 
@@ -65,49 +59,54 @@ validation.Field(&r.Name, rules...)
 
 ### Validatable Interface
 
-```go
-type Validatable interface {
-    Validate() error
-}
-```
-
-Structs implementing `Validatable` are auto-validated by `BindBody()` and `BindQuery()` after decoding. This is the "parse, don't validate" integration point (ADR-008).
+A type that implements `validation.Validatable` (`Validate() error`) is validated by `BindBody()` and `BindQuery()` right after decoding. This is the "parse, don't validate" integration point ([ADR-008](008-context-design.md#parse-dont-validate)). The interface lives in package `validation`, which depends only on the standard library; the root package depends on it, not the reverse.
 
 ### Topic-Based Rule Grouping
 
-Rules are organized by topic, not by implementation detail:
-
-| File                  | Rules                                     |
-| --------------------- | ----------------------------------------- |
-| `common_rules.go`     | `Required`, `NotNil`, `In`, `By` (custom) |
-| `string_rules.go`     | `Length`, `Email`, `URL`, `UUID`, `Regex` |
-| `numeric_rules.go`    | `Min`, `Max`, `Between`                   |
-| `date_rules.go`       | `DateBefore`, `DateAfter`                 |
-| `collection_rules.go` | `Each`, `When`, `NilSafe`                 |
+Rules are grouped by topic (string, numeric, date, collection, file, common), one file per topic rather than one per rule, following Goyave's organization; the inventory is in the [validation spec](../specs/validation.md#built-in-rules-topic-based-grouping).
 
 ### Error Format
 
-Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the default Credo envelope (ADR-009).
+Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the [default error envelope](009-handler-and-error-handling.md#default-error-envelope). `Code` and `Params` let the error pipeline translate a message without changing the wire shape ([ADR-013](013-internationalization.md)).
 
 ### Rule Errors: Client Messages and Internal Failures
 
-A rule error has two possible meanings: a message meant for the client ("must be a 2-letter code") or a failure the client did not cause (a lookup inside a rule that could not reach its database). One channel cannot carry both: converting every error into an `invalid` violation that carries the error's text puts internal text, such as `pq: connection to 10.1.2.3:5432 refused`, into a 422 body, where it reaches the client unless an i18n catalog happens to translate the generic code. The type of the returned error therefore decides its meaning:
+A rule error has two possible meanings: a message meant for the client ("must be a 2-letter code") or a failure the client did not cause (a lookup inside a rule that could not reach its database). One channel cannot carry both: treating every rule error as a violation would put internal text, such as `pq: connection to 10.1.2.3:5432 refused`, into a 422 body sent to the client. The type of the returned error therefore decides its meaning:
 
-- **Client-visible.** A rule that wants a client-visible message returns a `*ValidationError` (or a `validation.Errors`), or builds one with the small constructor `validation.NewError(code, message string) *ValidationError`. It becomes a violation of the field the rule validates and renders as 422 `validation_failed`. `By`'s documented example returns one.
-- **Internal.** Any other error is internal. Validation stops — `ValidateStruct` returns that error without collecting further violations, and nested `Validate` calls, `Each`, `When` and `NilSafe` pass it on unchanged — and the error leaves `Validate`, and `BindBody`/`BindQuery`, as it would leave a handler. The error pipeline classifies it like any other handler error (ADR-009): a plain error is a 500 whose text is logged, not rendered, and an error that carries a fault keeps its mapped status, so `store`'s unavailable kind is a 503.
+- **Client-visible.** A `*ValidationError` or a `validation.Errors` — `validation.NewError(code, message)` builds one — is a violation of the field the rule validates and renders as 422 `validation_failed`.
+- **Internal.** Any other error stops validation and leaves `Validate`, and `BindBody`/`BindQuery`, unchanged, as it would leave a handler. The error pipeline classifies it like any other handler error ([ADR-009](009-handler-and-error-handling.md)): a plain error is a 500 whose text is logged, not rendered, and an error that carries a fault keeps its mapped status, so `store`'s unavailable kind is a 503.
 
-This keeps the stateless boundary honest without policing it: a rule that does I/O anyway and fails reports a server failure, not invalid input.
+The [validation spec](../specs/validation.md#rule-errors) states the contract at every depth. This keeps the stateless boundary honest without policing it: a rule that does I/O anyway and fails reports a server failure, not invalid input.
 
 Rejected: rendering such an error as a generic 422 violation with a fixed, safe message. It hides the text but still tells the client that its input was wrong when the server failed, and a client that trusts the status does not retry a request that would succeed later.
 
-Together with the precedence of an explicit `HTTPError` over a wrapped validation error ([ADR-009](009-handler-and-error-handling.md)), this is one of the error model's final rules: later changes to the error model keep it.
+Together with the precedence of an explicit `HTTPError` over a wrapped validation error ([ADR-009](009-handler-and-error-handling.md#an-explicit-status-wins)), this rule is final: later changes to the error model keep it.
 
-### Rejected Alternatives
+### No Fluent Builder (Deferred)
+
+A fluent builder over generic methods (available since Go 1.27, [golang/go#77273](https://github.com/golang/go/issues/77273)) is deliberately deferred. `Rule[T]` is the substrate any fluent layer would wrap, so the rule set grows only by small, portable rules (`NotEmptySlice`/`NotEmptyMap` are `len`-based and reusable as-is). Convenience helpers that a fluent API would make obsolete — a `RequiredField` shorthand, for example — are not added: an API born deprecated helps no one.
+
+## Rejected Alternatives
+
+The libraries considered compare as follows:
+
+| Criteria | go-playground | ozzo | govy | Goyave | **Credo** |
+| --- | --- | --- | --- | --- | --- |
+| Rule definition | Tag strings | Programmatic | Programmatic | Programmatic | **Programmatic** |
+| Field reference | Reflection | Pointer | Getter func | Path string | **Pointer** |
+| Compile-time safe | No | Partial | Full | No | **Full (per field)** |
+| Generics | No | No | Yes (core) | No | **Yes (Rule[T])** |
+| Auto-validate | No | No | No | Route MW | **BindBody/Query** |
+| Custom rules | Tag func | `Rule` interface | `Rule[T]` | Validator | **`Rule[T]`** |
+| PATCH support | Awkward | Good (nil ptr) | OmitEmpty | Separate rules | **NilSafe[T]** |
+| Error format | Custom | map[string]error | Structured | Nested JSON | **Default error envelope; RFC 9457 opt-in** |
+| i18n | Translator | No | Templates | Built-in | **Code + Params** |
+| Reflection | Heavy (cached) | Moderate | None | Minimal | **Minimal (cached)** |
 
 | Alternative | Reason |
 | --- | --- |
-| Struct tags (go-playground/validator) | String-based, no type safety, reflection-heavy |
-| govy library code | MPL-2.0 copyleft — incompatible with MIT |
+| Struct tags (go-playground/validator) | See [Why no struct tags](#programmatic-only--no-struct-tags) |
+| govy library code | MPL-2.0 (file-level copyleft): adapted files would stay MPL, outside the MIT/BSD/ISC/Apache-2.0 adaptation policy ([ADR-002](002-code-acquisition-strategy.md)); govy informs the design only |
 | ValidateBody/ValidateQuery on Route | Couples validation to routing; "parse, don't validate" is cleaner |
 
 ## Consequences
@@ -115,9 +114,7 @@ Together with the precedence of an explicit `HTTPError` over a wrapped validatio
 **Positive:**
 
 - Type-safe rules via generics — errors caught at compile time
-- Composable — rules combine naturally (`When`, `Each`, `NilSafe`)
 - Testable — rules are regular Go values, testable in isolation
-- Auto-validation via `Validatable` — no manual validation calls needed
 - Stable machine-readable default envelope; RFC 9457 remains opt-in
 
 **Negative:**
