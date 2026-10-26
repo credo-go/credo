@@ -30,14 +30,9 @@ Applications that need a different ORM (GORM, sqlx, sqlc) can register their cli
 
 ### Semantic Error Types
 
-The stdlib-only `fault` leaf package defines transport-neutral `Kind` values
-and a `Provider` interface. Both root HTTP policy and `store` import that leaf;
-root never imports the feature package, so `store → credo` registration does
-not create a cycle. `store.Kind` aliases `fault.Kind` for application-facing
-data-access code.
+The stdlib-only `fault` leaf package defines transport-neutral `Kind` values and a `Provider` interface. Both root HTTP policy and `store` import that leaf; root never imports the feature package, so `store → credo` registration does not create a cycle. `store.Kind` aliases `fault.Kind` for application-facing data-access code.
 
-`store.Error` preserves structured diagnostics without placing them on the
-wire:
+`store.Error` preserves structured diagnostics without placing them on the wire:
 
 ```go
 type Error struct {
@@ -51,26 +46,11 @@ type Error struct {
 }
 ```
 
-Exact sentinels distinguish not-found, already-exists, persistent constraint,
-serialization, deadlock, lock/busy contention, timeout, unavailable, and
-read-only conditions. `ErrDuplicate` remains an alias of `ErrAlreadyExists`.
-`ErrConflict` remains a deprecated compatibility umbrella: constraint,
-serialization, deadlock, and contention errors still match it through
-`errors.Is`, while their exact `Kind` stays available.
+Exact sentinels distinguish not-found, already-exists, persistent constraint, serialization, deadlock, lock/busy contention, timeout, unavailable, and read-only conditions. `ErrDuplicate` remains an alias of `ErrAlreadyExists`. `ErrConflict` remains a deprecated compatibility umbrella: constraint, serialization, deadlock, and contention errors still match it through `errors.Is`, while their exact `Kind` stays available.
 
-`Transient` means only that the condition may clear. It never promises that
-replaying a statement, transaction callback, or externally visible operation
-is safe. Commit outcome is deliberately not inferred from a driver cause kind;
-an `OutcomeUnknown` model is deferred until operation-phase evidence can make
-it reliable.
+`Transient` means only that the condition may clear. It never promises that replaying a statement, transaction callback, or externally visible operation is safe. Commit outcome is deliberately not inferred from a driver cause kind; an `OutcomeUnknown` model is deferred until operation-phase evidence can make it reliable.
 
-Credo root maps `fault.Provider` after `*HTTPError` and before the legacy
-`HTTPStatus()` seam. This preserves service/domain override through
-`NewHTTPError(...).WithInternal(err)` while giving future gRPC policy the same
-semantic input. The store sentinels retain `HTTPStatus()` only as a deprecated
-compatibility bridge; semantic `Kind` is the primary contract. Unknown kinds
-fail closed as 500. Constraint names, driver codes, resources, and causes are
-never serialized by the default error renderer.
+Credo root maps `fault.Provider` after `*HTTPError` and before the legacy `HTTPStatus()` seam. This preserves service/domain override through `NewHTTPError(...).WithInternal(err)` while giving future gRPC policy the same semantic input. The store sentinels retain `HTTPStatus()` only as a deprecated compatibility bridge; semantic `Kind` is the primary contract. Unknown kinds fail closed as 500. Constraint names, driver codes, resources, and causes are never serialized by the default error renderer.
 
 ### Context-Based TX
 
@@ -95,27 +75,14 @@ Credo does not invent a workload-independent connection-pool size. `MaxOpen=0` r
 
 Pool settings preserve the distinction between absence and an explicit value:
 
-- `MaxIdle == nil` means Credo does not call `SetMaxIdleConns`; the effective
-  `database/sql` default remains subject to `MaxOpen`. `MaxIdle: new(0)`
-  disables idle retention, and a positive value is applied exactly.
-- When `MaxOpen > 0`, an explicit `MaxIdle` greater than `MaxOpen` is rejected
-  at `Open`; Credo does not rely on `database/sql`'s silent clamp.
-- `MaxIdleTime == 0` disables idle-age expiry; a positive value is passed to
-  `SetConnMaxIdleTime`.
-- `MaxLifetime == 0` disables lifetime expiry; a positive value is passed to
-  `SetConnMaxLifetime`.
+- `MaxIdle == nil` means Credo does not call `SetMaxIdleConns`; the effective `database/sql` default remains subject to `MaxOpen`. `MaxIdle: new(0)` disables idle retention, and a positive value is applied exactly.
+- When `MaxOpen > 0`, an explicit `MaxIdle` greater than `MaxOpen` is rejected at `Open`; Credo does not rely on `database/sql`'s silent clamp.
+- `MaxIdleTime == 0` disables idle-age expiry; a positive value is passed to `SetConnMaxIdleTime`.
+- `MaxLifetime == 0` disables lifetime expiry; a positive value is passed to `SetConnMaxLifetime`.
 
-`DB.Stats()` exposes the complete `sql.DBStats` snapshot. SQL health metadata
-includes current open/in-use/idle counts plus cumulative wait duration/count
-and idle-time, idle-count, and lifetime closure counters. Readiness does not
-serialize adapter `Details`, so these values are operational diagnostics for
-code and future metrics rather than an accidental public probe schema.
+`DB.Stats()` exposes the complete `sql.DBStats` snapshot. SQL health metadata includes current open/in-use/idle counts plus cumulative wait duration/count and idle-time, idle-count, and lifetime closure counters. Readiness does not serialize adapter `Details`, so these values are operational diagnostics for code and future metrics rather than an accidental public probe schema.
 
-Pool saturation does not currently produce `StatusDegraded`. A useful signal
-requires production metrics, an explicit SLO, windowed counter deltas,
-hysteresis, and opt-in thresholds. A universal instantaneous threshold would
-be noisy; because every store is currently critical and `DEGRADED` removes
-readiness, such noise could also trigger a replica-wide traffic cascade.
+Pool saturation does not currently produce `StatusDegraded`. A useful signal requires production metrics, an explicit SLO, windowed counter deltas, hysteresis, and opt-in thresholds. A universal instantaneous threshold would be noisy; because every store is currently critical and `DEGRADED` removes readiness, such noise could also trigger a replica-wide traffic cascade.
 
 ### Registration
 
@@ -271,100 +238,31 @@ The count source evaluates the logical projection. That is required for exact ca
 
 ### Cursor/keyset pagination gate — design accepted, implementation deferred
 
-No cursor symbols are exported yet. The first delivery is reserved as a
-forward-only `CursorPage[T]`, not `Slice[T]`: `Slice` is only the working name
-for a future total-free **offset** window and has its own design gate. The HTTP request uses `after` and
-`per_page`; the response uses a non-nil `data` array plus
-`meta.per_page`, `meta.has_next`, and nullable `meta.next_cursor`. It has no
-total, page number, previous cursor, direction switch, or `WithTotal` option.
-Callers that truly need a total compose a separate explicit `Count` and own the
-application response envelope; `CursorPage` itself never runs COUNT.
+No cursor symbols are exported yet. The first delivery is reserved as a forward-only `CursorPage[T]`, not `Slice[T]`: `Slice` is only the working name for a future total-free **offset** window and has its own design gate. The HTTP request uses `after` and `per_page`; the response uses a non-nil `data` array plus `meta.per_page`, `meta.has_next`, and nullable `meta.next_cursor`. It has no total, page number, previous cursor, direction switch, or `WithTotal` option. Callers that truly need a total compose a separate explicit `Count` and own the application response envelope; `CursorPage` itself never runs COUNT.
 
-The sqldb terminal will own an immutable keyset specification and reject a
-caller-supplied root ORDER/LIMIT/OFFSET/lock or an aggregate, distinct, grouped,
-compound, joined, or otherwise non-row-shaped source. A join can multiply a
-root model row, invalidating the claimed unique tie-breaker. Every ordering
-component must be selected, immutable, and non-null, and the final component
-must be an explicit unique tie-breaker. The adapter will quote column
-identifiers, format cursor values as typed data through Bun without raw token
-concatenation, append the portable lexicographic OR-of-AND ladder as one
-parenthesized condition, and fetch `per_page + 1` rows to derive `has_next`. It
-will not use a row-constructor
-comparison: the expanded form is portable across the supported databases and
-can give MySQL more complete index use. See the
-[MySQL row-constructor optimization guidance](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html).
+The sqldb terminal will own an immutable keyset specification and reject a caller-supplied root ORDER/LIMIT/OFFSET/lock or an aggregate, distinct, grouped, compound, joined, or otherwise non-row-shaped source. A join can multiply a root model row, invalidating the claimed unique tie-breaker. Every ordering component must be selected, immutable, and non-null, and the final component must be an explicit unique tie-breaker. The adapter will quote column identifiers, format cursor values as typed data through Bun without raw token concatenation, append the portable lexicographic OR-of-AND ladder as one parenthesized condition, and fetch `per_page + 1` rows to derive `has_next`. It will not use a row-constructor comparison: the expanded form is portable across the supported databases and can give MySQL more complete index use. See the [MySQL row-constructor optimization guidance](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html).
 
-Nullable keys are excluded from the first delivery. Row comparisons become
-unknown around NULL, and default NULL placement is not portable: PostgreSQL
-places NULL last for ascending order by default, while MySQL and SQLite place
-it first. See [PostgreSQL row comparison](https://www.postgresql.org/docs/current/functions-comparisons.html),
-[PostgreSQL ordering](https://www.postgresql.org/docs/current/queries-order.html),
-[MySQL NULL ordering](https://dev.mysql.com/doc/refman/8.0/en/null-values.html),
-and [SQLite type ordering](https://www.sqlite.org/datatype3.html).
+Nullable keys are excluded from the first delivery. Row comparisons become unknown around NULL, and default NULL placement is not portable: PostgreSQL places NULL last for ascending order by default, while MySQL and SQLite place it first. See [PostgreSQL row comparison](https://www.postgresql.org/docs/current/functions-comparisons.html), [PostgreSQL ordering](https://www.postgresql.org/docs/current/queries-order.html), [MySQL NULL ordering](https://dev.mysql.com/doc/refman/8.0/en/null-values.html), and [SQLite type ordering](https://www.sqlite.org/datatype3.html).
 
-The first delivery is narrower still: only a model-less default full-model
-SELECT plus curated predicates is accepted. Custom projections/tables, raw
-`Apply`, `WherePK`, top-level `WhereOr`, and hook-capable models fail pre-I/O.
-`WherePK` cannot resolve before the typed terminal supplies its model. OR
-filters must already be enclosed in one `WhereGroup` whose root separator is
-AND; this prevents `A OR B AND cursor` precedence from leaking rows before the
-boundary. This ensures every key is scanned into `T` and prevents pre-query or
-post-scan hooks from changing the model,
-query shape, order/window, or cursor key behind the terminal's back. The strict
-request boundary also checks that `per_page` plus one does not overflow `int`.
+The first delivery is narrower still: only a model-less default full-model SELECT plus curated predicates is accepted. Custom projections/tables, raw `Apply`, `WherePK`, top-level `WhereOr`, and hook-capable models fail pre-I/O. `WherePK` cannot resolve before the typed terminal supplies its model. OR filters must already be enclosed in one `WhereGroup` whose root separator is AND; this prevents `A OR B AND cursor` precedence from leaking rows before the boundary. This ensures every key is scanned into `T` and prevents pre-query or post-scan hooks from changing the model, query shape, order/window, or cursor key behind the terminal's back. The strict request boundary also checks that `per_page` plus one does not overflow `int`.
 
-Cursor integrity has no hidden fallback. The planned public-HTTP codec requires
-an explicit HMAC-SHA256 keyring and key identifier; Credo will not generate a
-process-local secret or silently issue unsigned cursors. Keys are at least 32
-cryptographically random bytes generated by a CSPRNG; code can enforce length,
-while entropy remains an operator contract. Exactly one signs, previous keys
-verify only, key-id lookup is direct, comparison is constant-time, and
-tuple/keyring/payload/token sizes are bounded before parsing. A fixed Credo
-cursor domain separator prevents cross-protocol
-MAC reuse; key material is never serialized, logged, or returned in an error.
-The signed data binds the token version, endpoint/query scope, canonical
-ordering, normalized filter scope, and tenant/authorization scope so a cursor
-cannot be replayed under a different query. The envelope must be versioned,
-key-id-addressed, base64url-safe, and integrity-protected, but canonical tuple
-encoding, key-id grammar, padding, scope canonicalization, MAC byte framing,
-and golden vectors wait for the consumer. Expiry and rotation-retention
-duration likewise wait for the consumer's request-lifetime needs; a verify-only
-key cannot be retired safely without that horizon.
+Cursor integrity has no hidden fallback. The planned public-HTTP codec requires an explicit HMAC-SHA256 keyring and key identifier; Credo will not generate a process-local secret or silently issue unsigned cursors. Keys are at least 32 cryptographically random bytes generated by a CSPRNG; code can enforce length, while entropy remains an operator contract. Exactly one signs, previous keys verify only, key-id lookup is direct, comparison is constant-time, and tuple/keyring/payload/token sizes are bounded before parsing. A fixed Credo cursor domain separator prevents cross-protocol MAC reuse; key material is never serialized, logged, or returned in an error. The signed data binds the token version, endpoint/query scope, canonical ordering, normalized filter scope, and tenant/authorization scope so a cursor cannot be replayed under a different query. The envelope must be versioned, key-id-addressed, base64url-safe, and integrity-protected, but canonical tuple encoding, key-id grammar, padding, scope canonicalization, MAC byte framing, and golden vectors wait for the consumer. Expiry and rotation-retention duration likewise wait for the consumer's request-lifetime needs; a verify-only key cannot be retired safely without that horizon.
 
-HMAC authenticates but does not encrypt: key values remain
-observable, sensitive keys are outside the first delivery, and an AEAD or
-server-side cursor is a later explicit codec. See [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104.html).
+HMAC authenticates but does not encrypt: key values remain observable, sensitive keys are outside the first delivery, and an AEAD or server-side cursor is a later explicit codec. See [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104.html).
 
-The cursor is never an authorization capability. Each request re-applies
-authentication, authorization, tenant predicates, and normalized filters;
-scope binding only prevents cross-query replay. It is opaque to clients by
-contract, but its signed payload remains visible.
+The cursor is never an authorization capability. Each request re-applies authentication, authorization, tenant predicates, and normalized filters; scope binding only prevents cross-query replay. It is opaque to clients by contract, but its signed payload remains visible.
 
-Across requests, keyset pagination promises no database snapshot. Inserts or
-deletes strictly before the cursor boundary do not shift later windows; new
-rows after the boundary may appear, and deleting an unseen row removes it.
-Updating an ordering key can still duplicate or skip a row, which is why cursor
-keys must be immutable. Deterministic mutation tests must pin this contract and
-contrast it with offset drift before the API ships.
+Across requests, keyset pagination promises no database snapshot. Inserts or deletes strictly before the cursor boundary do not shift later windows; new rows after the boundary may appear, and deleting an unseen row removes it. Updating an ordering key can still duplicate or skip a row, which is why cursor keys must be immutable. Deterministic mutation tests must pin this contract and contrast it with offset drift before the API ships.
 
 The implementation gate remains closed for five concrete reasons:
 
-1. no real Credo consumer has supplied an actual model/filter/order and key
-   rotation requirement to validate the public generics;
-2. Bun hooks can mutate the model/query before render or cursor keys
-   after scan; Credo must either reject hook-capable models before I/O or prove
-   model/order/window/key alignment across the whole lifecycle;
-3. PostgreSQL, MySQL, and SQLite conformance jobs must all pin the generated
-   predicate, ordering, collation assumptions, insert/delete behavior, and
-   typed round trips for large integers, time, strings, and consumer UUID or
-   decimal keys;
-4. invalid cursor input needs a transport-neutral invalid-argument kind pinned
-   through the root renderer, observer, and access-log status paths; and
+1. no real Credo consumer has supplied an actual model/filter/order and key rotation requirement to validate the public generics;
+2. Bun hooks can mutate the model/query before render or cursor keys after scan; Credo must either reject hook-capable models before I/O or prove model/order/window/key alignment across the whole lifecycle;
+3. PostgreSQL, MySQL, and SQLite conformance jobs must all pin the generated predicate, ordering, collation assumptions, insert/delete behavior, and typed round trips for large integers, time, strings, and consumer UUID or decimal keys;
+4. invalid cursor input needs a transport-neutral invalid-argument kind pinned through the root renderer, observer, and access-log status paths; and
 5. canonical wire framing needs cross-implementation golden vectors.
 
-Until those gates open, applications use an explicit repository-owned keyset
-query and token codec. Credo does not publish a speculative half-contract whose
-ordering or signature policy would later require silent behavior changes.
+Until those gates open, applications use an explicit repository-owned keyset query and token codec. Credo does not publish a speculative half-contract whose ordering or signature policy would later require silent behavior changes.
 
 **Snapshot consistency belongs to the caller's transaction boundary.** `Page` never starts an implicit transaction. Without one, COUNT and SELECT may run on different pool connections and snapshots. Even inside a transaction, the actual guarantee comes from the database, engine, configured isolation, read form, and driver. When a shared snapshot matters on PostgreSQL or InnoDB, establish the isolation on the outermost transaction and pass the callback's `txCtx` to `Page`:
 
@@ -410,15 +308,7 @@ Credo does not add a separate `Session`/Unit-of-Work object beside this typed am
 
 ## Semantic Error Classification Hardening
 
-`sqldb` stores the configured driver family (falling back to the selected Bun
-dialect for custom connectors) and passes both that family and the operation
-context into normalization. SQLSTATE remains the primary cross-driver path;
-when a MySQL error exposes both its number and a broad SQLSTATE class, the more
-specific number wins (for example 1213/40001 is Deadlock, not generic
-Serialization). MySQL's strict `Error NNNN (STATE): ...` envelope is parsed
-only for MySQL, and SQLite's structured code is read only for SQLite.
-Loose substrings such as “duplicate key” or “read-only” are never inspected on
-arbitrary errors, so scanner/query-hook/domain failures retain exact identity.
+`sqldb` stores the configured driver family (falling back to the selected Bun dialect for custom connectors) and passes both that family and the operation context into normalization. SQLSTATE remains the primary cross-driver path; when a MySQL error exposes both its number and a broad SQLSTATE class, the more specific number wins (for example 1213/40001 is Deadlock, not generic Serialization). MySQL's strict `Error NNNN (STATE): ...` envelope is parsed only for MySQL, and SQLite's structured code is read only for SQLite. Loose substrings such as “duplicate key” or “read-only” are never inspected on arbitrary errors, so scanner/query-hook/domain failures retain exact identity.
 
 Canonical classifications are:
 
@@ -434,14 +324,7 @@ Canonical classifications are:
 | `driver.ErrBadConn`, `sql.ErrConnDone`, SQLSTATE class 08, connect/shutdown codes | `Unavailable` |
 | Driver-specific read-only transaction/server codes | `ReadOnly` |
 
-PostgreSQL `57014` means query canceled, not timeout. Credo returns caller
-cancellation without a store timeout, maps a caller deadline to `Timeout`, and
-with a live context maps only a structured driver error that explicitly says
-statement timeout. MySQL 1290 is not classified as read-only because it is the
-generic option-prevents-statement code; the actual read-only transaction/server
-codes 1792 and 1836 are used. Every mapped result is a `*store.Error` preserving
-the original cause and driver code. A public classifier registry/normalizer is
-deferred until a custom-driver consumer demonstrates the need.
+PostgreSQL `57014` means query canceled, not timeout. Credo returns caller cancellation without a store timeout, maps a caller deadline to `Timeout`, and with a live context maps only a structured driver error that explicitly says statement timeout. MySQL 1290 is not classified as read-only because it is the generic option-prevents-statement code; the actual read-only transaction/server codes 1792 and 1836 are used. Every mapped result is a `*store.Error` preserving the original cause and driver code. A public classifier registry/normalizer is deferred until a custom-driver consumer demonstrates the need.
 
 ## Migrations and TX Ergonomics
 

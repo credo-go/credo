@@ -43,10 +43,7 @@ Key design properties:
 
 ### Semantic Errors
 
-The stdlib-only `fault` package owns transport-neutral kinds and the provider
-contract. `store.Kind` aliases `fault.Kind`; root HTTP policy imports only the
-leaf package, so the existing `store → credo` registration dependency does not
-form a cycle.
+The stdlib-only `fault` package owns transport-neutral kinds and the provider contract. `store.Kind` aliases `fault.Kind`; root HTTP policy imports only the leaf package, so the existing `store → credo` registration dependency does not form a cycle.
 
 ```go
 type Error struct {
@@ -63,14 +60,10 @@ func KindOf(err error) (Kind, bool)
 func IsTransient(err error) bool
 ```
 
-`Error.Unwrap` preserves the original cause. `Code`, `Constraint`, `Resource`,
-and `Cause` are diagnostic metadata and are never emitted by Credo's default
-error renderer. `Transient` says a condition may clear; it is not a
-promise that replaying a statement, transaction callback, or externally
-visible operation is safe.
+`Error.Unwrap` preserves the original cause. `Code`, `Constraint`, `Resource`, and `Cause` are diagnostic metadata and are never emitted by Credo's default error renderer. `Transient` says a condition may clear; it is not a promise that replaying a statement, transaction callback, or externally visible operation is safe.
 
 | Exact sentinel | Kind | Transient default | Root HTTP default |
-| --- | --- | ---: | ---: |
+| --- | --- | --: | --: |
 | `ErrNotFound` | `KindNotFound` | no | 404 |
 | `ErrAlreadyExists` | `KindAlreadyExists` | no | 409 |
 | `ErrConstraint` | `KindConstraint` | no | 409 |
@@ -81,17 +74,9 @@ visible operation is safe.
 | `ErrUnavailable` | `KindUnavailable` | yes | 503 |
 | `ErrReadOnly` | `KindReadOnly` | no | 503 |
 
-`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a
-deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and
-`ErrContention` continue to match it through `errors.Is`. Their exact kind is
-not lost. Store errors retain `HTTPStatus()` only as a deprecated compatibility
-bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError`
-remains the service/domain override and preserves the internal store cause.
+`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` continue to match it through `errors.Is`. Their exact kind is not lost. Store errors retain `HTTPStatus()` only as a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` remains the service/domain override and preserves the internal store cause.
 
-Outcome ambiguity is not a cause kind. A commit failure may leave the operation
-outcome unknown, but Credo does not infer that from a connection/transient flag
-and never treats `Transient` as blind-retry permission. A separate operation-
-phase outcome model is deferred until reliable evidence is available.
+Outcome ambiguity is not a cause kind. A commit failure may leave the operation outcome unknown, but Credo does not infer that from a connection/transient flag and never treats `Transient` as blind-retry permission. A separate operation- phase outcome model is deferred until reliable evidence is available.
 
 ### Lifecycle Interface
 
@@ -129,13 +114,7 @@ type Health struct {
 }
 ```
 
-`Cause` is preserved by `Health.Clone` and never encoded by `encoding/json`.
-The root readiness policy logs it and includes its text only when
-`HealthConfig.ExposeErrors` is explicitly enabled. Free-form
-`Details["error"]` values are adapter metadata, not a trusted error contract.
-Readiness responses do not serialize adapter `Details`; pool statistics remain
-available to application code and future metrics without becoming a public
-probe-response schema.
+`Cause` is preserved by `Health.Clone` and never encoded by `encoding/json`. The root readiness policy logs it and includes its text only when `HealthConfig.ExposeErrors` is explicitly enabled. Free-form `Details["error"]` values are adapter metadata, not a trusted error contract. Readiness responses do not serialize adapter `Details`; pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
 
 ### Registration
 
@@ -163,9 +142,7 @@ Names share the same validator as named liveness/readiness checks. They are neve
 
 There is no store registry API: `/ready` reports the registered stores, and one store's health is the value's own `Health`. The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md#registration).
 
-> **Health/readiness options** (`WithCritical`, `WithTags`) remain deferred to
-> [ADR-016](../adr/016-health-checks.md). All stores are currently critical;
-> both `DOWN` and `DEGRADED` make readiness return 503.
+> **Health/readiness options** (`WithCritical`, `WithTags`) remain deferred to [ADR-016](../adr/016-health-checks.md). All stores are currently critical; both `DOWN` and `DEGRADED` make readiness return 503.
 
 #### Two calls
 
@@ -338,63 +315,19 @@ type Config struct {
 func WithTxCleanupTimeout(d time.Duration) Option
 ```
 
-Driver-family detection is an exact, case-insensitive allowlist:
-`postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`. Names such as
-`postgres-proxy` or `notmysql` are custom drivers, not implicit aliases; combine
-their registered driver name and native DSN with `WithDialect`. Connectors do
-not undergo concrete-type guessing. An explicitly nil `WithDialect` or
-`WithConnector` (including typed-nil values) makes `Open` fail. A known explicit
-dialect that conflicts with a known driver family also fails; Credo will not
-build one family's DSN, emit another family's SQL, and classify errors as the
-first family.
+Driver-family detection is an exact, case-insensitive allowlist: `postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`. Names such as `postgres-proxy` or `notmysql` are custom drivers, not implicit aliases; combine their registered driver name and native DSN with `WithDialect`. Connectors do not undergo concrete-type guessing. An explicitly nil `WithDialect` or `WithConnector` (including typed-nil values) makes `Open` fail. A known explicit dialect that conflicts with a known driver family also fails; Credo will not build one family's DSN, emit another family's SQL, and classify errors as the first family.
 
-When Credo constructs a PostgreSQL or MySQL DSN, `Port` must be in `1..65535`;
-zero is rejected rather than emitted as `:0`. `Config.DSN` and `WithConnector`
-remain the escape hatches for driver-native default-port, socket, or custom DSN
-behavior. Host/port serialization uses `net.JoinHostPort`, including bracketed
-IPv6. Empty host and database-name values are preserved for driver-native
-interpretation. A positive PostgreSQL `ConnectTimeout` is rounded up to whole
-seconds, so a sub-second request becomes one second instead of silently turning
-the timeout off; MySQL retains its duration syntax.
+When Credo constructs a PostgreSQL or MySQL DSN, `Port` must be in `1..65535`; zero is rejected rather than emitted as `:0`. `Config.DSN` and `WithConnector` remain the escape hatches for driver-native default-port, socket, or custom DSN behavior. Host/port serialization uses `net.JoinHostPort`, including bracketed IPv6. Empty host and database-name values are preserved for driver-native interpretation. A positive PostgreSQL `ConnectTimeout` is rounded up to whole seconds, so a sub-second request becomes one second instead of silently turning the timeout off; MySQL retains its duration syntax.
 
-`Options` is for additional driver parameters, not a second source for core
-PostgreSQL endpoint/credential keys. It may supply `sslmode`/`connect_timeout`
-or MySQL `tls`/`timeout` only when the corresponding structured field is unset;
-MySQL `parseTime` is fixed to `true`. Ambiguous duplicates fail and their values
-are not included in the error. A raw `DSN` is used as-is when full driver-native
-control is needed. TLS values are deliberately driver-specific: `SSLMode` maps
-to PostgreSQL `sslmode` and MySQL `tls`. Credo does not impose a universal TLS
-default; production deployments explicitly choose and provision a verified
-mode supported by their selected driver.
+`Options` is for additional driver parameters, not a second source for core PostgreSQL endpoint/credential keys. It may supply `sslmode`/`connect_timeout` or MySQL `tls`/`timeout` only when the corresponding structured field is unset; MySQL `parseTime` is fixed to `true`. Ambiguous duplicates fail and their values are not included in the error. A raw `DSN` is used as-is when full driver-native control is needed. TLS values are deliberately driver-specific: `SSLMode` maps to PostgreSQL `sslmode` and MySQL `tls`. Credo does not impose a universal TLS default; production deployments explicitly choose and provision a verified mode supported by their selected driver.
 
-Credo deliberately has no workload-independent finite pool default.
-`MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is
-still unlimited when the start phase inspects a registered store emits, after
-a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone
-users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes
-themselves.
+Credo deliberately has no workload-independent finite pool default. `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is still unlimited when the start phase inspects a registered store emits, after a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes themselves.
 
-`MaxIdle` is a pointer because omission and zero have different stdlib
-semantics: `nil` does not call `SetMaxIdleConns` (the effective stdlib default
-remains subject to `MaxOpen`), `new(0)` explicitly disables idle retention,
-and a positive value is applied exactly. If `MaxOpen > 0`, an explicit
-`MaxIdle > MaxOpen` fails `Open` instead of relying on `database/sql`'s silent
-clamp. Negative pool counts or durations fail validation. A zero `MaxIdleTime`
-or `MaxLifetime` disables that expiry policy; positive values are passed to
-`SetConnMaxIdleTime` and `SetConnMaxLifetime`.
+`MaxIdle` is a pointer because omission and zero have different stdlib semantics: `nil` does not call `SetMaxIdleConns` (the effective stdlib default remains subject to `MaxOpen`), `new(0)` explicitly disables idle retention, and a positive value is applied exactly. If `MaxOpen > 0`, an explicit `MaxIdle > MaxOpen` fails `Open` instead of relying on `database/sql`'s silent clamp. Negative pool counts or durations fail validation. A zero `MaxIdleTime` or `MaxLifetime` disables that expiry policy; positive values are passed to `SetConnMaxIdleTime` and `SetConnMaxLifetime`.
 
-`DB.Stats()` returns the complete `sql.DBStats` snapshot. `DB.Health` includes
-the current open/in-use/idle counts and the cumulative `WaitCount`,
-`WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and
-`MaxLifetimeClosed` counters in adapter details. These counters are cumulative,
-so production saturation policy must use time-window deltas rather than raw
-totals.
+`DB.Stats()` returns the complete `sql.DBStats` snapshot. `DB.Health` includes the current open/in-use/idle counts and the cumulative `WaitCount`, `WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed` counters in adapter details. These counters are cumulative, so production saturation policy must use time-window deltas rather than raw totals.
 
-Pool saturation does not automatically produce `StatusDegraded`. Such a
-policy is deferred until production metrics and an explicit SLO justify
-opt-in thresholds, windowed deltas, and hysteresis. Today all stores are
-critical and `DEGRADED` removes readiness; a universal threshold could
-therefore cause a cascading traffic shift.
+Pool saturation does not automatically produce `StatusDegraded`. Such a policy is deferred until production metrics and an explicit SLO justify opt-in thresholds, windowed deltas, and hysteresis. Today all stores are critical and `DEGRADED` removes readiness; a universal threshold could therefore cause a cascading traffic shift.
 
 ### Query Builders
 
@@ -435,44 +368,13 @@ The curated `Limit(int)` and `Offset(int)` methods forward every value to Bun, w
 
 `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
 
-`SelectQuery.Count` reports complete logical projection-row cardinality. Credo
-removes root ORDER/LIMIT/OFFSET/FOR state and counts a universal outer
-`_credo_count_source` derived table. A normal projection counts its rows; an
-ungrouped aggregate normally counts as one result row; `Distinct` counts
-selected projection tuples; `GroupExpr` counts groups; and `GroupExpr` +
-`Having` counts the groups left after the filter. Behavioral and SQL conformance
-tests pin this Credo wrapper. Standalone `Having` and a direct compound root
-introduced through `Apply` (`UNION`/`INTERSECT`/`EXCEPT`, including their
-variants) return `sqldb.ErrUnsupportedCountQuery` before database I/O. Put the
-compound source behind an outer derived table/CTE when it must be counted.
+`SelectQuery.Count` reports complete logical projection-row cardinality. Credo removes root ORDER/LIMIT/OFFSET/FOR state and counts a universal outer `_credo_count_source` derived table. A normal projection counts its rows; an ungrouped aggregate normally counts as one result row; `Distinct` counts selected projection tuples; `GroupExpr` counts groups; and `GroupExpr` + `Having` counts the groups left after the filter. Behavioral and SQL conformance tests pin this Credo wrapper. Standalone `Having` and a direct compound root introduced through `Apply` (`UNION`/`INTERSECT`/`EXCEPT`, including their variants) return `sqldb.ErrUnsupportedCountQuery` before database I/O. Put the compound source behind an outer derived table/CTE when it must be counted.
 
-MySQL requires unique derived-table output names. Credo renders the post-hook
-count source once and lets the server apply its real naming and `sql_mode`
-rules. Wildcards, implicit aliases, and unaliased expressions are accepted when
-their server-derived output names are unique. If logical COUNT returns
-`ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps
-`sqldb.ErrUnsupportedCountQuery` after I/O while preserving the driver cause;
-use explicit unique aliases to resolve the collision. The wrapper is local to
-logical COUNT, so raw and other non-count 1060 errors pass through unchanged.
-Real MySQL tests pin normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's
-[derived-table contract](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
+MySQL requires unique derived-table output names. Credo renders the post-hook count source once and lets the server apply its real naming and `sql_mode` rules. Wildcards, implicit aliases, and unaliased expressions are accepted when their server-derived output names are unique. If logical COUNT returns `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`), Count/Page wraps `sqldb.ErrUnsupportedCountQuery` after I/O while preserving the driver cause; use explicit unique aliases to resolve the collision. The wrapper is local to logical COUNT, so raw and other non-count 1060 errors pass through unchanged. Real MySQL tests pin normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's [derived-table contract](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
 
-Relation callbacks run during Bun SQL rendering. The count source is rendered
-once, then its post-render state is validated and those exact bytes execute.
-Predicates/projections are allowed; replacing the model, reintroducing root
-ORDER/LIMIT/OFFSET/FOR, or adding standalone `Having`/a compound root fails
-before I/O with `sqldb.ErrUnsupportedCountQuery`.
+Relation callbacks run during Bun SQL rendering. The count source is rendered once, then its post-render state is validated and those exact bytes execute. Predicates/projections are allowed; replacing the model, reintroducing root ORDER/LIMIT/OFFSET/FOR, or adding standalone `Having`/a compound root fails before I/O with `sqldb.ErrUnsupportedCountQuery`.
 
-Logical Count runs the model SELECT hook lifecycle on its private source:
-`BeforeSelect`, `BeforeAppendModel`, then `AfterSelect` after a successful query.
-If Page proceeds to its data statement, normal Bun scanning runs the same
-lifecycle a second time. Filters or projections added by hooks therefore affect
-both `Total` and `Records`. The outer count keeps the model identity in
-`QueryEvent.Model` for observability, but soft-delete policy remains on the inner
-source and is not duplicated outside it. Count does not scan or mutate a bound
-model, so successful `AfterSelect` observes its pre-count value. Hook logic must
-be deterministic: transaction isolation cannot stabilize volatile SQL or an
-application-side decision across COUNT and SELECT.
+Logical Count runs the model SELECT hook lifecycle on its private source: `BeforeSelect`, `BeforeAppendModel`, then `AfterSelect` after a successful query. If Page proceeds to its data statement, normal Bun scanning runs the same lifecycle a second time. Filters or projections added by hooks therefore affect both `Total` and `Records`. The outer count keeps the model identity in `QueryEvent.Model` for observability, but soft-delete policy remains on the inner source and is not duplicated outside it. Count does not scan or mutate a bound model, so successful `AfterSelect` observes its pre-count value. Hook logic must be deterministic: transaction isolation cannot stabilize volatile SQL or an application-side decision across COUNT and SELECT.
 
 **Typed terminals: `One[T]` / `All[T]`.** Two generic terminals (Go 1.27 concrete-type generic methods) return the queried type directly instead of scanning into a caller-provided destination. `T` drives both the table and the scan destination, so the query is built model-less and the terminal owns the destination:
 
@@ -522,40 +424,13 @@ PostgreSQL defaults to statement-snapshot Read Committed. InnoDB defaults to Rep
 
 The universal count source evaluates the projection, which is necessary for exact aggregate and set-returning cardinality. A costly or volatile expression can consequently run once for COUNT and again for the page SELECT. There is deliberately no custom-count strategy on `Page`: advanced repositories share predicates with `ApplyQueryBuilder`, run a deliberately equivalent cheaper `Count` (or count an outer derived-table/CTE source), execute their data query, and call `pagination.NewPage`; a first-class abstraction waits for two real consumers. Likewise, `Page` never represents an unknown total. Total-free offset pagination uses the separate working name `Slice[T]` and gets its own design gate rather than changing `Page`/`Meta` JSON or navigation semantics.
 
-**Cursor/keyset implementation is gated.** The accepted first shape is a
-forward-only `CursorPage[T]`; `Slice[T]` remains only the working name for
-total-free offset pagination. A cursor response has `per_page`, `has_next`, and nullable
-`next_cursor`, never Page totals or a previous cursor, and its terminal performs
-no COUNT. Ordering belongs to an immutable adapter spec with non-null immutable
-keys and an explicit unique final tie-breaker. The terminal will reject an
-existing root ORDER/LIMIT/OFFSET/lock and non-row-shaped queries rather than
-silently composing incompatible state, then use a portable lexicographic
-OR-of-AND predicate plus `per_page + 1`. Joins are also excluded initially:
-they can multiply a root row and invalidate a root-id uniqueness assertion.
-Only a model-less default full-model SELECT plus curated predicates is accepted;
-custom projections/tables, raw `Apply`, and hook-capable models fail before I/O.
-Top-level `WhereOr` also fails; OR filters must be enclosed in one `WhereGroup`
-that joins the root with AND before the cursor predicate is appended.
+**Cursor/keyset implementation is gated.** The accepted first shape is a forward-only `CursorPage[T]`; `Slice[T]` remains only the working name for total-free offset pagination. A cursor response has `per_page`, `has_next`, and nullable `next_cursor`, never Page totals or a previous cursor, and its terminal performs no COUNT. Ordering belongs to an immutable adapter spec with non-null immutable keys and an explicit unique final tie-breaker. The terminal will reject an existing root ORDER/LIMIT/OFFSET/lock and non-row-shaped queries rather than silently composing incompatible state, then use a portable lexicographic OR-of-AND predicate plus `per_page + 1`. Joins are also excluded initially: they can multiply a root row and invalidate a root-id uniqueness assertion. Only a model-less default full-model SELECT plus curated predicates is accepted; custom projections/tables, raw `Apply`, and hook-capable models fail before I/O. Top-level `WhereOr` also fails; OR filters must be enclosed in one `WhereGroup` that joins the root with AND before the cursor predicate is appended.
 
-The public HTTP token policy requires an explicit rotatable HMAC-SHA256 keyring;
-there is no generated secret or implicit unsigned fallback. Signing binds the
-endpoint/query, canonical order, normalized filters, and tenant/authorization
-scope, but does not hide cursor values. Sensitive keys, encryption, backward
-navigation, optional totals, and nullable ordering remain outside the first
-delivery.
+The public HTTP token policy requires an explicit rotatable HMAC-SHA256 keyring; there is no generated secret or implicit unsigned fallback. Signing binds the endpoint/query, canonical order, normalized filters, and tenant/authorization scope, but does not hide cursor values. Sensitive keys, encryption, backward navigation, optional totals, and nullable ordering remain outside the first delivery.
 
-The cursor is not authorization. Every request re-applies the normal auth,
-tenant, and filter predicates; signed scope binding only prevents replay under
-a different query.
+The cursor is not authorization. Every request re-applies the normal auth, tenant, and filter predicates; signed scope binding only prevents replay under a different query.
 
-No symbols ship yet. The gate opens only with a concrete consumer, a fail-loud
-answer for Bun model hooks that can mutate terminal-owned order/window state,
-invalid-argument transport mapping, canonical wire-format vectors, and real
-PostgreSQL/MySQL/SQLite SQL, mutation, and typed-value conformance. The terminal
-must retain existing model-less, execution-snapshot, receiver-reuse, explicit
-connection/ambient-transaction, and store-error-mapping invariants. The canonical reserved contract
-and mutation semantics live in the [pagination spec](pagination.md#cursorkeyset-design-gate);
-the decision rationale is in [ADR-015](../adr/015-data-access.md).
+No symbols ship yet. The gate opens only with a concrete consumer, a fail-loud answer for Bun model hooks that can mutate terminal-owned order/window state, invalid-argument transport mapping, canonical wire-format vectors, and real PostgreSQL/MySQL/SQLite SQL, mutation, and typed-value conformance. The terminal must retain existing model-less, execution-snapshot, receiver-reuse, explicit connection/ambient-transaction, and store-error-mapping invariants. The canonical reserved contract and mutation semantics live in the [pagination spec](pagination.md#cursorkeyset-design-gate); the decision rationale is in [ADR-015](../adr/015-data-access.md).
 
 **Escape hatches** on each query type:
 
@@ -699,17 +574,7 @@ func (db *DB) Migrate(ctx context.Context) error
 
 ### Error Mapping
 
-The mapper receives the operation context and the `DB`'s driver family (derived
-from the driver name, or from the configured Bun dialect for custom connectors).
-SQLSTATE is the structured cross-driver path; when MySQL provides both a number
-and a broad SQLSTATE class, its more specific number wins. Strict MySQL error
-envelopes are parsed only for MySQL, and SQLite numeric codes only for SQLite
-(`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn,
-typed `ExtendedCode()`/`Code()` methods for ncruces — the latter two matched by
-package path via reflection, so no driver becomes a dependency).
-Unmapped errors pass through with exact identity. Loose message matching is
-forbidden because a scanner/query hook/domain error may legitimately contain
-text such as “duplicate key validation”.
+The mapper receives the operation context and the `DB`'s driver family (derived from the driver name, or from the configured Bun dialect for custom connectors). SQLSTATE is the structured cross-driver path; when MySQL provides both a number and a broad SQLSTATE class, its more specific number wins. Strict MySQL error envelopes are parsed only for MySQL, and SQLite numeric codes only for SQLite (`Code() int` for modernc, allowlisted `Code`/`ExtendedCode` fields for mattn, typed `ExtendedCode()`/`Code()` methods for ncruces — the latter two matched by package path via reflection, so no driver becomes a dependency). Unmapped errors pass through with exact identity. Loose message matching is forbidden because a scanner/query hook/domain error may legitimately contain text such as “duplicate key validation”.
 
 | Source | Codes / condition | Semantic result |
 | --- | --- | --- |
@@ -729,14 +594,7 @@ text such as “duplicate key validation”.
 | generic | `context.DeadlineExceeded` | `ErrTimeout` |
 | generic | `driver.ErrBadConn`, `sql.ErrConnDone` | `ErrUnavailable` |
 
-PostgreSQL `57014` is `query_canceled`, not intrinsically timeout. A canceled
-context is returned as cancellation; a deadline maps to timeout; a live context
-maps only a structured driver error that explicitly identifies statement
-timeout. MySQL 1290 is deliberately not treated as read-only because it is a
-generic option-prevents-statement code. Each mapped error is `*store.Error` and
-preserves the original cause plus driver `Code`. Driver-family-specific
-classifier registration and a public normalizer remain deferred until a real
-custom-driver consumer appears.
+PostgreSQL `57014` is `query_canceled`, not intrinsically timeout. A canceled context is returned as cancellation; a deadline maps to timeout; a live context maps only a structured driver error that explicitly identifies statement timeout. MySQL 1290 is deliberately not treated as read-only because it is a generic option-prevents-statement code. Each mapped error is `*store.Error` and preserves the original cause plus driver `Code`. Driver-family-specific classifier registration and a public normalizer remain deferred until a real custom-driver consumer appears.
 
 ### Client Escape Hatch
 
@@ -940,10 +798,7 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) error {
 
 8. **Ownership follows the binding** — the store is bound where its ownership is decided: a `ProvideValue` or constructor binding is owned by the App and shut down after its consumers under the drain deadline, `credo.Borrowed()` leaves it to the caller. Registration adds a ping and a readiness probe to the binding and never owns or closes anything.
 
-9. **Health returns one struct** — status, latency, pool stats, and an optional
-   typed `Cause` travel as one snapshot. The additive `Cause error` field keeps
-   the `Lifecycle.Health(ctx) Health` interface stable while avoiding
-   free-form `Details` parsing. It is diagnostic-only and excluded from JSON.
+9. **Health returns one struct** — status, latency, pool stats, and an optional typed `Cause` travel as one snapshot. The additive `Cause error` field keeps the `Lifecycle.Health(ctx) Health` interface stable while avoiding free-form `Details` parsing. It is diagnostic-only and excluded from JSON.
 
 10. **Wrapper types for multi-DB** — applications define distinct struct types (`PrimaryDB`, `AnalyticsDB`), each bound once and registered by its type. Compile-time DI safety with zero string keys; an embedding wrapper shares the handle's resource identity.
 
@@ -974,11 +829,9 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) error {
 - `Conn` returns TX from context when present, fallback otherwise
 - `ConnInScope` returns scoped TX from context when present, fallback otherwise
 - Store readiness probes are built once at start, run in parallel, enforce per-check deadlines, isolate panics, and coalesce overlapping calls; `/ready` resolves nothing per request
-- `Health.Clone` preserves typed cause identity while defensively cloning the
-  top-level details map
+- `Health.Clone` preserves typed cause identity while defensively cloning the top-level details map
 - A nil or typed-nil bound value fails the start before ping or health execution
-- Store failure causes are logged and masked by default; `ExposeErrors` is the
-  only response opt-in
+- Store failure causes are logged and masked by default; `ExposeErrors` is the only response opt-in
 - Registration misuse panics: nil App, nil option, non-positive ping timeout, invalid name, no stable default name, duplicate type, duplicate name, registration after `Finalize`, preparation or shutdown
 - The App shuts a registered store down after its consumers unless it is borrowed; holders of one resource are pinged each and shut down once
 - `WithName` sets a custom name; explicit empty, padded, control-character, and reserved `credo.` names panic at registration; omitted names use the stable pointer-unwrapped type default
@@ -988,18 +841,14 @@ func SetupMultiDB(app *credo.App, rc credo.RawConfig) error {
 
 - `Open` creates a working connection
 - `Open` returns error on invalid Config
-- Pool config applies finite `MaxOpen`, nil/zero/positive `MaxIdle`,
-  `MaxLifetime`, and `MaxIdleTime` exactly; negative values and explicit
-  `MaxIdle > MaxOpen` fail before connection use
+- Pool config applies finite `MaxOpen`, nil/zero/positive `MaxIdle`, `MaxLifetime`, and `MaxIdleTime` exactly; negative values and explicit `MaxIdle > MaxOpen` fail before connection use
 - `Client()` returns `*bun.DB`
 - `Stats()` returns the underlying complete `sql.DBStats` snapshot
 - `Ping` verifies connection
-- `Health` returns UP with latency, current pool counts, and cumulative
-  wait/idle/lifetime closure counters
+- `Health` returns UP with latency, current pool counts, and cumulative wait/idle/lifetime closure counters
 - An effective unlimited maximum reports `sqldb.pool.max_open_unlimited`; a registered store logs it once after a successful start-phase ping, and a failed ping logs none
 - A `*sqldb.DB` bound raw and through an embedding wrapper, both registered, is pinged twice and closed once
-- `Health` returns DOWN with a typed `Cause` when the connection is dead; it
-  does not copy the cause string into `Details["error"]`
+- `Health` returns DOWN with a typed `Cause` when the connection is dead; it does not copy the cause string into `Details["error"]`
 - `Shutdown` closes connection
 - Query proxies (`Select`, `Insert`, `Update`, `Delete`):
   - Execute queries correctly

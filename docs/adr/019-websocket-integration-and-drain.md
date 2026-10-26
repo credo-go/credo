@@ -4,30 +4,17 @@
 
 ## Context
 
-WebSocket support crosses routing, middleware, HTTP upgrade semantics, pooled
-request contexts, observability, and graceful shutdown. Implementing only an
-upgrade helper would leave applications to rebuild the security and lifecycle
-parts independently. Copying a protocol engine into the framework would also
-make Credo responsible for a fast-moving wire protocol and its security fixes.
+WebSocket support crosses routing, middleware, HTTP upgrade semantics, pooled request contexts, observability, and graceful shutdown. Implementing only an upgrade helper would leave applications to rebuild the security and lifecycle parts independently. Copying a protocol engine into the framework would also make Credo responsible for a fast-moving wire protocol and its security fixes.
 
-Credo therefore needs an integrated server API without owning RFC 6455 frame
-parsing. It must preserve the normal `func(*credo.Context) error` route chain,
-fail visibly before an upgrade, and guarantee that successful application
-drain does not tear down DI resources while WebSocket handlers still use them.
+Credo therefore needs an integrated server API without owning RFC 6455 frame parsing. It must preserve the normal `func(*credo.Context) error` route chain, fail visibly before an upgrade, and guarantee that successful application drain does not tear down DI resources while WebSocket handlers still use them.
 
 ## Decision
 
 ### Wrap and pin the protocol engine
 
-Credo imports exact-pinned `github.com/coder/websocket v1.8.15` under its ISC
-license. The upstream library owns the wire protocol, framing, masking, close
-handshake, ping/pong, and per-message deflate. Package `websocket` owns the
-public types, secure defaults, error normalization, logging, admission, and App
-lifecycle integration.
+Credo imports exact-pinned `github.com/coder/websocket v1.8.15` under its ISC license. The upstream library owns the wire protocol, framing, masking, close handshake, ping/pong, and per-message deflate. Package `websocket` owns the public types, secure defaults, error normalization, logging, admission, and App lifecycle integration.
 
-The upstream connection is reachable only through `Conn.Unwrap` as an expert
-escape hatch. It remains borrowed: raw calls do not transfer ownership and
-bypass Credo's validation, normalized errors, close policy, and logging.
+The upstream connection is reachable only through `Conn.Unwrap` as an expert escape hatch. It remains borrowed: raw calls do not transfer ownership and bypass Credo's validation, normalized errors, close policy, and logging.
 
 ### Keep routing explicit
 
@@ -39,21 +26,11 @@ app.Manage(ws, credo.Ingress())
 app.GET("/events", ws.Handler(handler))
 ```
 
-`New` validates the configuration and builds the server; the application registers it as an ingress component (below). `Server.Handler`
-adapts a synchronous WebSocket handler into the one Credo route-handler type,
-so built-in, global, group, route, auth, rewrite, and other middleware retain
-their existing ordering. A second `app.WebSocket` or `Server.Handle` route API
-is not added before usage evidence shows that explicit `GET` is inadequate.
+`New` validates the configuration and builds the server; the application registers it as an ingress component (below). `Server.Handler` adapts a synchronous WebSocket handler into the one Credo route-handler type, so built-in, global, group, route, auth, rewrite, and other middleware retain their existing ordering. A second `app.WebSocket` or `Server.Handle` route API is not added before usage evidence shows that explicit `GET` is inadequate.
 
 ### Treat the handshake as a transaction
 
-The adapter validates mechanical HTTP requirements, origin, subprotocol, and
-drain admission before calling the upstream `Accept`. A conditional response
-writer captures upstream pre-upgrade status, headers, and body. Before 101,
-failures return through Credo's centralized error renderer; only protocol-relevant
-headers are published. Once 101 is committed, an actual Hijack failure is a
-transport failure: the adapter logs it and must not attempt a second HTTP
-status or body.
+The adapter validates mechanical HTTP requirements, origin, subprotocol, and drain admission before calling the upstream `Accept`. A conditional response writer captures upstream pre-upgrade status, headers, and body. Before 101, failures return through Credo's centralized error renderer; only protocol-relevant headers are published. Once 101 is committed, an actual Hijack failure is a transport failure: the adapter logs it and must not attempt a second HTTP status or body.
 
 The effective precedence is:
 
@@ -64,35 +41,19 @@ The effective precedence is:
 5. real Hijacker capability;
 6. upstream Accept and actual Hijack.
 
-Auto-generated HEAD routes reach the adapter and fail with 405 plus
-`Allow: GET`. HTTP/2 extended CONNECT (RFC 8441) is not implemented. A response
-writer without a real Hijacker fails before I/O with 501.
+Auto-generated HEAD routes reach the adapter and fail with 405 plus `Allow: GET`. HTTP/2 extended CONNECT (RFC 8441) is not implemented. A response writer without a real Hijacker fails before I/O with 501.
 
 ### Own origin and subprotocol policy
 
-The zero configuration allows browser requests only when Origin is same-origin.
-Additional origins are exact `http`/`https` origins or a single left-most DNS
-label wildcard such as `https://*.example.com`. Origin absence is accepted for
-non-browser clients. `InsecureSkipOriginCheck` is an explicit footgun and
-cannot be combined with an allowlist. Origin authorization prevents browser
-cross-site WebSocket abuse; it is not authentication.
+The zero configuration allows browser requests only when Origin is same-origin. Additional origins are exact `http`/`https` origins or a single left-most DNS label wildcard such as `https://*.example.com`. Origin absence is accepted for non-browser clients. `InsecureSkipOriginCheck` is an explicit footgun and cannot be combined with an allowlist. Origin authorization prevents browser cross-site WebSocket abuse; it is not authentication.
 
-Subprotocols are validated at startup and selected in server preference order.
-`RequireSubprotocol` turns absence or mismatch into a pre-upgrade 400 rather
-than silently continuing without a protocol.
+Subprotocols are validated at startup and selected in server preference order. `RequireSubprotocol` turns absence or mismatch into a pre-upgrade 400 rather than silently continuing without a protocol.
 
 ### Borrow pooled request state only synchronously
 
-`Handler` runs synchronously for the full connection lifetime. The
-`*credo.Context` and `*websocket.Conn` must not be retained after it returns.
-The connection context is derived with `context.WithoutCancel` so request
-cancellation and deadlines do not terminate an accepted connection, while
-request values such as authenticated user and logger fields remain available.
+`Handler` runs synchronously for the full connection lifetime. The `*credo.Context` and `*websocket.Conn` must not be retained after it returns. The connection context is derived with `context.WithoutCancel` so request cancellation and deadlines do not terminate an accepted connection, while request values such as authenticated user and logger fields remain available.
 
-This preservation also means a transaction stored in the request context can
-accidentally live for the entire connection. Long-lived handlers should
-snapshot the small immutable values they need and open short repository or
-transaction scopes per operation.
+This preservation also means a transaction stored in the request context can accidentally live for the entire connection. Long-lived handlers should snapshot the small immutable values they need and open short repository or transaction scopes per operation.
 
 ### Construct with `New`, register as an ingress component
 
@@ -131,13 +92,9 @@ The restartable `Service` taxonomy stays out of scope, as ADR-024 records.
 - Subprotocol: optional.
 - Normal application return: close 1000.
 - App drain: close 1001.
-- Application error, transport error, or panic: close 1011 with a generic wire
-  reason; arbitrary errors and panic values are not logged.
+- Application error, transport error, or panic: close 1011 with a generic wire reason; arbitrary errors and panic values are not logged.
 
-The normal HTTP access log remains the single Info-level request record with
-status 101 and zero response bytes. Connection lifecycle records use structured
-Debug/Warn/Error classifications and safe identifiers; peer reason, message
-payload, cookies, authorization, query values, and raw Origin are excluded.
+The normal HTTP access log remains the single Info-level request record with status 101 and zero response bytes. Connection lifecycle records use structured Debug/Warn/Error classifications and safe identifiers; peer reason, message payload, cookies, authorization, query values, and raw Origin are excluded.
 
 ## Rejected Alternatives
 
@@ -155,15 +112,9 @@ payload, cookies, authorization, query values, and raw Origin are excluded.
 
 ## Consequences
 
-Applications get one Credo-shaped server API with secure defaults, normal
-middleware behavior, visible pre-upgrade failures, and DI-safe graceful drain.
-The package deliberately remains server-side and low-level: applications own
-authentication, authorization, heartbeat policy, message schemas, and fan-out.
+Applications get one Credo-shaped server API with secure defaults, normal middleware behavior, visible pre-upgrade failures, and DI-safe graceful drain. The package deliberately remains server-side and low-level: applications own authentication, authorization, heartbeat policy, message schemas, and fan-out.
 
-The adapter depends on specific public and handshake behavior of the pinned
-upstream version. Every dependency update must run the permanent upstream,
-origin, handshake, real-network, and lifecycle conformance suites documented in
-`SECURITY-UPSTREAMS.md`.
+The adapter depends on specific public and handshake behavior of the pinned upstream version. Every dependency update must run the permanent upstream, origin, handshake, real-network, and lifecycle conformance suites documented in `SECURITY-UPSTREAMS.md`.
 
 ## References
 

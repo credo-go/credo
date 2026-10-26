@@ -12,9 +12,7 @@ Embedding a `User` field into Context forces all applications to use the same us
 
 ### Generic User Accessors on Context
 
-The authenticated principal is accessed through generic `*credo.Context`
-methods — a first-class part of the Context model, alongside `RequestID()`,
-`Route()`, and `Logger()`:
+The authenticated principal is accessed through generic `*credo.Context` methods — a first-class part of the Context model, alongside `RequestID()`, `Route()`, and `Logger()`:
 
 ```go
 ctx.SetUser(user)                  // store user (T inferred — blessed form)
@@ -38,9 +36,7 @@ ctx.SetUser(authenticatedUser)
 user, ok := ctx.GetUser[User]()
 ```
 
-The `auth` package keeps the authentication *strategy* (`Authenticator[T]`,
-`Middleware[T]`, `ErrorFunc`); only the typed user slot — the primitive — lives
-on the root Context. The dependency direction is `auth → root` (no cycle).
+The `auth` package keeps the authentication _strategy_ (`Authenticator[T]`, `Middleware[T]`, `ErrorFunc`); only the typed user slot — the primitive — lives on the root Context. The dependency direction is `auth → root` (no cycle).
 
 ### No Built-in User Type on Context
 

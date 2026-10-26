@@ -287,9 +287,7 @@ When a field has no rules but implements `Validatable`, `ValidateStruct` auto-ca
 
 ## Error Format
 
-Validation errors are classified as 422 by the framework's internal error
-pipeline and rendered in Credo's default error envelope (or by a configured
-`ErrorRenderer`):
+Validation errors are classified as 422 by the framework's internal error pipeline and rendered in Credo's default error envelope (or by a configured `ErrorRenderer`):
 
 ```json
 {
@@ -329,18 +327,11 @@ func (e Errors) Error() string  // implements error interface
 func (e Errors) MarshalJSON() ([]byte, error)
 ```
 
-`Code` is the stable rule identity. `MessageKey`, when present, is an exact
-presentation key and is never serialized. `Params` provides template data.
+`Code` is the stable rule identity. `MessageKey`, when present, is an exact presentation key and is never serialized. `Params` provides template data.
 
-`Field` is always a stable technical identifier for frontend form-input
-matching. An optional Fields catalog may provide a display name only to the
-message template as `{{.field}}`; it never changes the wire `field` value.
+`Field` is always a stable technical identifier for frontend form-input matching. An optional Fields catalog may provide a display name only to the message template as `{{.field}}`; it never changes the wire `field` value.
 
-**Translation trigger** — Translation happens in the framework's error
-pipeline when i18n is configured, never inside the validation engine. An
-explicit `MessageKey` wins; otherwise the optional scope-aware resolver is
-used; otherwise the bare `Code` is the exact key. Credo adds no prefix. See
-[ADR-013](../adr/013-internationalization.md).
+**Translation trigger** — Translation happens in the framework's error pipeline when i18n is configured, never inside the validation engine. An explicit `MessageKey` wins; otherwise the optional scope-aware resolver is used; otherwise the bare `Code` is the exact key. Credo adds no prefix. See [ADR-013](../adr/013-internationalization.md).
 
 ---
 

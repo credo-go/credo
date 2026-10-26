@@ -114,7 +114,7 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 **Rationale**: deployments that mandate a single authoritative config file (reproducible images, security-sensitive services) previously had no way to shut out ambient sources — a stray `.env` in the working directory or a `CREDO_*` variable in the process environment silently altered configuration, and tests inherited whatever the developer's shell exported. The source-kill boundary (bootstrap keys included) was chosen over a merge-layer-only skip so that "the process environment does not exist for config purposes" holds without exceptions.
 
-**Rejected alternative — repurposing `WithPrefix("")`**: an empty prefix removes the filter and matches *every* environment variable; overloading it as "disable" would be a breaking, surprising reinterpretation. Disabling a source is an explicit, separate intent.
+**Rejected alternative — repurposing `WithPrefix("")`**: an empty prefix removes the filter and matches _every_ environment variable; overloading it as "disable" would be a breaking, surprising reinterpretation. Disabling a source is an explicit, separate intent.
 
 ## Strict Decoding
 

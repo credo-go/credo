@@ -21,19 +21,10 @@ Write the health check engine from scratch. The engine is unexported in the root
 
 - `healthEngine` manages named liveness and readiness checks.
 - Named and store checks run together through one concurrent runner.
-- Every registered check owns a stable module-internal `Probe`. Concurrent
-  readiness requests join the same in-flight execution instead of launching a
-  callback per request.
-- `Probe.Run` selects between an immutable flight result and the caller's
-  cancellation. The callback gets a finite timeout context. A callback that
-  ignores it may remain blocked, but the timeout result is published on time
-  and the flight stays attached until the callback exits, bounding the leak to
-  one callback (plus its coordinator) per check.
-- Callback workers never write response slices. Collectors write one dedicated
-  result index after receiving the immutable result, so late completion cannot
-  mutate an already-published timeout response or race with rendering.
-- Panics are recovered per check; one store cannot abort sibling checks or the
-  readiness handler.
+- Every registered check owns a stable module-internal `Probe`. Concurrent readiness requests join the same in-flight execution instead of launching a callback per request.
+- `Probe.Run` selects between an immutable flight result and the caller's cancellation. The callback gets a finite timeout context. A callback that ignores it may remain blocked, but the timeout result is published on time and the flight stays attached until the callback exits, bounding the leak to one callback (plus its coordinator) per check.
+- Callback workers never write response slices. Collectors write one dedicated result index after receiving the immutable result, so late completion cannot mutate an already-published timeout response or race with rendering.
+- Panics are recovered per check; one store cannot abort sibling checks or the readiness handler.
 - No checks registered = "up" for liveness (server responding proves alive).
 - Store, component and application checks are the three readiness sources described under [Readiness from the kernel's registries](#readiness-from-the-kernels-registries).
 
@@ -58,11 +49,7 @@ There is no public store-bridge method — store health comes from `store.Regist
 - `LivenessPath string` — default "/health".
 - `ReadinessPath string` — default "/ready".
 - `CheckTimeout time.Duration` — default 5s.
-- `ExposeErrors bool` — default false. Failing named and store checks report only
-  their bounded status; the typed cause is written to the application log.
-  Causes often contain hostnames and connection targets that must not reach an
-  unauthenticated probe endpoint. Opt in only when the endpoint is
-  network-restricted.
+- `ExposeErrors bool` — default false. Failing named and store checks report only their bounded status; the typed cause is written to the application log. Causes often contain hostnames and connection targets that must not reach an unauthenticated probe endpoint. Opt in only when the endpoint is network-restricted.
 - `Group *Group` — nil = app root. Routes registered on this group, inheriting its prefix and middleware.
 - `LogRequests bool` — default false. Probe requests are excluded from the access log: `UseHealth` sets the `MetaAccessLog` route meta on `/health` and `/ready` to this value, so probe traffic (Kubernetes liveness/readiness polling, often once per second per replica) does not flood the log. The endpoints stay registered and responsive regardless, and the meta propagates to each route's auto-generated HEAD twin. Because the meta is set at the route level, `LogRequests: true` re-enables logging even when the probes sit under a `Group` that silenced access logging — a route-level meta value overrides its group's (see [ADR-010](010-middleware-architecture.md)).
 
@@ -78,10 +65,7 @@ There is no public store-bridge method — store health comes from `store.Regist
 {"status": "up", "checks": {"postgres": {"status": "up", "latency": "1.234ms"}}}
 ```
 
-Status codes: 200 for "up", 503 for "down". All stores are critical in the
-current API. `StatusDegraded` is preserved in the per-store entry but is
-readiness-blocking, so the top-level status is `"down"` and the response is 503.
-Optional/critical configuration is deferred to a separate API decision.
+Status codes: 200 for "up", 503 for "down". All stores are critical in the current API. `StatusDegraded` is preserved in the per-store entry but is readiness-blocking, so the top-level status is `"down"` and the response is 503. Optional/critical configuration is deferred to a separate API decision.
 
 ### Graceful Shutdown
 
@@ -119,17 +103,10 @@ Rejected: resolving a readiness seam from the container on each request — the 
 
 **Negative:**
 
-- No result cache — a completed probe is run again by the next request.
-  Overlapping requests share only the current in-flight execution.
+- No result cache — a completed probe is run again by the next request. Overlapping requests share only the current in-flight execution.
 - No detailed liveness response body (only status). Keeps it minimal per K8s best practices.
 
 **Risks:**
 
-- Go cannot forcibly stop a non-cooperative callback. Credo returns at the
-  configured deadline and prevents overlapping executions, but one callback
-  goroutine can remain blocked indefinitely until application code releases it.
-- Probe execution is detached from an individual HTTP waiter's cancellation so
-  concurrent waiters can share it. A callback can therefore outlive that
-  request (and, if non-cooperative, application drain); adapters must honor the
-  finite probe context. The default five-second probe budget is shorter than
-  the default thirty-second shutdown drain budget.
+- Go cannot forcibly stop a non-cooperative callback. Credo returns at the configured deadline and prevents overlapping executions, but one callback goroutine can remain blocked indefinitely until application code releases it.
+- Probe execution is detached from an individual HTTP waiter's cancellation so concurrent waiters can share it. A callback can therefore outlive that request (and, if non-cooperative, application drain); adapters must honor the finite probe context. The default five-second probe budget is shorter than the default thirty-second shutdown drain budget.

@@ -346,7 +346,7 @@ A worker's readiness conditions reach `/ready` the same way: through its compone
 
 Both register an anonymous component of a tier, internal unless `credo.Ingress()` is passed.
 
-| | `OnStart` | `OnStop` |
+|  | `OnStart` | `OnStop` |
 | --- | --- | --- |
 | Slot | After its tier's components have started | Before its tier's components stop |
 | Order within the tier | FIFO | LIFO |

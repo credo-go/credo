@@ -230,11 +230,11 @@ credo.New(credo.WithRedirectTrailingSlash(false))
 
 ### URL Parameters
 
-| Syntax         | Example              | Description                              |
-| -------------- | -------------------- | ---------------------------------------- |
-| `{name}`       | `/users/{id}`        | Named parameter                          |
-| `{name:regex}` | `/users/{id:[0-9]+}` | Regex-constrained parameter              |
-| `{name...}`    | `/files/{path...}`   | Catch-all (rest of path, possibly empty) |
+| Syntax | Example | Description |
+| --- | --- | --- |
+| `{name}` | `/users/{id}` | Named parameter |
+| `{name:regex}` | `/users/{id:[0-9]+}` | Regex-constrained parameter |
+| `{name...}` | `/files/{path...}` | Catch-all (rest of path, possibly empty) |
 
 The same `{name}` / `{name:regex}` syntax is reused for host labels in `app.Host(...)`.
 
