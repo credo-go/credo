@@ -10,7 +10,7 @@ Each runnable example is a separate Go module that replaces Credo with the repos
 
 ## Accepted pre-v1 migration
 
-**DI, router, HTTP and wire minors applied 2026-09-05; v0.24.0 applied 2026-10-08.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples. In v0.24.0 the SaaS example follows the [documented bootstrap order](../docs/specs/bootstrap-and-di-lifecycle.md#documented-order) as six numbered steps with every satellite in it, and the hello example needed no change: `credo.New`, routes and `Run` stay the minimal shape.
+**DI, router, HTTP and wire minors applied 2026-09-05; v0.24.0 applied 2026-10-08.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples. In v0.24.0 the SaaS example follows the [documented bootstrap order](../docs/specs/container.md#documented-order) as six numbered steps with every satellite in it, and the hello example needed no change: `credo.New`, routes and `Run` stay the minimal shape.
 
 | Delivery | Hello | SaaS |
 | --- | --- | --- |

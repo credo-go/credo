@@ -4,7 +4,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 ## Bootstrap order
 
-`run()` in main.go follows the [documented bootstrap order](../../docs/specs/bootstrap-and-di-lifecycle.md#documented-order), one numbered comment per step:
+`run()` in main.go follows the [documented bootstrap order](../../docs/specs/container.md#documented-order), one numbered comment per step:
 
 1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, the logger, `credo.New(credo.WithRawConfig(rawCfg), …)`.
 2. **`Provide`** — the typed config values and the constructors of `TenantStore`, `TenantService` and `UsageReporter`, each taking `credo.Infra` first.

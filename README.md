@@ -212,8 +212,8 @@ A value the App should start or ask for readiness is provided as its concrete ty
 - User guide: `docs/guides/worker.md`
 - User guide: `docs/guides/websocket.md`
 - Migration guide: `docs/guides/pre-v1-migration.md`
-- Architecture decisions: `docs/adr/`
-- Detailed specs: `docs/specs/`
+- Architecture decisions: [`docs/adr/`](docs/adr/README.md)
+- Detailed specs: [`docs/specs/`](docs/specs/README.md)
 
 ## Repository Layout (High Level)
 

@@ -8,7 +8,7 @@
 
 ## Components, Kernel Registries and Sequential Bootstrap
 
-All of it ships in v0.24.0. The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle-components.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-006](docs/adr/006-application-lifecycle.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-013](docs/adr/013-internationalization.md), [ADR-023](docs/adr/023-worker-system.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-009](docs/adr/009-handler-and-error-handling.md) and [ADR-007](docs/adr/007-router-and-routing.md), the [lifecycle](docs/specs/lifecycle.md), [container](docs/specs/container.md), [bootstrap and DI lifecycle](docs/specs/bootstrap-and-di-lifecycle.md), [store](docs/specs/store.md), [WebSocket](docs/specs/websocket.md), [i18n](docs/specs/i18n.md), [worker](docs/specs/worker.md), [validation](docs/specs/validation.md) and [router](docs/specs/router.md) specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-10-08; only the release remains. These boxes are the only progress tracker.
+All of it ships in v0.24.0. The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle-components.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-006](docs/adr/006-application-lifecycle.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-013](docs/adr/013-internationalization.md), [ADR-023](docs/adr/023-worker-system.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-009](docs/adr/009-handler-and-error-handling.md) and [ADR-007](docs/adr/007-router-and-routing.md), the [lifecycle](docs/specs/lifecycle.md), [container](docs/specs/container.md), [store](docs/specs/store.md), [WebSocket](docs/specs/websocket.md), [i18n](docs/specs/i18n.md), [worker](docs/specs/worker.md), [validation](docs/specs/validation.md) and [router](docs/specs/router.md) specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-10-08; only the release remains. These boxes are the only progress tracker.
 
 - [x] The header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
 - [x] Promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
@@ -38,7 +38,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
 - [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
 - [x] P4 router minor (2026-09-05): endpoint-owned path parameter names; strict duplicate/structural conflicts retained
-- [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(*Context), pre-Global decompression, final access measurements and callback failure policy
+- [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(\*Context), pre-Global decompression, final access measurements and callback failure policy
 - [x] P8 HTTP minor (2026-09-05): optional Use features, default recovery, single renderers, executor, cleanup and example/test migration
 - [x] Close G3 (2026-09-05): decoded-value regex, one-time capture decoding, segment escaping and invalid-input outcomes
 - [x] P5 wire minor (2026-09-05): one-time capture decoding on the wire-form path, decoded-value constraints, single-segment parameters, validated and escaped generation, 400 `invalid_path_encoding`
@@ -655,7 +655,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 **Must land before v1** (each touches a surface that v1 freezes):
 
-- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, the *types* of the metrics/tracing fields on `credo.Infra` (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0.
+- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, the _types_ of the metrics/tracing fields on `credo.Infra` (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0.
 - [x] **json/v2 output profile** (`Response.JSON`, default error bodies, renderer bodies, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
 - [x] **Typed endpoint / operation model decision** — out of the pre-v1 reshaping (2026-10-02); reopened once the architecture has settled and real applications have run on it. v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface, and until the question reopens the root adds no package-level non-generic route verbs, so an additive typed layer stays possible. Open before v1 in its own right: whether `Validatable.Validate` takes a `context.Context` (a later addition would break every implementor).
@@ -721,27 +721,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 - [x] `doc.go` for every package (include maturity label)
 - [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
-- [x] ADRs tracked (20 total):
-  - [x] [`001-framework-identity-and-goals.md`](docs/adr/001-framework-identity-and-goals.md) — Framework identity and goals
-  - [x] [`002-code-acquisition-strategy.md`](docs/adr/002-code-acquisition-strategy.md) — Code acquisition strategy
-  - [x] [`003-application-architecture.md`](docs/adr/003-application-architecture.md) — Application architecture
-  - [x] [`004-dependency-injection-and-infra.md`](docs/adr/004-dependency-injection-and-infra.md) — DI container and credo.Infra
-  - [x] [`005-configuration-architecture.md`](docs/adr/005-configuration-architecture.md) — Configuration architecture (RawConfig, typed config via DI)
-  - [x] [`006-application-lifecycle.md`](docs/adr/006-application-lifecycle.md) — Application lifecycle
-  - [x] [`007-router-and-routing.md`](docs/adr/007-router-and-routing.md) — Router and routing
-  - [x] [`008-context-design.md`](docs/adr/008-context-design.md) — Context design
-  - [x] [`009-handler-and-error-handling.md`](docs/adr/009-handler-and-error-handling.md) — Handler and error handling
-  - [x] [`010-middleware-architecture.md`](docs/adr/010-middleware-architecture.md) — Middleware architecture
-  - [x] [`011-validation-strategy.md`](docs/adr/011-validation-strategy.md) — Validation strategy
-  - [x] [`012-authentication-and-authorization.md`](docs/adr/012-authentication-and-authorization.md) — Authentication and authorization
-  - [x] [`013-internationalization.md`](docs/adr/013-internationalization.md) — Internationalization
-  - [x] [`014-observability.md`](docs/adr/014-observability.md) — Observability (Draft; logging baseline accepted, tracing/metrics pending)
-  - [x] [`015-data-access.md`](docs/adr/015-data-access.md) — Data access
-  - [x] [`016-health-checks.md`](docs/adr/016-health-checks.md) — Health checks
-  - [x] [`017-static-file-serving.md`](docs/adr/017-static-file-serving.md) — Static file serving
-  - [x] [`018-host-routing-and-rewrite.md`](docs/adr/018-host-routing-and-rewrite.md) — Host routing and rewrite
-  - [x] [`019-websocket-integration-and-drain.md`](docs/adr/019-websocket-integration-and-drain.md) — WebSocket integration and drain
-  - [x] [`020-reload-and-partial-config-reload.md`](docs/adr/020-reload-and-partial-config-reload.md) — Reload signal, partial config reload, TLS rotation (Accepted; implemented in 3.8)
+- [x] Architecture decisions and specifications indexed: [ADR index](docs/adr/README.md), [spec index](docs/specs/README.md)
 - [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
 - [x] Write guide: Infra injection model (Model 1) — covered by [`docs/guides/dependency-injection.md`](docs/guides/dependency-injection.md)
 
