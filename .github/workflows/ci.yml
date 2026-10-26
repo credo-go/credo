@@ -15,7 +15,7 @@ permissions:
 
 env:
   GOLANGCI_LINT_VERSION: "v2.12.2"
-  GOLANGCI_X_TOOLS_VERSION: "v0.48.0"
+  GOLANGCI_X_TOOLS_VERSION: "v0.52.0"
 
 jobs:
   test:
@@ -302,10 +302,11 @@ jobs:
           go-version-file: go.mod
 
       # v2.12.2 pins x/tools v0.44.0, whose package loader cannot read Go 1.27
-      # generic-method export data. Build the exact linter release with the
-      # reviewed x/tools v0.48.0 override until a tagged golangci-lint includes
-      # that support. Run required lint serially for both repository modules;
-      # the full-canary job remains non-blocking for incompatible SSA engines.
+      # export data (generic methods; export data version 5 since Go 1.27.3).
+      # Build the exact linter release with the reviewed x/tools v0.52.0
+      # override until the pinned golangci-lint release is raised. Run required
+      # lint serially for both repository modules; the full-canary job remains
+      # non-blocking for incompatible SSA engines.
       - name: Build pinned golangci-lint
         run: |
           tool_dir="$RUNNER_TEMP/golangci-lint-build"
