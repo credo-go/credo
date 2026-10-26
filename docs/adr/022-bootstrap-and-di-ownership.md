@@ -1,114 +1,96 @@
 # ADR-022: Bootstrap Phases and DI Ownership
 
-**Status:** Accepted, implemented 2026-09-05 (DI minor); sequential bootstrap and ownership through the component registry implemented in v0.24.0 **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Specification:** [Bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md) **Delivery:** shipped in the DI minor of 2026-09-05; progress in [TODO](../../TODO.md#pre-v1-contract-migration)
+**Status:** Accepted **Date:** 2026-09-05 **Depends on:** ADR-004, ADR-006, ADR-009 **Related:** ADR-001, ADR-015, ADR-023, ADR-024 **Specification:** [Container spec](../specs/container.md#sequential-bootstrap), [Lifecycle spec](../specs/lifecycle.md) **Guide:** [Dependency injection guide](../guides/dependency-injection.md)
 
 ## Context
 
-The review of v0.18.0 identified separate lifecycle defects: shutdown uses reverse registration order, replacement abandons the previous instance, opaque factories can lose cycle detection, resolution has no terminal teardown boundary, and constructor/shutdown panics lack a consistent completion contract. These are ownership and coordination problems; replacing the whole DI API or introducing a general service framework is unnecessary.
+A DI container that owns teardown fails in predictable ways: closing in registration order closes a dependency before its consumer; a replaced instance is abandoned; a closure factory hides edges from cycle detection and from the teardown order; resolution racing teardown hands out values that are being closed; and constructor and shutdown panics are lost, or surface without their value and stack. These are ownership and coordination problems; replacing the whole DI API or introducing a general service framework is unnecessary.
 
-A scan of the maintainer's downstream applications found no factory or Replace use. It did find pre-Run resolution and an optional worker-pool existence probe. Framework store/worker adoption used the registration-time AdoptValue path. Consumer absence does not prove an API is safe to remove internally; migration includes those integration flows.
+Bootstrap has forces of its own. Registration that promises concurrency safety buys synchronization no bootstrap uses, and gives it unevenly; overlapping notions of "closed" make phase errors unpredictable; and an undocumented order makes a natural bootstrap — provide, routes, workers, run — meet ordering panics: a worker registration must precede `Finalize` while the controllers beside it are resolved after it, and a readiness check built from a resolved value must follow `UseHealth`.
+
+Ownership has one more: when it is decided in more than one place, a resource held by several bindings is shut down once per holder — the first time while consumers of another holder still run — and an integration that takes ownership of an application binding must then defend it against overrides.
 
 ## Decision
 
-Keep App, typed constructors, explicit `Infra`, singleton scope, aliases and ordered collections. Separate DI validation/freeze from HTTP preparation/freeze. Bootstrap follows the documented order of [Sequential bootstrap and three error phases](#sequential-bootstrap-and-three-error-phases): controllers and DI-backed renderers are built after `Finalize`, and the App prepares once through Finalize → compile → publish. Teardown drains before DI closing, then tears down consumers before their visible dependencies.
+Keep the App, typed constructors, the explicit `Infra`, singleton scope, aliases and ordered collections ([ADR-004](004-dependency-injection-and-infra.md)), and fix ownership and coordination around them. The [container spec](../specs/container.md) states the DI rules; the [lifecycle spec](../specs/lifecycle.md) states preparation, the start phase and the drain.
 
-DI-independent HTTP setup may precede Finalize. Managed serving and direct `ServeHTTP` share one stored preparation result. Preparation admission closes HTTP writes; DI Finalize alone does not. Bootstrap Shutdown competes atomically with managed start and direct preparation publication. It accepts an App in building, freezes writes without requiring successful Seal, runs serverless drain and ends stopped. Owners of external HTTP servers still drain those servers themselves.
+### Two freezes and one preparation
 
-Preparation failures remain repeatable developer errors: managed entry points return them, and `ServeHTTP` panics with the stored failure while lifecycle admission is open. Lifecycle rejection returns the callback-free default 503 response specified by ADR-009 and the lifecycle contract. A prepared stopping App retains its drain behavior; stopped always rejects new dispatch.
+DI validation and freeze (`Finalize`) are separate from HTTP preparation and freeze: controllers and DI-backed renderers are built from resolved values after `Finalize` and their routes registered before the App prepares, so `Finalize` closes DI writes only, and DI-independent HTTP setup may precede it. Every entry point — `Run`, `RunContext`, `ServeContext`, `App.Start` and direct `ServeHTTP` — reaches the same validated runtime model through one stored preparation, `Finalize` → compile → publish. A preparation failure is a repeatable developer error: the managed entry points return it, and `ServeHTTP` panics with the stored failure on every request while lifecycle admission is open, so no later request reaches a partly compiled handler ([lifecycle spec](../specs/lifecycle.md#preparation)).
 
-Public Resolve belongs after Finalize, and an override before it: `credo.Override()` replaces a binding while no constructor has run ([Ownership through the component registry](#ownership-through-the-component-registry)). No general early Resolve/Peek API is introduced; the non-resolving `Has[T]` is the registration phase's one read, a snapshot that never constructs and reserves nothing. Remove factory registration and its proposed runtime-edge machinery. Constructor-captured service-locator calls are unsupported.
+### Bootstrap teardown
 
-Teardown enters closing only when the drain reaches the internal tier ([ADR-024](024-lifecycle-components.md)). Closing/closed resolution rejects with an inspectable `credo.ErrDIClosed` sentinel, including cached resolution and delivery racing teardown. Track successfully constructed instances even when caller delivery is rejected. Constructor errors and panics are terminal, shared by waiters, and never retried automatically.
+`Shutdown` is accepted while the App is building: it competes atomically with a managed start and with direct preparation, freezes HTTP and DI writes without requiring a successful `Finalize`, drains with no servers and ends stopped, so a composition root that fails after registering resources, or a test that only used `ServeHTTP`, still releases what bootstrap built. Owners of external HTTP servers drain them themselves before `App.Shutdown`. A request the lifecycle rejects receives the callback-free default 503 ([ADR-009](009-handler-and-error-handling.md)), since a renderer or resolver it would otherwise reach may capture a component that is already shut down; a prepared stopping App keeps serving its drain, and a stopped one rejects every new dispatch ([lifecycle spec](../specs/lifecycle.md#bootstrap-teardown)).
 
-Use a Kahn ready queue with reverse-registration tie breaking over the component registry's resources, each keyed by resource identity ([ADR-024](024-lifecycle-components.md)). Aliases and collection edges participate; hidden dependencies inside prebuilt values do not. Pending builds block their dependencies while independent ready vertices can close. Retiring an intermediate binding that is not a component preserves transitive order. Report graph inconsistencies; never fall back to closing blocked dependencies out of order.
+### Resolution after Finalize, overrides before it
 
-Teardown calls use helper-based completion-or-context waiting under one shared budget: sequential in the internal tier, concurrent in the ingress tier for resources no edge orders. Recover on the invoking goroutine. A timed-out helper is still incomplete and keeps dependencies blocked; error/panic completion retires the vertex. Only construction completing after the shutdown context ends gets one separate, fixed five-second best-effort cleanup attempt. This budget has no configuration option and does not apply to normal teardown calls. No ordinary skipped or still-running callback receives that new budget.
+Constructors run only after `Finalize`, so the only graph that ever executes is a validated one, and no registration helper can trigger construction as a side effect. `Resolve` belongs after `Finalize` and an override before it: `credo.Override()` replaces a binding while no constructor has run ([Ownership through the component registry](#ownership-through-the-component-registry)). There is no general early `Resolve`/`Peek`; the non-resolving `Has[T]` is the registration phase's one read, a snapshot that never constructs and reserves nothing. There is no factory registration: a constructor's dependencies are its parameters, and a constructor that captures `app.Resolve` is unsupported ([ADR-004](004-dependency-injection-and-infra.md)).
 
-Keep `Shutdown(ctx) error`; failures expose `*credo.LifecycleError` ([ADR-024](024-lifecycle-components.md#one-error)), a deterministic immutable snapshot naming each component that failed, panicked, was abandoned or was kept open, with its tier, phase, blockers and timing, plus `Unwrap() []error`; it generalizes the `*credo.DIShutdownError` this decision first introduced. `*credo.DIPanicError` retains type, phase, original value and stack, and unwraps error-valued panics. Late completion is logged and cannot mutate the returned report. Stop hooks capture dependencies; resolving from them is unsupported. A stopping-state Debug diagnostic must not misclassify active HTTP work as a hook violation.
+### Terminal construction
 
-## Sequential bootstrap and three error phases
+Construction completes once per singleton with one result — value, error or panic — shared by every waiter and never retried automatically. A panic is recovered on the goroutine that ran the constructor and returned as `*credo.DIPanicError`, with the type, the phase, the original value and the stack captured where it panicked; it unwraps an error-valued panic, and `MustResolve` panics with that error as its payload.
 
-### Problem
+### Closing begins at the internal tier
 
-Every DI and feature registration API was safe for concurrent use and checked its phase at runtime, and four notions of "closed" overlapped beside the lifecycle state: the App's `frozen` flag and `prepMu`, `installFeature`'s second `checkFrozen` under `prepMu`, and the container's `frozen`, `sealed` and `closing`. The concurrency was paid for, unevenly, and used by nobody. `store.Register` ran a preflight, a reservation, a second preflight inside it, a network ping and a commit, and adopted the registry when it lost a creation race; `worker` asked `CanProvideValue` about a type it never registers, only to learn whether the container was still open, and adopted a pool that a racing call created; route and hook registration, meanwhile, were not synchronized at all. Bootstrap was sequential in practice, and no document said so. Ordering mistakes surfaced as runtime panics that the five-step summary (provide, `Finalize`, resolve, routes, run) did not predict: a worker registration must precede `Finalize` while the controllers beside it are resolved after it, and a readiness check built from a resolved value must follow `UseHealth`, so a bootstrap written in the natural order — provide, routes, workers, run — met two panics at once.
+The container enters closing when the drain reaches the internal tier ([ADR-024](024-lifecycle-components.md#two-tiers), [lifecycle spec](../specs/lifecycle.md#shutdown-in-tiers)), not when `Shutdown` is called, so the HTTP drain, the ingress tier and the internal stop hooks still see a live container. From then on resolution — a cached result, and a delivery that races teardown, included — fails with an error wrapping the sentinel `credo.ErrDIClosed`, and an instance whose construction completes after closing is still tracked and torn down. Stop hooks take their dependencies at registration; resolving from them is unsupported, and the Debug diagnostic for a resolve during the drain does not call it a hook violation, since an in-flight request may legitimately resolve.
 
-### Decision
+### Dependency-ordered, bounded teardown
 
-**The contract.** Bootstrap is sequential: registration calls come from the goroutine that builds the App, before it runs, and are not safe for concurrent use. The root package documentation, this ADR and the [bootstrap spec](../specs/bootstrap-and-di-lifecycle.md) state it.
+Teardown follows the static dependency graph — constructor parameters, aliases and collection edges, constructor and value bindings alike — consumers before the dependencies they were built from, with reverse registration order where the graph does not decide. A pending build blocks its dependencies while independent ready vertices proceed, and a built value that is not a component is transparent, so ordering survives intermediate services. Each teardown gets one attempt under the one shared drain deadline, waited for on a helper goroutine; one that misses the deadline is abandoned and keeps its dependencies open, because nothing may close a database under a component that may still use it. There is no out-of-order fallback: a blocked dependency is reported with its blockers. The [container spec](../specs/container.md#shutdown) and the [lifecycle spec](../specs/lifecycle.md#shutdown-in-tiers) state the rules.
 
-**The documented order** names every satellite:
+### One late attempt
 
-1. configuration (`credo.New`, or `credo.WithRawConfig` over `config.Load`);
-2. `Provide` and `ProvideValue`;
-3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, stores, `Manage`;
-4. `Finalize`;
-5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
-6. `Run`.
+An instance whose construction completes after the drain deadline would otherwise never be torn down, so it alone gets one separate, fixed five-second best-effort cleanup attempt, on a helper goroutine with its own deadline, logged and never reported. It has no configuration option and is never granted to an ordinary teardown that missed the deadline; it is best effort because the process may exit once `Shutdown` returns.
 
-There is no resolve-then-provide step. A value that needs a resolved dependency and I/O to exist is a component whose `Start` does that work ([ADR-024](024-lifecycle-components.md)), not a late registration. `credo.New()`, routes and `Run()` stay the minimal shape ([ADR-001](001-framework-identity-and-goals.md)).
+### One immutable report
 
-**Three error phases** extend the package documentation's "Panics and Errors":
+`Shutdown` keeps returning `error`. A failed or incomplete start or drain is one `*credo.LifecycleError` ([ADR-024](024-lifecycle-components.md#one-error)): a deterministic snapshot taken at the boundary, which a call returning later only logs and never mutates, with `Unwrap() []error` over every failure and the context cause, so `errors.Is` and `errors.AsType` work through App-level joins.
 
-| Phase | Reports | How |
-| --- | --- | --- |
-| Registration | Misuse known at the call site: a constructor of the wrong shape, a duplicate binding, a misused registration option, a call in the wrong phase | Panics with the call site's message; registration performs no I/O |
-| `Finalize` | What only the whole graph reveals: missing dependencies, each with its whole path (`OrderService → PaymentClient → *http.Client (not registered)`), cycles, and an internal component that depends on an ingress one | Returns the errors joined in registration order |
-| `Start` | I/O: a store's ping, i18n catalog reads, a component's `Start` | Returns the error; the start rolls back ([ADR-024](024-lifecycle-components.md)) |
+### Sequential bootstrap and three error phases
 
-Consequently `Provide`, `ProvideValue`, `Alias` and `BindMany` return nothing and panic on misuse, a misused registration option included, and `Resolve` before `Finalize` panics. A DI registration or a `Manage` call after `Finalize` panics, as does any registration after the App is prepared or shut down, each with the call site's message. A component's `Start` runs in the start phase, where its error rolls the start back.
+**The contract.** Bootstrap is sequential: registration calls come from the goroutine that builds the App, before it runs, and are not safe for concurrent use; each checks once that it is in its phase, and an application that registers from several goroutines serializes the calls itself. The root package documentation and the [container spec](../specs/container.md#sequential-bootstrap) state it.
 
-`store.Register`, `UseI18n` and the worker registrations follow the table: they return nothing, panic on misuse, and leave the store's ping, the catalog reads and a provided worker's construction to the start phase.
+**The documented order** gives every DI, feature and component registration its place — configuration, the application's bindings, feature mounts and component registrations, `Finalize`, then resolution and routes, then `Run` — so that a bootstrap written by following it meets no ordering panic ([container spec](../specs/container.md#documented-order)). There is no resolve-then-provide step: a value that needs a resolved dependency and I/O to exist is a component whose `Start` does that work ([ADR-024](024-lifecycle-components.md)), not a late registration. `credo.New()`, routes and `Run()` stay the minimal shape ([ADR-001](001-framework-identity-and-goals.md)).
+
+**Three error phases.** Every mistake has one phase: registration panics at the line that misused it and performs no I/O; `Finalize` returns what only the whole graph reveals, joined in registration order; the start phase returns the I/O errors — a component's `Start`, a store's ping, the i18n catalog reads — and rolls back ([container spec](../specs/container.md#three-error-phases)). Registration calls therefore return nothing, `store.Register`, `UseI18n` and the worker registrations included.
 
 **Messages are part of the API.** Every error and panic of the three phases names what failed — the component, binding or call — the phase and the remedy: a missing dependency with its path, an internal component with the ingress path it depends on and both fixes, `ServeHTTP`'s refusal with `App.Start` and `testutil.Start`, a misused option with the call that misused it, two holders of one resource that disagree on its owner or its teardown with both bindings and the remedies, a failed start with each component's phase and outcome. The test that triggers one asserts those parts of its message, so a message changes only on purpose.
 
-**Unchanged.** The contract covers registration, not the running App. After `Finalize`, `Resolve` stays safe for concurrent use: first resolutions of one singleton share one construction, and a resolution that races the drain returns an error wrapping `ErrDIClosed`. The one-time preparation that concurrent first `ServeHTTP` calls share stays synchronized: it belongs to the running App, not to registration. `Finalize` stays the DI phase boundary, and bootstrap `Shutdown` from `building` stays accepted.
+**What stays concurrent.** The contract covers registration, not the running App: after `Finalize`, `Resolve` is safe for concurrent use, and the one-time preparation that concurrent first `ServeHTTP` calls share is synchronized.
 
-### Removes
-
-- the statement, and the machinery, that registration is safe for concurrent use: `installFeature`'s double check around `prepMu`, and the container's freeze flags as public states;
-- the machinery whose only purpose was concurrent coordination through the container: `ensureRegistry`/`adoptRegistry` and `store.Register`'s reservation, the worker package's `registrationProbe` and `ensurePool`/`adoptPool`, and `CanProvideValue` and `AdoptValue`, of which no framework caller remained;
-- the "not finalized" error of `Resolve`, and the errors the registration calls return;
-- the tests of concurrent registration, which are deleted rather than loosened.
-
-### Rejected
-
-- **Keeping the concurrent-registration contract.** It defends a bootstrap nobody performs, unevenly — route and hook registration were never covered — and the cost of dropping it is that an application registering from several goroutines must serialize; none is known.
-- **A `Builder → Build() → App` type split.** Its own gain is that `Resolve` on the builder and `Provide` on the built App become compile errors; nothing else moves to compile time, because handlers close over resolved services and routes therefore stay on the App. The price is a second type to learn, a `credo.New()` shortcut that keeps the old shape alive beside the new one, and module helpers whose two halves take two different types. With framework infrastructure out of the container the DI surface on the App is seven methods and `Finalize` ([ADR-004](004-dependency-injection-and-infra.md)), which does not justify a second type; the split is revisited only if the App remains a hub for reasons other than DI.
-- **A registration window after `Finalize`** — registering workers, stores or other components once values have been resolved. It reopens the ordering problem this section closes; a value that needs resolved dependencies is a component whose `Start` does the work, and a DI-provided worker is registered before `Finalize` in its provided form.
-
-## Ownership through the component registry
-
-### Problem
-
-Ownership was decided in three places: the container closed a bound `Shutdowner`; `store.Register` kept a ledger of resource identities with its own caller-owned option; and `AdoptValue` and protected bindings let an integration take ownership of a value the application had bound, at the price of defending that value against `Replace`, which in turn handed a superseded instance and its cleanup back to the caller. A resource several bindings hold — one pointer under a concrete binding and an adapter's interface view — was shut down once per holder, the first time while consumers of another holder could still run.
-
-### Decision
+### Ownership through the component registry
 
 Ownership is decided where a value is registered, and the kernel's component registry holds it ([ADR-024](024-lifecycle-components.md)):
 
-- A DI singleton the App owns is a component when it has `Shutdown`; a resource whose teardown is `Close` is one through `credo.Closer()`; a value or constructor handed to `Manage` is one by registration. The App owns what it builds and what it is given, unless `credo.Borrowed()` on `ProvideValue` leaves starting and shutting down to the caller ([ADR-004](004-dependency-injection-and-infra.md)).
-- Within one App, the registry keys components by resource identity: one resource has one teardown, run once, after the consumers of every holder. The holders that have a teardown agree on its kind — `Shutdown`, or `Close` through `credo.Closer()` — and the one registered first runs it; a borrowed resource is torn down through none of them. `store`'s former identity ledger became this rule, with its refusal of mixed ownership.
+- The App owns what it builds and what it is given, unless `credo.Borrowed()` on `ProvideValue` leaves starting and shutting down to the caller; which bindings are components is [ADR-024](024-lifecycle-components.md#registration-and-discovery)'s rule.
+- Within one App the registry keys components by resource identity, so one resource has one teardown, run once, after the consumers of every holder, and holders that disagree on its owner or on its kind of teardown are refused ([container spec](../specs/container.md#resource-identity-and-teardown)).
 - Nothing framework-owned is bound in the container, so nothing is adopted or protected. A store registration names a binding by type and the start phase builds it once, after `Finalize` and every override ([ADR-015](015-data-access.md#registration)); the worker supervisor is not bound at all ([ADR-023](023-worker-system.md)).
-- `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built, and the ownership transfer the former `Replace` performed has nothing left to transfer: the replaced value never becomes the App's, and whoever built it releases it.
+- `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built: the replaced value never becomes the App's, and whoever built it releases it.
 
-Teardown keeps this ADR's mechanics, now stated for every component in [ADR-024](024-lifecycle-components.md): the Kahn order over the static graph with reverse registration as the tie-break, one bounded attempt per component under the shared deadline, an abandoned teardown that keeps its dependencies open and is reported, panic isolation, the single fixed five-second late attempt for a construction completing after the deadline, and one immutable report that unwraps its causes, `*credo.LifecycleError`. `ErrDIClosed` and `DIPanicError` for construction are unchanged; the closing boundary is the start of the internal tier.
+Every component is torn down by the rules above ([Dependency-ordered, bounded teardown](#dependency-ordered-bounded-teardown)), once per resource.
 
-### Removes
+### Adaptation
 
-`AdoptValue` and its registration-time adoption; `Replace`, `MustReplace` and the ownership they transfer; protected bindings; `store.Register`'s ledger, reservation and `WithCallerOwnedLifecycle`; DI-owned teardown as a mechanism separate from the components'.
+The dependency bookkeeping and the teardown diagnostics are adapted from samber/do, reviewed against [samber/do v2.1.0](https://github.com/samber/do/releases/tag/v2.1.0) (tag commit `f0d927f`); Credo adds terminal state, static-graph ownership, panic isolation and unwrapping. The [container spec](../specs/container.md#samberdo-adaptation-scope) lists what is kept and what is cut.
 
-## Decision closure
+## Rejected Alternatives
 
-G1/G2 were accepted on 2026-09-05: reject Registry constructors during registration (the store `Registry` has since been removed), use one AdoptValue operation (removed in v0.24.0 with the protected bindings), expose ErrDIClosed/DIShutdownError/DIPanicError (`DIShutdownError` since generalized into `LifecycleError`), and use a fixed five-second late-construction cleanup wait. Their regression requirements are in the specification. These decisions closed the design gates; the DI minor implements them with the regression tests the specification requires.
-
-## Adaptation and alternatives
-
-The adaptation reference is [samber/do v2.1.0](https://github.com/samber/do/releases/tag/v2.1.0), tag commit `f0d927f`, reviewed during the design. Reuse dependency-bookkeeping and diagnostic ideas; Credo adds terminal state, static-graph ownership, panic isolation and unwrapping. The reference does not establish the upstream revision originally copied into Credo. Preserve notices and separate a known adaptation date from an unknown upstream revision.
-
-Rejected: protect-on-read before validation; bulk wait-for-builds before any cleanup; unbounded construction barriers; inline cleanup presented as a hard timeout; automatic retry after a panic; out-of-order fallback; dynamic factory graphs. Scopes, transient services, cloning and a global container remain outside this work. Read-only DI explanation is backlog, independent of OTel.
+- **A concurrent-registration contract.** It defends a bootstrap nobody performs, and a guarantee that some registration calls give and routes and hooks do not is no guarantee; without it, an application that registers from several goroutines serializes the calls itself.
+- **A `Builder → Build() → App` type split.** Its own gain is that `Resolve` on the builder and `Provide` on the built App become compile errors; nothing else moves to compile time, because handlers close over resolved services and routes therefore stay on the App. The price is a second type to learn, a `credo.New()` shortcut that keeps the old shape alive beside the new one, and module helpers whose two halves take two different types. With framework infrastructure out of the container the DI surface on the App is seven methods and `Finalize` ([ADR-004](004-dependency-injection-and-infra.md)), which does not justify a second type; the split is revisited only if the App remains a hub for reasons other than DI.
+- **A registration window after `Finalize`** — registering workers, stores or other components once values have been resolved. It reopens the ordering problem the documented order closes; a value that needs resolved dependencies is a component whose `Start` does the work, and a DI-provided worker is registered before `Finalize` in its provided form.
+- **A general early `Resolve`/`Peek` during registration, or protection on every read.** It would run constructors against an unvalidated graph, or freeze an invalid binding before validation. `Has` answers the composition root's presence question, and no framework registration reads the container.
+- **Reverse registration order alone for teardown.** It ignores the dependency graph: a service registered before its database would close after it.
+- **A bulk wait-for-builds phase before any cleanup.** One runaway constructor would consume the budget before any independent cleanup ran; a pending build is a vertex of the ordered pass instead.
+- **An unbounded construction barrier.** One runaway constructor would block process exit.
+- **Running the late cleanup inline on the goroutine that completed the construction**, presented as a hard timeout. A `Shutdown` that ignores its context would block that goroutine forever, so the bound could only be cooperative.
+- **Automatic retry after a constructor panic.** Construction is terminal (Terminal construction).
+- **samber/do v2's out-of-order fallback**, which shuts down everything left when no vertex is ready. It closes a dependency underneath a live consumer; a blocked dependency is reported with its blockers instead.
+- **samber/do v2.1.0's `ShutdownReport` shape.** It implements `error` without unwrapping, so adopting it would hide the causes from `errors.Is` and typed inspection.
 
 ## Consequences
 
-Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code. The change landed as coordinated changes across root/internal DI, store, worker, testutil and lifecycle tests in one DI minor. Consumer migration adds an error-checked Finalize before constructor resolution; no one-minor announcement or v1-batch deferral was required.
+Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code.
 
-With sequential bootstrap, a contract that was true in practice becomes a promise, and registration loses its synchronization instead of gaining more. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports the I/O — a component's `Start`, a store's ping and the i18n catalog reads. Applications migrate by dropping the error checks of registration calls, `store.Register`, `UseI18n` and the worker registrations included, by replacing the `Must*` registration twins with the plain calls, and by moving any registration that follows `Finalize` before it.
+Sequential bootstrap is a promise about what every bootstrap does, and registration carries no synchronization. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports the I/O — a component's `Start`, a store's ping and the i18n catalog reads.
+
+The cost: the composition root calls an error-checked `Finalize` before its first `Resolve`, an application that registers from several goroutines serializes the calls itself, and a value that needs resolved dependencies and I/O is written as a component rather than registered late.

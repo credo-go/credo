@@ -1,10 +1,10 @@
 # Lifecycle Spec
 
-> Status: **Implemented** (Phase 2.5, updated Phase 3+); reload surface **Implemented** (Phase 3.8); lifecycle components **Implemented** (v0.24.0) **ADRs**: [005-configuration-architecture](../adr/005-configuration-architecture.md), [006-application-lifecycle](../adr/006-application-lifecycle.md), [020-reload-and-partial-config-reload](../adr/020-reload-and-partial-config-reload.md), [024-lifecycle-components](../adr/024-lifecycle-components.md)
+**Status:** Implemented (beta) **Package:** root (`lifecycle*.go`, `component.go`, `prepare.go`, `server.go`, `reload.go`, `tls_rotation.go`), `internal/di/` **ADR:** [ADR-006](../adr/006-application-lifecycle.md), [ADR-024](../adr/024-lifecycle-components.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md), [ADR-016](../adr/016-health-checks.md) **Guide:** [Deployment guide](../guides/deployment.md), [Dependency injection guide](../guides/dependency-injection.md#shutdown-and-lifecycle)
 
 ## Overview
 
-Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining.
+Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining. This spec owns the states, preparation, the serve entry points, TLS and server construction, the start phase, the drain, the lifecycle hooks, reload's mechanics and the registration guards. The DI surface, the registration options and resource identity are in the [container spec](container.md), what `/ready` aggregates is in the [health spec](health.md#readiness-aggregation), and the `Stager`/`Reloader` configuration side of reload is in the [config spec](config.md).
 
 ## State Machine
 
@@ -16,7 +16,7 @@ Credo uses a state machine to govern the application lifecycle. This prevents un
       | (prepare; refused    |    | shutdown requested ─ interrupt,       | serve error / Shutdown  |
       |  while the App has   |    |                      rollback ────────┼──── drain in tiers ─────┤
       |  anything to start)  |    |                                       └─────────────────────────┘
-      |                      └─ prepare / preflight / listen error → building (retryable*)
+      |                      └─ prepare / preflight / listen error → building (retryable, except a stored preparation failure)
       |
       └── Shutdown() in building ── drain with no servers (bootstrap teardown) ──────────────────────┘
 
@@ -27,13 +27,13 @@ Failures split by how far startup got. A **pre-session** failure (preparation, T
 
 ### States
 
-| State | Value | Description |
-| --- | --- | --- |
-| `building` | 0 | Initial state. Registration follows the bootstrap order ([bootstrap spec](bootstrap-and-di-lifecycle.md)) until preparation. `Shutdown` is bootstrap teardown. |
-| `starting` | 1 | The start phase: preparation, listener bind (managed serving), then the [start walk](#the-start-walk). `Shutdown` is accepted and [interrupts it](#a-shutdown-during-the-start-phase). |
-| `running` | 2 | The start walk succeeded. Managed serving accepts; after `App.Start` the App is served through `ServeHTTP` by its owner's server and `Addr()` stays nil. |
-| `stopping` | 3 | Readiness withdrawn; the [drain in tiers](#shutdown-in-tiers), or the rollback of a failed or interrupted start. |
-| `stopped` | 4 | Terminal — reached by graceful shutdown, bootstrap teardown, a failed or interrupted start, or a post-running serve error. New requests receive the 503 envelope. |
+| State | Description |
+| --- | --- |
+| `building` | Initial state. Registration follows the bootstrap order ([container spec](container.md#documented-order)) until preparation. `Shutdown` is bootstrap teardown. |
+| `starting` | The start phase: preparation, listener bind (managed serving), then the [start walk](#the-start-walk). `Shutdown` is accepted and [interrupts it](#a-shutdown-during-the-start-phase). |
+| `running` | The start walk succeeded. Managed serving accepts; after `App.Start` the App is served through `ServeHTTP` by its owner's server and `Addr()` stays nil. |
+| `stopping` | Readiness withdrawn; the [drain in tiers](#shutdown-in-tiers), or the rollback of a failed or interrupted start. |
+| `stopped` | Terminal — reached by graceful shutdown, bootstrap teardown, a failed or interrupted start, or a post-running serve error. New requests receive the 503 envelope. |
 
 `App.Start` claims the same start slot as the serve entry points, so the single-use rule covers it: a second `App.Start`, or `Run`, `RunContext` or `ServeContext` after it, returns the state error.
 
@@ -41,9 +41,9 @@ Failures split by how far startup got. A **pre-session** failure (preparation, T
 
 Two separate flags exist because `ServeHTTP` and `Run` serve different purposes:
 
-- **`frozen` (atomic.Bool)**: The HTTP write gate. Set at preparation admission — the first direct `ServeHTTP` request or a managed serve entry point — and at bootstrap-shutdown admission. Prevents route/middleware/hook/feature registration after the handler chain is (about to be) built or the App is being torn down. An explicit DI-only `Finalize` does **not** set it.
+- **`frozen`**: The HTTP write gate. Set at preparation admission — the first direct `ServeHTTP` request or a managed serve entry point — and at bootstrap-shutdown admission. Prevents route/middleware/hook/feature registration after the handler chain is (about to be) built or the App is being torn down. An explicit DI-only `Finalize` does **not** set it.
 
-- **`state` (atomic.Uint32)**: Tracks the lifecycle. Only the managed serve entry points and `App.Start` transition to `running`. A user who calls `ServeHTTP` directly without `App.Start` (with their own `*http.Server` or `httptest`) stays in `building` — possible only for an App with nothing to start ([the start gate](#the-start-gate-on-servehttp)) — manages their own server's lifecycle, and uses `Shutdown` in `building` to release what bootstrap built.
+- **`state`**: Tracks the lifecycle. Only the managed serve entry points and `App.Start` transition to `running`. A user who calls `ServeHTTP` directly without `App.Start` (with their own `*http.Server` or `httptest`) stays in `building` — possible only for an App with nothing to start ([the start gate](#the-start-gate-on-servehttp)) — manages their own server's lifecycle, and uses `Shutdown` in `building` to release what bootstrap built.
 
 This separation allows:
 
@@ -54,12 +54,12 @@ This separation allows:
 
 ## Preparation
 
-Every serve path reaches the same validated runtime model through one shared preparation step — `Finalize` → `compile` → publish — whose result (handler or error) is stored exactly once in `app.prep` (an atomic pointer with a fast path; `prepMu` serializes the slow path):
+Every serve path reaches the same validated runtime model through one shared preparation step — `Finalize` → `compile` → publish — whose result (handler or error) is stored exactly once (an atomic fast path; a lock serializes the slow path):
 
-- **Admission.** Preparation is admitted only while the state is below `stopping`; admission sets `frozen`. A preparation that loses to shutdown before publishing discards its result. Once stored, the result is final: a DI finalize error or a compile panic (middleware construction included) is recorded as a terminal preparation failure, logged with its stack (`credo: preparation failed`), and never retried.
-- **Managed serving** (`Run`, `RunContext`, `ServeContext`) and `App.Start` claim `building → starting` first, then prepare. A preparation failure rolls the state back to `building` and returns the error (`credo: Run: prepare: …`); a later serve attempt returns the same stored error without executing a partly compiled handler.
+- **Admission.** Preparation is admitted only while the state is below `stopping`; admission sets `frozen`. A preparation that loses to shutdown before publishing discards its result. Once stored, the result is final: a DI finalize error or a compile panic (middleware construction included) is recorded as a terminal preparation failure and never retried. A compile panic is also logged once with its stack (`credo: preparation failed`); a DI finalize error is reported only through the stored error.
+- **Managed serving** (`Run`, `RunContext`, `ServeContext`) and `App.Start` claim `building → starting` first, then prepare. A preparation failure rolls the state back to `building` and returns the error (`credo: Run: credo: prepare: DI finalize: …`, or `… compile panicked: …`); a later serve attempt returns the same stored error without executing a partly compiled handler.
 - **Direct `ServeHTTP`** prepares on the first request without claiming the start slot. While lifecycle admission is open it panics with the stored preparation error on every request — a graph or compile error is developer misuse under the package's panic-vs-error policy, and the stored result is what makes the panic repeatable rather than a `sync.Once` that would count a panicking call as done. An App with something to start additionally refuses to serve until its start phase has succeeded ([below](#the-start-gate-on-servehttp)).
-- **Lifecycle rejection.** `ServeHTTP` checks the state on every call, before the cached result: in `stopped`, and in `stopping` when no handler was ever prepared, the request receives the callback-free 503 below without preparing, resolving or dispatching, and the stored result is untouched. A handler prepared before the drain keeps serving during `stopping`, which is what the managed HTTP drain, readiness (`/ready` → 503 `shutting_down`) and liveness rely on.
+- **Lifecycle rejection.** `ServeHTTP` checks the state on every call, before the cached result; a request it rejects receives the [lifecycle 503](#lifecycle-rejection-503) without preparing, resolving or dispatching, and the stored result is untouched. A handler prepared before the drain keeps serving during `stopping`, which is what the managed HTTP drain, readiness (`/ready` → 503 `shutting_down`) and liveness rely on.
 
 ### The start gate on `ServeHTTP`
 
@@ -113,16 +113,17 @@ TLS is server configuration, not a serve method. When a certificate source is co
 | `server.tls.cert_file` / `server.tls.key_file` | lowest | The same paths via config. Rotated on every reload (paths re-read from the new snapshot) |
 | _(none)_ | — | Plaintext |
 
-All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is built once and reused by the serve goroutine — no double load. For the two file-based sources the key pair is served through `GetCertificate` backed by an atomic pointer: every [reload](#appreloadctx-contextcontext-error) re-reads the files and swaps the pair on success (new handshakes see the new certificate, open connections are untouched), while a failed re-read keeps the previous certificate and surfaces through the reload error. `WithTLSConfig` is never touched by reload; its owner drives rotation through their own `GetCertificate` (optionally from an `OnReload` hook).
+All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is built once and reused by the serve goroutine — no double load; a `WithTLSConfig` value is cloned, so later mutations of the caller's config do not affect serving. For the two file-based sources the key pair is served through `GetCertificate` backed by an atomic pointer: every [reload](#appreloadctx-contextcontext-error) re-reads the files and swaps the pair on success (new handshakes see the new certificate, open connections are untouched), while a failed re-read keeps the previous certificate and surfaces through the reload error. `WithTLSConfig` is never touched by reload; its owner drives rotation through their own `GetCertificate` (optionally from an `OnReload` hook).
 
-`WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
+`WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). The target reuses the request host and request URI with the TLS server's port, omitted when it is 443. It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
 
 ### Server construction and `WithHTTPServer`
 
 The `*http.Server` is built once per session. Credo maps the fields it has an opinion about and hands the rest to the caller, so the standard library gaining a field does not require a Credo release:
 
 ```
-serverConfig  →  buildServer fields  →  ErrorLog bridge  →  WithHTTPServer callback  →  (preflight) TLS chain  →  listen/serve
+preflight (TLS resolved and validated)  →  buildServer fields  →  ErrorLog bridge  →  WithHTTPServer callback
+  →  listen  →  start walk  →  TLSConfig assigned from the resolved chain  →  serve
 ```
 
 The callback runs last among the construction steps, so it is the final word on every field before it — the config keys included. Three fields are re-imposed afterwards:
@@ -184,11 +185,11 @@ An App is single-use: `New → Run → Shutdown → discard`. Once it reaches `s
 
 #### Bootstrap teardown
 
-`Shutdown` on an App that was never run cleans up whatever bootstrap registered. It claims `building → stopping` — the counterpart of the start phase's `building → starting` claim, so a concurrent start and `Shutdown` pick exactly one owner — then, under the preparation lock so no in-flight direct preparation can publish afterwards, sets `frozen` and freezes the DI container without validating it (no `Finalize`, no closing yet), and runs the [drain in tiers](#shutdown-in-tiers) with no managed servers: the ingress stop hooks and components, the reload barrier, the internal stop hooks and components, `stopped`. Teardown works even when `Finalize` was never called or failed: the cleanup graph is derived from the frozen registrations and the instances actually built, so an invalid unused registration cannot prevent cleanup of independent live resources. This is the cleanup path for a composition root that fails after registering resources and for tests that only used `ServeHTTP`. An external `http.Server` or `httptest.Server` is still its owner's responsibility: stop its admission and drain its active requests before calling `Shutdown`; the 503 below is not a substitute for that drain.
+`Shutdown` on an App that was never run cleans up whatever bootstrap registered. It claims `building → stopping` — the counterpart of the start phase's `building → starting` claim, so a concurrent start and `Shutdown` pick exactly one owner — then, under the preparation lock so no in-flight direct preparation can publish afterwards, sets `frozen` and freezes the DI container without validating it (no `Finalize`, no closing yet), and runs the [drain in tiers](#shutdown-in-tiers) with no managed servers: the ingress stop hooks and components, the reload barrier, the internal stop hooks and components, `stopped`. Teardown works even when `Finalize` was never called or failed: the cleanup graph is derived from the frozen registrations and the instances actually built, so an invalid unused registration cannot prevent cleanup of independent live resources. The App ends `stopped` even when the teardown is incomplete. This is the cleanup path for a composition root that fails after registering resources and for tests that only used `ServeHTTP`. An external `http.Server` or `httptest.Server` is still its owner's responsibility: stop its admission and drain its active requests before calling `Shutdown`; the 503 below is not a substitute for that drain.
 
 #### Lifecycle rejection (503)
 
-A request that `ServeHTTP` rejects for lifecycle reasons — the App is `stopped`, or `stopping` without a prepared handler (including a preparation that lost publication to shutdown) or without a successful start of an App that has something to start — receives HTTP 503 with the framework's default error envelope, `{"success":false,"error":{"code":"service_unavailable","message":"Service Unavailable"}}` (`Content-Type: application/json`, precomputed body, status and headers only for HEAD), and a Debug log `credo: request rejected: app is not serving`. The branch is shutdown-safe and callback-free by construction: it does not prepare, resolve, dispatch, run user middleware or status handlers, or invoke a custom error renderer, message-key resolver, locale detector, access-log filter or JSON options — any of which may capture a component that has already been shut down. This is a runtime availability outcome, independent of `WithoutRecover`, and it does not reopen the single-use App; preparation and configuration failures keep the stored developer-error contract above.
+A request that `ServeHTTP` rejects for lifecycle reasons — the App is `stopped`, or `stopping` without a prepared handler (including a preparation that lost publication to shutdown) or without a successful start of an App that has something to start — receives HTTP 503 with the framework's default error envelope, `{"success":false,"error":{"code":"service_unavailable","message":"Service Unavailable"}}` (`Content-Type: application/json; charset=utf-8`, precomputed body, status and headers only for HEAD), and a Debug log `credo: request rejected: app is not serving`. The branch is shutdown-safe and callback-free by construction: it does not prepare, resolve, dispatch, run user middleware or status handlers, or invoke a custom error renderer, message-key resolver, locale detector, access-log filter or JSON options — any of which may capture a component that has already been shut down. It is written before the feature executor runs, so no request ID, compression or access-log record applies to it. This is a runtime availability outcome, independent of `WithoutRecover`, and it does not reopen the single-use App; preparation and configuration failures keep the stored developer-error contract above.
 
 ### `app.Reload(ctx context.Context) error`
 
@@ -200,11 +201,11 @@ A `RawConfig` that implements only `config.Reloader` has no candidate stage: its
 
 ### `app.OnReload(fn func(ctx context.Context) error)`
 
-Registers a reload hook. Hooks run in **FIFO** order at the end of every reload, after the new snapshot is visible and typed subscribers have applied their sections, with the reload context (`WithReloadTimeout` for the signal path, the caller's for `Reload`). An error or recovered panic is joined into the `Reload` result and does not skip later hooks. Typical uses: re-open a log file after rotation, refresh an allowlist, drive rotation for a `WithTLSConfig` certificate. Must be called before `compile()` (panics if frozen); a nil hook panics.
+Registers a reload hook. Hooks run in **FIFO** order at the end of every reload, after the new snapshot is visible and typed subscribers have applied their sections, with the reload context (`WithReloadTimeout` for the signal path, the caller's for `Reload`). An error or recovered panic is joined into the `Reload` result and does not skip later hooks. Typical uses: re-open a log file after rotation, refresh an allowlist, drive rotation for a `WithTLSConfig` certificate. Must be called before preparation (panics once frozen); a nil hook panics.
 
 ### `app.OnConfigChange[T](key string, fn func(ctx context.Context, next T) error)`
 
-Generic method (Go 1.27 concrete-type generic methods, as `Provide[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before `compile()`; a nil hook panics; registering one when the app's `RawConfig` implements neither `config.Stager` nor `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
+Generic method (Go 1.27 concrete-type generic methods, as `Provide[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before preparation; a nil hook panics; registering one when the app's `RawConfig` implements neither `config.Stager` nor `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
 
 ### `credo.WithReloadTimeout(d time.Duration) Option`
 
@@ -216,23 +217,53 @@ Construction option (passed to `New`) setting the graceful-shutdown deadline for
 
 ### `credo.WithTLSFiles(certFile, keyFile string) Option`
 
-Construction option configuring HTTPS from a PEM certificate/key file pair. When set, `Run`/`RunContext` serve TLS. Performs no I/O at construction — the pair is loaded and validated at preflight. Overrides the `server.tls.cert_file` / `server.tls.key_file` config keys; shadowed by `WithTLSConfig`. An empty cert or key path is a preflight error, not a silent fall-back to the config keys or plaintext. See [TLS](#tls).
+Construction option configuring HTTPS from a PEM certificate/key file pair. Its config-key equivalent is `server.tls.cert_file` / `server.tls.key_file`, which it overrides. Performs no I/O at construction: the pair is loaded and validated at preflight. Precedence and the empty-path rule: [TLS](#tls).
 
 ### `credo.WithTLSConfig(cfg *tls.Config) Option`
 
-Construction option configuring HTTPS from a fully-formed `*tls.Config` — the full `crypto/tls` surface (mTLS, SNI, custom versions/cipher suites, ALPN, `GetCertificate` reload). Highest TLS precedence; when set, `WithTLSFiles` and `server.tls.*` are ignored. The config must carry a certificate source (validated at preflight) and is cloned before use. A nil config is a preflight error, not a silent fall-back to the lower-precedence sources. See [TLS](#tls).
+Construction option configuring HTTPS from a fully-formed `*tls.Config` — the full `crypto/tls` surface (mTLS, SNI, custom versions/cipher suites, ALPN, `GetCertificate` reload). It has the highest TLS precedence and no config-key equivalent. The certificate-source check, the clone and the nil rule: [TLS](#tls).
 
 ### `credo.WithHTTPRedirect(addr string) Option`
 
-Construction option running a second, plaintext listener on `addr` (e.g. `":80"`) that permanently redirects every request to its HTTPS equivalent — 301 for GET/HEAD, 308 for other methods. Requires TLS (preflight fails fast otherwise); binds, serves, and drains with the main server, and a runtime failure of the listener tears the app down like a main-listener failure. Does not apply to `ServeContext`. See [TLS](#tls).
+Construction option running the redirect-only plaintext listener on `addr` (e.g. `":80"`). It requires TLS and does not apply to `ServeContext`; the redirect and its listener's lifecycle: [TLS](#tls).
 
 ### `credo.WithHTTPServer(fn func(*http.Server)) Option`
 
-Construction option registering a callback that receives the built `*http.Server`, keeping the whole `net/http` surface reachable — `Protocols` (including H2C), `HTTP2`, `ConnState`, `BaseContext`, `ConnContext`, `DisableClientPriority` — without an option per field. It runs once, after every framework-set field, and is the last word on all of them; `Handler`, `Addr`, and `TLSConfig` are re-imposed afterwards. The lifecycle methods (`Serve`, `ServeTLS`, `Shutdown`, `Close`, `RegisterOnShutdown`) are framework-owned and the pointer must not be retained past the call. The `WithHTTPRedirect` listener is excluded. A nil callback is a no-op. See [Server construction and `WithHTTPServer`](#server-construction-and-withhttpserver).
+Construction option registering a callback that receives the built `*http.Server`, keeping the whole `net/http` surface reachable — `Protocols` (including H2C), `HTTP2`, `ConnState`, `BaseContext`, `ConnContext`, `DisableClientPriority` — without an option per field. A nil callback is a no-op. When it runs, the fields re-imposed after it and what it must not do: [Server construction and `WithHTTPServer`](#server-construction-and-withhttpserver).
 
 ## Components and the Start Phase
 
-The component contract — the type and its capabilities, discovery, resource identity, the registration options, the tiers — is [ADR-024](../adr/024-lifecycle-components.md); the options' DI surface is the [container spec](container.md). This section states what the lifecycle does with components.
+This section states what the lifecycle does with components. Which bindings are components, the registration options and resource identity are in the [container spec](container.md#registration-options); [ADR-024](../adr/024-lifecycle-components.md) records why.
+
+### Component types
+
+```go
+// Component is a value whose teardown the App owns.
+type Component interface {
+    Shutdown(ctx context.Context) error
+}
+
+// Optional capabilities, planned from the binding's type.
+type Starter interface {
+    Start(ctx context.Context) error
+}
+
+type Readier interface {
+    Ready(ctx context.Context) error
+}
+
+// ResourceIdentifier names the resource a value holds; read from the value,
+// not the binding's type.
+type ResourceIdentifier interface {
+    ResourceIdentity() any
+}
+
+// Tier is a component's drain tier: TierIngress stops first, concurrently
+// with the HTTP drain; TierInternal, the default, stops after it.
+type Tier uint8
+```
+
+A value the App owns is a component when it has `Shutdown` (a DI singleton whose binding's type shows the method or whose built value has it, or a value or constructor handed to [`app.Manage`](#appmanagev-opts)), or when its binding carries `credo.Closer()`. `Start`, `Ready` and the tier are planned from the binding's type at registration ([The start walk](#the-start-walk)); a capability absent from it has its documented default — no start step, no readiness entry. `Component` never gains a method; it grows through optional capabilities. The zero `Tier` is unset and means the registration's default. The zero `Tier` encodes as the empty text, `TierIngress` and `TierInternal` as `"ingress"` and `"internal"`; any other value or text is an encoding error.
 
 ### `app.Start(ctx context.Context) error`
 
@@ -244,7 +275,7 @@ Whoever serves the App through `ServeHTTP` owns that server's admission and drai
 
 ### `app.Manage(v, opts...)`
 
-Adds a component that is not a DI binding: a value with `Shutdown`, or a constructor over DI parameters — `func(deps...) C` or `func(deps...) (C, error)` — that the start walk builds and that never becomes a binding. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. `credo.Named("…")` names it (default: its type name; a duplicate panics), and `credo.Ingress()` places it in the ingress tier. A value has no edges and stops in reverse registration order within its tier; a constructor has its parameters' edges. A value without `Shutdown`, an App handed to its own `Manage`, a call after `Finalize` or shutdown, a value whose resource a `ProvideValue` binding holds, and a resource handed to `Manage` twice panic ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)).
+Adds a component that is not a DI binding: a value with `Shutdown`, or a constructor over DI parameters — `func(deps...) C` or `func(deps...) (C, error)` — that the start walk builds and that never becomes a binding. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. `credo.Named("…")` names it (default: its type name; a duplicate panics), and `credo.Ingress()` places it in the ingress tier. A value has no edges and stops in reverse registration order within its tier; a constructor has its parameters' edges. A value without `Shutdown`, an App handed to its own `Manage`, a call after `Finalize` or shutdown, a value whose resource a `ProvideValue` binding holds, and a resource handed to `Manage` twice panic ([container spec](container.md#resource-identity-and-teardown)).
 
 ### Contexts
 
@@ -254,7 +285,7 @@ Every context the lifecycle hands out lives as long as its call:
 | --- | --- |
 | `Start`, `OnStart` hook | Cancelled when the call returns, or earlier when a shutdown is requested during the start phase |
 | `Shutdown`, `OnStop` hook, `Close(ctx)` of a `credo.Closer()` binding | The drain context: its deadline is the [drain deadline](#drain-context-derivation) |
-| `Ready` | The probe request's context |
+| `Ready` | The probe request's values without its cancellation, with `CheckTimeout` as its deadline ([health spec](health.md#check-execution)) |
 
 Work that outlives `Start` runs on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, which `Shutdown` calls; `Shutdown` is the one stop signal. A loop that keeps `Start`'s context stops as soon as `Start` returns. The session context the App keeps internally is observed only by reload ([`app.Reload`](#appreloadctx-contextcontext-error)).
 
@@ -273,7 +304,7 @@ Work that outlives `Start` runs on a goroutine whose context derives from `conte
 ```
 
 - A component's `Start` runs after the `Start` of every component it depends on. No dependency crosses the tiers backwards: an internal component that depends on an ingress one fails `Finalize` (or, for a component found only on its built value, its construction) with the path and both remedies, so the order holds across the tiers. An ingress component that depends on an internal one starts after it.
-- `Start`, `Ready` and the tier are planned from the binding's type. A `Start` that only the built value has is never called, and a type with only `Start` is not a component and is never started. A value whose binding's type shows both `Start` and `Shutdown` is started exactly once, by the walk — an `OnStart` hook that also starts it starts it a second time. Holders that share a resource identity start it once, through the first holder the walk reaches whose binding plans a `Start`; a resource that any holder borrows is not started.
+- `Start`, `Ready` and the tier are planned from the binding's type. A `Start` that only the built value has is never called, and a type with only `Start` is not a component and is never started. A value whose binding's type shows both `Start` and `Shutdown` is started exactly once, by the walk — an `OnStart` hook that also starts it starts it a second time. A value behind an interface that hides `Start` is not started by the walk, so an `OnStart` hook that starts it starts it once; to have the walk start it, provide the concrete type and `Alias` the interface the application uses. Holders that share a resource identity start it once, through the first holder the walk reaches whose binding plans a `Start`; a resource that any holder borrows is not started.
 - A component with neither `Start` nor `Ready` stays lazy: it is built when first resolved — during a request included — and shut down by the drain only if built.
 - A framework start step that fails, a constructor error in step 1 or 3, and a failed start step are start failures. A failed start step leaves the value it was given to the rollback, which shuts it down unless it is borrowed: the step opened nothing the value had not. `Start` returns once the component is usable; it never blocks for the component's lifetime.
 - Under managed serving the listener is bound before the walk, so `app.Addr()` is available in `Start` and in start hooks; it is nil under `App.Start`.
@@ -306,41 +337,42 @@ In every case nothing further starts, the rollback stops what was built in rever
    a. the HTTP drain (the redirect listener closes before the main server)
    b. the ingress tier: ingress OnStop hooks LIFO, then ingress components; components that
       no edge orders stop concurrently with each other, edges are respected
-4. Wait for an in-flight Reload, keeping the reload slot (reported at the deadline)
+4. Wait for an in-flight Reload, keeping the reload slot. At the deadline: log
+   "credo: reload still in flight at the shutdown deadline; proceeding with
+   teardown" at Error, join "credo: shutdown: reload still in flight" (wrapping
+   the context error) into the result, and proceed with teardown
 5. The internal tier: internal OnStop hooks LIFO, then internal components one at a time in
    reverse dependency order, values with no edges in reverse registration order
 6. Clear bound address; state = stopped
 7. Return errors.Join of the HTTP drain's error, the reload's and the lifecycle error
 ```
 
-Stop hooks run before their tier's components, so a hook can still use them. The DI container enters closing when the internal components begin to stop — after the internal stop hooks, which still see a live container; a resolution after it returns an error wrapping `ErrDIClosed` ([container spec](container.md#shutdown)). Bootstrap teardown runs steps 2–7 with no servers, stopping what bootstrap built, and the rollback of a failed or interrupted start runs the same tiers ([A failed start](#a-failed-start)).
+Stop hooks run before their tier's components, so a hook can still use them; a resource that is already a component stops in its tier on its own, so no `OnStop` hook bridges its teardown. The DI container enters closing when the internal components begin to stop — after the internal stop hooks, which still see a live container; a resolution after it returns an error wrapping `ErrDIClosed` ([container spec](container.md#shutdown)). Stop hooks and components capture their dependencies rather than resolve them; a resolution while the App is `stopping` is logged at Debug (`credo: Resolve during drain`). Bootstrap teardown runs steps 2–7 with no servers, stopping what bootstrap built, and the rollback of a failed or interrupted start runs the same tiers ([A failed start](#a-failed-start)).
 
 **One deadline, spent in order.** Steps 3–5 share the drain deadline. The tiers run one after another, so a long HTTP drain or ingress tier leaves less of the budget for the internal tier, and a budget spent before step 5 stops nothing of it: once the deadline has ended, no further stop hook or teardown starts, and each one left is reported abandoned, its resources left to the process exit. There is no hard barrier:
 
-- A `Shutdown`, `Close` or stop hook that has not returned at the deadline is abandoned. The dependencies of an abandoned component are not stopped — nothing closes a database under a component that may still use it — and the abandoned component and every component it kept open (`kept_open`, with `KeptOpenBy`) are reported. A call that returns later is logged, never reported.
+- A `Shutdown`, `Close` or stop hook that has not returned at the deadline is abandoned, and never retried. The dependencies of an abandoned component are not stopped — nothing closes a database under a component that may still use it — and the abandoned component and every component it kept open (`kept_open`, with `KeptOpenBy`) are reported. A result already in when the deadline ends wins the boundary: that call has completed. A call that returns later is logged, never reported.
 - A `Shutdown` that returns an error promptly is reported, and its dependencies are still stopped.
-- Every `Start`, `Shutdown` and hook is panic-isolated; a panic is reported as that component's outcome.
-- A construction still running when the drain reaches it blocks its dependencies and is shut down in order when it completes. One that completes after the deadline gets the single fixed five-second late attempt, logged and not reported — for a component its binding's type shows and for one found only on its built value alike.
+- Every `Start`, `Shutdown` and hook is panic-isolated; a panic is reported as that component's outcome, with the phases [the lifecycle error](#the-lifecycle-error) names.
+- A construction still running when the drain reaches it blocks its dependencies and is shut down in order when it completes. One that completes after the deadline gets the single fixed five-second late attempt, logged and not reported — for a component its binding's type shows and for one found only on its built value alike ([container spec](container.md#shutdown) states when a shared or borrowed resource gets none).
 
-**One teardown per resource.** Values that share a resource identity are shut down once, when the last holder retires, through the holder registered first among those that have a teardown; a borrowed resource is shut down by none of them. A holder that obtained the resource through one of its consumers does not keep that consumer open: the consumer stops first. Every other dependency holds, including one between two such groups. A value whose construction the registry failed after its constructor returned it is released in order when no other holder carries it ([ADR-024](../adr/024-lifecycle-components.md#resource-identity-one-resource-one-teardown)).
+**One teardown per resource.** Values that share a resource identity are shut down once, when the last holder retires, through the holder registered first among those that have a teardown; a borrowed resource is shut down by none of them. A holder that obtained the resource through one of its consumers does not keep that consumer open: the consumer stops first. Every other dependency holds, including one between two such groups. A value whose construction the registry failed after its constructor returned it is released in order when no other holder carries it ([container spec](container.md#resource-identity-and-teardown)).
 
 ### Background work
 
-Background work is a component: its `Start` launches the work on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, and its `Shutdown` cancels that work and waits for it ([Contexts](#contexts)). Its tier places its stop: ingress for work that enters the process — a consumer of an external queue, a scheduled job — which stops beside the HTTP drain, and internal for in-process work that handlers feed, which stops after the HTTP drain and before the components it depends on. A producer that hands work to a consumer component takes the consumer as a constructor dependency, so the producer stops first. A lifecycle `Service` abstraction with a blocking `Run(ctx)` and a restartable/start-once taxonomy is rejected: a `Start` that blocks for the component's lifetime cannot tell a started component from a running one, components are start-once, and restart remains a worker concern ([ADR-024](../adr/024-lifecycle-components.md#rejected-alternatives)).
+Background work is a component: its `Start` launches the work and its `Shutdown` cancels it and waits for it ([Contexts](#contexts)). Its tier places its stop: ingress for work that enters the process — a consumer of an external queue, registered with `credo.Ingress()`, or a scheduled job — which stops beside the HTTP drain and before the internal components it uses, and internal for in-process work that handlers feed, which stops after the HTTP drain and before the components it depends on, so a job a request enqueues during the drain is still processed. A producer that hands work to a consumer component takes the consumer as a constructor dependency, so the producer stops first.
 
-Each worker is such a component, named `worker:<name>` and added with `app.Manage` — a provided worker as a constructor over its `T`, so it starts after `T`'s component dependencies and stops before them. A scheduled worker defaults to the ingress tier and a continuous worker to the internal tier; the registration's configuration may declare the other ([worker spec](worker.md#components)).
+Each worker is such a component, named `worker:<name>`, which the worker package adds as `app.Manage` adds one — a provided worker as a constructor over its `T`, so it starts after `T`'s component dependencies and stops before them — except that a `Finalize` finding for an internal worker that depends on an ingress component names the worker's `Tier` field as the remedy. A scheduled worker defaults to the ingress tier and a continuous worker to the internal tier; the registration's configuration may declare the other ([worker spec](worker.md#components)).
 
 ### The lifecycle error
 
-A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEntry, Cause error}`, obtained with `errors.AsType[*credo.LifecycleError]` from `Run`, `RunContext`, `ServeContext`, `App.Start` and `Shutdown`. Each `LifecycleEntry` names a component — by its `credo.Named` name or its type name, a hook as `OnStart[i]` or `OnStop[i]` — with its `Tier`, its `Phase` (`PhaseStart`, or `PhaseShutdown` for the drain and for the rollback of a start), its `Outcome` (`failed`, `panicked`, `abandoned` at the deadline, or `kept_open` by an abandoned consumer, named in `KeptOpenBy`), its `Err` and its `Duration`. Only those outcomes appear: a component that started and stopped cleanly has no entry. `Cause` is the context error that ended a phase before it completed. The text reads `credo: lifecycle (cause): name (tier) phase outcome[ after d][ by …]: err; …`. It is an immutable snapshot taken at the boundary: a call returning later, or a late-construction attempt, is logged and never written back. `Unwrap() []error` exposes each failure and the cause, so `errors.Is` and `errors.As` traverse it; a panicking `Start` is a `*credo.DIPanicError` with phase `DIPanicStart`. A worker is named `worker:<name>`.
+A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEntry, Cause error}`, obtained with `errors.AsType[*credo.LifecycleError]` from `Run`, `RunContext`, `ServeContext`, `App.Start` and `Shutdown`. Each `LifecycleEntry` names a component — by its `credo.Named` name or its type name, a hook as `OnStart[i]` or `OnStop[i]` — with its `Tier`, its `Phase` (`PhaseStart`, or `PhaseShutdown` for the drain and for the rollback of a start), its `Outcome` (`failed`, `panicked`, `abandoned` at the deadline, or `kept_open` by an abandoned consumer, named in `KeptOpenBy`), its `Err` and its `Duration` (how long an abandoned call had run at the boundary, or how long a completed one took). Only those outcomes appear: a component that started and stopped cleanly has no entry, and a start or drain without such an outcome produces no lifecycle error — a successful teardown is logged at Debug with its duration, and there is no success report. `Cause` is the context error that ended a phase before it completed. The text reads `credo: lifecycle (cause): name (tier) phase outcome[ after d][ by …]: err; …`. It is an immutable snapshot taken at the boundary: a call returning later, or a late-construction attempt, is logged and never written back. `Unwrap() []error` exposes each failure and the cause, so `errors.Is` and `errors.As` traverse it. A panicking `Start` is a `*credo.DIPanicError` with phase `DIPanicStart`, and a panicking `Shutdown` or `Close` one with phase `DIPanicShutdown`; a panic in the late attempt (phase `DIPanicLateCleanup`) is only logged. A hook's panic is its error (`panic: …`, [hooks](#apponstartfn-opts-and-apponstopfn-opts)). A worker is named `worker:<name>`.
 
 ### Readiness
 
-`/ready` aggregates three sources and resolves nothing from the DI container per request: the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), under the components' names, from the values built when the App entered `running`; the store registrations — each store's typed health, through a probe built once from the value the start phase built and pinged, after `Finalize` and so after every override, with no store checks before the App has started ([store spec](store.md)); and the application's `AddReadinessCheck` checks. A borrowed value's `Ready` is aggregated although the App neither starts nor stops it. During the drain `/ready` returns 503 `shutting_down`.
+The lifecycle contributes to `/ready` the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), asked of the value the start walk built and never resolved per request; a worker contributes through its component's `Ready` when its registration sets a readiness condition ([worker spec](worker.md#health-integration)). The [health spec](health.md#readiness-aggregation) states the entry names, when the probes are built and how the sources combine; once the drain begins, `/ready` answers 503 `shutting_down` without asking ([health spec](health.md#shutdown)).
 
-A failure after `Start` has returned is reported through `Ready`. No component ends the App — the App's own listeners excepted — so a component that has stopped for good leaves the process alive and unready, and a failing readiness probe restarts nothing. An application that wants a restart ties a liveness check to the component itself, knowing that a liveness check failing because of a shared dependency restarts every replica.
-
-A worker's readiness conditions reach `/ready` the same way: through its component's `Ready`, under `worker:<name>`. A worker whose registration sets no condition has no `Ready` and contributes nothing ([worker spec](worker.md#health-integration)).
+A failure after `Start` has returned is reported through `Ready`. No component ends the App — the App's own listeners excepted — so a component that has stopped for good leaves the process alive and unready, and a failing readiness probe restarts nothing ([ADR-024](../adr/024-lifecycle-components.md#start) records the policy and the liveness alternative).
 
 ### `app.OnStart(fn, opts...)` and `app.OnStop(fn, opts...)`
 
@@ -363,16 +395,7 @@ Typical start-hook uses include cache warm-up. The `store/sqldb` migration wrapp
 
 ### Mounted Apps
 
-`*App` has `Start(ctx) error` and `Shutdown(ctx) error`, so it is a startable component. A child App mounted with `app.Mount` is handed to `parent.Manage(child)`: its start phase runs in the parent's internal tier, before the parent's listener accepts, and it stops after the parent's HTTP drain, its own components in their own order. The parent's server is the child's owner, so the parent's HTTP drain is the drain the child's `Shutdown` relies on. Without the `Manage`, a child with anything to start panics on its first request with the gate's message, which the parent's recovery turns into a logged 500; a child with nothing to start serves as before. `parent.Manage(child)` composes independent Apps; an application's own modules share one App and its DI graph.
-
-### Scenarios the lifecycle closes
-
-The component model is specified to close four scenarios end to end, each pinned by a test:
-
-1. **A handler hands work to a worker that writes to the database.** A handler enqueues to an in-process continuous worker (internal tier) that writes through a database component. A request accepted just before shutdown completes during the HTTP drain, its job is written, and the database shuts down after the worker ([worker spec](worker.md)).
-2. **A WebSocket drain.** The WebSocket server is an ingress component; it drains concurrently with the HTTP drain and before the internal components its handlers use ([WebSocket spec](websocket.md)).
-3. **A scheduled worker.** It originates its runs, so it is ingress by default and stops with the ingress tier, before the internal components its runs use ([worker spec](worker.md)).
-4. **A consumer of an external queue.** Registered in the ingress tier — with `credo.Ingress()`, or `Tier: credo.TierIngress` for a worker — it stops in the ingress tier, before the database it writes to.
+`*App` has `Start(ctx) error` and `Shutdown(ctx) error`, so it is a startable component. A child App mounted with `app.Mount` is handed to `parent.Manage(child)`: its start phase runs in the parent's internal tier, before the parent's listener accepts, and it stops after the parent's HTTP drain, its own components in their own order. The parent's server is the child's owner, so the parent's HTTP drain is the drain the child's `Shutdown` relies on. Without the `Manage`, a child with anything to start panics on its first request with the gate's message, which the parent's recovery turns into a logged 500; a child with nothing to start serves without it. `parent.Manage(child)` composes independent Apps; an application's own modules share one App and its DI graph.
 
 ## Registration Guards
 
@@ -398,18 +421,16 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
 
-`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([bootstrap spec](bootstrap-and-di-lifecycle.md)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). `app.Manage()` also panics on a value without `Shutdown`, a duplicate name, a resource DI already holds, or a resource handed over twice. The worker registrations add their components through `app.Manage` and panic the same way, with the worker's own message ([worker spec](worker.md#validation)).
+`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
 
-The same fail-fast policy governs all registration APIs: misconfiguration (nil handlers, malformed patterns, duplicates) panics at startup, while operations that touch the outside world (request handling, file I/O) return errors. A registration that needs I/O defers it to the start phase, where a failure is a start failure: `UseI18n` returns nothing and panics on misuse, and its catalogs are read by the start phase ([i18n spec](i18n.md)); `store.Register` returns nothing, and the start phase pings the store ([store spec](store.md)). See the package documentation's "Panics and Errors" section.
+Registration is sequential and unsynchronized ([container spec](container.md#sequential-bootstrap)): each method checks `frozen` once and then publishes, from the goroutine that builds the App. The guard catches a call made after preparation or shutdown admission, not one that races them, so registering while the App may already be served is unsupported.
+
+The same fail-fast policy governs all registration APIs: misconfiguration panics at the call, while a registration that needs I/O — `UseI18n`'s catalogs, a store's ping — defers it to the start phase, where a failure is a start failure ([container spec](container.md#three-error-phases); the package documentation's "Panics and Errors" section).
 
 ## Thread Safety
 
-- `state` and `frozen` use `sync/atomic` — safe for concurrent reads.
-- `server`, `redirectServer`, `ctx`, `cancel`, `boundAddr` and the start phase in progress (`run`) are protected by the `serverMu` mutex. The start phase is published with the `building → starting` claim, so a `Shutdown` that reads `starting` always finds it to interrupt.
-- Preparation is published once through the `prep` atomic pointer; the slow path and bootstrap-shutdown admission serialize on `prepMu`, so shutdown either sees a stored result or prevents an unfinished preparation from publishing.
-- State transitions use `CompareAndSwap` — exactly one goroutine wins.
+- The state and the `frozen` flag are atomic — safe for concurrent reads.
+- The server, the redirect server, the session context, the bound address and the start phase in progress are guarded by one mutex. The start phase is published with the `building → starting` claim, so a `Shutdown` that reads `starting` always finds it to interrupt.
+- Preparation is published once; its slow path and bootstrap-shutdown admission serialize on one lock, so shutdown either sees a stored result or prevents an unfinished preparation from publishing.
+- State transitions use `CompareAndSwap` — exactly one goroutine wins, so concurrent `Shutdown` calls pick one owner of the drain.
 - `Reload` is serialized by a capacity-one slot channel that the drain also takes (and keeps) before the internal tier stops; signal-triggered reloads run on their own goroutine and signals during a reload coalesce into one follow-up. The config snapshot swap is atomic (see the [Config Spec](config.md)).
-
-## Container Integration
-
-A DI singleton whose binding's type shows `Shutdown`, or whose built value has it, is a component and stops automatically in its tier; do not register a second `OnStop` bridge for the same resource. DI enters closing only when the internal components begin to stop — after the HTTP drain, the ingress tier, the reload barrier and the internal stop hooks — so everything before still sees a live container (stop hooks and components must nonetheless capture their dependencies rather than resolve; a resolve while `stopping` is logged at Debug). The container contributes the static graph that orders the teardown — consumers before the singletons they were constructed from, reverse registration order as the tie-break — and bounds every attempt by the shared deadline: a reached component gets at most one attempt, a hung one is abandoned and keeps its dependencies open, and the failures are entries of the `*credo.LifecycleError` joined into the `Shutdown` result. Only construction that completes after the deadline ended gets a separate fixed five-second best-effort cleanup attempt. The [container spec](container.md#shutdown) has the full rules.

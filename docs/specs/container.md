@@ -1,37 +1,21 @@
 # DI Container & credo.Infra Spec
 
-**Status**: Approved; the v0.24.0 surface, registration options and component teardown implemented **Implementation**: `internal/di/` (private), Root package API (`app.Provide[T]`, `app.Resolve[T]`, `app.BindMany[I, T]`, `app.ResolveAll[I]`) **Sources**: samber/do (MIT) **Depends on**: --- **ADRs**: [004-dependency-injection-and-infra](../adr/004-dependency-injection-and-infra.md) **Roadmap**: [`TODO.md` Phase 2.1, 2.2](../../TODO.md)
+**Status:** Implemented (beta) **Package:** `internal/di/`; root `di.go`, `component.go`, `infra.go`, `dierrors.go`, `lifecycle_error.go` **ADR:** [ADR-004](../adr/004-dependency-injection-and-infra.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Dependency injection guide](../guides/dependency-injection.md) **Sources:** samber/do (MIT)
 
----
-
-## Canonical Source
-
-Implementation-level details for Credo's dependency injection system are defined in this file. Other documents should keep only high-level references and link here. The phase, ownership and teardown rules — post-Finalize resolution, overrides before Finalize, dependency-ordered shutdown, closing admission and the teardown/panic diagnostics — are specified in the [bootstrap and DI lifecycle contract](bootstrap-and-di-lifecycle.md) ([ADR-022](../adr/022-bootstrap-and-di-ownership.md)); this document states the same behavior in API terms.
-
----
+This spec states the DI container: its surface, registration and its options, `Finalize` and the three error phases, resolution, resource identity, the container's part in teardown, `credo.Infra`, and the [sequential bootstrap](#sequential-bootstrap) with its documented order. Preparation, the start phase and the drain sequence are the [lifecycle spec](lifecycle.md)'s.
 
 ## Overview
 
-Credo's DI system consists of two parts:
-
-1. **`internal/di/`** --- A generics-based container adapted from samber/do. Uses Go generics for type-safe registration and resolution. No code generation. `Seal()` freezes and validates the graph at startup.
-
-2. **`credo.Infra`** --- A framework-managed infrastructure carrier defined in the root package. Carries the per-service Logger (metrics/tracing carriers return with the Phase 3.5 observability release). Produced automatically by the container when seen as a constructor parameter, but still visible in the service constructor signature.
-
-The container lives in `internal/di` because it is Credo-specific --- not a standalone DI library. The public API is exposed through root package generic functions such as `app.Provide[T](constructor)`, `app.BindMany[I, T]()`, `app.Resolve[T]()`, and `app.ResolveAll[I]()`.
-
----
+Credo's DI system has two parts: a generics-based container in `internal/di`, adapted from samber/do and exposed as generic methods on `*App` — `app.Provide[T](constructor)`, `app.BindMany[I, T]()`, `app.Resolve[T]()`, `app.ResolveAll[I]()` — with no code generation; and `credo.Infra`, a framework-managed carrier defined in the root package, which the container produces for a constructor parameter while it stays visible in the constructor's signature. The container is Credo-specific, not a standalone DI library ([ADR-004](../adr/004-dependency-injection-and-infra.md)).
 
 ## Goals
 
-1. **Generics over reflection**: `Resolve[T]` is fully compile-time typed. `Provide[T]`'s `constructor` parameter is necessarily `any` (Go cannot express "a function with arbitrary parameters returning T"), so its signature is checked at registration time --- mistakes panic at the `Provide` call, and the dependency graph is validated at `Finalize`. Reflection is used at registration time to inspect constructor signatures and once per singleton during first construction (`reflect.Value.Call`). Subsequent resolves of the same singleton are pure cache lookups --- zero reflection.
-2. **Framework-managed infrastructure, explicit boundary**: `credo.Infra` delivers cross-cutting infrastructure (currently the Logger) as a visible constructor parameter. The framework produces it by convention; services do not receive hidden field population or struct-tag injection.
-3. **Composition Root first**: The container is primarily used at startup (`main()` or `App.Run()`). Credo's recommended pattern is constructor injection and bootstrap-time wiring: registrations first, then `Finalize`, then resolution. Runtime `Resolve` calls remain available for advanced use cases, but the framework does not provide request-time DI helpers such as `Context.Resolve`.
-4. **Always available with default-logger fallback**: `credo.Infra` works without configuring a Logger. An unset Logger falls back to the framework-owned stderr logger. Tests never need container setup for infrastructure access.
-5. **Single lifecycle: Singleton**: One instance per container lifetime. This covers web framework needs without unnecessary complexity.
-6. **Ordered interface collections**: Components can depend on `[]I` when startup wiring needs an ordered set of implementations (hooks, senders, subscribers) without introducing named services or keyed lookups.
-
----
+1. **Generics over reflection**: `Resolve[T]` is fully compile-time typed. `Provide[T]`'s `constructor` parameter is necessarily `any` (Go cannot express "a function with arbitrary parameters returning T"), so its signature is checked at the `Provide` call and the dependency graph at `Finalize`. Reflection stays on the cold path ([Registration](#registration-root-package)).
+2. **Framework-managed infrastructure, explicit boundary**: `credo.Infra` is a visible constructor parameter; services do not receive hidden field population or struct-tag injection.
+3. **Composition root first**: registrations, then `Finalize`, then resolution ([Resolution](#resolution-root-package)).
+4. **Always available**: `credo.Infra` works without a configured logger ([below](#always-available-default-logger-fallback)).
+5. **Single lifecycle: Singleton**: One instance per container lifetime.
+6. **Ordered interface collections**: Components can depend on `[]I` when startup wiring needs an ordered set of implementations (hooks, senders, subscribers) without named services or keyed lookups.
 
 ## credo.Infra --- Explicit Infrastructure Carrier
 
@@ -48,11 +32,7 @@ type Infra struct {
 }
 ```
 
-Users cannot add fields to `Infra`. The framework defines the set.
-
-### Observability Carriers (deferred to Phase 3.5)
-
-Earlier drafts defined speculative `MeterProvider`/`TracerProvider` (plus `Counter`/`Histogram`/`Span`) interfaces in the root package, carried as `Infra.Metrics`/`Infra.Tracer` with noop fallbacks. They were removed before v1 (2026-06-11): no real adapter existed, and shipping placeholder interfaces would have frozen an untested API surface. The observability release (Phase 3.5, aligned with the v1 / Go 1.27 window) reintroduces metrics and tracing carriers designed against real OpenTelemetry and Prometheus adapters; `Infra`'s keyed-literal guard (`_ struct{}`) lets those fields land without breaking existing constructors.
+Users cannot add fields to `Infra`. The framework defines the set. Metrics and tracing are deliberately not on `Infra`: they are deferred to the observability release, which decides whether and how they reach it ([ADR-014](../adr/014-observability.md)). The keyed-literal guard (`_ struct{}`) keeps adding fields compatible with existing `credo.Infra{Logger: ...}` literals.
 
 ### Always Available (Default-Logger Fallback)
 
@@ -74,7 +54,7 @@ When the container produces `Infra`, the Logger is **scoped** to the service's t
 infra.Logger = appLogger.With("service", "OrderService")
 ```
 
-Every log line from `OrderService` automatically includes `"service"="OrderService"` without the developer passing it manually.
+`appLogger` is the App's logger — the one `credo.WithLogger` configures, else the framework default — captured at `credo.New`; a `*slog.Logger` binding in the container is never consulted. Every log line from `OrderService` automatically includes `"service"="OrderService"` without the developer passing it manually.
 
 ### Non-DI Infra
 
@@ -89,11 +69,7 @@ The returned Infra has a Logger scoped with `"service"=name`. `NewInfra` is nil-
 
 ### Config Is Not in Infra
 
-Config is NOT part of `credo.Infra`. See [ADR-005](../adr/005-configuration-architecture.md) for rationale:
-
-- Each service may need a different config section (`*OrderConfig` vs `*DatabaseConfig`)
-- Config is an immutable startup-time snapshot; the Logger is runtime infrastructure
-- Typed config via DI is more type-safe than a universal accessor
+Config is not part of `credo.Infra`; typed config sections are constructor parameters ([ADR-005](../adr/005-configuration-architecture.md#config-is-not-in-infra)).
 
 ### What Goes Where
 
@@ -104,17 +80,15 @@ Config is NOT part of `credo.Infra`. See [ADR-005](../adr/005-configuration-arch
 | Domain services | Constructor param | Behavior-defining |
 | Typed config struct | Constructor param | Structural, read at startup |
 | Logger | `infra.Logger` (via `credo.Infra`) | Ubiquitous, cross-cutting |
-| Metrics / Tracer | _Phase 3.5_ | Carriers return with the observability release |
+| Metrics / Tracer | Not available yet | Deferred to the observability release ([ADR-014](../adr/014-observability.md)) |
 | i18n | App (`UseI18n`) | [ADR-013](../adr/013-internationalization.md) |
 | Request ID | Context | `ctx.RequestID()` --- per-request |
-
----
 
 ## Injection Models
 
 The container supports two injection models. Developers choose per-service.
 
-### Model 1: Infra as First Parameter
+### The Infra Parameter
 
 Convention: `credo.Infra` is the first parameter, like `context.Context`.
 
@@ -147,18 +121,16 @@ The container resolves all parameters normally. No Infra magic.
 
 The container inspects the constructor signature at registration time. Each parameter is checked independently:
 
-1. Parameter type is `credo.Infra` --- **Model 1**: produce Infra specially (scoped Logger, default-logger fallback). Convention: place `credo.Infra` as the first parameter.
+1. Parameter type is `credo.Infra` --- **the Infra parameter**: produced specially (scoped Logger, default-logger fallback), never resolved from a registration. Convention: place `credo.Infra` as the first parameter.
 2. Otherwise --- **Pure constructor injection**: parameter resolved normally from the container.
 
-This is a type check on the cold path --- no extra reflection beyond what the container already does for constructor inspection.
-
----
+The root package registers `credo.Infra` with the container as a framework-provided type, so producing it is one map lookup per constructor parameter on the cold path --- no extra reflection beyond what the container already does for constructor inspection.
 
 ## API Surface
 
 ### The Surface
 
-The container's public surface is seven methods and the phase verb ([ADR-004](../adr/004-dependency-injection-and-infra.md)):
+The container's public surface is seven methods and the phase verb ([ADR-004](../adr/004-dependency-injection-and-infra.md#the-public-surface)):
 
 ```text
 // Registration — returns nothing, panics on misuse
@@ -178,19 +150,9 @@ app.ResolveAll[I]() ([]I, error)
 app.Finalize() error
 ```
 
-`options` are the registration options below. `Has[T]` reports whether T is registered, directly or through `Alias`, without constructing; it is the one non-resolving presence probe, for a composition root that asks whether an optional module is present. It reserves nothing, and its result is a snapshot of the registrations made so far: an override after `Has` still replaces the binding. `MustResolve` and `MustResolveAll` remain beside the surface as resolve conveniences for the composition root (Resolution); they are not registration twins. After `Finalize`, a `Provide`, `ProvideValue`, `Alias` or `BindMany` call panics and `Resolve` becomes available.
+`options` are the registration options below. `Has[T]` reports whether T is registered, directly or through `Alias`, without constructing; it is the one non-resolving presence probe, for a composition root that asks whether an optional module is present ("is the optional module registered?"). It reserves nothing and never claims that an instance is healthy or usable, and its result is a snapshot of the registrations made so far: an override after `Has` still replaces the binding. `MustResolve` and `MustResolveAll` sit beside the surface as resolve conveniences for the composition root (Resolution); they are not registration twins. After `Finalize`, a `Provide`, `ProvideValue`, `Alias` or `BindMany` call panics and `Resolve` becomes available.
 
-Removed in v0.24.0, with what replaces each ([migration guide](../guides/pre-v1-migration.md#di-surface)):
-
-| Removed | Replacement |
-| --- | --- |
-| `Replace`, `MustReplace` and the Warn log for a superseded component | `credo.Override()` on `Provide` or `ProvideValue`, or `testutil.WithOverride` in tests — both before `Finalize` |
-| `ProvideProtectedValue`, `ProtectBinding` | None: nothing framework-owned is bound, so nothing needs protecting |
-| `AdoptValue` | None: the store registrations are kernel-owned and the worker supervisor binds nothing; neither reads the container during registration |
-| `CanProvideValue` | `Has` for presence, or simply `ProvideValue`, which panics on a duplicate |
-| `MustProvide`, `MustProvideValue`, `MustAlias`, `MustBindMany` | The plain call, which panics on misuse |
-
-What protection guaranteed — that no integration monitors or shuts down one value while DI resolves another — holds by construction, because the framework's registrations name bindings, not values: a component is its binding (Registration Options), the store registry names the store's binding by type and resolves it once in the start phase, after every override ([store spec](store.md)), and a DI-provided worker's component is a constructor over its binding, built by the start walk ([worker spec](worker.md#provided-workers)).
+No integration monitors or shuts down one value while DI resolves another: the framework's registrations name bindings, not values — a component is its binding (Registration Options), the store registry names the store's binding by type and resolves it once in the start phase, after every override ([store spec](store.md)), and a DI-provided worker's component is a constructor over its binding, built by the start walk ([worker spec](worker.md#provided-workers)).
 
 ### Registration Misuse
 
@@ -206,11 +168,11 @@ Registration performs no I/O and panics on misuse known at the call site, with a
 | Any registration after the App is prepared or shut down | The call |
 | `Resolve`, `MustResolve`, `ResolveAll` or `MustResolveAll` before `Finalize` | The call |
 
-Registration calls are not safe for concurrent use; bootstrap is sequential ([bootstrap spec](bootstrap-and-di-lifecycle.md#sequential-bootstrap)). `Finalize` returns an error, because what it reports needs the whole graph (Finalize and Container Lifecycle).
+Registration calls are not safe for concurrent use; bootstrap is sequential ([Sequential Bootstrap](#sequential-bootstrap)). `Finalize` returns an error, because what it reports needs the whole graph (Finalize and Container Lifecycle).
 
 ### Registration Options
 
-**Which bindings are components.** A singleton the App owns is a component when it has `Shutdown(ctx) error` — its binding's type shows the method at registration, or its built value has it — because ownership, not the view its consumers take, decides the teardown. `Start`, `Ready` and the tier are planned from the binding's type at registration, before any constructor runs: a `Start` or `Ready` that only the built value has is neither called nor asked, a type that has only `Start` is not a component and is never started, and a component found only on its built value is internal. A value behind an interface that an `OnStart` hook starts therefore keeps working and is started once, by the hook. To have the App start or ask a value, provide the concrete type and `Alias` the interface the application uses.
+**Which bindings are components.** A singleton the App owns is a component when it has `Shutdown(ctx) error` — its binding's type shows the method at registration, or its built value has it — because ownership, not the view its consumers take, decides the teardown; a component found only on its built value is internal. `Start`, `Ready` and the tier are planned from the binding's type before any constructor runs ([lifecycle spec](lifecycle.md#component-types)), and [the start walk](lifecycle.md#the-start-walk) states what that means for a value behind an interface.
 
 `Provide` and `ProvideValue` take registration options of type `credo.RegistrationOption`. Each is checked at the call, and misuse — an option the call does not accept, a zero option, an option given twice — panics there:
 
@@ -222,14 +184,14 @@ Registration calls are not safe for concurrent use; bootstrap is sequential ([bo
 | `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` | When there is no earlier binding of the type; after `Finalize` |
 | `credo.Named(name)` | `Manage` only | Names the managed component in reports and readiness (default: its type name) | On an empty name; on a name another managed component has |
 
-- **`Borrowed`** is for a pool that two Apps in one process share, or a fixture a test suite reuses across the Apps it builds; resource identity is unique only inside one App, so it cannot tell two Apps that one of them owns the value. It is accepted on a binding whose type does not show `Shutdown`: that is how a caller keeps the teardown of a value that has the method behind an interface.
+- **`Borrowed`** is for a pool that two Apps in one process share, or a fixture a test suite reuses across the Apps it builds ([ADR-024](../adr/024-lifecycle-components.md#ownership-and-registration-options) gives why resource identity cannot express it). It is accepted on a binding whose type does not show `Shutdown`: that is how a caller keeps the teardown of a value that has the method behind an interface.
 - **`Closer`** accepts the three shapes `Close` takes, checked from the binding's type: `Close() error` (`*sql.DB`, a Redis client), `Close()` (`*pgxpool.Pool`) and `Close(ctx) error` (`*pgx.Conn`), the last receiving the drain deadline. A `Close` that blocks past the deadline is abandoned like any `Shutdown`, and its dependencies stay open. The option decides its binding's teardown: a built value that also has `Shutdown` is closed once, with `Close`. `Close` is never discovered without the option.
 - **`Override`** is strict: without an earlier binding of the type it panics, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Without the option a duplicate still panics. The replaced binding may be a constructor or a value; since constructors run only after `Finalize`, an override never supersedes a built instance. A value that an override replaces never becomes the App's: the App neither starts nor shuts it down, and a replaced `ProvideValue` value stays with the caller who created it.
 - **`testutil.WithOverride[T](v)`** builds on `credo.Override()` and is equally strict: without an earlier binding of T, wired by the test or by `testutil.WithWiring`, it panics. Adding a binding is `WithWiring`'s job.
 
-`app.Manage(v, opts...)` adds a component that is not a binding — a value with `Shutdown`, or a constructor over DI parameters, `func(deps...) C` or `func(deps...) (C, error)`, that the start walk builds and that never becomes a binding — with `credo.Ingress()` and `credo.Named("…")`, which defaults to the type name. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. A value without `Shutdown`, a duplicate name, an App managing itself, and a call after `Finalize` or shutdown panic. A child App handed to its parent's `Manage` runs its start phase in the parent's ([lifecycle spec](lifecycle.md#mounted-apps)). [ADR-024](../adr/024-lifecycle-components.md) specifies it.
+`app.Manage(v, opts...)` adds a component that is not a binding — a value with `Shutdown`, or a constructor `func(deps...) C` or `func(deps...) (C, error)` that the start walk builds — and accepts `credo.Ingress()` and `credo.Named(name)`; the [lifecycle spec](lifecycle.md#appmanagev-opts) states its rules, and a child App handed to its parent's `Manage` runs its start phase in the parent's ([mounted Apps](lifecycle.md#mounted-apps)).
 
-A teardown that is neither `Shutdown` nor one of the `Close` shapes — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges. There is no teardown-function option, and a constructor returning `(T, func(context.Context) error, error)` stays rejected at `Provide` until a type proves costly to wrap ([ADR-004](../adr/004-dependency-injection-and-infra.md#registration-options)).
+A teardown that is neither `Shutdown` nor one of the `Close` shapes — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges. There is no teardown-function option, and a constructor returning `(T, func(context.Context) error, error)` is rejected at `Provide`; [ADR-024](../adr/024-lifecycle-components.md#rejected-alternatives) records why, and [defers the three-value form](../adr/024-lifecycle-components.md#consequences) until a type proves costly to wrap.
 
 ### Resource Identity and Teardown
 
@@ -249,7 +211,7 @@ Kinds are all the registry can compare: Go does not tell a `Shutdown` that a wra
 
 **Borrowed resources** are started and torn down through none of their holders: a holder whose type shows `Start` does not start a resource another holder borrows. A holder that claims the teardown — a component bound with `ProvideValue`, a value handed to `Manage`, a binding with `credo.Closer()` — disagrees with `credo.Borrowed()` on the owner and panics at the later call or fails its construction. A value that a constructor builds over a borrowed resource without `credo.Closer()` stays the caller's even when it has `Shutdown`, since a `Shutdown` found on a value is no claim.
 
-The order in which components stop — the tiers, reverse dependency order, the shared deadline, the abandonment of a teardown that misses it, and the late attempt for a construction that completes after it — is [ADR-024](../adr/024-lifecycle-components.md)'s and the [lifecycle spec](lifecycle.md)'s; the container contributes the static graph that orders it.
+The order in which components stop — the tiers, the shared deadline, the abandonment of a teardown that misses it — is the [lifecycle spec](lifecycle.md#shutdown-in-tiers)'s; the container contributes the static graph that orders it ([Shutdown](#shutdown)).
 
 ### Registration (root package)
 
@@ -271,7 +233,7 @@ func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption)
 func (app *App) Has[T any]() bool
 ```
 
-Constructors run only after Finalize, so the registration phase has no read of a bound value and no early-resolve exemption: `Has[T]` is its one query, for optional wiring ("is the optional module registered?"), and it never claims that an instance is usable. A binding is replaced with `credo.Override()` (Registration Options), never after the fact.
+A binding is replaced with `credo.Override()` (Registration Options), never after the fact.
 
 The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
 
@@ -282,11 +244,9 @@ func NewUserRepo(db *sql.DB) (*UserRepo, error)
 func NewUserRepo(infra credo.Infra, db *sql.DB) (*UserRepo, error)
 ```
 
-Constructor parameter types are inspected via reflection at registration time and matched against registered types. The first construction of each singleton also uses `reflect.Value.Call` to invoke the constructor. Subsequent resolves of the same singleton are pure cache lookups with zero reflection cost.
+Constructor parameter types are inspected via reflection at registration time and matched against registered types. The first construction of each singleton invokes the constructor with `reflect.Value.Call`. Resolving a built singleton afterwards is a map lookup with no `reflect.Value` call; `ResolveAll` assembles its slice with reflection on each call.
 
 Because `constructor` is typed `any`, a signature mistake (wrong return type, not a function) panics at the `Provide` call --- not at compile time. There is no closure-based factory alternative: a constructor that captures `app` and calls `Resolve` inside its body is unsupported. Such a call is invisible to `Finalize` graph validation, cycle detection and dependency-ordered shutdown, and since constructors run only after Finalize it cannot be scheduled against the graph. Declare every dependency as a constructor parameter.
-
-**`context.Context` as a constructor parameter is always an error.** Constructors run at startup, not per-request. If `Seal()` encounters a constructor with a `context.Context` parameter, it reports a clear error.
 
 ### Interface Aliasing
 
@@ -348,14 +308,12 @@ Contract rules enforced by `BindMany`, each violation a panic at the call:
 
 ### Finalize and Container Lifecycle
 
-The container has four phases:
+The container moves through registration, `Finalize`, runtime and closing:
 
-1. **Bootstrap** --- `Provide` and `ProvideValue` with their registration options, `Alias`, `BindMany` and `Manage` are allowed; `Has` observes without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase; neither `store.Register` nor the worker registrations read the container.
-2. **Finalize** --- `app.Finalize()` freezes the container (internally calling `Seal()`) and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call, naming the call and the phase. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error. Finalize is DI-only: routes, hooks, renderers and other HTTP registrations stay open until the App prepares to serve, so controllers built from resolved services can still be wired afterwards (see the [lifecycle spec](lifecycle.md#preparation)).
-3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()`, `app.RunContext()`, `app.ServeContext()` and the first direct `ServeHTTP` call Finalize implicitly.
-4. **Closing** --- the drain freezes the container when it begins and enters closing when the internal tier's components begin to stop, after the HTTP drain, the ingress tier and the internal stop hooks ([lifecycle spec](lifecycle.md#shutdown-in-tiers)). New `Resolve` calls, cached results included, return an error wrapping `credo.ErrDIClosed`; builds already admitted are tracked for cleanup even when their caller's delivery loses to closing. The closing check precedes the failed-Finalize check, so teardown rejection wins even after a failed Seal. A never-finalized container can still be shut down (bootstrap teardown): the cleanup graph is derived from the frozen registrations and current instances without requiring successful validation.
-
-**Concurrency**: Registration is sequential ([bootstrap spec](bootstrap-and-di-lifecycle.md#sequential-bootstrap)): it comes from the goroutine that builds the App, before it runs, and is not safe for concurrent use. `Has` is deliberately point-in-time; its result does not reserve T against a later registration.
+1. **Registration** --- `Provide` and `ProvideValue` with their registration options, `Alias`, `BindMany` and `Manage` are allowed; `Has` observes without mutating or reserving. `Resolve` and `ResolveAll` panic --- constructors never run in this phase; neither `store.Register` nor the worker registrations read the container.
+2. **Finalize** --- `app.Finalize()` freezes the container and validates the dependency graph. After Finalize, `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call, naming the call and the phase. If validation fails, subsequent `Resolve` and `ResolveAll` calls return the finalize error. Finalize is DI-only: routes, hooks, renderers and other HTTP registrations stay open until the App prepares to serve, so controllers built from resolved services can still be wired afterwards (see the [lifecycle spec](lifecycle.md#preparation)).
+3. **Runtime** --- `Resolve` creates and caches singletons on demand. The dependency graph is guaranteed valid. `app.Run()`, `app.RunContext()`, `app.ServeContext()`, `app.Start(ctx)` and the first direct `ServeHTTP` call Finalize implicitly.
+4. **Closing** --- the drain freezes the container when it begins and enters closing when the internal tier's components begin to stop, after the HTTP drain, the ingress tier and the internal stop hooks ([lifecycle spec](lifecycle.md#shutdown-in-tiers)). New `Resolve` calls, cached results included, return an error wrapping `credo.ErrDIClosed`; builds already admitted are tracked for cleanup even when their caller's delivery loses to closing. The closing check precedes the failed-Finalize check, so teardown rejection wins even after a failed `Finalize`. A never-finalized container can still be shut down (bootstrap teardown): the cleanup graph is derived from the frozen registrations and current instances without requiring successful validation.
 
 ```go
 // Finalize freezes the container and validates the dependency graph.
@@ -365,12 +323,12 @@ The container has four phases:
 // Finalize is idempotent --- subsequent calls return the same result via sync.Once.
 //
 // Finalize is side-effect-free: it does not instantiate singletons or perform I/O.
-// It only freezes the container (via Seal) and validates the graph. It does
-// not close HTTP registration.
+// It only freezes the container and validates the graph. It does not close
+// HTTP registration.
 //
-// The serve entry points and the first ServeHTTP call Finalize implicitly.
-// Explicit, error-checked Finalize is the recommended composition-root step
-// between registration and the first Resolve.
+// The serve entry points, App.Start and the first ServeHTTP call Finalize
+// implicitly. Explicit, error-checked Finalize is the recommended
+// composition-root step between registration and the first Resolve.
 func (app *App) Finalize() error
 ```
 
@@ -396,21 +354,17 @@ userSvc := app.MustResolve[*UserService]()
 // app.BindMany[Qux, *Baz]()
 ```
 
-If `app.Finalize()` is not called explicitly, the serve entry points call it implicitly as the first step of preparation, and a direct `ServeHTTP` call does the same on the first request. A composition root that resolves services before serving must call it explicitly first.
+If `app.Finalize()` is not called explicitly, the serve entry points and `App.Start` call it implicitly as the first step of preparation, and a direct `ServeHTTP` call does the same on the first request. A composition root that resolves services before serving must call it explicitly first.
 
-Duplicate registration of the same type panics at the call (Registration Misuse).
+`Finalize` returns what only the whole graph reveals, joined in registration order:
 
-Circular dependencies (A -> B -> A) are detected during Finalize; each cycle produces an error listing its members and asking to remove one of those constructor parameters. Dependencies inside pre-built values are opaque to the container and take no part in validation or shutdown ordering.
+- each missing dependency, with its whole path from the entry-point registration that needs it — `di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); provide *http.Client before Finalize` — where an alias hop reads `app.Gateway (alias of *app.Stripe)` and a collection member `*app.Audit (in []app.Plugin)`;
+- each circular dependency (A → B → A), through constructor parameters, aliases and collections alike, listing its members and asking to remove one of those constructor parameters;
+- each constructor parameter of type `context.Context`: constructors run at startup, not per request;
+- an internal component that depends on an ingress one, directly or through bindings that are not components, with the path and both remedies — declare the dependent ingress, or split the ingress component so that what internal components use is an internal part;
+- after the graph's findings, a store registration whose type has no binding — neither a direct binding nor an interface an `Alias` names: `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` ([store spec](store.md#registration)).
 
-`Alias` and `BindMany` check their types when the binding is made — an interface target, and a registered concrete type that implements it — and no registration is ever removed, so Finalize does not check them again: it validates constructor parameters (missing dependencies, `context.Context`) and cycles.
-
-The validation report is deterministic: the same wiring yields the same error text on every run. Errors are listed in registration order — a consumer registered earlier is reported earlier, its parameters left to right — and every cycle in the graph is reported, its text starting at the member that was registered first.
-
-`Finalize` returns what only the whole graph reveals, joined in registration order: missing dependencies, `context.Context` parameters and cycles. Each missing dependency is reported with its whole path from the entry-point registration that needs it — `di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); provide *http.Client before Finalize` — where an alias hop reads `app.Gateway (alias of *app.Stripe)` and a collection member `*app.Audit (in []app.Plugin)`.
-
-`Finalize` also reports an internal component that depends on an ingress one, directly or through bindings that are not components, with the path and both remedies — declare the dependent ingress, or split the ingress component so that what internal components use is an internal part. A component found only on its built value is internal and is checked when it is built: such a component that depends on an ingress one fails its construction with the same message.
-
-`Finalize` also reports a store registration whose type has no binding — neither a direct binding nor an interface an `Alias` names: `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` ([store spec](store.md#registration)).
+The report is deterministic: the same wiring yields the same text on every run. A consumer registered earlier is reported earlier, its parameters left to right, and every cycle's text starts at the member that was registered first. Registration order does not otherwise matter: a constructor may depend on a type registered after it. `Alias` and `BindMany` check their types when the binding is made and no registration is ever removed, so `Finalize` does not check them again. Dependencies inside pre-built values are opaque to the container and take no part in validation or shutdown ordering. A component found only on its built value is internal and is checked when it is built: such a component that depends on an ingress one fails its construction with the same message as the `Finalize` finding.
 
 ### Resolution (root package)
 
@@ -433,7 +387,7 @@ func (app *App) MustResolveAll[I any]() []I
 
 `Resolve` is admitted only after `Finalize()`: before it, the call panics and no constructor runs; after a failed `Finalize` it returns the `Finalize` error. It remains public afterwards and can be called at runtime. Credo intentionally keeps that low-level capability available, but does not make it part of the preferred request-time programming model. There is no `Context.Resolve` helper, and the recommended approach remains wiring dependencies through constructors during bootstrap. Stop hooks (`OnStop`) and components do not resolve during the drain: they take their dependencies at registration — a hook by capture, a component through its constructor. `OnStart` hooks run after `Finalize` and before traffic, and may resolve. A resolve while the App is stopping is logged at Debug (`credo: Resolve during drain`) because an in-flight request may still legitimately resolve.
 
-Construction completes exactly once per singleton with one terminal result — value, error or panic — shared by the first, concurrent and later callers. A constructor panic is recovered and returned as `*credo.DIPanicError` (`Type`, `Phase == DIPanicConstruction`, the original `Value`, and the `Stack` captured on the panicking goroutine; it unwraps an error-valued panic). There is no automatic retry, and `MustResolve` panics with that error as its payload rather than the original value. Construction failures are diagnostics only: they are not teardown failures. Once the container is closing, callers receive an error wrapping `credo.ErrDIClosed` even for a cached instance or a recorded failure; an instance created after closing is still owned and cleaned up by the container.
+Construction completes exactly once per singleton with one terminal result — value, error or panic — shared by the first, concurrent and later callers. A constructor panic is recovered and returned as `*credo.DIPanicError` (`Type`, `Phase == DIPanicConstruction`, the original `Value`, and the `Stack` captured on the panicking goroutine; it unwraps an error-valued panic), and a constructor that depends on it fails through its parameter. There is no automatic retry, and `MustResolve` panics with that error as its payload rather than the original value. Construction failures are diagnostics only: they are not teardown failures. Once the container is closing, callers receive an error wrapping `credo.ErrDIClosed` even for a cached instance or a recorded failure; an instance created after closing is still owned and cleaned up by the container. A constructor's parameters are resolved before it is invoked, so a constructor whose parameter meets closing never runs; a constructor body already running is not forced to fail — the container rejects new resolution and withholds results, nothing more.
 
 ### `[]I` Constructor Injection
 
@@ -466,37 +420,19 @@ type Component interface {
 }
 ```
 
-A singleton is a component when its binding's type shows `Shutdown` at registration, when its built value has it (an internal component), or when it carries `credo.Closer()`; a value or constructor handed to `app.Manage` is a component that is not a binding. The optional capabilities `credo.Starter`, `credo.Readier` and `credo.ResourceIdentifier`, the tiers and the start walk are [ADR-024](../adr/024-lifecycle-components.md)'s and the [lifecycle spec](lifecycle.md)'s; this section states what the container contributes to the drain.
+Which singletons are components is stated under [Registration Options](#registration-options); a value or constructor handed to `app.Manage` is a component that is not a binding. The capabilities and the tiers are the lifecycle spec's ([component types](lifecycle.md#component-types)), and so is the drain sequence ([shutdown in tiers](lifecycle.md#shutdown-in-tiers)); this section states what the container contributes to the drain.
 
-```go
-// internal/di/shutdown.go
-
-// BeginTeardown opens the drain: it closes the registration window without
-// entering closing. excluded are the components whose Start failed, stuck
-// those whose Start was abandoned; neither is shut down.
-func (c *Container) BeginTeardown(excluded, stuck []*Unit) error
-
-// StopTier stops one tier's components, consumers before their dependencies.
-// The internal tier enters closing first.
-func (c *Container) StopTier(ctx context.Context, tier Tier)
-
-// TeardownReport classifies every unit at the boundary; nil when nothing
-// failed or remained incomplete. The App converts it into the
-// *credo.LifecycleError it returns.
-func (c *Container) TeardownReport(ctx context.Context) *ShutdownError
-```
-
-Ordering follows the static graph built at Seal (or extracted from the frozen registrations for a never-sealed container): constructor parameters, aliases mapped to their canonical singleton, and `BindMany` collection edges. Both constructor and value bindings are vertices, so a `Service` closes before the DB it received even when that DB came from `ProvideValue`; dependencies hidden inside pre-built values are opaque. Holders that share a [resource identity](#resource-identity-and-teardown) form one vertex. Rules:
+Ordering follows the static graph built at `Finalize` (or extracted from the frozen registrations for a never-finalized container): constructor parameters, aliases mapped to their canonical singleton, and `BindMany` collection edges. Both constructor and value bindings are vertices, so a `Service` closes before the DB it received even when that DB came from `ProvideValue`; dependencies hidden inside pre-built values are opaque. Holders that share a [resource identity](#resource-identity-and-teardown) form one vertex. Rules:
 
 - The ingress tier stops while resolutions are still admitted; its components that no edge orders stop concurrently with each other. The internal tier enters closing first and stops one component at a time, in reverse dependency order with reverse registration order as the tie-break; it also stops an ingress component built after the ingress tier ran.
 - A built value that is no component, and a borrowed resource, is transparent: edges pass through it, so ordering survives intermediate services, and it retires without calling user code. Aliases and collection members are the same vertex as their singleton and are attempted once.
-- Never-started and terminally failed constructors are inactive and contribute no live edges. A build still in progress is a pending vertex: it blocks its dependencies while independent ready vertices proceed; a failed build retires and releases them, a successful one becomes an ordinary vertex.
+- Never-started and terminally failed constructors are inactive and contribute no live edges. The HTTP drain proceeds past its deadline with requests still running, so a construction can be in flight when closing begins. A build still in progress is a pending vertex: it blocks its dependencies while independent ready vertices proceed; a failed build retires and releases them, a successful one becomes an ordinary vertex.
 - Each eligible teardown — `Shutdown`, or `Close` for a `credo.Closer()` binding — runs on a helper goroutine with the shared drain context; the container waits for completion or context end, preferring a completed result at the boundary. A returned error or recovered panic completes the attempt as a failure and releases the vertex's dependencies. A wait that ends because the context ended is not completion: the component is abandoned, its dependencies stay open (kept open by it), and the same instance is never retried nor given extra budget. A later result or panic is logged without mutating the returned report.
-- Once the context ends, no further teardown starts and the remaining vertices are reported with their actual state and blockers; there is no out-of-order fallback.
-- An instance whose construction completes after the context ended gets one separate, fixed five-second best-effort cleanup attempt on its own goroutine (result-or-deadline, a completed result wins the boundary) — for a component its binding's type shows and for one found only on its built value alike. The attempt is logged, never reported, not configurable, never granted to ordinary entries, and does not guarantee dependency order.
+- Once the context ends, no further teardown starts and the remaining vertices are reported with their actual state and blockers; there is no out-of-order fallback. A tier's pass also ends when none of its vertices is ready or pending; a vertex still held by a live consumer when the drain ends — the dependency of an abandoned consumer, or a graph inconsistency — is reported as kept open with its blockers, never closed out of order.
+- An instance whose construction completes after the context ended gets one separate, fixed five-second best-effort cleanup attempt on its own goroutine (result-or-deadline, a completed result wins the boundary) — for a component its binding's type shows and for one found only on its built value alike — unless another holder still holds its resource, that resource was already torn down, or a holder borrows it. The attempt is logged, never reported, not configurable, never granted to ordinary entries, and does not guarantee dependency order; it is best effort because the process may exit once `Shutdown` returns.
 - Recovery wraps every invocation, construction and `Start` included. A recovered teardown panic is a completed failed attempt reported as `*credo.DIPanicError` with phase `DIPanicShutdown` or `DIPanicLateCleanup`; a `Start` panic has phase `DIPanicStart`.
 
-The App reports a failed or incomplete drain as one `*credo.LifecycleError`, an immutable snapshot that lists only the components that did not succeed — failed, panicked, abandoned at the deadline, or kept open by an abandoned consumer (`KeptOpenBy`) — and unwraps every failure and the context cause, so `errors.Is`, `errors.As` and `errors.AsType` work through App-level joins ([lifecycle spec](lifecycle.md#the-lifecycle-error)). A second teardown of the same container returns an error wrapping `ErrDIClosed`.
+The App reports a failed or incomplete drain as one `*credo.LifecycleError` ([lifecycle spec](lifecycle.md#the-lifecycle-error)); a constructor that panicked before the drain is a diagnostic, not a teardown failure, so it alone does not make `Shutdown` return an error. A second teardown of the same container returns an error wrapping `ErrDIClosed`.
 
 ### Concurrency and Lifecycle
 
@@ -506,189 +442,128 @@ The App reports a failed or incomplete drain as one `*credo.LifecycleError`, an 
 - **`Resolve` / `MustResolve` / `ResolveAll` / `MustResolveAll`**: Panic before Finalize. Safe for concurrent use afterwards: per-singleton completion ensures each constructor runs exactly once and every waiter receives the same terminal result (value, error or `DIPanicError`). Different singletons resolve concurrently without blocking each other.
 - **Teardown**: the internal tier enters closing atomically with respect to resolution admission and result delivery, then runs the dependency-ordered pass described above; the ingress tier, before it, still admits resolutions. Ordinary attempts share the drain context; only late construction gets the separate five-second attempt.
 
----
+## Sequential Bootstrap
+
+Bootstrap is sequential. Registration calls — DI bindings, feature mounts, component registrations, routes, hooks and renderers — come from the goroutine that builds the App, before it runs, and are not safe for concurrent use. Each call checks once that it is in its phase, and a call out of phase panics; since bootstrap is sequential, nothing can prepare the App between that check and the call's publication. Registration promises nothing about concurrent calls, so an application that registers from several goroutines serializes them itself. The running App is concurrent: `Resolve` after `Finalize` ([Concurrency and Lifecycle](#concurrency-and-lifecycle)) and the preparation that concurrent first `ServeHTTP` calls share ([lifecycle spec](lifecycle.md#preparation)) are safe for concurrent use.
+
+### Documented Order
+
+The order gives every DI, feature and component registration its place, so that a bootstrap written by following it meets no ordering panic:
+
+1. **Configuration** — `credo.New()`, which loads configuration, or `credo.New(credo.WithRawConfig(rawCfg))`.
+2. **`Provide`** — the application's bindings (`Provide`, `ProvideValue`, `Alias`, `BindMany`), with their registration options.
+3. **Feature mounts and component registrations**, in any order among themselves — `UseI18n`, `UseHealth`, workers, stores, `Manage`.
+4. **`Finalize`** — graph validation; handle its error.
+5. **`Resolve`, routes and anything built from a resolved value** — a hook, a renderer or a readiness check included.
+6. **`Run`** — or `RunContext`, `ServeContext`, or `App.Start` for an App that an external server serves.
+
+The runnable `Example_bootstrapOrder` (`example_bootstrap_test.go`) follows this order with stand-in types.
+
+```go
+func main() {
+    app, err := credo.New() // 1. configuration
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Provide
+    app.Provide[*sqldb.DB](NewDatabase) // built and pinged by the start phase
+    app.Provide[*PaymentClient](NewPaymentClient)
+    app.Provide[*OrderService](NewOrderService)
+    app.Provide[*OrderController](NewOrderController)
+    app.Provide[*OutboxRelay](NewOutboxRelay)
+
+    // 3. Feature mounts and component registrations, in any order
+    app.UseI18n(credo.I18nConfig{Dir: "locales"})
+    app.UseHealth()
+    store.Register[*sqldb.DB](app)
+    worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
+    app.Manage(NewSearchIndexer, credo.Named("search-indexer"))
+
+    // 4. Finalize
+    if err := app.Finalize(); err != nil {
+        log.Fatal(err)
+    }
+
+    // 5. Resolve, routes, and what is built from resolved values
+    orders := app.MustResolve[*OrderController]()
+    app.POST("/orders", orders.Create)
+    payments := app.MustResolve[*PaymentClient]()
+    app.AddReadinessCheck("payments", credo.HealthCheckFunc(payments.Ping))
+
+    // 6. Run
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+There is no resolve-then-provide step: no DI or component registration follows `Finalize`. A value that needs a resolved dependency and I/O to exist — a provider whose settings are read from a database table, for example — is a component whose constructor takes its dependencies and whose `Start` reads the settings and opens its backend ([lifecycle spec](lifecycle.md#the-start-walk)). HTTP setup that uses no resolved value — global middleware, the [built-in HTTP features](http-features.md), a route that calls no service — may come at any point before preparation. `credo.New()`, routes and `Run()` stay the minimal shape: an App that resolves nothing before serving needs no explicit `Finalize`, since the serve entry points call it.
+
+### Three Error Phases
+
+The package documentation's "Panics and Errors" names three phases:
+
+| Phase | What it reports | How |
+| --- | --- | --- |
+| Registration | Misuse known at the call site ([Registration Misuse](#registration-misuse)) | Panics with a message naming the call, the phase and the remedy; performs no I/O |
+| `Finalize` | What only the whole graph reveals ([Finalize and Container Lifecycle](#finalize-and-container-lifecycle)) | Returns the errors joined in registration order, with the same text on every run |
+| `Start` | I/O: a component's `Start`, a store's ping ([store spec](store.md#registration)), a catalog read ([i18n spec](i18n.md#registration-and-start-phase)), a constructor that the start walk runs | Returns the error; the start rolls back ([lifecycle spec](lifecycle.md#a-failed-start)) |
+
+`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Manage`, `store.Register`, `UseI18n` and the worker registrations therefore return no error, and leave their I/O to the start phase: a store's ping, i18n's catalog reads and a provided worker's construction.
 
 ## Design Decisions
 
-1. **Framework-managed Infra over implicit Base** --- Embedding a struct and auto-populating via reflection (Spring `@Autowired`) would hide the dependency boundary. `credo.Infra` is produced by the framework but appears in constructor signatures --- visible, reviewable, mockable.
-
-2. **Infra in root package** --- Infra must be referenceable without importing the DI package. Placing it in root keeps the dependency graph clean.
-
-3. **Interfaces for infrastructure, not concrete types** --- infrastructure beyond the stdlib `*slog.Logger` will be expressed as root-package interfaces so root never imports `observability/` --- preserving the zero-external-dependency kernel. The first speculative cut of those interfaces (`MeterProvider`, `TracerProvider`) was removed pre-v1; Phase 3.5 redesigns them against real adapters.
-
-4. **Always available with default-logger fallback** --- container-produced Infra never carries a nil Logger; it defaults to the framework stderr logger when unconfigured. This eliminates test ceremony and makes Infra usage truly optional.
-
-5. **Single lifecycle: Singleton** --- One instance per container lifetime. Web frameworks rarely need per-request DI construction. Request-specific data flows through `context.Context` on method calls, not through constructors.
-
-6. **Container detects injection model via type check** --- At registration time, the container checks if a parameter is `credo.Infra`. Standard type comparison on the cold path.
-
-7. **Typed constructors over injector parameter** --- samber/do uses `func(do.Injector) (T, error)` which is a service locator inside the constructor. Credo uses `func(dep1 T1, dep2 T2) T` --- dependencies are visible in the signature.
-
-8. **Finalize/Seal lifecycle** --- `app.Finalize()` seals the container and validates the graph. This separates registration from runtime and catches errors (missing deps, cycles, forbidden params) before the first request.
-
-9. **Composition Root enforcement** --- The container is designed for startup use. Business code receives resolved services via constructors and Infra, never via `Resolve[T]` calls.
-
-10. **Interface aliasing via Alias** --- `Alias[I, T]()` creates a type alias from interface to concrete type. This is simpler than samber/do's `As[T]()` and keeps the registration and aliasing steps explicit and separate.
-
-11. **Ordered collections via BindMany** --- `BindMany[I, T]()` and `ResolveAll[I]` support plugin-style composition while keeping single resolution explicit. Credo intentionally does not introduce named/keyed bindings for this use case.
-
-12. **No protected bindings** --- every binding stays replaceable for composition overrides and tests, through `credo.Override()` before `Finalize`. Rejected, and removed in v0.24.0: protected bindings (`ProvideProtectedValue`, `ProtectBinding`), which let an integration that published lifecycle or health state about a bound value stop `Replace` from making DI diverge from that state. No integration binds such a value any more, and registrations that name bindings rather than values keep DI and that state in agreement by construction.
-
-13. **Resolution only after Finalize** --- constructors never run in the registration phase, so a validated graph is the only graph that ever executes and registration helpers cannot trigger construction as a side effect. Rejected: a general early Resolve/Peek exemption and protect-on-read, which would freeze an invalid binding before validation, and registration-time adoption (`AdoptValue`, removed in v0.24.0). The registration phase's one read is `Has`, which observes only.
-
-14. **Overrides happen before construction** --- `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built; the value it replaces never becomes the App's and stays with whoever built it. The container never closes a value it does not hand out. Rejected: a runtime `Replace` that returned the superseded instance and its cleanup to the caller (removed in v0.24.0), silently abandoning the old instance, and automatically closing it (the caller may still hold it).
-
-15. **Dependency-ordered shutdown with bounded waiting** --- consumers close before the singletons they were built from, using a ready queue with reverse-registration tie-break over the static graph (adapted from samber/do v2.1.0's batched dependent bookkeeping). Every ordinary call is bounded by the shared context via helper goroutines; a runaway callback is abandoned, keeps its dependencies open and is reported rather than skipped around. Rejected: reverse registration order alone, a bulk wait-for-builds phase before any cleanup, an unbounded construction barrier, and do v2's out-of-order fallback.
-
-16. **Terminal completion and inspectable diagnostics** --- one completion record per singleton covers value, error and panic and is shared by all waiters; nothing is retried automatically. Panics are recovered on the goroutine that invoked user code and surfaced as `DIPanicError` with phase, original value and stack; a failed or incomplete start or drain is an immutable `LifecycleError` snapshot that unwraps its causes. Closing rejection is the `ErrDIClosed` sentinel from the moment the internal tier's components begin to stop.
-
-17. **Registration panics; `Finalize` reports the graph** --- misuse known at the call site panics with a stack at the exact line; what needs the whole graph is one joined error with each missing dependency's whole path. Rejected: Wire-style code generation and a DI-optional kernel ([ADR-004](../adr/004-dependency-injection-and-infra.md#di-stays-the-spine)).
-
-18. **Options, not methods** --- a binding's tier, owner, `Close` teardown and override are registration options checked at the call, so the surface does not grow per concern and misuse panics where it was written.
-
-19. **One resource, one teardown** --- holders of one resource share one component, keyed by resource identity, torn down after the consumers of all of them, through the first-registered holder of the teardown kind they agree on. Rejected: deciding the teardown from the binding's static type, which silently ends the teardown of a value behind an interface without `Shutdown`; keying by pointer alone, which misses a value-shaped wrapper and its interface view; choosing among holders' teardowns by build order, which a lazily built holder makes unpredictable, or by a fixed precedence of `Close` over `Shutdown`, which skips a teardown the application wrote; starting the resource once per holder, which starts it twice and starts a borrowed one; keeping every holder's dependencies on the resource, which closes a cycle when a holder reached it through a consumer ([ADR-024](../adr/024-lifecycle-components.md)).
-
-20. **A wrapper type per instance** --- several instances of one type are several wrapper types, so the signature names the instance. Rejected: named bindings, a qualifier type in the container, scoped child containers and wiring outside the container ([ADR-004](../adr/004-dependency-injection-and-infra.md#several-instances-of-one-type)).
-
-21. **Seven methods and `Finalize`** --- the container holds only the application's bindings, so no method exists for a framework integration, and registration has one form, which panics on misuse. Rejected: keeping protected bindings, adoption and preflights, which defended framework state that no longer lives in the container, and the `Must*` registration twins, which duplicated calls that already panic.
-
----
+- The DI surface, `credo.Infra`, the registration options and several instances of one type: [ADR-004](../adr/004-dependency-injection-and-infra.md).
+- The bootstrap phases, resolution after `Finalize`, terminal construction, closing admission and the dependency-ordered, bounded teardown: [ADR-022](../adr/022-bootstrap-and-di-ownership.md).
+- Components, tiers, ownership and resource identity: [ADR-024](../adr/024-lifecycle-components.md).
 
 ## samber/do Adaptation Scope
+
+The dependency bookkeeping and the teardown diagnostics were reviewed against [samber/do v2.1.0](https://github.com/samber/do/releases/tag/v2.1.0), tag commit `f0d927f`, and adapted to Credo's static graph; that reference is not evidence of the upstream revision Credo originally copied. NOTICES records an adapted upstream revision only when provenance supports it; otherwise it says `upstream revision unknown` and records a known adaptation date separately, and the copyright and license notices are retained.
 
 ### What We Keep
 
 | samber/do source | Credo file | Notes |
 | --- | --- | --- |
 | Container core + type registry | `internal/di/container.go` | Adapted to typed constructors (not `func(Injector)` signature) |
-| Lifecycle primitives | `internal/di/option.go` | Singleton option only |
-| Shutdown interface (`credo.Component`) | Root package `component.go` | Dependency-ordered shutdown (ready queue; do v2.1.0's dependent bookkeeping adapted to Credo's static graph) |
+| Shutdown interface (`credo.Component`) | Root package `component.go`; `internal/di/shutdown.go` | Dependency-ordered shutdown (ready queue; do v2.1.0's dependent bookkeeping adapted to Credo's static graph) |
 
 ### What We Cut
 
 | samber/do feature | Reason |
 | --- | --- |
-| `func(do.Injector) (T, error)` constructor signature | Service locator inside constructor --- replaced with typed params |
+| `func(do.Injector) (T, error)` constructor signature | Service locator inside constructor --- replaced with typed params, so a constructor's dependencies are visible in its signature |
 | `do.MustInvoke[T](i)` inside constructors | Same --- service locator pattern |
 | Named services (`do.ProvideNamed`) | Type-based resolution is sufficient. Named variants add complexity |
-| `do.Package()` grouping | Replaced by App-level registration helpers |
+| `do.As[T]()` aliasing | `Alias[I, T]()` keeps registration and aliasing explicit and separate |
+| `do.Package()` grouping | Module functions that take `*credo.App` and register their bindings |
 | Scope tree (parent/child) | Not needed --- single Singleton lifecycle, no request-scoped containers |
 | Out-of-order shutdown fallback, automatic build retries | A blocked dependency is reported with its blockers instead of being closed underneath a live consumer; a failed constructor is terminal |
-
-### Key Divergence
-
-The most significant adaptation is **constructor signatures**. samber/do passes an `Injector` to every constructor, making every constructor a service locator:
-
-```go
-// samber/do --- constructor = service locator
-func NewUserService(i do.Injector) (*UserService, error) {
-    db := do.MustInvoke[*sql.DB](i)       // hidden dependency
-    logger := do.MustInvoke[*Logger](i)    // hidden dependency
-    return &UserService{db: db, logger: logger}, nil
-}
-```
-
-Credo uses typed constructor parameters:
-
-```go
-// Credo --- constructor = explicit dependencies
-func NewUserService(infra credo.Infra, db *sql.DB) *UserService {
-    return &UserService{infra: infra, db: db}
-    // Logger comes from Infra, not a separate parameter
-}
-```
-
-The container inspects the constructor's parameter types via reflection at registration time (cold path). Resolution uses cached type mappings --- the `reflect` package is never called on the hot path.
-
----
+| Transient services, implicit aliases, a global container, container cloning, per-invocation frame bookkeeping | Singleton is the only lifecycle, an alias is declared with `Alias`, each App owns its container, and the static graph orders what per-call bookkeeping would track |
 
 ## File Layout
 
-```text
-internal/di/
-+-- doc.go            <- package documentation (samber/do attribution)
-+-- container.go      <- Container struct, New(), Has, findRegistration (alias-aware)
-+-- provide.go        <- Provide/ProvideValue registration, override check
-+-- resolve.go        <- Resolve[T], ResolveAll[I], phase/closing admission, completion
-+-- bind.go           <- Alias[I,T], BindMany[I,T], binding management
-+-- build.go          <- Seal(), freeze + validate via sync.Once
-+-- lifecycle.go      <- validate (unexported), cycle detection, graph extraction
-+-- unit.go           <- component registry entries: plan (component, tier, Start/Ready), Close shapes
-+-- resource.go       <- resource identity, holder agreement on owner and teardown kind
-+-- manage.go         <- Manage (values and constructors that are not bindings), HasStartWork
-+-- start.go          <- StartPlan: the start walk's order per tier
-+-- step.go           <- StartStep: start work a framework registration runs on a binding's value (a store's ping); Finalize reports a step whose type has no binding
-+-- shutdown.go       <- BeginTeardown/StopTier/TeardownReport: tiers, closing, bounded calls, late cleanup
-+-- errors.go         <- ErrClosed, MisuseError, PanicError, ShutdownError/Entry/State
-+-- provider.go       <- provider strategies (constructor/value)
-+-- infra.go          <- FrameworkProvider map (credo.Infra), deriveServiceName
-+-- export_test.go    <- test-only helpers
-+-- *_test.go
-
-Root package:
-+-- infra.go          <- Infra struct, newInfra (default-logger fallback), defaultLogger
-+-- component.go      <- Component, Starter, Readier, ResourceIdentifier, Tier, registration options, Manage
-+-- lifecycle_error.go <- LifecycleError, LifecycleEntry, phases and outcomes
-+-- interfaces.go     <- RawConfig alias
-+-- di.go             <- root registration, Has, resolve, alias and collection APIs
-+-- dierrors.go       <- ErrDIClosed, DIPanicError aliases
-+-- infra_test.go
-```
-
----
+The container is `internal/di` — registration, resolution and validation, and the component registry the start walk and the drain run on — and its public API is the root package's `di.go`, `component.go`, `infra.go`, `dierrors.go` and `lifecycle_error.go`.
 
 ## Examples
 
-### Basic Wiring
+The bootstrap as a whole is the [Documented Order](#documented-order) example; aliasing and collections are shown with their API above.
+
+### Service with Infra
 
 ```go
-func main() {
-    rawCfg, err := config.Load()
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    app, err := credo.New(credo.WithRawConfig(rawCfg))
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Register services (all Singleton)
-    app.Provide[*sql.DB](NewDB)
-    app.Provide[*UserRepo](NewUserRepo)
-    app.Provide[*UserService](NewUserService)
-
-    // Finalize: freeze container + validate dependency graph
-    if err := app.Finalize(); err != nil {
-        log.Fatal(err)
-    }
-
-    // Resolve services for handler setup
-    userSvc := app.MustResolve[*UserService]()
-
-    app.GET("/users/{id}", func(ctx *credo.Context) error {
-        user, err := userSvc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
-        if err != nil {
-            return err
-        }
-        return ctx.Response().JSON(200, user)
-    })
-
-    app.Run() // Run calls Finalize implicitly if not already called
+type UserStore interface {
+    Create(ctx context.Context, input CreateUserInput) (*User, error)
 }
-```
 
-### Service with Infra (Model 1)
-
-```go
 type UserService struct {
     infra credo.Infra
-    repo  *UserRepo
-    db    *sql.DB
+    repo  UserStore
 }
 
-func NewUserService(infra credo.Infra, repo *UserRepo, db *sql.DB) *UserService {
-    return &UserService{infra: infra, repo: repo, db: db}
+func NewUserService(infra credo.Infra, repo UserStore) *UserService {
+    return &UserService{infra: infra, repo: repo}
 }
 
 func (s *UserService) Create(ctx context.Context, input CreateUserInput) (*User, error) {
@@ -702,180 +577,26 @@ func (s *UserService) Create(ctx context.Context, input CreateUserInput) (*User,
 }
 ```
 
-### Interface Aliasing
-
-```go
-// Define the interface.
-type UserRepo interface {
-    FindByID(ctx context.Context, id string) (*User, error)
-    Create(ctx context.Context, input CreateUserInput) (*User, error)
-}
-
-// Register the concrete implementation.
-app.Provide[*PgUserRepo](NewPgUserRepo)
-
-// Alias interface to concrete type.
-app.Alias[UserRepo, *PgUserRepo]()
-
-// Services depend on the interface, resolved via the alias.
-func NewUserService(infra credo.Infra, repo UserRepo) *UserService {
-    return &UserService{infra: infra, repo: repo}
-}
-```
-
-### Ordered Interface Collection
-
-```go
-type Sender interface {
-    Send(ctx context.Context, msg Message) error
-}
-
-type SenderRegistry struct {
-    senders []Sender
-}
-
-func NewSenderRegistry(senders []Sender) *SenderRegistry {
-    return &SenderRegistry{senders: senders}
-}
-
-app.Provide[*EmailSender](NewEmailSender)
-app.Provide[*InAppSender](NewInAppSender)
-
-app.BindMany[Sender, *EmailSender]()
-app.BindMany[Sender, *InAppSender]()
-
-app.Provide[*SenderRegistry](NewSenderRegistry)
-
-if err := app.Finalize(); err != nil {
-    log.Fatal(err)
-}
-
-registry := app.MustResolve[*SenderRegistry]()
-allSenders := app.MustResolveAll[Sender]()
-
-_ = registry
-_ = allSenders
-```
-
 ### Testing --- Direct Construction
 
 ```go
-func TestUserService_Create(t *testing.T) {
-    svc := &UserService{
-        infra: credo.Infra{Logger: slog.Default()},
-        repo:  testutil.NewMockUserRepo(t),
-        db:    testutil.NewMockDB(t),
-    }
+type fakeUserStore struct{}
 
-    user, err := svc.Create(t.Context(), validInput)
-    assert.NoError(t, err)
-    assert.Equal(t, "alice@example.com", user.Email)
+func (fakeUserStore) Create(_ context.Context, input CreateUserInput) (*User, error) {
+    return &User{Email: input.Email}, nil
+}
+
+func TestUserService_Create(t *testing.T) {
+    svc := NewUserService(credo.Infra{Logger: slog.New(slog.DiscardHandler)}, fakeUserStore{})
+
+    user, err := svc.Create(t.Context(), CreateUserInput{Email: "alice@example.com"})
+    if err != nil {
+        t.Fatalf("Create: %v", err)
+    }
+    if user.Email != "alice@example.com" {
+        t.Fatalf("Email = %q, want %q", user.Email, "alice@example.com")
+    }
 }
 ```
 
 Infra is a plain struct --- construct it directly, no ceremony. Set the Logger your test needs to observe; a zero-value `Infra{}` leaves Logger nil (the default-logger fallback applies only to container-produced Infra).
-
----
-
-## Test Requirements
-
-### Registration
-
-- `Provide[T]` with valid constructor succeeds
-- `Provide[T]` with non-function constructor panics with the call site's message
-- `Provide[T]` with nil constructor panics with the call site's message
-- Duplicate `Provide[T]` for same type panics
-- `ProvideValue[T]` registers value as Singleton
-- `Provide[T]`, `ProvideValue[T]`, `Alias[I, T]` and `BindMany[I, T]` after `Finalize()`, and after shutdown began, panic with the call site's message
-- `Has[T]` reports constructor, value and alias registrations without constructing; it reserves nothing, so an override after `Has` still replaces the binding
-- `Manage` after `Finalize` panics with the call site's message
-- Option misuse panics: `Borrowed` on `Provide`; `Closer` on a type without `Close`, on a component, beside `Borrowed`; `Override` without an earlier binding; `Ingress` on a binding that is not a component at registration
-- `Override` replaces before `Finalize`; `testutil.WithOverride` panics without an earlier binding, and a test that relied on its old upsert moves to `WithWiring`
-- A `ResourceIdentity()` that panics or returns a non-comparable token panics at `ProvideValue` and fails a constructor's construction; holders that disagree on the owner, or on the teardown kind, panic at the later `ProvideValue` call or fail the later construction, in either build order, naming both bindings and both remedies; `Manage` of a resource a binding holds, and of one resource twice, panics
-
-### Aliasing
-
-- `Alias[I, T]` succeeds when T is registered and implements I
-- `Alias[I, T]` panics when I is not an interface
-- `Alias[I, T]` panics when T does not implement I
-- `Alias[I, T]` panics when T is not registered
-- `Alias[I, T]` panics when I already has a registration or alias
-- `Alias[I, T]` after `Finalize()` panics
-- `Resolve[I]` after `Alias[I, T]` returns the T singleton
-
-### Ordered Collections
-
-- `BindMany[I, T]` succeeds when T is registered, concrete, and implements I
-- `BindMany[I, T]` panics when I is not an interface
-- `BindMany[I, T]` panics when T is an interface type
-- `BindMany[I, T]` panics when T does not implement I
-- `BindMany[I, T]` panics when T is not registered
-- `BindMany[I, T]` panics when the same `(I, T)` pair already exists
-- `BindMany[I, T]` after `Finalize()` panics
-- `ResolveAll[I]` preserves bind order
-- `ResolveAll[I]` returns `[]I{}` when no bindings exist
-- `[]I` constructor injection preserves bind order
-- Direct registrations for `[]I` take precedence over `BindMany`
-- Collection-based cycles are detected during `Seal()`
-
-### Finalize / Seal
-
-- `app.Finalize()` returns nil when dependency graph is valid
-- `app.Finalize()` returns error listing missing dependencies, each with its full path
-- `app.Finalize()` with two missing dependencies and a cycle returns all three, in registration order
-- `Seal()` detects circular dependencies with clear cycle description
-- `Seal()` detects `context.Context` constructor parameters and returns error
-- `app.Finalize()` is idempotent --- second call returns same result
-- `app.Finalize()` freezes container --- subsequent `Provide`/`Alias` panic
-- `Resolve` before `Finalize()` panics without running a constructor; after a failed `Finalize()` it returns the `Finalize` error
-- `Run()` and the first direct `ServeHTTP` call `Finalize()` implicitly; explicit `Finalize()` leaves route registration open
-
-### Validation (via Seal)
-
-- `Seal()` returns nil when all dependencies are resolvable
-- `Seal()` returns error listing missing dependencies
-- `Seal()` detects circular dependencies (A -> B -> A) with clear cycle description
-- `Seal()` reports error for `context.Context` constructor parameters
-- `Seal()` reports errors in registration order with identical text on every run, every cycle included
-- Registration order does not matter --- A depending on B registered after A is valid
-
-### Resolution
-
-- `Resolve[T]` returns correct instance
-- `Resolve[T]` for unregistered type returns error
-- `MustResolve[T]` panics on missing registration
-- Singleton: same instance returned on multiple `Resolve` calls
-- Constructor returning error: error propagated to `Resolve` caller
-- Constructor panic: one construction, every concurrent and later caller receives the same terminal `DIPanicError` (type, phase, value, stack); a dependent constructor fails through its parameter; `Shutdown` still returns nil
-
-### Infra Production
-
-- Constructor with `credo.Infra` param (Model 1): Infra produced with scoped Logger
-- Pure constructor (no Infra): all params resolved normally, no Infra magic
-- Logger scoped with `"service"="TypeName"`
-- No logger configured: framework default (stderr) logger used, no error
-
-### Infra Zero-Value
-
-- `Infra{}` (zero value) is constructible; Logger stays nil until set
-- In tests, `Infra{Logger: customLogger}` works without container
-
-### Lifecycle
-
-- The internal tier closes consumers before their dependencies regardless of registration order, with reverse registration order as the tie-break; the ingress tier stops its unordered components concurrently
-- Aliases and collection members close once; an intermediate that is no component keeps transitive order
-- Closing rejects new `Resolve` calls with `ErrDIClosed`, also after a failed Seal and for cached results; a never-finalized container tears down its built values
-- A pending build blocks its dependencies and withholds its result from callers; a failed pending build releases them
-- A hung `Shutdown` is bounded by ctx, is abandoned, keeps its dependencies open (reported `kept_open`), and is never retried; the returned report is immutable
-- A shutdown panic is isolated and reported as a `DIPanicError`; `LifecycleError.Unwrap` exposes every cause
-- Construction finishing after ctx ended gets one five-second late cleanup attempt; full success returns nil
-- `Closer` with each of the three shapes closes after its consumers; the context form receives the deadline; a `Close` that blocks past the deadline is abandoned and reported while its dependencies stay open; on the only holder of a value that also has `Shutdown`, it closes the value once, with `Close`
-- `Borrowed`: never started or shut down by the App while its `Ready` is aggregated; two Apps sharing one borrowed value shut it down zero times; a constructor's wrapper over a borrowed handle is never shut down by the App, though it has `Shutdown`
-- A producer bound under an interface without `Shutdown`, through a constructor and through `ProvideValue`, is shut down exactly once and before its dependencies; a borrowed one is not
-- Resource identity: one pointer under a concrete binding and an adapter's interface view, a value wrapper and its interface view, a handle that identifies itself bound raw and inside an embedding wrapper, and two wrappers over one handle are each torn down once, after the consumers of every holder, through the holder registered first whichever is built first; non-comparable component values are torn down once each without a panic
-- A value with `Start`, `Ready` and `Shutdown` behind an interface that shows none of them is neither started nor asked, and is shut down; a value with `Start` and without `Shutdown` behind an interface is never started
-
-### Concurrency
-
-- `Resolve[T]` is safe for concurrent use after Finalize
-- Concurrent `Resolve` of same Singleton returns same instance (no double-init)
