@@ -1,16 +1,12 @@
 # Middleware Spec
 
-**Status**: Approved **Package**: `middleware/` **Sources**: Chi (MIT), Echo (MIT), Goyave (MIT) **Depends on**: Root package **ADRs**: [010-middleware-architecture](../adr/010-middleware-architecture.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md)
-
----
+**Status:** Implemented (beta) **Package:** `middleware/` **ADR:** [ADR-010](../adr/010-middleware-architecture.md), [ADR-018](../adr/018-host-routing-and-rewrite.md) **Guide:** [Middleware guide](../guides/middleware.md) **Sources:** Echo (MIT), Goyave (MIT), go-limiter (Apache-2.0)
 
 ## Overview
 
-Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model (Global / Group / Route) provides fine-grained control over which middleware runs where. URL rewriting is implemented as middleware at the global/group layer when path normalization must happen before route matching.
+Credo middleware returns `credo.Middleware` (`func(Handler) Handler`). Stdlib middleware works via `WrapStdMiddleware` adapter. A 3-tier execution model (Global / Group / Route) provides fine-grained control over which middleware runs where. URL rewriting is implemented as global middleware when path normalization must happen before route matching.
 
-Panic recovery, request IDs, access logging, response compression, request-body decompression and locale detection are not middleware. They are framework-owned HTTP features of the root package, installed once per App (`WithRecoverConfig`/`WithoutRecover` for recovery, `app.UseRequestID`, `app.UseAccessLog`, `app.UseCompress`, `app.UseDecompress`, `app.UseI18n` for the rest) and run by one request executor in a fixed order around the whole user chain. The [HTTP features spec](http-features.md) is their contract; this document covers the user chain and the `middleware` package.
-
----
+Panic recovery, request IDs, access logging, response compression, request-body decompression and locale detection are framework-owned HTTP features, not middleware: user middleware runs inside the feature executor, whose order and contract the [HTTP features spec](http-features.md) defines. This document covers the user chain and the `middleware` package.
 
 ## Signatures
 
@@ -28,33 +24,20 @@ Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddlewar
 app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
 ```
 
-Adapted stdlib middleware is deliberately second-class: it sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), or the renderer. If it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's error pipeline — only responses produced by calling `next` flow back through centralized handling. The first-class path for anything that needs the principal or the error pipeline is a native `func(Handler) Handler`. See [ADR-010](../adr/010-middleware-architecture.md) and [ADR-012](../adr/012-authentication-and-authorization.md).
+Adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`. A response it writes to the `ResponseWriter` by itself bypasses Credo's error pipeline; only responses produced by calling `next` flow back through centralized handling ([why](../adr/010-middleware-architecture.md#stdlib-adapter)).
 
 A response the middleware writes by itself is still observed, because the adapter hands it a recording writer. When the middleware returns, `Response.Status()`, `Size()` and `Committed()` report what it wrote and the access record carries that status and byte count. An error returned further up the chain, or a panic in the middleware after it answered, is logged (`credo: error after response committed`) instead of appending an error body to the response already sent. The record follows `net/http`: a 1xx status other than 101 is informational, a body write or a flush without a status commits 200, and the first status wins. A connection the middleware hijacks is reported by `Response.Hijacked()`; the error pipeline then writes nothing to it and the response compressor is abandoned rather than flushed into it.
 
 What the chain writes through `Response` is counted by `Response` alone, so nothing is counted twice; bytes the middleware adds around a response the chain wrote are not part of `Size()`. The recording writer forwards `Flush`, `Hijack`, `ReadFrom` (a file served behind the middleware keeps sendfile) and `Push`, and exposes the underlying writer through `Unwrap` for `http.ResponseController`.
 
----
-
 ## Framework Features Around the Chain
 
-The request executor (`executor.go`) wraps the compiled user chain. Per admitted request it runs, in this fixed order and independently of `Use*` call order:
+The request executor wraps the compiled user chain in a fixed order ([request execution](http-features.md#request-execution)). For middleware authors:
 
-```
-RequestID → AccessLog start → Decompress → Compress writer
-  → Global middleware → dispatch → Group middleware → Route middleware → Handler
-  → centralized error rendering → recovery → compressor finalization
-  → AccessLog observation → Context release
-```
-
-Consequences for middleware authors:
-
-- Global middleware already sees the request ID (`ctx.RequestID()`, empty when `UseRequestID` is not installed), the decoded body when `UseDecompress` applied, and writes through the compressing writer when `UseCompress` negotiated an encoding. Error envelopes produced after the chain are compressed like handler output.
-- The access record is observed after error rendering, recovery and compressor finalization, so its status, bytes and duration are final. Middleware cannot alter or replace it; use `AccessLogConfig` (Skipper, MinLevel, ResultFilter, Logger) and the `credo.MetaAccessLog` route meta for selection.
-- Recovery is the outermost layer and covers middleware, handlers and every feature callback. There is no per-group or per-route recovery; a group that needs its own panic policy writes an ordinary middleware that recovers and returns an error.
-- The `request_id` attribute is added to access and panic records only when the target logger does not already carry it (a dedicated logger, or no request-scoped logger). Middleware that enriches the logger should derive from `ctx.Logger()` through `ctx.AddLogAttrs`; a wholesale `ctx.SetLogger` replacement drops the ID and the framework cannot detect it.
-
----
+- Global middleware already sees the request ID (`ctx.RequestID()`, empty when `UseRequestID` is not installed), the decoded body when `UseDecompress` applied, and writes through the compressing writer when `UseCompress` negotiated an encoding.
+- The access record is observed after the chain and cannot be altered or replaced by middleware; select it with `AccessLogConfig` and the `credo.MetaAccessLog` route meta.
+- Recovery has no per-group or per-route variant; a group that needs its own panic policy writes an ordinary middleware that recovers and returns an error.
+- Middleware that enriches the logger derives from `ctx.Logger()` through `ctx.AddLogAttrs`; a wholesale `ctx.SetLogger` replacement drops the request ID ([request_id sourcing](http-features.md#observability-contract)).
 
 ## 3-Tier Model (Goyave-inspired)
 
@@ -82,11 +65,11 @@ Response
 
 ### Group Middleware Is Collected at Compile Time
 
-A route's chain is assembled when the app compiles (at `Run()` or the first request), by walking the route's group parent chain — the same model `LookupMeta` uses for metadata. Middleware added to a group after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
+A route's chain is assembled when the App prepares to serve ([preparation](lifecycle.md#preparation)), by walking the route's group parent chain — the same model `LookupMeta` uses for metadata. Middleware added to a group after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
 
 ### Why Global Tier Matters
 
-Without a global tier, 404/405 responses bypass all group/route middleware — no CORS headers, no security headers. The global tier ensures these cross-cutting concerns always run. (Recovery, request IDs, access logging and compression are framework features and cover 404/405 as well.)
+Without a global tier, 404/405 responses bypass all group/route middleware — no CORS headers, no security headers. The global tier ensures these cross-cutting concerns always run.
 
 ```go
 app, err := credo.New()
@@ -110,8 +93,6 @@ api := app.Group("/api")
 api.Middleware(middleware.RateLimit())
 ```
 
----
-
 ## Meta-Driven Middleware (Goyave-inspired)
 
 Middleware can read Route Meta to change behavior per-route declaratively, instead of hardcoding path checks.
@@ -120,7 +101,8 @@ Middleware can read Route Meta to change behavior per-route declaratively, inste
 // Auth middleware — checks Meta instead of path list
 func Auth(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
-        if val, ok := ctx.Route().LookupMeta("auth"); ok && val.(bool) {
+        val, _ := ctx.Route().LookupMeta("auth")
+        if required, _ := val.(bool); required {
             token := ctx.Request().Header.Get("Authorization")
             if !validateToken(token) {
                 return credo.NewHTTPError(401, "unauthorized")
@@ -139,6 +121,8 @@ api.GET("/users", listUsers)                          // authenticated
 api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
 ```
 
+`LookupMeta` returns the value and whether any scope set the key; the two-value type assertion treats a missing or non-bool value as `false` instead of panicking. `ctx.Route()` is nil until dispatch has matched a route — in global middleware before `next` runs and on the router's own 404/405 — so register meta-reading middleware on a group or route, as here, or guard the call with `ctx.HasRoute()` ([route meta](router.md#route-meta-system-goyave-inspired)).
+
 ### Framework Meta Keys
 
 These keys are read by framework features and framework middleware. Application middleware may also define its own convention keys — the `"auth"` key in the example above is one such user-defined key, not a framework key.
@@ -153,15 +137,15 @@ These keys are read by framework features and framework middleware. Application 
 | `middleware.MetaAPIVersion` (`"api_version"`) | `string` \| `[]string` | `ContractGuard` — 400 on version mismatch |
 | `middleware.MetaScope` (`"scope"`) | `string` \| `[]string` | `ContractGuard` — 403 (requires `ScopeChecker`) |
 
+Register `ContractGuard` as group or route middleware: it reads the matched route's meta, and global middleware runs before a route has matched, so as global middleware the guard does nothing.
+
 `ContractGuard` matches these types exactly; a `[]any` whose elements are all strings is read like a `[]string`. A declared contract is never skipped: when the guard reaches a value of any other type — a named string type (`type Scope string`), `nil`, a `[]any` holding a non-string element, an unsigned or floating-point `MetaMaxBody` — it rejects the request with the generic 500 instead of calling the handler. The cause (route, meta key, the value's Go type and the fix) is the error's internal cause, so it appears once in the server-error log and never in the response. No reflection is involved, and the accepted set does not grow to named types: the declaration converts (`string(scope)`).
 
 A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `"*/*"` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `nil` is not a contract value and lifts nothing.
 
----
-
 ## Config Struct Pattern (Echo-inspired)
 
-Complex middleware provides both default and configurable constructors:
+Each constructor takes `cfg ...XConfig`: no argument selects `DefaultXConfig()`, one argument customizes.
 
 ```go
 // Default config
@@ -174,8 +158,6 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 }))
 ```
 
----
-
 ## Middleware Catalog
 
 | Middleware | Source | Description |
@@ -185,10 +167,10 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
 | `RateLimit` | go-limiter | Token bucket rate limiting. Default key uses `Request.RealIP()` |
-| `Timeout` | Echo | Request timeout |
+| `Timeout` | Echo | Request timeout through a cooperative context deadline that handlers observe via `ctx.Context()` |
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
-Recovery, request IDs, access logging, response compression and request decompression are framework features, not entries in this catalog; see the [HTTP features spec](http-features.md).
+Authentication is `auth.Middleware[T]` with the `auth` package's authenticators (Basic, API key, JWT); see the [auth spec](auth.md).
 
 ### Rewrite
 
@@ -202,7 +184,7 @@ type RewriteConfig struct {
 }
 ```
 
-`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. It follows the package-wide config-struct convention (`Middleware(cfg ...Config)`): the single `RewriteConfig` argument carries the `Rules` list and an optional `Skipper`; there is no rule-list variadic form and no `RewriteWithConfig` twin.
+`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. It follows the package-wide config-struct convention (`Middleware(cfg ...Config)`): the single `RewriteConfig` argument carries the `Rules` list and an optional `Skipper`.
 
 ```go
 type RewriteRule struct {
@@ -228,7 +210,7 @@ type RewriteRule struct {
 
 **Placement:**
 
-Register rewrite as global middleware when it should affect routing for the whole app:
+Register `Rewrite` as global middleware when routing must see the rewritten path:
 
 ```go
 app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
@@ -236,9 +218,9 @@ app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middle
 }}))
 ```
 
-Register `Rewrite` as global middleware when routing must see the rewritten path. When attached at group or route scope, it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.
+At group or route scope it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.
 
-When a handler later calls `ctx.Rewrite()`, framework features and global middleware do not run again. Group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind.
+When a handler later calls `ctx.Rewrite()`, framework features and global middleware do not run again. Group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind. The [context spec](context.md#rewrite) defines `ctx.Rewrite`.
 
 ### CSRF
 
@@ -263,25 +245,15 @@ Wraps the standard library's `net/http.CrossOriginProtection`: cross-origin dete
 - `Origin` matching the `Host` header passes (pre-2023 browsers).
 - Everything else is rejected — **including `Sec-Fetch-Site: same-site`**: subdomains are cross-origin, so `app.example.com` → `api.example.com` needs `TrustedOrigins: []string{"https://app.example.com"}`.
 
-**Credo integration:** QUERY bypasses Go 1.27's older GET/HEAD/OPTIONS-only safe list, then every other method is passed to the detector's `Check` method. Rejections flow through the framework error pipeline — the default `ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason attached as internal error (default Credo envelope; the reason is logged at debug level and never exposed). The stdlib deny handler is not used.
+**Credo integration:** QUERY bypasses Go 1.27's older GET/HEAD/OPTIONS-only safe list, then every other method is passed to the detector's `Check` method. Rejections flow through the framework error pipeline — the default `ErrorHandler` returns `credo.NewHTTPError(403)` with the detector's reason attached as internal error ([default error envelope](../adr/009-handler-and-error-handling.md#default-error-envelope); the reason is logged at debug level and never exposed). The stdlib deny handler is not used.
 
 QUERY being safe and QUERY requiring CORS preflight are separate properties. A browser cannot send a cross-origin fetch/XHR QUERY without preflight, and HTML forms or navigation cannot produce QUERY, so the classic preflight-free CSRF channel does not exist. Treating QUERY as state-changing is a protocol violation; CSRF middleware does not compensate for it. CORS's default method list includes QUERY so a default-config preflight can authorize the request.
 
-No test pins the stdlib's own handling of QUERY. A Go release that adds QUERY to `CrossOriginProtection`'s safe methods is a correct upstream improvement after which Credo's bypass is redundant, not wrong; a canary that failed on it would break the suite or cap the toolchain, so none is added.
+No test pins the stdlib's own handling of QUERY ([why](../adr/010-middleware-architecture.md#csrf-through-crossoriginprotection)).
 
 **Panics** if a `TrustedOrigins` entry is malformed or an `InsecureBypassPatterns` entry is invalid/conflicting — middleware construction is startup configuration (fail-fast, panic-vs-error policy).
 
 CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
-
-### Planned (Not Yet Implemented)
-
-| Middleware  | Source | Description                     |
-| ----------- | ------ | ------------------------------- |
-| `BasicAuth` | Echo   | HTTP Basic authentication       |
-| `APIKey`    | Echo   | API key (header/query)          |
-| `JWT`       | Echo   | JWT token validation            |
-| `Metrics`   | GoFr   | Prometheus request metrics      |
-| `Tracer`    | GoFr   | OpenTelemetry trace propagation |
 
 ### RateLimit Lifecycle
 
@@ -293,40 +265,16 @@ app.GlobalMiddleware(rl.Middleware())
 app.Manage(rl, credo.Named("ratelimiter"))
 ```
 
----
+### Planned (Not Yet Implemented)
+
+| Middleware | Source | Description                     |
+| ---------- | ------ | ------------------------------- |
+| `Metrics`  | GoFr   | Prometheus request metrics      |
+| `Tracer`   | GoFr   | OpenTelemetry trace propagation |
+
+Both arrive with the observability release ([ADR-014](../adr/014-observability.md)).
 
 ## Design Decisions
 
-1. **Credo-native signature as primary** — `func(Handler) Handler` provides full access to `credo.Context` and error returns. Stdlib middleware is adapted via `WrapStdMiddleware`, keeping the community ecosystem accessible.
-
-2. **3-tier model from Goyave** — Global/Router/Route tiers give precise control. Global tier solves the 404/405 middleware gap present in Chi/Echo.
-
-3. **Meta-driven behavior from Goyave** — Middleware reads route metadata instead of maintaining allowlists/denylists. Declarative and composable.
-
-4. **Config struct pattern** — `Middleware(cfg ...Config)` for optional configuration. Zero args for defaults, one arg for custom config.
-
-5. **Rewrite lives in middleware, not router config** — Stateless path normalization belongs in the middleware tier so it can be registered, scoped, and composed like other cross-cutting concerns. Conditional internal forwarding remains on `ctx.Rewrite()`.
-
-6. **CSRF via stdlib `CrossOriginProtection`, not token plumbing** — token/double-submit-cookie CSRF requires session state, template helpers, and header plumbing across the stack; `Sec-Fetch-Site` has shipped in all browsers since 2023 and reduces the problem to a header check. Credo wraps the stdlib detector (maintained upstream, security patches ride Go releases) and only adds config-struct ergonomics plus error-pipeline integration. Older-browser fallback (Origin/Host comparison) is inherited from the stdlib.
-
-7. **Framework features are not middleware** — Recovery, request IDs, access logging, compression, decompression and locale detection need to see the final response (after error rendering and recovery), the original request (before rewrites and body transformation), or both. A middleware position cannot give them that, so the root package owns them with one registration each and one fixed execution plan; the per-route/per-group variants that used to live in this package were removed rather than kept as compatibility wrappers ([ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion)).
-
----
-
-## File Layout
-
-```
-middleware/
-├── rewrite.go      Pre-dispatch path rewriting
-├── cors.go         CORS with config struct
-├── csrf.go         CSRF via stdlib CrossOriginProtection
-├── secure.go       Security headers
-├── ratelimit.go    RateLimit + NewRateLimiter API
-├── ratelimit_store.go Internal in-memory limiter store
-├── timeout.go      Request timeout
-├── contractguard.go Declarative per-route request contracts
-├── skipper.go      Shared skipper type
-├── configresolve.go Shared config default/override/normalize helper
-├── doc.go
-└── *_test.go       Tests alongside source
-```
+- The single middleware type with its stdlib adapter, the Global/Group/Route tiers, meta-driven behavior, the config struct pattern, CSRF through the stdlib detector, and the framework features outside the chain are recorded in [ADR-010](../adr/010-middleware-architecture.md).
+- Pre-dispatch rewrite as middleware rather than router configuration, with conditional internal forwarding on `ctx.Rewrite()`, is recorded in [ADR-018](../adr/018-host-routing-and-rewrite.md#rejected-alternatives).

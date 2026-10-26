@@ -1,10 +1,6 @@
 # ADR-010: Middleware Architecture
 
-**Status:** Accepted **Date:** 2026-03-01 **Last revised:** 2026-09-19 **Depends on:** ADR-007, ADR-008
-
-**2026-09-19 amendment (v0.21.0):** the managed server's start line lists the built-in features in effect; see [Startup visibility of effective features](#startup-visibility-of-effective-features).
-
-**2026-09-05 amendment (HTTP minor):** panic recovery, request IDs, access logging, response compression, request decompression and locale detection left the middleware tiers and became framework-owned HTTP features with one registration path each. The built-in middleware tier, the `middleware.Recover`/`RequestID`/`AccessLog`/`Compress`/`Decompress` constructors, the `WithoutRequestID`/`WithoutAccessLog`/`WithAccessLog*` options and the renderer setters were removed in the same change. The [HTTP features spec](../specs/http-features.md) is the feature contract; this ADR records the decision and the middleware model around it.
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007, ADR-008 **Related:** ADR-001, ADR-005, ADR-009, ADR-012, ADR-013, ADR-014, ADR-016, ADR-018 **Specification:** [Middleware spec](../specs/middleware.md), [HTTP features spec](../specs/http-features.md) **Guide:** [Middleware guide](../guides/middleware.md)
 
 ## Context
 
@@ -12,42 +8,11 @@ Middleware is the primary extension mechanism for a web framework. It intercepts
 
 Credo needs a middleware model that supports three scopes (global, group, route), integrates with route metadata, and interoperates with the Go stdlib ecosystem.
 
-Pre-dispatch rewrite middleware and its interaction with handler-level re-dispatch are documented in ADR-018.
+Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect.
+
+Pre-dispatch rewrite middleware and its interaction with handler-level re-dispatch are documented in [ADR-018](018-host-routing-and-rewrite.md). The [middleware spec](../specs/middleware.md) is the user-chain contract and the [HTTP features spec](../specs/http-features.md) the feature contract; this ADR records the decisions and their rationale.
 
 ## Decision
-
-### Built-in HTTP Feature Configuration Criterion
-
-The default activation policy determines the public configuration path for selectable built-in HTTP features:
-
-| Default | Sole public path | Application |
-| --- | --- | --- |
-| On | Constructor configuration plus a `Without*` opt-out | `WithRecoverConfig(cfg)` configures recovery; `WithoutRecover()` disables it |
-| Off | A `Use*(config)` registration that activates and configures the feature | RequestID, AccessLog, Compress, Decompress and i18n; custom error/success renderers use their own `Use*` registrations |
-
-Recovery's constructor config does not re-enable it: `WithoutRecover()` takes precedence regardless of option order. No separate positive recovery activation helper exists. Optional features have one successful registration, including a `UseI18n` whose start phase finds no catalogs and leaves i18n inactive; they do not also expose constructor fields/options, configuration setters, or an `Enabled` switch for the same decision. Applications evaluate external enable flags in bootstrap code before calling `Use*`. Required feature config travels as one typed value rather than a family of per-field helpers.
-
-The criterion concerns feature activation, not every zero-valued setting. Foundational App inputs such as logger, raw configuration, server/TLS and network timeouts remain constructor settings. Mandatory protocol/error handling is not made optional by this rule. Request-state and route-meta mutators keep their separate purpose.
-
-Custom renderer installation is optional even though core error rendering always exists. A renderer may be bound from a DI-resolved object during bootstrap, so `UseErrorRenderer` and `UseSuccessRenderer` provide their sole registration path; there are no constructor duplicates and no setters. The core pipeline retains its default rendering when no extension is registered.
-
-`Use*` registers a feature once during HTTP setup. Invocation order does not determine execution order, and registration ends at the shared HTTP preparation/shutdown gate ([bootstrap and DI lifecycle](../specs/bootstrap-and-di-lifecycle.md)); DI `Finalize` alone does not freeze HTTP setup. AccessLog activation does not govern framework/application diagnostic logs, which continue through their normal levels and logger filtering.
-
-### Startup visibility of effective features
-
-**Accepted 2026-09-19, implemented in v0.21.0.** The criterion above makes most features default-off, and the HTTP minor turned request IDs and access records from default-on to default-off. Code that relied on the old defaults kept compiling and silently stopped producing both — a change visible only to someone who read the migration table. Nothing at runtime says which features are in effect.
-
-The managed start line, `credo: server started`, carries one `features` attribute: a string array of the built-in features in effect, in a fixed display order (`recover`, `request_id`, `access_log`, `decompress`, `compress`, `i18n`, `error_renderer`, `success_renderer`, `health`). The list is derived from the App's effective state after the start phase, not from registration calls: recovery comes from constructor options rather than a `Use*` call, a `UseI18n` whose start phase finds no catalogs consumes its registration without activating i18n, and `UseHealth` with both probes disabled creates its engine but mounts no probe. A default App reports `["recover"]`; when nothing is on, the attribute is an empty array. The [HTTP features spec](../specs/http-features.md#startup-visibility) defines the names and the derivation.
-
-The attribute is a permanent diagnostic, not a migration aid, in keeping with observable-by-default. It is written only by managed serving; an application that serves through its own `http.Server` and `ServeHTTP` has no start line, and none is added on the first request. It reports installation, not delivery: an installed access log can still be filtered per request. Rejected: a separate startup line (the start line already exists and carries the address); a Warn for each feature that is off (default-off is this ADR's deliberate choice, and a warning on every start would train operators to silence it); a public feature-introspection API or registry (no consumer needs more than the log line).
-
-### Framework features around the user chain
-
-Recovery, RequestID, AccessLog, i18n, Compress and Decompress are framework-owned HTTP processing around the three Global/Group/Route user middleware tiers. One request executor owns request initialization, the user chain, centralized error and panic handling, response finalization, optional access logging and Context release. It observes the final response after error rendering and compressor finalization, keeps framework diagnostics independent from access logging, and applies the installed features in one fixed plan whatever the `Use*` call order.
-
-Why not middleware: these features need to see the final response (status after error rendering and recovery, bytes after compression), the original request (transport selection before rewrites and body transformation), or both. A middleware position gives neither, which is why the previous built-in tier had to infer the final status from a pre-render error and why the configurable `middleware.AccessLog` observed an earlier boundary than the built-in one. Moving them into the executor gives one authoritative observation and removes the duplicate implementations. The price is that these features cannot be scoped per group or route; an application that needs route-specific policy writes ordinary middleware (for example a group-level recover-and-return-error wrapper) or uses the selection knobs the features expose (`Skipper`, `MetaAccessLog`, `ResultFilter`).
-
-The lazy `Detect(*Context)` locale contract memoizes one detection per request; Decompress precedes Global middleware with original-request selection; AccessLog counts post-compression body bytes and measures duration through finalization. Callback failures follow the recovery configuration, with a callback-free error-render fallback, post-response filter failure isolation and no second body after commitment. Genuine setup errors leave registration retryable; a successful inactive i18n configuration consumes its slot. Timeout, CORS, CSRF, Secure, RateLimit, Rewrite and ContractGuard remain user middleware because their route/group scope and their order relative to application policy are useful.
 
 ### Single Middleware Type
 
@@ -65,11 +30,7 @@ Request → Global MW → Group MW → Route MW → Handler
 Response ← Global MW ← Group MW ← Route MW ← Handler
 ```
 
-| Tier   | Registration                 | Scope                           |
-| ------ | ---------------------------- | ------------------------------- |
-| Global | `app.GlobalMiddleware(m...)` | All requests, including 404/405 |
-| Group  | `group.Middleware(m...)`     | Routes under that group         |
-| Route  | `route.Middleware(m...)`     | Single route only               |
+Global middleware (`app.GlobalMiddleware`) runs on every request, group middleware (`group.Middleware`) on the routes under that group, route middleware (`route.Middleware`) on a single route; the [middleware spec](../specs/middleware.md#3-tier-model-goyave-inspired) defines the tiers and their order.
 
 **Global middleware runs even on 404/405.** This ensures CORS and security headers are always present. Framework features cover 404/405 as well.
 
@@ -77,104 +38,87 @@ Response ← Global MW ← Group MW ← Route MW ← Handler
 
 ### Compile-Time Chain Building
 
-Middleware chains are precompiled at startup (during `compile()`):
+Middleware chains are precompiled when the App prepares to serve:
 
 1. Per-route: group middlewares + route middlewares + handler → single compiled `Handler`
 2. Global: global middlewares + dispatch → single compiled `Handler`
 
 At runtime, `ServeHTTP` applies the lifecycle admission gate and hands the request to the executor, which runs the installed framework features around the precompiled global chain. Dispatch looks up the matched route and calls its precompiled chain. Zero allocation, no slice iteration on the hot path.
 
+Because the chains are built once, middleware, route and feature registration closes when the App prepares to serve or admits shutdown, and a later call panics ([registration guards](../specs/lifecycle.md#registration-guards)). DI `Finalize` alone does not close it, so DI-resolved controllers and renderers can still be registered after it.
+
 ### Meta-Driven Behavior
 
-Middleware reads route metadata declaratively instead of being configured per-route:
-
-```go
-// Registration: declare intent
-app.GET("/admin", adminHandler).SetMeta("auth", true).SetMeta("permission", "admin")
-
-// Middleware: reads meta, acts accordingly
-func AuthMiddleware(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        if auth, _ := ctx.Route().LookupMeta("auth").(bool); !auth {
-            return next(ctx) // skip auth
-        }
-        // validate token...
-        return next(ctx)
-    }
-}
-```
-
-`LookupMeta` walks the parent chain (route → group → app) for inherited values.
+Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta`, and the middleware reads it with `LookupMeta`, which walks the parent chain (route → group → app) for inherited values. The [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) shows the pattern and lists the framework's own meta keys.
 
 ### Config Struct Pattern
 
-Middleware with options uses an optional config parameter:
+Configurable middleware takes `cfg ...Config`: no argument selects the defaults, one argument customizes ([example](../specs/middleware.md#config-struct-pattern-echo-inspired)). Framework features follow the same shape at registration: `app.UseAccessLog()` for defaults, `app.UseAccessLog(credo.AccessLogConfig{...})` for customization, at most one config.
 
-```go
-// Zero-config (sensible defaults)
-app.GlobalMiddleware(middleware.CORS())
+### Stdlib Adapter
 
-// Custom config
-app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
-	AllowOrigins: []string{"https://example.com"},
-	AllowMethods: []string{"GET", "POST"},
-}))
-```
+`WrapStdMiddleware` adapts `func(http.Handler) http.Handler` middleware to the Credo chain. It is kept as a deliberate ecosystem escape hatch — the large stdlib-middleware corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the override-friendly boundaries of [ADR-001 goal 3](001-framework-identity-and-goals.md#3-integrated-first-explicit-boundaries) and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), the renderer, or the error pipeline. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`. The [middleware spec](../specs/middleware.md#stdlib-adapter) defines how the adapter records a response the middleware writes itself.
 
-Framework features follow the same shape at registration: `app.UseAccessLog()` for defaults, `app.UseAccessLog(credo.AccessLogConfig{...})` for customization, at most one config.
+### CSRF through CrossOriginProtection
+
+`middleware.CSRF` wraps the standard library's `net/http.CrossOriginProtection` instead of implementing token plumbing. Token or double-submit-cookie CSRF requires session state, template helpers and header plumbing across the stack; `Sec-Fetch-Site` has shipped in all browsers since 2023 and reduces the problem to a header check. Credo wraps the stdlib detector (maintained upstream, so security patches ride Go releases) and adds only config-struct ergonomics, error-pipeline integration and QUERY as a safe method; the older-browser fallback (Origin/Host comparison) is inherited from the stdlib. Token and double-submit-cookie CSRF are rejected for the plumbing they need.
+
+No test pins the stdlib's own handling of QUERY. A Go release that adds QUERY to `CrossOriginProtection`'s safe methods is a correct upstream improvement after which Credo's bypass is redundant, not wrong; a canary that failed on it would break the suite or cap the toolchain, so none is added.
+
+### Framework features around the user chain
+
+Recovery, RequestID, AccessLog, i18n, Compress and Decompress are framework-owned HTTP processing around the three Global/Group/Route user middleware tiers. One request executor owns request initialization, the user chain, centralized error and panic handling, response finalization, optional access logging and Context release. It observes the final response after error rendering and compressor finalization, keeps framework diagnostics independent from access logging, and applies the installed features in one fixed plan whatever the `Use*` call order ([request execution](../specs/http-features.md#request-execution)).
+
+Why not middleware: these features need to see the final response, the original request, or both, and a middleware position gives neither. A middleware can only infer the final status from an error that has not been rendered yet, and an observation at its boundary disagrees with any other observer's on status, bytes and duration. Owning the features in the executor gives one authoritative observation and one implementation of each. The price is that these features cannot be scoped per group or route; an application that needs route-specific policy writes ordinary middleware (for example a group-level recover-and-return-error wrapper) or uses the selection knobs the features expose (`Skipper`, `MetaAccessLog`, `ResultFilter`).
+
+Timeout, CORS, CSRF, Secure, RateLimit, Rewrite and ContractGuard are user middleware because their route/group scope and their order relative to application policy are useful.
+
+### Built-in HTTP Feature Configuration Criterion
+
+The default activation policy determines the public configuration path for selectable built-in HTTP features:
+
+| Default | Sole public path | Application |
+| --- | --- | --- |
+| On | Constructor configuration plus a `Without*` opt-out | `WithRecoverConfig(cfg)` configures recovery; `WithoutRecover()` disables it |
+| Off | A `Use*(config)` registration that activates and configures the feature | RequestID, AccessLog, Compress, Decompress and i18n; custom error/success renderers use their own `Use*` registrations |
+
+Each decision has one public path, so there is never a question of which path wins. Recovery's constructor config does not re-enable it: `WithoutRecover()` takes precedence regardless of option order, and no separate positive recovery activation helper exists. An optional feature has one successful registration — a `UseI18n` that leaves i18n inactive included — and does not also expose constructor fields/options, configuration setters, or an `Enabled` switch for the same decision. Applications evaluate external enable flags in bootstrap code before calling `Use*`. Required feature config travels as one typed value rather than a family of per-field helpers.
+
+The criterion concerns feature activation, not every zero-valued setting. Foundational App inputs such as logger, raw configuration, server/TLS and network timeouts remain constructor settings. Mandatory protocol/error handling is not made optional by this rule. Request-state and route-meta mutators keep their separate purpose.
+
+Custom renderer installation is optional even though core error rendering always exists. A renderer may be bound from a DI-resolved object during bootstrap, so `UseErrorRenderer` and `UseSuccessRenderer` provide their sole registration path; there are no constructor duplicates and no setters. The core pipeline retains its default rendering when no extension is registered.
+
+`Use*` registers a feature once during HTTP setup, and invocation order does not determine execution order. AccessLog activation does not govern framework/application diagnostic logs, which continue through their normal levels and logger filtering.
 
 ### Access-Log Filtering
 
 Access logging is explicit (`app.UseAccessLog(cfg...)`) and observes the final response outside recovery and centralized error rendering, so it is the one authoritative access record. `AccessLogConfig.Logger` selects a dedicated sink without giving up that boundary; the logger is not derived from `ctx.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
 
-Filtering is split by observation phase:
+Filtering is split by observation phase, because each phase knows different things. The `Skipper` runs before routing and sees request data only, which suits blanket path/header skips (metrics scrape, static assets). The `MetaAccessLog` route meta is read once the route is known, so a route or a whole group is silenced declaratively, and a route-level value overrides its group's. `MinLevel` and `ResultFilter` run after the final response and see its status, duration and bytes along with route and request metadata.
 
-- **`AccessLogConfig.Skipper`** — a predicate consulted before routing. Because it runs pre-dispatch, only request-level data is reliable (method, path, headers); `ctx.Route()` and the response status are not yet set. It suits blanket path/header skips (metrics scrape, static assets).
-- **`MetaAccessLog` route meta** — `route.SetMeta(credo.MetaAccessLog, false)` silences a single route, and the same call on a `Group` silences everything under it via `LookupMeta` inheritance. A route-level value overrides a group-level one (the route is read before its parents), so a noisy group can be silenced while one route inside it stays logged. Only a bool `false` silences; any non-bool value is ignored and the request is logged (fail-open). The meta is read at observation time, after the route is known.
-- **`AccessLogConfig.MinLevel`** (`slog.Leveler`) — compares the status-derived record level with a dynamic minimum. `nil` means Info; `slog.LevelVar` permits a concurrency-safe runtime change; a typed-nil provider panics at registration.
-- **`AccessLogConfig.ResultFilter`** (`func(*Context, AccessLogEntry) bool`) — a positive post-response predicate (`true` emits) for status, duration, byte count, route, request ID, and request/user metadata. The pooled Context is synchronous-only and callbacks must be concurrency-safe. A panic in the filter is a framework `Error` diagnostic and skips the record; the completed response is unaffected.
-
-The exact order is `Skipper → chain → error rendering/recovery/finalization → MetaAccessLog → status/level → MinLevel → AccessLogEntry snapshot → ResultFilter → emit`. `MinLevel` and `ResultFilter` intersect: the filter cannot restore a record rejected by the threshold. Status drives the actual log level (`1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`); `MinLevel` controls admission, never rewrites that level. The default is Info, so an installed access log preserves every status class and keeps the traffic/latency denominator while request metrics remain deferred; high-volume applications opt into Warn or Error.
-
-The attribute set and `"request completed"` emit core remain centralized in `internal/observe.EmitAccessLog`. `AccessLogEntry.RouteName` is filter metadata only and does not silently extend that schema. Request ID snapshotting is independent from emit-time duplicate prevention, so filters always see the ID even when the request-scoped logger already carries it.
-
-Health probes use `MetaAccessLog` internally: `UseHealth` registers `/health` and `/ready` with the meta set to `HealthConfig.LogRequests` (default `false`), so probe traffic is silent unless re-enabled. See [ADR-016](016-health-checks.md).
+Status drives the record's level (`1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`); `MinLevel` controls admission and never rewrites that level, and `ResultFilter` cannot restore a record the threshold rejected. The default is Info, so an installed access log preserves every status class and keeps the traffic/latency denominator while request metrics remain deferred; high-volume applications opt into Warn or Error. The [observability contract](../specs/http-features.md#observability-contract) defines the exact order, the record and its measurements.
 
 #### Alternatives considered
 
-**Default-on access logging** was the original decision (2026-03) and was superseded on 2026-09-05. The argument for it was philosophy #6, "observable by default": the framework's nearest all-in-one peer, GoFr, logs requests by default, while the composable toolkits (Goyave, Hertz, Echo, Chi) default off. The configuration criterion above replaced it: the logging _infrastructure_ stays ready by default (structured `slog`, `Infra.Logger`, server-error bridging, recovery diagnostics), while request correlation and access records are two explicit `Use*` calls. This removed the `WithoutRequestID`/`WithoutAccessLog` opt-outs and the four `WithAccessLog*` field helpers, gave every feature exactly one public path, and keeps plain `New()` free of implicit scaffold behavior; an enterprise scaffold makes the two calls visible instead.
+**Default-on access logging** was rejected. The argument for it is [ADR-001 goal 6](001-framework-identity-and-goals.md#6-observable-by-default), "observable by default": the framework's nearest all-in-one peer, GoFr, logs requests by default, while the composable toolkits (Goyave, Hertz, Echo, Chi) default off. Against it, the configuration criterion above gives every feature exactly one public path and keeps plain `New()` free of implicit scaffold behavior. The logging _infrastructure_ is ready by default (structured `slog`, `Infra.Logger`, server-error bridging, recovery diagnostics), while request correlation and access records are two explicit `Use*` calls; an enterprise scaffold makes the two calls visible.
 
 A **status-code skip list** was rejected. Across the ecosystem request-level skipping is a predicate — Hertz `WithLogConditionFunc(func(ctx, c) bool)`, Echo `Skipper`, Gin `Skip`/`SkipPaths`. Credo keeps the package-wide `Skipper` convention and adds the more general post-response `MinLevel` + `ResultFilter` composition instead of a fixed list.
 
-Changing successful requests to **Debug by default** or enabling a built-in fixed **1/N sampler** was rejected. Both silently weaken the traffic record and conflate the status-derived severity contract with admission. Applications can set `MinLevel` explicitly and implement deterministic request-ID sampling (or concurrency-safe counter sampling) in `ResultFilter`; general metrics and telemetry sampling remain Phase 3.5 work.
+Changing successful requests to **Debug by default** or enabling a built-in fixed **1/N sampler** was rejected. Both silently weaken the traffic record and conflate the status-derived severity contract with admission. Applications can set `MinLevel` explicitly and implement deterministic request-ID sampling (or concurrency-safe counter sampling) in `ResultFilter`; general metrics and telemetry sampling belong to the observability release ([ADR-014](014-observability.md)).
 
-A **second, route-scoped access logger** (the former `middleware.AccessLog`) was removed rather than kept as a compatibility wrapper. It observed returned-error paths before the centralized renderer, so its status, bytes and duration were approximations, and two producers meant two schemas to keep aligned. Route/group selection is now expressed with `MetaAccessLog` and `ResultFilter` on the single record; a deliberate second audit sink is an application middleware.
+A **route-scoped access-log middleware** beside the feature was rejected. A middleware observes returned errors before centralized rendering, so its status, bytes and duration would be approximations, and two producers mean two schemas to keep aligned. Route and group selection uses `MetaAccessLog` and `ResultFilter` on the single record; a deliberate second audit sink is application middleware.
 
-### Stdlib Adapter
+### Startup visibility of effective features
 
-`WrapStdMiddleware` converts stdlib middleware for use with Credo:
+The managed start line, `credo: server started`, carries a `features` attribute listing the built-in features in effect, derived from the App's effective state after the start phase rather than from registration calls ([spec](../specs/http-features.md#startup-visibility)).
 
-```go
-app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
-```
+The attribute is a permanent diagnostic, in keeping with observable-by-default. Rejected: a separate startup line (the start line already exists and carries the address); a Warn for each feature that is off (default-off is this ADR's deliberate choice, and a warning on every start would train operators to silence it); a public feature-introspection API or registry (no consumer needs more than the log line).
 
-The adapter handles request/response writer updates that stdlib middleware may apply (e.g., wrapping the writer, modifying the request).
-
-`WrapStdMiddleware` is kept as a deliberate ecosystem escape hatch — the large `func(http.Handler) http.Handler` corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the "integrated first, override-friendly boundaries" philosophy and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), the renderer, or the error pipeline. A short-circuit that writes directly to the `ResponseWriter` therefore bypasses Credo's centralized envelope; only responses produced by calling `next` flow back through error handling. The adapter still records such a response — its status, size and commit, or a hijack — so the access record and the error pipeline's committed-response guard see it. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`.
-
-### Frozen Guard
-
-Middleware and feature registration panics after the App prepares to serve or admits shutdown:
-
-```go
-app.Run()
-app.GlobalMiddleware(m) // panic: credo: App.GlobalMiddleware called after app was compiled or shut down
-app.UseAccessLog()      // panic: credo: App.UseAccessLog called after app was compiled or shut down
-```
+## Rejected Alternatives
 
 ### Configuration-Driven Activation (Rejected)
 
-Activating or parameterizing middleware from configuration files — framework-read `middleware.*` keys (`middleware.cors.enabled`, `middleware.timeout.duration`) behind a `UseConfiguredMiddleware()` bootstrapper — was considered and rejected. Discoverability: `credo.With*` options and the `middleware` package surface in IDE autocomplete, while stringly-typed config keys do not, and a typo silently disables the middleware it names. Doctrine: Credo's configuration architecture (ADR-005) is built on typed snapshots — string keys never appear in business code — and the framework reading `middleware.*` keys itself would violate the rule it sets. Explicitness (philosophy #3): the middleware stack is part of the application's composition and belongs visibly in code. Environment-dependent parameters remain fully supported the doctrinal way — the application unmarshals its own typed config and passes it to the middleware constructor (`middleware.CORS(middleware.CORSConfig{AllowOrigins: cfg.CORS.Origins})`). The same rule applies to framework features: YAML/JSON may supply application-owned parameters, but only a `Use*` call in code activates a feature.
+Activating or parameterizing middleware from configuration files — framework-read `middleware.*` keys (`middleware.cors.enabled`, `middleware.timeout.duration`) behind a `UseConfiguredMiddleware()` bootstrapper — was considered and rejected. Discoverability: `credo.With*` options and the `middleware` package surface in IDE autocomplete, while stringly-typed config keys do not, and a typo silently disables the middleware it names. Doctrine: Credo's configuration architecture (ADR-005) is built on typed snapshots — string keys never appear in business code. Credo reads its own `server` section, and the `i18n` section once `UseI18n` is called, but no configuration key activates a feature or a middleware; the call in code does. Explicitness ([ADR-001 goal 3](001-framework-identity-and-goals.md#3-integrated-first-explicit-boundaries)): the middleware stack is part of the application's composition and belongs visibly in code. Environment-dependent parameters remain fully supported the doctrinal way — the application unmarshals its own typed config and passes it to the middleware constructor (`middleware.CORS(middleware.CORSConfig{AllowOrigins: cfg.CORS.Origins})`).
 
 ## Consequences
 

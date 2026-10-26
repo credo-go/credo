@@ -1,6 +1,6 @@
 # ADR-018: Host Routing & URL Rewrite
 
-**Status:** Accepted **Date:** 2026-03-12 **Depends on:** ADR-007, ADR-008, ADR-010
+**Status:** Accepted **Date:** 2026-03-12 **Depends on:** ADR-007, ADR-008, ADR-010 **Related:** ADR-009 **Specification:** [Router spec](../specs/router.md), [Context spec](../specs/context.md), [Middleware spec](../specs/middleware.md) **Guide:** [Routing guide](../guides/routing.md)
 
 ## Context
 
@@ -22,109 +22,32 @@ Credo adds host routing as a first-class routing dimension and keeps rewrite as 
 3. `ctx.Rewrite(path)` performs post-match internal re-dispatch.
 4. `ctx.OriginalPath()` preserves the client-sent path across both rewrite forms.
 
-## Host Routing
+### Host Routing
 
-```go
-func (app *App) Host(pattern string) *Group
-```
+Each registered host pattern gets a dedicated mux. Dispatch first matches the request host, selects the matching mux, then performs the normal radix-tree path lookup inside that mux; a request whose host matches no pattern falls back to the default mux. Keeping the host out of the radix tree leaves path matching unchanged and isolates each domain's routes, 404/405 answers and introspection. Returning a `*Group` reuses prefixes, middleware, meta and names for host-scoped routes with no new API. Pattern syntax (static, `{param}`, `{param:regex}`, a leftmost `*`), normalization and the matching rules: [router spec](../specs/router.md#host-based-route-groups).
 
-Each registered host pattern gets a dedicated mux. Dispatch first matches the request host, selects the matching mux, then performs the normal radix-tree path lookup inside that mux.
+When several patterns could match, the most specific wins — a static label over a regex-constrained one over a param or wildcard, compared right to left — rather than the first registered, so a broader pattern registered earlier never shadows a more specific one; registration order only breaks ties between equally specific patterns with different semantics (two regex-constrained labels, say). Host patterns with identical match semantics panic at registration: only registration order would decide between them, and one of them could never be reached. Exact static hosts use a hash-map lookup, so the common case pays no scan.
 
-### Pattern Syntax
+Host params share one namespace with path params and are read through the same `RouteParam`/`RouteParams` accessors; a separate host-param accessor is deliberately not added, so a handler reads every capture the same way. A name used by both the host and the path therefore panics at registration. A wildcard label captures nothing: it matches only, and a route that needs to generate its subdomain uses a named host param. Introspection reports each route's host pattern (`RouteInfo.Host`) across the default mux and every host-scoped mux.
 
-- Static: `api.example.com`
-- Param: `{tenant}.example.com`
-- Regex: `{tenant:[a-z]+}.example.com`
-- Wildcard: `*.acme.io`
+### Pre-Dispatch Rewrite
 
-Patterns are normalized to lowercase and may not include a port. Incoming request hosts are normalized by lowercasing, stripping an explicit port, and trimming a trailing dot.
+`middleware.Rewrite` rewrites the request path before routing, so the first lookup already sees the rewritten path. It is middleware rather than router configuration, so it is registered, scoped and composed like other cross-cutting concerns. It runs once in the normal middleware chain: it does not create a loop and does not re-enter global middleware. Rules are evaluated in order and the first match wins, so overlapping rules resolve predictably. `RewriteConfig`, `RewriteRule` and placement: [middleware spec](../specs/middleware.md#rewrite).
 
-Wildcard `*` is an anonymous single-label match. It captures no parameter, must be the leftmost complete label, and may appear at most once. `*` and `*.io` are valid but broad. `api*.acme.io`, `foo.*.io`, `*.*.acme.io`, `*.{tenant}.acme.io`, and `{tenant}.*.acme.io` panic at registration time.
+### Post-Match Internal Re-Dispatch
 
-### Matching Rules
+`ctx.Rewrite(path)` is a handler-level internal forward for decisions that need handler logic. The handler API stays `return ctx.Rewrite(target)`: the call returns an internal sentinel that the compiled route chain swallows before user middleware sees it, and dispatch owns the loop, re-matching the target within the host scope the request already selected. Framework features and global middleware run once per request, while group and route middleware run again for the newly matched route, since that route may carry different policy. A hard limit of 10 rewrites per request stops loops. The complete rule list (target form, query replacement, committed responses, the limit's error): [context spec](../specs/context.md#rewrite).
 
-- If no host pattern matches, dispatch falls back to the default mux.
-- Matching is case-insensitive.
-- Exact static hosts use a hash-map fast path. Param, regex, and wildcard patterns use the specificity-ordered scan.
-- Specificity wins over registration order:
-  1. static label
-  2. regex-constrained label
-  3. param or wildcard label
-- Comparison is evaluated right-to-left by label.
-- Host patterns with identical match semantics panic at registration time. Param names are ignored for this comparison, and wildcard `*` is equivalent to an unconstrained param. For example, `{a}.acme.io`, `{b}.acme.io`, and `*.acme.io` are identical; `{org:[a-z]+}.acme.io` and `{tenant}.acme.io` are not.
-- Registration order breaks remaining equal-specificity ties.
+### Original Path Preservation
 
-### Host Parameters
+`ctx.OriginalPath()` reports the client-sent wire-form path, captured once before any middleware or rewrite runs and immutable for the request's lifetime, so logs, analytics and debugging see what the client asked for whichever rewrite form ran; the access log adds `path_original` when the served path differs ([context spec](../specs/context.md#originalpath)).
 
-Host params are merged into `ctx.Request().RouteParams()` together with path params. Credo does not introduce a separate host-param accessor.
+## Rejected Alternatives
 
-Because host params and path params share one namespace, registration panics when a host-scoped route reuses the same parameter name in the path.
-
-Wildcard host labels are not host params. They do not appear in `RouteParams()` and cannot be used by `BuildURL` to generate a concrete host; use a named param host pattern when URL generation needs the subdomain value.
-
-### Introspection
-
-Route introspection includes host information through `RouteInfo.Host` and `WalkRoutes`. `*App` itself satisfies the `Routes` introspection interface (`credo.Walk(app, …)`, `credo.WalkRoutes(app, …)`), covering the default mux and all host-scoped muxes; the former `app.Mux()` accessor only returned the app and was removed.
-
-## Pre-Dispatch Rewrite
-
-```go
-func Rewrite(rules ...RewriteRule) credo.Middleware
-
-type RewriteRule struct {
-    Host string
-    From string
-    To   string
-
-    Regexp *regexp.Regexp
-
-    PreserveQuery bool
-}
-```
-
-`middleware.Rewrite` mutates `req.URL.Path` before routing. Rules are evaluated in order and the first match wins.
-
-- `From` uses Credo route syntax unless `Regexp` is provided.
-- `To` expands named placeholders from matched captures.
-- `Host` is an optional exact host filter.
-- If `To` contains a query string, it replaces the current query string.
-- If `To` does not contain a query string and `PreserveQuery` is true, the original query string is preserved.
-- `Rewrite()` panics when called with zero rules.
-
-This middleware runs once in the normal middleware chain. It does not create a loop and does not re-enter global middleware.
-
-## Post-Match Internal Re-Dispatch
-
-```go
-func (ctx *Context) Rewrite(path string) error
-```
-
-`ctx.Rewrite()` is a handler-level internal forward. The handler returns a sentinel error (`errRewrite`), and the leaf wrapper in the compiled route chain swallows it before it reaches user middleware. Dispatch then:
-
-1. reads the rewrite target from Context,
-2. stores the wire-form target on the request (`URL.Path` decoded, `URL.RawPath` when the spellings differ) and `URL.RawQuery`,
-3. clears the previous route params,
-4. re-runs route matching.
-
-Rules:
-
-- The rewrite target must begin with `/` and is a wire-form path; `ctx.Rewrite()` rejects a malformed percent-escape.
-- Re-dispatch stays within the same matched host scope.
-- Group and route middleware run again for the newly matched route.
-- Framework features and global middleware do not run again.
-- A hard limit of 10 rewrites prevents loops.
-- If the limit is exceeded, dispatch returns an error and the normal error pipeline produces a 500 response.
-- If the response is already committed, `ctx.Rewrite()` returns an error.
-
-## Original Path Preservation
-
-```go
-func (ctx *Context) OriginalPath() string
-```
-
-Context captures the original path once in `reset()`, before any middleware or dispatch runs. The value is immutable for the lifetime of the request.
-
-The access log includes a `path_original` attribute when the final served path differs from the original path.
+- _Host labels inside the radix tree_: rejected — it bakes host logic into the path tree every route lookup walks; a selector over per-host muxes keeps the tree unchanged and the domains isolated.
+- _Middleware-only host checks_: rejected — every domain shares one path tree, so routes, 404/405 answers, introspection and named-route metadata cannot be isolated per domain (see Context).
+- _Rewrite as router configuration_: rejected — stateless path normalization belongs in the middleware tier, where it is registered, scoped and composed like other cross-cutting concerns; conditional forwarding stays on `ctx.Rewrite()`.
+- _A single rewrite mechanism_: rejected — normalization must change the path before the first lookup, while a handler-driven forward is decided after a route matched; one mechanism would serve one of the two too early or too late.
 
 ## Consequences
 
@@ -141,4 +64,4 @@ The access log includes a `path_original` attribute when the final served path d
 - Param/regex host matching adds a small linear scan before path lookup. Exact static hosts use a hash-map fast path.
 - Shared route-param namespace requires registration-time collision checks.
 - `ctx.Rewrite()` re-runs group/route middleware, so middleware with side effects must tolerate per-dispatch execution.
-- `BuildURL` auto-fills the host from the route's host pattern; host params are consumed first, then path params. Wildcard host patterns are rejected by `BuildURL` because they do not carry a concrete label value.
+- Wildcard host routes cannot generate URLs; a route that needs URL generation uses a named host param.
