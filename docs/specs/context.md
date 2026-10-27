@@ -1,12 +1,6 @@
 # Context Spec
 
-**Status**: Approved **Package**: Root (`github.com/credo-go/credo`) **Sources**: Echo (MIT) **Depends on**: `internal/radix/` **ADRs**: [011-validation-strategy](../adr/011-validation-strategy.md), [008-context-design](../adr/008-context-design.md), [018-host-routing-and-rewrite](../adr/018-host-routing-and-rewrite.md), [021-json-output-profile](../adr/021-json-output-profile.md)
-
----
-
-## HTTP feature integration
-
-The [HTTP features contract](http-features.md) keeps Context pooled and synchronous. First-use locale detection uses one `Detect(*Context)` callback and request-owned memo state shared by `Locale` and every translation/error/field path; the state is reset with the pooled Context, and an empty locale string is never used as an initialized/inactive test. First access fixes the language, including after early auth failure or request restoration. Detector panic/re-entry caches the default fallback without repeated detection and follows the configured recovery policy. `RequestID` returns empty when the optional request ID feature has installed no ID. The terminal lifecycle 503 bypasses extension callbacks and still releases acquired request state.
+**Status:** Implemented (beta) **Package:** root (`github.com/credo-go/credo`) **ADR:** [ADR-008](../adr/008-context-design.md), [ADR-009](../adr/009-handler-and-error-handling.md), [ADR-011](../adr/011-validation-strategy.md), [ADR-012](../adr/012-authentication-and-authorization.md), [ADR-013](../adr/013-internationalization.md), [ADR-018](../adr/018-host-routing-and-rewrite.md), [ADR-021](../adr/021-json-output-profile.md) **Guide:** [Getting started](../guides/getting-started.md#request-and-response), [Error handling](../guides/error-handling.md), [Routing](../guides/routing.md), [Proxy trust](../guides/proxy-trust.md) **Sources:** Echo (MIT)
 
 ## Overview
 
@@ -21,9 +15,7 @@ Input and output concerns are separated into `Request` and `Response` structs:
 - **Request** — wraps `*http.Request`, provides route params, query shortcuts, and `Bind*` methods ("parse, don't validate").
 - **Response** — wraps `http.ResponseWriter`, provides `JSON`, `Text`, `HTML`, `XML`, `NoContent`, `Redirect`, `Blob`, `Stream` helpers.
 
-Defined in the **root package** (not a sub-package) to avoid collision with stdlib `context`.
-
----
+Defined in the **root package** (not a sub-package) to avoid collision with stdlib `context`. The framework-owned HTTP features that run around the handler chain are specified in the [HTTP features spec](http-features.md), and locale detection in the [i18n spec](i18n.md#detector-contract).
 
 ## API Surface
 
@@ -33,6 +25,8 @@ Defined in the **root package** (not a sub-package) to avoid collision with stdl
 type Context struct {
     // unexported fields — access via methods only (pool safety)
 }
+
+func NewContext(w http.ResponseWriter, r *http.Request) *Context // for testing handlers, renderers and middleware
 
 // Accessors
 func (c *Context) Request() *Request
@@ -48,6 +42,16 @@ func (c *Context) OriginalPath() string    // client path before any rewriting
 func (c *Context) Rewrite(path string) error
 func (c *Context) IsRewriting() bool
 
+// Locale and translation — resolved on first use and memoized for the request
+func (c *Context) Locale() string // "" without UseI18n
+func (c *Context) T(key string, data ...map[string]any) string
+func (c *Context) TPlural(key string, count any, data ...map[string]any) string
+
+// Authenticated user — one slot per type T
+func (c *Context) SetUser[T any](user T)
+func (c *Context) GetUser[T any]() (T, bool)
+func (c *Context) RequireUser[T any]() (T, error) // 401 wrapping ErrUserMissing when absent
+
 // Request-scoped store
 func (c *Context) Set(key string, val any)
 func (c *Context) Get(key string) any
@@ -55,6 +59,8 @@ func (c *Context) Get(key string) any
 // Request context access — the request's context.Context
 func (c *Context) Context() context.Context
 ```
+
+`Locale`, `T` and `TPlural` follow the [i18n spec](i18n.md#detector-contract); the user accessors and `credo.ErrUserMissing` follow the [auth spec](auth.md#user-accessors-generic-context-methods).
 
 ### Request Struct
 
@@ -80,18 +86,22 @@ func (r *Request) BindQuery(target any) error
 
 ```go
 type Response struct {
-    http.ResponseWriter // swappable by writer-wrapping middleware (e.g., compress)
-    // status, size, committed — framework-owned tracking state (unexported)
+    http.ResponseWriter // swappable by the compression feature or a wrapped stdlib middleware
+    // status, size, committed, hijacked — framework-owned tracking state (unexported)
 }
+
+func NewResponse(w http.ResponseWriter) *Response
 
 // State accessors (read-only — the framework owns the tracking state)
 func (r *Response) Status() int     // status code written; 0 until committed
 func (r *Response) Size() int64     // bytes written to the response body
 func (r *Response) Committed() bool // true once the final status is written
+func (r *Response) Hijacked() bool  // true once the connection was taken over
 
-// Existing methods
+// http.ResponseWriter and optional interfaces
 func (r *Response) WriteHeader(code int)
 func (r *Response) Write(b []byte) (int, error)
+func (r *Response) WriteString(s string) (int, error)     // io.StringWriter
 func (r *Response) ReadFrom(src io.Reader) (int64, error) // io.ReaderFrom; see below
 func (r *Response) Flush()            // http.Flusher; see FlushError
 func (r *Response) FlushError() error // preferred by http.ResponseController
@@ -112,13 +122,13 @@ func (r *Response) Stream(code int, contentType string, rd io.Reader) error
 func (r *Response) SetCookie(cookie *http.Cookie)
 ```
 
-`WriteHeader` writes the final status once; later calls are ignored. An informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once with the current headers and commits nothing: `Status()` stays 0, `Committed()` false, and the final status follows, as with net/http. Under `UseCompress` the compression decision waits for that final status too. A code outside 100–999 panics, as net/http's own check does, before `Response` records anything, so recovery still answers with a 500.
+`WriteHeader` writes the final status once; later calls are ignored. An informational status other than 101 — `WriteHeader(103)` for Early Hints — is sent at once with the current headers and commits nothing: `Status()` stays 0, `Committed()` false, and the final status follows, as with net/http. Under `UseCompress` the compression decision waits for that final status too. A code outside 100–999 panics, as net/http's own check does, before `Response` records anything, so recovery still answers with a 500. A final 4xx or 5xx status rewrites an inherited `Cache-Control` value that carries the `immutable` directive (matched case-insensitively) to `no-cache, must-revalidate`, static or not, so an error answered under a cache policy set before its status was known is never cached for an immutable lifetime ([static spec](static.md#cache-control)).
 
 A flush commits the response, as net/http's does: status 200 is written first when no status was, so `Status()` reports 200, `Committed()` true, and an error the handler returns afterwards is logged (`credo: error after response committed`) instead of being appended to the flushed response. `FlushError` reports `http.ErrNotSupported` and commits nothing when no writer in the chain can flush (`http.ErrHijacked` after a hijack); `Flush` discards the result. Under `UseCompress` a flush before the first write makes the compression decision then, from the headers set so far, so the flushed header carries `Content-Encoding`.
 
 Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) treats body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified (RFC 9110) — as status-only: the body **and** the Content-Type header are skipped, the call returns nil, and `Stream`'s reader is never read. Without this, writing a body to such a status fails inside net/http after the header is committed, and the returned error can only surface as a spurious "error after response committed" warning; a 204 also must not advertise a `Content-Type` it does not carry. Handler-set headers (ETag, Cache-Control on a 304) are untouched.
 
-`Response` implements `io.ReaderFrom`, so `Stream` and any `io.Copy` into the response copy a Reader-only source without allocating a buffer per call. On an uncommitted response the first 32 KiB of the source always pass through `Response.Write` from a framework-pooled buffer, so the commit is recorded by `Response` before anything else can fail. When the underlying `http.ResponseWriter` implements `io.ReaderFrom` (net/http's HTTP/1.1 writer, which uses its own pooled buffer and sendfile/splice on a plaintext TCP connection for `*os.File` and socket sources) the rest of a larger source — or the whole source of an already committed response — is delegated to it; otherwise — a compressing or other wrapping writer, HTTP/2 — the copy runs through the pooled buffer and every chunk passes through `Response.Write`. A source implementing `io.WriterTo` writes itself on the pooled path. The bytes the writer accepted count toward `Size()`, a partial-write error is returned with the accepted count, a hijacked response answers `http.ErrHijacked`, and the commit follows `Write`: nothing is committed before the first byte (a source that fails up front leaves the response uncommitted so the handler's error still renders), the first byte commits status 200 when none was written, and a source that panics after its first bytes leaves the response committed — recovery logs the panic, the access record observes the 200 already on the wire, and no error envelope is appended. `Size()` counts the delegated part the same way: the delegated source is wrapped in an `io.LimitedReader` owned by the pooled `Response` (no allocation; the type net's sendfile and splice paths unwrap, so the zero-copy path survives) whose remaining count records what the writer consumed, and a panic in the source after that point still leaves `Size()` — and the access record's bytes — equal to what the client received.
+`Response` implements `io.ReaderFrom`, so `Stream` and any `io.Copy` into the response copy a Reader-only source without allocating a buffer per call. On an uncommitted response the first 32 KiB of the source always pass through `Response.Write` from a framework-pooled buffer, so the commit is recorded by `Response` before anything else can fail. When the underlying `http.ResponseWriter` implements `io.ReaderFrom` (net/http's HTTP/1.1 writer, which keeps its sendfile/splice path for `*os.File` and socket sources on a plaintext TCP connection) the rest of a larger source — or the whole source of an already committed response — is delegated to the writer's `ReadFrom`; otherwise — a compressing or other wrapping writer, HTTP/2 — the copy runs through the pooled buffer and every chunk passes through `Response.Write`. A source implementing `io.WriterTo` writes itself on the pooled path. The bytes the writer accepted count toward `Size()`, a partial-write error is returned with the accepted count, a hijacked response answers `http.ErrHijacked`, and the commit follows `Write`: nothing is committed before the first byte (a source that fails up front leaves the response uncommitted so the handler's error still renders), and the first byte commits status 200 when none was written. A source that panics after its first bytes leaves the response committed: recovery logs the panic, the access record observes the 200 already on the wire, and no error envelope is appended. The delegated source is wrapped in a Response-owned `io.LimitedReader` (no allocation; the type net's sendfile and splice paths unwrap, so the zero-copy path survives) whose remaining count records what the writer consumed, so `Size()` — and the access record's bytes — stay equal to what the client received even when the source panics during delegation.
 
 #### Render and the envelope seam
 
@@ -129,24 +139,61 @@ func (c *Context) Render(status int, data any, opts ...RenderOption) error
 // Side channels for the renderer's envelope; silently dropped with no renderer
 func RenderMessageKey(key string) RenderOption
 func RenderMeta(v any) RenderOption
+
+// Renderers, each installed once with App.UseSuccessRenderer / App.UseErrorRenderer
+type SuccessRenderer func(ctx *Context, info RenderInfo) any
+type ErrorRenderer func(ctx *Context, info *ErrorInfo) any
+
+type RenderInfo struct {
+    Status     int
+    Data       any
+    MessageKey string // from RenderMessageKey
+    Meta       any    // from RenderMeta
+}
+
+// Request-scoped; must not be retained after the renderer returns.
+type ErrorInfo struct {
+    Err        error                        // original error, for logging and errors.As
+    Status     int                          // effective status; the renderer may change it
+    Code       string                       // stable machine code
+    MessageKey string                       // exact key before resolution
+    Message    string                       // resolved message, including safe fallback
+    Details    any                          // client-safe detail
+    Violations []validation.ValidationError // validation or bind violations
+}
+
+// The default error envelope.
+type ErrorResponse struct {
+    Success bool      `json:"success"`
+    Error   ErrorBody `json:"error"`
+}
+
+type ErrorBody struct {
+    Code       string                       `json:"code"`
+    Message    string                       `json:"message"`
+    Details    any                          `json:"details,omitempty"`
+    Violations []validation.ValidationError `json:"violations,omitempty"`
+}
 ```
 
-`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` (`func(ctx, RenderInfo) any`) installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo{Status, Data, MessageKey, Meta}` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it. The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract; the pairing is documented in the [error-handling guide](../guides/error-handling.md)'s "Response Envelopes" section.
+`Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it.
+
+The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract: it receives the classified `ErrorInfo`, and a nil return writes the [default error envelope](../adr/009-handler-and-error-handling.md#default-error-envelope) (`ErrorResponse`, `Content-Type: application/json; charset=utf-8`). The renderer may set headers and may change `info.Status`; an invalid status fails closed to a generic 500 and discards the renderer body, and a renderer panic yields the same generic 500. HEAD and body-forbidding statuses render status-only. The pairing is documented in the [error-handling guide](../guides/error-handling.md#success-and-error-envelopes).
 
 In debug mode, a handler that writes body-carrying JSON through the raw `Response.JSON` helper while a `SuccessRenderer` is installed triggers a `WARN` (envelope-bypass diagnostic); intentional raw routes silence it with the `credo.MetaRawResponse` route meta. Non-JSON writers are exempt by design.
 
 #### JSON output profile
 
-`Response.JSON` encodes with `encoding/json/v2` under an application-level profile ([ADR-021](../adr/021-json-output-profile.md)). Two axes are set by the framework; the rest are json/v2's defaults, which differ from `encoding/json` v1 on the wire:
+`Response.JSON` encodes with `encoding/json/v2` under an application-level profile ([ADR-021](../adr/021-json-output-profile.md) holds the rationale). Two axes are set by the framework; the rest are json/v2's defaults, which differ from `encoding/json` v1 on the wire:
 
-| Axis | Credo output | v1 behavior | Why |
+| Axis | Credo output | v1 behavior | Override |
 | --- | --- | --- | --- |
-| Map key order | sorted (`Deterministic`) | sorted | Byte-stable responses, golden files, and diffs |
-| `time.Duration` | integer nanoseconds | integer nanoseconds | json/v2 has no default representation and Go 1.27 has no `format:` tag; also what `BindBody` decodes |
-| nil slice / nil map | `[]` / `{}` | `null` | Clients iterate without a null guard |
-| `omitempty` | drops JSON-empty (`""`, `null`, `[]`, `{}`) | drops Go zero values | Matches what the tag says; use `omitzero` for the v1 meaning |
-| `<` `>` `&` | literal | escaped (`\u003c`) | Responses are `application/json`; browsers do not sniff them |
-| Trailing newline | none | `\n` | An artefact of v1's streaming `Encoder`, not part of the value |
+| Map key order | sorted (`Deterministic`) | sorted | `jsonv2.Deterministic(false)` (default error bodies stay sorted) |
+| `time.Duration` | integer nanoseconds, as `BindBody` decodes | integer nanoseconds | none |
+| nil slice / nil map | `[]` / `{}` | `null` | `jsonv2.FormatNilSliceAsNull(true)`, `jsonv2.FormatNilMapAsNull(true)` |
+| `omitempty` | drops JSON-empty (`""`, `null`, `[]`, `{}`) | drops Go zero values | `jsonv1.OmitEmptyWithLegacySemantics(true)`, or `omitzero` on the field |
+| `<` `>` `&` | literal | escaped (`\u003c`) | `jsontext.EscapeForHTML(true)` |
+| Trailing newline | none | `\n` | none |
 
 Override any axis for the whole application with `credo.WithJSONOptions(...)`; options are applied after the framework profile, so each one wins on its axis:
 
@@ -156,9 +203,7 @@ credo.WithJSONOptions(jsontext.EscapeForHTML(true))       // escape < > &
 credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
 ```
 
-There is no per-call variant: one posture per application. `Context.Render` inherits the profile through its `Response.JSON` fallback; once a `SuccessRenderer` is installed it owns the response bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic` — error bodies are a framework contract.
-
----
+There is no per-call variant: one posture per application. `Context.Render` inherits the profile: with a `SuccessRenderer` installed, its returned body is encoded under the same profile, and only a renderer that commits the response itself writes other bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic`; custom error-renderer bodies use the application profile.
 
 ## Rewrite Helpers
 
@@ -183,10 +228,13 @@ func (c *Context) Rewrite(path string) error
 Rules:
 
 - Call it as the last statement in a handler: `return ctx.Rewrite("/new")`.
-- The target is a wire-form path: percent-encoded values decode once during matching (`/files/a%2Fb` reaches `RouteParam` as `a/b`), and a malformed escape makes `Rewrite` return an error.
+- The target must begin with `/`. It is a wire-form path: percent-encoded values decode once during matching (`/files/a%2Fb` reaches `RouteParam` as `a/b`), and a malformed escape makes `Rewrite` return an error.
+- The target's query string, or its absence, replaces the request's query.
+- Before matching again, dispatch writes the target onto the request — `URL.Path` decoded, `URL.RawPath` set when the spellings differ — so the target route's middleware and handler see the rewritten URL while `OriginalPath()` keeps the client's.
 - The matched host scope does not change. Re-dispatch stays within the host mux selected for the original request.
+- Framework features and global middleware run once per request; group and route middleware run again for the target route.
 - Route params are cleared between dispatch rounds and rebuilt from the target route.
-- If the response is already committed, `Rewrite` returns an error.
+- If the response is already committed or hijacked, `Rewrite` returns an error.
 - Credo enforces a hard limit of 10 internal rewrites per request. Exceeding the limit fails the request with a 500.
 
 ### IsRewriting
@@ -208,9 +256,9 @@ tenant := ctx.Request().RouteParam("tenant")
 id := ctx.Request().RouteParam("id")
 ```
 
-Host and path params share one namespace. Registering a host-scoped route whose path params collide with host param names panics at registration time.
+Host and path params share one namespace, so a host-scoped route whose path params collide with its host params panics at registration ([router spec](router.md#host-based-route-groups)).
 
-`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. Without it, `ctx.Request().PathValue("id")` would silently return "" — the dispatcher deliberately does not populate stdlib path values with a route's parameters (an extra allocation per request for data `RouteParam` already serves). The raw embedded request — as seen by middleware via `WrapStdMiddleware` — still carries none of them. The fallback is also how an app mounted under a parametric prefix reads that prefix: `Mount("/t/{tenant}", child)` hands the child a request whose path values hold `tenant`, so in the child `PathValue("tenant")` returns it while `RouteParam`/`RouteParams` hold the child's own route parameters only ([router spec](router.md#sub-router-mounting)).
+`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. The dispatcher deliberately does not populate stdlib path values with a route's parameters (an extra allocation per request for data `RouteParam` already serves), so without this shadow `ctx.Request().PathValue("id")` would silently return "", and the raw embedded request — as seen by middleware via `WrapStdMiddleware` — carries none of them. The fallback is also how an app mounted under a parametric prefix reads that prefix: `Mount("/t/{tenant}", child)` hands the child a request whose path values hold `tenant`, so in the child `PathValue("tenant")` returns it while `RouteParam`/`RouteParams` hold the child's own route parameters only ([router spec](router.md#sub-router-mounting)).
 
 ### Scheme and RealIP
 
@@ -223,27 +271,20 @@ ip := ctx.Request().RealIP()     // IP-only string when parseable
 
 Forwarded headers are default-deny. Unless the immediate peer `RemoteAddr` is inside `server.trusted_proxies` or configured via `WithTrustedProxies`, Credo ignores the RFC 7239 `Forwarded` header, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Ssl`, `Front-End-Https`, and `X-Real-IP`.
 
+`Scheme()` returns `https` for a direct TLS connection; behind a trusted proxy it prefers the `Forwarded` header's `proto=` parameter, then `X-Forwarded-Proto`, `X-Forwarded-Ssl` and `Front-End-Https`, and returns only `http` or `https`.
+
 `RealIP()` prefers the RFC 7239 `Forwarded` header (`for=` parameters), then walks `X-Forwarded-For` from right to left, skipping trusted proxy hops and returning the first untrusted address. If no usable value exists, it falls back to `X-Real-IP`, then the direct peer address. Each chain walk is limited to 32 hops as a DoS guard.
 
 Both values are cached for the lifetime of the request and cleared when the pooled context is reset.
 
----
-
 ## Bind Methods — "Parse, Don't Validate"
 
-The `Bind*` methods live on the `Request` struct and implement Zod's "parse, don't validate" philosophy in Go. Each method performs two steps atomically:
+The `Bind*` methods live on the `Request` struct and implement the "parse, don't validate" approach. Each method performs two steps atomically:
 
-1. **Decode** — read data from the request source (body, query, headers)
-2. **Validate** — if the target implements `Validatable`, call `Validate()`
+1. **Decode** — read data from the request source (body or query)
+2. **Validate** — if the target implements [`validation.Validatable`](validation.md#philosophy-parse-dont-validate), call `Validate()`
 
 In debug mode (`WithDebug()` or `server.debug: true`), a warning is logged when the target does not implement `Validatable`.
-
-```go
-// Validatable interface — any struct can opt in
-type Validatable interface {
-    Validate() error
-}
-```
 
 ### BindBody
 
@@ -255,12 +296,12 @@ For ordinary methods, a missing `Content-Type` retains the JSON convenience defa
 
 A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
 
-| Content-Type                        | Decoder            | Status          |
-| ----------------------------------- | ------------------ | --------------- |
-| `application/json`                  | `encoding/json/v2` | **Implemented** |
-| `application/xml`                   | `encoding/xml`     | **Implemented** |
-| `application/x-www-form-urlencoded` | Form decoder       | **Implemented** |
-| `multipart/form-data`               | Multipart decoder  | **Implemented** |
+| Content-Type                        | Decoder            |
+| ----------------------------------- | ------------------ |
+| `application/json`                  | `encoding/json/v2` |
+| `application/xml`, `text/xml`       | `encoding/xml`     |
+| `application/x-www-form-urlencoded` | Form decoder       |
+| `multipart/form-data`               | Multipart decoder  |
 
 **Multipart files live for the request.** File parts beyond the in-memory threshold (32 MiB per form) are spilled to temporary files. They are removed when the request ends — on normal completion, a returned error and a panic alike — whether the form was parsed by `BindBody` or by the handler itself (`ParseMultipartForm`, `FormFile`). That includes a form parsed on a copy of the request, which `net/http` does not clean up on its own: after `SetUser`, behind `middleware.Timeout` or a wrapped stdlib middleware that substitutes the request, and in a handler attached with `Mount` (removed when the mounted handler returns). A `*multipart.FileHeader` is therefore valid only until the handler returns; copy the content before handing it to a goroutine that outlives the request.
 
@@ -281,7 +322,7 @@ func (c *CreateUserInput) Validate() error {
 app.POST("/users", func(ctx *credo.Context) error {
     var input CreateUserInput
     if err := ctx.Request().BindBody(&input); err != nil {
-        return err // decode OR validation error → default Credo error envelope
+        return err // decode OR validation error → default error envelope
     }
     // input is GUARANTEED valid here
     return ctx.Response().JSON(201, svc.CreateUser(input))
@@ -295,7 +336,7 @@ JSON bodies are decoded with `encoding/json/v2` under strict semantics:
 - **Exactly one JSON value per request** — after the first value decodes, only whitespace may remain in the body. A second JSON document or trailing garbage fails the bind with reason `trailing_data`.
 - **Object members must be unique** — a repeated member fails the bind with reason `duplicate_field`. Because member matching is case-insensitive (see below), a case-variant repeat (`{"name":…,"Name":…}`) is also rejected.
 - **Member matching stays case-insensitive** — v1-compatible matching is preserved via `MatchCaseInsensitiveNames`, so existing clients sending `{"Name":…}` for a `name`-tagged field keep working (v2's case-sensitive default would silently leave the field empty).
-- **`time.Duration` fields decode as integer nanoseconds** — json/v2 has no default Duration representation and Go 1.27 ships without the `format:` struct-tag option (removed before the v2 GA, go.dev/issue/79071), so `BindBody` enables the v1-compatible `FormatDurationAsNano` option: `{"timeout": 5000000000}` binds 5s, a string fails with `type_mismatch`. For human-readable durations (`"5s"`) declare a named type implementing `encoding.TextUnmarshaler`.
+- **`time.Duration` fields decode as integer nanoseconds** — `BindBody` enables `FormatDurationAsNano` (json/v2 has no default Duration representation; [ADR-021](../adr/021-json-output-profile.md) gives the background): `{"timeout": 5000000000}` binds 5s, a string fails with `type_mismatch`. For human-readable durations (`"5s"`) declare a named type implementing `encoding.TextUnmarshaler`.
 - **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input. Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a _known_ member is reported as `duplicate_field`, while a repeated _unknown_ member fails as `unknown_field` on its first occurrence.
 
 Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
@@ -359,59 +400,19 @@ app.GET("/users", func(ctx *credo.Context) error {
 
 **Supported field types**: `string`, `bool`, all integer types (`int`, `int8`–`int64`, `uint`–`uint64`), `float32`, `float64`, any type implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`, custom types — takes precedence over native conversions, matching the config decoder), slices of all of these (`[]string`, `[]int`, `[]float64`, repeated params), and pointer variants of all scalar types (`*string`, `*int`, `*time.Time`, etc.). Pointer fields stay `nil` when the parameter is absent, enabling nil-vs-zero-value distinction (e.g., PATCH partial updates, optional filters). Embedded structs and pointer-to-embedded-structs are supported recursively. The same type support applies to `form:"..."` tags used by `BindBody` for form-urlencoded and multipart content types.
 
----
-
 ## Design Decisions
 
-1. **Struct instead of interface** — Context was originally a 22-method interface. This caused interface bloat (every new helper broke the contract), made mocking difficult, and prevented future use of Go generic methods (which only work on concrete types). A struct with methods solves all three issues. Testing uses `testutil` helpers instead of interface mocking. See [ADR-008](../adr/008-context-design.md).
-
-2. **Request/Response split** — Input (params, bind) and output (JSON, HTML) concerns are separated into `Request` and `Response` structs. The Context itself stays slim (a small method set plus the `Context()` accessor). New response formats or binding methods can be added without touching Context.
-
-3. **`Text()` instead of `String()`** — The response helper for plain text is named `Text()` to avoid conflict with `fmt.Stringer`, which Response implements for debugging.
-
-4. **Map-backed params + `RouteParam()` shortcut** — Parameters live in a single `map[string]string`, which is simpler and eliminates Echo's parallel-slices pattern (`ParamNames()`/`ParamValues()`). `RouteParam(name)` is the preferred single-value accessor (named for symmetry with `QueryParam`/`RouteParams`, unlike Echo's bare `Param`); `RouteParams()` exposes the full framework-owned map (recycled with the request — not safe to retain). Host-scoped routes reuse the same map for host params and path params.
-
-5. **Proxy-derived metadata belongs on Request** — `Scheme()` and `RealIP()` are request-derived values, not response or routing state. They use the app's centralized trusted proxy list so Secure, RateLimit, access logs, and user code agree on client metadata.
-
-6. **`FormValue()` removed** — `BindBody` covers form decoding. Direct `FormValue` access was removed as it bypasses the "parse, don't validate" pattern.
-
-7. **`SetRequest()` removed** — Rare use case (middleware context modification). Middleware that needs to modify the request context can use `ctx.Request().Request = r.WithContext(newCtx)` via the embedded field.
-
-8. **`Bind*` naming preserved** — While "Parse" better communicates the decode+validate philosophy, Go ecosystem universally uses "Bind" (Echo, Gin, Fiber). Using `BindBody`/`BindQuery` reduces friction.
-
-9. **Auto-validation via `Validatable`** — If the target struct implements `Validate() error`, `Bind*` calls it automatically after decoding. No separate validation step needed in handlers.
-
-10. **App back-reference** — Context holds an unexported `app *App` field set during pool construction (never changes, not touched by `reset()`). This enables the internal error handling pipeline to access `app.i18nBundle` for i18n translation without exposing the App publicly on Context. See [ADR-013](../adr/013-internationalization.md).
-
-11. **Reflection boundaries** — `BindBody` uses `encoding/json/v2` internally (stdlib reflection). `BindQuery` will use reflection for struct tag reading (`query:"name"`). This is standard Go practice and distinct from the "generics over reflection" principle, which applies to DI resolution and validation rule execution hot paths.
-
-12. **Original path belongs on Context, not Request** — The original client path is framework lifecycle state, not raw HTTP state. Storing it on Context keeps it tied to dispatch/rewrite behavior and avoids mutating the wrapped `*http.Request`.
-
-13. **Internal rewrite is a handler-level forward** — `ctx.Rewrite()` keeps the ergonomic `return ctx.Rewrite("/new")` API while dispatch owns the actual re-dispatch loop. Framework features and global middleware run once; group/route middleware re-run for the target route.
-
----
+- A struct rather than an interface, the Request/Response split, the `RouteParam`, `Text` and `Bind*` names, the reflection boundary of binding, proxy metadata on Request and the original path on Context, and the rejected alternatives (`FormValue` and `SetRequest` on Context, a per-call strict-bodies switch): [ADR-008](../adr/008-context-design.md).
+- The error-side choices (handler signature, classification, default envelope, renderer seam): [ADR-009](../adr/009-handler-and-error-handling.md).
+- The JSON output profile: [ADR-021](../adr/021-json-output-profile.md).
 
 ## Pooling
 
-Context structs are pooled via `sync.Pool` (managed in root package `pool.go`). Each request:
+Context structs, each with its Request and Response, are pooled per App in a `sync.Pool` built by `New`. Each request:
 
-1. Gets a Context from the pool (contains pre-allocated *Request and *Response)
+1. Passes the lifecycle admission gate in `ServeHTTP`, then takes a Context from the pool (a request answered with the [lifecycle 503](lifecycle.md#lifecycle-rejection-503) takes none)
 2. Resets it with the new `ResponseWriter` and `*http.Request`
-3. Runs the handler chain
-4. Returns the Context to the pool
+3. Runs the feature executor and the handler chain ([HTTP features spec](http-features.md#request-execution))
+4. Returns the Context to the pool after finalization, the access record and multipart cleanup, on every path including a propagating panic
 
-This minimizes allocations on the hot path.
-
----
-
-## File Layout
-
-```
-(root package)
-├── context.go       Context struct, rewrite helpers, Context() accessor
-├── request.go       Request struct (embeds *http.Request, Bind*, RouteParams, Scheme/RealIP)
-├── response.go      Response struct (wraps http.ResponseWriter, JSON/Text/HTML helpers)
-├── context_test.go  Context method tests
-
-├── pool.go          Generic sync.Pool wrapper for Context reuse
-```
+This removes the per-request Context, Request and Response allocations from the hot path.

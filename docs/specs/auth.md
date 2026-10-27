@@ -1,21 +1,10 @@
 # Auth Spec
 
-**Status**: Approved **Package**: `auth/` **Sources**: Original design (no external code adapted) **Depends on**: Root package (`Context`, `Handler`, `Middleware`, `HTTPError`) **ADR**: [012-authentication-and-authorization](../adr/012-authentication-and-authorization.md)
-
----
+**Status:** Implemented (beta) **Package:** `auth/`; the user accessors are methods on the root `*credo.Context` **ADR:** [ADR-012](../adr/012-authentication-and-authorization.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
 
 ## Overview
 
-The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface and a middleware factory that populates them.
-
-**Design principles**:
-
-- Generic type parameter `T` — works with any user type
-- Principal access is a `*credo.Context` method, not a `context.Context` helper — a first-class Context feature like `RequestID()`/`Route()`
-- Per-type unexported key — collision-proof, and multiple identities coexist per request
-- Zero cost when unused — no Context struct changes (the slot lives on the request's `context.Context`)
-
----
+The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface, a middleware factory that populates them, and three built-in authenticators (JWT, API key, HTTP Basic). The JWT authenticator wraps `github.com/golang-jwt/jwt/v5` (pinned v5.3.1 in `go.mod`) and exposes it on purpose in its advanced tier. The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md).
 
 ## API Surface
 
@@ -37,9 +26,12 @@ func (c *Context) GetUser[T any]() (T, bool)
 // RequireUser is GetUser plus a handler-ready error: ErrUnauthorized
 // wrapping ErrUserMissing when the user is absent.
 func (c *Context) RequireUser[T any]() (T, error)
+
+// ErrUserMissing is the cause RequireUser wraps; errors.Is reports it.
+var ErrUserMissing error
 ```
 
-**Internal implementation**: `SetUser` stores the user on the request's `context.Context` via `context.WithValue` with an unexported generic `userKey[T] struct{}` key (defined in the root package). The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The backing store is private; the only public access path is these methods (there is no `context.Context`-based accessor).
+**Internal implementation**: `SetUser` stores the user on the request's `context.Context` via `context.WithValue` with an unexported generic `userKey[T] struct{}` key (defined in the root package). The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`). The backing store is private; the only public access path is these methods (there is no `context.Context`-based accessor).
 
 ### Authenticator Interface (generic)
 
@@ -67,34 +59,53 @@ The interface is intentionally minimal — a single method that takes an `*http.
 type ErrorFunc func(err error, ctx *credo.Context) error
 ```
 
-When `nil` (or when it returns `nil`), the middleware returns `credo.ErrUnauthorized` by default.
+An `ErrorFunc` returns the error to render; it may set response headers first, as `BasicErrorHandler` sets `WWW-Authenticate`. When `onError` is nil or returns nil, the middleware returns `credo.ErrUnauthorized` with the authenticator's error as its internal cause (logged, never rendered). An `ErrorFunc` must not write the response itself: the middleware still returns an error, and the error pipeline, finding the response committed, logs `credo: error after response committed` at Warn for every rejected request.
+
+Every error from `Authenticate` takes this path, including an infrastructure failure: a database error that an API-key or Basic validator returns through its `err` result, or a JWKS outage that `Advanced.KeyFunc` returns. The built-in authenticators wrap it in their `…Invalid` sentinel, and the default `ErrUnauthorized` wraps that, so the client receives 401 — an explicit `HTTPError` wins classification even over a wrapped fault such as `store`'s unavailable kind ([ADR-009](../adr/009-handler-and-error-handling.md#an-explicit-status-wins)). An application that wants a 5xx for such a failure detects it in its `ErrorFunc` and returns an error with no `HTTPError` in its chain (the authenticator's error itself, for example), which the pipeline classifies like a handler error: a fault keeps its mapped status, a plain error is a 500.
 
 ### Middleware Factory
 
 ```go
-// Middleware creates an credo.Middleware that authenticates requests
-// using the given Authenticator. On success, the user is stored in
-// the request context via SetUser. On failure, onError is called
+// Middleware creates a credo.Middleware that authenticates requests
+// using the given Authenticator. On success, the user is stored on
+// the request via SetUser. On failure, onError is called
 // (or ErrUnauthorized if onError is nil / returns nil).
+// Panics if a is nil.
 func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware
 ```
 
-**Returns**: `credo.Middleware` (`func(credo.Handler) credo.Handler`).
+**Returns**: `credo.Middleware` (`func(credo.Handler) credo.Handler`). A nil authenticator is a wiring error and panics at construction.
+
+### Built-in Authenticators
+
+Each constructor returns an error when its required input is missing; each `Authenticate` returns the package's sentinels, wrapping the cause where there is one.
+
+| Constructor | Credentials, in order | Defaults | Constructor errors | Sentinels |
+| --- | --- | --- | --- | --- |
+| `NewJWTAuthenticator[T](JWTConfig[T])` | `Header` (after `Prefix`), `Query`, `Cookie` | `Header` = `Authorization` when no source is set; `Prefix` = `Bearer`; `SigningMethod` = HS256 | no `SigningKey`, `SigningKeys` or `Advanced.KeyFunc`; both `ParseClaims` and `Advanced.ParseToken` | `ErrJWTMissing`, `ErrJWTInvalid` |
+| `NewAPIKeyAuthenticator[T](APIKeyConfig[T])` | `Header` (after optional `Prefix`), `Query` | `Header` = `X-API-Key` when `Header` and `Query` are empty | no `Validator` | `ErrAPIKeyMissing`, `ErrAPIKeyInvalid` |
+| `NewBasicAuthenticator[T](BasicConfig[T])` | `Authorization: Basic` | `Realm` = `Restricted` | no `Validator` | `ErrBasicCredentialsMissing`, `ErrBasicCredentialsInvalid` |
+
+- A `Prefix` matches case-insensitively and must be followed by a space or tab; every value of a repeated header is tried, and surrounding whitespace is trimmed.
+- The API-key and Basic validators (`APIKeyValidator[T]`, `BasicValidator[T]`) return `(user T, ok bool, err error)`: `ok == false` yields the `…Invalid` sentinel, and a non-nil `err` yields the sentinel wrapping `err`.
+- `NewBasicAuthenticator` sends no challenge by itself: pass `BasicErrorHandler(a.Realm())` as the middleware's `ErrorFunc` to set `WWW-Authenticate: Basic realm="…"` (`BasicChallenge(realm)` builds the value; an empty realm is `Restricted`).
+- `SecureCompare(x, y string) bool` compares a received credential with a known plaintext secret in constant time, hiding both content and length. Stored passwords are verified with a password hash (bcrypt, argon2id) instead.
 
 ### JWT Configuration (two tiers)
 
 `JWTConfig[T]` separates a Credo-typed simple tier from a golang-jwt escape hatch:
 
 - **Simple tier** — extraction (`Header`/`Prefix`/`Query`/`Cookie`), key material (`SigningMethod`/`SigningKey`/`SigningKeys`), registered-claim validation (`Issuer`, `Audience`, `Leeway`, `RequireExpiry`), and user extraction via `ParseClaims func(JWTClaims) (T, error)`. `JWTClaims` is a read-only accessor view: registered claims come back with proper Go types (`ExpiresAt() time.Time` — never the raw float64 that JSON decoding produces), and `Get`/`GetString` read custom claims from the default map representation.
-- **Advanced tier** — `Advanced JWTAdvanced[T]` exposes golang-jwt primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims structs), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions` (appended after the options derived from the simple tier, so they win on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken` is a constructor error. When neither is set, the raw claims value is type-asserted to `T`.
+- **Advanced tier** — `Advanced JWTAdvanced[T]` exposes golang-jwt primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims structs; default `jwt.MapClaims`), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions` (appended after the options derived from the simple tier, so they win on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken` is a constructor error. When neither is set, the raw claims value is type-asserted to `T`.
 
 Validation semantics:
 
+- Only `SigningMethod` is accepted. The default key function checks the algorithm again, so a `ParserOptions` entry cannot widen it unless `Advanced.KeyFunc` replaces the key function.
+- Key selection: when `SigningKeys` is set, a token with a `kid` header uses that entry and an unknown `kid` is rejected; a token without `kid` falls back to `SigningKey` when configured and is rejected otherwise. Without `SigningKeys`, `SigningKey` is used. `Advanced.KeyFunc` replaces this selection entirely.
+- `Issuer` requires an exact `iss` match.
 - `Audience` is **any-of** (RFC 7519 §4.1.3 validator practice): the token is accepted when its `aud` list contains at least one configured value.
 - `Leeway` widens `exp`/`nbf`/`iat` checks in both directions to absorb clock skew between issuer and server.
 - `RequireExpiry` rejects tokens without `exp`. The golang-jwt v5 default — pinned by tests — validates `exp` only when present, so an exp-less token never expires unless this is set.
-
----
 
 ## Usage Patterns
 
@@ -114,8 +125,10 @@ func (a *MyAuthenticator) Authenticate(r *http.Request) (*User, error) {
 }
 
 // Registration
-app.GlobalMiddleware(auth.Middleware[*User](myAuth, nil))
+api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth, nil))
 ```
+
+Register authentication on a group or route. Global middleware runs before routing, for requests that match no route too: global authentication answers an unauthenticated request for an unknown path with 401 instead of 404, and `ctx.Route()` is nil there ([middleware guide](../guides/middleware.md#rewrite-ordering-affects-auth-decisions)). A mounted handler bypasses group middleware and needs global authentication or its own.
 
 ### Pattern 2: Custom Middleware (full control)
 
@@ -138,12 +151,16 @@ func MyAuthMiddleware(next credo.Handler) credo.Handler {
 
 ```go
 func CreateOrder(ctx *credo.Context) error {
-    // Type-safe — generic parameter, no assertion needed
-    user, ok := ctx.GetUser[*User]()
-    if !ok {
-        return credo.ErrUnauthorized
+    // Type-safe — generic parameter, no assertion needed; 401 when absent
+    user, err := ctx.RequireUser[*User]()
+    if err != nil {
+        return err
     }
 
+    var input CreateOrderInput
+    if err := ctx.Request().BindBody(&input); err != nil {
+        return err
+    }
     order, err := orderService.Create(ctx.Context(), user.TenantID, input)
     if err != nil {
         return err
@@ -157,36 +174,31 @@ func CreateOrder(ctx *credo.Context) error {
 Auth middleware sets the user, RBAC middleware reads meta and checks permissions:
 
 ```go
-// Route registration
-admin := app.Group("/v1/admin")
-admin.Middleware(authMiddleware)
-admin.Middleware(rbacMiddleware)
+// Route registration: authentication first, then authorization
+admin := app.Group("/v1/admin").
+    Middleware(auth.Middleware[*User](myAuth, nil), RequirePermission)
 
-admin.GET("/users", listUsers).
-    SetMeta("permission", "admin.users.view").
-    SetMeta("scope", "TENANT")
+admin.GET("/users", listUsers).SetMeta("permission", "admin.users.view")
 
-// RBAC middleware
-func RBACMiddleware(next credo.Handler) credo.Handler {
+// RequirePermission authorizes against the route's "permission" meta.
+func RequirePermission(next credo.Handler) credo.Handler {
     return func(ctx *credo.Context) error {
-        user, ok := ctx.GetUser[*User]()
+        meta, ok := ctx.Route().LookupMeta("permission")
         if !ok {
-            return credo.ErrUnauthorized
+            return next(ctx) // no permission required
+        }
+        perm, ok := meta.(string)
+        if !ok || perm == "" {
+            return credo.ErrForbidden // malformed meta fails closed
         }
 
-        perm, _ := ctx.Route().LookupMeta("permission")
-        if perm != nil {
-            if !user.HasPermission(perm.(string)) {
-                return credo.ErrForbidden
-            }
+        user, err := ctx.RequireUser[*User]()
+        if err != nil {
+            return err // 401
         }
-
-        // Store scope info for downstream use
-        scope, _ := ctx.Route().LookupMeta("scope")
-        if scope != nil {
-            ctx.Set("rbac.scope", scope)
+        if !user.HasPermission(perm) {
+            return credo.ErrForbidden
         }
-
         return next(ctx)
     }
 }
@@ -209,47 +221,6 @@ func ViewProduct(ctx *credo.Context) error {
 }
 ```
 
----
-
-## Package Structure
-
-```
-auth/
-├── authenticator.go Authenticator[T] interface, ErrorFunc, Middleware[T]
-├── basic.go         Basic Auth authenticator
-├── apikey.go        API key authenticator
-├── jwt.go           JWT authenticator
-├── credentials.go   Shared credential extraction helpers
-├── compare.go       SecureCompare (constant-time secret comparison)
-├── doc.go           Package documentation
-└── *_test.go        Tests
-```
-
----
-
 ## Design Decisions
 
-1. **No built-in User field** — Progressive disclosure, zero cost, type safety via generics. See [ADR-012](../adr/012-authentication-and-authorization.md).
-
-2. **`context.WithValue` backing, exposed as a Context method** — The user is stored on the request's `context.Context` (so it rides along with the request and survives `ctx.Context()` hand-offs), but the only public access is `ctx.SetUser`/`GetUser`. Principal is a first-class Context feature, not a `context.Context` helper; stdlib middleware adapted via `WrapStdMiddleware` is intentionally second-class here and cannot set or read it (see [ADR-010](../adr/010-middleware-architecture.md)).
-
-3. **Unexported generic key type** — `type userKey[T any] struct{}` (root-private) prevents key collisions (no other package can read or overwrite the user) and gives each user type its own slot, so multiple authentication identities can coexist per request.
-
-4. **`Authenticator[T]` is optional** — The interface is a convenience, not a requirement. Users can write custom middleware and call `ctx.SetUser`/`ctx.GetUser` directly.
-
-5. **`ErrorFunc` callback** — Different apps need different error responses (JSON, redirect to login, custom headers). The callback provides this flexibility without subclassing. If callback returns `nil`, middleware falls back to default `ErrUnauthorized` behavior.
-
-6. **JWT key selection policy** — `SigningKeys` is selected by token `kid` when `kid` is present; unknown `kid` is rejected. If token has no `kid`, middleware falls back to `SigningKey` when configured.
-
-7. **Separate from `middleware/`** — Auth is a cross-cutting concern with its own types (Authenticator, ErrorFunc) and strategy implementations. It deserves its own package rather than being scattered across `middleware/`. (The principal accessors themselves live on the root Context, since the user slot is a Context primitive.)
-
-8. **`SecureCompare` helper** — Basic/API-key validators are user code, and the natural `==` comparison leaks timing information. The framework ships `SecureCompare(x, y string) bool` (hash-then-`subtle.ConstantTimeCompare`, masking both content and length) and the validator type godocs point to it. Password verification should instead use a dedicated password hash (bcrypt/argon2id); JWT signature comparison is already constant-time inside `golang-jwt`.
-
-9. **Two-tier `JWTConfig`** — Credo does not hide golang-jwt, it integrates it (the same visibility policy as Bun in `store/sqldb`): the simple tier is fully Credo-typed for the common path, while the nested `Advanced JWTAdvanced[T]` struct keeps the library's full power one explicit step away. Structural nesting (rather than a doc-only convention) keeps the simple/advanced boundary visible in config literals and code review, and `_ = config.Advanced` usage is easy to grep for when auditing library coupling.
-
----
-
-## Implementation Phase
-
-- **Phase 3.2**: Generic user accessors + Authenticator interface + middleware factory
-- **Phase 3.2** (also): JWT, API Key, Basic Auth implementations (these use the Authenticator interface)
+The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorFunc` callback, RBAC via route meta, the separate `auth` package, the two-tier `JWTConfig` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
