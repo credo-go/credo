@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/credo-go/credo/internal/di"
 	"github.com/credo-go/credo/internal/kernel"
@@ -44,8 +45,11 @@ type Component interface {
 // context ends when Start returns, or earlier when a shutdown is requested
 // during the start phase.
 //
-// Start is planned from the binding's type: a Start that only the built value
-// has is never called, and a type with Start but no Shutdown is not a
+// Start is planned from the binding's type, and a component whose binding's
+// type hides its value's Start or Ready is refused — a ProvideValue at the
+// call, a built value at the start — unless another holder of the same
+// resource plans it or the binding is [Borrowed]; bind the concrete type and
+// the interface with [App.Alias]. A type with Start but no Shutdown is not a
 // component and is never started. Holders that share a resource identity
 // start it once, and a borrowed resource is not started through any holder.
 // A Start that returns an error has released what it opened; the App does not
@@ -179,10 +183,13 @@ func Borrowed() RegistrationOption { return RegistrationOption{kind: optBorrowed
 // [Borrowed]. Close is never discovered without it.
 func Closer() RegistrationOption { return RegistrationOption{kind: optCloser} }
 
-// Override replaces an earlier binding of the same type before Finalize, and
-// panics when there is none, so an override that no longer matches the
-// wiring fails instead of adding a binding nothing resolves. The replaced
-// value never becomes the App's: whoever built it releases it.
+// Override, on Provide, ProvideValue and Alias, replaces an earlier binding
+// of the same type before Finalize — a direct binding, or an alias of an
+// interface — and panics when there is none, so an override that no longer
+// matches the wiring fails instead of adding a binding nothing resolves. The
+// replaced value never becomes the App's: whoever built it releases it, and
+// the type a replaced alias pointed at is dropped at Finalize when nothing
+// else uses it.
 func Override() RegistrationOption { return RegistrationOption{kind: optOverride} }
 
 // Named names a component handed to [App.Manage] in reports and readiness;
@@ -201,7 +208,7 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 			panic("credo: " + call + ": a zero RegistrationOption; use credo.Ingress, credo.Borrowed, " +
 				"credo.Closer, credo.Override or credo.Named")
 		case !containsKind(accepted, opt.kind):
-			panic(fmt.Sprintf("credo: %s does not accept %s", call, opt.kind))
+			panic(fmt.Sprintf("credo: %s does not accept %s; it accepts %s", call, opt.kind, kindList(accepted)))
 		case seen[opt.kind]:
 			panic(fmt.Sprintf("credo: %s: %s given twice", call, opt.kind))
 		}
@@ -223,6 +230,18 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 		}
 	}
 	return o
+}
+
+// kindList names options as "a", "a or b" or "a, b or c".
+func kindList(kinds []optionKind) string {
+	names := make([]string, len(kinds))
+	for i, k := range kinds {
+		names[i] = k.String()
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 func containsKind(kinds []optionKind, k optionKind) bool {

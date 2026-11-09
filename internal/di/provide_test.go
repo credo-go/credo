@@ -56,31 +56,31 @@ func TestProvide_ValidConstructors(t *testing.T) {
 		{
 			name: "zero params",
 			register: func(c *di.Container) error {
-				return c.Provide[*SimpleService](NewSimpleService)
+				return c.Provide(NewSimpleService)
 			},
 			wantRegCount: 1,
 		},
 		{
 			name: "one param",
 			register: func(c *di.Container) error {
-				c.MustProvide[*SimpleService](NewSimpleService)
-				return c.Provide[*ServiceWithDep](NewServiceWithDep)
+				c.MustProvide(NewSimpleService)
+				return c.Provide(NewServiceWithDep)
 			},
 			wantRegCount: 2,
 		},
 		{
 			name: "returns error",
 			register: func(c *di.Container) error {
-				return c.Provide[*ServiceWithError](NewServiceWithError)
+				return c.Provide(NewServiceWithError)
 			},
 			wantRegCount: 1,
 		},
 		{
 			name: "two deps",
 			register: func(c *di.Container) error {
-				c.MustProvide[*SimpleService](NewSimpleService)
-				c.MustProvide[*ServiceWithDep](NewServiceWithDep)
-				return c.Provide[*ServiceWithTwoDeps](NewServiceWithTwoDeps)
+				c.MustProvide(NewSimpleService)
+				c.MustProvide(NewServiceWithDep)
+				return c.Provide(NewServiceWithTwoDeps)
 			},
 			wantRegCount: 3,
 		},
@@ -117,8 +117,8 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 			constructor: func() (*SimpleService, int, error) { return nil, 0, nil },
 		},
 		{
-			name:        "wrong return type",
-			constructor: func() string { return "" },
+			name:        "nil",
+			constructor: nil,
 		},
 		{
 			name:        "second return not error",
@@ -129,7 +129,7 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := di.New()
-			err := c.Provide[*SimpleService](tt.constructor)
+			err := c.Provide(tt.constructor)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -139,9 +139,9 @@ func TestProvide_InvalidConstructors(t *testing.T) {
 
 func TestProvide_Duplicate(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
-	err := c.Provide[*SimpleService](NewSimpleService)
+	err := c.Provide(NewSimpleService)
 	if err == nil {
 		t.Fatal("expected error for duplicate registration")
 	}
@@ -149,14 +149,14 @@ func TestProvide_Duplicate(t *testing.T) {
 
 func TestMustProvide_Panics(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for duplicate MustProvide")
 		}
 	}()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 }
 
 func TestProvideValue(t *testing.T) {
@@ -186,7 +186,7 @@ func TestProvideValue_Duplicate(t *testing.T) {
 
 func TestProvide_NilConstructor(t *testing.T) {
 	c := di.New()
-	if err := c.Provide[*SimpleService](nil); err == nil {
+	if err := c.Provide(nil); err == nil {
 		t.Fatal("expected error for nil constructor, got nil")
 	}
 }
@@ -205,7 +205,7 @@ func (s *funcShutdowner) Shutdown(ctx context.Context) error {
 func TestProvide_ShutdownParticipates(t *testing.T) {
 	c := di.New()
 	closed := false
-	c.MustProvide[*funcShutdowner](func() *funcShutdowner {
+	c.MustProvide(func() *funcShutdowner {
 		return &funcShutdowner{closed: &closed}
 	})
 	seal(t, c)

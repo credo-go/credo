@@ -45,8 +45,8 @@ func mustPanicMessage(t *testing.T, fn func()) (msg string) {
 func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 	newApp := func(t *testing.T) *credo.App {
 		app := mustNew(t)
-		app.Provide[*bootPgRepo](func() *bootPgRepo { return &bootPgRepo{} })
-		app.Provide[*bootAudit](func() *bootAudit { return &bootAudit{} })
+		app.Provide(func() *bootPgRepo { return &bootPgRepo{} })
+		app.Provide(func() *bootAudit { return &bootAudit{} })
 		return app
 	}
 	finalized := func(t *testing.T) *credo.App {
@@ -76,20 +76,18 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 		want  []string
 	}{
 		// Arguments the container cannot accept.
-		{"nil constructor", newApp, func(app *credo.App) { app.Provide[*bootUnbound](nil) },
-			[]string{"credo: App.Provide[*credo_test.bootUnbound]: constructor must not be nil; " +
-				"want func(dependencies...) *credo_test.bootUnbound or func(dependencies...) (*credo_test.bootUnbound, error)"}},
-		{"constructor not a function", newApp, func(app *credo.App) { app.Provide[*bootUnbound]("ctor") },
-			[]string{"credo: App.Provide[*credo_test.bootUnbound]: constructor must be a function, got string; want func"}},
-		{"constructor of the wrong type", newApp,
-			func(app *credo.App) { app.Provide[*bootUnbound](func() *bootAudit { return nil }) },
-			[]string{"credo: App.Provide[*credo_test.bootUnbound]: first return type *credo_test.bootAudit " +
-				"is not assignable to *credo_test.bootUnbound"}},
+		{"nil constructor", newApp, func(app *credo.App) { app.Provide(nil) },
+			[]string{"credo: App.Provide: constructor must not be nil; want func(dependencies...) T or " +
+				"func(dependencies...) (T, error), which binds T"}},
+		{"constructor not a function", newApp, func(app *credo.App) { app.Provide("ctor") },
+			[]string{"credo: App.Provide: constructor must be a function, got string; want func"}},
+		{"constructor without a result", newApp, func(app *credo.App) { app.Provide(func() {}) },
+			[]string{"credo: App.Provide: constructor must return 1 or 2 values, got 0; want func(dependencies...) T"}},
 		{"constructor second result not an error", newApp,
-			func(app *credo.App) { app.Provide[*bootUnbound](func() (*bootUnbound, int) { return nil, 0 }) },
+			func(app *credo.App) { app.Provide(func() (*bootUnbound, int) { return nil, 0 }) },
 			[]string{"credo: App.Provide[*credo_test.bootUnbound]: second return type must implement error, got int"}},
 		{"duplicate Provide", newApp,
-			func(app *credo.App) { app.Provide[*bootPgRepo](func() *bootPgRepo { return nil }) },
+			func(app *credo.App) { app.Provide(func() *bootPgRepo { return nil }) },
 			[]string{"credo: App.Provide[*credo_test.bootPgRepo]: *credo_test.bootPgRepo is already registered; " +
 				"bind a second instance under a wrapper type of its own"}},
 		{"duplicate ProvideValue", newApp, func(app *credo.App) {
@@ -106,7 +104,32 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 			app.Alias[bootRepo, *bootPgRepo]()
 			app.Alias[bootRepo, *bootPgRepo]()
 		}, []string{"credo: App.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]: interface " +
-			"credo_test.bootRepo already has an alias"}},
+			"credo_test.bootRepo already has an alias, to *credo_test.bootPgRepo; give credo.Override() to " +
+			"point it at *credo_test.bootPgRepo, or drop one of the two"}},
+		{"Alias over a direct binding", newApp, func(app *credo.App) {
+			app.ProvideValue[bootRepo](&bootPgRepo{})
+			app.Alias[bootRepo, *bootPgRepo]()
+		}, []string{"credo: App.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]: interface " +
+			"credo_test.bootRepo already has a direct registration; give credo.Override() to replace it " +
+			"with the alias"}},
+		{"Alias with another option", newApp,
+			func(app *credo.App) { app.Alias[bootRepo, *bootPgRepo](credo.Ingress()) },
+			[]string{"credo: App.Alias does not accept credo.Ingress(); it accepts credo.Override()"}},
+		{"Alias override without a binding", newApp,
+			func(app *credo.App) { app.Alias[bootRepo, *bootPgRepo](credo.Override()) },
+			[]string{"credo: App.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]: credo.Override() replaces " +
+				"an earlier binding, but credo_test.bootRepo has none; drop credo.Override()"}},
+		{"ProvideValue after an alias", newApp, func(app *credo.App) {
+			app.Alias[bootRepo, *bootPgRepo]()
+			app.ProvideValue[bootRepo](&bootPgRepo{})
+		}, []string{"credo: App.ProvideValue[credo_test.bootRepo]: credo_test.bootRepo is already bound " +
+			"through app.Alias[credo_test.bootRepo, *credo_test.bootPgRepo](); give credo.Override() to replace " +
+			"the alias, or drop the Alias call"}},
+		{"Provide after an alias", newApp, func(app *credo.App) {
+			app.Alias[bootRepo, *bootPgRepo]()
+			app.Provide(func() bootRepo { return &bootPgRepo{} })
+		}, []string{"credo: App.Provide[credo_test.bootRepo]: credo_test.bootRepo is already bound through " +
+			"app.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]()"}},
 		{"BindMany of a non-implementation", newApp, func(app *credo.App) { app.BindMany[bootPlugin, *bootPgRepo]() },
 			[]string{"credo: App.BindMany[credo_test.bootPlugin, *credo_test.bootPgRepo]: " +
 				"*credo_test.bootPgRepo does not implement credo_test.bootPlugin"}},
@@ -126,7 +149,7 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 
 		// Each DI registration after Finalize.
 		{"Provide after Finalize", finalized,
-			func(app *credo.App) { app.Provide[*bootUnbound](func() *bootUnbound { return nil }) },
+			func(app *credo.App) { app.Provide(func() *bootUnbound { return nil }) },
 			[]string{"credo: App.Provide[*credo_test.bootUnbound]: " + afterFinalize}},
 		{"ProvideValue after Finalize", finalized, func(app *credo.App) { app.ProvideValue(&bootUnbound{}) },
 			[]string{"credo: App.ProvideValue[*credo_test.bootUnbound]: " + afterFinalize}},
@@ -137,7 +160,7 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 
 		// Each registration after shutdown.
 		{"Provide after shutdown", shutDown,
-			func(app *credo.App) { app.Provide[*bootUnbound](func() *bootUnbound { return nil }) },
+			func(app *credo.App) { app.Provide(func() *bootUnbound { return nil }) },
 			[]string{"credo: App.Provide[*credo_test.bootUnbound]: " + afterShutdown}},
 		{"ProvideValue after shutdown", shutDown, func(app *credo.App) { app.ProvideValue(&bootUnbound{}) },
 			[]string{"credo: App.ProvideValue[*credo_test.bootUnbound]: " + afterShutdown}},
@@ -193,11 +216,11 @@ type (
 // in registration order, each missing dependency with its full path.
 func TestBootstrap_FinalizeReportsTheWholeGraph(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*bootOrders](func(*bootPayments) *bootOrders { return &bootOrders{} })
-	app.Provide[*bootPayments](func(*http.Client) *bootPayments { return &bootPayments{} })
-	app.Provide[*bootCycleA](func(*bootCycleB) *bootCycleA { return &bootCycleA{} })
-	app.Provide[*bootCycleB](func(*bootCycleA) *bootCycleB { return &bootCycleB{} })
-	app.Provide[*bootReports](func(*bootLedger) *bootReports { return &bootReports{} })
+	app.Provide(func(*bootPayments) *bootOrders { return &bootOrders{} })
+	app.Provide(func(*http.Client) *bootPayments { return &bootPayments{} })
+	app.Provide(func(*bootCycleB) *bootCycleA { return &bootCycleA{} })
+	app.Provide(func(*bootCycleA) *bootCycleB { return &bootCycleB{} })
+	app.Provide(func(*bootLedger) *bootReports { return &bootReports{} })
 
 	err := app.Finalize()
 	if err == nil {

@@ -30,7 +30,7 @@ func TestShutdown_BuildFailsDuringAnotherShutdown_ReleasesDependencies(t *testin
 	started, release := make(chan struct{}), make(chan struct{})
 	resolved := make(chan error, 1)
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(*nodeDB) (*nodeService, error) {
+	c.MustProvide(func(*nodeDB) (*nodeService, error) {
 		close(started)
 		<-release
 		return nil, errors.New("init failed")
@@ -69,7 +69,7 @@ func TestShutdown_BuildSucceedsDuringShutdown_IsAttempted(t *testing.T) {
 		c := di.New()
 		started, release := make(chan struct{}), make(chan struct{})
 		c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-		c.MustProvide[*nodeService](func(*nodeDB) (*nodeService, error) {
+		c.MustProvide(func(*nodeDB) (*nodeService, error) {
 			close(started)
 			<-release
 			return &nodeService{newCloser(log, "service")}, nil

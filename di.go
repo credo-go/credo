@@ -9,17 +9,23 @@ import (
 	"github.com/credo-go/credo/internal/di"
 )
 
-// Provide registers a constructor for type T in the application's DI
-// container. The constructor can accept any number of parameters that are
-// themselves registered, and must return T or (T, error). It runs at most
-// once, on the first resolution after [App.Finalize].
+// Provide registers a constructor in the application's DI container. The
+// binding's type is the constructor's first result type: func(deps...) T or
+// func(deps...) (T, error) binds T. Its parameters are themselves resolved
+// from the container. It runs at most once, on the first resolution after
+// [App.Finalize].
 //
-//	app.Provide[*UserService](NewUserService)
+//	app.Provide(NewUserService) // binds *UserService
 //
-// Because Go cannot express "a function with arbitrary parameters returning
-// T" in the type system, constructor is typed any: a signature mistake (wrong
-// return type, not a function) panics here, at the call, not at compile time.
-// So do a nil constructor, a second binding of T and a call after
+// A constructor declared to return a concrete type binds that type; the
+// interfaces it serves are bound with [App.Alias]. One declared to return an
+// interface binds the interface.
+//
+// Because Go cannot express "a function with arbitrary parameters" in the
+// type system, constructor is typed any: a signature mistake (not a
+// function, no result, a second result that is not an error) panics here, at
+// the call, not at compile time. So do a nil constructor, a second binding of
+// T — a direct one, or an alias of T — without [Override], and a call after
 // [App.Finalize] or after shutdown began; each is misuse known at the call
 // site (see "Panics and Errors" in the package documentation). The dependency
 // graph itself is validated at [App.Finalize]. A constructor that captures
@@ -30,25 +36,31 @@ import (
 // A binding whose type shows Shutdown is a component: the App shuts its value
 // down after its consumers, and starts it and asks it for readiness when the
 // type also shows Start or Ready ([Component]). A value whose Shutdown only
-// the built value shows is shut down too, in the internal tier. The options
-// are [Ingress], [Closer] and [Override]; each panics on misuse at the call.
+// the built value shows is shut down too, in the internal tier. A component
+// whose built value has a Start or Ready the binding's type hides fails the
+// start once it is built: declare the constructor to return the concrete
+// type, and bind the interface with [App.Alias]. The options are [Ingress],
+// [Closer] and [Override]; each panics on misuse at the call.
 //
 // Registration is sequential: call Provide from the goroutine that builds the
 // App, before it runs.
-func (app *App) Provide[T any](constructor any, opts ...RegistrationOption) {
+func (app *App) Provide(constructor any, opts ...RegistrationOption) {
 	o := registrationOptions("App.Provide", opts, optIngress, optCloser, optOverride)
-	panicOnMisuse(app.container.ProvideWith[T](constructor, o))
+	panicOnMisuse(app.container.ProvideWith(constructor, o))
 }
 
 // ProvideValue registers a pre-built value for type T as a Singleton. The App
 // owns the value from then on: if it is a [Component] it is shut down during
 // the drain, unless [Borrowed] leaves it to the caller. The options are
 // [Ingress], [Borrowed], [Closer] and [Override]; [Override] is how a
-// composition root or a test swaps an earlier binding for a stub, and the
-// value it replaces never becomes the App's. A second binding of T without
-// [Override], a call after [App.Finalize] or after shutdown began, and a
-// value whose resource another holder owns differently panic, like
-// [App.Provide].
+// composition root or a test swaps an earlier binding — a direct one, or an
+// alias of T — for a stub, and the value it replaces never becomes the App's.
+// A second binding of T without [Override], a call after [App.Finalize] or
+// after shutdown began, a value whose resource another holder owns
+// differently, and a component whose Start or Ready the type T hides panic,
+// like [App.Provide]; a hidden capability's remedies are binding the
+// concrete type with an [App.Alias] of T, or [Borrowed] when the caller
+// starts and stops the value.
 //
 //	app.ProvideValue[*Logger](logger)
 func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption) {
@@ -143,14 +155,24 @@ func (app *App) noteResolveDuringDrain(t reflect.Type) {
 }
 
 // Alias creates a type alias so that resolving interface I via [App.Resolve]
-// returns the singleton registered for concrete type T. I must be an
-// interface, T must implement I, T must already be registered and I must not
-// be; otherwise Alias panics, as it does after [App.Finalize] or after
-// shutdown began.
+// returns the singleton registered for concrete type T. An alias is a binding
+// of I: a later direct binding of I panics unless it carries [Override],
+// which replaces the alias. I must be an interface, T must implement I and
+// be registered already, and I must have neither a binding nor an alias;
+// otherwise Alias panics, as it does after [App.Finalize] or after shutdown
+// began. [Override], its one option, points I at T in place of its earlier
+// binding or alias.
 //
+// The type an overridden alias pointed at stays registered until
+// [App.Finalize], which drops it when no other alias, [App.BindMany] entry or
+// constructor parameter reaches it: it is never built or started, and
+// resolving it reports the override.
+//
+//	app.Provide(NewPgUserRepo) // binds *PgUserRepo
 //	app.Alias[UserRepo, *PgUserRepo]()
-func (app *App) Alias[I, T any]() {
-	panicOnMisuse(app.container.Alias[I, T]())
+func (app *App) Alias[I, T any](opts ...RegistrationOption) {
+	o := registrationOptions("App.Alias", opts, optOverride)
+	panicOnMisuse(app.container.AliasWith[I, T](o))
 }
 
 // BindMany adds concrete type T to the ordered collection for interface I.

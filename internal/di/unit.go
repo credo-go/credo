@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // Tier is the drain tier a component belongs to. The zero value is unset and
@@ -289,4 +290,66 @@ func (u *Unit) close(ctx context.Context, value any) error {
 		return err
 	}
 	return nil
+}
+
+// hiddenCapabilityErrorLocked refuses a component whose binding's type hides
+// its value's Start or Ready: the plan is taken from the type, so the App
+// would never call them. A borrowed value is its caller's to start, a value
+// that is not a component has nothing the App would call, and a capability
+// another holder of the same resource plans is called through that holder.
+// c.mu must be held.
+func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, hasToken bool) error {
+	if value == nil || u.teardownOf(value) == teardownNone {
+		return nil
+	}
+	_, starts := value.(starter)
+	_, readies := value.(readier)
+	if hasToken {
+		for _, h := range c.resources[token] {
+			if h != u && !h.borrowed {
+				starts = starts && !h.starts
+				readies = readies && !h.readies
+			}
+		}
+	}
+	if (!starts || u.starts) && (!readies || u.readies) {
+		return nil
+	}
+	vt := reflect.TypeOf(value)
+	var hidden []string
+	for _, m := range []struct {
+		name string
+		t    reflect.Type
+	}{{"Shutdown", shutdownerType}, {"Start", starterType}, {"Ready", readierType}} {
+		if vt.Implements(m.t) && !u.t.Implements(m.t) {
+			hidden = append(hidden, m.name)
+		}
+	}
+	methods := joinAnd(hidden)
+	switch {
+	case u.valueBinding:
+		return fmt.Errorf("the binding's type %s hides %s of its value, a %s, and the App starts and asks "+
+			"for readiness only what the binding's type shows; bind the value as %s and the interface with "+
+			"app.Alias[%s, %s](), or give credo.Borrowed() when the caller starts and stops it",
+			u.t, methods, vt, vt, u.t, vt)
+	case u.managed:
+		return fmt.Errorf("the constructor handed to %s returns a %s, whose %s its result type %s hides, "+
+			"and the App starts and asks for readiness only what that type shows; declare the constructor "+
+			"to return %s", u.label(), vt, methods, u.t, vt)
+	default:
+		return fmt.Errorf("the constructor of %s returns a %s, whose %s the binding's type hides, and the "+
+			"App starts and asks for readiness only what the binding's type shows; declare the constructor "+
+			"to return %s and bind %s with app.Alias[%s, %s]()", u.t, vt, methods, vt, u.t, u.t, vt)
+	}
+}
+
+// joinAnd joins names as "a", "a and b" or "a, b and c".
+func joinAnd(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }

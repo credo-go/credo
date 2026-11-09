@@ -59,23 +59,23 @@ func TestAcceptance_FailedStartStopsWhatWasBuilt(t *testing.T) {
 	app := mustNew(t, credo.WithAddr(host, port))
 
 	app.ProvideValue(log)
-	app.Provide[*componentA](func(l *acceptanceLog) *componentA {
+	app.Provide(func(l *acceptanceLog) *componentA {
 		l.add("build a")
 		return &componentA{startStop{name: "a", log: l}}
 	})
-	app.Provide[*componentB](func(_ *componentA, l *acceptanceLog) *componentB {
+	app.Provide(func(_ *componentA, l *acceptanceLog) *componentB {
 		l.add("build b")
 		return &componentB{startStop{name: "b", log: l}}
 	})
-	app.Provide[*componentC](func(_ *componentB, l *acceptanceLog) *componentC {
+	app.Provide(func(_ *componentB, l *acceptanceLog) *componentC {
 		l.add("build c")
 		return &componentC{startStop{name: "c", log: l, failStart: true}}
 	})
-	app.Provide[*componentD](func(_ *componentC, l *acceptanceLog) *componentD {
+	app.Provide(func(_ *componentC, l *acceptanceLog) *componentD {
 		l.add("build d")
 		return &componentD{startStop{name: "d", log: l}}
 	})
-	app.Provide[*componentE](func(l *acceptanceLog) *componentE {
+	app.Provide(func(l *acceptanceLog) *componentE {
 		l.add("build e")
 		return &componentE{log: l}
 	})

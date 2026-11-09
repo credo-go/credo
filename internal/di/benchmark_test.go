@@ -10,7 +10,7 @@ import (
 // reflect.TypeFor → findRegistration (RLock + map hit) → sync.Once no-op.
 func BenchmarkResolve_Singleton_Cached(b *testing.B) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 	seal(b, c)
 	c.MustResolve[*SimpleService]() // prime the singleton
 
@@ -38,7 +38,7 @@ func BenchmarkResolve_ProvideValue(b *testing.B) {
 // under concurrent singleton resolution.
 func BenchmarkResolve_Parallel(b *testing.B) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 	seal(b, c)
 	c.MustResolve[*SimpleService]() // prime
 
@@ -53,8 +53,8 @@ func BenchmarkResolve_Parallel(b *testing.B) {
 // BenchmarkResolveAll_Cached measures ordered interface collection resolution.
 func BenchmarkResolveAll_Cached(b *testing.B) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
-	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustProvide(NewEnglishGreeter)
+	c.MustProvide(NewFrenchGreeter)
 	c.MustBindMany[Greeter, *englishGreeter]()
 	c.MustBindMany[Greeter, *frenchGreeter]()
 	seal(b, c)

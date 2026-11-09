@@ -104,6 +104,12 @@ func (c *Container) resolve(targetType reflect.Type, stack []reflect.Type) (any,
 
 	reg, canonical, ok := c.findRegistration(targetType)
 	if !ok {
+		c.mu.RLock()
+		err := c.droppedErrorLocked("Resolve", targetType)
+		c.mu.RUnlock()
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("di: Resolve[%s]: not registered", targetType)
 	}
 

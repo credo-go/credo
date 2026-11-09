@@ -31,7 +31,7 @@ func newDIServiceWithDep(s *diSimpleService) *diServiceWithDep {
 
 func TestProvide_Resolve(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
+	app.Provide(newDISimpleService)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diSimpleService]()
@@ -45,7 +45,7 @@ func TestProvide_Resolve(t *testing.T) {
 
 func TestMustResolve(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
+	app.Provide(newDISimpleService)
 
 	mustFinalize(t, app)
 	svc := app.MustResolve[*diSimpleService]()
@@ -71,8 +71,8 @@ func TestProvideValue_Resolve(t *testing.T) {
 
 func TestProvide_DependencyChain(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
-	app.Provide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide(newDISimpleService)
+	app.Provide(newDIServiceWithDep)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diServiceWithDep]()
@@ -113,7 +113,7 @@ func newDIPgUserRepo() *diPgUserRepo           { return &diPgUserRepo{} }
 
 func TestAlias_ResolveByInterface(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diPgUserRepo](newDIPgUserRepo)
+	app.Provide(newDIPgUserRepo)
 	app.Alias[diUserRepo, *diPgUserRepo]()
 
 	mustFinalize(t, app)
@@ -130,7 +130,7 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 
 func TestFinalize(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
+	app.Provide(newDISimpleService)
 
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
@@ -150,8 +150,8 @@ func TestFinalize(t *testing.T) {
 
 func TestFinalize_ValidGraph(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
-	app.Provide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide(newDISimpleService)
+	app.Provide(newDIServiceWithDep)
 
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
@@ -161,7 +161,7 @@ func TestFinalize_ValidGraph(t *testing.T) {
 func TestFinalize_MissingDep(t *testing.T) {
 	app := mustNew(t)
 	// diServiceWithDep depends on diSimpleService which is not registered.
-	app.Provide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide(newDIServiceWithDep)
 
 	err := app.Finalize()
 	if err == nil {

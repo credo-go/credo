@@ -194,8 +194,8 @@ func TestApp_ShutdownDuringStartWalkStartsNoWorker(t *testing.T) {
 	app := newTestApp(t, credo.WithLogger(capture.logger()))
 	gate := &raceGate{entered: make(chan struct{})}
 	gated := &raceGatedWorker{}
-	app.Provide[*raceGate](func() *raceGate { return gate })
-	app.Provide[*raceGatedWorker](func(*raceGate) *raceGatedWorker { return gated })
+	app.Provide(func() *raceGate { return gate })
+	app.Provide(func(*raceGate) *raceGatedWorker { return gated })
 	s := Use(app)
 	s.ContinuousProvided[*raceGatedWorker]("gated")
 	var byValueRuns atomic.Int32

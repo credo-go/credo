@@ -152,7 +152,7 @@ func TestShutdown_ConsumersBeforeDependencies_RegardlessOfRegistrationOrder(t *t
 	c := di.New()
 	// The consumer is registered BEFORE its dependency; reverse registration
 	// order alone would close the DB first.
-	c.MustProvide[*nodeService](func(db *nodeDB) *nodeService {
+	c.MustProvide(func(db *nodeDB) *nodeService {
 		return &nodeService{newCloser(log, "service")}
 	})
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
@@ -187,10 +187,10 @@ func TestShutdown_AliasAndCollectionEdges_CloseOnce(t *testing.T) {
 	c := di.New()
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
 	c.MustAlias[storage, *nodeDB]()
-	c.MustProvide[*nodeRepo](func(s storage) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
-	c.MustProvide[*nodeCache](func() *nodeCache { return &nodeCache{newCloser(log, "cache")} })
+	c.MustProvide(func(s storage) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
+	c.MustProvide(func() *nodeCache { return &nodeCache{newCloser(log, "cache")} })
 	c.MustBindMany[storage, *nodeCache]()
-	c.MustProvide[*nodeService](func(all []storage) *nodeService {
+	c.MustProvide(func(all []storage) *nodeService {
 		return &nodeService{newCloser(log, "service")}
 	})
 	seal(t, c)
@@ -217,8 +217,8 @@ func TestShutdown_NonShutdownerIntermediateKeepsOrder(t *testing.T) {
 	log := newCloseLog()
 	c := di.New()
 	c.MustProvideValue[*nodeRepo](&nodeRepo{newCloser(log, "repo")})
-	c.MustProvide[*nodePlain](func(r *nodeRepo) *nodePlain { return &nodePlain{Repo: r} })
-	c.MustProvide[*nodeAPI](func(p *nodePlain) *nodeAPI { return &nodeAPI{newCloser(log, "api")} })
+	c.MustProvide(func(r *nodeRepo) *nodePlain { return &nodePlain{Repo: r} })
+	c.MustProvide(func(p *nodePlain) *nodeAPI { return &nodeAPI{newCloser(log, "api")} })
 	seal(t, c)
 	c.MustResolve[*nodeAPI]()
 
@@ -234,7 +234,7 @@ func TestShutdown_ClosingRejectsResolve(t *testing.T) {
 	log := newCloseLog()
 	c := di.New()
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeRepo](func(db *nodeDB) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
+	c.MustProvide(func(db *nodeDB) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
 	seal(t, c)
 	c.MustResolve[*nodeRepo]()
 
@@ -261,7 +261,7 @@ func TestShutdown_ClosingRejectsResolve(t *testing.T) {
 
 func TestShutdown_ClosedWinsOverFailedSeal(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*ServiceWithDep](NewServiceWithDep) // missing dependency
+	c.MustProvide(NewServiceWithDep) // missing dependency
 	if err := c.Seal(); err == nil {
 		t.Fatal("Seal should fail")
 	}
@@ -278,7 +278,7 @@ func TestShutdown_WithoutSeal_TearsDownBuiltValues(t *testing.T) {
 	c := di.New()
 	calls := 0
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeRepo](func(db *nodeDB) *nodeRepo {
+	c.MustProvide(func(db *nodeDB) *nodeRepo {
 		calls++
 		return &nodeRepo{newCloser(log, "repo")}
 	})
@@ -302,7 +302,7 @@ func TestShutdown_PendingBuild_BlocksDependencyAndWithholdsResult(t *testing.T) 
 	gate := make(chan struct{})
 	started := make(chan struct{})
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(db *nodeDB) *nodeService {
+	c.MustProvide(func(db *nodeDB) *nodeService {
 		close(started)
 		<-gate
 		return &nodeService{newCloser(log, "service")}
@@ -344,7 +344,7 @@ func TestShutdown_PendingBuildFailure_ReleasesDependencies(t *testing.T) {
 	gate := make(chan struct{})
 	started := make(chan struct{})
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(db *nodeDB) (*nodeService, error) {
+	c.MustProvide(func(db *nodeDB) (*nodeService, error) {
 		close(started)
 		<-gate
 		return nil, errors.New("init failed")
@@ -373,7 +373,7 @@ func TestShutdown_HungShutdowner_BoundedAndReported(t *testing.T) {
 	hung.block = make(chan struct{})
 	t.Cleanup(func() { close(hung.block) })
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(db *nodeDB) *nodeService { return &nodeService{hung} })
+	c.MustProvide(func(db *nodeDB) *nodeService { return &nodeService{hung} })
 	seal(t, c)
 	c.MustResolve[*nodeService]()
 
@@ -444,7 +444,7 @@ func TestShutdown_PanicIsolated(t *testing.T) {
 	bad := newCloser(log, "service")
 	bad.panic = "kaboom"
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(db *nodeDB) *nodeService { return &nodeService{bad} })
+	c.MustProvide(func(db *nodeDB) *nodeService { return &nodeService{bad} })
 	seal(t, c)
 	c.MustResolve[*nodeService]()
 
@@ -505,7 +505,7 @@ func TestShutdown_LateConstruction_GetsOneBoundedCleanup(t *testing.T) {
 	started := make(chan struct{})
 	late := newCloser(log, "service")
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeService](func(db *nodeDB) *nodeService {
+	c.MustProvide(func(db *nodeDB) *nodeService {
 		close(started)
 		<-gate
 		return &nodeService{late}
@@ -570,8 +570,8 @@ func TestShutdown_SuccessReturnsNil_NotEmptyReport(t *testing.T) {
 	log := newCloseLog()
 	c := di.New()
 	c.MustProvideValue[*nodeDB](&nodeDB{newCloser(log, "db")})
-	c.MustProvide[*nodeRepo](func(db *nodeDB) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
-	c.MustProvide[*nodeCache](func() *nodeCache { return &nodeCache{newCloser(log, "cache")} }) // never built
+	c.MustProvide(func(db *nodeDB) *nodeRepo { return &nodeRepo{newCloser(log, "repo")} })
+	c.MustProvide(func() *nodeCache { return &nodeCache{newCloser(log, "cache")} }) // never built
 	seal(t, c)
 	c.MustResolve[*nodeRepo]()
 

@@ -106,12 +106,12 @@ func (s *Supervisor) Scheduled(name, expr string, w Worker, cfg ...ScheduledConf
 // ContinuousProvided registers, under name, the continuous worker the DI
 // container provides as T:
 //
-//	app.Provide[*OrderConsumer](NewOrderConsumer)
+//	app.Provide(NewOrderConsumer)
 //	workers.ContinuousProvided[*OrderConsumer]("order-consumer")
 //
 // The worker's component is a constructor over T: the start walk builds it
 // after T's component dependencies have started, and the worker stops before
-// them. Provide[T] may come before or after this call, both before Finalize;
+// them. The Provide call that binds T may come before or after this call, both before Finalize;
 // T may be an interface bound with app.Alias. A T without a binding fails
 // Finalize; a constructor error, a panic or a nil T fails the start. One T
 // registered under two names panics, in any supervisor of the App, since the

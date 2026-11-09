@@ -59,10 +59,10 @@ func TestComponents_SharedResourceStartsOnce(t *testing.T) {
 		bind func(app *credo.App)
 	}{
 		{"same pointer under a second type", func(app *credo.App) {
-			app.Provide[countedView](func(r *counted) countedView { return r })
+			app.Provide(func(r *counted) countedView { return r })
 		}},
 		{"wrapper that embeds the resource", func(app *credo.App) {
-			app.Provide[countedWrapper](func(r *counted) countedWrapper { return countedWrapper{r} })
+			app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} })
 		}},
 	}
 	for _, tc := range cases {
@@ -86,7 +86,7 @@ func TestComponents_BorrowedResourceIsNeverStarted(t *testing.T) {
 	app := mustNew(t)
 	r := &counted{}
 	app.ProvideValue(r, credo.Borrowed())
-	app.Provide[countedWrapper](func(r *counted) countedWrapper { return countedWrapper{r} })
+	app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} })
 	startComponents(t, app)
 	if err := shutdownApp(t, app, time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -121,13 +121,13 @@ func TestComponents_SharedResourceKeepsDependencyOrder(t *testing.T) {
 	var userStops atomic.Int32
 	var user *countedUser
 	app.ProvideValue(r)
-	app.Provide[*countedUser](func(r *counted) *countedUser {
+	app.Provide(func(r *counted) *countedUser {
 		user = &countedUser{r: r, stops: &userStops}
 		return user
 	})
 	// The interface view is the resource itself, reached through its
 	// consumer; it has no state or teardown of its own.
-	app.Provide[publisher](func(u *countedUser) publisher { return u.r })
+	app.Provide(func(u *countedUser) publisher { return u.r })
 	if err := app.Finalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func (b *badIdentity) Shutdown(context.Context) error {
 func TestComponents_RejectedValueIsReleased(t *testing.T) {
 	app := mustNew(t)
 	var stops atomic.Int32
-	app.Provide[*badIdentity](func() *badIdentity { return &badIdentity{stops: &stops} })
+	app.Provide(func() *badIdentity { return &badIdentity{stops: &stops} })
 	if err := app.Finalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestComponents_ConflictingHolderIsNotReleased(t *testing.T) {
 	app := mustNew(t)
 	conn := &borrowedConn{}
 	app.ProvideValue(conn, credo.Borrowed())
-	app.Provide[connCloser](func(c *borrowedConn) connCloser { return c }, credo.Closer())
+	app.Provide(func(c *borrowedConn) connCloser { return c }, credo.Closer())
 	if err := app.Finalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestComponents_SharedGroupsKeepARealDependency(t *testing.T) {
 			app := mustNew(t)
 			pool := &groupedPool{}
 			registerService := func() {
-				app.Provide[*groupedService](func(p *groupedPool) *groupedService {
+				app.Provide(func(p *groupedPool) *groupedService {
 					return &groupedService{pool: p}
 				})
 			}
@@ -261,8 +261,8 @@ func TestComponents_SharedGroupsKeepARealDependency(t *testing.T) {
 			if !serviceFirst {
 				registerService()
 			}
-			app.Provide[groupedServiceView](func(s *groupedService) groupedServiceView { return s })
-			app.Provide[groupedPublisher](func(s *groupedService) groupedPublisher { return s.pool })
+			app.Provide(func(s *groupedService) groupedServiceView { return s })
+			app.Provide(func(s *groupedService) groupedPublisher { return s.pool })
 			if err := app.Finalize(); err != nil {
 				t.Fatal(err)
 			}

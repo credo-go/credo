@@ -1,7 +1,6 @@
 package di
 
 import (
-	"fmt"
 	"reflect"
 )
 
@@ -22,7 +21,7 @@ func (c *Container) Manage(v any, o Options) error {
 	// named func type with Shutdown is a value, since a constructor's type
 	// carries no methods.
 	if vt := reflect.TypeOf(v); vt.Kind() == reflect.Func && !vt.Implements(shutdownerType) {
-		reg, err := inspectManagedConstructor(v)
+		reg, err := inspectConstructor(v)
 		if err != nil {
 			return misuse("Manage", []reflect.Type{reflect.TypeOf(v)}, "%v; want a component value, or "+
 				"func(dependencies...) C or func(dependencies...) (C, error) for a component type C", err)
@@ -71,16 +70,6 @@ func (c *Container) Manage(v any, o Options) error {
 	c.units = append(c.units, u)
 	c.names[u.name] = u
 	return nil
-}
-
-// inspectManagedConstructor checks a constructor handed to Manage: any
-// result type, with the same shape rules as Provide.
-func inspectManagedConstructor(constructor any) (*constructorProvider, error) {
-	ct := reflect.TypeOf(constructor)
-	if ct.NumOut() == 0 {
-		return nil, fmt.Errorf("constructor must return 1 or 2 values, got 0")
-	}
-	return inspectConstructor(constructor, ct.Out(0))
 }
 
 // BuildUnit returns a unit's value, building it — and what it depends on —

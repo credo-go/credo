@@ -106,7 +106,7 @@ func TestTeardown_HolderWithoutTeardownKeepsResourceUntilRetired(t *testing.T) {
 	pool := &unitPool{ev: ev, name: "pool"}
 	c := di.New()
 	c.MustProvideValue[*unitPool](pool)
-	c.MustProvide[unitRepo](func(p *unitPool) unitRepo { return unitRepo{pool: p} })
+	c.MustProvide(func(p *unitPool) unitRepo { return unitRepo{pool: p} })
 	seal(t, c)
 	if _, err := c.Resolve[unitRepo](); err != nil {
 		t.Fatal(err)
@@ -349,13 +349,13 @@ func TestTeardown_IngressBeforeInternalAndConcurrent(t *testing.T) {
 	enter := make(chan struct{}, 2)
 	c := di.New()
 	c.MustProvideValue[*events](ev)
-	c.MustProvide[*tierStore](func(e *events) *tierStore { return &tierStore{ev: e} })
-	if err := c.ProvideWith[*tierServer](func(e *events, _ *tierStore) *tierServer {
+	c.MustProvide(func(e *events) *tierStore { return &tierStore{ev: e} })
+	if err := c.ProvideWith(func(e *events, _ *tierStore) *tierServer {
 		return &tierServer{ev: e, name: "a", gate: gate, enter: enter}
 	}, di.Options{Ingress: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.ProvideWith[tierServerB](func(e *events, _ *tierStore) tierServerB {
+	if err := c.ProvideWith(func(e *events, _ *tierStore) tierServerB {
 		return tierServerB{&tierServer{ev: e, name: "b", gate: gate, enter: enter}}
 	}, di.Options{Ingress: true}); err != nil {
 		t.Fatal(err)
@@ -388,12 +388,12 @@ func TestSeal_InternalComponentDependsOnIngress(t *testing.T) {
 	ev := &events{}
 	c := di.New()
 	c.MustProvideValue[*events](ev)
-	if err := c.ProvideWith[*tierServer](func(e *events) *tierServer { return &tierServer{ev: e} },
+	if err := c.ProvideWith(func(e *events) *tierServer { return &tierServer{ev: e} },
 		di.Options{Ingress: true}); err != nil {
 		t.Fatal(err)
 	}
-	c.MustProvide[unitRepo](func(*tierServer) unitRepo { return unitRepo{} })
-	c.MustProvide[*tierStore](func(e *events, _ unitRepo) *tierStore { return &tierStore{ev: e} })
+	c.MustProvide(func(*tierServer) unitRepo { return unitRepo{} })
+	c.MustProvide(func(e *events, _ unitRepo) *tierStore { return &tierStore{ev: e} })
 	err := c.Seal()
 	if err == nil || !strings.Contains(err.Error(), "internal component *di_test.tierStore depends on the ingress "+
 		"component *di_test.tierServer: *di_test.tierStore → di_test.unitRepo → *di_test.tierServer") {
@@ -412,11 +412,11 @@ func TestResolve_ComponentFoundOnValueMustNotDependOnIngress(t *testing.T) {
 	ev := &events{}
 	c := di.New()
 	c.MustProvideValue[*events](ev)
-	if err := c.ProvideWith[*tierServer](func(e *events) *tierServer { return &tierServer{ev: e} },
+	if err := c.ProvideWith(func(e *events) *tierServer { return &tierServer{ev: e} },
 		di.Options{Ingress: true}); err != nil {
 		t.Fatal(err)
 	}
-	c.MustProvide[hiddenComponent](func(e *events, _ *tierServer) hiddenComponent { return &hiddenImpl{ev: e} })
+	c.MustProvide(func(e *events, _ *tierServer) hiddenComponent { return &hiddenImpl{ev: e} })
 	seal(t, c)
 	_, err := c.Resolve[hiddenComponent]()
 	if err == nil || !strings.Contains(err.Error(), "found only on its built value") {
@@ -437,9 +437,9 @@ func TestStartPlan_DependencyOrder(t *testing.T) {
 	c := di.New()
 	c.MustProvideValue[*events](ev)
 	// B is registered first but depends on A through a non-component.
-	c.MustProvide[startableB](func(e *events, _ unitRepo) startableB { return startableB{&unitPool{ev: e}} })
-	c.MustProvide[unitRepo](func(s startable) unitRepo { return unitRepo{pool: s.unitPool} })
-	c.MustProvide[startable](func(e *events) startable { return startable{&unitPool{ev: e}} })
+	c.MustProvide(func(e *events, _ unitRepo) startableB { return startableB{&unitPool{ev: e}} })
+	c.MustProvide(func(s startable) unitRepo { return unitRepo{pool: s.unitPool} })
+	c.MustProvide(func(e *events) startable { return startable{&unitPool{ev: e}} })
 	seal(t, c)
 	var names []string
 	for _, u := range c.StartPlan(di.TierInternal) {
@@ -471,8 +471,8 @@ func TestTeardown_SharedResourceKeepsAHoldersOtherDependencies(t *testing.T) {
 	pool := &unitPool{ev: ev, name: "pool"}
 	c := di.New()
 	c.MustProvideValue[*unitPool](pool)
-	c.MustProvide[*unitMetrics](func() *unitMetrics { return &unitMetrics{ev: ev} })
-	c.MustProvide[unitRepoWith](func(p *unitPool, m *unitMetrics) unitRepoWith { return unitRepoWith{pool: p, m: m} })
+	c.MustProvide(func() *unitMetrics { return &unitMetrics{ev: ev} })
+	c.MustProvide(func(p *unitPool, m *unitMetrics) unitRepoWith { return unitRepoWith{pool: p, m: m} })
 	seal(t, c)
 	if _, err := c.Resolve[unitRepoWith](); err != nil {
 		t.Fatal(err)

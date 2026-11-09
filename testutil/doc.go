@@ -28,12 +28,16 @@
 //
 //	app := testutil.NewApp(t,
 //		testutil.WithWiring(func(app *credo.App) {
-//			app.Provide[*UserService](NewUserService)
-//			app.Provide[UserRepo](NewPostgresRepo)
+//			app.Provide(NewUserService)
+//			app.Provide(NewPostgresRepo) // binds *PostgresRepo
+//			app.Alias[UserRepo, *PostgresRepo]()
 //		}),
 //		testutil.WithOverride[UserRepo](fakeRepo),
 //	)
 //	svc := app.MustResolve[*UserService]() // built with fakeRepo
+//
+// The override replaces the alias, and Finalize drops *PostgresRepo when
+// nothing else uses it, so the real repository is never built.
 //
 // # Starting an App
 //
