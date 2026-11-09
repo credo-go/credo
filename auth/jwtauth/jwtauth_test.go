@@ -1,4 +1,4 @@
-package auth_test
+package jwtauth_test
 
 import (
 	"errors"
@@ -10,14 +10,14 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 
-	"github.com/credo-go/credo/auth"
+	"github.com/credo-go/credo/auth/jwtauth"
 )
 
-func TestJWTAuthenticator_Success_DefaultClaims(t *testing.T) {
+func TestAuthenticator_Success_DefaultClaims(t *testing.T) {
 	secret := []byte("top-secret")
 	signed := mustSignJWT(t, secret, jwt.MapClaims{"sub": "42", "role": "admin"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 	})
 	if err != nil {
@@ -37,8 +37,8 @@ func TestJWTAuthenticator_Success_DefaultClaims(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_MissingToken(t *testing.T) {
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+func TestAuthenticator_MissingToken(t *testing.T) {
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: []byte("top-secret"),
 	})
 	if err != nil {
@@ -47,15 +47,15 @@ func TestJWTAuthenticator_MissingToken(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/", nil)
 	_, err = a.Authenticate(r)
-	if !errors.Is(err, auth.ErrJWTMissing) {
-		t.Fatalf("expected ErrJWTMissing, got %v", err)
+	if !errors.Is(err, jwtauth.ErrTokenMissing) {
+		t.Fatalf("expected ErrTokenMissing, got %v", err)
 	}
 }
 
-func TestJWTAuthenticator_InvalidSignature(t *testing.T) {
+func TestAuthenticator_InvalidSignature(t *testing.T) {
 	signed := mustSignJWT(t, []byte("issuer-secret"), jwt.MapClaims{"sub": "42"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: []byte("different-secret"),
 	})
 	if err != nil {
@@ -66,16 +66,16 @@ func TestJWTAuthenticator_InvalidSignature(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+signed)
 
 	_, err = a.Authenticate(r)
-	if !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("expected ErrJWTInvalid, got %v", err)
+	if !errors.Is(err, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
 	}
 }
 
-func TestJWTAuthenticator_QueryFallback(t *testing.T) {
+func TestAuthenticator_QueryFallback(t *testing.T) {
 	secret := []byte("query-secret")
 	signed := mustSignJWT(t, secret, jwt.MapClaims{"sub": "7"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 		Header:     "",
 		Query:      "token",
@@ -95,7 +95,7 @@ func TestJWTAuthenticator_QueryFallback(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_CustomParseUser(t *testing.T) {
+func TestAuthenticator_CustomParseUser(t *testing.T) {
 	type claims struct {
 		Tenant string `json:"tenant"`
 		jwt.RegisteredClaims
@@ -109,9 +109,9 @@ func TestJWTAuthenticator_CustomParseUser(t *testing.T) {
 		},
 	})
 
-	a, err := auth.NewJWTAuthenticator[string](auth.JWTConfig[string]{
+	a, err := jwtauth.NewAuthenticator[string](jwtauth.Config[string]{
 		SigningKey: secret,
-		Advanced: auth.JWTAdvanced[string]{
+		Advanced: jwtauth.Advanced[string]{
 			NewClaims: func() jwt.Claims {
 				return &claims{}
 			},
@@ -141,11 +141,11 @@ func TestJWTAuthenticator_CustomParseUser(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_CookieFallback(t *testing.T) {
+func TestAuthenticator_CookieFallback(t *testing.T) {
 	secret := []byte("cookie-secret")
 	signed := mustSignJWT(t, secret, jwt.MapClaims{"sub": "cookie-user"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 		Header:     "",
 		Cookie:     "jwt_token",
@@ -166,12 +166,12 @@ func TestJWTAuthenticator_CookieFallback(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_SigningKeys_KnownKid(t *testing.T) {
+func TestAuthenticator_SigningKeys_KnownKid(t *testing.T) {
 	fallback := []byte("fallback")
 	k1 := []byte("kid-1-secret")
 	signed := mustSignJWTWithKid(t, k1, "kid-1", jwt.MapClaims{"sub": "1"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey:  fallback,
 		SigningKeys: map[string]any{"kid-1": k1},
 	})
@@ -191,12 +191,12 @@ func TestJWTAuthenticator_SigningKeys_KnownKid(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_SigningKeys_MissingKid_UsesSigningKeyFallback(t *testing.T) {
+func TestAuthenticator_SigningKeys_MissingKid_UsesSigningKeyFallback(t *testing.T) {
 	fallback := []byte("fallback-key")
 	k1 := []byte("kid-1-secret")
 	signed := mustSignJWT(t, fallback, jwt.MapClaims{"sub": "fallback"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey:  fallback,
 		SigningKeys: map[string]any{"kid-1": k1},
 	})
@@ -216,11 +216,11 @@ func TestJWTAuthenticator_SigningKeys_MissingKid_UsesSigningKeyFallback(t *testi
 	}
 }
 
-func TestJWTAuthenticator_SigningKeys_MissingKid_NoFallbackKey(t *testing.T) {
+func TestAuthenticator_SigningKeys_MissingKid_NoFallbackKey(t *testing.T) {
 	k1 := []byte("kid-1-secret")
 	signed := mustSignJWT(t, k1, jwt.MapClaims{"sub": "x"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKeys: map[string]any{"kid-1": k1},
 	})
 	if err != nil {
@@ -231,18 +231,18 @@ func TestJWTAuthenticator_SigningKeys_MissingKid_NoFallbackKey(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+signed)
 
 	_, err = a.Authenticate(r)
-	if !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("expected ErrJWTInvalid, got %v", err)
+	if !errors.Is(err, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
 	}
 }
 
-func TestJWTAuthenticator_SigningKeys_UnknownKid(t *testing.T) {
+func TestAuthenticator_SigningKeys_UnknownKid(t *testing.T) {
 	fallback := []byte("fallback-key")
 	k1 := []byte("kid-1-secret")
 	unknown := []byte("unknown-kid-secret")
 	signed := mustSignJWTWithKid(t, unknown, "kid-x", jwt.MapClaims{"sub": "x"})
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey:  fallback,
 		SigningKeys: map[string]any{"kid-1": k1},
 	})
@@ -254,22 +254,23 @@ func TestJWTAuthenticator_SigningKeys_UnknownKid(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+signed)
 
 	_, err = a.Authenticate(r)
-	if !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("expected ErrJWTInvalid, got %v", err)
+	if !errors.Is(err, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
 	}
 }
 
-func TestJWTAuthenticator_Constructor_RequiresSigningKeyOrKeyFunc(t *testing.T) {
-	_, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{})
-	if err == nil {
-		t.Fatal("expected error when no signing key, keys, or keyfunc are provided")
+func TestAuthenticator_Constructor_RequiresSigningKeyOrKeyFunc(t *testing.T) {
+	_, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{})
+	want := "jwtauth: Config has no signing key; set SigningKey, SigningKeys or Advanced.KeyFunc"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
 
-func TestJWTAuthenticator_Constructor_UsesProvidedKeyFunc(t *testing.T) {
+func TestAuthenticator_Constructor_UsesProvidedKeyFunc(t *testing.T) {
 	called := false
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
-		Advanced: auth.JWTAdvanced[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
+		Advanced: jwtauth.Advanced[jwt.MapClaims]{
 			KeyFunc: func(token *jwt.Token) (any, error) {
 				called = true
 				return []byte("top-secret"), nil
@@ -293,7 +294,7 @@ func TestJWTAuthenticator_Constructor_UsesProvidedKeyFunc(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_ParseClaims_SimplePath(t *testing.T) {
+func TestAuthenticator_ParseClaims_SimplePath(t *testing.T) {
 	secret := []byte("simple-secret")
 	exp := time.Now().Add(time.Hour).Truncate(time.Second)
 	signed := mustSignJWT(t, secret, jwt.MapClaims{
@@ -308,9 +309,9 @@ func TestJWTAuthenticator_ParseClaims_SimplePath(t *testing.T) {
 		Exp  time.Time
 	}
 
-	a, err := auth.NewJWTAuthenticator[user](auth.JWTConfig[user]{
+	a, err := jwtauth.NewAuthenticator[user](jwtauth.Config[user]{
 		SigningKey: secret,
-		ParseClaims: func(claims auth.JWTClaims) (user, error) {
+		ParseClaims: func(claims jwtauth.Claims) (user, error) {
 			return user{
 				ID:   claims.Subject(),
 				Role: claims.GetString("role"),
@@ -339,23 +340,24 @@ func TestJWTAuthenticator_ParseClaims_SimplePath(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_Constructor_ParseClaimsAndParseTokenConflict(t *testing.T) {
-	_, err := auth.NewJWTAuthenticator[string](auth.JWTConfig[string]{
+func TestAuthenticator_Constructor_ParseClaimsAndParseTokenConflict(t *testing.T) {
+	_, err := jwtauth.NewAuthenticator[string](jwtauth.Config[string]{
 		SigningKey:  []byte("secret"),
-		ParseClaims: func(auth.JWTClaims) (string, error) { return "", nil },
-		Advanced: auth.JWTAdvanced[string]{
+		ParseClaims: func(jwtauth.Claims) (string, error) { return "", nil },
+		Advanced: jwtauth.Advanced[string]{
 			ParseToken: func(*jwt.Token) (string, error) { return "", nil },
 		},
 	})
-	if err == nil {
-		t.Fatal("expected constructor error when both ParseClaims and Advanced.ParseToken are set")
+	want := "jwtauth: Config sets both ParseClaims and Advanced.ParseToken; set one of them"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
 
-func TestJWTAuthenticator_Issuer(t *testing.T) {
+func TestAuthenticator_Issuer(t *testing.T) {
 	secret := []byte("issuer-secret")
 
-	a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 		Issuer:     "credo-idp",
 	})
@@ -373,12 +375,12 @@ func TestJWTAuthenticator_Issuer(t *testing.T) {
 	wrong := mustSignJWT(t, secret, jwt.MapClaims{"iss": "evil-idp", "sub": "1"})
 	r = httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+wrong)
-	if _, err := a.Authenticate(r); !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("wrong issuer: expected ErrJWTInvalid, got %v", err)
+	if _, err := a.Authenticate(r); !errors.Is(err, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("wrong issuer: expected ErrTokenInvalid, got %v", err)
 	}
 }
 
-func TestJWTAuthenticator_Audience_AnyOf(t *testing.T) {
+func TestAuthenticator_Audience_AnyOf(t *testing.T) {
 	secret := []byte("aud-secret")
 	signed := mustSignJWT(t, secret, jwt.MapClaims{
 		"sub": "1",
@@ -398,7 +400,7 @@ func TestJWTAuthenticator_Audience_AnyOf(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+			a, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 				SigningKey: secret,
 				Audience:   tc.audience,
 			})
@@ -413,14 +415,14 @@ func TestJWTAuthenticator_Audience_AnyOf(t *testing.T) {
 			if tc.wantOK && err != nil {
 				t.Fatalf("expected success, got %v", err)
 			}
-			if !tc.wantOK && !errors.Is(err, auth.ErrJWTInvalid) {
-				t.Fatalf("expected ErrJWTInvalid, got %v", err)
+			if !tc.wantOK && !errors.Is(err, jwtauth.ErrTokenInvalid) {
+				t.Fatalf("expected ErrTokenInvalid, got %v", err)
 			}
 		})
 	}
 }
 
-func TestJWTAuthenticator_Leeway(t *testing.T) {
+func TestAuthenticator_Leeway(t *testing.T) {
 	secret := []byte("leeway-secret")
 	// Token expired 30 seconds ago.
 	signed := mustSignJWT(t, secret, jwt.MapClaims{
@@ -428,7 +430,7 @@ func TestJWTAuthenticator_Leeway(t *testing.T) {
 		"exp": time.Now().Add(-30 * time.Second).Unix(),
 	})
 
-	strict, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	strict, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 	})
 	if err != nil {
@@ -436,11 +438,11 @@ func TestJWTAuthenticator_Leeway(t *testing.T) {
 	}
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+signed)
-	if _, authErr := strict.Authenticate(r); !errors.Is(authErr, auth.ErrJWTInvalid) {
-		t.Fatalf("expired token without leeway: expected ErrJWTInvalid, got %v", authErr)
+	if _, authErr := strict.Authenticate(r); !errors.Is(authErr, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("expired token without leeway: expected ErrTokenInvalid, got %v", authErr)
 	}
 
-	lenient, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	lenient, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 		Leeway:     time.Minute,
 	})
@@ -454,12 +456,12 @@ func TestJWTAuthenticator_Leeway(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticator_RequireExpiry(t *testing.T) {
+func TestAuthenticator_RequireExpiry(t *testing.T) {
 	secret := []byte("exp-secret")
 	noExp := mustSignJWT(t, secret, jwt.MapClaims{"sub": "1"})
 
 	// Pin the golang-jwt v5 default: a token without exp is accepted.
-	lax, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	lax, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey: secret,
 	})
 	if err != nil {
@@ -471,7 +473,7 @@ func TestJWTAuthenticator_RequireExpiry(t *testing.T) {
 		t.Fatalf("v5 default should accept exp-less token, got %v", authErr)
 	}
 
-	strict, err := auth.NewJWTAuthenticator[jwt.MapClaims](auth.JWTConfig[jwt.MapClaims]{
+	strict, err := jwtauth.NewAuthenticator[jwt.MapClaims](jwtauth.Config[jwt.MapClaims]{
 		SigningKey:    secret,
 		RequireExpiry: true,
 	})
@@ -480,21 +482,21 @@ func TestJWTAuthenticator_RequireExpiry(t *testing.T) {
 	}
 	r = httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer "+noExp)
-	if _, err := strict.Authenticate(r); !errors.Is(err, auth.ErrJWTInvalid) {
-		t.Fatalf("RequireExpiry: expected ErrJWTInvalid for exp-less token, got %v", err)
+	if _, err := strict.Authenticate(r); !errors.Is(err, jwtauth.ErrTokenInvalid) {
+		t.Fatalf("RequireExpiry: expected ErrTokenInvalid for exp-less token, got %v", err)
 	}
 }
 
-func TestJWTClaims_ZeroValueAccessors(t *testing.T) {
-	var claims auth.JWTClaims
+func TestClaims_ZeroValueAccessors(t *testing.T) {
+	var claims jwtauth.Claims
 	if claims.Subject() != "" || claims.Issuer() != "" || claims.GetString("x") != "" {
-		t.Error("zero JWTClaims string accessors should return empty strings")
+		t.Error("zero Claims string accessors should return empty strings")
 	}
 	if claims.Audience() != nil || claims.Get("x") != nil {
-		t.Error("zero JWTClaims slice/any accessors should return nil")
+		t.Error("zero Claims slice/any accessors should return nil")
 	}
 	if !claims.ExpiresAt().IsZero() || !claims.IssuedAt().IsZero() || !claims.NotBefore().IsZero() {
-		t.Error("zero JWTClaims time accessors should return the zero time")
+		t.Error("zero Claims time accessors should return the zero time")
 	}
 }
 

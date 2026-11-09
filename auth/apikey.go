@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/credo-go/credo/internal/credential"
 )
 
 var (
@@ -78,11 +80,11 @@ func (a *APIKeyAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
 }
 
 func (a *APIKeyAuthenticator[T]) extractKey(r *http.Request) (string, error) {
-	if key, ok := extractHeaderCredential(r, a.cfg.Header, a.cfg.Prefix); ok {
+	if key, ok := credential.FromHeader(r, a.cfg.Header, a.cfg.Prefix); ok {
 		return key, nil
 	}
 
-	if key, ok := extractQueryCredential(r, a.cfg.Query); ok {
+	if key, ok := credential.FromQuery(r, a.cfg.Query); ok {
 		return key, nil
 	}
 
