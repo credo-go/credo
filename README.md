@@ -96,7 +96,8 @@ func main() {
 
     // Panic recovery is on by default. Request IDs and access logging are
     // explicit features: app.UseRequestID() and app.UseAccessLog(cfg...),
-    // where AccessLogConfig carries the Skipper, MinLevel and ResultFilter.
+    // where AccessLogConfig carries the Skipper, MinLevel, ResultFilter and
+    // Attrs; app.AddObserver adds an observer of the final response.
     // Silence a route/group with the MetaAccessLog route meta; health probes
     // are silent by default.
 

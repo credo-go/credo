@@ -349,15 +349,19 @@ RequestID and AccessLog are independent: access records carry an empty `request_
 
 ### AccessLog
 
-`app.UseAccessLog()` logs each completed request with structured attributes: method, path, status, bytes, duration, real client address, user agent, request ID and the matched route pattern. It observes the final response after error rendering, recovery and compressor finalization, so status, bytes (post-compression, as accepted by the transport) and duration are final. Log level follows the status: 1xx/2xx/3xx = Info, 4xx = Warn, 5xx+ = Error.
+`app.UseAccessLog()` logs each completed request with structured attributes: method, path, status, bytes, duration, real client address, user agent, request ID and the matched route pattern, and the application's own attributes in an `attrs` group. It observes the final response after error rendering, recovery and compressor finalization, so status, bytes (post-compression, as accepted by the transport) and duration are final. Log level follows the status: 1xx/2xx/3xx = Info, 4xx = Warn, 5xx+ = Error.
 
 ```go
 app.UseAccessLog(credo.AccessLogConfig{
     Logger:   accessLogger,    // nil: the request-scoped logger
     MinLevel: slog.LevelInfo,  // nil: Info
     Skipper:  func(c *credo.Context) bool { return c.Request().URL.Path == "/metrics" },
-    ResultFilter: func(c *credo.Context, entry credo.AccessLogEntry) bool {
-        return entry.Status >= 400 || entry.Duration >= time.Second
+    ResultFilter: func(ex *credo.Exchange) bool {
+        return ex.Status() >= 400 || ex.Duration() >= time.Second
+    },
+    Attrs: func(ex *credo.Exchange) []slog.Attr {
+        tenant, _ := ex.Get(TenantKey) // var TenantKey = credo.NewKey[string]("tenant")
+        return []slog.Attr{slog.String("tenant", tenant)}
     },
 })
 ```
@@ -374,18 +378,34 @@ internal.GET("/audit", auditHandler).SetMeta(credo.MetaAccessLog, true) // ...ex
 ```
 
 - **MinLevel** admits records at or above a level without changing their actual level: `slog.LevelWarn` keeps 4xx and 5xx, `slog.LevelError` keeps 5xx only. Pass a concurrency-safe `*slog.LevelVar` to change the threshold at runtime; it is read once per eligible request.
-- **ResultFilter** runs after the final response, after meta silencing and the MinLevel check. Return `true` to emit. MinLevel and ResultFilter intersect: `Warn` would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `c.Response()`, for status, bytes and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state. A filter that panics is logged as a framework error and the record is skipped; the response is unaffected. Request/result combinations work as expected:
+- **ResultFilter** runs after the final response, after meta silencing and the MinLevel check, on the `*credo.Exchange`, the record every observer reads. Return `true` to emit. MinLevel and ResultFilter intersect: `Warn` would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. The `Exchange` is valid only during the call and the callback may run concurrently; copy what you keep and synchronize mutable state. A filter that panics is logged as a framework error and the record is skipped; the response is unaffected. The request's values and the user are read as on the Context:
 
 ```go
-ResultFilter: func(c *credo.Context, entry credo.AccessLogEntry) bool {
-    user, ok := c.GetUser[User]()
-    return (ok && user.TenantID == "audit-all") || entry.Status >= 400
+ResultFilter: func(ex *credo.Exchange) bool {
+    user, ok := ex.GetUser[User]()
+    return (ok && user.TenantID == "audit-all") || ex.Status() >= 400
 },
 ```
+
+- **Attrs** adds the application's attributes to a record that will be emitted — after meta silencing, MinLevel and ResultFilter, and only when the logger is enabled for the record's level — inside one `attrs` group, so an attribute such as `status` never shadows the framework's. `attrs` is reserved on the access record. Return a fresh slice; the framework keeps it. An `Attrs` that panics is logged and the record is emitted without the group.
 
 - **Logger** routes access records to a dedicated sink, for example a JSON logger on its own file. It receives the standard fields and an explicit request ID, but it is not derived from `c.Logger()` and therefore does not inherit attributes added with `c.AddLogAttrs` or `c.SetLogger`.
 
 When the final served path differs from the client path because of `middleware.Rewrite()` or `c.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
+
+The access log is one observer of the final response. `app.AddObserver(o)` adds another — a metrics exporter, an audit sink — that receives the same `*credo.Exchange`, with the classified error code and whether a panic was recovered besides the fields above; observers run in registration order, and one that panics is logged and skipped while the next one still runs:
+
+```go
+type latency struct{ hist *Histogram } // a histogram of your metrics library
+
+func (l latency) Observe(ex *credo.Exchange) {
+    l.hist.Record(ex.Context(), ex.Duration(), ex.Route(), ex.Status())
+}
+
+app.AddObserver(latency{hist: h})
+```
+
+`ex.Context()` is the request's context as it stands when the response is final, with every value set during the request; it may be kept after `Observe` returns.
 
 Turning access logging off does not silence anything else: panic records, server errors, lifecycle, health and application logs keep flowing through their normal loggers and levels.
 

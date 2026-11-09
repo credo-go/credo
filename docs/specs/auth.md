@@ -38,8 +38,6 @@ var ErrUserMissing error
 
 **Internal implementation**: the accessors are shortcuts over a typed key of the root package's own, generic in the user type and unexported, set and read on the Context's head as every [typed key](context.md#context-head-and-typed-keys) is. Because the key is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds one node to the head and copies no request. A user set inside a scope — `middleware.Timeout`, a wrapped stdlib middleware, `c.Within` — is still the request's user after the scope returns, panics included. The key is private, so the only public access path is these methods; there is no `context.Context`-based accessor, and stdlib code cannot read or set the user, while the request a wrapped stdlib middleware passes on still carries it.
 
-> **Pending v0.26.0 (R12):** not implemented yet; no observer record exists.
-
 An observer of the final response reads the user with `Exchange.GetUser[T]`, which reads the same private key as `GetUser` ([HTTP features spec](http-features.md)).
 
 ### Authenticator Interface (generic)

@@ -34,8 +34,6 @@ The backing store is an implementation detail: the only public access path is th
 
 `SetUser`, `GetUser[T]` and `RequireUser[T]` are shortcuts over a generic typed key of the root package's own, one per user type, so the user is a value on the Context's head like any other ([ADR-008](008-context-design.md#one-context-head-and-typed-keys)): `SetUser` adds one node and copies no request, a user set inside a scope outlives it, and the request a wrapped stdlib middleware passes on still carries the user. The key stays unexported, so the user keeps no `context.Context` accessor: stdlib code can neither read nor set the principal, and the typed keys add no reader of their own.
 
-> **Pending v0.26.0 (R12):** not implemented yet; observers do not exist, and the access log's `ResultFilter` receives the `*Context`.
-
 An observer of the final response reads the user through `Exchange.GetUser[T]`, as the Context's `GetUser` does, over the same unexported key ([ADR-014](014-observability.md)); no observer reads it through `Value`.
 
 ### Authenticator Interface

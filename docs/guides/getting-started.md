@@ -247,7 +247,7 @@ api.Middleware(authMiddleware)
 app.GET("/admin", adminHandler).Middleware(requireAdmin)
 ```
 
-Panic recovery is on by default (`WithRecoverConfig` customizes it, `WithoutRecover` disables it). Request IDs, access logging, response compression and request decompression are framework features you enable explicitly — `app.UseRequestID()`, `app.UseAccessLog()`, `app.UseCompress()`, `app.UseDecompress()` — each with one optional config (`AccessLogConfig` carries the logger, `MinLevel`, `Skipper` and `ResultFilter`). They are not middleware: they wrap the whole chain and observe the final response. Middleware proper includes `CORS`, `CSRF`, `Secure`, `Timeout`, `RateLimit`, `Rewrite` and `ContractGuard`.
+Panic recovery is on by default (`WithRecoverConfig` customizes it, `WithoutRecover` disables it). Request IDs, access logging, response compression and request decompression are framework features you enable explicitly — `app.UseRequestID()`, `app.UseAccessLog()`, `app.UseCompress()`, `app.UseDecompress()` — each with one optional config (`AccessLogConfig` carries the logger, `MinLevel`, `Skipper`, `ResultFilter` and `Attrs`). They are not middleware: they wrap the whole chain and observe the final response, and `app.AddObserver` adds an observer of your own beside the access log. Middleware proper includes `CORS`, `CSRF`, `Secure`, `Timeout`, `RateLimit`, `Rewrite` and `ContractGuard`.
 
 See the [Middleware Guide](middleware.md) for the full list, configuration options, and custom middleware patterns.
 
