@@ -6,3 +6,9 @@ package credo
 func SetMultipartMaxMemory(app *App, n int64) {
 	app.multipartMaxMemory = n
 }
+
+// SourceFieldPath exposes sourceFieldPath for testing.
+var SourceFieldPath = sourceFieldPath
+
+// SourceFieldNames exposes sourceFieldNames for testing.
+var SourceFieldNames = sourceFieldNames

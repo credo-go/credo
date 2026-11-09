@@ -12,6 +12,8 @@ Validation is essential for enterprise applications (ADR-001). Go's ecosystem of
 
 Credo chooses programmatic validation to keep validation boundaries typed and reviewable (ADR-001) and to leverage Go generics for type-safe rules.
 
+A violation is read by a client against the request it sent, whether a JSON body, a form or a query carried it, so it must name a field as that client sent it, not by a tag of another source. And validation must not let part of a request through unchecked: an element of a slice of structs, and the content of a nested value whose presence a rule checks, are input as much as a top-level field, and a rule that checks presence must not switch off the validation of what is present.
+
 ## Decision
 
 ### Programmatic Only — No Struct Tags
@@ -63,23 +65,15 @@ A type that implements `validation.Validatable` (`Validate() error`) is validate
 
 **`Validate` takes no context.** `Validatable.Validate() error` checks a decoded value, and a `context.Context` parameter would invite I/O into it: a uniqueness check, which needs the database, belongs to the service, which returns a `fault.Error` naming its code ([ADR-009](009-handler-and-error-handling.md)). A context-taking interface could be added beside this one later without a break, as ozzo-validation v4 added `ValidatableWithContext`, so nothing is reserved for it now.
 
-> **Current until v0.26.0 (R6):** the next paragraph's last two sentences, under which a field with rules runs its rules only; from R6 its value's `Validate` runs once the rules pass ([Field names, slices and nested values](#field-names-slices-and-nested-values)).
-
-A `Field` with no rules validates a nested field that implements `Validatable` by calling its `Validate`. A nil pointer or nil interface is valid and its `Validate` is not called, as in ozzo-validation, which returns before calling it: an optional object a request omits is valid, and presence is what `NotNil` and `Required` check. Calling `Validate` on a nil receiver would panic in any method that reads its fields, and the request pipeline would answer a well-formed request with a 500. A struct field's `Validate` runs through the field's own pointer, so what a pointer-receiver `Validate` normalizes is kept, as it is for the bind target itself; validating a copy would discard it. A field with rules runs its rules only. Whether it should also run its `Validate` once the rules pass, as ozzo-validation does, is a separate decision: it would change which violations a request reports.
+A `Field` validates a nested field that implements `Validatable` by calling its `Validate`, once the field's rules pass ([Field names, slices and nested values](#field-names-slices-and-nested-values)). A nil pointer or nil interface is valid and its `Validate` is not called, as in ozzo-validation, which returns before calling it: an optional object a request omits is valid, and presence is what `NotNil` and `Required` check. Calling `Validate` on a nil receiver would panic in any method that reads its fields, and the request pipeline would answer a well-formed request with a 500. A struct field's `Validate` runs through the field's own pointer, so what a pointer-receiver `Validate` normalizes is kept, as it is for the bind target itself; validating a copy would discard it.
 
 ### Field names, slices and nested values
 
-> **Pending v0.26.0 (R6):** not implemented yet; a violation names its field by the `json` tag whatever the binding source, an element of a slice or array of structs is validated only under an `Each` rule, and a field with rules does not run its value's `Validate`.
-
-**A violation names a field as the client sent it:** by the `json` name for a JSON body, the `form` name for a form or multipart body, and the `query` name for `BindQuery`; a nested field joins the names of its source. The mechanism is the implementation's, within the rule that reflection stays on the cold path, cached.
+**A violation names a field as the client sent it:** by the `json` name for a JSON body, the `form` name for a form or multipart body, and the `query` name for `BindQuery`; a nested field joins the names of its source. `Validate` takes no source, so the engine names a field by its `json` tag, and `BindBody` and `BindQuery` rename the violations the target's `Validate` returns to the tags of the source they decoded, walking the target's type along each field path. The rename runs only when validation fails, over tables cached per type, so reflection stays on the cold path. An XML body keeps the `json` names. A violation inside an error that `Validate` wraps keeps them too, since the rename cannot rebuild the wrapping; a `Validate` returns the `Errors` it built as they are.
 
 **A slice or array of structs is validated like a nested struct.** An element that is `Validatable`, or a struct reachable by pointer, is validated, and its violations carry the index in `Each`'s form, `items[0].name`. An `Each` rule on the same field still runs, and the two never report one violation twice.
 
-**A nested value's `Validate` runs after its field's rules.** A field with rules runs its value's `Validate` once the rules pass, as ozzo-validation does, so `validation.Field(&r.Address, validation.NotNil[Address]())` checks that the address is present and then validates it. A field whose rules fail reports their violations only, and a nil value still is not validated.
-
-**Problem.** The field name comes from the `json` tag whatever the source, so a query or form struct reports names the client never sent. An element of a slice of structs passes unless the rule list says `Each`, so an invalid element of a request reaches the service. A rule list replaces the nested validation, so a presence rule on an optional nested field silently stops validating its content.
-
-**Removes.** The `json` name in a violation of a query or form field; the pass of an unvalidated slice element; the rule list that stops a nested `Validate`. Each is a behaviour, not an API: a request that passed may now fail with 422, and query and form violations change their field names.
+**A nested value's `Validate` runs after its field's rules.** A field with rules runs its value's `Validate` once the rules pass, as ozzo-validation does, so `validation.Field(&r.Address, validation.NotNil[Address]())` checks that the address is present and then validates it. A field whose rules fail reports their violations only, and a nil value still is not validated. A slice type with a `Validate` of its own is validated by it, not element by element. One `Field` per value carries its rules: a second `Field` on the same value runs its `Validate` a second time and reports its violations twice.
 
 ### Topic-Based Rule Grouping
 

@@ -32,22 +32,30 @@
 //
 // # Nested Structs
 //
-// A [Field] with no rules validates a field that implements [Validatable] by
-// calling its Validate, and prefixes the failures with the field's name
-// (address.city). A struct field's Validate runs on the field itself, so what
-// a pointer-receiver Validate normalizes is kept. A nil pointer or nil
-// interface is valid and its Validate is not called, so an optional nested
-// object may be omitted. A field with rules runs its rules only, so a
-// mandatory nested pointer takes [NotNil] in a Field of its own:
+// A [Field] validates a field that implements [Validatable] by calling its
+// Validate once the field's rules pass, and prefixes the failures with the
+// field's name (address.city); a field whose rules fail reports their
+// violations only. A slice or array of such values, structs whose pointer
+// implements Validatable included, has each element validated, its failures
+// prefixed with the field's name and the index (items[0].name). A struct
+// field's or element's Validate runs on the value itself, so what a
+// pointer-receiver Validate normalizes is kept. A nil pointer or nil interface
+// is valid and its Validate is not called, so an optional nested object may
+// be omitted, and a mandatory one takes [NotNil]:
 //
 //	func (o *CreateOrderInput) Validate() error {
 //	    return v.ValidateStruct(o,
 //	        v.Field(&o.Shipping),                     // Address: always validated
 //	        v.Field(&o.Billing),                      // *Address: validated when set
-//	        v.Field(&o.Contact, v.NotNil[Contact]()), // *Contact: must be set
-//	        v.Field(&o.Contact),                      // and is then validated
+//	        v.Field(&o.Contact, v.NotNil[Contact]()), // *Contact: must be set, then validated
+//	        v.Field(&o.Items),                        // []LineItem: each element validated
 //	    )
 //	}
+//
+// A violation names a field by its json tag, or the Go field name when the
+// tag gives none. BindBody and BindQuery rename the violations a target's
+// Validate returns to the tag of the source they decoded: form for a form or
+// multipart body, query for a query.
 //
 // # Error Format
 //

@@ -257,7 +257,9 @@ func (r *Request) query() url.Values {
 // case-insensitive matching against struct fields.
 //
 // If target implements [validation.Validatable], Validate() is called
-// automatically after successful decoding ("parse, don't validate").
+// automatically after successful decoding ("parse, don't validate"). A
+// violation names its field as the client sent it: by the json tag for a JSON
+// body, and by the form tag for a form or multipart body.
 //
 // Decode failures return a [*BindError] carrying a typed reason (400 Bad
 // Request via the error pipeline). Exceeding the body-size limit returns
@@ -287,6 +289,9 @@ func (r *Request) BindBody(target any) error {
 	if ct == "" {
 		ct = "application/json"
 	}
+	// source is the struct tag that names a violation's field: the tag the
+	// decoder read. XML keeps the json names, as before.
+	source := "json"
 
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil {
@@ -336,6 +341,7 @@ func (r *Request) BindBody(target any) error {
 		if err := decodeValues(target, r.PostForm, "form"); err != nil {
 			return err
 		}
+		source = "form"
 
 	case "multipart/form-data":
 		if err := r.ParseMultipartForm(r.multipartMaxMemory()); err != nil {
@@ -350,13 +356,14 @@ func (r *Request) BindBody(target any) error {
 		if err := bindMultipartFiles(target, r.MultipartForm.File); err != nil {
 			return err
 		}
+		source = "form"
 
 	default:
 		return NewHTTPError(http.StatusUnsupportedMediaType).
 			WithDetails(map[string]any{"content_type": mediaType})
 	}
 
-	return r.validateBoundTarget("BindBody", target)
+	return r.validateBoundTarget("BindBody", target, source)
 }
 
 // invalidBindTarget reports a developer error (nil or non-pointer bind
@@ -465,19 +472,22 @@ func formBindError(err error) error {
 
 // BindQuery decodes URL query parameters into target using `query:"name"` struct tags.
 // If target implements [validation.Validatable], Validate() is called automatically
-// after successful decoding ("parse, don't validate").
+// after successful decoding ("parse, don't validate"), and a violation names its
+// field by the query tag.
 //
 // In debug mode, a warning is logged when the target does not implement Validatable.
 func (r *Request) BindQuery(target any) error {
 	if err := decodeValues(target, r.query(), "query"); err != nil {
 		return err
 	}
-	return r.validateBoundTarget("BindQuery", target)
+	return r.validateBoundTarget("BindQuery", target, "query")
 }
 
-func (r *Request) validateBoundTarget(op string, target any) error {
+// validateBoundTarget runs target's Validate and names its violations' fields
+// by source, the struct tag the decoder read.
+func (r *Request) validateBoundTarget(op string, target any, source string) error {
 	if v, ok := target.(validation.Validatable); ok {
-		return v.Validate()
+		return sourceFieldNames(v.Validate(), target, source)
 	}
 	if r.app.IsDebug() {
 		r.app.logger.Warn(op+": target does not implement Validatable, skipping validation",
