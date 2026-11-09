@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	jsonv2 "encoding/json/v2"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -219,8 +220,12 @@ func setNested(root map[string]any, key string, val any) {
 }
 
 // emptyConfig is a RawConfig with no values. NewApp injects it by default so a
-// test App does not auto-load configuration from the working directory.
+// test App does not auto-load configuration from the working directory. It
+// honours the missing-key contract of a loaded configuration: every key is
+// absent, and Unmarshal returns the not-found error *config.Config returns.
 type emptyConfig struct{}
 
-func (emptyConfig) Unmarshal(string, any) error { return nil }
-func (emptyConfig) Exists(string) bool          { return false }
+func (emptyConfig) Unmarshal(key string, _ any) error {
+	return fmt.Errorf("config: key %q not found", key)
+}
+func (emptyConfig) Exists(string) bool { return false }

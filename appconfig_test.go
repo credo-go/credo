@@ -241,11 +241,23 @@ func TestApp_GetConfig(t *testing.T) {
 	}
 	app := mustNew(t, credo.WithRawConfig(rc))
 
-	t.Run("struct sub-tree", func(t *testing.T) {
-		type appCfg struct {
-			Name  string `credo:"name"`
-			Debug bool   `credo:"debug"`
+	type appCfg struct {
+		Name  string `credo:"name"`
+		Debug bool   `credo:"debug"`
+	}
+
+	t.Run("descriptor infers the type", func(t *testing.T) {
+		section := config.Section[appCfg]("app")
+		got, err := app.GetConfig(section)
+		if err != nil {
+			t.Fatalf("GetConfig(section): %v", err)
 		}
+		if got.Name != "acme" || !got.Debug {
+			t.Errorf("GetConfig(section) = %+v, want {Name:acme Debug:true}", got)
+		}
+	})
+
+	t.Run("literal key compiles", func(t *testing.T) {
 		got, err := app.GetConfig[appCfg]("app")
 		if err != nil {
 			t.Fatalf("GetConfig[appCfg]: %v", err)
@@ -307,10 +319,14 @@ func TestApp_MustGetConfig(t *testing.T) {
 		t.Errorf("MustGetConfig[int](server.port) = %d, want 8080", got)
 	}
 
-	t.Run("panics on missing key", func(t *testing.T) {
+	t.Run("panics naming a missing key", func(t *testing.T) {
 		defer func() {
-			if recover() == nil {
+			r := recover()
+			if r == nil {
 				t.Fatal("MustGetConfig on missing key should panic")
+			}
+			if msg := fmt.Sprint(r); !strings.Contains(msg, `"missing"`) || !strings.Contains(msg, "not found") {
+				t.Errorf("panic %q does not name the missing key", msg)
 			}
 		}()
 		_ = app.MustGetConfig[int]("missing")

@@ -43,10 +43,16 @@
 //
 // # Sub-Tree Access
 //
-// Read a typed section in one call with the generic [Config.Get] method, or
-// decode into an existing value with [Config.Unmarshal]:
+// A [Section] names a section and its type once; its [Section.Decode] reads
+// it from any [RawConfig], and its method value is the constructor that binds
+// the section in the container:
 //
-//	serverCfg, err := c.Get[ServerConfig]("server")
+//	var ServerSection = config.Section[ServerConfig]("server")
+//
+//	serverCfg, err := ServerSection.Decode(c)
+//	app.Provide(ServerSection.Decode)
+//
+// [Config.Unmarshal] decodes into an existing value:
 //
 //	var serverCfg ServerConfig
 //	c.Unmarshal("server", &serverCfg)
