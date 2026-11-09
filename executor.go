@@ -8,7 +8,7 @@ import (
 )
 
 // execState is the per-request bookkeeping of the executor. It lives inside
-// the pooled Context so a request allocates nothing for it.
+// the Context so a request allocates nothing for it.
 type execState struct {
 	// start is the executor entry time; the exchange's duration is measured
 	// from it through response finalization.
@@ -43,14 +43,9 @@ type execState struct {
 	body io.Closer
 }
 
-func (s *execState) reset() {
-	*s = execState{}
-}
-
 // execute is the request executor: the single owner of request
 // initialization, the user middleware/handler chain, centralized error and
-// panic handling, response finalization, access-log observation and Context
-// release. chain is the prepared pre-routing middleware → dispatch handler.
+// panic handling, response finalization and observation. chain is the prepared pre-routing middleware → dispatch handler.
 //
 // The stages run in one framework-defined order regardless of the order the
 // features were installed in:
@@ -71,13 +66,12 @@ func (s *execState) reset() {
 //     response, so the observers see the bytes the transport accepted;
 //  8. observation: the observers, the access log among them, run in
 //     registration order on the final response;
-//  9. Context release — on normal completion, on a propagating panic and on
-//     a transport abort alike.
+//  9. cleanup — the temporary files of multipart forms are removed on normal
+//     completion, on a propagating panic and on a transport abort alike.
 //
 // Lifecycle-rejected requests never reach execute: ServeHTTP answers them
 // with the callback-free 503 first.
 func (app *App) execute(c *Context, chain Handler) {
-	c.exec.reset()
 	if len(app.observers) != 0 {
 		c.exec.start = time.Now()
 	}
@@ -130,12 +124,9 @@ func (app *App) runRequest(c *Context, chain Handler) {
 
 // finishRequest runs after the recovered region on every path — normal
 // completion, a propagating panic and a transport abort. It finalizes the
-// response (closing the compressor), runs the observers, removes the
-// temporary files of multipart forms parsed during the request and releases
-// the Context to the pool.
+// response (closing the compressor), runs the observers and removes the
+// temporary files of multipart forms parsed during the request.
 func (app *App) finishRequest(c *Context) {
-	defer app.ctxPool.put(c)
-
 	var (
 		outBytes int64
 		counted  bool
@@ -167,7 +158,7 @@ func (app *App) finishRequest(c *Context) {
 	}
 	// Before the abort below, so that path removes the files as well. The
 	// check is inlined: a request without a multipart form pays two loads.
-	if req := c.request; req.multipartForm != nil || req.Request.MultipartForm != nil {
+	if req := &c.request; req.multipartForm != nil || req.Request.MultipartForm != nil {
 		req.removeMultipartFiles()
 	}
 	if abort {

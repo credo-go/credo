@@ -581,7 +581,7 @@ func mountLeaf(handler http.Handler) Handler {
 		if rctx := c.mountRouteCtx; rctx != nil {
 			std = withRouteContext(std, rctx)
 		}
-		handler.ServeHTTP(c.response, std)
+		handler.ServeHTTP(&c.response, std)
 		return nil
 	}
 }

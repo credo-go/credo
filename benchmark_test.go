@@ -170,8 +170,8 @@ func BenchmarkServeHTTP_Middleware(b *testing.B) {
 	}
 }
 
-// BenchmarkServeHTTP_Parallel stresses sync.Pool contention under
-// concurrent load (context pool + route context pool).
+// BenchmarkServeHTTP_Parallel measures a request under concurrent load: the
+// Context's allocation and the route context pool.
 func BenchmarkServeHTTP_Parallel(b *testing.B) {
 	app := mustNewBench(b)
 	app.GET("/", func(ctx *credo.Context) error {
@@ -189,7 +189,7 @@ func BenchmarkServeHTTP_Parallel(b *testing.B) {
 	})
 }
 
-// BenchmarkServeHTTP_ParallelJSON measures pool contention + JSON encoding
+// BenchmarkServeHTTP_ParallelJSON measures concurrent load with JSON encoding
 // under concurrent load.
 func BenchmarkServeHTTP_ParallelJSON(b *testing.B) {
 	app := mustNewBench(b)

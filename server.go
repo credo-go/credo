@@ -59,11 +59,9 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if app.serverCfg.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, app.serverCfg.MaxBodyBytes)
 	}
-	c := app.ctxPool.get()
-	c.reset(w, r)
 	// The executor owns everything from here: feature stages, the chain,
-	// error and panic handling, finalization and the Context's release.
-	app.execute(c, p.handler)
+	// error and panic handling and finalization.
+	app.execute(newContext(app, w, r), p.handler)
 }
 
 // Run binds the listener, runs the start phase — each component's Start in

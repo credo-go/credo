@@ -93,7 +93,7 @@ func (f *decompressFeature) apply(c *Context) error {
 		return nil
 	}
 
-	req := c.request
+	req := &c.request
 	coding := req.Header.Get("Content-Encoding")
 	if coding == "" {
 		return nil
