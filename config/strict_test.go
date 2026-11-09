@@ -216,23 +216,43 @@ func TestStrictDecodingPrimitives(t *testing.T) {
 	assertRemedy(t, c.Unmarshal("app.port", &got), `"app.port"`)
 }
 
-// TestReloadCandidateDecodesInInstanceMode verifies that the staged candidate
-// inherits the instance's mode, strict and weak.
+// TestReloadCandidateDecodesInInstanceMode verifies that a reload decodes
+// its candidate in the instance's mode: a live section whose new value has
+// an unknown key aborts a strict reload and is replaced under weak decoding.
 func TestReloadCandidateDecodesInInstanceMode(t *testing.T) {
-	const doc = `{"app":{"name":"x","unknown_key":1}}`
-	s, err := loadHermetic(t, doc).Stage()
-	if err != nil {
-		t.Fatalf("Stage: %v", err)
-	}
-	var cfg strictAppConfig
-	assertRemedy(t, s.Unmarshal("app", &cfg), `"app.unknown_key"`)
-
-	s, err = loadHermetic(t, doc, WithWeakDecoding()).Stage()
-	if err != nil {
-		t.Fatalf("Stage: %v", err)
-	}
-	if err := s.Unmarshal("app", &cfg); err != nil {
-		t.Errorf("weak staged Unmarshal: %v", err)
+	type app struct{ Name string }
+	for _, weak := range []bool{false, true} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(path, []byte(`{"app":{"name":"x"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts := []Option{WithFiles(path), WithoutProcessEnv(), WithoutDotenv()}
+		if weak {
+			opts = append(opts, WithWeakDecoding())
+		}
+		c, err := Load(opts...)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		live, err := Section[app]("app").Live(c)
+		if err != nil {
+			t.Fatalf("Live: %v", err)
+		}
+		if err = os.WriteFile(path, []byte(`{"app":{"name":"y","unknown_key":1}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Reload(t.Context())
+		if weak {
+			if err != nil || live.Load().Name != "y" {
+				t.Errorf("weak reload = %v, name %q; want the new value", err, live.Load().Name)
+			}
+			continue
+		}
+		assertRemedy(t, err, `"app.unknown_key"`)
+		if live.Load().Name != "x" {
+			t.Errorf("strict reload published %q despite the unknown key", live.Load().Name)
+		}
 	}
 }
 

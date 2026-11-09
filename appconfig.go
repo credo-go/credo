@@ -47,7 +47,8 @@ type serverConfig struct {
 	ShutdownTimeout time.Duration `credo:"shutdown_timeout"`
 
 	// ReloadTimeout bounds a reload triggered by SIGHUP under Run: the
-	// configuration re-read, subscribers, and OnReload hooks share this budget.
+	// configuration re-read and the live sections' OnChange callbacks share
+	// this budget.
 	// Zero (the default) applies 30s. A programmatic Reload(ctx) ignores this
 	// and uses the caller's context instead.
 	ReloadTimeout time.Duration `credo:"reload_timeout"`
@@ -339,10 +340,14 @@ func WithAddr(host string, port int) Option {
 // config keys or to plaintext. For conditional TLS, omit the option entirely
 // rather than passing empty strings.
 //
-// The pair is served through GetCertificate backed by an atomic pointer, so
-// every [App.Reload] (SIGHUP under Run) re-reads the same two paths and swaps
-// the pair in for new handshakes; a failed re-read keeps the current pair and
-// is reported through the reload error. Open connections are never affected.
+// The pair is served through GetCertificate backed by an atomic pointer and
+// rotates when its files change on disk, with no signal and no reload: the
+// handshake that finds the last check older than a second stats both files
+// (following symbolic links, so a Kubernetes Secret volume's link swap is a
+// change) and, when either changed, loads the pair and swaps it in for new
+// handshakes. A pair that fails to load keeps the current one and is logged
+// once per change. Open connections are never affected. The paths are read
+// at start: a new path takes a restart.
 //
 // This option performs no I/O; the files are read when the server starts.
 func WithTLSFiles(certFile, keyFile string) Option {
@@ -446,8 +451,8 @@ func WithoutReloadSignals() Option {
 }
 
 // WithReloadTimeout sets the context budget for reloads triggered by SIGHUP
-// under Run: re-reading configuration, notifying [App.OnConfigChange]
-// subscribers, and running [App.OnReload] hooks must complete within it. Zero
+// under Run: re-reading configuration and running the live sections'
+// OnChange callbacks share it. Zero
 // (the default) applies a 30s budget. A programmatic [App.Reload] call ignores
 // this and honours the caller's context instead. Can also be set via the
 // server.reload_timeout config key.

@@ -7,10 +7,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/credo-go/credo"
 )
 
 // closingResource is a DI singleton that records, when it is shut down,
-// whether the reload hook that uses it had already returned.
+// whether the reload callback that uses it had already returned.
 type closingResource struct {
 	hookDone        *atomic.Bool
 	hookDoneAtClose atomic.Bool
@@ -23,7 +25,7 @@ func (r *closingResource) Shutdown(context.Context) error {
 	return nil
 }
 
-// TestReload_CallbacksAreCancelledByShutdown: a reload hook that is running
+// TestReload_CallbacksAreCancelledByShutdown: a reload callback that is running
 // when Shutdown begins sees its context cancelled, and the DI resources it
 // may be using are torn down only after it returns.
 func TestReload_CallbacksAreCancelledByShutdown(t *testing.T) {
@@ -33,7 +35,7 @@ func TestReload_CallbacksAreCancelledByShutdown(t *testing.T) {
 	f.app.ProvideValue(r)
 
 	entered := make(chan struct{})
-	f.app.OnReload(func(ctx context.Context) error {
+	f.onChange(t, func(ctx context.Context) error {
 		close(entered)
 		<-ctx.Done()
 		if r.closed.Load() {
@@ -45,7 +47,7 @@ func TestReload_CallbacksAreCancelledByShutdown(t *testing.T) {
 	f.start(t)
 
 	reloadErr := make(chan error, 1)
-	go func() { reloadErr <- f.app.Reload(context.Background()) }()
+	go func() { reloadErr <- reloadOnly(f.app, context.Background()) }()
 	<-entered
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -68,7 +70,7 @@ func TestReload_CallbacksAreCancelledByShutdown(t *testing.T) {
 		t.Fatal("resource was not shut down")
 	}
 	if !r.hookDoneAtClose.Load() {
-		t.Fatal("resource was shut down before the reload hook returned")
+		t.Fatal("resource was shut down before the reload callback returned")
 	}
 }
 
@@ -79,7 +81,7 @@ func TestShutdown_ReportsReloadStillInFlight(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	f.app.OnReload(func(context.Context) error {
+	f.onChange(t, func(context.Context) error {
 		close(entered)
 		<-release
 		return nil
@@ -87,7 +89,7 @@ func TestShutdown_ReportsReloadStillInFlight(t *testing.T) {
 	f.start(t)
 
 	reloadErr := make(chan error, 1)
-	go func() { reloadErr <- f.app.Reload(context.Background()) }()
+	go func() { reloadErr <- reloadOnly(f.app, context.Background()) }()
 	<-entered
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -104,7 +106,7 @@ func TestShutdown_ReportsReloadStillInFlight(t *testing.T) {
 	select {
 	case err := <-reloadErr:
 		if err != nil {
-			t.Fatalf("Reload = %v, want nil (the hook itself succeeded)", err)
+			t.Fatalf("Reload = %v, want nil (the callback itself succeeded)", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Reload did not return after the hook was released")
@@ -117,7 +119,7 @@ func TestReload_QueuedCallerAbortsOnShutdown(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
 	var runs atomic.Int32
 	entered := make(chan struct{}, 1)
-	f.app.OnReload(func(ctx context.Context) error {
+	f.onChange(t, func(ctx context.Context) error {
 		runs.Add(1)
 		entered <- struct{}{}
 		<-ctx.Done()
@@ -126,11 +128,11 @@ func TestReload_QueuedCallerAbortsOnShutdown(t *testing.T) {
 	f.start(t)
 
 	first := make(chan error, 1)
-	go func() { first <- f.app.Reload(context.Background()) }()
+	go func() { first <- reloadOnly(f.app, context.Background()) }()
 	<-entered
 
 	second := make(chan error, 1)
-	go func() { second <- f.app.Reload(context.Background()) }()
+	go func() { second <- reloadOnly(f.app, context.Background()) }()
 	time.Sleep(30 * time.Millisecond) // let the second caller queue on the slot
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -159,7 +161,7 @@ func TestReload_WaitingCallerHonoursItsContext(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	f.app.OnReload(func(context.Context) error {
+	f.onChange(t, func(context.Context) error {
 		close(entered)
 		<-release
 		return nil
@@ -167,12 +169,12 @@ func TestReload_WaitingCallerHonoursItsContext(t *testing.T) {
 	f.start(t)
 
 	first := make(chan error, 1)
-	go func() { first <- f.app.Reload(context.Background()) }()
+	go func() { first <- reloadOnly(f.app, context.Background()) }()
 	<-entered
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	err := f.app.Reload(ctx)
+	_, err := f.app.Reload(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "waiting for the in-flight reload") {
 		t.Fatalf("waiting Reload = %v, want its own deadline reported", err)
 	}
@@ -188,7 +190,7 @@ func TestReload_WaitingCallerHonoursItsContext(t *testing.T) {
 func TestReload_CancelledContextRunsNothing(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
 	var runs atomic.Int32
-	f.app.OnReload(func(context.Context) error {
+	f.onChange(t, func(context.Context) error {
 		runs.Add(1)
 		return nil
 	})
@@ -196,11 +198,17 @@ func TestReload_CancelledContextRunsNothing(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := f.app.Reload(ctx)
+	_, err := f.app.Reload(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Reload with a cancelled ctx = %v, want context.Canceled", err)
 	}
 	if got := runs.Load(); got != 0 {
 		t.Fatalf("hook ran %d times, want 0", got)
 	}
+}
+
+// reloadOnly runs a reload and returns its error only.
+func reloadOnly(app *credo.App, ctx context.Context) error {
+	_, err := app.Reload(ctx)
+	return err
 }

@@ -46,7 +46,8 @@ var _ RawConfig = (*Config)(nil)
 //
 // A Config is safe for concurrent reads. [Config.Reload] replaces the whole
 // tree atomically, so concurrent readers observe either the previous or the
-// new snapshot, never a mix.
+// new snapshot, never a mix, and replaces the value of its live sections
+// ([Section.Live]) in the same step.
 type Config struct {
 	// The whole state lives behind one pointer so that a Config value is
 	// cheap and safe to copy: a dereferenced copy (*cfg) shares the same
@@ -57,10 +58,24 @@ type Config struct {
 
 // configState is the pointer-backed state shared by every copy of a Config.
 type configState struct {
-	mu   sync.RWMutex // guards data; the tree itself is never mutated after load
+	mu   sync.RWMutex // guards data, files and overrides; a tree is never mutated after load
 	data map[string]any
 	opts options
 	src  source // how the tree was built, replayed by Reload
+
+	// files is the file (or embedded document) layer of data, before .env and
+	// the process environment; overrides maps each leaf key those later
+	// sources set to the source's name.
+	files     map[string]any
+	overrides map[string]string
+
+	// start and startFiles are data and files as the first load built them:
+	// a reload reports the changes since the start that no live section
+	// covers as needing a restart.
+	start      map[string]any
+	startFiles map[string]any
+
+	live liveState // live sections, their callbacks and the record of reads
 }
 
 // source records the inputs [Load] or [LoadBytes] used, so that

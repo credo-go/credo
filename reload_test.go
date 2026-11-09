@@ -6,31 +6,36 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/config"
+	"github.com/credo-go/credo/testutil"
 )
 
 // reloadFixture is a running App backed by a YAML file the test can rewrite.
 type reloadFixture struct {
 	app  *credo.App
+	cfg  *config.Config
 	path string
 	logs *syncBuffer
 	errC chan error
 }
 
 // newReloadFixture writes content to a config file, builds an App on it (plus
-// opts), and returns the fixture without running it so hooks can still be
-// registered. Call start to run it.
+// opts), and returns the fixture without running it so sections can still be
+// bound. Call start to run it.
 func newReloadFixture(t *testing.T, content string, opts ...credo.Option) *reloadFixture {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeYAML(t, path, content)
-	cfg, err := config.Load(config.WithFiles(path), config.WithPrefix("RELOADAPP_"))
+	cfg, err := config.Load(config.WithFiles(path), config.WithPrefix("RELOADAPP_"), config.WithoutDotenv())
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
@@ -42,7 +47,7 @@ func newReloadFixture(t *testing.T, content string, opts ...credo.Option) *reloa
 		credo.WithAddr(host, port),
 		credo.WithLogger(logger),
 	}, opts...)
-	return &reloadFixture{app: mustNew(t, all...), path: path, logs: logs, errC: make(chan error, 1)}
+	return &reloadFixture{app: mustNew(t, all...), cfg: cfg, path: path, logs: logs, errC: make(chan error, 1)}
 }
 
 func writeYAML(t *testing.T, path, content string) {
@@ -77,6 +82,23 @@ func (f *reloadFixture) rewrite(t *testing.T, content string) {
 	writeYAML(t, f.path, content)
 }
 
+// onChange declares the fixture's "a" key a live section whose callback runs
+// fn. The callback first rewrites the file with the next value of a, so every
+// reload, including one queued behind a running callback, changes the section
+// again. The fixture's file must hold only "a: <int>".
+func (f *reloadFixture) onChange(t *testing.T, fn func(ctx context.Context) error) {
+	t.Helper()
+	live, err := config.Section[int]("a").Live(f.cfg)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	live.OnChange(func(ctx context.Context, _, next int) error {
+		writeYAML(t, f.path, "a: "+strconv.Itoa(next+1)+"\n")
+		return fn(ctx)
+	})
+	f.rewrite(t, "a: 2\n")
+}
+
 type limits struct {
 	RPS   int `credo:"rps"`
 	Burst int `credo:"burst"`
@@ -86,220 +108,220 @@ type validatedLimits struct {
 	RPS int `credo:"rps"`
 }
 
-func (v *validatedLimits) Validate() error {
+func (v validatedLimits) Validate() error {
 	if v.RPS <= 0 {
 		return errors.New("rps must be positive")
 	}
 	return nil
 }
 
+var limitsLiveSection = config.Section[limits]("limits")
+
+// limitedService consumes a live section, as a business service would.
+type limitedService struct{ limits *config.Live[limits] }
+
+func newLimitedService(l *config.Live[limits]) *limitedService { return &limitedService{limits: l} }
+
 func TestReload_NotRunning(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
-	if err := f.app.Reload(t.Context()); err == nil || !strings.Contains(err.Error(), `expected "running"`) {
+	if _, err := f.app.Reload(t.Context()); err == nil || !strings.Contains(err.Error(), `expected "running"`) {
 		t.Fatalf("Reload before Run: err = %v, want state error", err)
 	}
-	if err := f.app.Reload(nil); err == nil { //nolint:staticcheck // nil ctx is the condition under test
+	if _, err := f.app.Reload(nil); err == nil { //nolint:staticcheck // nil ctx is the condition under test
 		t.Fatal("Reload(nil) must error")
 	}
 }
 
-// TestReload_WithoutReloadSignalsKeepsProgrammaticReload pins the
-// cross-platform half of WithoutReloadSignals: the option constructs on every
-// platform and programmatic Reload is unaffected (only the Run signal path is
-// disabled — covered by the unix-only signal tests).
-func TestReload_WithoutReloadSignalsKeepsProgrammaticReload(t *testing.T) {
-	f := newReloadFixture(t, "limits:\n  rps: 10\n", credo.WithoutReloadSignals())
-	var got []limits
-	f.app.OnConfigChange[limits]("limits", func(_ context.Context, next limits) error {
-		got = append(got, next)
-		return nil
-	})
+// TestReload_LiveSectionThroughProvide: a live section bound with
+// Provide(section.Live) reaches its consumer, and a reload that changes it is
+// visible through Load; a reload that changes another key leaves it alone.
+func TestReload_LiveSectionThroughProvide(t *testing.T) {
+	f := newReloadFixture(t, "limits:\n  rps: 10\n  burst: 1\nother: 1\n", credo.WithoutReloadSignals())
+	f.app.Provide(limitsLiveSection.Live)
+	f.app.Provide(newLimitedService)
+	svc := f.app.MustResolve[*limitedService]()
 	f.start(t)
 
-	f.rewrite(t, "limits:\n  rps: 20\n")
-	if err := f.app.Reload(t.Context()); err != nil {
+	f.rewrite(t, "limits:\n  rps: 20\n  burst: 1\nother: 1\n")
+	res, err := f.app.Reload(t.Context())
+	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if len(got) != 1 || got[0].RPS != 20 {
-		t.Fatalf("subscriber calls = %v, want one call with rps=20", got)
+	if got := svc.limits.Load().RPS; got != 20 {
+		t.Errorf("RPS after reload = %d, want 20", got)
 	}
-}
+	if !slices.Equal(res.Replaced, []string{"limits"}) {
+		t.Errorf("Replaced = %v, want [limits]", res.Replaced)
+	}
 
-func TestReload_NotifiesAffectedSubscribersOnly(t *testing.T) {
-	f := newReloadFixture(t, "limits:\n  rps: 10\n  burst: 20\nother:\n  x: 1\n")
-
-	var gotLimits []limits
-	var otherCalls int
-	f.app.OnConfigChange[limits]("limits", func(_ context.Context, next limits) error {
-		gotLimits = append(gotLimits, next)
-		return nil
-	})
-	f.app.OnConfigChange[map[string]any]("other", func(context.Context, map[string]any) error {
-		otherCalls++
-		return nil
-	})
-	f.start(t)
-
-	f.rewrite(t, "limits:\n  rps: 50\n  burst: 20\nother:\n  x: 1\n")
-	if err := f.app.Reload(t.Context()); err != nil {
+	f.rewrite(t, "limits:\n  rps: 20\n  burst: 1\nother: 2\n")
+	res, err = f.app.Reload(t.Context())
+	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if len(gotLimits) != 1 || gotLimits[0] != (limits{RPS: 50, Burst: 20}) {
-		t.Errorf("limits subscriber got %+v, want one call with rps=50", gotLimits)
-	}
-	if otherCalls != 0 {
-		t.Errorf("unaffected subscriber called %d times", otherCalls)
-	}
-
-	// No change → nobody is notified, and the snapshot is still readable.
-	if err := f.app.Reload(t.Context()); err != nil {
-		t.Fatalf("second Reload: %v", err)
-	}
-	if len(gotLimits) != 1 {
-		t.Errorf("unchanged reload must not notify; calls = %d", len(gotLimits))
-	}
-	if got := f.app.MustGetConfig[int]("limits.rps"); got != 50 {
-		t.Errorf("GetConfig after reload = %d, want 50", got)
+	if len(res.Replaced) != 0 || svc.limits.Load().RPS != 20 {
+		t.Errorf("a reload of another key replaced %v; RPS %d", res.Replaced, svc.limits.Load().RPS)
 	}
 }
 
-func TestReload_NestedKeysAreIndependentSubscriptions(t *testing.T) {
-	f := newReloadFixture(t, "databases:\n  primary:\n    dsn: a\n  replica:\n    dsn: b\n")
-	var all, primary, replica int
-	f.app.OnConfigChange[map[string]any]("databases", func(context.Context, map[string]any) error { all++; return nil })
-	f.app.OnConfigChange[map[string]any]("databases.primary", func(context.Context, map[string]any) error { primary++; return nil })
-	f.app.OnConfigChange[map[string]any]("databases.replica", func(context.Context, map[string]any) error { replica++; return nil })
+// TestReload_ResultReportsRestartKeys: App.Reload returns the result
+// Config.Reload computes; a changed key outside every live section — a
+// Decode-bound section's key and a server.tls.* path included — needs a
+// restart, a live key does not, and the report repeats until a key reverts.
+func TestReload_ResultReportsRestartKeys(t *testing.T) {
+	const start = "limits:\n  rps: 10\napp:\n  name: a\nserver:\n  tls:\n    cert_file: \"\"\n    key_file: \"\"\n"
+	f := newReloadFixture(t, start)
+	f.app.Provide(limitsLiveSection.Live)
+	f.app.Provide(config.Section[struct{ Name string }]("app").Decode)
+	f.app.Provide(newLimitedService)
+	f.app.Provide(func(app struct{ Name string }) *appNameHolder { return &appNameHolder{name: app.Name} })
+	_ = f.app.MustResolve[*limitedService]()
+	holder := f.app.MustResolve[*appNameHolder]()
 	f.start(t)
 
-	f.rewrite(t, "databases:\n  primary:\n    dsn: changed\n  replica:\n    dsn: b\n")
-	if err := f.app.Reload(t.Context()); err != nil {
+	f.rewrite(t, "limits:\n  rps: 20\napp:\n  name: b\nserver:\n  tls:\n    cert_file: \"/new.pem\"\n    key_file: \"\"\n")
+	res, err := f.app.Reload(t.Context())
+	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if all != 1 || primary != 1 || replica != 0 {
-		t.Errorf("calls all=%d primary=%d replica=%d, want 1/1/0", all, primary, replica)
+	if want := []string{"app.name", "server.tls.cert_file"}; !slices.Equal(res.RestartRequired, want) {
+		t.Errorf("RestartRequired = %v, want %v", res.RestartRequired, want)
+	}
+	if holder.name != "a" {
+		t.Errorf("a Decode-bound section changed with a reload: %q", holder.name)
+	}
+	logs := f.logs.String()
+	for _, part := range []string{"restart to apply it", "app.name", "server.tls.cert_file", "reload complete"} {
+		if !strings.Contains(logs, part) {
+			t.Errorf("logs do not contain %q:\n%s", part, logs)
+		}
+	}
+	if strings.Contains(logs, "/new.pem") {
+		t.Errorf("a configuration value was logged:\n%s", logs)
+	}
+
+	res, err = f.app.Reload(t.Context())
+	if err != nil || !slices.Equal(res.RestartRequired, []string{"app.name", "server.tls.cert_file"}) {
+		t.Errorf("a reload that changes nothing = %+v, %v; want the restart keys again", res, err)
+	}
+
+	f.rewrite(t, start)
+	res, err = f.app.Reload(t.Context())
+	if err != nil || len(res.RestartRequired) != 0 {
+		t.Errorf("a reload that reverts every key = %+v, %v; want no restart keys", res, err)
 	}
 }
 
-func TestReload_DecodeFailureAbortsBeforePublish(t *testing.T) {
-	f := newReloadFixture(t, "limits:\n  rps: 10\nname: app\n")
-	var limitCalls, nameCalls, hookCalls int
-	f.app.OnConfigChange[limits]("limits", func(context.Context, limits) error { limitCalls++; return nil })
-	f.app.OnConfigChange[string]("name", func(context.Context, string) error { nameCalls++; return nil })
-	f.app.OnReload(func(context.Context) error { hookCalls++; return nil })
-	f.start(t)
+type appNameHolder struct{ name string }
 
-	// rps becomes undecodable while name also changes: the whole reload aborts.
-	f.rewrite(t, "limits:\n  rps: not-a-number\nname: renamed\n")
-	err := f.app.Reload(t.Context())
-	if err == nil || !strings.Contains(err.Error(), `OnConfigChange[0] "limits"`) {
-		t.Fatalf("Reload err = %v, want decode failure for limits", err)
-	}
-	if limitCalls+nameCalls+hookCalls != 0 {
-		t.Errorf("nothing may run after an aborted reload: limits=%d name=%d hooks=%d", limitCalls, nameCalls, hookCalls)
-	}
-	if got := f.app.MustGetConfig[string]("name"); got != "app" {
-		t.Errorf("previous snapshot must stay current; name = %q", got)
-	}
-	if !strings.Contains(f.logs.String(), "reload aborted before publish") {
-		t.Errorf("expected abort log, got:\n%s", f.logs)
-	}
-}
-
-func TestReload_ValidationFailureAbortsBeforePublish(t *testing.T) {
+// TestReload_InvalidLiveSectionAborts: a reload that a live section's
+// validation aborts returns a result that applied nothing, naming the
+// section, with its error, and logs the abort.
+func TestReload_InvalidLiveSectionAborts(t *testing.T) {
 	f := newReloadFixture(t, "limits:\n  rps: 10\n")
-	var calls int
-	f.app.OnConfigChange[validatedLimits]("limits", func(context.Context, validatedLimits) error { calls++; return nil })
+	live, err := config.Section[validatedLimits]("limits").Live(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.start(t)
 
 	f.rewrite(t, "limits:\n  rps: 0\n")
-	err := f.app.Reload(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "rps must be positive") {
-		t.Fatalf("Reload err = %v, want validation failure", err)
+	res, err := f.app.Reload(t.Context())
+	if err == nil || !strings.Contains(err.Error(), `live section "limits"`) || !strings.Contains(err.Error(), "rps must be positive") {
+		t.Fatalf("Reload = %v, want the live section's validation error", err)
 	}
-	if calls != 0 {
-		t.Errorf("subscriber must not run on validation failure; calls = %d", calls)
+	if res.Published || !strings.Contains(res.Aborted, `live section "limits"`) {
+		t.Errorf("result = %+v, want unpublished, naming the section", res)
 	}
-	if got := f.app.MustGetConfig[int]("limits.rps"); got != 10 {
-		t.Errorf("previous snapshot must stay current; rps = %d", got)
+	if live.Load().RPS != 10 {
+		t.Errorf("an aborted reload replaced the value: %+v", live.Load())
 	}
-}
-
-func TestReload_SubscriberErrorDoesNotStopOthers(t *testing.T) {
-	f := newReloadFixture(t, "a: 1\nb: 1\n")
-	var bCalls, hookCalls int
-	f.app.OnConfigChange[int]("a", func(context.Context, int) error { return errors.New("a failed") })
-	f.app.OnConfigChange[int]("b", func(context.Context, int) error { bCalls++; return nil })
-	f.app.OnConfigChange[int]("b", func(context.Context, int) error { panic("b panicked") })
-	f.app.OnReload(func(context.Context) error { hookCalls++; return nil })
-	f.start(t)
-
-	f.rewrite(t, "a: 2\nb: 2\n")
-	err := f.app.Reload(t.Context())
-	if err == nil {
-		t.Fatal("expected joined errors")
-	}
-	for _, want := range []string{"a failed", "panic: b panicked", `OnConfigChange[0] "a"`, `OnConfigChange[2] "b"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q lacks %q", err, want)
-		}
-	}
-	if bCalls != 1 || hookCalls != 1 {
-		t.Errorf("later steps must still run: b=%d hooks=%d", bCalls, hookCalls)
-	}
-	// The snapshot was published despite the subscriber failures (no rollback).
-	if got := f.app.MustGetConfig[int]("a"); got != 2 {
-		t.Errorf("a after reload = %d, want 2 (no rollback)", got)
-	}
-}
-
-func TestReload_OnReloadOrderAndPanicRecovery(t *testing.T) {
-	f := newReloadFixture(t, "a: 1\n")
-	var order []string
-	f.app.OnConfigChange[int]("a", func(context.Context, int) error { order = append(order, "sub"); return nil })
-	f.app.OnReload(func(context.Context) error { order = append(order, "hook1"); return nil })
-	f.app.OnReload(func(context.Context) error { order = append(order, "hook2"); panic("boom") })
-	f.app.OnReload(func(context.Context) error { order = append(order, "hook3"); return errors.New("hook3 failed") })
-	f.start(t)
-
-	f.rewrite(t, "a: 2\n")
-	err := f.app.Reload(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "OnReload[1]: panic: boom") || !strings.Contains(err.Error(), "OnReload[2]: hook3 failed") {
-		t.Fatalf("Reload err = %v", err)
-	}
-	if got := strings.Join(order, ","); got != "sub,hook1,hook2,hook3" {
-		t.Errorf("order = %s, want sub,hook1,hook2,hook3", got)
+	if !strings.Contains(f.logs.String(), "reload aborted; nothing was published") {
+		t.Errorf("the abort was not logged:\n%s", f.logs.String())
 	}
 	if !f.app.IsRunning() {
 		t.Error("a failed reload must never stop the server")
 	}
 }
 
-func TestReload_WarnsForUnsubscribedChanges(t *testing.T) {
-	f := newReloadFixture(t, "limits:\n  rps: 1\nserver:\n  read_timeout: 1s\nfeature:\n  flag: false\n")
-	f.app.OnConfigChange[limits]("limits", func(context.Context, limits) error { return nil })
+// TestReload_CallbackErrorsAreJoined: OnChange errors and panics come back
+// joined from App.Reload, after the publish, and are logged.
+func TestReload_CallbackErrorsAreJoined(t *testing.T) {
+	f := newReloadFixture(t, "a: 1\n")
+	f.onChange(t, func(context.Context) error { return errors.New("derived state refused") })
+	live, err := config.Section[int]("a").Live(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.OnChange(func(context.Context, int, int) error { panic("boom") })
 	f.start(t)
 
-	f.rewrite(t, "limits:\n  rps: 2\nserver:\n  read_timeout: 2s\nfeature:\n  flag: true\n")
-	if err := f.app.Reload(t.Context()); err != nil {
-		t.Fatalf("Reload: %v", err)
+	res, err := f.app.Reload(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "derived state refused") || !strings.Contains(err.Error(), "panic: boom") {
+		t.Fatalf("Reload = %v, want both callback failures", err)
 	}
-	logs := f.logs.String()
-	if !strings.Contains(logs, "restart required") {
-		t.Fatalf("expected restart-required warning, got:\n%s", logs)
+	if !res.Published || live.Load() != 2 {
+		t.Errorf("callback failures undid the publish: %+v, a = %d", res, live.Load())
 	}
-	for _, key := range []string{"feature.flag", "server.read_timeout"} {
-		if !strings.Contains(logs, key) {
-			t.Errorf("warning should name %s:\n%s", key, logs)
+	if !strings.Contains(f.logs.String(), "reload callback failed") {
+		t.Errorf("callback failures were not logged:\n%s", f.logs.String())
+	}
+}
+
+// TestReload_ConfigurationThatCannotReload: over testutil's empty
+// configuration or a custom RawConfig, Section.Live fails at construction and
+// App.Reload returns an error, each naming the type and config.Load.
+func TestReload_ConfigurationThatCannotReload(t *testing.T) {
+	t.Run("testutil's empty configuration", func(t *testing.T) {
+		app := testutil.NewApp(t)
+		app.Provide(limitsLiveSection.Live)
+		_, err := app.Resolve[*config.Live[limits]]()
+		if err == nil {
+			t.Fatal("Resolve of a live section: expected an error")
 		}
-	}
-	if strings.Contains(logs, "limits.rps") {
-		t.Errorf("subscribed key must not be reported as restart-only:\n%s", logs)
-	}
-	if strings.Contains(logs, "true") && strings.Contains(logs, "keys=") && strings.Contains(logs, "flag: true") {
-		t.Errorf("values must never be logged:\n%s", logs)
-	}
-	if !strings.Contains(logs, "reload complete") {
-		t.Errorf("expected completion summary:\n%s", logs)
+		for _, part := range []string{"testutil.emptyConfig", "cannot reload", "config.Load"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("Resolve error %q does not contain %q", err, part)
+			}
+		}
+	})
+
+	t.Run("a custom RawConfig", func(t *testing.T) {
+		host, port, _ := freePort(t)
+		app := mustNew(t, credo.WithRawConfig(staticConfig{data: map[string]any{"a": 1}}), credo.WithAddr(host, port),
+			credo.WithLogger(slog.New(slog.DiscardHandler)))
+		errC := make(chan error, 1)
+		go func() { errC <- app.RunContext(context.Background()) }()
+		for !app.IsRunning() {
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()); <-errC })
+		_, err := app.Reload(t.Context())
+		if err == nil {
+			t.Fatal("Reload over a custom RawConfig: expected an error")
+		}
+		for _, part := range []string{"credo_test.staticConfig", "cannot reload", "config.Load"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("Reload error %q does not contain %q", err, part)
+			}
+		}
+	})
+}
+
+// TestReload_LiveServerSectionFails: the framework reads "server" as static,
+// so a live read of it, or of a section nested in it, fails naming both reads.
+func TestReload_LiveServerSectionFails(t *testing.T) {
+	f := newReloadFixture(t, "server:\n  read_timeout: 1s\n  tls:\n    cert_file: \"\"\n")
+	for _, key := range []string{"server", "server.tls"} {
+		_, err := config.Section[map[string]any](key).Live(f.cfg)
+		if err == nil {
+			t.Fatalf("Live(%q): expected an error", key)
+		}
+		for _, part := range []string{`config.Section[credo.serverConfig]("server").Decode`, "Live", "static or live"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("Live(%q) error %q does not contain %q", key, err, part)
+			}
+		}
 	}
 }
 
@@ -318,156 +340,19 @@ func (s staticConfig) Unmarshal(key string, dst any) error {
 }
 func (s staticConfig) Exists(key string) bool { _, ok := s.data[key]; return ok }
 
-func TestReload_NonReloadableStore(t *testing.T) {
-	host, port, _ := freePort(t)
-	app := mustNew(t, credo.WithRawConfig(staticConfig{data: map[string]any{"a": 1}}), credo.WithAddr(host, port))
-
-	func() {
-		defer func() {
-			if r := recover(); r == nil || !strings.Contains(r.(string), "neither config.Stager nor config.Reloader") {
-				t.Errorf("OnConfigChange on a static store should panic, got %v", r)
-			}
-		}()
-		app.OnConfigChange[int]("a", func(context.Context, int) error { return nil })
-	}()
-
-	var hookCalls int
-	app.OnReload(func(context.Context) error { hookCalls++; return nil })
-
-	errC := make(chan error, 1)
-	go func() { errC <- app.RunContext(context.Background()) }()
-	for !app.IsRunning() {
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = app.Shutdown(ctx)
-		<-errC
-	})
-
-	if err := app.Reload(t.Context()); err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	if hookCalls != 1 {
-		t.Errorf("OnReload must still run without config reload; calls = %d", hookCalls)
-	}
-}
-
-// reloadOnlyStore implements config.Reloader but not config.Stager, so the
-// App publishes first and validates afterwards.
-type reloadOnlyStore struct {
-	mu   sync.Mutex
-	cur  map[string]any
-	next map[string]any
-}
-
-func (s *reloadOnlyStore) Unmarshal(key string, dst any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v, ok := s.cur[key]
-	if !ok {
-		return errors.New("missing " + key)
-	}
-	p, ok := dst.(*int)
-	if !ok {
-		return errors.New("unsupported target")
-	}
-	n, ok := v.(int)
-	if !ok {
-		return errors.New("not an int")
-	}
-	*p = n
-	return nil
-}
-func (s *reloadOnlyStore) Exists(key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.cur[key]
-	return ok
-}
-func (s *reloadOnlyStore) Reload() (config.Changes, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cur = s.next
-	return changesOf("a", "b"), nil
-}
-
-// changesOf builds a Changes value through a real config diff: every key
-// moves from 1 to 2.
-func changesOf(keys ...string) config.Changes {
-	var before, after strings.Builder
-	for _, k := range keys {
-		before.WriteString(k + ": 1\n")
-		after.WriteString(k + ": 2\n")
-	}
-	dir, err := os.MkdirTemp("", "changes")
-	if err != nil {
-		panic(err)
-	}
-	defer os.RemoveAll(dir)
-	p := filepath.Join(dir, "c.yaml")
-	if werr := os.WriteFile(p, []byte(before.String()), 0o644); werr != nil {
-		panic(werr)
-	}
-	c, err := config.Load(config.WithFiles(p), config.WithPrefix("NONE_"))
-	if err != nil {
-		panic(err)
-	}
-	if werr := os.WriteFile(p, []byte(after.String()), 0o644); werr != nil {
-		panic(werr)
-	}
-	ch, err := c.Reload()
-	if err != nil {
-		panic(err)
-	}
-	return ch
-}
-
-func TestReload_ReloaderOnlyStoreValidatesAfterPublish(t *testing.T) {
-	store := &reloadOnlyStore{cur: map[string]any{"a": 1, "b": 1}, next: map[string]any{"a": 2, "b": "bad"}}
-	host, port, _ := freePort(t)
-	app := mustNew(t, credo.WithRawConfig(store), credo.WithAddr(host, port))
-	var gotA int
-	app.OnConfigChange[int]("a", func(_ context.Context, v int) error { gotA = v; return nil })
-	app.OnConfigChange[int]("b", func(context.Context, int) error { t.Error("b must not be applied"); return nil })
-
-	errC := make(chan error, 1)
-	go func() { errC <- app.RunContext(t.Context()) }()
-	for !app.IsRunning() {
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		_ = app.Shutdown(ctx)
-		<-errC
-	})
-
-	err := app.Reload(t.Context())
-	if err == nil || !strings.Contains(err.Error(), `OnConfigChange[1] "b": not an int`) {
-		t.Fatalf("Reload err = %v, want post-publish decode failure for b", err)
-	}
-	if gotA != 2 {
-		t.Errorf("a subscriber got %d, want 2 (published before validation)", gotA)
-	}
-}
-
 func TestReload_ConcurrentCallsAreSerialized(t *testing.T) {
 	f := newReloadFixture(t, "a: 1\n")
-	var inFlight, maxInFlight int
-	var mu sync.Mutex
-	f.app.OnReload(func(context.Context) error {
-		mu.Lock()
-		inFlight++
-		if inFlight > maxInFlight {
-			maxInFlight = inFlight
+	var inFlight, maxInFlight atomic.Int32
+	f.onChange(t, func(context.Context) error {
+		n := inFlight.Add(1)
+		for {
+			old := maxInFlight.Load()
+			if n <= old || maxInFlight.CompareAndSwap(old, n) {
+				break
+			}
 		}
-		mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
+		inFlight.Add(-1)
 		return nil
 	})
 	f.start(t)
@@ -475,26 +360,15 @@ func TestReload_ConcurrentCallsAreSerialized(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 5 {
 		wg.Go(func() {
-			if err := f.app.Reload(t.Context()); err != nil {
+			if _, err := f.app.Reload(t.Context()); err != nil {
 				t.Error(err)
 			}
 		})
 	}
 	wg.Wait()
-	if maxInFlight != 1 {
-		t.Errorf("reloads overlapped: max in flight = %d", maxInFlight)
+	if got := maxInFlight.Load(); got != 1 {
+		t.Errorf("reloads overlapped: max in flight = %d", got)
 	}
-}
-
-func TestReload_RegistrationGuards(t *testing.T) {
-	f := newReloadFixture(t, "a: 1\n")
-	mustPanic(t, "nil OnReload", func() { f.app.OnReload(nil) })
-	mustPanic(t, "nil OnConfigChange", func() { f.app.OnConfigChange[int]("a", nil) })
-	f.start(t) // compiles and freezes
-	mustPanic(t, "frozen OnReload", func() { f.app.OnReload(func(context.Context) error { return nil }) })
-	mustPanic(t, "frozen OnConfigChange", func() {
-		f.app.OnConfigChange[int]("a", func(context.Context, int) error { return nil })
-	})
 }
 
 func mustPanic(t *testing.T, name string, fn func()) {

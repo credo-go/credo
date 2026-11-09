@@ -35,20 +35,16 @@ func loadYAML(t *testing.T, content string, opts ...config.Option) (*config.Conf
 	return c, path
 }
 
-func TestReloadImplementsReloader(t *testing.T) {
-	var _ config.Reloader = (*config.Config)(nil)
-}
-
 func TestReloadPicksUpFileChanges(t *testing.T) {
 	c, path := loadYAML(t, "server:\n  port: 8080\n  host: a\nname: app\n")
 
 	writeFile(t, path, "server:\n  port: 9090\n  host: a\nname: app\nextra: 1\n")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	if got, want := changes.Keys(), []string{"extra", "server.port"}; !slices.Equal(got, want) {
+	if got, want := changes.Changed, []string{"extra", "server.port"}; !slices.Equal(got, want) {
 		t.Errorf("Keys = %v, want %v", got, want)
 	}
 	if port := mustGet[int](t, c, "server.port"); port != 9090 {
@@ -67,7 +63,7 @@ func TestReloadPicksUpFileChanges(t *testing.T) {
 		"extra":       true,
 		"":            true,
 	} {
-		if got := changes.Affects(prefix); got != want {
+		if got := affected(changes, prefix); got != want {
 			t.Errorf("Affects(%q) = %v, want %v", prefix, got, want)
 		}
 	}
@@ -77,11 +73,11 @@ func TestReloadRemovedKeyIsAChange(t *testing.T) {
 	c, path := loadYAML(t, "a: 1\nsection:\n  x: 1\n  y: 2\n")
 
 	writeFile(t, path, "a: 1\nsection:\n  x: 1\n")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if got, want := changes.Keys(), []string{"section.y"}; !slices.Equal(got, want) {
+	if got, want := changes.Changed, []string{"section.y"}; !slices.Equal(got, want) {
 		t.Errorf("Keys = %v, want %v", got, want)
 	}
 	if c.Exists("section.y") {
@@ -92,29 +88,15 @@ func TestReloadRemovedKeyIsAChange(t *testing.T) {
 func TestReloadUnchangedIsEmpty(t *testing.T) {
 	c, _ := loadYAML(t, "a: 1\nlist: [1, 2]\nnested:\n  b: x\n")
 
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if !changes.Empty() {
-		t.Errorf("expected no changes, got %v", changes.Keys())
+	if len(changes.Changed) != 0 {
+		t.Errorf("expected no changes, got %v", changes.Changed)
 	}
-	if changes.Affects("") {
+	if affected(changes, "") {
 		t.Error("Affects(\"\") must be false when nothing changed")
-	}
-}
-
-func TestReloadKeysReturnsCopy(t *testing.T) {
-	c, path := loadYAML(t, "a: 1\n")
-	writeFile(t, path, "a: 2\n")
-	changes, err := c.Reload()
-	if err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	keys := changes.Keys()
-	keys[0] = "mutated"
-	if got := changes.Keys(); got[0] != "a" {
-		t.Errorf("Keys must return a copy; got %v", got)
 	}
 }
 
@@ -122,15 +104,15 @@ func TestReloadErrorKeepsPreviousSnapshot(t *testing.T) {
 	c, path := loadYAML(t, "server:\n  port: 8080\n")
 
 	writeFile(t, path, "server:\n  port: [unclosed\n")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err == nil {
 		t.Fatal("expected a parse error from Reload")
 	}
 	if !strings.Contains(err.Error(), "config: reload:") {
 		t.Errorf("error should carry the reload prefix, got %q", err)
 	}
-	if !changes.Empty() {
-		t.Errorf("failed reload must report no changes, got %v", changes.Keys())
+	if len(changes.Changed) != 0 {
+		t.Errorf("failed reload must report no changes, got %v", changes.Changed)
 	}
 	if port := mustGet[int](t, c, "server.port"); port != 8080 {
 		t.Errorf("previous snapshot must survive a failed reload; port = %d", port)
@@ -140,7 +122,7 @@ func TestReloadErrorKeepsPreviousSnapshot(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Reload(); err == nil {
+	if _, err := c.Reload(t.Context()); err == nil {
 		t.Fatal("expected an error when the explicit file disappears")
 	}
 	if port := mustGet[int](t, c, "server.port"); port != 8080 {
@@ -162,12 +144,12 @@ func TestReloadReflectsEnvVarChanges(t *testing.T) {
 	}
 
 	t.Setenv("RELOADTEST_SERVER__PORT", "2222")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if !changes.Affects("server.port") {
-		t.Errorf("env var change should be reported, got %v", changes.Keys())
+	if !affected(changes, "server.port") {
+		t.Errorf("env var change should be reported, got %v", changes.Changed)
 	}
 	if port := mustGet[int](t, c, "server.port"); port != 2222 {
 		t.Errorf("port after reload = %d, want 2222", port)
@@ -187,7 +169,7 @@ func TestReloadReflectsDotenvChanges(t *testing.T) {
 	}
 
 	writeFile(t, dotenv, "SERVER__HOST=from-dotenv-2\n")
-	if _, err := c.Reload(); err != nil {
+	if _, err := c.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if host := mustGet[string](t, c, "server.host"); host != "from-dotenv-2" {
@@ -212,12 +194,12 @@ func TestReloadKeepsCredoEnvFixed(t *testing.T) {
 	}
 
 	t.Setenv("CREDO_ENV", "prod")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if !changes.Empty() {
-		t.Errorf("switching CREDO_ENV must not change anything, got %v", changes.Keys())
+	if len(changes.Changed) != 0 {
+		t.Errorf("switching CREDO_ENV must not change anything, got %v", changes.Changed)
 	}
 	if tier := mustGet[string](t, c, "tier"); tier != "dev" {
 		t.Errorf("tier after reload = %q, want dev (CREDO_ENV is fixed at first load)", tier)
@@ -236,11 +218,11 @@ func TestReloadLoadBytesReplaysDocument(t *testing.T) {
 	doc[0] = '['
 
 	t.Setenv("BYTESTEST_SERVER__PORT", "2")
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if got, want := changes.Keys(), []string{"server.port"}; !slices.Equal(got, want) {
+	if got, want := changes.Changed, []string{"server.port"}; !slices.Equal(got, want) {
 		t.Errorf("Keys = %v, want %v", got, want)
 	}
 	if port := mustGet[int](t, c, "server.port"); port != 2 {
@@ -253,11 +235,11 @@ func TestReloadLoadBytesReplaysDocument(t *testing.T) {
 
 func TestReloadUninitialized(t *testing.T) {
 	var zero config.Config
-	if _, err := zero.Reload(); err == nil {
+	if _, err := zero.Reload(t.Context()); err == nil {
 		t.Error("zero Config must not reload")
 	}
 	var nilCfg *config.Config
-	if _, err := nilCfg.Reload(); err == nil {
+	if _, err := nilCfg.Reload(t.Context()); err == nil {
 		t.Error("nil Config must not reload")
 	}
 }
@@ -297,7 +279,7 @@ func TestReloadConcurrentReadersSeeWholeSnapshots(t *testing.T) {
 	}
 	for i := 1; i <= 25; i++ {
 		writeFile(t, path, "pair:\n  a: "+strconv.Itoa(i)+"\n  b: "+strconv.Itoa(i)+"\n")
-		if _, err := c.Reload(); err != nil {
+		if _, err := c.Reload(t.Context()); err != nil {
 			t.Fatalf("Reload %d: %v", i, err)
 		}
 	}
@@ -308,62 +290,13 @@ func TestReloadConcurrentReadersSeeWholeSnapshots(t *testing.T) {
 	}
 }
 
-func TestStagePublishesOnlyOnCommit(t *testing.T) {
-	c, path := loadYAML(t, "server:\n  port: 8080\n")
-	writeFile(t, path, "server:\n  port: 9090\n")
-
-	staged, err := c.Stage()
-	if err != nil {
-		t.Fatalf("Stage: %v", err)
+// affected reports whether a reload changed a key equal to prefix or under
+// it; the empty prefix matches any change.
+func affected(res config.ReloadResult, prefix string) bool {
+	for _, k := range res.Changed {
+		if prefix == "" || k == prefix || strings.HasPrefix(k, prefix+".") {
+			return true
+		}
 	}
-	if !staged.Changes().Affects("server.port") {
-		t.Fatalf("staged changes = %v, want server.port", staged.Changes().Keys())
-	}
-	if port := mustGet[int](t, c, "server.port"); port != 8080 {
-		t.Errorf("parent must be unchanged before Commit; port = %d", port)
-	}
-	var candidate int
-	if err := staged.Unmarshal("server.port", &candidate); err != nil || candidate != 9090 {
-		t.Errorf("staged.Unmarshal = %d, %v; want 9090", candidate, err)
-	}
-	if !staged.Exists("server.port") || staged.Exists("nope") {
-		t.Error("staged.Exists must read the candidate")
-	}
-
-	staged.Commit()
-	if port := mustGet[int](t, c, "server.port"); port != 9090 {
-		t.Errorf("port after Commit = %d, want 9090", port)
-	}
-}
-
-func TestStageDiscardedWithoutCommit(t *testing.T) {
-	c, path := loadYAML(t, "a: 1\n")
-	writeFile(t, path, "a: 2\n")
-	if _, err := c.Stage(); err != nil {
-		t.Fatalf("Stage: %v", err)
-	}
-	if a := mustGet[int](t, c, "a"); a != 1 {
-		t.Errorf("an uncommitted stage must not publish; a = %d", a)
-	}
-	changes, err := c.Reload()
-	if err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	if !changes.Affects("a") {
-		t.Errorf("Reload after a discarded stage must still see the change, got %v", changes.Keys())
-	}
-}
-
-func TestStageImplementsInterfaces(t *testing.T) {
-	var _ config.Stager = (*config.Config)(nil)
-	var rc config.RawConfig
-	c, _ := loadYAML(t, "a: 1\n")
-	staged, err := c.Stage()
-	if err != nil {
-		t.Fatal(err)
-	}
-	rc = staged
-	if !rc.Exists("a") {
-		t.Error("Staged must satisfy RawConfig over the candidate")
-	}
+	return false
 }

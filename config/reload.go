@@ -1,165 +1,230 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 )
 
-// Reloader is implemented by configuration stores that can re-read their
-// sources at runtime. *Config implements it; a custom RawConfig opts into the
-// App-level reload (see the credo package and ADR-020) by implementing it too.
+// ReloadResult reports what a reload did: the keys it changed, the live
+// sections it replaced, the keys whose change takes a restart and the file
+// keys a later source keeps. It names keys, never values, so it is safe to log
+// and to return to an operator; its fields encode to JSON in snake_case.
+type ReloadResult struct {
+	// Published reports whether the reload published its snapshot. It is false
+	// when the sources failed to load or a live section failed to decode or
+	// validate, in which case every live section keeps its value.
+	Published bool `json:"published"`
+
+	// Aborted says why nothing was published, naming the live sections that
+	// failed and their errors; empty when Published is true.
+	Aborted string `json:"aborted,omitempty"`
+
+	// Changed lists the leaf keys whose value the reload changed, relative to
+	// the snapshot current before it, in sorted order.
+	Changed []string `json:"changed"`
+
+	// Replaced lists the keys of the live sections whose value the reload
+	// replaced, in the order the sections were declared live.
+	Replaced []string `json:"replaced"`
+
+	// RestartRequired lists, in sorted order, the leaf keys whose value
+	// differs from the one the start read and that no live section covers,
+	// a key of a section bound through Decode included: their change takes a
+	// restart. A reload that changes nothing keeps reporting them, and one
+	// that reverts a key to its start value clears it.
+	RestartRequired []string `json:"restart_required"`
+
+	// Overridden lists the keys whose file value differs from the one the
+	// start read while a later source, .env or the process environment, sets
+	// the key and so keeps its value.
+	Overridden []OverriddenKey `json:"overridden"`
+}
+
+// OverriddenKey is a file key whose change a later source hides.
+type OverriddenKey struct {
+	// Key is the dotted key path whose file value changed.
+	Key string `json:"key"`
+	// Source names the later source that keeps the key's value: the .env
+	// entry or the process environment variable.
+	Source string `json:"source"`
+}
+
+// Reload re-reads every source the Config was built from — the same files
+// (or the same embedded document for [LoadBytes]), the same .env resolution
+// and the process environment — and applies the result to its live sections
+// (ADR-020). The steps are:
 //
-// Reload must be atomic from a reader's point of view — after it returns, a
-// concurrent Unmarshal or Exists sees either the previous or the new snapshot,
-// never a mix — and must leave the previous snapshot untouched on error.
+//  1. Re-read the sources into a candidate. A load error aborts the reload.
+//  2. Decode and validate, against the candidate, every live section whose
+//     keys the candidate changes. One failure aborts the reload: nothing is
+//     published, every live section keeps its value, and the result's
+//     Aborted names each failed section and its error.
+//  3. Publish the candidate and the changed sections' values as one
+//     generation: once a [Live.Load] returns this reload's value for one
+//     section, every later Load returns this reload's values or newer ones.
+//     No other value changes: a section read through [Section.Decode] keeps
+//     its snapshot.
+//  4. Run the [Live.OnChange] callbacks of the changed sections in
+//     registration order, with ctx. An error or a recovered panic is joined
+//     into the returned error, the later callbacks still run, and nothing
+//     rolls back. No callback is skipped when ctx ends.
+//  5. Return the result, whose RestartRequired lists every key whose value
+//     differs from the start's and that no live section covers.
 //
-// A store that also implements [Stager] lets the App validate the new
-// snapshot before it is published; a Reloader-only store is reloaded first and
-// validated afterwards, so a bad value reaches readers before it is reported.
-type Reloader interface {
-	Reload() (Changes, error)
-}
-
-// Stager is the two-phase form of [Reloader]: Stage re-reads the sources into
-// a candidate snapshot that can be inspected through the [Staged] handle
-// without affecting readers, and Staged.Commit publishes it. The App uses this
-// form when available so that typed subscribers are decoded and validated
-// against the candidate and a failure leaves the previous snapshot current.
-//
-// *Config implements Stager; [Config.Reload] is Stage followed by Commit.
-type Stager interface {
-	Stage() (Staged, error)
-}
-
-// Staged is a candidate snapshot produced by [Stager.Stage]. Its RawConfig
-// methods read the candidate, Changes reports how it differs from the snapshot
-// that was current when it was staged, and Commit publishes it atomically.
-// A Staged that is never committed is simply discarded.
-type Staged interface {
-	RawConfig
-	Changes() Changes
-	Commit()
-}
-
-// Compile-time interface satisfaction checks.
-var (
-	_ Reloader = (*Config)(nil)
-	_ Stager   = (*Config)(nil)
-	_ Staged   = (*staged)(nil)
-)
-
-// Changes is the set of leaf key paths whose value differs between two
-// configuration snapshots — added, removed, or changed. It records key paths
-// only, never values, so it is safe to log.
-type Changes struct {
-	keys []string // sorted, deduplicated dotted leaf paths
-}
-
-// Affects reports whether any changed key equals prefix or lies under it
-// ("server" matches "server.port"). The empty prefix matches any change.
-func (c Changes) Affects(prefix string) bool {
-	if prefix == "" {
-		return len(c.keys) > 0
+// The effective CREDO_ENV is fixed at the first load: Reload does not switch
+// environments, because that would swap entire file sets under sections that
+// were never designed to change at runtime. Concurrent calls are serialized,
+// callbacks included.
+func (c *Config) Reload(ctx context.Context) (ReloadResult, error) {
+	if ctx == nil {
+		return ReloadResult{}, errors.New("config: Reload: nil context")
 	}
-	for _, k := range c.keys {
-		if k == prefix || strings.HasPrefix(k, prefix+keyDelim) {
+	if !c.initialized() {
+		return ReloadResult{}, errors.New("config: Reload: instance not initialized; build the Config with config.Load or config.LoadBytes")
+	}
+	st := &c.live
+	st.reloadMu.Lock()
+	defer st.reloadMu.Unlock()
+
+	st.mu.Lock()
+	fresh, err := c.reread()
+	if err != nil {
+		st.mu.Unlock()
+		err = fmt.Errorf("config: reload: %w; nothing was published", err)
+		return ReloadResult{Aborted: err.Error()}, err
+	}
+
+	c.mu.RLock()
+	changed := diffTrees(c.data, fresh.data)
+	c.mu.RUnlock()
+
+	prev := st.gen.Load()
+	var (
+		vals     []any
+		replaced []int
+		failed   []error
+	)
+	if prev != nil {
+		vals = slices.Clone(prev.vals)
+	}
+	for i, e := range st.entries {
+		if !affects(changed, e.key) {
+			continue
+		}
+		v, err := e.decode(fresh)
+		if err != nil {
+			failed = append(failed, fmt.Errorf("live section %q: %w", e.key, err))
+			continue
+		}
+		vals[i] = v
+		replaced = append(replaced, i)
+	}
+	if len(failed) > 0 {
+		st.mu.Unlock()
+		err := fmt.Errorf("config: reload: %w; nothing was published, and every live section keeps its value",
+			errors.Join(failed...))
+		return ReloadResult{Aborted: err.Error(), Changed: changed}, err
+	}
+
+	c.mu.Lock()
+	c.data, c.files, c.overrides = fresh.data, fresh.files, fresh.overrides
+	if prev != nil {
+		st.gen.Store(&generation{vals: vals})
+	}
+	c.mu.Unlock()
+
+	result := ReloadResult{Published: true, Changed: changed, Replaced: []string{}}
+	for _, i := range replaced {
+		result.Replaced = append(result.Replaced, st.entries[i].key)
+	}
+	result.RestartRequired = []string{}
+	for _, k := range diffTrees(c.start, fresh.data) {
+		if !st.liveCovers(k) {
+			result.RestartRequired = append(result.RestartRequired, k)
+		}
+	}
+	result.Overridden = overridden(c.startFiles, fresh.files, fresh.overrides)
+
+	var callbacks []liveCallback
+	for _, cb := range st.callbacks {
+		if slices.Contains(replaced, cb.index) {
+			callbacks = append(callbacks, cb)
+		}
+	}
+	keys := make([]string, len(st.entries))
+	for i, e := range st.entries {
+		keys[i] = e.key
+	}
+	st.mu.Unlock()
+
+	var cbErrs []error
+	for _, cb := range callbacks {
+		if err := runCallback(ctx, cb, prev.vals[cb.index], vals[cb.index]); err != nil {
+			cbErrs = append(cbErrs, fmt.Errorf("config: reload: OnChange callback of live section %q: %w", keys[cb.index], err))
+		}
+	}
+	return result, errors.Join(cbErrs...)
+}
+
+// runCallback runs one OnChange callback, converting a panic into an error.
+func runCallback(ctx context.Context, cb liveCallback, prev, next any) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("panic: %v", rec)
+		}
+	}()
+	return cb.run(ctx, prev, next)
+}
+
+// reread builds a candidate from the recorded sources, with the same options.
+func (c *Config) reread() (*Config, error) {
+	fresh := &Config{configState: &configState{data: make(map[string]any), opts: c.opts, src: c.src}}
+	dotenv, err := fresh.readDotenv()
+	if err != nil {
+		return nil, fmt.Errorf("load .env: %w", err)
+	}
+	if err := fresh.populate(dotenv); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
+// affects reports whether a changed leaf key lies under the section key, or
+// the section lies under a changed leaf (a section removed or replaced by a
+// scalar).
+func affects(changed []string, key string) bool {
+	for _, k := range changed {
+		if covers(key, k) || covers(k, key) {
 			return true
 		}
 	}
 	return false
 }
 
-// Keys returns a copy of the changed leaf key paths in sorted order.
-func (c Changes) Keys() []string {
-	return slices.Clone(c.keys)
-}
-
-// Empty reports whether nothing changed.
-func (c Changes) Empty() bool {
-	return len(c.keys) == 0
-}
-
-// Reload re-reads every source the Config was created from — the same files
-// (or the same embedded document for [LoadBytes]), the same .env resolution,
-// and the process environment — builds a fresh tree, and swaps it in
-// atomically. It returns the leaf keys whose values differ from the previous
-// snapshot.
-//
-// The effective CREDO_ENV is fixed at the first load: Reload does not switch
-// environments, because that would swap entire file sets under sections that
-// were never designed to change at runtime (ADR-020).
-//
-// On any read or parse error the previous snapshot stays current and the error
-// is returned. Reload is safe to call concurrently with readers; concurrent
-// Reload calls are serialized by the caller (the App does this), and the last
-// one to finish wins.
-func (c *Config) Reload() (Changes, error) {
-	s, err := c.Stage()
-	if err != nil {
-		return Changes{}, err
+// overridden returns the file keys whose value differs from the start's while
+// a later source sets the key, or a key containing it, with that source.
+func overridden(startFiles, files map[string]any, overrides map[string]string) []OverriddenKey {
+	out := []OverriddenKey{}
+	for _, k := range diffTrees(startFiles, files) {
+		for ok, source := range overrides {
+			if covers(ok, k) {
+				out = append(out, OverriddenKey{Key: k, Source: source})
+				break
+			}
+		}
 	}
-	s.Commit()
-	return s.Changes(), nil
-}
-
-// Stage re-reads every source exactly as [Config.Reload] does, but returns the
-// candidate as a [Staged] handle instead of publishing it. Readers keep seeing
-// the current snapshot until Commit. Changes are computed against the snapshot
-// current at Stage time; callers that stage concurrently must serialize
-// themselves (the App does), as the last Commit wins.
-func (c *Config) Stage() (Staged, error) {
-	if !c.initialized() {
-		return nil, fmt.Errorf("config: instance not initialized")
-	}
-	fresh := &Config{configState: &configState{data: make(map[string]any), opts: c.opts, src: c.src}}
-	dotenv, err := fresh.readDotenv()
-	if err != nil {
-		return nil, fmt.Errorf("config: reload: load .env: %w", err)
-	}
-	if err := fresh.populate(dotenv); err != nil {
-		return nil, fmt.Errorf("config: reload: %w", err)
-	}
-
-	c.mu.RLock()
-	changes := diffTrees(c.data, fresh.data)
-	c.mu.RUnlock()
-
-	return &staged{parent: c, fresh: fresh, changes: changes}, nil
-}
-
-// staged is the Staged handle for *Config: a fully built candidate tree plus
-// the diff against the parent's snapshot at Stage time.
-type staged struct {
-	parent  *Config
-	fresh   *Config
-	changes Changes
-}
-
-// Unmarshal decodes from the candidate snapshot.
-func (s *staged) Unmarshal(key string, dst any) error { return s.fresh.Unmarshal(key, dst) }
-
-// Exists reports presence in the candidate snapshot.
-func (s *staged) Exists(key string) bool { return s.fresh.Exists(key) }
-
-// Changes reports how the candidate differs from the snapshot that was current
-// when it was staged.
-func (s *staged) Changes() Changes { return s.changes }
-
-// Commit publishes the candidate atomically.
-func (s *staged) Commit() {
-	s.parent.mu.Lock()
-	s.parent.data = s.fresh.data
-	s.parent.mu.Unlock()
+	return out
 }
 
 // diffTrees returns the sorted symmetric difference of the leaf key paths of
 // two trees: keys present in only one of them, plus keys whose values differ.
-func diffTrees(previous, next map[string]any) Changes {
+func diffTrees(previous, next map[string]any) []string {
 	before := flatten(previous)
 	after := flatten(next)
-	var keys []string
+	keys := []string{}
 	for k, v := range before {
 		if nv, ok := after[k]; !ok || !reflect.DeepEqual(v, nv) {
 			keys = append(keys, k)
@@ -171,7 +236,7 @@ func diffTrees(previous, next map[string]any) Changes {
 		}
 	}
 	slices.Sort(keys)
-	return Changes{keys: keys}
+	return keys
 }
 
 // flatten maps every leaf of a nested tree to its dotted key path. Nested

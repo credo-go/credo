@@ -173,17 +173,17 @@ func TestHermeticReloadReplay(t *testing.T) {
 	t.Setenv("CREDO_APP__NAME", "env")
 	writeTestFile(t, filepath.Join(dir, ".env"), "APP__NAME=dotenv\n")
 
-	changes, err := c.Reload()
+	changes, err := c.Reload(t.Context())
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if !changes.Empty() {
-		t.Errorf("Reload changes = %v, want empty (disabled sources must not leak in)", changes.Keys())
+	if len(changes.Changed) != 0 {
+		t.Errorf("Reload changes = %v, want empty (disabled sources must not leak in)", changes.Changed)
 	}
 
 	// The file layer itself stays live across Reload.
 	writeTestFile(t, base, `{"app":{"name":"updated"}}`)
-	if _, err := c.Reload(); err != nil {
+	if _, err := c.Reload(t.Context()); err != nil {
 		t.Fatalf("Reload after file change: %v", err)
 	}
 	var name string
