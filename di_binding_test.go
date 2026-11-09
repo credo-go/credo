@@ -303,3 +303,57 @@ func TestAlias_OverrideKeepsReadiness(t *testing.T) {
 type fakeNamed struct{}
 
 func (fakeNamed) isNamedThing() {}
+
+// TestHiddenCapability_ViewOfAHeldResource: an interface view of a resource
+// another registration holds and starts is accepted, bound by ProvideValue
+// or returned by a constructor, and the resource is started, readied and
+// stopped once, through that holder. ProvideValue decides against the
+// registrations made before it, so the view bound first panics, naming the
+// remedy.
+func TestHiddenCapability_ViewOfAHeldResource(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		view func(app *credo.App, p *partA)
+	}{
+		{"ProvideValue", func(app *credo.App, p *partA) { app.ProvideValue[namedThing](p) }},
+		{"constructor", func(app *credo.App, p *partA) {
+			app.Provide(func() namedThing { return p })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := &journal{}
+			p := &partA{&part{name: "held", j: j}}
+			app := mustNew(t)
+			app.ProvideValue(p)
+			tc.view(app, p)
+			app.UseHealth()
+			startComponents(t, app)
+			if _, err := app.Resolve[namedThing](); err != nil {
+				t.Fatalf("Resolve[namedThing]() = %v; the view of a held resource is accepted", err)
+			}
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+			if rec.Code != http.StatusOK || strings.Count(rec.Body.String(), `"status":"up"`) != 2 {
+				t.Errorf("/ready = %d %s, want 200 with one entry for the resource", rec.Code, rec.Body)
+			}
+			if err := shutdownApp(t, app, 2*time.Second); err != nil {
+				t.Fatalf("Shutdown() = %v", err)
+			}
+			if want := []string{"start:held", "stop:held"}; !slices.Equal(j.list(), want) {
+				t.Errorf("events = %v, want %v (one start and one stop, through the holder)", j.list(), want)
+			}
+		})
+	}
+	t.Run("view bound first", func(t *testing.T) {
+		p := &partA{&part{name: "first", j: &journal{}}}
+		app := mustNew(t)
+		const want = "credo: App.ProvideValue[credo_test.namedThing]: the binding's type credo_test.namedThing " +
+			"hides Shutdown, Start and Ready of its value, a *credo_test.partA, and the App plans Start, Ready " +
+			"and the ingress tier only from the binding's type; bind the value as *credo_test.partA and the " +
+			"interface with app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.Borrowed() " +
+			"when the caller starts and stops it"
+		if got := mustPanicMessage(t, func() { app.ProvideValue[namedThing](p) }); got != want {
+			t.Fatalf("panic = %q\nwant    %q", got, want)
+		}
+	})
+}
