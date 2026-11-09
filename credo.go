@@ -186,6 +186,10 @@ type App struct {
 	compress   *compressFeature
 	decompress *decompressFeature
 
+	// observers run after each request's final response, in registration
+	// order; the access log is among them when installed.
+	observers []Observer
+
 	// disableReloadSignals makes Run ignore (and log) reload signals instead
 	// of triggering App.Reload. Set via WithoutReloadSignals option.
 	disableReloadSignals bool

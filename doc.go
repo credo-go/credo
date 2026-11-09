@@ -85,7 +85,9 @@
 // [MetaAccessLog] route meta, noisy paths with [AccessLogConfig.Skipper], or
 // result classes with [AccessLogConfig.MinLevel] and
 // [AccessLogConfig.ResultFilter]; health probes are silent by default
-// ([HealthConfig.LogRequests] re-enables them).
+// ([HealthConfig.LogRequests] re-enables them). The access log is one
+// [Observer] of the final response; [App.AddObserver] adds others, which
+// receive the same [Exchange].
 //
 // # Dependency Injection
 //

@@ -285,8 +285,8 @@ func TestContextHead_UserSetBeforePanicReachesObservers(t *testing.T) {
 	var observed string
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.DiscardHandler),
-		ResultFilter: func(c *credo.Context, _ credo.AccessLogEntry) bool {
-			if u, ok := c.GetUser[*headUser](); ok {
+		ResultFilter: func(ex *credo.Exchange) bool {
+			if u, ok := ex.GetUser[*headUser](); ok {
 				observed = u.name
 			}
 			return false
@@ -455,8 +455,8 @@ func TestContextHead_MountReadsParentValues(t *testing.T) {
 	var parentSawInner bool
 	parent.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.DiscardHandler),
-		ResultFilter: func(c *credo.Context, _ credo.AccessLogEntry) bool {
-			parentInner, parentSawInner = c.Get(keyInner)
+		ResultFilter: func(ex *credo.Exchange) bool {
+			parentInner, parentSawInner = ex.Get(keyInner)
 			return false
 		},
 	})

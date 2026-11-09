@@ -390,6 +390,7 @@ func (app *App) handleError(err error, ctx *Context) {
 
 	info := app.classifyError(err, ctx)
 	info.Err = err
+	ctx.exec.code = info.Code
 	app.logError(err, info.Status, ctx)
 	app.renderError(ctx, info)
 }
@@ -401,7 +402,9 @@ func (app *App) recoverErrorPipelinePanic(err error, ctx *Context) {
 		if !ctx.Response().Hijacked() && !ctx.Response().Committed() {
 			// A marshal failure inside panic recovery is deliberately
 			// swallowed; there is no safer response left to attempt.
-			writeDefaultError(ctx, safeInternalErrorInfo()) //nolint:errcheck
+			info := safeInternalErrorInfo()
+			ctx.exec.code = info.Code
+			writeDefaultError(ctx, info) //nolint:errcheck
 		}
 	}
 }
@@ -477,6 +480,7 @@ func (app *App) renderError(ctx *Context, info *ErrorInfo) {
 			"credo: ErrorRenderer returned an invalid status",
 			slog.Int("status", info.Status), slog.Any("error", info.Err))
 		info = safeInternalErrorInfo()
+		ctx.exec.code = info.Code
 		body = nil
 	}
 	if ctx.Request().Method == http.MethodHead {

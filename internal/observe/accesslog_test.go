@@ -27,14 +27,14 @@ func TestAccessLogAttrs(t *testing.T) {
 	}
 
 	t.Run("base attrs", func(t *testing.T) {
-		if _, n := AccessLogAttrs(base, ""); n != 7 {
+		if _, n := AccessLogAttrs(base); n != 7 {
 			t.Fatalf("n = %d, want 7", n)
 		}
 	})
 	t.Run("path_original when different", func(t *testing.T) {
 		rec := base
 		rec.Path, rec.OriginalPath = "/new", "/old"
-		attrs, n := AccessLogAttrs(rec, "")
+		attrs, n := AccessLogAttrs(rec)
 		if n != 8 || attrs[7].Key != "path_original" || attrs[7].Value.String() != "/old" {
 			t.Fatalf("attrs = %v (n=%d)", attrs[:n], n)
 		}
@@ -42,12 +42,14 @@ func TestAccessLogAttrs(t *testing.T) {
 	t.Run("path_original omitted when equal", func(t *testing.T) {
 		rec := base
 		rec.OriginalPath = rec.Path
-		if _, n := AccessLogAttrs(rec, ""); n != 7 {
+		if _, n := AccessLogAttrs(rec); n != 7 {
 			t.Fatalf("n = %d, want 7", n)
 		}
 	})
 	t.Run("request_id when provided", func(t *testing.T) {
-		attrs, n := AccessLogAttrs(base, "req-1")
+		rec := base
+		rec.RequestID = "req-1"
+		attrs, n := AccessLogAttrs(rec)
 		if n != 8 || attrs[7].Key != "request_id" || attrs[7].Value.String() != "req-1" {
 			t.Fatalf("attrs = %v (n=%d)", attrs[:n], n)
 		}
@@ -55,7 +57,8 @@ func TestAccessLogAttrs(t *testing.T) {
 	t.Run("both", func(t *testing.T) {
 		rec := base
 		rec.Path, rec.OriginalPath = "/new", "/old"
-		if _, n := AccessLogAttrs(rec, "req-1"); n != 9 {
+		rec.RequestID = "req-1"
+		if _, n := AccessLogAttrs(rec); n != 9 {
 			t.Fatalf("n = %d, want 9", n)
 		}
 	})
@@ -66,9 +69,9 @@ func TestEmitAccessLog(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	rec := AccessLogRecord{
 		Method: "GET", Path: "/x", OriginalPath: "/orig", Status: 503, Bytes: 42,
-		Duration: time.Second, RemoteAddr: "1.2.3.4", UserAgent: "curl",
+		Duration: time.Second, RemoteAddr: "1.2.3.4", UserAgent: "curl", RequestID: "req-9",
 	}
-	EmitAccessLog(t.Context(), logger, rec, "req-9")
+	EmitAccessLog(t.Context(), logger, Level(rec.Status), rec, nil)
 	out := buf.String()
 	for _, want := range []string{
 		"level=ERROR", "request completed", "method=GET", "path=/x", "status=503",
@@ -80,15 +83,18 @@ func TestEmitAccessLog(t *testing.T) {
 	}
 }
 
-func TestEmitAccessLog_SkipsDisabledLevel(t *testing.T) {
+func TestEmitAccessLog_AppAttrsGroup(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	EmitAccessLog(t.Context(), logger, AccessLogRecord{Method: "GET", Path: "/x", Status: 200}, "")
-	if buf.Len() != 0 {
-		t.Fatalf("Info record was emitted through a Warn-only logger: %s", buf.String())
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	rec := AccessLogRecord{Method: "GET", Path: "/x", Status: 200}
+	EmitAccessLog(t.Context(), logger, Level(rec.Status), rec, []slog.Attr{slog.String("tenant", "acme"), slog.String("status", "shadow")})
+	out := buf.String()
+	if !strings.Contains(out, " status=200 ") || !strings.Contains(out, " attrs.tenant=acme attrs.status=shadow") {
+		t.Fatalf("log line = %s, want the framework status and the application attributes under attrs", out)
 	}
-	EmitAccessLog(t.Context(), logger, AccessLogRecord{Method: "GET", Path: "/x", Status: 404}, "")
-	if !strings.Contains(buf.String(), "level=WARN") {
-		t.Fatalf("Warn record missing: %s", buf.String())
+	buf.Reset()
+	EmitAccessLog(t.Context(), logger, Level(rec.Status), rec, nil)
+	if strings.Contains(buf.String(), "attrs") {
+		t.Fatalf("log line = %s, want no attrs group without application attributes", buf.String())
 	}
 }

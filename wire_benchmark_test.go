@@ -46,7 +46,14 @@ type wireBenchmarkFeatures struct {
 	requestID bool
 	accessLog bool
 	accessCfg AccessLogConfig
+	observer  bool
 }
+
+// wireBenchmarkObserver is an observer that reads the record and keeps
+// nothing, the floor of an observer's cost.
+type wireBenchmarkObserver struct{ status int }
+
+func (o *wireBenchmarkObserver) Observe(ex *Exchange) { o.status = ex.Status() }
 
 func newWireBenchmarkApp(b *testing.B, coreOnly bool) *App {
 	b.Helper()
@@ -65,6 +72,9 @@ func installWireBenchmarkFeatures(app *App, f wireBenchmarkFeatures) {
 	}
 	if f.accessLog {
 		app.UseAccessLog(f.accessCfg)
+	}
+	if f.observer {
+		app.AddObserver(&wireBenchmarkObserver{})
 	}
 }
 
@@ -134,6 +144,13 @@ func BenchmarkWireObservability(b *testing.B) {
 			},
 			features: wireBenchmarkFeatures{accessLog: true},
 		},
+		{
+			name: "AccessLog/Attrs",
+			features: wireBenchmarkFeatures{accessLog: true, accessCfg: AccessLogConfig{
+				Attrs: func(*Exchange) []slog.Attr { return []slog.Attr{slog.String("tenant", "acme")} },
+			}},
+		},
+		{name: "Observer", features: wireBenchmarkFeatures{observer: true}},
 		{name: "Both/Generated", features: wireBenchmarkFeatures{requestID: true, accessLog: true}},
 		{name: "Both/Incoming", features: wireBenchmarkFeatures{requestID: true, accessLog: true}, requestID: "upstream-request-id"},
 	}
