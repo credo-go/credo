@@ -569,16 +569,18 @@ api.Middleware(middleware.Timeout(middleware.TimeoutConfig{
 }))
 ```
 
-### RateLimit
+### Rate limiting (`middleware/ratelimit`)
 
-Token bucket rate limiting per client IP. Sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After` headers.
+Token bucket rate limiting per client IP, in its own package (`github.com/credo-go/credo/middleware/ratelimit`) so that only applications that use it link go-limiter. Sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After` headers.
 
 ```go
+import "github.com/credo-go/credo/middleware/ratelimit"
+
 // 60 requests per minute (default)
-app.GlobalMiddleware(middleware.RateLimit())
+app.GlobalMiddleware(ratelimit.Middleware())
 
 // Custom limits
-app.GlobalMiddleware(middleware.RateLimit(middleware.RateLimitConfig{
+app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
     Tokens:   120,
     Interval: time.Minute,
 }))
@@ -589,7 +591,7 @@ Behind a reverse proxy, configure trusted proxy CIDRs on the app. The default ra
 ```go
 app, err := credo.New(credo.WithTrustedProxies("10.0.0.0/8"))
 
-app.GlobalMiddleware(middleware.RateLimit(middleware.RateLimitConfig{
+app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
     Tokens:   100,
     Interval: time.Minute,
 }))
@@ -598,7 +600,7 @@ app.GlobalMiddleware(middleware.RateLimit(middleware.RateLimitConfig{
 Custom key function (e.g., rate limit by API key):
 
 ```go
-app.GlobalMiddleware(middleware.RateLimit(middleware.RateLimitConfig{
+app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
     Tokens:   1000,
     Interval: time.Hour,
     KeyFunc: func(ctx *credo.Context) (string, error) {
@@ -611,26 +613,23 @@ app.GlobalMiddleware(middleware.RateLimit(middleware.RateLimitConfig{
 }))
 ```
 
-#### RateLimiter Lifecycle
+#### One budget per value, no lifecycle
 
-The convenience constructor `RateLimit()` creates an internal in-memory store that is not automatically closed. For explicit lifecycle management, use `NewRateLimiter`:
+The middleware a `ratelimit.Middleware` call returns holds one store. Attach the same value to several routes or groups and they share one budget per key; each call builds a budget of its own:
 
 ```go
-rl := middleware.NewRateLimiter(middleware.RateLimitConfig{
-    Tokens:   120,
-    Interval: time.Minute,
-})
-app.GlobalMiddleware(rl.Middleware())
-app.Manage(rl, credo.Named("ratelimiter"))
+limit := ratelimit.Middleware(ratelimit.Config{Tokens: 5, Interval: time.Minute})
+app.POST("/login", login).Middleware(limit)
+app.POST("/password-reset", resetPassword).Middleware(limit) // same budget as /login
 ```
 
-`RateLimiter` is a `credo.Component` (it has `Shutdown`), so `app.Manage` makes the App shut it down after the HTTP drain. A limiter registered in the DI container instead is shut down the same way, after its consumers.
+The rate limiter is not a component: there is nothing to hand to `app.Manage`. Its default in-memory store runs no goroutine — expired buckets are swept inline — so nothing must be stopped at shutdown. A store you pass through `Config.Store` (a shared Redis store, say) stays yours: the middleware never closes it, so close it yourself, or register it with the App as a component when it holds a connection or a goroutine.
 
 ---
 
 ## Skipper
 
-Every configurable middleware in the `middleware` package accepts a `Skipper` function. When the skipper returns `true`, the middleware is bypassed for that request. (The framework features use the same shape: `AccessLogConfig`, `CompressConfig` and `DecompressConfig` each carry a `Skipper func(*credo.Context) bool`.)
+Every configurable middleware in the `middleware` package, and `ratelimit.Config`, accepts a `middleware.Skipper` function. When the skipper returns `true`, the middleware is bypassed for that request. (The framework features use the same shape: `AccessLogConfig`, `CompressConfig` and `DecompressConfig` each carry a `Skipper func(*credo.Context) bool`.)
 
 ```go
 type Skipper func(ctx *credo.Context) bool
@@ -648,7 +647,7 @@ middleware.Timeout(middleware.TimeoutConfig{
 })
 
 // Skip middleware for internal IPs
-middleware.RateLimit(middleware.RateLimitConfig{
+ratelimit.Middleware(ratelimit.Config{
     Skipper: func(ctx *credo.Context) bool {
         return strings.HasPrefix(ctx.Request().RealIP(), "10.")
     },
@@ -858,7 +857,7 @@ app.GlobalMiddleware(
 // API group: only matched routes
 api := app.Group("/api")
 api.Middleware(
-    middleware.RateLimit(),             // rate limiting
+    ratelimit.Middleware(),             // rate limiting
     middleware.Timeout(middleware.TimeoutConfig{Timeout: 10 * time.Second}),
     authMiddleware,                     // authentication
 )
@@ -976,6 +975,7 @@ import (
 
     "github.com/credo-go/credo"
     "github.com/credo-go/credo/middleware"
+    "github.com/credo-go/credo/middleware/ratelimit"
 )
 
 // Custom middleware: require a valid API key.
@@ -1026,7 +1026,7 @@ func main() {
     api := app.Group("/api")
     api.Middleware(
         APIKeyAuth("secret-key"),
-        middleware.RateLimit(middleware.RateLimitConfig{
+        ratelimit.Middleware(ratelimit.Config{
             Tokens:   100,
             Interval: time.Minute,
         }),

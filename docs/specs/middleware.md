@@ -1,6 +1,6 @@
 # Middleware Spec
 
-**Status:** Implemented (beta) **Package:** `middleware/` **ADR:** [ADR-010](../adr/010-middleware-architecture.md), [ADR-018](../adr/018-host-routing-and-rewrite.md) **Guide:** [Middleware guide](../guides/middleware.md) **Sources:** Echo (MIT), Goyave (MIT), go-limiter (Apache-2.0)
+**Status:** Implemented (beta) **Package:** `middleware/`, `middleware/ratelimit/` **ADR:** [ADR-010](../adr/010-middleware-architecture.md), [ADR-018](../adr/018-host-routing-and-rewrite.md) **Guide:** [Middleware guide](../guides/middleware.md) **Sources:** Echo (MIT), Goyave (MIT), go-limiter (Apache-2.0)
 
 ## Overview
 
@@ -90,7 +90,7 @@ app.GlobalMiddleware(
 
 // These run only on matched routes within the group
 api := app.Group("/api")
-api.Middleware(middleware.RateLimit())
+api.Middleware(ratelimit.Middleware())
 ```
 
 ## Meta-Driven Middleware (Goyave-inspired)
@@ -160,19 +160,16 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 
 ## Middleware Catalog
 
-> **Current until v0.25.0 (W8):** the `RateLimit` row of the next table; rate limiting moves to [`middleware/ratelimit`](#rate-limiting-middlewareratelimit) as `ratelimit.Middleware`.
-
 | Middleware | Source | Description |
 | --- | --- | --- |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
 | `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
-| `RateLimit` | go-limiter | Token bucket rate limiting. Default key uses `Request.RealIP()` |
 | `Timeout` | Echo | Request timeout through a cooperative context deadline that handlers observe via `ctx.Context()` |
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
-Authentication is `auth.Middleware[T]` with the `auth` package's authenticators (Basic, API key, JWT); see the [auth spec](auth.md).
+Rate limiting is `ratelimit.Middleware` in its own package, [`middleware/ratelimit`](#rate-limiting-middlewareratelimit) (go-limiter; the default key is `Request.RealIP()`). Authentication is `auth.Middleware[T]` with the `auth` package's authenticators (Basic, API key, JWT); see the [auth spec](auth.md).
 
 ### Rewrite
 
@@ -259,8 +256,6 @@ CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cro
 
 ### Rate Limiting (`middleware/ratelimit`)
 
-> **Pending v0.25.0 (W8):** not implemented yet; until W8 ships, rate limiting is `middleware.RateLimit(cfg...)` with `middleware.RateLimitConfig` and `middleware.DefaultRateLimitConfig()`, beside the object form described under [RateLimit Lifecycle](#ratelimit-lifecycle).
-
 ```go
 package ratelimit // github.com/credo-go/credo/middleware/ratelimit
 
@@ -296,18 +291,6 @@ app.GET("/export", export).Middleware(limit) // spends the /search budget
 ```
 
 **Lifecycle.** The rate limiter is not a component, so nothing is handed to `app.Manage` ([why](../adr/010-middleware-architecture.md#rate-limiting-one-constructor-in-its-own-package)). Without `Config.Store`, `Middleware` creates an in-memory store that the middleware owns for its lifetime; the store runs no goroutine — expired buckets are swept inline during `Take` — so nothing must be stopped at shutdown. The in-memory store keeps `Close`, which `limiter.Store` requires. A store passed in through `Config.Store` stays its owner's: the middleware never closes it, and a store that holds a connection or a goroutine is registered by the application as a component of its own.
-
-### RateLimit Lifecycle
-
-> **Current until v0.25.0 (W8):** this section, which the removal of the object form deletes.
-
-`RateLimit()` is a convenience constructor. For explicit lifecycle management, use `NewRateLimiter(...)`: the limiter is a `credo.Component`, so hand it to `app.Manage` and the App shuts it down after the HTTP drain, in the internal tier:
-
-```go
-rl := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
-app.GlobalMiddleware(rl.Middleware())
-app.Manage(rl, credo.Named("ratelimiter"))
-```
 
 ### Planned (Not Yet Implemented)
 
