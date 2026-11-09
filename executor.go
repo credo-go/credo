@@ -105,7 +105,11 @@ func (app *App) runRequest(c *Context, chain Handler) {
 		f.apply(c)
 	}
 
-	if err := chain(c); err != nil {
+	err := chain(c)
+	// A handler that replaced the embedded request is reported (debug mode)
+	// before the error rendering reads the request.
+	c.noteForeignRequest()
+	if err != nil {
 		app.handleError(err, c)
 	}
 	app.warnEnvelopeBypass(c)

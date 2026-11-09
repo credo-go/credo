@@ -6,12 +6,46 @@ import (
 	"testing"
 )
 
-// assertMeta compares two metadata maps. Both must hold only comparable
-// values (the table cases below use primitives), so maps.Equal is safe.
-func assertMeta(t *testing.T, got, want map[string]any) {
+// metaIDs names the key identities of the table cases below, so a resolved
+// map can be compared by name.
+var metaIDs = map[string]*keyID{}
+
+func metaID(name string) *keyID {
+	if id, ok := metaIDs[name]; ok {
+		return id
+	}
+	id := &keyID{name: name}
+	metaIDs[name] = id
+	return id
+}
+
+// metaOf builds a meta table from name/value pairs.
+func metaOf(kv ...any) map[*keyID]any {
+	m := make(map[*keyID]any, len(kv)/2)
+	for i := 0; i < len(kv); i += 2 {
+		m[metaID(kv[i].(string))] = kv[i+1]
+	}
+	return m
+}
+
+// byName turns a resolved meta table into a name-keyed map.
+func byName(m map[*keyID]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for id, v := range m {
+		out[id.name] = v
+	}
+	return out
+}
+
+// assertMeta compares a resolved table with name/value pairs. The table cases
+// hold only comparable values (primitives), so maps.Equal is safe.
+func assertMeta(t *testing.T, got map[*keyID]any, want map[string]any) {
 	t.Helper()
-	if !maps.Equal(got, want) {
-		t.Errorf("resolveAllMeta() = %v, want %v", got, want)
+	if g := byName(got); !maps.Equal(g, want) {
+		t.Errorf("resolveAllMeta() = %v, want %v", g, want)
 	}
 }
 
@@ -24,43 +58,40 @@ func TestRoute_resolveAllMeta(t *testing.T) {
 	})
 
 	t.Run("route-only meta", func(t *testing.T) {
-		r := &Route{
-			parent: &Group{},
-			meta:   map[string]any{"auth": true},
-		}
+		r := &Route{parent: &Group{}, meta: metaOf("auth", true)}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"auth": true})
 	})
 
 	t.Run("group-only meta inherited by route", func(t *testing.T) {
-		g := &Group{meta: map[string]any{"group": "x"}}
+		g := &Group{meta: metaOf("group", "x")}
 		r := &Route{parent: g}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"group": "x"})
 	})
 
 	t.Run("route meta overrides group meta", func(t *testing.T) {
-		g := &Group{meta: map[string]any{"k": "group", "g": 1}}
-		r := &Route{parent: g, meta: map[string]any{"k": "route"}}
+		g := &Group{meta: metaOf("k", "group", "g", 1)}
+		r := &Route{parent: g, meta: metaOf("k", "route")}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"k": "route", "g": 1})
 	})
 
 	t.Run("nearest group wins across nested groups", func(t *testing.T) {
-		root := &Group{meta: map[string]any{"k": "root", "r": true}}
-		mid := &Group{parent: root, meta: map[string]any{"k": "mid", "m": true}}
-		leaf := &Group{parent: mid, meta: map[string]any{"k": "leaf"}}
+		root := &Group{meta: metaOf("k", "root", "r", true)}
+		mid := &Group{parent: root, meta: metaOf("k", "mid", "m", true)}
+		leaf := &Group{parent: mid, meta: metaOf("k", "leaf")}
 		r := &Route{parent: leaf}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"k": "leaf", "m": true, "r": true})
 	})
 
 	t.Run("route wins over all nested groups", func(t *testing.T) {
-		root := &Group{meta: map[string]any{"k": "root"}}
-		mid := &Group{parent: root, meta: map[string]any{"k": "mid"}}
-		r := &Route{parent: mid, meta: map[string]any{"k": "route"}}
+		root := &Group{meta: metaOf("k", "root")}
+		mid := &Group{parent: root, meta: metaOf("k", "mid")}
+		r := &Route{parent: mid, meta: metaOf("k", "route")}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"k": "route"})
 	})
 
 	t.Run("root-level meta inherited several levels down", func(t *testing.T) {
 		// App.SetMeta writes to the root group; a route many levels down inherits it.
-		root := &Group{meta: map[string]any{"app": "root"}}
+		root := &Group{meta: metaOf("app", "root")}
 		mid := &Group{parent: root}
 		leaf := &Group{parent: mid}
 		r := &Route{parent: leaf}
@@ -69,8 +100,8 @@ func TestRoute_resolveAllMeta(t *testing.T) {
 
 	t.Run("empty non-nil meta maps yield nil", func(t *testing.T) {
 		// e.g. RemoveMeta deleted the last key, leaving an empty (non-nil) map.
-		g := &Group{meta: map[string]any{}}
-		r := &Route{parent: g, meta: map[string]any{}}
+		g := &Group{meta: metaOf()}
+		r := &Route{parent: g, meta: metaOf()}
 		if got := r.resolveAllMeta(); got != nil {
 			t.Errorf("resolveAllMeta() = %v, want nil for empty maps", got)
 		}
@@ -78,46 +109,52 @@ func TestRoute_resolveAllMeta(t *testing.T) {
 
 	t.Run("no parent group", func(t *testing.T) {
 		// Defensive: a route with no parent chain still resolves its own meta.
-		r := &Route{meta: map[string]any{"solo": 1}}
+		r := &Route{meta: metaOf("solo", 1)}
 		assertMeta(t, r.resolveAllMeta(), map[string]any{"solo": 1})
 	})
 }
 
-// TestRoute_resolveAllMeta_MatchesLookupMeta asserts the invariant that
-// resolveAllMeta and LookupMeta agree: every key in the resolved map is found
-// by LookupMeta, with the same value for comparable values (slices/maps/
+// TestRoute_resolveAllMeta_MatchesLookup asserts the invariant that the
+// snapshot and the walk it replaces agree: every key in the resolved map is
+// found by lookupMeta, with the same value for comparable values (slices/maps/
 // pointers are checked for presence and shape only — a generalized == would
-// panic on non-comparable dynamic types).
-func TestRoute_resolveAllMeta_MatchesLookupMeta(t *testing.T) {
-	root := &Group{meta: map[string]any{"a": "root-a", "shared": "root"}}
-	mid := &Group{parent: root, meta: map[string]any{"b": 2, "shared": "mid"}}
+// panic on non-comparable dynamic types), and no key the walk finds is
+// missing from the snapshot.
+func TestRoute_resolveAllMeta_MatchesLookup(t *testing.T) {
+	root := &Group{meta: metaOf("a", "root-a", "shared", "root")}
+	mid := &Group{parent: root, meta: metaOf("b", 2, "shared", "mid")}
 	r := &Route{
 		parent: mid,
-		meta:   map[string]any{"c": true, "shared": "route", "perms": []string{"read", "write"}},
+		meta:   metaOf("c", true, "shared", "route", "perms", []string{"read", "write"}),
 	}
 
 	resolved := r.resolveAllMeta()
 
-	for k, v := range resolved {
-		lv, ok := r.LookupMeta(k)
+	for id, v := range resolved {
+		lv, ok := r.lookupMeta(id)
 		if !ok {
-			t.Errorf("key %q present in resolveAllMeta but missing from LookupMeta", k)
+			t.Errorf("key %q present in resolveAllMeta but missing from lookupMeta", id.name)
 			continue
 		}
 		if isComparable(v) && lv != v {
-			t.Errorf("key %q: resolveAllMeta=%v, LookupMeta=%v", k, v, lv)
+			t.Errorf("key %q: resolveAllMeta=%v, lookupMeta=%v", id.name, v, lv)
+		}
+	}
+	for _, name := range []string{"a", "b", "c", "shared", "perms"} {
+		if _, ok := resolved[metaID(name)]; !ok {
+			t.Errorf("key %q found by lookupMeta but missing from the snapshot", name)
 		}
 	}
 
 	// Nearest scope wins: route overrides mid overrides root for "shared".
-	if resolved["shared"] != "route" {
-		t.Errorf("shared = %v, want %q", resolved["shared"], "route")
+	if got := resolved[metaID("shared")]; got != "route" {
+		t.Errorf("shared = %v, want %q", got, "route")
 	}
 
 	// Non-comparable value survives with correct shape and identity.
-	perms, ok := resolved["perms"].([]string)
+	perms, ok := resolved[metaID("perms")].([]string)
 	if !ok || len(perms) != 2 || perms[0] != "read" || perms[1] != "write" {
-		t.Errorf("perms = %v, want []string{read write}", resolved["perms"])
+		t.Errorf("perms = %v, want []string{read write}", resolved[metaID("perms")])
 	}
 }
 
@@ -126,22 +163,22 @@ func isComparable(v any) bool {
 	return v == nil || reflect.TypeOf(v).Comparable()
 }
 
-// TestRoute_resolveAllMeta_RealApp exercises the genuine wiring path that Faz 3
-// introspection will rely on: App.SetMeta (root group), Group.SetMeta, and
-// Route.SetMeta all feed the parent chain resolveAllMeta walks.
+// TestRoute_resolveAllMeta_RealApp exercises the genuine wiring path:
+// App.SetMeta (root group), Group.SetMeta, and Route.SetMeta all feed the
+// parent chain resolveAllMeta walks.
 func TestRoute_resolveAllMeta_RealApp(t *testing.T) {
 	app, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
+	appKey := NewKey[string]("app")
+	groupKey := NewKey[string]("group")
+	routeKey := NewKey[string]("route")
 
-	app.SetMeta("app", "A")        // root group
-	g := app.Group("/api")         // child of root
-	g.SetMeta("group", "G")        // group scope
-	g.SetMeta("app", "G-override") // nearer scope overrides root
-
-	r := g.GET("/users", func(ctx *Context) error { return nil })
-	r.SetMeta("route", "R")
+	app.SetMeta(appKey, "A") // root group
+	g := app.Group("/api")   // child of root
+	g.SetMeta(groupKey, "G").SetMeta(appKey, "G-override")
+	r := g.GET("/users", func(*Context) error { return nil }).SetMeta(routeKey, "R")
 
 	assertMeta(t, r.resolveAllMeta(), map[string]any{
 		"app":   "G-override",

@@ -36,44 +36,31 @@ func DefaultTimeoutConfig() TimeoutConfig {
 
 // Timeout returns request timeout middleware.
 //
-// It replaces the request context with one carrying the configured
-// deadline; handlers and downstream calls observe it via ctx.Context().
-// When the chain returns context.DeadlineExceeded, the default
-// ErrorHandler maps it to 503 with the request-timeout message key.
+// It runs the rest of the chain in a scope whose context carries the
+// configured deadline ([credo.Context.Within]): handlers and downstream calls
+// observe it through c.Context(), and it ends when the chain returns. A value
+// set inside the scope, such as an authenticated user, outlives it. When the
+// chain returns context.DeadlineExceeded, the default ErrorHandler maps it to
+// 503 request_timeout.
 //
 // Enforcement is cooperative. Unlike http.TimeoutHandler, this middleware
 // does not buffer the response or cut off writes once the deadline passes —
 // a handler that ignores its context can keep writing to the client. Pass
-// ctx.Context() to blocking work (database queries, outbound requests) so
+// c.Context() to blocking work (database queries, outbound requests) so
 // it actually aborts on deadline.
 func Timeout(cfg ...TimeoutConfig) credo.Middleware {
 	config := resolveConfig(cfg, DefaultTimeoutConfig(), normalizeTimeoutConfig)
 
 	return func(next credo.Handler) credo.Handler {
-		return func(ctx *credo.Context) error {
-			if config.Skipper(ctx) || config.Timeout <= 0 {
-				return next(ctx)
+		return func(c *credo.Context) error {
+			if config.Skipper(c) || config.Timeout <= 0 {
+				return next(c)
 			}
-
-			origReq := ctx.Request().Request
-			timeoutCtx, cancel := context.WithTimeout(origReq.Context(), config.Timeout)
+			timeoutCtx, cancel := context.WithTimeout(c.Context(), config.Timeout)
 			defer cancel()
-			defer func() {
-				// A form the chain parsed on the deadline-carrying copy stays
-				// with the request that outlives it, which owns the cleanup
-				// of its temporary files.
-				if cur := ctx.Request().Request; origReq.MultipartForm == nil {
-					origReq.MultipartForm = cur.MultipartForm
-				}
-				ctx.Request().Request = origReq
-			}()
-
-			ctx.Request().Request = origReq.WithContext(timeoutCtx)
-
-			if err := next(ctx); err != nil {
-				return config.ErrorHandler(ctx, err)
+			if err := c.Within(timeoutCtx, next); err != nil {
+				return config.ErrorHandler(c, err)
 			}
-
 			return nil
 		}
 	}

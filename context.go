@@ -41,9 +41,23 @@ type Context struct {
 	// locale and localeState hold the lazily resolved request locale: the
 	// detector runs on the first Locale/translation access and the result is
 	// memoized for the request (see resolveLocale).
-	locale           string
-	localeState      uint8
-	extra            map[string]any
+	locale      string
+	localeState uint8
+	// head is the request's current context.Context, values holds the record
+	// of Set calls and scope the innermost open scope (see contexthead.go).
+	// headGen changes whenever the head does; installed is the embedded
+	// request the Context last installed and installedGen the headGen it
+	// carries, so Std knows without comparing contexts whether the embedded
+	// request is in step.
+	head             context.Context
+	scope            headScope
+	values           []valueEntry
+	seq              uint64
+	pending          bool // values set after pendingStart await reapplication
+	pendingStart     uint64
+	headGen          uint64
+	installed        *http.Request
+	installedGen     uint64
 	originalPath     string // set in reset(), never modified after
 	rewriteTarget    string // set by Rewrite(), consumed by dispatch loop
 	rewriteRequested bool   // set by Rewrite(), read by dispatch loop
@@ -68,10 +82,13 @@ var errRewrite = errors.New("credo: internal rewrite")
 // NewContext creates a new Context wrapping the given ResponseWriter and Request.
 // This is primarily useful for testing error handlers and middleware.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {
-	return &Context{
+	c := &Context{
 		request:  NewRequest(r),
 		response: NewResponse(w),
 	}
+	c.request.owner = c
+	c.initHead(r)
+	return c
 }
 
 // Request returns the Request for this context.
@@ -96,8 +113,8 @@ func (c *Context) Route() *Route {
 // Use this to guard [Context.Route] calls in middleware that may run on
 // unmatched-request paths:
 //
-//	if ctx.HasRoute() {
-//	    val, _ := ctx.Route().LookupMeta("permission")
+//	if c.HasRoute() {
+//	    scopes, _ := c.Route().GetMeta(RequiredScopes)
 //	}
 func (c *Context) HasRoute() bool {
 	return c.route != nil
@@ -134,7 +151,7 @@ func (c *Context) baseLogger() *slog.Logger {
 // When replacing, derive the new logger from [Context.Logger] so existing
 // enrichment is preserved:
 //
-//	ctx.SetLogger(ctx.Logger().With("tenant_id", tenantID))
+//	c.SetLogger(c.Logger().With("tenant_id", tenantID))
 //
 // A logger built from scratch silently drops attributes added earlier —
 // including the request_id added by the request ID tier — from all
@@ -153,7 +170,7 @@ func (c *Context) SetLogger(l *slog.Logger) {
 // attribute — is preserved by construction. args are key-value pairs as
 // accepted by [slog.Logger.With]:
 //
-//	ctx.AddLogAttrs("tenant_id", tenantID)
+//	c.AddLogAttrs("tenant_id", tenantID)
 //
 // Prefer this over [Context.SetLogger] when the goal is to add attributes
 // rather than replace the logger. Calling it with no arguments is a no-op.
@@ -181,10 +198,8 @@ func (c *Context) HasRequestLogger() bool {
 // RequestID returns the current request ID.
 // It returns an empty string when request ID middleware is not active.
 func (c *Context) RequestID() string {
-	if id, ok := c.Get(requestIDKey).(string); ok {
-		return id
-	}
-	return ""
+	id, _ := c.Get(requestIDKey)
+	return id
 }
 
 // Locale returns the request's locale (e.g., "en", "tr"). It is resolved on
@@ -257,8 +272,8 @@ func (c *Context) T(key string, data ...map[string]any) string {
 // digits matter. The count value is exposed to the template as {{.count}}.
 //
 //	// messages.json: "items": {"one": "{{.count}} item", "other": "{{.count}} items"}
-//	ctx.TPlural("items", 1) // "1 item"
-//	ctx.TPlural("items", 5) // "5 items"
+//	c.TPlural("items", 1) // "1 item"
+//	c.TPlural("items", 5) // "5 items"
 //
 // If i18n is not configured or the key is not found, the key itself is
 // returned. When count cannot be interpreted as a number, the Other form
@@ -277,46 +292,39 @@ func (c *Context) TPlural(key string, count any, data ...map[string]any) string 
 	return key
 }
 
-// --- Request-scoped store ---
-
-// Set stores a key-value pair in the request-scoped store.
-func (c *Context) Set(key string, val any) {
-	if c.extra == nil {
-		c.extra = make(map[string]any)
-	}
-	c.extra[key] = val
-}
-
-// Get retrieves a value from the request-scoped store.
-func (c *Context) Get(key string) any {
-	if c.extra == nil {
-		return nil
-	}
-	return c.extra[key]
-}
-
 // --- Request context access ---
 
-// Context returns the underlying request's [context.Context]. Use it
-// for APIs that take a context.Context — database queries, downstream
-// requests, or transaction propagation through a data-store API:
+// Context returns the request's current [context.Context], its head: the
+// request's own context, the values set with [Context.Set] as nodes over it,
+// and the deadline or span of the scope it is read in ([Context.Within], a
+// stdlib middleware wrapped with [WrapStdMiddleware]). [Request.Context]
+// returns the same context. Use it for APIs that take a context.Context —
+// database queries, downstream requests, or transaction propagation through a
+// data-store API:
 //
-//	err := db.InTx(ctx.Context(), func(txCtx context.Context) error {
+//	err := db.InTx(c.Context(), func(txCtx context.Context) error {
 //		return service.Update(txCtx)
 //	})
 //
-// The returned context is canceled when the request completes. For background
-// work that must outlive the request, detach it with [context.WithoutCancel]:
+// The returned context is made of immutable nodes, so it may be handed to a
+// goroutine: later Set calls do not change it. It is canceled when the request
+// completes. For background work that must outlive the request, detach it
+// with [context.WithoutCancel]:
 //
-//	bg := context.WithoutCancel(ctx.Context())
+//	bg := context.WithoutCancel(c.Context())
 //	go process(bg)
 //
 // Context deliberately does NOT implement context.Context itself: it is pooled
 // (sync.Pool) and reused across requests, so retaining a *Context as a
 // long-lived context.Context would observe a later request's state.
-// Context hands back the real, non-pooled request context instead.
+// Context hands back the request's context instead.
 func (c *Context) Context() context.Context {
-	return c.request.Context()
+	if c.head == nil {
+		return c.request.Request.Context()
+	}
+	c.noteForeignRequest()
+	c.materialize()
+	return c.head
 }
 
 // --- Pool reuse ---
@@ -330,7 +338,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.pendingLogAttrID = ""
 	c.locale = ""
 	c.localeState = localeUnresolved
-	clear(c.extra)
+	c.initHead(r)
 	c.originalPath = r.URL.EscapedPath()
 	c.rewriteTarget = ""
 	c.rewriteRequested = false
@@ -339,7 +347,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 
 // OriginalPath returns the request path as received from the client in its
 // wire form (percent-encoding preserved), before any rewriting
-// (middleware.Rewrite or ctx.Rewrite).
+// (middleware.Rewrite or c.Rewrite).
 // Useful for access logging, analytics, and debugging.
 func (c *Context) OriginalPath() string {
 	return c.originalPath
@@ -353,7 +361,7 @@ func (c *Context) OriginalPath() string {
 // Rewrite must be the last call in a handler — the return value
 // must be returned directly:
 //
-//	return ctx.Rewrite("/new-path")
+//	return c.Rewrite("/new-path")
 //
 // A maximum of 10 rewrites per request is enforced to prevent loops.
 // If exceeded, an error is returned and the request fails with 500.

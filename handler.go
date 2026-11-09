@@ -124,10 +124,23 @@ type Middleware func(next Handler) Handler
 type StdMiddleware = func(http.Handler) http.Handler
 
 // WrapStdMiddleware converts stdlib middleware (func(http.Handler) http.Handler)
-// into a Credo [Middleware] (func(Handler) Handler). This allows using any
-// existing Go community middleware with Credo's unified middleware stack.
+// into a Credo [Middleware] (func(Handler) Handler):
 //
-//	app.GlobalMiddleware(credo.WrapStdMiddleware(corsMiddleware))
+//	app.GlobalMiddleware(credo.WrapStdMiddleware(tracingMiddleware))
+//
+// The middleware receives the standard request through [Request.Std], so it
+// reads the values set before it with ctx.Value(key). The context of the
+// request it passes on becomes the request's context for the handlers after
+// it — a deadline or a span it adds is visible through [Context.Context] —
+// until it returns; the values those handlers set with [Context.Set] are then
+// applied again over the outer context. A middleware that passes on a context
+// not derived from the request's cuts the handlers after it off from the
+// values set before it.
+//
+// The middleware must call the next handler on the request's own goroutine
+// and before it returns: the Context is not safe for concurrent use, so a
+// middleware that runs the next handler on another goroutine, as
+// [http.TimeoutHandler] does, is outside this contract.
 //
 // A response the middleware writes by itself, without calling next, is the
 // request's response. Its body is the middleware's own — it passes neither the
@@ -138,33 +151,35 @@ type StdMiddleware = func(http.Handler) http.Handler
 // connection the middleware hijacks is reported by [Response.Hijacked].
 func WrapStdMiddleware(m StdMiddleware) Middleware {
 	return func(next Handler) Handler {
-		return func(ctx *Context) error {
-			origReq := ctx.request.Request
-			origWriter := ctx.response.ResponseWriter
+		return func(c *Context) error {
+			origReq := c.request.Std()
+			origWriter := c.response.ResponseWriter
 			// The middleware writes to a recording writer over the underlying
 			// ResponseWriter, not to the Response wrapper: if it wraps its
-			// writer, ctx.response.ResponseWriter = w below would otherwise
+			// writer, c.response.ResponseWriter = w below would otherwise
 			// make the Response delegate to itself.
 			rec := &stdMiddlewareWriter{ResponseWriter: origWriter}
-			// The stdlib middleware's request/writer substitutions are only
-			// valid while its ServeHTTP runs. Restore the originals afterwards
-			// (also on panic) so that later writes — the error pipeline,
-			// recovery — never hit a writer the middleware already finalized.
+			// The stdlib middleware's writer substitution is only valid while
+			// its ServeHTTP runs. Restore the original afterwards (also on
+			// panic) so that later writes — the error pipeline, recovery —
+			// never hit a writer the middleware already finalized.
 			defer func() {
-				// A form the chain parsed on the middleware's request copy
-				// stays with the request that outlives it.
-				handOverMultipartForm(origReq, ctx.request.Request)
-				ctx.request.Request = origReq
-				ctx.response.ResponseWriter = origWriter
+				c.response.ResponseWriter = origWriter
 				// A response the middleware wrote by itself is the request's
 				// response, and a connection it hijacked is gone.
-				ctx.response.adopt(rec)
+				c.response.adopt(rec)
 			}()
 			var handlerErr error
 			nextHTTP := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ctx.request.Request = r         // stdlib MW may modify request
-				ctx.response.ResponseWriter = w // stdlib MW may wrap writer
-				handlerErr = next(ctx)
+				c.response.ResponseWriter = w // stdlib MW may wrap writer
+				if r == origReq {
+					// The request the middleware was given: the head stays.
+					handlerErr = next(c)
+					return
+				}
+				// The context of the request the middleware passes on is the
+				// head of the inner chain until the middleware returns.
+				handlerErr = c.within(r.Context(), r, next)
 			})
 			m(nextHTTP).ServeHTTP(rec, origReq)
 			return handlerErr

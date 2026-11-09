@@ -9,7 +9,7 @@
 //
 // This package is internal — the public API is exposed via the root credo package:
 //   - app.UseI18n(...)             — setup
-//   - ctx.Locale()                 — detected language
-//   - ctx.T(key, data)             — translate (Other form)
-//   - ctx.TPlural(key, count, data) — translate with plural selection
+//   - c.Locale()                 — detected language
+//   - c.T(key, data)             — translate (Other form)
+//   - c.TPlural(key, count, data) — translate with plural selection
 package i18n

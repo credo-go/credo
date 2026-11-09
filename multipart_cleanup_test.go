@@ -157,6 +157,36 @@ func TestMultipartTempFiles_RemovedBehindRequestCopies(t *testing.T) {
 			},
 		},
 		{
+			name: "direct parse on Std after Set", count: "1", want: http.StatusOK,
+			setup: func(app *credo.App, observe func()) {
+				app.POST("/upload", func(c *credo.Context) error {
+					c.Set(keyStr, "v")
+					if err := c.Request().Std().ParseMultipartForm(uploadSpillThreshold); err != nil {
+						return err
+					}
+					observe()
+					return c.Response().Text(http.StatusOK, "ok")
+				})
+			},
+		},
+		{
+			name: "direct parse on Std inside Within", count: "1", want: http.StatusOK,
+			setup: func(app *credo.App, observe func()) {
+				app.POST("/upload", func(c *credo.Context) error {
+					ctx, cancel := context.WithCancel(c.Context())
+					defer cancel()
+					return c.Within(ctx, func(c *credo.Context) error {
+						c.Set(keyStr, "v") // the next Std installs a copy
+						if err := c.Request().Std().ParseMultipartForm(uploadSpillThreshold); err != nil {
+							return err
+						}
+						observe()
+						return c.Response().Text(http.StatusOK, "ok")
+					})
+				})
+			},
+		},
+		{
 			name: "mounted stdlib handler", count: "1", want: http.StatusOK,
 			setup: func(app *credo.App, observe func()) {
 				app.Mount("/upload", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

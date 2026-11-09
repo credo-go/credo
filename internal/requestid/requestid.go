@@ -3,9 +3,6 @@ package requestid
 import "crypto/rand"
 
 const (
-	// Key is the request-scoped store key used for the current request ID.
-	Key = "credo.requestid"
-
 	// Header is the default HTTP header used to read and write the request ID.
 	Header = "X-Request-Id"
 

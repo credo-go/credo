@@ -157,15 +157,29 @@ func (sr *StaticRoute) Name(name string) *StaticRoute {
 	return sr
 }
 
-// SetMeta sets metadata on both the catch-all and exact-match GET routes.
+// SetMeta sets a meta value on both the catch-all and exact-match GET routes.
 // HEAD requests automatically see the same metadata as GET, so middleware
 // reading route meta returns consistent values for both methods and both
 // registration patterns.
 //
-// Must be called before the server starts; panics if called after compile.
-func (sr *StaticRoute) SetMeta(key string, val any) *StaticRoute {
+// Must be called before the server starts; panics if called after compile,
+// and for a zero Key.
+func (sr *StaticRoute) SetMeta[T any](key Key[T], val T) *StaticRoute {
+	key.mustID("StaticRoute.SetMeta")
 	sr.primary.SetMeta(key, val)
 	sr.index.SetMeta(key, val)
+	return sr
+}
+
+// RemoveMeta removes the static routes' own value of a meta key, so that the
+// value their group or the App set shows through.
+//
+// Must be called before the server starts; panics if called after compile,
+// and for a zero Key.
+func (sr *StaticRoute) RemoveMeta[T any](key Key[T]) *StaticRoute {
+	key.mustID("StaticRoute.RemoveMeta")
+	sr.primary.RemoveMeta(key)
+	sr.index.RemoveMeta(key)
 	return sr
 }
 
@@ -388,7 +402,7 @@ func newStaticHandler(fsys fs.FS, cfg StaticConfig) Handler {
 func newStaticIndexHandler(fsys fs.FS, cfg StaticConfig) Handler {
 	srv := internalstatic.NewServer(fsys, cfg.internal())
 	return func(ctx *Context) error {
-		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Request, ctx.OriginalPath(), ""))
+		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Std(), ctx.OriginalPath(), ""))
 	}
 }
 
@@ -396,7 +410,7 @@ func newStaticIndexHandler(fsys fs.FS, cfg StaticConfig) Handler {
 func newFileHandler(fsys fs.FS, name string, cfg StaticConfig) Handler {
 	srv := internalstatic.NewFileServer(fsys, name, cfg.internal())
 	return func(ctx *Context) error {
-		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Request, ctx.OriginalPath()))
+		return mapStaticError(srv.Serve(ctx.Response(), ctx.Request().Std(), ctx.OriginalPath()))
 	}
 }
 

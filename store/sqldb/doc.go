@@ -164,7 +164,7 @@
 // savepoint; because a savepoint cannot apply new transaction options, a
 // nested call with non-default options returns ErrNestedTxOptions instead of
 // silently ignoring them. From a handler, pass the request context:
-// db.InTx(ctx.Context(), fn).
+// db.InTx(c.Context(), fn).
 // Nested savepoint creation and cleanup are cancellation-safe and bounded:
 // callback queries retain their original context, while savepoint operations
 // use an internal context controlled by Credo. An uncertain begin/release/

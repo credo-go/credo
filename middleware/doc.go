@@ -26,7 +26,7 @@
 // and [credo.App.UseI18n]. The request executor runs them in a fixed order
 // around the whole user chain, so they observe the final response — error
 // envelopes and panic responses included — and cannot be applied per route or
-// per group. Handlers read the current request ID via ctx.RequestID().
+// per group. Handlers read the current request ID via c.RequestID().
 //
 // Most middleware in this package expose a [Skipper] for selective application.
 //

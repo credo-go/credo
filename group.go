@@ -17,31 +17,17 @@ type routeRegistrar interface {
 
 // Group is the user-facing route group for configuring routes with a
 // shared prefix, middleware, and metadata. It is also the node of the
-// group parent chain: route metadata (LookupMeta) and group middleware
-// are both resolved by walking this chain — metadata dynamically at
-// request time, middleware once at compile time.
+// group parent chain: route metadata ([Route.GetMeta]) and group middleware
+// are both resolved by walking this chain once, when the routes' chains are
+// compiled.
 type Group struct {
 	registrar   routeRegistrar
 	prefix      string
 	parent      *Group // nil for the root group
-	meta        map[string]any
+	meta        map[*keyID]any
 	mws         []Middleware
 	mux         *mux   // nil → app.mux, non-nil → host-specific mux
 	hostPattern string // "" for default scope, non-empty for host-scoped groups
-}
-
-// lookupMeta searches the group's own meta, then traverses up the
-// parent chain.
-func (g *Group) lookupMeta(key string) (any, bool) {
-	if g.meta != nil {
-		if val, ok := g.meta[key]; ok {
-			return val, true
-		}
-	}
-	if g.parent != nil {
-		return g.parent.lookupMeta(key)
-	}
-	return nil, false
 }
 
 // GET registers a GET route in this group. A matching HEAD handler is
@@ -102,7 +88,7 @@ func (g *Group) OPTIONS(pattern string, h Handler) *Route {
 // of this group and its sub-groups, regardless of whether the route was
 // registered before or after this call: per-route chains are assembled
 // from the group parent chain when the app compiles (first request or
-// Run), mirroring how route metadata is resolved via [Route.LookupMeta].
+// Run), mirroring how route metadata is resolved for [Route.GetMeta].
 // Must be called before the server starts; panics if called after
 // compile. Returns *Group for chaining.
 func (g *Group) Middleware(middlewares ...Middleware) *Group {
@@ -111,24 +97,30 @@ func (g *Group) Middleware(middlewares ...Middleware) *Group {
 	return g
 }
 
-// SetMeta sets a metadata key-value pair for this group.
-// All routes within the group inherit this metadata.
-// Must be called before the server starts; panics if called after compile.
-func (g *Group) SetMeta(key string, val any) {
+// SetMeta sets the group's value of a meta key. The routes of the group and
+// of its sub-groups inherit it, whenever they were registered, unless a
+// nearer group or the route sets the key itself. Must be called before the
+// server starts; panics if called after compile, and for a zero Key. Returns
+// the Group for fluent chaining.
+func (g *Group) SetMeta[T any](key Key[T], val T) *Group {
+	id := key.mustID("Group.SetMeta")
 	g.registrar.checkFrozen("Group.SetMeta")
 	if g.meta == nil {
-		g.meta = make(map[string]any)
+		g.meta = make(map[*keyID]any)
 	}
-	g.meta[key] = val
+	g.meta[id] = val
+	return g
 }
 
-// RemoveMeta removes a metadata key from this group.
-// Must be called before the server starts; panics if called after compile.
-func (g *Group) RemoveMeta(key string) {
+// RemoveMeta removes the group's own value of a meta key, so that an outer
+// group's or the App's shows through. Must be called before the server
+// starts; panics if called after compile, and for a zero Key. Returns the
+// Group for fluent chaining.
+func (g *Group) RemoveMeta[T any](key Key[T]) *Group {
+	id := key.mustID("Group.RemoveMeta")
 	g.registrar.checkFrozen("Group.RemoveMeta")
-	if g.meta != nil {
-		delete(g.meta, key)
-	}
+	delete(g.meta, id)
+	return g
 }
 
 // Group creates a nested sub-group with the given prefix. The sub-group

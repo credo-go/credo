@@ -102,9 +102,9 @@ func TestReferenceLocaleCatalogsLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 			app.UseI18n(credo.I18nConfig{Dir: "locales", Default: lang})
-			app.GET("/", func(ctx *credo.Context) error {
-				welcome := ctx.T("app.welcome", map[string]any{"name": "Ada"})
-				return ctx.Response().Text(http.StatusOK, ctx.T("not_found")+"|"+ctx.T("content_type_required")+"|"+welcome)
+			app.GET("/", func(c *credo.Context) error {
+				welcome := c.T("app.welcome", map[string]any{"name": "Ada"})
+				return c.Response().Text(http.StatusOK, c.T("not_found")+"|"+c.T("content_type_required")+"|"+welcome)
 			})
 			t.Cleanup(func() { _ = app.Shutdown(context.WithoutCancel(t.Context())) })
 			if err := app.Start(t.Context()); err != nil {

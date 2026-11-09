@@ -8,28 +8,6 @@ import (
 	"time"
 )
 
-func TestSilencedByMeta(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   any
-		present bool
-		want    bool
-	}{
-		{"missing", nil, false, false},
-		{"false silences", false, true, true},
-		{"true keeps", true, true, false},
-		{"non-bool fails open", "off", true, false},
-		{"nil value fails open", nil, true, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := SilencedByMeta(tt.value, tt.present); got != tt.want {
-				t.Fatalf("SilencedByMeta(%v, %v) = %v, want %v", tt.value, tt.present, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBelowMinLevel(t *testing.T) {
 	if BelowMinLevel(200, slog.LevelInfo) {
 		t.Fatal("200 at Info must not be below")

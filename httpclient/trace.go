@@ -31,8 +31,8 @@ type traceContextKey struct{}
 //
 // Typical server-side wiring:
 //
-//	callCtx := ctx.Context()
-//	if tc, ok := httpclient.TraceContextFromRequest(ctx.Request().Request); ok {
+//	callCtx := c.Context()
+//	if tc, ok := httpclient.TraceContextFromRequest(c.Request().Std()); ok {
 //		callCtx = httpclient.SetTraceContext(callCtx, tc)
 //	}
 //	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, url, nil)

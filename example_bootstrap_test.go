@@ -32,8 +32,8 @@ func newExampleOrders(db *exampleDB, payments *examplePayments) *exampleOrders {
 	return &exampleOrders{db: db, payments: payments}
 }
 
-func (o *exampleOrders) List(ctx *credo.Context) error {
-	return ctx.Response().Text(http.StatusOK, "3 orders")
+func (o *exampleOrders) List(c *credo.Context) error {
+	return c.Response().Text(http.StatusOK, "3 orders")
 }
 
 // exampleRelay is a continuous worker built by the container.
