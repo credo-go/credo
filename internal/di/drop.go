@@ -57,12 +57,6 @@ func (c *Container) reachedLocked(drop map[reflect.Type]bool) map[reflect.Type]b
 			reached[t] = true
 		}
 	}
-	for _, p := range c.steps {
-		reached[p.t] = true
-		if target, ok := c.aliases[p.t]; ok {
-			reached[target] = true
-		}
-	}
 	for _, u := range c.units {
 		if !u.managed && drop[u.t] {
 			continue
@@ -89,6 +83,7 @@ func (c *Container) removeBindingLocked(t reflect.Type) {
 		return
 	}
 	c.forgetHolderLocked(u)
+	c.forgetNameLocked(u)
 	c.units = slices.DeleteFunc(c.units, func(x *Unit) bool { return x == u })
 	for i, x := range c.units {
 		x.index = i

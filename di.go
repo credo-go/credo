@@ -40,19 +40,22 @@ import (
 // whose built value has a Start, a Ready or an [IngressComponent] tier the
 // binding's type hides fails the start once it is built: declare the constructor to return the concrete
 // type, and bind the interface with [App.Alias]. The options are [Ingress],
-// [CloseOnShutdown] and [Override]; each panics on misuse at the call.
+// [CloseOnShutdown], [Override], [ComponentName] and [OptionalReadiness];
+// each panics on misuse at the call.
 //
 // Registration is sequential: call Provide from the goroutine that builds the
 // App, before it runs.
 func (app *App) Provide(constructor any, opts ...RegistrationOption) {
-	o := registrationOptions("App.Provide", opts, optIngress, optCloseOnShutdown, optOverride)
+	o := registrationOptions("App.Provide", opts, optIngress, optCloseOnShutdown, optOverride, optComponentName,
+		optOptionalReadiness)
 	panicOnMisuse(app.container.ProvideWith(constructor, o))
 }
 
 // ProvideValue registers a pre-built value for type T as a Singleton. The App
 // owns the value from then on: if it is a [Component] it is shut down during
 // the drain, unless [Borrowed] leaves it to the caller. The options are
-// [Ingress], [Borrowed], [CloseOnShutdown] and [Override]; [Override] is how a
+// [Ingress], [Borrowed], [CloseOnShutdown], [Override], [ComponentName] and
+// [OptionalReadiness]; [Override] is how a
 // composition root or a test swaps an earlier binding — a direct one, or an
 // alias of T — for a stub, and the value it replaces never becomes the App's.
 // A second binding of T without [Override], a call after [App.Finalize] or
@@ -65,7 +68,8 @@ func (app *App) Provide(constructor any, opts ...RegistrationOption) {
 //
 //	app.ProvideValue[*Logger](logger)
 func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption) {
-	o := registrationOptions("App.ProvideValue", opts, optIngress, optBorrowed, optCloseOnShutdown, optOverride)
+	o := registrationOptions("App.ProvideValue", opts, optIngress, optBorrowed, optCloseOnShutdown, optOverride,
+		optComponentName, optOptionalReadiness)
 	panicOnMisuse(app.container.ProvideValueWith[T](value, o))
 }
 

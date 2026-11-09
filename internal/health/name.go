@@ -7,7 +7,7 @@ import (
 	"unicode"
 )
 
-// ValidateName validates the canonical identifier shared by named and store
+// ValidateName validates the canonical identifier shared by named and contributed
 // health checks. Names are never normalized: padded input is rejected so
 // duplicate detection remains an exact, deterministic comparison.
 func ValidateName(name string) error {

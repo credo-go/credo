@@ -42,6 +42,12 @@ type Config struct {
 	// in whole seconds, so positive fractional seconds are rounded up.
 	ConnectTimeout time.Duration
 
+	// PingTimeout is the deadline of the ping [DB.Start] sends. Zero means
+	// [DefaultPingTimeout] (5s), not "no deadline" as for ConnectTimeout:
+	// an unbounded ping would hang the App's start. A negative value fails
+	// Open.
+	PingTimeout time.Duration
+
 	// MaxOpen is the maximum number of open connections. Zero keeps the
 	// database/sql default, which is unlimited.
 	MaxOpen int
@@ -80,6 +86,9 @@ func (c *Config) validateLimits() error {
 	}
 	if c.ConnectTimeout < 0 {
 		return fmt.Errorf("sqldb: connect timeout must be >= 0, got %s", c.ConnectTimeout)
+	}
+	if c.PingTimeout < 0 {
+		return fmt.Errorf("sqldb: ping timeout must be >= 0, got %s", c.PingTimeout)
 	}
 	if c.MaxOpen < 0 {
 		return fmt.Errorf("sqldb: max open must be >= 0, got %d", c.MaxOpen)

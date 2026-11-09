@@ -276,7 +276,7 @@ func TestManage_Misuse(t *testing.T) {
 			if err := c.Manage(&unitPool{ev: ev}, di.Options{Name: "x"}); err != nil {
 				t.Fatal(err)
 			}
-		}, &unitPool{ev: ev}, di.Options{Name: "x"}, "already managed"},
+		}, &unitPool{ev: ev}, di.Options{Name: "x"}, "a component named \"x\" is already registered, as Manage(x); give each component its own name with credo.ComponentName"},
 		{"bad constructor", nil, func() {}, di.Options{}, "return 1 or 2 values"},
 	}
 	for _, tt := range tests {

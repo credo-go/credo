@@ -58,7 +58,7 @@ var modulePolicies = map[string]importPolicy{
 	"middleware/ratelimit": {credo: []string{"", "middleware"}, external: []string{"github.com/sethvargo/go-limiter"}},
 
 	"pagination": {},
-	"store":      {credo: []string{"", "fault", "internal/health", "internal/kernel"}},
+	"store":      {credo: []string{"fault"}},
 	"testutil":   {credo: []string{"", "config"}},
 	"validation": {},
 	"websocket":  {credo: []string{"", "internal/httpwriter", "internal/origin"}, external: []string{"github.com/coder/websocket"}},

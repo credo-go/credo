@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -64,16 +65,27 @@ func startServing(t *testing.T, app *credo.App) {
 	}
 }
 
-// readinessStore is a store whose health is fixed.
+// readinessStore is a store component whose health is fixed; its Ready
+// reads it as a store adapter's does.
 type readinessStore struct{ health store.Health }
 
-func (*readinessStore) Ping(context.Context) error            { return nil }
-func (*readinessStore) Shutdown(context.Context) error        { return nil }
-func (s *readinessStore) Health(context.Context) store.Health { return s.health.Clone() }
+func (*readinessStore) Shutdown(context.Context) error { return nil }
+func (s *readinessStore) Ready(context.Context) error  { return healthReady(s.health.Clone()) }
 
-// registerReadinessStore binds a store with the given health and registers
-// it under name.
+// healthReady is the Ready of a store adapter over its Health: nil when it is
+// up, else an error naming the status that wraps the typed cause.
+func healthReady(h store.Health) error {
+	switch {
+	case h.Status == store.StatusUp && h.Cause == nil:
+		return nil
+	case h.Cause != nil:
+		return fmt.Errorf("store is %s: %w", h.Status, h.Cause)
+	default:
+		return fmt.Errorf("store is %s", h.Status)
+	}
+}
+
+// registerReadinessStore binds a store with the given health under name.
 func registerReadinessStore(app *credo.App, name string, health store.Health) {
-	app.ProvideValue(&readinessStore{health: health})
-	store.Register[*readinessStore](app, store.WithName(name))
+	app.ProvideValue(&readinessStore{health: health}, credo.ComponentName(name))
 }

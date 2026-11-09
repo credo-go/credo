@@ -266,7 +266,7 @@ func manageMisuse(call, name string, r any) string {
 		return fmt.Sprintf("worker: %s after app.Finalize; register workers before Finalize", call)
 	case strings.Contains(msg, "called after shutdown began"):
 		return fmt.Sprintf("worker: %s after the App shut down; register workers before Finalize", call)
-	case strings.Contains(msg, "is already managed"):
+	case strings.Contains(msg, "is already registered, as "):
 		return fmt.Sprintf("worker: %s: the App already has a component named %q, registered by another "+
 			"supervisor or with credo.ComponentName; give each worker its own name", call, componentName(name))
 	}

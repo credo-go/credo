@@ -25,8 +25,11 @@ type healthStoreProbe struct {
 	health  store.Health
 }
 
-func (*healthStoreProbe) Ping(context.Context) error     { return nil }
 func (*healthStoreProbe) Shutdown(context.Context) error { return nil }
+
+// Ready reads the store's Health, as a store adapter's Ready does.
+func (p *healthStoreProbe) Ready(ctx context.Context) error { return healthReady(p.Health(ctx)) }
+
 func (p *healthStoreProbe) Health(context.Context) store.Health {
 	if p.calls != nil {
 		p.calls.Add(1)
@@ -58,13 +61,13 @@ func quietHealthApp(t *testing.T) *credo.App {
 	return mustNew(t, credo.WithLogger(logger))
 }
 
-func TestReadiness_RegisteredStoresRunInParallel(t *testing.T) {
+func TestReadiness_BoundStoresRunInParallel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app := quietHealthApp(t)
-		app.ProvideValue(&firstHealthStore{healthStoreProbe: &healthStoreProbe{delay: 5 * time.Second}})
-		app.ProvideValue(&secondHealthStore{healthStoreProbe: &healthStoreProbe{delay: 3 * time.Second}})
-		store.Register[*firstHealthStore](app, store.WithName("first"))
-		store.Register[*secondHealthStore](app, store.WithName("second"))
+		app.ProvideValue(&firstHealthStore{healthStoreProbe: &healthStoreProbe{delay: 5 * time.Second}},
+			credo.ComponentName("first"))
+		app.ProvideValue(&secondHealthStore{healthStoreProbe: &healthStoreProbe{delay: 3 * time.Second}},
+			credo.ComponentName("second"))
 		app.UseHealth(credo.HealthConfig{CheckTimeout: 10 * time.Second})
 		startServing(t, app)
 
@@ -88,8 +91,8 @@ func TestReadiness_RepeatedRequestsReuseHungStoreFlight(t *testing.T) {
 		var calls atomic.Int32
 
 		app := quietHealthApp(t)
-		app.ProvideValue(&hangingHealthStore{healthStoreProbe: &healthStoreProbe{release: release, calls: &calls}})
-		store.Register[*hangingHealthStore](app, store.WithName("hung"))
+		app.ProvideValue(&hangingHealthStore{healthStoreProbe: &healthStoreProbe{release: release, calls: &calls}},
+			credo.ComponentName("hung"))
 		app.UseHealth(credo.HealthConfig{CheckTimeout: time.Second})
 		startServing(t, app)
 
@@ -118,7 +121,7 @@ func TestReadiness_RepeatedRequestsReuseHungStoreFlight(t *testing.T) {
 	})
 }
 
-func TestReadiness_RegisteredStoreCauseContract(t *testing.T) {
+func TestReadiness_BoundStoreCauseContract(t *testing.T) {
 	const typedSecret = "dial tcp 10.0.1.5:5432: connection refused"
 	const forgedDetail = "forged details error must not be promoted"
 	tests := []struct {
@@ -149,22 +152,14 @@ func TestReadiness_RegisteredStoreCauseContract(t *testing.T) {
 			},
 			exposeErrors: true,
 		},
-		{
-			name: "up with cause fails closed",
-			health: store.Health{
-				Status: store.StatusUp,
-				Cause:  errors.New(typedSecret),
-			},
-			wantTypedInLog: true,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, logs := newTestLogger(t)
 			app := mustNew(t, credo.WithLogger(logger))
-			app.ProvideValue(&diagnosticHealthStore{healthStoreProbe: &healthStoreProbe{health: tt.health}})
-			store.Register[*diagnosticHealthStore](app, store.WithName("diagnostic"))
+			app.ProvideValue(&diagnosticHealthStore{healthStoreProbe: &healthStoreProbe{health: tt.health}},
+				credo.ComponentName("diagnostic"))
 			app.UseHealth(credo.HealthConfig{ExposeErrors: tt.exposeErrors})
 			startServing(t, app)
 

@@ -10,49 +10,40 @@ import (
 	"time"
 )
 
-var (
-	// ErrInvalidStoreStatus marks a store probe that reported a status outside
-	// the allowlist (or "up" together with a failure cause). Such results fail
-	// closed as "down".
-	ErrInvalidStoreStatus = errors.New("credo: invalid store health status")
+// ErrCheckNameConflict marks a contributed readiness check whose name
+// duplicates another contributed check or a named readiness check.
+var ErrCheckNameConflict = errors.New("credo: readiness check name conflict")
 
-	// ErrCheckNameConflict marks a store check whose name duplicates another
-	// store check or a named readiness check.
-	ErrCheckNameConflict = errors.New("credo: readiness check name conflict")
-)
-
-// CheckResult holds the outcome of a named application health check.
-// Cause is retained for structured operator logging; Error is the safe,
-// explicitly selected text used only when the root opts into exposing errors.
+// CheckResult holds the outcome of one health check. Cause is retained for
+// structured operator logging; Error is the safe, explicitly selected text
+// used only when the root opts into exposing errors. Latency is the time the
+// check's run took, or the time until its deadline. An Optional check is
+// reported without gating readiness.
 type CheckResult struct {
-	Name   string
-	Status string
-	Error  string
-	Cause  error
+	Name     string
+	Status   string
+	Error    string
+	Cause    error
+	Latency  time.Duration
+	Optional bool
 }
 
 type namedCheck struct {
-	name  string
-	probe *Probe
+	name     string
+	probe    *Probe
+	optional bool
 }
 
-type checkSource uint8
-
-const (
-	sourceNamed checkSource = iota
-	sourceStore
-)
-
 type scheduledCheck struct {
-	name   string
-	source checkSource
-	probe  *Probe
+	name     string
+	probe    *Probe
+	optional bool
 }
 
 type scheduledResult struct {
-	name   string
-	source checkSource
-	result Result
+	name     string
+	optional bool
+	result   Result
 }
 
 // Engine manages liveness and readiness health checks and runs them through
@@ -74,15 +65,16 @@ func NewEngine(timeout time.Duration) *Engine {
 func (e *Engine) AddLiveness(name string, fn func(context.Context) error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.liveness = appendNamedCheck(e.liveness, "liveness", name, fn)
+	e.liveness = appendNamedCheck(e.liveness, "liveness", name, fn, false)
 }
 
-// AddReadiness registers a named readiness check. It panics on an invalid or
-// duplicate name; the root registration API documents these panics.
-func (e *Engine) AddReadiness(name string, fn func(context.Context) error) {
+// AddReadiness registers a named readiness check; an optional one is
+// reported without gating readiness. It panics on an invalid or duplicate
+// name; the root registration API documents these panics.
+func (e *Engine) AddReadiness(name string, fn func(context.Context) error, optional bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.readiness = appendNamedCheck(e.readiness, "readiness", name, fn)
+	e.readiness = appendNamedCheck(e.readiness, "readiness", name, fn, optional)
 }
 
 func appendNamedCheck(
@@ -90,6 +82,7 @@ func appendNamedCheck(
 	kind string,
 	name string,
 	fn func(context.Context) error,
+	optional bool,
 ) []namedCheck {
 	if err := ValidateName(name); err != nil {
 		panic(fmt.Sprintf("credo: Add%sCheck: %v", titleWord(kind), err))
@@ -106,7 +99,7 @@ func appendNamedCheck(
 		}
 		return Result{Status: "up"}
 	})
-	return append(checks, namedCheck{name: name, probe: probe})
+	return append(checks, namedCheck{name: name, probe: probe, optional: optional})
 }
 
 func titleWord(value string) string {
@@ -122,20 +115,16 @@ func titleWord(value string) string {
 func (e *Engine) CheckLiveness(ctx context.Context) (string, []CheckResult) {
 	named := e.snapshotLiveness()
 	scheduled := scheduleNamedChecks(named)
-	runResults := runChecks(ctx, scheduled, e.timeout)
-	results := namedResults(runResults)
+	results := checkResults(runChecks(ctx, scheduled, e.timeout))
 	return aggregateStatus(results), results
 }
 
-// CheckReadiness runs named, contributed, and store checks through the same
-// bounded parallel runner. storeFn returns stable per-store probes and
-// contributedFn stable per-contributor probes (reported among the named
-// checks); either may be nil.
-func (e *Engine) CheckReadiness(
-	ctx context.Context,
-	storeFn StoreFunc,
-	contributedFn ReadinessFunc,
-) (string, []CheckResult, []StoreResult) {
+// CheckReadiness runs the named and the contributed checks through the same
+// bounded parallel runner. contributedFn returns stable per-contributor
+// probes, reported among the named checks; it may be nil. The status is
+// "down" when a gating check fails, else "degraded" when an optional one
+// does, else "up".
+func (e *Engine) CheckReadiness(ctx context.Context, contributedFn ReadinessFunc) (string, []CheckResult) {
 	named := e.snapshotReadiness()
 	scheduled := scheduleNamedChecks(named)
 	namedNames := make(map[string]struct{}, len(named))
@@ -143,46 +132,7 @@ func (e *Engine) CheckReadiness(
 		namedNames[check.name] = struct{}{}
 	}
 
-	storeChecks, storeSnapshotErr := snapshotStoreChecks(storeFn)
 	configFailures := make([]CheckResult, 0)
-	if storeSnapshotErr != nil {
-		configFailures = append(configFailures, failedResult(
-			"credo.store_registry",
-			storeSnapshotErr,
-		))
-	}
-
-	seenStores := make(map[string]struct{}, len(storeChecks))
-	for index, storeCheck := range storeChecks {
-		if err := validateStoreCheckDescriptor(storeCheck); err != nil {
-			configFailures = append(configFailures, failedResult(
-				configurationFailureName("store_descriptor", index),
-				err,
-			))
-			continue
-		}
-		if _, duplicate := seenStores[storeCheck.Name]; duplicate {
-			configFailures = append(configFailures, failedResult(
-				configurationFailureName("store_name_conflict", index),
-				fmt.Errorf("%w: duplicate store check %q", ErrCheckNameConflict, storeCheck.Name),
-			))
-			continue
-		}
-		seenStores[storeCheck.Name] = struct{}{}
-		if _, collision := namedNames[storeCheck.Name]; collision {
-			configFailures = append(configFailures, failedResult(
-				configurationFailureName("store_name_conflict", index),
-				fmt.Errorf("%w: named and store checks both use %q", ErrCheckNameConflict, storeCheck.Name),
-			))
-			continue
-		}
-		scheduled = append(scheduled, scheduledCheck{
-			name:   storeCheck.Name,
-			source: sourceStore,
-			probe:  storeCheck.Probe,
-		})
-	}
-
 	contributed, contributedSnapshotErr := snapshotContributedChecks(contributedFn)
 	if contributedSnapshotErr != nil {
 		configFailures = append(configFailures, failedResult(
@@ -201,8 +151,7 @@ func (e *Engine) CheckReadiness(
 		}
 		_, duplicate := seenContributed[check.Name]
 		_, namedCollision := namedNames[check.Name]
-		_, storeCollision := seenStores[check.Name]
-		if duplicate || namedCollision || storeCollision {
+		if duplicate || namedCollision {
 			configFailures = append(configFailures, failedResult(
 				configurationFailureName("contributed_name_conflict", index),
 				fmt.Errorf("%w: contributed readiness check %q is already registered", ErrCheckNameConflict, check.Name),
@@ -211,37 +160,15 @@ func (e *Engine) CheckReadiness(
 		}
 		seenContributed[check.Name] = struct{}{}
 		scheduled = append(scheduled, scheduledCheck{
-			name:   check.Name,
-			source: sourceNamed,
-			probe:  check.Probe,
+			name:     check.Name,
+			probe:    check.Probe,
+			optional: check.Optional,
 		})
 	}
 
-	runResults := runChecks(ctx, scheduled, e.timeout)
-	checks := make([]CheckResult, 0, len(named)+len(configFailures))
-	stores := make([]StoreResult, 0, len(storeChecks))
-	for _, runResult := range runResults {
-		switch runResult.source {
-		case sourceStore:
-			stores = append(stores, normalizeStoreResult(runResult.name, runResult.result))
-		default:
-			checks = append(checks, namedResult(runResult))
-		}
-	}
+	checks := checkResults(runChecks(ctx, scheduled, e.timeout))
 	checks = append(checks, configFailures...)
-
-	status := aggregateStatus(checks)
-	if status == "up" {
-		for _, storeResult := range stores {
-			// All stores remain critical in this delivery. "degraded" is
-			// explicitly readiness-blocking until optional-store policy lands.
-			if storeResult.Status != "up" {
-				status = "down"
-				break
-			}
-		}
-	}
-	return status, checks, stores
+	return readinessStatus(checks), checks
 }
 
 func (e *Engine) snapshotLiveness() []namedCheck {
@@ -260,25 +187,12 @@ func scheduleNamedChecks(checks []namedCheck) []scheduledCheck {
 	scheduled := make([]scheduledCheck, 0, len(checks))
 	for _, check := range checks {
 		scheduled = append(scheduled, scheduledCheck{
-			name:   check.name,
-			source: sourceNamed,
-			probe:  check.probe,
+			name:     check.name,
+			probe:    check.probe,
+			optional: check.optional,
 		})
 	}
 	return scheduled
-}
-
-func snapshotStoreChecks(storeFn StoreFunc) (checks []StoreCheck, err error) {
-	if storeFn == nil {
-		return nil, nil
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			checks = nil
-			err = fmt.Errorf("credo: store health registry panic: %v", recovered)
-		}
-	}()
-	return storeFn(), nil
 }
 
 func snapshotContributedChecks(fn ReadinessFunc) (checks []ReadinessCheck, err error) {
@@ -304,21 +218,11 @@ func validateContributedCheck(check ReadinessCheck) error {
 	return nil
 }
 
-func validateStoreCheckDescriptor(check StoreCheck) error {
-	if err := ValidateName(check.Name); err != nil {
-		return fmt.Errorf("credo: invalid store check: %w", err)
-	}
-	if check.Probe == nil {
-		return fmt.Errorf("credo: store check %q has a nil probe", check.Name)
-	}
-	return nil
-}
-
 func configurationFailureName(kind string, index int) string {
 	return fmt.Sprintf("credo.%s.%d", kind, index)
 }
 
-// runChecks executes every named and store probe concurrently. Workers publish
+// runChecks executes every scheduled probe concurrently. Workers publish
 // immutable Probe results; only these bounded collector goroutines write their
 // dedicated result indexes, so a late callback cannot race with or mutate a
 // response that already timed out.
@@ -339,9 +243,9 @@ func runChecks(
 	for index, check := range checks {
 		wait.Go(func() {
 			results[index] = scheduledResult{
-				name:   check.name,
-				source: check.source,
-				result: check.probe.Run(ctx, timeout),
+				name:     check.name,
+				optional: check.optional,
+				result:   check.probe.Run(ctx, timeout),
 			}
 		})
 	}
@@ -349,25 +253,23 @@ func runChecks(
 	return results
 }
 
-func namedResults(runResults []scheduledResult) []CheckResult {
+func checkResults(runResults []scheduledResult) []CheckResult {
 	results := make([]CheckResult, 0, len(runResults))
 	for _, result := range runResults {
-		results = append(results, namedResult(result))
+		status := result.result.Status
+		if status != "up" {
+			status = "down"
+		}
+		results = append(results, CheckResult{
+			Name:     result.name,
+			Status:   status,
+			Error:    result.result.Error,
+			Cause:    result.result.Cause,
+			Latency:  max(result.result.Latency, 0),
+			Optional: result.optional,
+		})
 	}
 	return results
-}
-
-func namedResult(result scheduledResult) CheckResult {
-	status := result.result.Status
-	if status != "up" {
-		status = "down"
-	}
-	return CheckResult{
-		Name:   result.name,
-		Status: status,
-		Error:  result.result.Error,
-		Cause:  result.result.Cause,
-	}
 }
 
 func failedResult(name string, cause error) CheckResult {
@@ -379,56 +281,6 @@ func failedResult(name string, cause error) CheckResult {
 	}
 }
 
-func normalizeStoreResult(name string, result Result) StoreResult {
-	status := strings.ToLower(result.Status)
-	cause := result.Cause
-	causeText := result.Error
-	latency := max(result.Latency, 0)
-
-	switch status {
-	case "up":
-		if cause != nil || causeText != "" {
-			status = "down"
-			cause = errors.Join(ErrInvalidStoreStatus, cause)
-			causeText = appendSafeCauseText(
-				fmt.Sprintf("store %q reported up with a failure cause", name),
-				causeText,
-			)
-		}
-	case "down", "degraded":
-		if cause == nil {
-			if causeText == "" {
-				causeText = fmt.Sprintf("store %q reported status %q", name, status)
-			}
-			cause = errors.New(causeText)
-		} else if causeText == "" {
-			causeText = fmt.Sprintf("store %q reported status %q", name, status)
-		}
-	default:
-		status = "down"
-		cause = errors.Join(ErrInvalidStoreStatus, cause)
-		causeText = appendSafeCauseText(
-			fmt.Sprintf("store %q reported unsupported status %q", name, result.Status),
-			causeText,
-		)
-	}
-
-	return StoreResult{
-		Name:    name,
-		Status:  status,
-		Latency: latency,
-		Cause:   cause,
-		Error:   causeText,
-	}
-}
-
-func appendSafeCauseText(prefix string, causeText string) string {
-	if causeText == "" {
-		return prefix
-	}
-	return prefix + ": " + causeText
-}
-
 // aggregateStatus returns "up" if every check passed (or none were
 // registered), and "down" if any check failed.
 func aggregateStatus(results []CheckResult) string {
@@ -438,4 +290,21 @@ func aggregateStatus(results []CheckResult) string {
 		}
 	}
 	return "up"
+}
+
+// readinessStatus returns "down" if a gating check failed, "degraded" if
+// only optional checks did, and "up" if every check passed or none was
+// registered.
+func readinessStatus(results []CheckResult) string {
+	status := "up"
+	for _, result := range results {
+		switch {
+		case result.Status == "up":
+		case !result.Optional:
+			return "down"
+		default:
+			status = "degraded"
+		}
+	}
+	return status
 }

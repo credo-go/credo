@@ -1,8 +1,7 @@
 // Package store provides universal data access contracts for the Credo framework.
 //
-// This package defines error sentinels, lifecycle/health interfaces,
-// a connection registry, a registration API, and context-based
-// transaction helpers. It has zero external dependencies — only
+// This package defines error sentinels, the typed [Health] report, and
+// context-based transaction helpers. It has zero external dependencies — only
 // the Go standard library and Credo's root/fault contracts are imported.
 //
 // The companion package store/sqldb (a separate Go submodule) wraps
@@ -23,34 +22,31 @@
 // The sentinel HTTPStatus methods remain only as a deprecated compatibility
 // bridge; new application policy should use Kind.
 //
-// # Registration
+// # A Bound Store
 //
-// A store is bound like any other component — app.ProvideValue, or
-// app.Provide with a constructor, with credo.Borrowed() for a handle the
-// caller shares — and [Register] adds that binding to the App's stores:
+// A store is a component like any other: it is bound with app.ProvideValue,
+// or app.Provide with a constructor, with credo.Borrowed() for a handle the
+// caller shares, and the binding alone is enough:
 //
 //	app.ProvideValue(db)
-//	store.Register[*sqldb.DB](app)
 //
-// Register performs no I/O. The start phase resolves the binding once, after
-// Finalize and so after every override, and pings it before the components
-// that depend on it start; a failed ping fails the start. A registration
-// whose type has no binding fails Finalize. Shutdown follows the binding: the
-// App shuts the store down after its consumers unless it is borrowed.
+// The start walk calls the store's Start, which pings it, before the
+// components that depend on it start; /ready reports it through its Ready;
+// and the App shuts it down after its consumers unless it is borrowed. A store
+// adapter implements Start, Ready and Shutdown, as store/sqldb's *DB does.
+// credo.OptionalReadiness() reports a store in /ready without letting it gate
+// readiness, and credo.ComponentName names its entry.
 //
 // Several bindings may hold one physical resource — a *sqldb.DB bound raw and
 // a wrapper type that embeds it. A value that names its resource through
-// credo.ResourceIdentifier shares one teardown with the other holders of that
-// resource, which happens once, after the last holder retires. Only a value
-// without state of its own to release may share an identity.
+// credo.ResourceIdentifier is one resource with the other holders of that
+// resource: one start, one readiness entry and one teardown, which happens
+// once, after the last holder retires. Only a value without state of its own
+// to release may share an identity.
 //
-// Every pinged store contributes a stable readiness probe, built once at
-// start; nothing is resolved per readiness request. Named and store checks
-// run in parallel with enforced per-check deadlines and panic isolation.
-// [Health.Cause] carries typed diagnostics for logging while remaining excluded
-// from JSON; free-form Details values are never interpreted as error causes.
-// Overlapping readiness requests share one in-flight execution per store, so a
-// cancellation-ignoring probe cannot accumulate a goroutine per request.
+// [Health.Cause] carries typed diagnostics for logging while remaining
+// excluded from JSON; free-form Details values are never interpreted as error
+// causes.
 //
 // # Context-Based Transactions
 //

@@ -103,50 +103,6 @@ func TestApplyPoolConfig(t *testing.T) {
 	}
 }
 
-func TestDB_StoreRegistrationWarningCodesReflectEffectivePool(t *testing.T) {
-	t.Run("unlimited max open", func(t *testing.T) {
-		db, err := Open(&Config{Driver: "sqlite", DSN: ":memory:"})
-		if err != nil {
-			t.Fatalf("Open() = %v", err)
-		}
-		t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
-
-		got := db.StoreRegistrationWarningCodes()
-		want := []string{maxOpenUnlimitedWarningCode}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("StoreRegistrationWarningCodes() = %v, want %v", got, want)
-		}
-
-		got[0] = "mutated"
-		if next := db.StoreRegistrationWarningCodes(); !reflect.DeepEqual(next, want) {
-			t.Fatalf("warning codes retained caller mutation: %v", next)
-		}
-
-		db.Client().DB.SetMaxOpenConns(5)
-		if got := db.StoreRegistrationWarningCodes(); got != nil {
-			t.Fatalf("StoreRegistrationWarningCodes() after finite override = %v, want nil", got)
-		}
-	})
-
-	t.Run("bounded max open", func(t *testing.T) {
-		db, err := Open(&Config{Driver: "sqlite", DSN: ":memory:", MaxOpen: 5})
-		if err != nil {
-			t.Fatalf("Open() = %v", err)
-		}
-		t.Cleanup(func() { _ = db.Shutdown(context.WithoutCancel(t.Context())) })
-
-		if got := db.StoreRegistrationWarningCodes(); got != nil {
-			t.Fatalf("StoreRegistrationWarningCodes() = %v, want nil", got)
-		}
-
-		db.Client().DB.SetMaxOpenConns(0)
-		want := []string{maxOpenUnlimitedWarningCode}
-		if got := db.StoreRegistrationWarningCodes(); !reflect.DeepEqual(got, want) {
-			t.Fatalf("StoreRegistrationWarningCodes() after unlimited override = %v, want %v", got, want)
-		}
-	})
-}
-
 func TestOpen_NilConfig(t *testing.T) {
 	_, err := Open(nil)
 	if err == nil {
