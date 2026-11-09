@@ -32,7 +32,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Dependency Injection (`Provide`/`Resolve`, `Infra`) | Beta |
 | Configuration (`config`, typed snapshot) | Beta |
 | Validation | Beta |
-| Authentication (JWT / Basic / API key) | Beta |
+| Authentication (`auth`: API key / Basic; JWT in `auth/jwtauth`) | Beta |
 | Internationalization (`i18n`) | Beta |
 | Health checks | Beta |
 | Background workers + cron (`app.Workers()`) | Beta |

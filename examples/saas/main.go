@@ -51,6 +51,7 @@ import (
 
 	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/auth"
+	"github.com/credo-go/credo/auth/jwtauth"
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/middleware"
 	"github.com/credo-go/credo/validation"
@@ -285,11 +286,11 @@ func (r *UsageReporter) Run(ctx context.Context) error {
 // jwtSigningKey is the HMAC key for this example (use RSA/ECDSA in production).
 var jwtSigningKey = []byte("super-secret-key-change-in-production")
 
-func newJWTAuthenticator() *auth.JWTAuthenticator[User] {
-	a, err := auth.NewJWTAuthenticator(auth.JWTConfig[User]{
+func newJWTAuthenticator() *jwtauth.Authenticator[User] {
+	a, err := jwtauth.NewAuthenticator(jwtauth.Config[User]{
 		SigningMethod: "HS256",
 		SigningKey:    jwtSigningKey,
-		ParseClaims: func(claims auth.JWTClaims) (User, error) {
+		ParseClaims: func(claims jwtauth.Claims) (User, error) {
 			return User{
 				ID:    claims.Subject(),
 				Email: claims.GetString("email"),

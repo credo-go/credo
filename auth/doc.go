@@ -40,25 +40,11 @@
 //
 // This package includes reusable Authenticator implementations:
 //
-//   - NewJWTAuthenticator[T]
 //   - NewAPIKeyAuthenticator[T]
 //   - NewBasicAuthenticator[T]
 //
-// # JWT: Simple and Advanced Tiers
-//
-// JWTConfig is two-tiered. The simple tier is Credo-typed: token
-// extraction, signing keys, registered-claim validation (Issuer, Audience,
-// Leeway, RequireExpiry), and ParseClaims, which receives a [JWTClaims]
-// view with typed accessors (ExpiresAt as time.Time, GetString for custom
-// claims).
-//
-// # Advanced golang-jwt Integration
-//
-// The JWTConfig.Advanced field exposes the underlying golang-jwt/jwt/v5
-// primitives — KeyFunc (e.g. JWKS lookup), NewClaims (typed claims
-// structs), ParseToken (raw *jwt.Token access), ParserOptions — for setups
-// the simple tier cannot express. Configuration placed there is coupled to
-// the golang-jwt API by design; see [JWTAdvanced].
+// The JWT authenticator is in package auth/jwtauth, so that only an
+// application that verifies JWTs compiles golang-jwt.
 //
 // Maturity: beta
 package auth

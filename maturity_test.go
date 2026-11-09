@@ -30,6 +30,7 @@ var maturityByPackage = map[string]string{
 	"validation":  "beta",
 	"websocket":   "beta",
 
+	"auth/jwtauth":         "beta",
 	"middleware/ratelimit": "beta",
 }
 
@@ -38,7 +39,6 @@ var maturityByPackage = map[string]string{
 var readmeAreas = map[string][]string{
 	"Routing, Context, Handlers, Middleware": {"", "middleware"},
 	"Validation":                             {"validation"},
-	"Authentication":                         {"auth"},
 	"Pagination":                             {"pagination"},
 }
 

@@ -1,4 +1,4 @@
-package auth
+package jwtauth
 
 import (
 	"errors"
@@ -9,26 +9,30 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
+
+	"github.com/credo-go/credo/internal/credential"
 )
 
 var (
-	// ErrJWTMissing is returned when no JWT token can be extracted.
-	ErrJWTMissing = errors.New("auth: jwt token is missing")
+	// ErrTokenMissing is returned when no token can be extracted from the
+	// request.
+	ErrTokenMissing = errors.New("jwtauth: token is missing")
 
-	// ErrJWTInvalid is returned when a JWT token fails validation.
-	ErrJWTInvalid = errors.New("auth: jwt token is invalid")
+	// ErrTokenInvalid is returned when a token fails validation; it wraps
+	// the cause when there is one.
+	ErrTokenInvalid = errors.New("jwtauth: token is invalid")
 )
 
-// JWTConfig defines configuration for JWTAuthenticator.
+// Config defines configuration for [Authenticator].
 //
 // The config has two tiers. The simple tier covers common setups with
 // Credo-typed fields only: token extraction, key material, registered-claim
 // validation (Issuer, Audience, Leeway, RequireExpiry), and user extraction
-// via [JWTConfig.ParseClaims]. The [JWTConfig.Advanced] tier exposes the
+// via [Config.ParseClaims]. The [Config.Advanced] tier exposes the
 // underlying golang-jwt primitives for setups the simple tier cannot
 // express (custom claims structs, JWKS key resolution, extra parser
 // options).
-type JWTConfig[T any] struct {
+type Config[T any] struct {
 	// Header is the header name used to read the token.
 	// Default: "Authorization".
 	Header string
@@ -81,21 +85,21 @@ type JWTConfig[T any] struct {
 
 	// ParseClaims converts the validated token's claims into the user
 	// value T. This is the simple-tier counterpart of
-	// [JWTAdvanced.ParseToken]; configuring both is a constructor error.
+	// [Advanced.ParseToken]; configuring both is a constructor error.
 	// When neither is set, the raw claims value is type-asserted to T.
-	ParseClaims func(claims JWTClaims) (T, error)
+	ParseClaims func(claims Claims) (T, error)
 
 	// Advanced exposes golang-jwt primitives directly. Most applications
-	// never need it; see [JWTAdvanced].
-	Advanced JWTAdvanced[T]
+	// never need it; see [Advanced].
+	Advanced Advanced[T]
 }
 
-// JWTAdvanced is the escape hatch tier of [JWTConfig]: direct golang-jwt
+// Advanced is the escape hatch tier of [Config]: direct golang-jwt
 // integration for setups the Credo-typed fields cannot express. Fields
 // here trade framework guarantees for full library access — for example,
 // ParserOptions can override the option the framework derives from
 // SigningMethod, Issuer, Leeway, or RequireExpiry.
-type JWTAdvanced[T any] struct {
+type Advanced[T any] struct {
 	// KeyFunc overrides SigningKey/SigningKeys selection entirely
 	// (e.g. JWKS lookup).
 	KeyFunc jwt.Keyfunc
@@ -106,7 +110,7 @@ type JWTAdvanced[T any] struct {
 
 	// ParseToken converts a validated *jwt.Token into the user value T,
 	// with access to the raw token (header, signature, typed claims).
-	// Configuring both ParseToken and JWTConfig.ParseClaims is a
+	// Configuring both ParseToken and Config.ParseClaims is a
 	// constructor error.
 	ParseToken func(token *jwt.Token) (T, error)
 
@@ -116,18 +120,18 @@ type JWTAdvanced[T any] struct {
 	ParserOptions []jwt.ParserOption
 }
 
-// JWTClaims is a read-only view over a validated token's claims, passed to
-// [JWTConfig.ParseClaims]. Registered claims are exposed with proper Go
+// Claims is a read-only view over a validated token's claims, passed to
+// [Config.ParseClaims]. Registered claims are exposed with proper Go
 // types — timestamps as time.Time rather than the raw float64 that JSON
 // decoding produces — and read as zero values when absent or malformed
 // (signature and temporal validity are already enforced before ParseClaims
 // runs).
-type JWTClaims struct {
+type Claims struct {
 	claims jwt.Claims
 }
 
 // Subject returns the sub claim, or "" when absent.
-func (c JWTClaims) Subject() string {
+func (c Claims) Subject() string {
 	if c.claims == nil {
 		return ""
 	}
@@ -136,7 +140,7 @@ func (c JWTClaims) Subject() string {
 }
 
 // Issuer returns the iss claim, or "" when absent.
-func (c JWTClaims) Issuer() string {
+func (c Claims) Issuer() string {
 	if c.claims == nil {
 		return ""
 	}
@@ -145,7 +149,7 @@ func (c JWTClaims) Issuer() string {
 }
 
 // Audience returns the aud claim values, or nil when absent.
-func (c JWTClaims) Audience() []string {
+func (c Claims) Audience() []string {
 	if c.claims == nil {
 		return nil
 	}
@@ -155,23 +159,23 @@ func (c JWTClaims) Audience() []string {
 
 // ExpiresAt returns the exp claim as a time.Time, or the zero time when
 // absent.
-func (c JWTClaims) ExpiresAt() time.Time {
+func (c Claims) ExpiresAt() time.Time {
 	return c.numericDate(jwt.Claims.GetExpirationTime)
 }
 
 // IssuedAt returns the iat claim as a time.Time, or the zero time when
 // absent.
-func (c JWTClaims) IssuedAt() time.Time {
+func (c Claims) IssuedAt() time.Time {
 	return c.numericDate(jwt.Claims.GetIssuedAt)
 }
 
 // NotBefore returns the nbf claim as a time.Time, or the zero time when
 // absent.
-func (c JWTClaims) NotBefore() time.Time {
+func (c Claims) NotBefore() time.Time {
 	return c.numericDate(jwt.Claims.GetNotBefore)
 }
 
-func (c JWTClaims) numericDate(get func(jwt.Claims) (*jwt.NumericDate, error)) time.Time {
+func (c Claims) numericDate(get func(jwt.Claims) (*jwt.NumericDate, error)) time.Time {
 	if c.claims == nil {
 		return time.Time{}
 	}
@@ -184,10 +188,10 @@ func (c JWTClaims) numericDate(get func(jwt.Claims) (*jwt.NumericDate, error)) t
 
 // Get returns the named custom claim when the default claims
 // representation (a JSON object map) is in use, or nil when the claim is
-// absent or a custom [JWTAdvanced.NewClaims] type is configured. Typed
-// custom claims structs should be read via [JWTAdvanced.ParseToken]
+// absent or a custom [Advanced.NewClaims] type is configured. Typed
+// custom claims structs should be read via [Advanced.ParseToken]
 // instead.
-func (c JWTClaims) Get(name string) any {
+func (c Claims) Get(name string) any {
 	if m, ok := c.claims.(jwt.MapClaims); ok {
 		return m[name]
 	}
@@ -195,21 +199,25 @@ func (c JWTClaims) Get(name string) any {
 }
 
 // GetString returns the named custom claim as a string, or "" when the
-// claim is absent or not a string. See [JWTClaims.Get] for the lookup
+// claim is absent or not a string. See [Claims.Get] for the lookup
 // rules.
-func (c JWTClaims) GetString(name string) string {
+func (c Claims) GetString(name string) string {
 	s, _ := c.Get(name).(string)
 	return s
 }
 
-// JWTAuthenticator validates JWT credentials from an HTTP request.
-type JWTAuthenticator[T any] struct {
-	cfg    JWTConfig[T]
+// Authenticator validates JWT credentials from an HTTP request. It
+// implements auth.Authenticator[T], so auth.Middleware turns it into a
+// middleware.
+type Authenticator[T any] struct {
+	cfg    Config[T]
 	parser *jwt.Parser
 }
 
-// NewJWTAuthenticator creates a new JWT Authenticator.
-func NewJWTAuthenticator[T any](cfg JWTConfig[T]) (*JWTAuthenticator[T], error) {
+// NewAuthenticator creates a JWT [Authenticator]. It returns an error when
+// cfg has no signing key and no Advanced.KeyFunc, or sets both ParseClaims
+// and Advanced.ParseToken.
+func NewAuthenticator[T any](cfg Config[T]) (*Authenticator[T], error) {
 	if cfg.Header == "" && cfg.Query == "" && cfg.Cookie == "" {
 		cfg.Header = http.CanonicalHeaderKey("Authorization")
 	}
@@ -220,7 +228,7 @@ func NewJWTAuthenticator[T any](cfg JWTConfig[T]) (*JWTAuthenticator[T], error) 
 		cfg.SigningMethod = jwt.SigningMethodHS256.Alg()
 	}
 	if cfg.ParseClaims != nil && cfg.Advanced.ParseToken != nil {
-		return nil, errors.New("auth: jwt: configure either ParseClaims or Advanced.ParseToken, not both")
+		return nil, errors.New("jwtauth: Config sets both ParseClaims and Advanced.ParseToken; set one of them")
 	}
 	if cfg.Advanced.NewClaims == nil {
 		cfg.Advanced.NewClaims = func() jwt.Claims {
@@ -230,7 +238,7 @@ func NewJWTAuthenticator[T any](cfg JWTConfig[T]) (*JWTAuthenticator[T], error) 
 
 	if cfg.Advanced.KeyFunc == nil {
 		if cfg.SigningKey == nil && len(cfg.SigningKeys) == 0 {
-			return nil, errors.New("auth: jwt signing key is required")
+			return nil, errors.New("jwtauth: Config has no signing key; set SigningKey, SigningKeys or Advanced.KeyFunc")
 		}
 		cfg.Advanced.KeyFunc = jwtKeyFunc(cfg.SigningMethod, cfg.SigningKey, cfg.SigningKeys)
 	}
@@ -250,14 +258,14 @@ func NewJWTAuthenticator[T any](cfg JWTConfig[T]) (*JWTAuthenticator[T], error) 
 	}
 	parserOptions = append(parserOptions, cfg.Advanced.ParserOptions...)
 
-	return &JWTAuthenticator[T]{
+	return &Authenticator[T]{
 		cfg:    cfg,
 		parser: jwt.NewParser(parserOptions...),
 	}, nil
 }
 
 // Authenticate validates a JWT token and returns the authenticated user value.
-func (a *JWTAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
+func (a *Authenticator[T]) Authenticate(r *http.Request) (T, error) {
 	tokenString, err := a.extractToken(r)
 	if err != nil {
 		var zero T
@@ -268,11 +276,11 @@ func (a *JWTAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
 	token, err := a.parser.ParseWithClaims(tokenString, claims, a.cfg.Advanced.KeyFunc)
 	if err != nil {
 		var zero T
-		return zero, fmt.Errorf("%w: %w", ErrJWTInvalid, err)
+		return zero, fmt.Errorf("%w: %w", ErrTokenInvalid, err)
 	}
 	if !token.Valid {
 		var zero T
-		return zero, ErrJWTInvalid
+		return zero, ErrTokenInvalid
 	}
 
 	if err := a.validateAudience(token.Claims); err != nil {
@@ -284,16 +292,16 @@ func (a *JWTAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
 		user, err := a.cfg.Advanced.ParseToken(token)
 		if err != nil {
 			var zero T
-			return zero, fmt.Errorf("%w: parse user: %w", ErrJWTInvalid, err)
+			return zero, fmt.Errorf("%w: parse user: %w", ErrTokenInvalid, err)
 		}
 		return user, nil
 	}
 
 	if a.cfg.ParseClaims != nil {
-		user, err := a.cfg.ParseClaims(JWTClaims{claims: token.Claims})
+		user, err := a.cfg.ParseClaims(Claims{claims: token.Claims})
 		if err != nil {
 			var zero T
-			return zero, fmt.Errorf("%w: parse claims: %w", ErrJWTInvalid, err)
+			return zero, fmt.Errorf("%w: parse claims: %w", ErrTokenInvalid, err)
 		}
 		return user, nil
 	}
@@ -301,45 +309,45 @@ func (a *JWTAuthenticator[T]) Authenticate(r *http.Request) (T, error) {
 	user, ok := token.Claims.(T)
 	if !ok {
 		var zero T
-		return zero, fmt.Errorf("%w: claims type %T is not assignable", ErrJWTInvalid, token.Claims)
+		return zero, fmt.Errorf("%w: claims type %T is not assignable", ErrTokenInvalid, token.Claims)
 	}
 
 	return user, nil
 }
 
-// validateAudience enforces the any-of audience rule from JWTConfig.Audience.
+// validateAudience enforces the any-of audience rule from Config.Audience.
 // golang-jwt's WithAudience option matches a single expected value, so the
 // framework validates the list itself after parsing.
-func (a *JWTAuthenticator[T]) validateAudience(claims jwt.Claims) error {
+func (a *Authenticator[T]) validateAudience(claims jwt.Claims) error {
 	if len(a.cfg.Audience) == 0 {
 		return nil
 	}
 	tokenAud, err := claims.GetAudience()
 	if err != nil {
-		return fmt.Errorf("%w: read audience: %w", ErrJWTInvalid, err)
+		return fmt.Errorf("%w: read audience: %w", ErrTokenInvalid, err)
 	}
 	for _, want := range a.cfg.Audience {
 		if slices.Contains(tokenAud, want) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: audience mismatch", ErrJWTInvalid)
+	return fmt.Errorf("%w: audience mismatch", ErrTokenInvalid)
 }
 
-func (a *JWTAuthenticator[T]) extractToken(r *http.Request) (string, error) {
-	if token, ok := extractHeaderCredential(r, a.cfg.Header, a.cfg.Prefix); ok {
+func (a *Authenticator[T]) extractToken(r *http.Request) (string, error) {
+	if token, ok := credential.FromHeader(r, a.cfg.Header, a.cfg.Prefix); ok {
 		return token, nil
 	}
 
-	if token, ok := extractQueryCredential(r, a.cfg.Query); ok {
+	if token, ok := credential.FromQuery(r, a.cfg.Query); ok {
 		return token, nil
 	}
 
-	if token, ok := extractCookieCredential(r, a.cfg.Cookie); ok {
+	if token, ok := credential.FromCookie(r, a.cfg.Cookie); ok {
 		return token, nil
 	}
 
-	return "", ErrJWTMissing
+	return "", ErrTokenMissing
 }
 
 func jwtKeyFunc(signingMethod string, signingKey any, signingKeys map[string]any) jwt.Keyfunc {
@@ -349,7 +357,7 @@ func jwtKeyFunc(signingMethod string, signingKey any, signingKeys map[string]any
 
 	return func(token *jwt.Token) (any, error) {
 		// Deliberate overlap with the parser-level WithValidMethods option
-		// (set in NewJWTAuthenticator): defense in depth against
+		// (set in NewAuthenticator): defense in depth against
 		// algorithm-confusion attacks, and the only check when a caller
 		// supplies ParserOptions that omit method validation.
 		if signingMethod != "" && token.Method.Alg() != signingMethod {

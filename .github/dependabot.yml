@@ -13,7 +13,7 @@
 version: 2
 updates:
   # Root module: coder/websocket (WebSocket protocol), go.yaml.in/yaml/v3 +
-  # mapstructure (config), golang-jwt (auth), go-limiter (rate limiting),
+  # mapstructure (config), golang-jwt (auth/jwtauth), go-limiter (rate limiting),
   # x/text (BCP 47).
   - package-ecosystem: "gomod"
     directory: "/"

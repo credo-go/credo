@@ -43,7 +43,11 @@ var modulePolicies = map[string]importPolicy{
 	// parse-don't-validate error types).
 	"": {credo: []string{"config", "fault", "validation", "internal/*"}},
 
-	"auth":       {credo: []string{""}, external: []string{"github.com/golang-jwt/jwt/v5"}},
+	"auth": {credo: []string{"", "internal/credential"}},
+	"auth/jwtauth": {
+		credo:    []string{"internal/credential"},
+		external: []string{"github.com/golang-jwt/jwt/v5"},
+	},
 	"config":     {external: []string{"github.com/go-viper/mapstructure/v2", "go.yaml.in/yaml/v3"}},
 	"fault":      {credo: []string{"internal/machinecode"}},
 	"httpclient": {}, // stdlib-only AND must not import credo (documented in its spec)
@@ -71,6 +75,7 @@ var modulePolicies = map[string]importPolicy{
 	"internal/httpheader":  {},
 	"internal/httpwriter":  {},
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
+	"internal/credential":  {},
 	"internal/observe":     {},
 	"internal/origin":      {},
 	"internal/pattern":     {credo: []string{"internal/wirepath"}},
@@ -140,41 +145,9 @@ var rootGraphModules = []string{
 // rootGraphModules in the same change, and a module that left the graph has
 // to be removed from it.
 func TestImportBoundary_RootPackageGraph(t *testing.T) {
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatalf("the go tool is needed to list the root package's dependencies: %v", err)
-	}
-
-	// One line per package of the graph: import path, then its module. The
-	// standard library is left out by the template; the workspace is switched
-	// off so that the answer is the root module's own.
-	cmd := exec.CommandContext(t.Context(), goTool, "list", "-deps",
-		"-f", "{{if not .Standard}}{{.ImportPath}}\t{{with .Module}}{{.Path}}{{end}}{{end}}", ".")
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list -deps: %v\n%s", err, stderr.String())
-	}
-
-	// The first package seen of each module names the way in.
-	linked := make(map[string]string)
-	for line := range strings.Lines(string(out)) {
-		importPath, module, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
-		if !ok {
-			continue // a standard-library package: the template printed nothing
-		}
-		if module == "" {
-			t.Errorf("%s: go list reported no module for a package outside the standard library", importPath)
-			continue
-		}
-		if _, seen := linked[module]; !seen {
-			linked[module] = importPath
-		}
-	}
+	linked := linkedModules(t, ".")
 	if _, ok := linked[modulePath]; !ok {
-		t.Fatalf("go list -deps did not report the root module itself; output:\n%s", out)
+		t.Fatal("go list -deps did not report the root module itself")
 	}
 
 	var violations []string
@@ -193,6 +166,60 @@ func TestImportBoundary_RootPackageGraph(t *testing.T) {
 		sort.Strings(violations)
 		t.Errorf("root package module graph violations:\n  %s", strings.Join(violations, "\n  "))
 	}
+}
+
+// TestImportBoundary_AuthGraphExcludesJWT pins why the JWT authenticator has
+// a package of its own: an application that authenticates with API keys or
+// HTTP Basic imports auth and must not compile golang-jwt, while auth/jwtauth
+// is where it arrives.
+func TestImportBoundary_AuthGraphExcludesJWT(t *testing.T) {
+	const jwtModule = "github.com/golang-jwt/jwt/v5"
+	if importPath, ok := linkedModules(t, "./auth")[jwtModule]; ok {
+		t.Errorf("auth links %s (through %s); the JWT authenticator belongs in auth/jwtauth", jwtModule, importPath)
+	}
+	if _, ok := linkedModules(t, "./auth/jwtauth")[jwtModule]; !ok {
+		t.Errorf("auth/jwtauth no longer links %s; update this test and the import policy", jwtModule)
+	}
+}
+
+// linkedModules returns every module outside the standard library that the
+// package pkg links, each with the first package of it seen, which names the
+// way in. The workspace is switched off so that the answer is the root
+// module's own.
+func linkedModules(t *testing.T, pkg string) map[string]string {
+	t.Helper()
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("the go tool is needed to list %s's dependencies: %v", pkg, err)
+	}
+
+	// One line per package of the graph: import path, then its module. The
+	// standard library is left out by the template.
+	cmd := exec.CommandContext(t.Context(), goTool, "list", "-deps",
+		"-f", "{{if not .Standard}}{{.ImportPath}}\t{{with .Module}}{{.Path}}{{end}}{{end}}", pkg)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps %s: %v\n%s", pkg, err, stderr.String())
+	}
+
+	linked := make(map[string]string)
+	for line := range strings.Lines(string(out)) {
+		importPath, module, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
+		if !ok {
+			continue // a standard-library package: the template printed nothing
+		}
+		if module == "" {
+			t.Errorf("%s: go list reported no module for a package outside the standard library", importPath)
+			continue
+		}
+		if _, seen := linked[module]; !seen {
+			linked[module] = importPath
+		}
+	}
+	return linked
 }
 
 // checkImport returns a violation message, or "" when imp is allowed for pkg.
