@@ -13,7 +13,7 @@ import (
 func corsAllowOrigin(t *testing.T, allowOrigins []string, origin string) string {
 	t.Helper()
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{AllowOrigins: allowOrigins}))
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{AllowOrigins: allowOrigins}))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
 	})

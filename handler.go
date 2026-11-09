@@ -126,7 +126,7 @@ type StdMiddleware = func(http.Handler) http.Handler
 // WrapStdMiddleware converts stdlib middleware (func(http.Handler) http.Handler)
 // into a Credo [Middleware] (func(Handler) Handler):
 //
-//	app.GlobalMiddleware(credo.WrapStdMiddleware(tracingMiddleware))
+//	app.PreRouting(credo.WrapStdMiddleware(tracingMiddleware))
 //
 // The middleware receives the standard request through [Request.Std], so it
 // reads the values set before it with ctx.Value(key). The context of the

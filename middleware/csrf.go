@@ -75,11 +75,12 @@ func DefaultCSRFConfig() CSRFConfig {
 // *processed*. APIs serving browser frontends on other origins typically
 // need both, with the frontend origins in both allow lists.
 //
-// Register it globally or per group:
+// It needs no route, so it works on either tier — before routing, on the
+// routed tier or on a group:
 //
-//	app.GlobalMiddleware(middleware.CSRF())
+//	app.PreRouting(middleware.CSRF())
 //
-//	app.GlobalMiddleware(middleware.CSRF(middleware.CSRFConfig{
+//	app.PreRouting(middleware.CSRF(middleware.CSRFConfig{
 //	    TrustedOrigins:         []string{"https://app.example.com"},
 //	    InsecureBypassPatterns: []string{"/webhooks/"},
 //	}))

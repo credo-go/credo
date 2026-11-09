@@ -14,7 +14,7 @@ import (
 // Uses high token count (1M) so requests never get denied during the benchmark.
 func BenchmarkMiddleware(b *testing.B) {
 	app := mustNewBench(b)
-	app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
+	app.PreRouting(ratelimit.Middleware(ratelimit.Config{
 		Tokens:   1_000_000,
 		Interval: time.Hour,
 	}))
@@ -37,7 +37,7 @@ func BenchmarkMiddleware(b *testing.B) {
 // stressing the sharded mutex under contention.
 func BenchmarkMiddleware_Parallel(b *testing.B) {
 	app := mustNewBench(b)
-	app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
+	app.PreRouting(ratelimit.Middleware(ratelimit.Config{
 		Tokens:   1_000_000,
 		Interval: time.Hour,
 	}))

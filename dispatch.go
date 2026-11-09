@@ -17,16 +17,16 @@ import (
 const methodQuery = "QUERY"
 
 // routeHandler is the payload the radix tree stores for every endpoint.
-// Credo routes carry route/handler/compiled; handlers attached via
-// [App.Mount] carry only mounted and are dispatched as raw http.Handlers
-// outside the per-route compiled chain.
+// Credo routes carry route/handler/compiled; the endpoints of an [App.Mount]
+// carry the mount's route and the mounted handler, which runs as the leaf of
+// a chain compiled as a route's is.
 type routeHandler struct {
 	route    *Route
 	handler  Handler
 	compiled Handler // precompiled: group parent chain + route.middlewares + handler
 
-	// mounted is the stdlib handler for Mount-registered endpoints.
-	// nil for regular Credo routes; when non-nil all other fields are zero.
+	// mounted is the stdlib handler for Mount-registered endpoints; nil for
+	// regular Credo routes.
 	mounted http.Handler
 
 	// srcLoc is the user call site that registered this endpoint, captured at
@@ -35,8 +35,9 @@ type routeHandler struct {
 	srcLoc sourceLocation
 }
 
-// compile builds the user chain: globalMW[0] → ... → globalMW[n] → dispatch
-// and precompiles per-route middleware chains. It runs exactly once, under
+// compile builds the pre-routing chain: preRoutingMW[0] → ... →
+// preRoutingMW[n] → dispatch, and precompiles per-route middleware chains,
+// which carry the routed tier (the root group's middleware). It runs exactly once, under
 // prepare, after registration was frozen. The framework stages around the
 // chain — request ID, access log, decompression, compression, error and
 // panic handling — belong to the request executor (see App.execute), not to
@@ -53,24 +54,29 @@ func (app *App) compile() Handler {
 		app.compileRoutes(h.mux)
 	}
 
-	// Build global chain.
+	// Build the pre-routing chain.
 	var handler Handler = app.dispatch
-	for i := len(app.globalMW) - 1; i >= 0; i-- {
-		handler = app.globalMW[i](handler)
+	for i := len(app.preRoutingMW) - 1; i >= 0; i-- {
+		handler = app.preRoutingMW[i](handler)
 	}
 	return handler
 }
 
 // compileRoutes precompiles per-route middleware chains for a given mux.
-// Each route handler is wrapped: leaf (errRewrite swallower) → route MW → group MW.
-// Mount-registered payloads are skipped — they dispatch as raw http.Handlers.
+// Each route handler is wrapped: leaf (errRewrite swallower) → route MW →
+// group MW, the root group's — the routed tier — outermost. A mount's
+// payload is compiled the same way around the mounted handler; it is
+// inserted once per forwarded method, and compiled once.
 func (app *App) compileRoutes(m *mux) {
 	for _, rh := range m.handlers {
-		if rh.mounted != nil {
+		if rh.compiled != nil {
 			continue
 		}
 		// Capture the leaf handler BEFORE clearing rh.handler.
 		leafHandler := rh.handler
+		if rh.mounted != nil {
+			leafHandler = mountLeaf(rh.mounted)
+		}
 		if rh.route.method == methodQuery {
 			handler := leafHandler
 			leafHandler = func(c *Context) error {
@@ -222,21 +228,17 @@ func (app *App) dispatchOnce(c *Context) error {
 			return rh.compiled(c)
 		}
 
-		// Mounted stdlib handler — dispatched raw, outside the compiled chain.
-		if r.Method == methodQuery {
-			if err := requireQueryContentType(c); err != nil {
-				return err
-			}
-		}
-		// The mounted handler gets the standard request carrying the request's
-		// context, so it reads the values set before the mount.
-		std := c.request.Std()
+		// A mount: its route and chain, the mounted handler as the leaf. The
+		// handler reads the mount's captures from the RouteContext: a pooled
+		// one is handed to it through the Context, and released with the
+		// dispatch.
+		c.request.resetRouteParams()
+		c.route = rh.route
 		if pooled {
-			rh.mounted.ServeHTTP(c.response, withRouteContext(std, rctx))
-		} else {
-			rh.mounted.ServeHTTP(c.response, std)
+			c.mountRouteCtx = rctx
+			defer func() { c.mountRouteCtx = nil }()
 		}
-		return nil
+		return rh.compiled(c)
 	}
 
 	if rctx.MethodNotAllowed {
@@ -462,13 +464,16 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // (CONNECT is a proxy mechanism; TRACE enables cross-site tracing).
 // Requests using them receive 405 Method Not Allowed.
 //
-// Middleware scope: mounted handlers receive only global middleware (and the
-// framework features that wrap every request).
-// Group-level and route-level middleware do not apply because mounted handlers
-// are plain [http.Handler] instances dispatched outside the per-route compiled
-// chain. If the mounted sub-application requires authentication or other
-// protections, it must enforce them internally or the protections must be
-// registered as global middleware.
+// A mount is a route: a request it matches carries a [Route] whose pattern
+// is the mount's prefix, with the App's meta and no name or method, so
+// [Context.HasRoute] is true for it and its access record names the prefix.
+//
+// Middleware scope: the mounted handler runs inside the routed tier
+// ([App.Middleware]), after [App.PreRouting] and the framework features that
+// wrap every request, through a chain compiled as a route's is. A mount
+// belongs to no group and has no route value of its own, so group and route
+// middleware do not apply to it. Authentication registered with
+// App.Middleware covers the mounted paths too.
 //
 // The parent's RouteContext (which may contain internal params like _mount) is
 // stripped before calling the child handler, so the child dispatch creates its
@@ -546,13 +551,36 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 		}
 	}
 
-	app.mountRoutes(catchAll, mountHandler)
-	app.mountRoutes(exact, exactHandler)
+	// One route for the mount: the cleaned prefix, under the root group for
+	// the App's meta and the routed tier.
+	route := &Route{pattern: exact, parent: app.root, registrar: app, mount: true}
+	app.mountRoutes(catchAll, mountHandler, route)
+	app.mountRoutes(exact, exactHandler, route)
 
 	// Record the mount for introspection only after both registrations
 	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
 	// The prefix is the same cleaned value the exact match was registered on.
-	app.mounts = append(app.mounts, mountInfo{prefix: exact, registeredAt: callerLocation()})
+	app.mounts = append(app.mounts, mountInfo{route: route, registeredAt: callerLocation()})
+}
+
+// mountLeaf is the leaf of a mount's chain: the QUERY content-type check a
+// route's leaf makes, then the mounted handler on the standard request,
+// which carries the request's context, so the handler reads the values set
+// before it.
+func mountLeaf(handler http.Handler) Handler {
+	return func(c *Context) error {
+		if c.request.Method == methodQuery {
+			if err := requireQueryContentType(c); err != nil {
+				return err
+			}
+		}
+		std := c.request.Std()
+		if rctx := c.mountRouteCtx; rctx != nil {
+			std = withRouteContext(std, rctx)
+		}
+		handler.ServeHTTP(c.response, std)
+		return nil
+	}
 }
 
 // serveMounted runs a mounted handler on its child request. The child is a
@@ -729,7 +757,7 @@ func setWirePath(u *url.URL, raw string) error {
 // is no host field: Group.Mount does not exist, so mounts are always
 // default-scope.
 type mountInfo struct {
-	prefix       string
+	route        *Route // the mount's route; its pattern is the cleaned prefix
 	registeredAt sourceLocation
 }
 
@@ -766,9 +794,9 @@ func cleanMountPrefix(pattern string) string {
 }
 
 // mountRoutes registers a handler on the given pattern for every method in
-// mountForwardedMethods.
-func (app *App) mountRoutes(pattern string, handler http.Handler) {
-	rh := &routeHandler{mounted: handler, srcLoc: callerLocation()}
+// mountForwardedMethods, under the mount's route.
+func (app *App) mountRoutes(pattern string, handler http.Handler, route *Route) {
+	rh := &routeHandler{route: route, mounted: handler, srcLoc: callerLocation()}
 	for _, method := range mountForwardedMethods() {
 		app.mux.insert(method, pattern, rh)
 	}

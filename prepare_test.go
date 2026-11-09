@@ -173,7 +173,7 @@ func TestServe_CompilePanic_RecordedAndRolledBack(t *testing.T) {
 	logger, logs := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger))
 	var wraps atomic.Int32
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		wraps.Add(1)
 		panic("middleware construction failed")
 	})
@@ -239,7 +239,7 @@ func TestServeHTTP_StoppedNeverPrepared_503WithoutCallbacks(t *testing.T) {
 				constructed.Add(1)
 				return &prepDep{}
 			})
-			app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+			app.PreRouting(func(next credo.Handler) credo.Handler {
 				middleware.Add(1)
 				return next
 			})
@@ -306,7 +306,7 @@ func TestServeHTTP_LatePublicationLosesToShutdown(t *testing.T) {
 	compileStarted := make(chan struct{})
 	release := make(chan struct{})
 	var handler atomic.Int32
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		close(compileStarted)
 		<-release
 		return next

@@ -12,7 +12,7 @@ import (
 
 func TestRewrite_SimplePath(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old",
 		To:   "/new",
 	}}}))
@@ -34,7 +34,7 @@ func TestRewrite_SimplePath(t *testing.T) {
 
 func TestRewrite_Skipper(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{
 		Skipper: func(ctx *credo.Context) bool {
 			return ctx.Request().Header.Get("X-Skip-Rewrite") == "1"
 		},
@@ -64,7 +64,7 @@ func TestRewrite_Skipper(t *testing.T) {
 
 func TestRewrite_WithParam(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old/{id}",
 		To:   "/new/{id}",
 	}}}))
@@ -83,7 +83,7 @@ func TestRewrite_WithParam(t *testing.T) {
 
 func TestRewrite_CatchAll(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old/{path...}",
 		To:   "/new/{path}",
 	}}}))
@@ -105,7 +105,7 @@ func TestRewrite_CatchAll(t *testing.T) {
 // and reaches the "/new/{path...}" route with an empty path.
 func TestRewrite_CatchAllEmptyRest(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old/{path...}",
 		To:   "/new/{path}",
 	}}}))
@@ -123,7 +123,7 @@ func TestRewrite_CatchAllEmptyRest(t *testing.T) {
 
 func TestRewrite_RegexConstraint(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/users/{id:[0-9]+}",
 		To:   "/api/users/{id}",
 	}}}))
@@ -153,7 +153,7 @@ func TestRewrite_RegexConstraint(t *testing.T) {
 
 func TestRewrite_RegexConstraintWithCharClassBrace(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/legacy/{slug:[a-z}]+}",
 		To:   "/items/{slug}",
 	}}}))
@@ -175,7 +175,7 @@ func TestRewrite_RegexConstraintWithCharClassBrace(t *testing.T) {
 
 func TestRewrite_RegexpField(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		Regexp: regexp.MustCompile(`^/blog/(?P<year>\d{4})/(?P<slug>[^/]+)$`),
 		To:     "/posts/{year}/{slug}",
 	}}}))
@@ -193,7 +193,7 @@ func TestRewrite_RegexpField(t *testing.T) {
 
 func TestRewrite_FirstMatchWins(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
 		{From: "/a", To: "/first"},
 		{From: "/a", To: "/second"},
 	}}))
@@ -214,7 +214,7 @@ func TestRewrite_FirstMatchWins(t *testing.T) {
 
 func TestRewrite_NoMatch(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old",
 		To:   "/new",
 	}}}))
@@ -232,7 +232,7 @@ func TestRewrite_NoMatch(t *testing.T) {
 
 func TestRewrite_HostFilter(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		Host: "api.example.com",
 		From: "/v1/{path...}",
 		To:   "/v2/{path}",
@@ -265,7 +265,7 @@ func TestRewrite_HostFilter(t *testing.T) {
 
 func TestRewrite_QueryOverride(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From: "/old",
 		To:   "/new?forced=true",
 	}}}))
@@ -283,7 +283,7 @@ func TestRewrite_QueryOverride(t *testing.T) {
 
 func TestRewrite_PreserveQuery(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{
 		From:          "/old",
 		To:            "/new",
 		PreserveQuery: true,
@@ -326,7 +326,7 @@ func TestRewrite_DuplicateParamNamePanics(t *testing.T) {
 
 func TestRewrite_IntegrationWithRouting(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
 		{From: "/legacy/{id}", To: "/api/v2/items/{id}"},
 	}}))
 	app.GET("/api/v2/items/{id}", func(ctx *credo.Context) error {

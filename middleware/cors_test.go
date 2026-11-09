@@ -14,7 +14,7 @@ import (
 
 func TestCORS_SimpleRequest_AllowedOrigin(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://example.com"},
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
@@ -41,7 +41,7 @@ func TestCORS_SimpleRequest_AllowedOrigin(t *testing.T) {
 // to another.
 func TestCORS_MultipleOrigins(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://app.example.com", "https://admin.example.com"},
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
@@ -76,7 +76,7 @@ func TestCORS_MultipleOrigins(t *testing.T) {
 
 func TestCORS_Preflight_Allowed(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://example.com"},
 		AllowMethods: []string{http.MethodGet, http.MethodPost},
 		AllowHeaders: []string{"Authorization", "Content-Type"},
@@ -112,7 +112,7 @@ func TestCORS_Preflight_Allowed(t *testing.T) {
 
 func TestCORS_DefaultPreflight_AllowsQUERY(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS())
+	app.PreRouting(middleware.CORS())
 	app.QUERY("/search", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusNoContent)
 	})
@@ -133,7 +133,7 @@ func TestCORS_DefaultPreflight_AllowsQUERY(t *testing.T) {
 
 func TestCORS_Preflight_DisallowedOrigin(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://example.com"},
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
@@ -156,7 +156,7 @@ func TestCORS_Preflight_DisallowedOrigin(t *testing.T) {
 
 func TestCORS_WildcardWithCredentials_UsesRequestOrigin(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
 		AllowCredentials: true,
 	}))
@@ -179,7 +179,7 @@ func TestCORS_WildcardWithCredentials_UsesRequestOrigin(t *testing.T) {
 
 func TestCORS_DefaultConstructor(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS())
+	app.PreRouting(middleware.CORS())
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
 	})
@@ -196,7 +196,7 @@ func TestCORS_DefaultConstructor(t *testing.T) {
 
 func TestCORS_WildcardPattern(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://*.tenant.example.com"},
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
@@ -215,7 +215,7 @@ func TestCORS_WildcardPattern(t *testing.T) {
 
 func TestCORS_WildcardPattern_CaseInsensitive(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOrigins: []string{"https://*.Example.COM"},
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
@@ -234,7 +234,7 @@ func TestCORS_WildcardPattern_CaseInsensitive(t *testing.T) {
 
 func TestCORS_AllowOriginFuncError(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+	app.PreRouting(middleware.CORS(middleware.CORSConfig{
 		AllowOriginFunc: func(_ *credo.Context, _ string) (string, bool, error) {
 			return "", false, errors.New("lookup failed")
 		},

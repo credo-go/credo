@@ -39,7 +39,7 @@ func (s *execState) reset() {
 // execute is the request executor: the single owner of request
 // initialization, the user middleware/handler chain, centralized error and
 // panic handling, response finalization, access-log observation and Context
-// release. chain is the prepared global middleware → dispatch handler.
+// release. chain is the prepared pre-routing middleware → dispatch handler.
 //
 // The stages run in one framework-defined order regardless of the order the
 // features were installed in:

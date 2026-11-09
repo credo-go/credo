@@ -99,7 +99,7 @@ func TestFeatures_InstallOrderIrrelevant(t *testing.T) {
 		app := mustNew(t, credo.WithLogger(logger))
 		install(app)
 		var mwBody string
-		app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+		app.PreRouting(func(next credo.Handler) credo.Handler {
 			return func(ctx *credo.Context) error {
 				if ctx.RequestID() == "" {
 					t.Error("request ID not resolved before global middleware")
@@ -359,7 +359,7 @@ func TestI18n_Lazy_EarlyMiddlewareReadWins(t *testing.T) {
 		return "en"
 	})
 	var early string
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			early = ctx.Locale() // before auth: default
 			ctx.SetUser("alice")
@@ -386,7 +386,7 @@ func TestI18n_Lazy_PostAuthReadSeesUser(t *testing.T) {
 		}
 		return "en"
 	})
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.SetUser("alice")
 			return next(ctx)

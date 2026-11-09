@@ -12,8 +12,8 @@
 //
 // Middleware with options uses an optional config parameter:
 //
-//	app.GlobalMiddleware(middleware.CORS())                            // default config
-//	app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{...}))  // custom config
+//	app.PreRouting(middleware.CORS())                            // default config
+//	app.PreRouting(middleware.CORS(middleware.CORSConfig{...}))  // custom config
 //
 // # Framework Features Are Not Middleware
 //
@@ -32,18 +32,23 @@
 //
 // # Recommended Middleware Order
 //
-// Add global middleware for cross-cutting concerns:
+// The user tiers run PreRouting → routed → Group → Route. A middleware that
+// acts before the match or on a request no route matches goes before routing;
+// one that reads the matched route goes on the routed tier, which runs on
+// every route of the App and never for the router's 404 and 405:
 //
-//	app.GlobalMiddleware(
-//	    middleware.Secure(),  // Security headers
-//	    middleware.CORS(),    // CORS headers
+//	app.PreRouting(
+//	    middleware.Secure(), // headers on the 404 and 405 too
+//	    middleware.CORS(),   // answers a preflight no route serves
 //	)
+//	app.Middleware(middleware.ContractGuard()) // reads each route's meta
 //
-// Global middleware runs on every request, including 404 and 405 responses.
-// Group middleware (group.Middleware) only runs on matched routes in that group.
-// Group middleware is captured at route registration time: calling
-// group.Middleware(...) affects routes registered after that call, not previously
-// registered routes.
+// Rewrite (it changes the path that routing matches) and RateLimit stay
+// before routing; CSRF works on either tier; authentication and
+// ContractGuard go on the routed tier, a group or a route. Group middleware
+// (group.Middleware) runs on the routes of that group. Routed and group
+// middleware are collected when the routes' chains are compiled, so they
+// apply to routes registered before the call too.
 //
 // Middleware in this package:
 //   - Rewrite(cfg ...RewriteConfig) — pre-dispatch URL path rewriting

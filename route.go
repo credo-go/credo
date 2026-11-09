@@ -49,6 +49,12 @@ type Route struct {
 	// Empty for routes registered on the default mux.
 	hostPattern string
 
+	// mount marks the route of an [App.Mount]: its pattern is the mount's
+	// prefix, it has no method, no name and no middleware of its own, and its
+	// parent is the App's root group, so it reads the App's meta and runs
+	// in the routed tier.
+	mount bool
+
 	// headTwin is the auto-generated HEAD route paired with this GET route.
 	// Nil for non-GET routes and when an explicit HEAD route already exists
 	// for the same pattern. When non-nil, Middleware and SetMeta propagate
@@ -173,12 +179,14 @@ func (r *Route) GetName() string {
 	return r.name
 }
 
-// GetMethod returns the HTTP method.
+// GetMethod returns the HTTP method. It is empty for a mount's route, which
+// answers every forwarded method.
 func (r *Route) GetMethod() string {
 	return r.method
 }
 
-// GetPattern returns the URL pattern.
+// GetPattern returns the URL pattern; for a mount's route, the mount's
+// prefix.
 func (r *Route) GetPattern() string {
 	return r.pattern
 }

@@ -25,7 +25,7 @@ func moduleLogApp(t *testing.T, appLogger *slog.Logger, cfg Config) string {
 		t.Fatal(err)
 	}
 	app.UseRequestID()
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.AddLogAttrs(slog.String("tenant", "acme"))
 			return next(ctx)

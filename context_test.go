@@ -22,7 +22,7 @@ func TestContext_SetLogger(t *testing.T) {
 	app := mustNew(t, credo.WithLogger(logger))
 
 	var hasBefore, hasAfter []bool
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			hasBefore = append(hasBefore, ctx.HasRequestLogger())
 			ctx.SetLogger(ctx.Logger().With("tenant_id", "acme"))
@@ -67,7 +67,7 @@ func TestContext_AddLogAttrs(t *testing.T) {
 	app := mustNew(t, credo.WithLogger(logger))
 	app.UseRequestID()
 
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.AddLogAttrs("tenant_id", "acme")
 			return next(ctx)
@@ -1470,7 +1470,7 @@ func TestOriginalPath_PreservedAfterURLMutation(t *testing.T) {
 	})
 
 	// Simulate a middleware that mutates URL.Path before dispatch
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(c *credo.Context) error {
 			c.Request().URL.Path = "/new-path"
 			return next(c)

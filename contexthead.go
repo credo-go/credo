@@ -345,7 +345,10 @@ func (c *Context) foreignRequest() {
 	pattern := ""
 	if c.route != nil {
 		flag = &c.route.foreignRequestReported
-		pattern = c.route.method + " " + c.route.pattern
+		pattern = c.route.pattern
+		if c.route.method != "" {
+			pattern = c.route.method + " " + pattern
+		}
 	}
 	if flag.CompareAndSwap(false, true) {
 		c.baseLogger().LogAttrs(c.head, slog.LevelWarn,

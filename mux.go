@@ -27,8 +27,8 @@ const (
 	RouteKindRoute RouteKind = "route"
 
 	// RouteKindMount is a handler subtree attached via [App.Mount]. Only its
-	// prefix and forwarded method set are exposed in introspection, never its
-	// internal routes.
+	// prefix, forwarded method set and meta (the App's) are exposed in
+	// introspection, never its internal routes.
 	RouteKindMount RouteKind = "mount"
 )
 
@@ -40,7 +40,7 @@ const (
 // forwarded method at its prefix.
 //
 // [RouteInfo.GetMeta] reads the fully resolved route metadata (route ← group
-// ← app), taken when the RouteInfo was built. The values are read-only by
+// ← app; a mount's is the App's), taken when the RouteInfo was built. The values are read-only by
 // convention — mutating a slice, map, or pointer read from it mutates the
 // live route metadata.
 type RouteInfo struct {
@@ -78,7 +78,8 @@ type RouteInfo struct {
 
 // GetMeta returns the route's resolved value of a meta key — the route's own,
 // else its groups', else the App's — and reports whether one was set, as
-// [Route.GetMeta] does. A mount reports none. GetMeta panics for a zero Key.
+// [Route.GetMeta] does; a mount reports the App's. GetMeta panics for a zero
+// Key.
 func (ri RouteInfo) GetMeta[T any](key Key[T]) (T, bool) {
 	v, ok := ri.meta[key.mustID("RouteInfo.GetMeta")]
 	t, _ := v.(T)
@@ -271,7 +272,7 @@ func (mx *mux) Routes() []RouteInfo {
 	out := make([]RouteInfo, 0, len(entries))
 	for _, e := range entries {
 		route := e.rh.route
-		if route == nil {
+		if route.mount {
 			// Mounted handler — surfaced separately by App.Routes.
 			continue
 		}
