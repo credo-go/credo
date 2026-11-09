@@ -121,6 +121,8 @@ Validation errors use 422 and top-level code `validation_failed`:
 
 Bind/decode errors use 400 and top-level code `bind_failed`. The nested entry's code is the exact reason (`syntax`, `type_mismatch`, `empty_body`, `trailing_data`, `duplicate_field`, `unknown_field`, or `invalid_value`). This lets clients switch on the broad class in `error.code` and the actionable cause in `error.violations[0].code`.
 
+Two neighbouring outcomes are not `bind_failed`. A body whose `Content-Encoding` is not `identity` and that `app.UseDecompress` has not unwrapped is a 415 with the code `unsupported_content_encoding` (`credo.CodeUnsupportedContentEncoding`) and the encoding in `details.encoding`, returned before any decoder runs. A bind target the binder cannot fill — nil, not a pointer, or with a field of a type it does not bind — is a developer error: a 500 with the code `invalid_bind_target` (`credo.CodeInvalidBindTarget`), whose reason is logged as the internal cause and never sent to the client.
+
 The array is named `violations` because it carries two kinds of entries: field-scoped validation failures and document-scoped bind failures. A bind entry's `field` may be empty when the violation concerns the whole body — a JSON syntax error, for example.
 
 ### Rule errors: client messages and internal failures

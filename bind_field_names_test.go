@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -271,4 +272,115 @@ func TestBindBody_SliceElementsAndNestedValuesBehindRulesFailWith422(t *testing.
 			}
 		})
 	}
+}
+
+// sourceRegion is unexported and embedded by value: its exported fields are
+// promoted, for a query or form bind as encoding/json promotes them for a
+// JSON body.
+type sourceRegion struct {
+	Region string `json:"region" query:"region_code" form:"region-code"`
+}
+
+// SourceTenant is embedded through a pointer the binder allocates.
+type SourceTenant struct {
+	Tenant string `json:"tenant" query:"tenant_id" form:"tenant-id"`
+}
+
+// sourceOwner is embedded through a pointer to an unexported type, which the
+// binder cannot set, so its fields are never bound.
+type sourceOwner struct {
+	Owner string `json:"owner" query:"owner" form:"owner"`
+}
+
+type promotedInput struct {
+	sourceRegion
+	*SourceTenant
+	*sourceOwner
+}
+
+func (in *promotedInput) Validate() error {
+	return validation.ValidateStruct(in,
+		validation.Field(&in.Region, validation.In("eu", "us")),
+		validation.Field(&in.Tenant, validation.Length(3, 10)),
+	)
+}
+
+// A field promoted from an unexported embedded struct is bound from a query
+// and a form and named by its source tag in a violation, as one promoted
+// through an embedded pointer is; an embedded pointer to an unexported type is
+// left nil.
+func TestBind_FieldsPromotedFromUnexportedEmbeddedStructs(t *testing.T) {
+	newApp := func(t *testing.T) *credo.App {
+		app := mustNew(t)
+		handler := func(c *credo.Context) error {
+			var in promotedInput
+			var err error
+			if c.Request().Method == http.MethodGet {
+				err = c.Request().BindQuery(&in)
+			} else {
+				err = c.Request().BindBody(&in)
+			}
+			if err != nil {
+				return err
+			}
+			return c.Response().Text(http.StatusOK, in.Region+","+in.Tenant+","+
+				strconv.FormatBool(in.sourceOwner == nil))
+		}
+		app.GET("/in", handler)
+		app.POST("/in", handler)
+		return app
+	}
+	form := func(body string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/in", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	jsonBody := func(body string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/in", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		return r
+	}
+
+	t.Run("bound", func(t *testing.T) {
+		for name, r := range map[string]*http.Request{
+			"query": httptest.NewRequest(http.MethodGet, "/in?region_code=eu&tenant_id=acme&owner=x", nil),
+			"form":  form("region-code=eu&tenant-id=acme&owner=x"),
+			"json":  jsonBody(`{"region":"eu","tenant":"acme"}`),
+		} {
+			w := httptest.NewRecorder()
+			newApp(t).ServeHTTP(w, r)
+			if w.Code != http.StatusOK || w.Body.String() != "eu,acme,true" {
+				t.Errorf("%s: %d %q, want 200 %q", name, w.Code, w.Body.String(), "eu,acme,true")
+			}
+		}
+	})
+
+	t.Run("named by the source", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			req  *http.Request
+			want []string
+		}{
+			{"query", httptest.NewRequest(http.MethodGet, "/in?region_code=xx&tenant_id=ab", nil), []string{"region_code", "tenant_id"}},
+			{"form", form("region-code=xx&tenant-id=ab"), []string{"region-code", "tenant-id"}},
+			{"json", jsonBody(`{"region":"xx","tenant":"ab"}`), []string{"region", "tenant"}},
+		} {
+			w := httptest.NewRecorder()
+			newApp(t).ServeHTTP(w, tt.req)
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("%s: status = %d, want 422; body %s", tt.name, w.Code, w.Body.String())
+			}
+			var body credo.ErrorResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("%s: unmarshal %q: %v", tt.name, w.Body.String(), err)
+			}
+			var got []string
+			for _, v := range body.Error.Violations {
+				got = append(got, v.Field)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("%s: fields = %q, want %q", tt.name, got, tt.want)
+			}
+		}
+	})
 }

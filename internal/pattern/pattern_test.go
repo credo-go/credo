@@ -152,6 +152,36 @@ func TestCheckNames(t *testing.T) {
 	}
 }
 
+func TestCheckCatchAll(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string // "" for no error
+	}{
+		{"/static", ""},
+		{"/a/{p...}", ""},
+		{"/a/{id}/{p...}", ""},
+		{"/{p...}", ""},
+		{"/a/{p...}/x", `pattern: text "/x" after the catch-all {p...} in "/a/{p...}/x": a catch-all takes the rest of the path, so end the pattern with it`},
+		{"/a/{p...}/", `pattern: text "/" after the catch-all {p...} in "/a/{p...}/": a catch-all takes the rest of the path, so end the pattern with it`},
+		{"/a/{p...}/{id}", `pattern: text "/{id}" after the catch-all {p...} in "/a/{p...}/{id}": a catch-all takes the rest of the path, so end the pattern with it`},
+		{"/a/{p...}/{q...}", `pattern: text "/{q...}" after the catch-all {p...} in "/a/{p...}/{q...}": a catch-all takes the rest of the path, so end the pattern with it`},
+		// A malformed parameter ends the scan; NextSegment reports it.
+		{"/a/{id/{p...}/x", ""},
+	}
+	for _, tt := range tests {
+		err := CheckCatchAll(tt.pattern)
+		if tt.want == "" {
+			if err != nil {
+				t.Errorf("CheckCatchAll(%q) = %v, want nil", tt.pattern, err)
+			}
+			continue
+		}
+		if err == nil || err.Error() != tt.want {
+			t.Errorf("CheckCatchAll(%q) = %v, want %q", tt.pattern, err, tt.want)
+		}
+	}
+}
+
 // TestMatcher pins that a Matcher matches a canonical wire path as the
 // router matches a route: literal text in canonical form, a parameter that
 // ends at its tail byte or the next slash with every escape one unit, a

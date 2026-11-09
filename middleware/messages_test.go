@@ -38,7 +38,7 @@ func TestContractGuard_RejectionMessages(t *testing.T) {
 		message string
 		details map[string]any
 	}{
-		{"content type required", middleware.ContractConfig{RequireContentType: true},
+		{"content type required", middleware.ContractConfig{},
 			func(r *credo.Route) { r.SetMeta(middleware.MetaAccept, []string{"application/json"}) },
 			func(r *http.Request) { r.Header.Del("Content-Type") },
 			415, "content_type_required", "Content-Type is required.", nil},

@@ -1512,6 +1512,74 @@ func TestRouting_DuplicateParamNamePanics(t *testing.T) {
 	}
 }
 
+// A catch-all takes the rest of the path, so text after it can never match:
+// the router answered 405 for every path under the prefix. Registration now
+// panics with the message middleware.Rewrite gives such a From pattern, and
+// registers nothing, so the pattern ending at the catch-all is free afterwards.
+// A Static or Mount prefix adds its own capture below the prefix, so a
+// catch-all in the prefix panics naming the prefix the caller wrote.
+func TestRouting_TextAfterCatchAllPanics(t *testing.T) {
+	h := func(ctx *credo.Context) error { return nil }
+	child := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	const tail = `: a catch-all takes the rest of the path, so end the pattern with it`
+	var api *credo.Group // the host group, shared by the host case's two calls
+	tests := []struct {
+		name     string
+		want     string
+		register func(app *credo.App)
+		retry    func(app *credo.App)
+	}{
+		{
+			name:     "route",
+			want:     `credo: pattern: text "/x" after the catch-all {p...} in "/a/{p...}/x"` + tail,
+			register: func(app *credo.App) { app.GET("/a/{p...}/x", h) },
+			retry:    func(app *credo.App) { app.GET("/a/{p...}", h) },
+		},
+		{
+			name:     "trailing slash",
+			want:     `credo: pattern: text "/" after the catch-all {p...} in "/a/{p...}/"` + tail,
+			register: func(app *credo.App) { app.POST("/a/{p...}/", h) },
+			retry:    func(app *credo.App) { app.POST("/a/{p...}", h) },
+		},
+		{
+			name:     "group prefix",
+			want:     `credo: pattern: text "/x" after the catch-all {p...} in "/t/{p...}/x"` + tail,
+			register: func(app *credo.App) { app.Group("/t/{p...}").GET("/x", h) },
+			retry:    func(app *credo.App) { app.Group("/t").GET("/{p...}", h) },
+		},
+		{
+			name: "host group",
+			want: `credo: pattern: text "/x" after the catch-all {p...} in "/a/{p...}/x"` + tail,
+			register: func(app *credo.App) {
+				api = app.Host("api.example.com")
+				api.GET("/a/{p...}/x", h)
+			},
+			retry: func(*credo.App) { api.GET("/a/{p...}", h) },
+		},
+		{
+			name: "static under a group prefix",
+			want: `credo: Static "/t/{p...}/files": a prefix cannot hold the catch-all {p...}: ` +
+				`a catch-all takes the rest of the path, and Static captures the path below its prefix itself`,
+			register: func(app *credo.App) { app.Group("/t/{p...}").Static("/files", fstest.MapFS{}) },
+			retry:    func(app *credo.App) { app.Group("/t/{p}").Static("/files", fstest.MapFS{}) },
+		},
+		{
+			name: "mount prefix",
+			want: `credo: Mount "/t/{p...}": a prefix cannot hold the catch-all {p...}: ` +
+				`a catch-all takes the rest of the path, and Mount captures the path below its prefix itself`,
+			register: func(app *credo.App) { app.Mount("/t/{p...}", child) },
+			retry:    func(app *credo.App) { app.Mount("/t/{p}", child) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			expectPanicContaining(t, tt.want, func() { tt.register(app) })
+			tt.retry(app)
+		})
+	}
+}
+
 // Host-scoped path trees carry the same endpoint-owned names, independently
 // of the default mux and of the host captures.
 func TestRouting_EndpointOwnedParamNames_HostScoped(t *testing.T) {

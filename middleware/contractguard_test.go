@@ -39,7 +39,7 @@ func TestContractGuard_Accept(t *testing.T) {
 		{"mismatch", []string{"application/json"}, "text/plain", http.StatusUnsupportedMediaType},
 		{"subtype wildcard", []string{"image/*"}, "image/png", http.StatusOK},
 		{"wildcard all", []string{"*/*"}, "application/x-thing", http.StatusOK},
-		{"empty content type passes", []string{"application/json"}, "", http.StatusOK},
+		{"missing content type on a body", []string{"application/json"}, "", http.StatusUnsupportedMediaType},
 		{"slice match", []string{"application/json", "application/xml"}, "application/xml", http.StatusOK},
 	}
 	for _, tt := range tests {
@@ -320,14 +320,15 @@ func TestContractGuard_Skipper(t *testing.T) {
 	}
 }
 
-// TestContractGuard_RequireContentType covers the body-present signal for the
-// RequireContentType switch: Content-Length > 0 or unknown (-1, chunked /
-// HTTP/2) means "has body"; 0 or no body passes; a present-but-empty header
-// counts as absent; the switch only arms a declared MetaAccept contract.
-func TestContractGuard_RequireContentType(t *testing.T) {
+// TestContractGuard_MissingContentType covers the body-present signal for the
+// Content-Type a MetaAccept contract requires by default: Content-Length > 0
+// or unknown (-1, chunked / HTTP/2) means "has body"; 0 or no body passes; a
+// present-but-empty header counts as absent; only a declared MetaAccept
+// contract requires it; AllowMissingContentType lets such a body pass.
+func TestContractGuard_MissingContentType(t *testing.T) {
 	type tc struct {
 		name    string
-		require bool
+		allow   bool
 		method  string
 		body    io.Reader
 		chunked bool
@@ -337,19 +338,19 @@ func TestContractGuard_RequireContentType(t *testing.T) {
 	}
 	empty := ""
 	tests := []tc{
-		{"POST body no header", true, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusUnsupportedMediaType},
-		{"POST NoBody no header", true, http.MethodPost, http.NoBody, false, nil, true, http.StatusOK},
-		{"GET no header", true, http.MethodGet, nil, false, nil, true, http.StatusOK},
-		{"chunked POST no header", true, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusUnsupportedMediaType},
-		{"POST body empty header", true, http.MethodPost, strings.NewReader("{}"), false, &empty, true, http.StatusUnsupportedMediaType},
-		{"no MetaAccept contract", true, http.MethodPost, strings.NewReader("{}"), false, nil, false, http.StatusOK},
-		{"default off: POST body no header", false, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusOK},
-		{"default off: chunked no header", false, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusOK},
+		{"POST body no header", false, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusUnsupportedMediaType},
+		{"POST NoBody no header", false, http.MethodPost, http.NoBody, false, nil, true, http.StatusOK},
+		{"GET no header", false, http.MethodGet, nil, false, nil, true, http.StatusOK},
+		{"chunked POST no header", false, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusUnsupportedMediaType},
+		{"POST body empty header", false, http.MethodPost, strings.NewReader("{}"), false, &empty, true, http.StatusUnsupportedMediaType},
+		{"no MetaAccept contract", false, http.MethodPost, strings.NewReader("{}"), false, nil, false, http.StatusOK},
+		{"allowed: POST body no header", true, http.MethodPost, strings.NewReader("{}"), false, nil, true, http.StatusOK},
+		{"allowed: chunked no header", true, http.MethodPost, strings.NewReader("{}"), true, nil, true, http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := middleware.DefaultContractConfig()
-			cfg.RequireContentType = tt.require
+			cfg.AllowMissingContentType = tt.allow
 			app, g := contractGroup(t, cfg)
 			var route *credo.Route
 			if tt.method == http.MethodGet {
