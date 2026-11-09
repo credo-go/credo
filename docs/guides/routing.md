@@ -422,6 +422,10 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 - If `To` contains a query string, it replaces the current query string.
 - If `To` has no query string and `PreserveQuery` is true, Credo keeps the original query string.
 
+### Encoded Paths
+
+A rule matches the path the way the router does, so an encoded slash is data inside a segment: `{From: "/files/{name}", To: "/blobs/{name}"}` rewrites `/files/a%2Fb` to `/blobs/a%2Fb`, and the `/blobs/{name}` route reads `name` as `a/b`. A rule never matches across an encoded slash: `/files/{dir}/{name}` does not match `/files/a%2Fb`. A `From` parameter matches as a route parameter does, so `{rest:.+}` is still one segment and its constraint sees the decoded value; use `{rest...}`, or a `Regexp` rule, when a capture spans segments. `To` is written in wire form, so `To: "/blobs/a%2Fb"` keeps the escape and a literal `%` is `%25`.
+
 ---
 
 ## Handler-Level Internal Forwarding

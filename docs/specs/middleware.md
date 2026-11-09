@@ -176,9 +176,7 @@ type RewriteConfig struct {
 }
 ```
 
-> **Current until v0.26.0 (R7):** the next paragraph's first sentence, under which `Rewrite` matches and sets the decoded `URL.Path`.
-
-`middleware.Rewrite` mutates `req.URL.Path` before dispatch so that routing sees the rewritten path on the first lookup. It follows the package-wide config-struct convention (`Middleware(cfg ...Config)`): the single `RewriteConfig` argument carries the `Rules` list and an optional `Skipper`.
+`middleware.Rewrite` follows the package-wide config-struct convention (`Middleware(cfg ...Config)`): the single `RewriteConfig` argument carries the `Rules` list and an optional `Skipper`.
 
 ```go
 type RewriteRule struct {
@@ -192,9 +190,7 @@ type RewriteRule struct {
 }
 ```
 
-> **Pending v0.26.0 (R7):** not implemented yet; until R7 ships, `Rewrite` matches the decoded `URL.Path`, so a rule can match across an encoded slash.
-
-**Wire form.** `Rewrite` matches on the canonical wire form the router matches, not the decoded `URL.Path`, and sets the rewritten path in wire form, keeping `Path` and `RawPath` consistent, as ADR-018 says its targets are ([ADR-018](../adr/018-host-routing-and-rewrite.md)). An encoded `%2F` inside a segment stays data and is never a separator, so a single-segment pattern matches it and the rewrite keeps the escape; a catch-all keeps its slashes; a captured value is decoded once, as a route parameter is. The router sees the same segments after the rewrite as the client sent, and a malformed escape in a target is an error.
+**Wire form.** `Rewrite` matches on the canonical wire form the router matches, not the decoded `URL.Path`, and sets the rewritten path in wire form, keeping `Path` and `RawPath` consistent ([ADR-018](../adr/018-host-routing-and-rewrite.md)). An encoded `%2F` inside a segment stays data and is never a separator, so a single-segment pattern matches it and the rewrite keeps the escape; a catch-all keeps its slashes; a captured value is decoded once, as a route parameter is. The router sees the same segments after the rewrite as the client sent. Literal `From` text matches only its literal spelling, as in a route pattern. A `{name}` or `{name:regex}` parameter matches as the router's does: it ends at the byte that follows it in the pattern or at the next slash, whichever comes first, with every escape one unit, so it never spans a raw slash, and a constraint is checked as `^(?:regex)$` on the whole decoded value (`%31` satisfies `[0-9]+`; `{rest:.+}` does not match `a/b`). A capture that decodes to invalid UTF-8 is no match. Text after a catch-all panics when the middleware is built, since the catch-all takes the rest of the path. A `Regexp` rule is the caller's regexp over the same canonical path, and its groups may span segments. `To` is a wire-form path: an escape in it stays data and a literal `%` is written `%25`. A malformed escape in a target's path panics when the middleware is built, naming the rule, the target and the byte; one produced at request time, which only a `Regexp` group that splits an escape can cause, is an error naming the rule and the rewritten path, and the request is left unchanged.
 
 **Semantics:**
 
