@@ -3,7 +3,8 @@
 // run() follows the documented bootstrap order, every satellite included:
 //
 //  1. Configuration: config.Load, typed sections, the logger and credo.New
-//  2. Provide: typed config values and constructors, Infra first
+//  2. Bindings: the opened store as a value, typed config, and the
+//     constructors, Infra first
 //  3. Feature mounts and satellite registrations: request features, i18n,
 //     health, the store, a scheduled worker, the WebSocket server and hooks
 //  4. Finalize: an optional early check of the whole graph
@@ -25,10 +26,11 @@
 //   - Dependency injection (Provide/Resolve with typed constructors)
 //   - Validation (programmatic rules and one custom rule, no struct tags)
 //   - Centralized error handling (Credo JSON envelope)
-//   - A data store bound as a component: pinged at start, reported by
-//     /ready, shut down after its consumers
+//   - A data store bound as a value: one ProvideValue call pings it at start,
+//     reports it in /ready and shuts it down after its consumers
 //   - A scheduled worker built from the container
-//   - A WebSocket echo endpoint served by an ingress component
+//   - A WebSocket echo endpoint served by a component whose type declares
+//     the ingress tier
 //   - Health probes (/health, /ready) for container orchestration
 //   - Lifecycle components and graceful shutdown with OnStop hooks
 package main
@@ -147,22 +149,24 @@ type Tenant struct {
 // ---------------------------------------------------------------------------
 
 // TenantStore stands in for a database handle such as *sqldb.DB, which an
-// application builds from DatabaseConfig with sqldb.Open. Like *sqldb.DB it
-// is a component: its binding's type shows Start, Ready and Shutdown, so the
-// start phase pings it before the services that use it start, /ready reports
-// it, and the App shuts it down after those services.
+// application opens from its configuration with sqldb.Open and binds with
+// app.ProvideValue. Like *sqldb.DB it is a component: its type shows Start,
+// Ready and Shutdown, so the start phase pings it before the services that
+// use it start, /ready reports it, and the App shuts it down after those
+// services.
 type TenantStore struct {
-	infra   credo.Infra
 	mu      sync.Mutex
 	tenants map[string]Tenant
 }
 
-// NewTenantStore is a DI constructor. A real constructor opens the
-// connection pool from cfg; it does no I/O beyond that, since the start
-// phase pings the store.
-func NewTenantStore(infra credo.Infra, cfg *DatabaseConfig) *TenantStore {
-	infra.Logger.Debug("tenant store configured", "db_host", cfg.Host, "db_name", cfg.Name)
-	return &TenantStore{infra: infra, tenants: make(map[string]Tenant)}
+// OpenTenantStore stands in for sqldb.Open: it opens the connection pool
+// from cfg and does no I/O beyond that, since the start phase pings the
+// store.
+func OpenTenantStore(cfg DatabaseConfig) (*TenantStore, error) {
+	if cfg.Host == "" {
+		return nil, fmt.Errorf("tenant store: databases.default.host is empty")
+	}
+	return &TenantStore{tenants: make(map[string]Tenant)}, nil
 }
 
 // Start pings the store; the start phase calls it once, before the services
@@ -172,9 +176,11 @@ func (s *TenantStore) Start(context.Context) error { return nil }
 // Ready reports the store in /ready, under its component name.
 func (s *TenantStore) Ready(context.Context) error { return nil }
 
-// Shutdown closes the store and makes it a component.
-func (s *TenantStore) Shutdown(context.Context) error {
-	s.infra.Logger.Info("tenant store closed")
+// Shutdown closes the store and makes it a component. The App's call
+// carries the component's scoped Infra, so the record names the component
+// (component=tenants-db), as a framework module such as sqldb logs.
+func (s *TenantStore) Shutdown(ctx context.Context) error {
+	credo.InfraFrom(ctx).Logger.Info("tenant store closed")
 	return nil
 }
 
@@ -460,11 +466,18 @@ func run() error {
 		return fmt.Errorf("credo.New: %w", err)
 	}
 
-	// 2. Provide. Typed config values and the constructors that use them.
-	// Nothing is built yet; a misused registration panics at its line.
+	// 2. Bindings. The store is opened here, as sqldb.Open would open a
+	// database, and bound as a value: its type plans the ping at start, the
+	// /ready entry and the teardown after its consumers, and ComponentName
+	// names it in logs and /ready. Then the typed config and the
+	// constructors; nothing is built yet, and a misused registration panics
+	// at its line.
+	tenantStore, err := OpenTenantStore(dbCfg)
+	if err != nil {
+		return err
+	}
+	app.ProvideValue(tenantStore, credo.ComponentName("tenants-db"))
 	app.ProvideValue(&appCfg)
-	app.ProvideValue(&dbCfg)
-	app.Provide(NewTenantStore, credo.ComponentName("tenants-db"))
 	app.Provide(NewTenantService)
 
 	// 3. Feature mounts and satellite registrations, in any order.
@@ -482,8 +495,9 @@ func run() error {
 	// values: one run per hour.
 	app.Workers().Scheduled("usage-report", "@every 1h", NewUsageReporter)
 
-	// The WebSocket server declares the ingress tier: it starts with the App
-	// and drains beside the HTTP drain, before the services its handlers use.
+	// The WebSocket server's type declares the ingress tier, so Manage needs
+	// no option: it starts with the App and drains beside the HTTP drain,
+	// before the services its handlers use.
 	ws := websocket.New()
 	app.Manage(ws)
 

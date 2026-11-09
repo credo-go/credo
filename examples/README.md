@@ -10,7 +10,7 @@ Each runnable example is a separate Go module that replaces Credo with the repos
 
 ## Accepted pre-v1 migration
 
-**DI, router, HTTP and wire minors applied 2026-09-05; v0.24.0 applied 2026-10-08.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples. In v0.24.0 the SaaS example follows the [documented bootstrap order](../docs/specs/container.md#documented-order) as six numbered steps with every satellite in it, and the hello example needed no change: `credo.New`, routes and `Run` stay the minimal shape.
+**DI, router, HTTP and wire minors applied 2026-09-05; v0.24.0 applied 2026-10-08; v0.25.0 applied 2026-11-09.** The runnable source uses the shipped APIs. The [migration guide](../docs/guides/pre-v1-migration.md) records the shipped contracts; the URL round-trip change did not alter the examples. In v0.24.0 the SaaS example follows the [documented bootstrap order](../docs/specs/container.md#documented-order) as six numbered steps with every satellite in it, and the hello example needed no change: `credo.New`, routes and `Run` stay the minimal shape.
 
 | Delivery | Hello | SaaS |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ Each runnable example is a separate Go module that replaces Credo with the repos
 | v0.24.0 bootstrap (done) | No bindings, so no explicit Finalize: `New`, routes, `Run` | Configuration, `Provide`, feature mounts and satellite registrations, an error-checked `Finalize`, `Resolve` with middleware and routes, `Run` — each a numbered step in `run()` |
 | v0.24.0 components (done) | None required by the example | The store stand-in is bound with `Provide`; the WebSocket server is handed to `Manage` with `Ingress`; the worker is a provided scheduled worker; `TenantService` and the store are components the App shuts down after their consumers; hooks are `OnStart`/`OnStop` |
 | v0.24.0 errors (done) | None required by the example | `UseI18n` with a programmatic catalog returns nothing; the custom validation rule returns `validation.NewError`; `StatusHandler` registers the router's 404 only |
-| v0.25.0 store (done) | None required by the example | The store stand-in implements `Start`, `Ready` and `Shutdown` and is bound with `app.Provide(NewTenantStore, credo.ComponentName("tenants-db"))` alone: the start phase starts it, `/ready` reports it as `tenants-db`, and no store registration is needed |
+| v0.25.0 bootstrap (done) | None required by the example | The composition root binds what only the application knows: the opened store stand-in with `app.ProvideValue(tenantStore, credo.ComponentName("tenants-db"))` alone (the start phase pings it, `/ready` reports it as `tenants-db`, no store registration); `websocket.New()` handed to `app.Manage(ws)` with no option; the worker registered through its constructor on `app.Workers()`; `app.Provide(NewTenantService)` without a type argument; `Finalize` kept as an optional early check |
 | User middleware | None required by the example | Keep Secure/CORS global and authentication/authorization on their existing groups |
 | Cleanup | Keep graceful Run exit handling | Capture dependencies in hooks; bootstrap `Shutdown` is available for cleanup on setup errors |
 
