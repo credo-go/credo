@@ -1,6 +1,6 @@
 # ADR-012: Authentication & Authorization
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007, ADR-008 **Related:** ADR-001, ADR-009, ADR-010, ADR-015 **Specification:** [Auth spec](../specs/auth.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007, ADR-008 **Related:** ADR-001, ADR-009, ADR-010, ADR-014, ADR-015 **Specification:** [Auth spec](../specs/auth.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
 
 ## Context
 
@@ -30,6 +30,18 @@ Context has no concrete `User` field or `User()` method — only the generic `Se
 
 The backing store is an implementation detail: the only public access path is the Context methods. There is deliberately no `context.Context`-based accessor (no `UserFrom(ctx)`-style helper in the root or the `auth` package) — the principal is an HTTP-boundary feature reached through `*credo.Context`, not a value read from the `context.Context` chain (contrast store's typed transaction scopes, which are; [ADR-015](015-data-access.md)).
 
+> **Pending v0.26.0 (R4):** not implemented yet; `SetUser` adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`).
+
+`SetUser`, `GetUser[T]` and `RequireUser[T]` are shortcuts over a generic typed key of the root package's own, one per user type, so the user is a value on the Context's head like any other ([ADR-008](008-context-design.md#one-context-head-and-typed-keys)): `SetUser` adds one node and copies no request, a user set inside a scope outlives it, and the request a wrapped stdlib middleware passes on still carries the user. The key stays unexported, so the user keeps no `context.Context` accessor: stdlib code can neither read nor set the principal, and the typed keys add no reader of their own.
+
+**Problem.** `SetUser` copies the request for every user it stores, and the copy is the request's context only until a scope that swapped the request reverts it, so a user set inside `middleware.Timeout` or a wrapped stdlib middleware is lost to the layers outside it.
+
+**Removes.** The request copy behind `SetUser`, and the allocation it costs.
+
+> **Pending v0.26.0 (R12):** not implemented yet; observers do not exist, and the access log's `ResultFilter` receives the `*Context`.
+
+An observer of the final response reads the user through `Exchange.GetUser[T]`, as the Context's `GetUser` does, over the same unexported key ([ADR-014](014-observability.md)); no observer reads it through `Value`.
+
 ### Authenticator Interface
 
 Authentication strategies implement `Authenticator[T]`, a single-method interface parameterized by the user type: it takes the `*http.Request`, extracts credentials (header, cookie, query, TLS peer certificate) and returns the authenticated user or an error.
@@ -45,7 +57,19 @@ Authentication strategies implement `Authenticator[T]`, a single-method interfac
 - **Two-tier JWT configuration.** Credo does not hide golang-jwt, it integrates it — the same visibility policy as Bun in `store/sqldb` ([ADR-015](015-data-access.md)). The simple tier of `JWTConfig[T]` is fully Credo-typed for the common path, while the nested `Advanced JWTAdvanced[T]` struct keeps the library's full power one explicit step away. Structural nesting, rather than a doc-only convention, keeps the simple/advanced boundary visible in config literals and code review, so coupling to the library is easy to audit.
 - **Constant-time comparison is shipped.** Basic and API-key validators are application code, and the natural `==` comparison leaks timing information. The framework ships `SecureCompare` (hash, then `subtle.ConstantTimeCompare`, hiding both content and length), and the validator godocs point to it. Stored passwords are verified with a dedicated password hash (bcrypt, argon2id) instead; JWT signature comparison is already constant-time inside golang-jwt.
 
+### JWT in Its Own Package
+
+> **Pending v0.26.0 (R11):** not implemented yet; the JWT authenticator lives in `auth` (`auth.JWTConfig[T]`, `JWTAdvanced[T]`, `JWTClaims`, `JWTAuthenticator[T]`, `NewJWTAuthenticator[T]`, `ErrJWTMissing`, `ErrJWTInvalid`), so every application that imports `auth` compiles golang-jwt.
+
+The JWT authenticator lives in `auth/jwtauth`, so that only an application that verifies JWTs compiles golang-jwt. The name is not `jwt`, golang-jwt's package name, which code that configures `Advanced` imports beside it; like `net/http/httptest`, it joins its subject to its parent's name. `auth.Middleware`, the `Authenticator[T]` interface and the API-key and Basic authenticators stay in `auth`. The types drop the `JWT` prefix the package now names — `Config[T]`, `Advanced[T]`, `Claims`, `Authenticator[T]`, `NewAuthenticator[T]` — and the errors take golang-jwt's `ErrToken` stem, `ErrTokenMissing` and `ErrTokenInvalid`, with `jwtauth:` as the prefix of their text. The package stays in the root module: a module of its own waits for a consumer that cannot resolve a version conflict or must keep golang-jwt out of its module graph.
+
+**Problem.** An application that authenticates with API keys or HTTP Basic imports `auth` and compiles golang-jwt, a dependency it never calls.
+
+**Removes.** `auth.JWTConfig[T]`, `JWTAdvanced[T]`, `JWTClaims`, `JWTAuthenticator[T]`, `NewJWTAuthenticator[T]`, `ErrJWTMissing` and `ErrJWTInvalid`, which move to `auth/jwtauth` under the names above.
+
 ### RBAC via Route Meta
+
+> **Current until v0.26.0 (R4):** the next example and paragraph use a string meta key read with `LookupMeta`.
 
 Authorization uses route metadata ([ADR-007](007-router-and-routing.md#route-meta)) — no separate RBAC system:
 
@@ -55,12 +79,30 @@ app.GET("/admin/users", listUsers).SetMeta("permission", "admin.users.read")
 
 An authorization middleware registered on the group or route reads the value with `ctx.Route().LookupMeta("permission")`, which inherits through the group chain, and checks it against the user; the [auth spec](../specs/auth.md#pattern-4-rbac-with-route-meta) shows one.
 
+> **Pending v0.26.0 (R4):** the next example and paragraph replace the two above when R4 ships.
+
+Authorization uses route metadata ([ADR-007](007-router-and-routing.md#route-meta)) — no separate RBAC system. The permission's key is a typed key, so its value type is checked at compile time:
+
+```go
+var Permission = credo.NewKey[string]("permission")
+
+app.GET("/admin/users", listUsers).SetMeta(Permission, "admin.users.read")
+```
+
+An authorization middleware registered on the group or route reads the value with `c.Route().GetMeta(Permission)`, which returns the typed value and inherits through the route, its groups and the App, and checks it against the user; the [auth spec](../specs/auth.md#pattern-4-rbac-with-route-meta) shows one.
+
+**Problem.** A string meta key binds no type to its name: every read is a type assertion that each middleware must fail closed on by hand, and two packages that choose one name share one value.
+
+**Removes.** String-meta RBAC: `SetMeta("permission", v)` and `LookupMeta("permission")`, which become `SetMeta(key, v)` and `GetMeta(key)` with a `credo.NewKey[T]`.
+
 ## Consequences
 
 **Positive:**
 
 - Type-safe via generics — no `any` assertions
 - Middleware factory is reusable across auth strategies (JWT, API key, etc.)
+
+> **Current until v0.26.0 (R4):** the negative bullets on `SetUser`'s allocation, which R4 reduces to one node and no request copy, and on string-based RBAC, which becomes typed keys whose permission values stay application strings, unchecked at compile time.
 
 **Negative:**
 

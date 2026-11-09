@@ -1,6 +1,6 @@
 # ADR-002: Code Acquisition Strategy
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001 **Related:** ADR-014
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001 **Related:** ADR-014, ADR-015
 
 ## Context
 
@@ -27,6 +27,14 @@ For these components, Credo evolves the API independently from upstream, removes
 Components that implement specs/protocols, have high CVE pressure, and evolve rapidly are wrapped — for example the SQL ORM and migration engine (uptrace/bun, in `store/sqldb`), JWT parsing (golang-jwt/jwt/v5), the WebSocket protocol engine (coder/websocket) and the rate limiter's store contract (sethvargo/go-limiter, in `middleware/ratelimit`, a package of its own so that only its users link it).
 
 For these components, Credo provides a thin adapter layer and pins the version. Upgrades arrive as reviewed version bumps (Dependabot pull requests) that pass the [wrapped-dependency upgrade gate](../../CONTRIBUTING.md#wrapped-dependency-upgrades). A planned package chooses its path when it is designed; tracing and metrics are to be wrapped ([ADR-014](014-observability.md)).
+
+> **Pending v0.26.0 (R9):** not implemented yet; `store/sqldb` also writes private fields of Bun's `SelectQuery`, so a Bun upgrade passes a check of that private layout as well ([ADR-015](015-data-access.md#bun-through-its-exported-api)).
+
+A wrapper uses its dependency through the dependency's exported API, never its private state. The thin adapter is the set of curated forwarders that attach Credo's guarantees — for `sqldb`, transaction injection and error mapping at the terminals — and an upgrade is checked by conformance tests of the behaviour the adapter relies on. A forwarder covers only the methods it names, so a method a later release of the dependency adds changes nothing until Credo forwards it.
+
+**Problem.** A wrapper that writes private fields is pinned to one release's memory layout: each upgrade needs a layout check, and an application that minimal version selection gives a newer release fails when it opens the wrapper, although the dependency's exported API did not change.
+
+**Removes.** The private-field layer of `store/sqldb` and the layout check in its upgrade procedure ([ADR-015](015-data-access.md#bun-through-its-exported-api)).
 
 ### Direct import — Small, stable utilities
 

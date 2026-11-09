@@ -1,6 +1,6 @@
 # ADR-008: Context Design
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007 **Related:** ADR-009, ADR-011, ADR-012, ADR-013, ADR-021 **Specification:** [Context spec](../specs/context.md) **Guide:** [Getting started](../guides/getting-started.md#request-and-response), [Proxy trust](../guides/proxy-trust.md)
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-007 **Related:** ADR-003, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-018, ADR-021 **Specification:** [Context spec](../specs/context.md) **Guide:** [Getting started](../guides/getting-started.md#request-and-response), [Proxy trust](../guides/proxy-trust.md)
 
 ## Context
 
@@ -37,6 +37,12 @@ Input and output live on separate objects reached through `ctx.Request()` and `c
 
 The plain-text helper is `Text`, not `String`, because `Response` implements `fmt.Stringer` for debugging. The original client path lives on Context, not Request: it is dispatch and rewrite state, and keeping it on Context avoids mutating the wrapped `*http.Request`.
 
+### Route Parameters Are Not Stdlib Path Values
+
+The dispatcher does not set the standard request's path values for a route. Credo code reads parameters through `Request.RouteParam` and `Request.PathValue`, the stdlib-shaped shadow that resolves route parameters first and falls back to the embedded request, so stdlib code handed the embedded request sees none of them. A handler mounted under a parametric prefix keeps receiving the prefix's parameters as path values: the mount hands it a clone of the request whose path values hold them ([router spec](../specs/router.md#sub-router-mounting)).
+
+Rejected: populating them on every request, which would allocate a map per request outside a `ServeMux` pattern and share that map between a request and its `WithContext` copy, so that a value set on one shows through the other.
+
 ### Parse, Don't Validate
 
 `Request.BindBody()` and `Request.BindQuery()` decode and, when the target implements `validation.Validatable`, validate in the same call, so a handler holds either a decoded and validated value or an error for the pipeline. The [Context spec](../specs/context.md#bind-methods--parse-dont-validate) has the content types, the decoders and an example.
@@ -59,19 +65,102 @@ Unknown members are **ignored by default** and **rejected under an app-wide opt-
 
 ### Request Context Access
 
+> **Current until v0.26.0 (R10):** the next paragraph gives the pool as the reason the Context does not implement `context.Context`.
+
 `credo.Context` deliberately does **not** implement `context.Context`. Because it is recycled through a `sync.Pool` (see below), a `*credo.Context` retained as a long-lived `context.Context` — handed to a goroutine or stored — would observe a _later_ request's state once the original request completed. To make that misuse impossible at the type level, `ctx.Context()` returns the underlying request's context explicitly.
+
+> **Pending v0.26.0 (R10):** the next paragraph replaces the paragraph above when R10 ships; until then the Context is pooled.
+
+`credo.Context` deliberately does **not** implement `context.Context`. Its head moves as scopes open and return ([below](#one-context-head-and-typed-keys)), so a `*Context` held as a `context.Context` — handed to a goroutine or stored — would not be one fixed context, and a `*Context` is not safe for concurrent use. `c.Context()` returns the head as it stands: a fixed node, whose values do not change after it is handed out.
 
 Pass `ctx.Context()` to functions expecting `context.Context` (database queries and transactions, downstream requests). The returned context is canceled when the request completes; for work that must outlive the request, detach it with `context.WithoutCancel(ctx.Context())`.
 
-### sync.Pool Recycling
+### One Context Head and Typed Keys
+
+> **Pending v0.26.0 (R4):** not implemented yet; values live in a string-keyed store on the Context (`Set(key string, val any)`, `Get(key string) any`), route meta is a `map[string]any` read with `LookupMeta`, `c.Context()` returns the embedded request's context, `SetUser` copies the request, and a middleware that derives a context assigns the embedded request (`c.Request().Request = r.WithContext(ctx)`).
+
+The Context holds the request's current `context.Context` as its head. `c.Context()` and `c.Request().Context()` return it. Request values are typed keys over the head:
+
+```go
+var Tenant = credo.NewKey[*TenantInfo]("tenant")
+
+c.Set(Tenant, t)       // a value of another type does not compile
+t, ok := c.Get(Tenant) // t is a *TenantInfo
+```
+
+`c.Set` replaces the head with a `context.WithValue` node over it, so no request is copied for a value and no custom `Value` implementation exists; stdlib code that holds only a `context.Context` reads a value with the standard `Value` and its key, which is the context key, and Credo adds no reader of its own. One key type, `Key[T]`, serves request values and route meta ([ADR-007](007-router-and-routing.md#route-meta)). Its name is for diagnostics; identity is the key value, so the keys of two packages never collide: two `NewKey` calls with one name are two keys, where two message keys with one text are one catalog key ([ADR-009](009-handler-and-error-handling.md)). A zero `Key[T]`, declared without `NewKey`, panics in every method that takes a key, since all zero keys of one type would be one context key. The user accessors stay as shortcuts over a generic key whose type stays unexported, so the user has no `context.Context` accessor ([ADR-012](012-authentication-and-authorization.md#backing-store)).
+
+**Scopes.** A layer that derives a context derives it from the head and makes the result the head of the inner chain, so `middleware.Timeout`'s deadline and a span a wrapped stdlib middleware adds are visible through `c.Context()`. `c.Within(ctx, next)` is the one way a layer opens a scope: it makes `ctx` the head of the inner chain, keeps the embedded request in step with one copy per scope, runs `next`, and reverts when `next` returns or panics. The deadline or span ends with its scope, while the values set through `c.Set` inside it are applied again over the outer head, in the order of their `Set` calls and in a deferred call, so a user set inside a scope before a panic is still the request's user for the error rendering, the observers and the access record: a user or a tenant is a fact about the request, not about one layer. A value the scope owns, such as a transaction or a span, goes into the context given to `Within` and ends with it. A key set again and again does not lengthen the chain without bound: a node built over the Context's own node for that key is built over its parent, and once the Context's nodes over a head number twice the keys set there, they are rebuilt from the record of `Set` calls; neither modifies a node, so a context handed out before keeps its values. The [Context spec](../specs/context.md#context-head-and-typed-keys) states the edges: a retrying middleware, a stdlib middleware that runs the next handler on another goroutine or passes on an unrelated context, and a mounted Credo App.
+
+**The stdlib boundary.** `c.Request().Std()` is the one accessor for the standard request: the embedded `*http.Request` when it already carries the head, otherwise a copy with the head that replaces the embedded request. `WrapStdMiddleware` and `Mount` hand the request on through it and take the context of the request the stdlib code passes on as the head of the inner chain. `c.Request().Request` stays the embedded field; its `Context()` lags the head after a `Set`, and in debug mode the Context reports, once per route, an embedded request it did not install.
+
+Rejected:
+
+- `WithContext` as the scope method's name: `With` names construction options in Credo, and the standard library's `WithContext` returns a copy where this runs a chain.
+- Adopting a replaced request's context as the head, which no scope would ever revert.
+- A mutable store behind `Value`, which does not conform to the `context` contract however it is documented.
+- A chain of the Context's own, rooted once at the request's context, which a deadline or span added later never reaches.
+- Values that end with their scope, which loses a user set inside `middleware.Timeout` or a wrapped stdlib middleware.
+- Values in a table of the Context's own, which a repository given `c.Context()`, a mounted stdlib handler and a wrapped stdlib middleware would no longer reach.
+- Keeping the embedded request in step on every `Set`, a request copy per value.
+- Reverting a retry attempt's values when `next` returns an error, since the Context cannot tell a retry from a middleware that handles the error and goes on, and a user set before the failure is still the request's user.
+
+Rejected for the keys:
+
+- String keys with a type argument at each call, which bind no type to the name and let two packages share one value.
+- Methods on the key beside the Context's, a second path to one value.
+- Converting between `T` and `*T` on a mismatch, which loses the caller's writes and which a typed key cannot produce.
+- A typed reader for a `context.Context`, a second path for code that holds the Context, and its user form, the accessor ADR-012 refuses.
+- `NewValue` with `SetValue`/`GetValue`, whose constructor makes a key, not a value.
+
+**Problem.** The request's values and its `context.Context` live apart. A deadline that `middleware.Timeout` sets or a span that a wrapped stdlib middleware adds is installed by swapping the embedded request, which the string store never sees, while the string store is invisible to stdlib code: a repository given `c.Context()` and a mounted stdlib handler cannot read a tenant set by middleware, and a user set inside a timeout or a wrapped stdlib middleware is lost to the layers outside it when the swapped request is reverted. A string key binds no type to its name, so two packages can share one value by accident and every read is a type assertion; `SetUser` copies the request for each value.
+
+**Removes.** `Context.Set(key string, val any)` and `Get(key string) any`, which take a `Key[T]`; the string-keyed route meta and its `map[string]any`, and `LookupMeta`, which becomes `GetMeta`; the string type of the middleware meta constants and of `MetaAccessLog`; the request ID's string key; assigning `c.Request().Request` as the way to change the request's context, which still compiles and no longer moves the head; the request copy behind `SetUser`.
+
+### One Allocation per Request
+
+> **Current until v0.26.0 (R10):** the next paragraph describes the per-App pool.
 
 Context instances are pooled per App, which removes the per-request allocation of the Context and its Request and Response. `reset()` clears the request state between requests. The Context, Request and Response keep a back-reference to their App, set once when the pool builds them and never cleared; through it request-time code reaches the installed i18n feature, the renderers, the JSON profile and the trusted proxies without the App being exposed on Context.
 
+> **Pending v0.26.0 (R10):** not implemented yet; the Context, its Request and Response and the two parameter arrays are pooled per App and reset between requests, so a `*Context` kept past its request reads a later request's state.
+
+The Context is not pooled. Each request allocates one Context, which embeds its `Request` and `Response` by value and keeps the first parameters in fixed arrays, folding the five pooled allocations — the Context, its `Request` and `Response`, and the two parameter arrays — into one. A `*Context` kept past its request reads that request's state, `GetUser` included, never another request's. What remains of the old caveats is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The Context, Request and Response keep a back-reference to their App, set when the Context is built; through it request-time code reaches the installed i18n feature, the renderers, the JSON profile and the trusted proxies without the App being exposed on Context.
+
+**Measurement.** The pooled build is measured against the unpooled one, after the typed keys have settled the Context's layout, with a CPU-bound realistic handler such as a small JSON encode, at saturation — requests per second, CPU and allocations per request — and p99 at a fixed load; a handler that waits on I/O would hide the difference by construction. The measurement prices the change and does not decide it. Expected in advance: a cost well inside 5%, since one allocation is small against the ones `net/http` makes per request; a larger cost is answered in the layout, not by keeping the pool. The numbers are recorded here when the change ships.
+
+Rejected: keeping the pool when the unpooled build is more than 5% worse, which would price a read of another tenant's user against throughput; and detecting use after release instead, which a counter inside the object cannot do, since a retained bare pointer reads the reused object's new counter.
+
+**Problem.** A pooled Context is reused by a later request, so a `*Context` kept past its request — captured by a goroutine, stored by a hook — reads another request's state, another tenant's user included. The "must not be retained" caveats in the hook godocs warn about it but cannot prevent it, and nothing can detect it after the fact.
+
+**Removes.** The per-App pool and the reset between requests, and with them the "must not be retained" caveats that the pool was the reason for; `Response.Reset` loses its one caller ([below](#pruned-context-apis)).
+
+### Pruned Context APIs
+
+> **Pending v0.26.0 (R14):** not implemented yet; `Response.Reset`, the `RouteContext` alias, `NewRequest`, `NewResponse`, `Context.Rewrite` and `IsRewriting` are public.
+
+Three leftovers of earlier shapes and the Context's parallel APIs leave the public surface before v1 freezes it:
+
+- `Response.Reset`: only the Context pool resets a response, the pool is gone, and an application has none to reset.
+- The `RouteContext` alias of the internal radix type: no exported function returns one, so it only exposes the fields.
+- `NewRequest` and `NewResponse`: a test that exercises a `Request` or a `Response` takes it from a Context built with `NewContext`, and a handler test runs through `testutil.NewApp` and `ServeHTTP` ([ADR-003](003-application-architecture.md)).
+- `Context.Rewrite` and `IsRewriting`: the common cases have their own path, static's SPA mode and `middleware.Rewrite` before routing, while the post-match re-dispatch would freeze at v1 with its contract and adding it back later is additive ([ADR-018](018-host-routing-and-rewrite.md)).
+
+Kept: `NewContext`, with which the hooks that take a `*Context` — a locale detector, a `Skipper`, an `ErrorRenderer`, an `Authenticator` — are unit-tested, and a `Request` or a `Response` with them; its godoc names what a Context built without an App lacks.
+
+**Problem.** Each of these freezes at v1 with a contract nothing needs: a reset with no pool, a type alias that exposes internal fields, a second way to build a `Request` or a `Response` beside the Context that owns them, and a re-dispatch whose pending signal, rewrite limit and second run of group and route middleware no common case uses.
+
+**Removes.** `Response.Reset` and `credo.RouteContext`, with no replacement; `credo.NewRequest(r)` and `credo.NewResponse(w)`, which become `credo.NewContext(w, r).Request()` and `.Response()`; `Context.Rewrite` and `IsRewriting`, which become a `middleware.Rewrite` rule, static's SPA mode, or a handler that calls the target's handler itself.
+
 ### Key-Value Store
+
+> **Current until v0.26.0 (R4):** this section describes the string-keyed store that the [typed keys](#one-context-head-and-typed-keys) replace.
 
 `ctx.Set(key, val)` / `ctx.Get(key)` provides a simple request-scoped store for middleware-to-handler communication (the request ID feature stores its ID there).
 
 ## Rejected Alternatives
+
+> **Current until v0.26.0 (R4):** the `SetRequest()` row's remedy, assigning the embedded request; with the context head, a middleware that changes the request's context calls `c.Within(ctx, next)` instead.
 
 | Alternative | Reason |
 | --- | --- |
@@ -83,6 +172,10 @@ Context instances are pooled per App, which removes the per-request allocation o
 | Per-call `BindBody(target, opts...)` strict switch | Mixed posture inside one service makes the contract hard to reason about; JSON-only knob with no `BindQuery`/form counterpart — strict bodies is app-wide (`WithStrictBodies`) |
 
 ## Consequences
+
+> **Current until v0.26.0 (R10):** the bullets on pooling (the positive one on the removed Context allocations and the negative one on `reset()`), and the phrase "on the pooled struct"; with R10 the Context is one allocation per request and a `*Context` kept past its request reads only that request.
+
+> **Current until v0.26.0 (R4):** the negative bullet's mitigation, the `Set`/`Get` store; with R4 it is the typed keys.
 
 **Positive:**
 

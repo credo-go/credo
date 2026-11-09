@@ -1,6 +1,6 @@
 # ADR-007: Router & Routing
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-002 **Related:** ADR-009, ADR-010, ADR-018 **Specification:** [Router spec](../specs/router.md) **Guide:** [Routing guide](../guides/routing.md)
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-001, ADR-002 **Related:** ADR-008, ADR-009, ADR-010, ADR-017, ADR-018 **Specification:** [Router spec](../specs/router.md) **Guide:** [Routing guide](../guides/routing.md)
 
 ## Context
 
@@ -42,6 +42,12 @@ Rejected alternatives:
 - _Decoding the reserved characters too_: `/api/a%3Bb` would reach a mounted app as `/a;b`, a different URI.
 - _Chi's prefix match (`^(re)` on the raw candidate)_: a constraint could consume part of a segment or span a raw slash, and a tail-bounded parameter would span segments (`/{name}.json` would accept `/a/b.json`), although the grammar says a parameter is one segment.
 
+### The Path as Received
+
+The router matches the path the client sent: it removes no dot-segment and merges no empty segment, so `/a/../b` is not `/b` and `//a` is not `/a`. Browsers and HTTP clients remove dot-segments before they send a request, so a `..` on the wire was sent deliberately; matched as received, it never reaches a handler other than the one for the path that a proxy or a guard in front of the application judged. A parameter may capture `..` as its value, which is the handler's input like any other: a decoded value is data, not a path ([router spec](../specs/router.md#encoded-parameter-values)). Static files are confined by the static handler's path sanitization, and served from `credo.DirFS` they are opened through an `os.Root`, which refuses to leave its root.
+
+Rejected alternative: cleaning the path, or redirecting to its clean form as `http.ServeMux` does — either makes two spellings of a path reach one handler, so the handler a proxy or guard judged for `/a/../b` would differ from the one that serves it.
+
 ### Router Lives in Root Package
 
 The router is not a separate package — it lives in the root `credo` package. This eliminates import cycles between router and middleware, enables unified handler/middleware types, and simplifies the API.
@@ -52,7 +58,21 @@ HTTP method shortcuts on `App` and `Group` (`GET`, `POST`, `PUT`, `DELETE`, `PAT
 
 ### Route Meta
 
+> **Current until v0.26.0 (R4):** the next paragraph describes string-keyed, untyped meta read with `LookupMeta`.
+
 Routes, groups and the App carry key-value metadata (`SetMeta`). `Route.LookupMeta(key)` returns `(any, bool)` and walks the parent chain (route → group → app), so a route inherits its group's policy and overrides it locally. Middleware reads policy declaratively from the matched route instead of keeping path allow-lists ([router spec](../specs/router.md#route-meta-system-goyave-inspired), [ADR-010](010-middleware-architecture.md#meta-driven-behavior)).
+
+> **Pending v0.26.0 (R4):** not implemented yet; meta takes a string key and an `any` value, `LookupMeta` walks route → group → App on each request, `Group.SetMeta` returns nothing, and `Route` and `StaticRoute` have no `RemoveMeta`. The next four paragraphs state the typed meta.
+
+Routes, groups and the App carry metadata under typed keys, the same `credo.NewKey[T]` keys that carry request values ([ADR-008](008-context-design.md)): `route.SetMeta(key, v)` checks the value's type at compile time, and `c.Route().GetMeta(key)` returns `(T, bool)` — the route's value, then its groups', then the App's — as `GetUser` does. The name of a key is for diagnostics; identity is the key value, so the meta keys of two packages never collide. A route inherits its group's policy and overrides it locally, and middleware reads policy declaratively from the matched route instead of keeping path allow-lists ([router spec](../specs/router.md#route-meta-system-goyave-inspired), [ADR-010](010-middleware-architecture.md#meta-driven-behavior)). The middleware meta constants (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`) and `credo.MetaAccessLog` are typed meta keys.
+
+A route's meta is resolved into a per-route snapshot when its chain is compiled, so a request-time lookup does not walk route, group and App. Registration order never decides membership: a value set on a group after its routes were registered reaches them.
+
+The meta methods share one shape. `Route.SetMeta`, `StaticRoute.SetMeta` and `Group.SetMeta` return their receiver, so a group's meta chains as a route's does, and `Route` and `StaticRoute` have the `RemoveMeta` that `App` and `Group` have, which removes the route's own value so that its group's shows through. The key rejections — string keys with a type argument at each call, methods on the key beside the Context's — are [ADR-008](008-context-design.md)'s.
+
+**Problem.** Meta is a `map[string]any`. A key binds no type, so every reader asserts the value's type, and a wrong assertion fails open: a named string type in a meta value makes `ContractGuard` skip its check. Two packages that choose one name share one value. Every request-time lookup walks route, group and App. `Group.SetMeta` returns nothing, so a group's meta does not chain, and a route cannot remove its own value to let its group's show through.
+
+**Removes.** `SetMeta(name, v)` and `RemoveMeta(name)` with a string key, `LookupMeta(name)` and its `(any, bool)` result, and the `map[string]any` meta; the middleware meta constants and `credo.MetaAccessLog` keep their names and change type.
 
 ### Named Routes & URL Generation
 
@@ -86,9 +106,23 @@ Credo deliberately adds no QUERY-only content-type option, `Accept-Query` helper
 
 The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix is not text that could be stripped, so the child's path is cut by segment count on the canonical path — a parameter never crosses a slash and an encoded slash stays encoded there — and the prefix's parameters reach the child as stdlib path values (`http.Request.PathValue`), set on a clone of the request. Path values are the one mechanism every mounted handler already reads: a stdlib handler directly, a mounted Credo app through `Request.PathValue`, and no Credo-specific context key crosses the mount boundary. Passing the parent's route context down was rejected: it would hand the child internal captures (`_mount`) and switch a mounted Credo app from its own pooled route context to a pre-filled one, a dispatch path that otherwise never runs. Setting the values on the shallow copy a static mount uses was rejected too: a shallow copy shares the storage behind its path values with the request it was copied from, so the mount would overwrite the values of a request its caller still holds — an `http.ServeMux` in front of the app, or the parametric mount one level up. Refusing parametric prefixes at registration was rejected as well: it turns a pattern the router accepts everywhere else into a startup panic, and it is the worse stdlib interoperation — a stdlib handler mounted under a tenant or version prefix would have to re-parse the path to learn what the router already matched, where path values hand it over through the standard `PathValue`.
 
+> **Pending v0.26.0 (R13):** not implemented yet; a mounted handler is dispatched raw, outside the compiled chain: it receives pre-routing middleware only, `HasRoute` is false for its requests, and the App's meta does not apply to them.
+
+**A mount is a route.** A request a `Mount` matches carries a `*Route` of kind mount — the mount's pattern, the App's meta, no name — so `HasRoute` is true for it, and its handler runs inside the routed tier that `app.Middleware` adds ([ADR-010](010-middleware-architecture.md)), through a chain compiled as a route's is. A mount belongs to no group and has no route value of its own, so group and route middleware still do not apply to it. Its access record names the mount's pattern.
+
+**Problem.** A mounted handler is dispatched outside the compiled chain and receives pre-routing middleware only. Authentication added to the routed tier would let a mounted path through, and a meta-driven middleware finds no route on a mounted request.
+
+**Removes.** The raw dispatch of a mounted handler: a mounted request carries its mount as its route, so `HasRoute` is true for it, App-level meta such as `MetaAccessLog` applies to it, and its access record names the mount's pattern.
+
 ### Route Introspection
 
+> **Current until v0.26.0 (R14):** the next paragraph names `Walk` and `WalkRoutes` beside `app.Routes()`.
+
 `app.Routes()`, `Walk` and `WalkRoutes` report the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)). `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and carries the resolved `Meta` (route ← group ← app) as a shallow copy whose values are read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out, and `Walk` skips mounts because its method+pattern callback cannot represent them. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
+
+> **Pending v0.26.0 (R14):** the next paragraph replaces the paragraph above when the `Walk` family goes; until then `Walk` and `WalkRoutes` report the same surface through a callback.
+
+`app.Routes()` reports the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)), every route and every mount. `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and carries the resolved meta (route ← group ← app) as a shallow copy whose values are read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out; a caller that wants routes only skips the mounts in its loop. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
 
 **Alternatives considered:**
 
@@ -96,6 +130,16 @@ The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix
 - _A separate `LocalMeta` field (route-only, unresolved)_: deferred (YAGNI) — consumers need the resolved view (route ← group ← app); a local-only view can be added later if a use case appears.
 - _Deep-cloning `Meta` values_: rejected — selectively cloning `[]string`/map values gives false confidence for custom types (`[]Permission`, `*T`) that cannot be cloned generically, so `Meta` is a shallow copy with a documented read-only-by-convention contract.
 - _Registration-order output_: rejected — `compile()` sorts host entries in place, so registration order is not stable across the first request; a total-order sort guarantees deterministic output regardless of compile state.
+
+### One Introspection Call, No Exposed Routing State
+
+> **Pending v0.26.0 (R14):** not implemented yet; `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface are exported, `credo.RouteContext` aliases `internal/radix`'s type, and `StaticRoute.BuildURI` returns a `string` built without escaping.
+
+The routing API v1 freezes has one way to do each thing. `app.Routes()` is the one introspection call: it returns every route, mounts included, and a loop over it does what `Walk` and `WalkRoutes` did, with `Walk`'s skip of mounts written in the loop. No routing type of `internal/radix` is exported: no exported function returns one, so an alias would only expose its fields. `StaticRoute.BuildURI` builds a URL as `Route.BuildURI` does — it escapes each segment of the file path, and returns an error for a path it cannot represent, such as invalid UTF-8 or a dot-segment that a client would resolve out of the static prefix — so a generated static URL routes back to the file it names.
+
+**Problem.** `Walk`, `WalkRoutes` and the `Routes` interface they take are a second introspection API beside `app.Routes()`, and `Walk`'s `(method, pattern)` callback cannot represent a mount, so it skips them silently. The `RouteContext` alias exposes the radix tree's internal fields although nothing hands an application one. `StaticRoute.BuildURI` writes the file path unescaped and cannot fail, so a file name that needs escaping produces a URL that does not reach the file, and a dot-segment produces one a client resolves out of the prefix.
+
+**Removes.** `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface, replaced by a loop over `app.Routes()`; the `credo.RouteContext` alias, with no replacement; and `StaticRoute.BuildURI`'s `string` result, which becomes `(string, error)`. A static URL whose file path needs escaping is now escaped.
 
 ### Compile & Freeze
 

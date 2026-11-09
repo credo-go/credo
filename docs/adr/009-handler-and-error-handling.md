@@ -1,6 +1,6 @@
 # ADR-009: Handler and Error Handling
 
-**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 **Related:** ADR-010, ADR-011, ADR-013, ADR-021 **Specification:** [Context spec](../specs/context.md), [HTTP features spec](../specs/http-features.md) **Guide:** [Error handling](../guides/error-handling.md)
+**Status:** Accepted **Date:** 2026-03-01 **Depends on:** ADR-008 **Related:** ADR-010, ADR-011, ADR-013, ADR-015, ADR-021 **Specification:** [Context spec](../specs/context.md), [HTTP features spec](../specs/http-features.md) **Guide:** [Error handling](../guides/error-handling.md)
 
 ## Context
 
@@ -52,6 +52,8 @@ The envelope's JSON is deterministic whatever the application's JSON profile ([A
 
 `HTTPError.Code` is the primary machine identity. `NewHTTPError(status, code...)` accepts zero or one code. With no explicit code, Credo uses the frozen status table and then `http_<status>` for unknown statuses. Codes obey `^[a-z0-9]+(_[a-z0-9]+)*$`, a deliberately opinionated wire convention.
 
+> **Current until v0.26.0 (R2):** the next paragraph's clause "and invalid `HTTPStatus()` results"; the `HTTPStatus() int` channel goes ([One error channel](#one-error-channel-keys-messages-and-fault-codes)).
+
 Invalid status/code constructor input is developer misuse and panics even when the call happens during a request; recovery fails closed. Malformed directly constructed values and invalid `HTTPStatus()` results also classify as generic 500 without publishing their fields.
 
 `MessageKey` is presentation identity and never determines `Code`. `WithMessageKey`, `WithDetails`, and `WithInternal` are copy-on-write so shared sentinels remain immutable.
@@ -61,6 +63,46 @@ Invalid status/code constructor input is developer misuse and panics even when t
 An explicitly constructed `HTTPError` wins over a validation error wrapped inside it. `NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` renders 409 with code `tenant_conflict`, not 422 `validation_failed`: the application stated the status, and a classification that searches the whole unwrap chain for `validation.Errors` first would overrule it with a cause the application chose to keep internal. The wrapped errors stay reachable through `ErrorInfo.Err` for logging and for a renderer that wants them. Validation errors that no `HTTPError` wraps — `validation.Errors`, or a single `*ValidationError` such as a `Validate` method may return from `validation.NewError` — still render as 422 `validation_failed`.
 
 The companion rule is in [ADR-011](011-validation-strategy.md#rule-errors-client-messages-and-internal-failures): a validation rule error that is not a `*ValidationError` is internal, leaves `Validate` as it would leave a handler, and is classified here — a plain error is a 500 whose text is logged, not rendered, and a fault keeps its mapped status.
+
+### One error channel; keys, messages and fault codes
+
+> **Pending v0.26.0 (R2):** not implemented yet; today an error type with `HTTPStatus() int` sets its status, `store`'s errors carry a deprecated `HTTPStatus` bridge, a message key is a plain `string` that renders as text when the catalog lacks it, the `MsgKey*` constants name codes, a fault renders the code its status derives, and `fault.Error` does not exist.
+
+The nested `{success: false, error: {...}}` envelope stays the default body, RFC 9457 the one-line opt-in renderer, and a success envelope comes only through `SuccessRenderer` and `Render`. This section settles how an error reaches that body: one status channel, a code and a message key that each mean one thing, and a carrier through which a service names a code of its own.
+
+**One status channel.** An error's status comes from `*HTTPError`, from the validation errors, from `*BindError` as a classified bind failure, or from a `fault.Provider`'s kind; anything else is a 500. A store error keeps its status through `FaultKind`, with no bridge of its own. The classification order is `*HTTPError`, `*fault.Error`, the validation errors, `*BindError`, any other `fault.Provider`, then 500: an explicit `HTTPError` keeps winning over what it wraps, and an explicit `fault.Error` wins over a validation or bind error it wraps, so a cause given as its `Internal` never reaches the client.
+
+**A message key is a catalog key, never text.** `MessageKey` is a named string type, `type MessageKey string`, declared in `validation` and aliased by the root, `type MessageKey = validation.MessageKey`, as `credo.RawConfig` aliases `config.RawConfig`: the root imports `validation`, whose violations carry a key too, so a violation's key has the type an `HTTPError`'s has. `HTTPError.WithMessageKey`, `HTTPError.MessageKey`, `ErrorInfo.MessageKey`, `RenderMessageKey`, `RenderInfo.MessageKey` and `ValidationError.MessageKey` take it, and `I18nConfig.ResolveMessageKey` returns a `string`, since it computes keys. A catalog miss never renders the key: it falls back to the built-in message for the code and then to the status text, and in debug the pipeline warns with the key, the code and the route. With the key typed, a key built by concatenation does not compile.
+
+**Messages are literal, client input is a detail.** `HTTPError.WithMessage(text)` sets the client message directly, never looked up. Client input goes into `Details` only, never into a key or a message: the framework's rejections that carry a client value — an unsupported content encoding or content type, a missing scope, `ContractGuard`'s content-type, header, query-parameter, API-version and body-size rejections, the decompressor's size limit — render their code's built-in message with the value in `Details`. A framework failure that is the developer's — an unsupported bind field type, an invalid redirect status — is a 500 with the reason logged, as an invalid bind target is.
+
+**Constants name codes.** A code of the framework's own has a `Code*` constant — `CodeValidationFailed`, `CodeBindFailed`, `CodeUnsupportedContentEncoding`, `CodeInvalidBindTarget` — and a code derived from a status has none, since `NewHTTPError(status)` derives it. The lifecycle's 503 takes its code from its status, and `middleware.Timeout` sets no key of its own, so `I18nConfig.ResolveMessageKey` maps the timeout's code `request_timeout` as it maps every other.
+
+**The fault kind is the default code.** A fault without an explicit code renders its kind as the code, whatever its kind — `already_exists`, `constraint`, `serialization`, `deadlock`, `contention` and `conflict` among the 409s, `timeout`, `unavailable` and `read_only` — so a duplicate stays distinguishable from a retryable serialization or deadlock failure. `not_found` keeps its code, which its status already gives. The statuses do not change.
+
+**A service names its own code.** `fault.Error` is the carrier a domain layer returns without naming a transport status:
+
+```go
+var ErrDomainTaken = fault.New(fault.KindAlreadyExists, "tenant_domain_taken")
+
+return nil, ErrDomainTaken.WithDetails(map[string]any{"domain": in.Domain}).WithInternal(err)
+```
+
+Its fields are `Kind`, `Code`, `Details` and `Internal` — `HTTPError`'s, with the kind in place of the status and without the message key. `New(kind, code...)` mirrors `NewHTTPError(status, code...)`: without a code the kind is the code, and an undeclared kind, `KindUnknown` included, an invalid machine code or a second code panics; during a request, recovery turns the panic into a generic 500. `WithDetails` and `WithInternal` return copies, so a sentinel is never mutated, and `Is` matches another `fault.Error` of the same kind and code, so a derived copy still matches its sentinel. The kind gives the status, as for every fault; `Code` is the rendered code; `Details` render as `details`; `Internal` is logged and never rendered; the message is resolved from the code, as for an `HTTPError` without a key. A value built without `New` whose kind is unknown or whose code is invalid fails closed to a generic 500, as an invalid `HTTPError` does. `Code` is the client-visible machine code, as on `HTTPError`, while `store.Error`'s `Code` is the driver's and stays unrendered. `fault` stays transport-neutral — no status, no message key — and shares the machine-code grammar with `HTTPError` through one internal check, since it cannot import the root. `HTTPError` stays for what only the HTTP boundary knows.
+
+**Keys are checked against the catalog.** `testutil.CheckMessageKeys(tb, catalogDir, sourceRoots...)` parses the sources with `go/parser`, collects the keys written as literals — a literal argument of `WithMessageKey` or `RenderMessageKey`, a literal given to a `MessageKey` field, a constant or variable declared with type `MessageKey`, a conversion to it — reports a key whose value is not a literal, and fails the test for a key the catalogs do not define, each with its file and line. The application chooses its catalog, so the check is per application. A key that reaches `WithMessageKey` through an untyped constant is outside the scan, so key constants are declared with their type.
+
+**Rejected:**
+
+- An opaque key type that only a constructor builds: it refuses at compile time the untyped literal that the text fallback's removal, the debug warning and the scan already catch, at the price of a conversion in every renderer and in the resolver, whose computed keys the scan would report.
+- A process-wide key registry: catalogs are per application, and one test process runs many applications.
+- A hand-maintained key list as the primary check: it duplicates the catalog and leaves a forgotten key unchecked.
+- For the carrier, mapping each domain error to an `HTTPError` in the handler, which every transport would repeat; an optional `FaultCode()` method beside `FaultKind()`, which a misspelled method passes unnoticed; a message key or a literal message on it, since `fault` cannot name the root's key type, the code already is the catalog key, and literal client text is the boundary's choice; and kinds added before a domain error needs them, since each kind is a status mapping and an unknown kind already fails closed.
+- For the constructor, `New(kind)` beside `NewCode(kind, code)`, or `New(kind, WithCode(code))`: `New(kind, code...)` mirrors `NewHTTPError(status, code...)`, so the two carriers are built alike, while a second constructor or an option would be a second way to set one field.
+
+**Problem.** A status reaches the client through two channels: the pipeline reads a fault's kind and, after it, any type with `HTTPStatus() int`, which `store`'s errors still implement as a deprecated bridge, so a code path can depend on a status no kind states. A message key is a plain `string`, and a catalog miss renders it as the message, so the framework's own rejections pass literal text as a key, and a key that embeds client input — a content type, a content encoding, a scope — renders that input to the client. The `MsgKey*` constants are codes named as keys, most of them repeating what a status already derives, and `middleware.Timeout`'s explicit key bypasses the resolver. A fault renders the code its status derives, so a duplicate and a retryable serialization or deadlock failure all answer `conflict`, and a service that needs a code of its own has to name a transport status by returning an `HTTPError`.
+
+**Removes.** The `HTTPStatus() int` interface, with its implementations on `*HTTPError` and `*BindError`, and `store`'s bridge: `(*store.Error).HTTPStatus` and the kind sentinels' `HTTPStatus`. The `string` type of a message key on `WithMessageKey`, `HTTPError.MessageKey`, `ErrorInfo.MessageKey`, `RenderMessageKey`, `RenderInfo.MessageKey` and `ValidationError.MessageKey`. The rendering of a missing key as text. The thirteen `MsgKey*` constants that repeat a status's code; `MsgKeyValidationFailed` and `MsgKeyBindFailed`, renamed `CodeValidationFailed` and `CodeBindFailed`. The framework keys that carry literal text or client input, and the 400 whose key names an unsupported bind field. `middleware.Timeout`'s explicit message key. The status-derived code of a fault without an explicit code, `conflict` among them.
 
 ### Message-key resolution
 
