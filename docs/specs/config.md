@@ -4,7 +4,7 @@
 
 > **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
 
-This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, section descriptors, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
+This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, section descriptors, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-configreloadresult-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
 
 ## Overview
 
@@ -14,7 +14,7 @@ The primary pattern is:
 
 1. **`credo.New()`** — auto-loads config via `config.Load()`, or use `credo.WithRawConfig(rc)` for explicit control
 2. **`var AppSection = config.Section[AppConfig]("app")`** — the section's key and type, named once
-3. **`app.Provide(AppSection.Decode)`** — the section bound in DI as a snapshot
+3. **`app.Provide(AppSection.Decode)`** — the section bound in DI as a snapshot; `app.Provide(AppSection.Live)` binds a [live section](#live-sections)
 
 The key appears **once**, in the descriptor; business code receives the section's typed value through its constructor, and string keys in business code are an explicit anti-pattern. [Section Descriptors](#section-descriptors--sectiont) states the contract; examples: [Configuration Guide — Typed Config + DI](../guides/configuration.md#typed-config--di).
 
@@ -40,8 +40,6 @@ Later sources override earlier sources on key conflicts.
 
 ### Source Opt-Outs — Hermetic Loading
 
-> **Current until v0.26.0 (R15):** the paragraph after the table names `Reload`/`Stage`; with R15 `Reload(ctx)` replays the opt-outs.
-
 `WithoutProcessEnv()` and `WithoutDotenv()` disable sources 4 and 3 respectively. Each opt-out kills its **whole source, bootstrap keys included** — not just the merge layer:
 
 | Option | Merge layer | Bootstrap keys | Still works |
@@ -49,7 +47,7 @@ Later sources override earlier sources on key conflicts.
 | `WithoutProcessEnv()` | No env vars merged (regardless of `WithPrefix`) | Process-env `CREDO_ENV` ignored; `CREDO_ENV_FILE` not consulted | `WithDotenvPath` (programmatic); a `.env`-sourced `CREDO_ENV` still drives env-specific file derivation |
 | `WithoutDotenv()` | No `.env` entries merged | No `.env` file read at all, so no `.env`-sourced `CREDO_ENV` | Process-env `CREDO_ENV` still drives env-specific file derivation |
 
-Combining both with `WithFiles(...)` (or `LoadBytes`) yields **fully hermetic loading**: only the listed files (or the embedded document) are read, and `Reload`/`Stage` replay the same opt-outs — a disabled source can never leak in at reload time. An empty `WithPrefix("")` is not an opt-out: it removes the filter and merges every process environment variable.
+Combining both with `WithFiles(...)` (or `LoadBytes`) yields **fully hermetic loading**: only the listed files (or the embedded document) are read, and `Reload(ctx)` replays the same opt-outs — a disabled source can never leak in at reload time. An empty `WithPrefix("")` is not an opt-out: it removes the filter and merges every process environment variable.
 
 `WithoutDotenv()` combined with an explicit `WithDotenvPath(...)` is contradictory and fails loud: `Load`/`LoadBytes` return an error. `WithoutDotenv()` + `WithDotenvOptional()` is merely redundant and is allowed.
 
@@ -133,27 +131,7 @@ Behavior contract:
 - `Unmarshal(key, &dst)` decodes a config sub-tree into `dst` (a pointer to a struct, map, slice, or primitive); returns error if the key is missing or decoding fails. The empty key `""` decodes the whole tree and returns an error when the configuration is empty. A key present with a null value leaves `dst` unchanged and returns no error.
 - `Exists(key)` checks both leaf and intermediate keys, and reports a key whose value is null as present. `Exists("")` is false.
 
-### Reload — Partial Reload (ADR-020)
-
-> **Current until v0.26.0 (R15):** this section describes `Reloader`, `Stager`, `Staged`, `Config.Stage` and the context-free `Config.Reload`, which leave the public API; [Live Sections](#live-sections) and [Reload and Its Result](#reload-and-its-result) replace it.
-
-```go
-type Reloader interface { Reload() (Changes, error) }
-type Stager interface { Stage() (Staged, error) }
-type Staged interface { RawConfig; Changes() Changes; Commit() }
-
-func (c *Config) Reload() (Changes, error)   // Stage + Commit
-func (c *Config) Stage() (Staged, error)
-func (c Changes) Affects(prefix string) bool  // a changed key equals prefix or lies under "prefix."; "" matches any change
-func (c Changes) Keys() []string              // sorted copy of the changed leaf key paths
-func (c Changes) Empty() bool                 // nothing changed
-```
-
-`*Config` implements both `Reloader` and `Stager`. `Stage` re-runs the load pipeline with the options captured by the original `Load` — the same files (or the same `LoadBytes` document), prefix, `.env` path and source opt-outs, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart) — into a candidate returned as a `Staged` handle: a `RawConfig` over the candidate, `Changes()` — the sorted symmetric difference of leaf key paths against the snapshot current at stage time (values are never retained) — and `Commit()`, which swaps the internal snapshot atomically so that concurrent `Unmarshal`/`Exists`/`Get` observe the old or the new tree, never a mix. An uncommitted candidate is discarded. `Reload` is `Stage` followed by `Commit`. Any load error leaves the current snapshot untouched and is returned. `RawConfig` stays a two-method interface; a custom store opts into reload by implementing `Reloader` (one-shot: atomic for readers, previous snapshot untouched on error) or, to get validate-before-publish, `Stager`. The App-level orchestration — validate-before-publish through typed `OnConfigChange[T]` subscribers, the restart-required warning for unsubscribed keys, file-based TLS rotation — is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error). The process environment is re-read on every stage; what a supervisor hands the process stays fixed until restart ([Deployment Guide](../guides/deployment.md#systemd)).
-
 ### Live Sections
-
-> **Pending v0.26.0 (R15):** not implemented yet; a section follows a reload only through an `app.OnConfigChange[T]` subscriber ([below](#apponconfigchangetkey-string-fn-funcctx-contextcontext-next-t-error)).
 
 ```go
 var Limits = config.Section[LimitsConfig]("limits")
@@ -167,9 +145,9 @@ l := s.limits.Load() // once per operation: one atomic load, a value no reload c
 
 | API | Contract |
 | --- | --- |
-| `Section[T].Live(src config.RawConfig) (*config.Live[T], error)` | Decodes and validates the section as `Decode` does — a missing section, an invalid one and an empty key fail alike — and registers the handle with the `*config.Config` it read. Over a configuration that cannot reload (`testutil`'s, a custom `RawConfig`) it fails, naming the configuration's type and `config.Load` |
+| `Section[T].Live(src config.RawConfig) (*config.Live[T], error)` | Decodes and validates the section as `Decode` does — a missing section, an invalid one and an empty key fail alike — and registers the handle with the `*config.Config` it read. Over a configuration that cannot reload (`testutil`'s, a custom `RawConfig`, a `Config` not built by `Load` or `LoadBytes`) it fails, naming the configuration's type and `config.Load` |
 | `(*config.Live[T]).Load() T` | The current value, with one atomic load. A consumer calls it once per operation |
-| `(*config.Live[T]).OnChange(fn func(ctx context.Context, prev, next T) error)` | Registers a callback for state derived from the section — a limiter, a compiled pattern, a `slog.LevelVar` — run after a reload that changed the section has published its new value |
+| `(*config.Live[T]).OnChange(fn func(ctx context.Context, prev, next T) error)` | Registers a callback for state derived from the section — a limiter, a compiled pattern, a `slog.LevelVar` — run after a reload that changed the section has published its new value. A nil `fn` panics |
 | `config.Fixed(v T) *config.Live[T]` | A handle whose value is `v` and never changes, and which runs no callback; for a consumer's unit test |
 
 - **Static by default, live by declaration.** A section bound through `Decode` is a snapshot: a reload does not change it, and a change to it is reported as needing a restart. Each reload that changes a key under a live section replaces the handle's value whole. No other binding changes at a reload, and no singleton is rebuilt.
@@ -178,16 +156,32 @@ l := s.limits.Load() // once per operation: one atomic load, a value no reload c
 
 ### Reload and Its Result
 
-> **Pending v0.26.0 (R15):** not implemented yet; [Reload — Partial Reload](#reload--partial-reload-adr-020) holds.
+`(*Config).Reload(ctx context.Context)` re-reads the sources with the options captured by the original `Load` — the same files (or the same `LoadBytes` document), prefix, `.env` path and source opt-outs, and the environment name resolved at first load (`CREDO_ENV` is not re-derived; switching environments is a restart). The process environment is re-read on every reload; what a supervisor hands the process stays fixed until restart ([Deployment Guide](../guides/deployment.md#systemd)). A load error returns a result that says nothing was published and the error `config: reload: …; nothing was published`, with the current snapshot untouched. Otherwise, in order:
 
-`(*Config).Reload(ctx context.Context)` re-reads the sources with the options captured by the original `Load` — the same files (or the same `LoadBytes` document), prefix, `.env` path and source opt-outs, and the environment name resolved at first load — and then, in order:
-
-1. Decodes and validates every live section the reload changes against the candidate. One failure aborts the reload with every old value current, and its error names the section's key and the error and says that nothing was published.
-2. Publishes the snapshot and the changed sections as one generation: once a `Load` returns a reload's value for one section, every later `Load` of that configuration returns that reload's values or newer ones. Two `Load` calls can still straddle a reload, so values that must agree within one operation belong to one section.
-3. Runs the `OnChange` callbacks in registration order, for the sections the reload changed, with the reload's context. An error or a recovered panic is joined into the reload's result, the later callbacks still run, and nothing rolls back. No callback is skipped when the context has ended, since the next reload's diff would not show its change again.
+1. Decodes and validates every live section the reload changes against the candidate. One failure aborts the reload with every old value current, and its error names the section's key and the error and says that nothing was published (`config: reload: live section "limits": …; nothing was published, and every live section keeps its value`); every failing section is named.
+2. Publishes the snapshot and the changed sections as one generation. Concurrent `Unmarshal` and `Exists` calls observe the old or the new tree, never a mix, and once a `Load` returns a reload's value for one section, every later `Load` of that configuration returns that reload's values or newer ones. Two `Load` calls can still straddle a reload, so values that must agree within one operation belong to one section.
+3. Runs the `OnChange` callbacks in registration order, for the sections the reload changed, with the reload's context. An error or a recovered panic is joined into the error `Reload` returns beside its result (`config: reload: OnChange callback of live section "limits": …`, a panic as `panic: …`), the later callbacks still run, and nothing rolls back. No callback is skipped when the context has ended, since the next reload's diff would not show its change again.
 4. Returns its result: what changed, the sections it replaced, the keys that need a restart and the keys a later source keeps. A live section covers every key under it; every other key whose value differs from the one the start read, a key of a section bound through `Decode` and a `server.tls.*` path included, needs a restart. A key whose file value changed while `.env` or the process environment keeps it is reported with that source. The keys that need a restart are computed against the snapshot the start read, so a reload that changes nothing reports them again and one that reverts a key to its start value clears it. An aborted reload returns a result that says nothing was applied and why, beside its error. Key paths are reported, never values.
 
-`App.Reload` keeps the trigger, the slot and the drain's step, logs this result and returns it beside its error ([Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error)). `RawConfig` stays a two-method interface; `config.Reloader`, `Stager`, `Staged` and `Config.Stage` leave the public API, and a custom `RawConfig` does not reload: it is loaded with `config.Load`.
+```go
+func (c *Config) Reload(ctx context.Context) (ReloadResult, error)
+
+type ReloadResult struct {
+    Published       bool            `json:"published"`         // the snapshot was published
+    Aborted         string          `json:"aborted,omitempty"` // why nothing was published; empty when Published
+    Changed         []string        `json:"changed"`           // changed leaf keys, sorted, against the snapshot before the reload
+    Replaced        []string        `json:"replaced"`          // live sections replaced, in the order they were declared live
+    RestartRequired []string        `json:"restart_required"`  // keys that differ from the start outside every live section, sorted
+    Overridden      []OverriddenKey `json:"overridden"`        // file keys whose change a later source hides
+}
+
+type OverriddenKey struct {
+    Key    string `json:"key"`    // the dotted key path whose file value changed
+    Source string `json:"source"` // the later source: the .env entry or the environment variable
+}
+```
+
+The result is the same value `App.Reload` returns; its JSON form is what an admin endpoint answers with. A nil `ctx` is an error, and so is a `Config` not built by `Load` or `LoadBytes`. Reloads of one `Config` are serialized. `App.Reload` keeps the trigger, the slot and the drain's step, logs this result and returns it beside its error ([Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-configreloadresult-error)). `RawConfig` stays a two-method interface, and a custom `RawConfig` does not reload: it is loaded with `config.Load`.
 
 ### credo.New() Config Integration
 
@@ -199,8 +193,6 @@ The framework reads its own settings from the `server` section when present (lis
 
 ### config.LoadBytes() — Embedded Config
 
-> **Current until v0.26.0 (R15):** the last item names `Reload`/`Stage`; with R15 `Reload(ctx)` re-parses the same document.
-
 ```go
 rc, err := config.LoadBytes(data, config.FormatJSON, opts...)
 ```
@@ -210,7 +202,7 @@ Creates a Config from one raw document. Useful with `go:embed`.
 - `format` is `config.FormatJSON` or `config.FormatYAML` (also `"yml"` or a file extension such as `".yaml"`, case-insensitive); any other format is an error.
 - The document is parsed first, so a malformed document fails before any `.env` I/O. The `.env` and process-environment layers then merge on top with the same rules and options as `Load`.
 - `CREDO_ENV` selects no env-specific overlay: there is no file to derive one from.
-- The bytes are copied: `Reload`/`Stage` re-parse the same document and re-read only `.env` and the process environment.
+- The bytes are copied: `Reload(ctx)` re-parses the same document and re-reads only `.env` and the process environment.
 
 ### Section Descriptors — Section[T]
 
@@ -286,10 +278,10 @@ Every typed decode from a Config is strict unless the Config was loaded with `co
 
 `WithWeakDecoding()`'s contract is one sentence: mapstructure's weak coercion. Strict decoding is the default and has no option of its own.
 
-The policy rides on the Config instance, so it covers every decode path: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction.
+The policy rides on the Config instance, so it covers every decode path: `Unmarshal`, a section's `Decode` and `Live`, the decoding of a reload's candidate, and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction.
 
 - **Environment overrides decode.** Process environment and `.env` values are strings, and the string hook parses each by its target type, so `CREDO_SERVER__PORT=9090` decodes into an `int`. The hook does not know a value's source, so a quoted number in a file decodes too; parsing a string by its target type is not a conversion between kinds.
-- **Complete typed views**: every struct that decodes a section — full-tree decodes included — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
+- **Complete typed views**: every struct that decodes a section — a live section's `T` and full-tree decodes included — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
 - **The error names the remedy.** A value strict decoding refuses fails with the key path, the conversion refused, and `config.WithWeakDecoding()` as the opt-in; a string that does not parse as its target type names the key path without the remedy, since weak coercion would not parse it either. Every offending key of one decode is reported. Unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
 
 ## Default Values
@@ -377,31 +369,27 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Error Handling Contract
 
-> **Current until v0.26.0 (R15):** the last item names `Reload()`/`Stage()`; with R15 a reload's load error is returned by `Reload(ctx)` with its result, and `Stage` is gone.
-
 - **Config File Error**: I/O or syntax error in JSON/YAML (only if found), including a YAML file with more than one document (`yaml: a config file holds one document; found another after the first`).
 - **Missing Explicit Config Files**: `WithFiles` lists files of which none exists (`none of the specified config files were found: …`).
 - **Unsupported Format**: a config file whose extension, or a `LoadBytes` format, is neither JSON nor YAML (`unsupported format: …`).
 - **Conflicting Options**: `WithoutDotenv` + `WithDotenvPath`, rejected before any I/O.
 - **Explicit .env Error**: an explicit `.env` path (`WithDotenvPath` or `CREDO_ENV_FILE`) is missing (a Warn instead under `WithDotenvOptional()`) or unreadable, or a `.env` file fails to parse.
 - **Key Not Found**: `Unmarshal`, or a section's `Decode`, on a key that does not exist (`config: key "…" not found`; through `Decode`, `config: section "…": config: key "…" not found`).
-- **Empty Section Key**: `Section[T].Decode` with an empty key (`config: Section.Decode: empty section key; …`).
+- **Empty Section Key**: `Section[T].Decode` or `Live` with an empty key (`config: Section.Decode: empty section key; …`, `config: Section.Live: …`).
 - **Empty Configuration**: a full-tree `Unmarshal("", &dst)` of an empty configuration (`config: configuration is empty`).
 - **Strict Decoding Refusal**: an unknown key (`config: unknown key "app.porrt": no field of the target decodes it; fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()`) or a conversion across kinds (`config: key "app.port": …; strict decoding converts no value across kinds: …`) names the key path, the conversion refused, and `config.WithWeakDecoding()`.
 - **Type Conversion**: a string that does not parse as its target type (`config: key "server.port": …`), in either mode.
 - **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling (`config: validation: …`).
-- All errors are returned, never panicked; only `MustGetConfig` panics, with the error `GetConfig` would return, naming the key.
-- **Reload Error**: any load error during `Reload()`/`Stage()` is returned and the previous snapshot stays current.
-
-> **Pending v0.26.0 (R15):** not implemented yet; a reload validates `OnConfigChange` subscribers and has no live sections.
-
+- **Reload Error**: a load error during `Reload(ctx)` is returned beside a result that says nothing was published, and the previous snapshot stays current.
 - **Live Section at Reload**: a live section that fails to decode or validate at a reload names its key and the error and says that nothing was published; the old values stay current.
+- **Callback Error**: an `OnChange` callback's error or recovered panic is joined into the error `Reload` returns, naming its section; the reload stays published.
 - **Configuration That Cannot Reload**: `Section.Live` over a configuration that cannot reload, and `App.Reload` with one, each name the configuration's type and `config.Load`.
-- **One Nature per Section**: a static read of a live section, or a live read of a static one, names the section and both reads.
+- **One Nature per Section**: a static read of a live section, or a live read of a static one, names the section and both reads (`config: section "limits" is read both as static, by …, and as live, by …; …`).
+- All errors are returned, never panicked; only `MustGetConfig` panics, with the error `GetConfig` would return, naming the key, and `Live.OnChange` with a nil callback.
 
 ## Redacted Formatting
 
-`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the `Changes` doctrine (key paths only, never values, safe to log). The state lives behind one private pointer and the formatting methods are declared on the value type, so a dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`.
+`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the reload result's doctrine (key paths only, never values, safe to log). The state lives behind one private pointer and the formatting methods are declared on the value type, so a dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`.
 
 ## Koanf Adaptation Scope
 
@@ -409,5 +397,5 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 - **Provider/parser architecture** (`providers/*`, `parsers/*`): the loader is single-pass, and file, `.env` and environment reading is Credo's own (`load.go`, `dotenv.go`). A single embedded document goes through `LoadBytes`; an `fs.FS` source with discovery and env-specific overlays is deferred. Remote (consul, etcd, vault) and CLI-flag providers are out of scope, and only JSON and YAML are supported.
 - **Scalar getters, `All()`, `KeyMap()`**: `Unmarshal` and a section's `Decode` decode typed values, `Unmarshal("", &dst)` decodes the whole tree, and lookup walks the nested map (no flattened key index).
-- **`Set()`/`Delete()`**: no in-place mutation; reload re-loads the whole snapshot ([Reload](#reload--partial-reload-adr-020)).
+- **`Set()`/`Delete()`**: no in-place mutation; reload re-loads the whole snapshot ([Reload](#reload-and-its-result)).
 - **`StrictMerge`/`MergeStrict`**: merges are always loose.
