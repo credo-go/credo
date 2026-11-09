@@ -19,20 +19,7 @@ A worker system has to settle a set of contract questions before v1 freezes it:
 
 ## Decision
 
-### One package, two kinds, chosen by the registration method
-
-> **Current until v0.25.0 (W4):** the next paragraph and its example place the workers in the `worker` package, registered through the `*Supervisor` that `worker.Use(app)` returns.
-
-Continuous and scheduled work share one package, one interface, one supervisor and one loop; a schedule is a scheduling strategy, not a second system, which is why no separate `cron` package exists. The kind is chosen by the registration method:
-
-```go
-workers := worker.Use(app)
-
-workers.Continuous("order-consumer", consumer)
-workers.Scheduled("session-cleanup", "0 */6 * * *", cleanup)
-```
-
-> **Pending v0.25.0 (W4):** the next paragraph and its example state the registration in the root package; until W4 ships, the workers are registered as the paragraph above shows.
+### One registry, two kinds, chosen by the registration method
 
 Continuous and scheduled work share one registry, one interface and one loop; a schedule is a scheduling strategy, not a second system, which is why no separate `cron` package exists. The kind is chosen by the registration method:
 
@@ -45,8 +32,6 @@ The call site states the contract aloud: a reader who sees a finite function pas
 
 ### Workers are a subsystem of the App, in the root package
 
-> **Pending v0.25.0 (W4):** not implemented yet; the `worker` package holds the registry, its types and the engine, and `internal/kernel` adds each worker's component to the App.
-
 `app.Workers()` returns the App's one registry, a `*credo.Workers` held in a field of the App, created on first use and the same value on every call. The placement follows the rule [ADR-002](002-code-acquisition-strategy.md#what-lives-in-the-root-package) records: a subsystem the App holds one of and reaches through `app.` lives in the root package. The root's module allowlist, recorded beside that rule, admits it, since the worker system links no third-party module: its cron parser is adapted from robfig/cron, not imported.
 
 The public types — `Worker`, `WorkerInfo`, `WorkerKind`, `WorkerStatus`, `RestartPolicy`, `WorkerRun`, `ErrWorkerRunTimeout`, `ContinuousConfig`, `ScheduledConfig` and `Schedule` — are defined in the root package, not aliased from an internal one, so `go doc` and pkg.go.dev show them where users look; the root namespace forces the `Worker` prefixes ([worker spec](../specs/worker.md#workers-in-the-root-package)). The engine — the runner, the restart backoff, the schedule loop and the cron parser — lives in `internal/worker`, which does not import the root package; the root converts at the boundary. The registry calls `internal/di` directly, with no seam between them, so a registration the container refuses panics with the container's reason under the worker's own call.
@@ -55,27 +40,21 @@ One registry per App makes the report whole: `Snapshot` and `Lookup` cover every
 
 ### The name is registration identity
 
-> **Current until v0.25.0 (W5):** `worker.Func` is a function type in the `http.HandlerFunc` style that adapts a `func(context.Context) error` to `Worker`.
+> **Current until v0.25.0 (W5):** a registration takes a `Worker` only; a function is registered through a type whose `Run` method calls it.
 
 `Worker` has one method, `Run(ctx) error`. The name is an argument of the registration method, the same position Credo takes for routes and health checks: a name identifies a registration, not an instance. Names are validated strictly and uniformly — non-empty, no surrounding whitespace, no control characters, never normalized — because a name is a log attribute, a future metric label and the suffix of the component name `worker:<name>`, under which readiness and the lifecycle report the worker. No prefix is reserved: no framework-owned worker needs a namespace, and health's `credo.` reservation applies to the full name `worker:<name>`.
 
-> **Pending v0.25.0 (W5):** until W5 ships, a function is registered through `worker.Func`.
+> **Pending v0.25.0 (W5):** until W5 ships, a function is registered through a type whose `Run` method calls it.
 
 A function needs no adapter: a `func(context.Context) error` is a worker as it is, and the registry makes the conversion itself ([Three forms](#three-forms-a-worker-a-run-function-a-constructor)).
 
-### Each worker is a component; the supervisor is a registry
-
-> **Current until v0.25.0 (W4):** the next paragraph describes the `*Supervisor` of the `worker` package.
-
-`worker.Use(app)` returns a `*Supervisor`: the registry and reporting object. It keeps the definitions and the live state for `Snapshot` and `Lookup`, enforces unique names and assigns the logger. It has no `Start`, no `Shutdown`, no hooks and no DI binding; `Use` registers nothing, so the supervisor has no registration window of its own.
-
-> **Pending v0.25.0 (W4):** the next paragraph describes the registry `app.Workers()` returns; until W4 ships, the paragraph above holds.
+### Each worker is a component; the registry has no lifecycle
 
 `app.Workers()` returns the registry and reporting object. It keeps the definitions and the live state for `Snapshot` and `Lookup`, enforces unique names across the App and assigns the logger. It has no `Start`, no `Shutdown`, no hooks and no DI binding, and creating it registers nothing, so an App that calls it and registers no worker has no start work, and the registry has no registration window of its own.
 
 Each registration adds one component to the App's component registry ([ADR-024](024-lifecycle-components.md)), named `worker:<name>`: its `Start` launches the worker's loop, its `Shutdown` cancels the worker's context and waits for `Run`, and its `Ready` reports the readiness conditions the registration sets ([worker spec](../specs/worker.md#components)). `Shutdown` returns when `Run` has returned — and not before. It does not give up at the deadline itself: a `Run` that ignores cancellation is abandoned by the lifecycle under its rule for every component, reported, and the components the worker depends on are kept open. Returning at the deadline would tell the lifecycle the worker is done and let it close a database under a goroutine that still uses it.
 
-**The tier is declared per registration**, and zero is the kind's default ([worker spec](../specs/worker.md#tiers)). A scheduled worker originates its runs and defaults to ingress: it stops first, concurrently with the HTTP drain, so no run starts during the drain. A continuous worker defaults to internal: it stops after the HTTP drain, in reverse dependency order, so a worker that drains a queue the handlers fill sees every job they enqueued before the database it writes to is shut down. The defaults follow the asymmetry of the two mistakes: an external consumer wrongly left internal merely stops later, while an in-process consumer wrongly placed in ingress loses the work handlers enqueue during the drain. A consumer of an external queue declares `Tier: credo.TierIngress`. The tier belongs to each worker, not to the supervisor: one supervisor holds a queue consumer that must outlive the handlers and a cron job that must not start a run during the drain.
+**The tier is declared per registration**, and zero is the kind's default ([worker spec](../specs/worker.md#tiers)). A scheduled worker originates its runs and defaults to ingress: it stops first, concurrently with the HTTP drain, so no run starts during the drain. A continuous worker defaults to internal: it stops after the HTTP drain, in reverse dependency order, so a worker that drains a queue the handlers fill sees every job they enqueued before the database it writes to is shut down. The defaults follow the asymmetry of the two mistakes: an external consumer wrongly left internal merely stops later, while an in-process consumer wrongly placed in ingress loses the work handlers enqueue during the drain. A consumer of an external queue declares `Tier: credo.TierIngress`. The tier belongs to each worker, not to the registry: one registry holds a queue consumer that must outlive the handlers and a cron job that must not start a run during the drain.
 
 > **Current until v0.25.0 (W5):** the next paragraph states the edges of the provided form.
 
@@ -85,19 +64,13 @@ Each registration adds one component to the App's component registry ([ADR-024](
 
 **Edges.** The parameters of a run function and of a constructor are the worker's edges: the start walk resolves or builds them after their components have started, and the drain stops the worker before them — the ordering a worker that writes to a database needs, in both directions. An internal worker whose parameters depend on an ingress component fails `Finalize` like every internal component (ADR-024). A worker registered by value has no edges the graph can see — a closure's captures are invisible — and takes its place in its tier by registration order; a worker that uses infrastructure is registered as a run function or a constructor.
 
-> **Current until v0.25.0 (W4):** the next paragraph names the supervisor as what a module takes.
-
-DI access to the supervisor is the application's choice. The framework binds nothing into the application's container: a module that registers workers takes the supervisor as a parameter, and an application that wants it injected into an admin controller binds it with `app.ProvideValue(workers)`.
-
-> **Pending v0.25.0 (W4):** the next paragraph replaces the paragraph above when W4 ships.
-
 DI access to the registry is the application's choice. The framework binds nothing into the application's container: a module that registers workers takes the `*credo.App` it already receives, and an application that wants the registry injected into an admin controller binds it with `app.ProvideValue(app.Workers())`.
 
 ### DI-provided workers are built in the start walk
 
 > **Current until v0.25.0 (W5):** this section describes the provided form, which the [three forms](#three-forms-a-worker-a-run-function-a-constructor) replace.
 
-`ContinuousProvided[T Worker](name, cfg...)` and `ScheduledProvided[T Worker](name, expr, cfg...)` are generic methods on `*Supervisor`, the form `app.Resolve[T]` uses. `T` is resolved when the start walk builds the worker's component, not at registration, so registration order relative to `Provide` is free and `T` may be an interface bound through `Alias`. Each mistake surfaces in the phase that reveals it — a type without `Run` at compile time, a `T` with no binding at `Finalize`, a failed construction at start ([worker spec](../specs/worker.md#provided-workers)). Registering one `T` twice panics, under two names or in two supervisors of one App, because the container would hand both loops one instance.
+`ContinuousProvided[T Worker](name, cfg...)` and `ScheduledProvided[T Worker](name, expr, cfg...)` are generic methods on `*Workers`, the form `app.Resolve[T]` uses. `T` is resolved when the start walk builds the worker's component, not at registration, so registration order relative to `Provide` is free and `T` may be an interface bound through `Alias`. Each mistake surfaces in the phase that reveals it — a type without `Run` at compile time, a `T` with no binding at `Finalize`, a failed construction at start ([worker spec](../specs/worker.md#provided-workers)). Registering one `T` under two names panics, because the container would hand both loops one instance.
 
 ### Three forms: a worker, a run function, a constructor
 
@@ -140,7 +113,7 @@ Handlers and the loop share one singleton, which starts once, before the loop, a
 
 ### Configuration is per kind, in code
 
-Each kind has its own configuration struct, `ContinuousConfig` and `ScheduledConfig` ([worker spec](../specs/worker.md#configuration)), and each registration method takes it variadically, following the framework's config-struct convention: zero arguments for the defaults, one for custom, more than one panics. Zero always means the default; nothing distinguishes an omitted field from an explicit zero. The configuration comes from the registration call and nowhere else: the package owns no configuration section, and an application that wants environment-driven settings unmarshals its own typed section and passes the values — the pattern every other feature follows (`AccessLogConfig`, `HealthConfig`, `websocket.Config`). Resolution has two levels: the given value, then the package default.
+Each kind has its own configuration struct, `ContinuousConfig` and `ScheduledConfig` ([worker spec](../specs/worker.md#configuration)), and each registration method takes it variadically, following the framework's config-struct convention: zero arguments for the defaults, one for custom, more than one panics. Zero always means the default; nothing distinguishes an omitted field from an explicit zero. The configuration comes from the registration call and nowhere else: the worker system owns no configuration section, and an application that wants environment-driven settings unmarshals its own typed section and passes the values — the pattern every other feature follows (`AccessLogConfig`, `HealthConfig`, `websocket.Config`). Resolution has two levels: the given value, then the default.
 
 ### Registration misuse panics
 
@@ -158,7 +131,7 @@ A registration after the container was finalized names, under the worker's own c
 
 ### The snapshot carries the effective configuration
 
-`Info` is identity, the resolved configuration of the worker's kind and flat live state ([worker spec](../specs/worker.md#info)). The configuration is the policy the runner executes after defaults are applied, not the arguments as passed, so registration is testable without running anything; its type is the type the registration took, so the input and the report never drift apart. The live-state fields stay flat, and the status and counters are always present, so dashboards keep one schema. The configuration types hold only scalars, so every snapshot's copy of the configuration is a deep copy, and a future field that is not a scalar is excluded from the echo. One builder produces every `Info`. Because applications serve `Snapshot()` from admin endpoints, the JSON shape is a wire contract ([worker spec](../specs/worker.md#json-shape)), with durations as integer nanoseconds under the response profile of ADR-021.
+`WorkerInfo` is identity, the resolved configuration of the worker's kind and flat live state ([worker spec](../specs/worker.md#workerinfo)). The configuration is the policy the runner executes after defaults are applied, not the arguments as passed, so registration is testable without running anything; its type is the type the registration took, so the input and the report never drift apart. The live-state fields stay flat, and the status and counters are always present, so dashboards keep one schema. The configuration types hold only scalars, so every snapshot's copy of the configuration is a deep copy, and a future field that is not a scalar is excluded from the echo. One builder produces every `WorkerInfo`. Because applications serve `Snapshot()` from admin endpoints, the JSON shape is a wire contract ([worker spec](../specs/worker.md#json-shape)), with durations as integer nanoseconds under the response profile of ADR-021.
 
 The statuses carry their operational meaning ([worker spec](../specs/worker.md#status)): `backoff` is a continuous worker waiting to restart after a failure — unhealthy, recovering — while `waiting` is a scheduled worker waiting for its next activation, whatever its last run did, so a scheduled worker's "unhealthy but recovering" signal is `consecutive_failures > 0`. `LastStartedAt` is when the most recent run was admitted and `LastSucceededAt` when the last successful run completed; the names say which end of a run each records.
 
@@ -168,9 +141,9 @@ After every run the loop first classifies the outcome, records it, and only then
 
 ### Continuous workers are permanent
 
-A continuous worker's `Run` must remain active until its context is cancelled. A nil return while the context is alive is a failure with an actionable message and follows the restart policy. A restart calls `Run` again on the same value, so a continuous `Run` must be re-enterable — it builds its per-run resources inside `Run` — or be registered with `Restart{Disabled: true}`. Finite background work belongs in a component's `Start` or an `OnStart` hook when startup should wait for it, or in a continuous worker that waits for `<-ctx.Done()` after the work. This is the only restart strategy offered.
+A continuous worker's `Run` must remain active until its context is cancelled. A nil return while the context is alive is a failure with an actionable message and follows the restart policy. A restart calls `Run` again on the same value, so a continuous `Run` must be re-enterable — it builds its per-run resources inside `Run` — or be registered with `RestartPolicy{Disabled: true}`. Finite background work belongs in a component's `Start` or an `OnStart` hook when startup should wait for it, or in a continuous worker that waits for `<-ctx.Done()` after the work. This is the only restart strategy offered.
 
-`Restart{Disabled, Limit, MinDelay, MaxDelay}` states the policy. `Limit` N, N > 0, allows the first run plus at most N restarts; zero is unlimited. `Disabled` makes the first failed run terminal: no in-process retry, and nothing more — the worker remains permanent, an early nil return is still a failure, and it ends in `failed`. It fills a gap a count cannot express, since `Limit` keeps zero for "unlimited", and with it the first failure is the last, so `LastError` holds the real cause rather than the error of a forced restart of a `Run` that is not re-enterable. `Disabled` beside any other field is a contradiction and panics.
+`RestartPolicy{Disabled, Limit, MinDelay, MaxDelay}` states the policy. `Limit` N, N > 0, allows the first run plus at most N restarts; zero is unlimited. `Disabled` makes the first failed run terminal: no in-process retry, and nothing more — the worker remains permanent, an early nil return is still a failure, and it ends in `failed`. It fills a gap a count cannot express, since `Limit` keeps zero for "unlimited", and with it the first failure is the last, so `LastError` holds the real cause rather than the error of a forced restart of a `Run` that is not re-enterable. `Disabled` beside any other field is a contradiction and panics.
 
 What follows a terminal failure is the application's. The framework reports the fact — status `failed`, the `worker failed` line, and an unready instance under `UnreadyWhenFailed` — and no component ends the App (ADR-024). Readiness only takes the instance out of rotation: a `Disabled` worker bound to readiness alone leaves a process that is alive, unready and never restarted. An application that wants a restart ties a liveness check to the worker through `Lookup`, knowing that a failure caused by a shared dependency restarts every replica; the [worker guide](../guides/worker.md#escalating-a-terminal-failure) carries the recipe.
 
@@ -178,7 +151,7 @@ The cost of permanence is accepted and stated: a worker that returns nil on purp
 
 ### Timeouts are cooperative and cannot be laundered
 
-`ScheduledConfig.RunTimeout` bounds every run of a scheduled worker by deriving the run context with `context.WithTimeoutCause(…, ErrRunTimeout)`. Classification reads the cause, not the return value: a run cut short by its budget is a failure even when it returns nil, because Credo's own idiom `case <-ctx.Done(): return nil` would otherwise turn half-done work into a success that stamps `LastSucceededAt`, resets the failure streak and opens a readiness barrier. The accepted cost is conservative: a run that completes just after its deadline counts as failed. The timeout never abandons the goroutine, so at most one run per worker is ever active. It is scheduled-only, since a continuous `Run` lives for the process.
+`ScheduledConfig.RunTimeout` bounds every run of a scheduled worker by deriving the run context with `context.WithTimeoutCause(…, ErrWorkerRunTimeout)`. Classification reads the cause, not the return value: a run cut short by its budget is a failure even when it returns nil, because Credo's own idiom `case <-ctx.Done(): return nil` would otherwise turn half-done work into a success that stamps `LastSucceededAt`, resets the failure streak and opens a readiness barrier. The accepted cost is conservative: a run that completes just after its deadline counts as failed. The timeout never abandons the goroutine, so at most one run per worker is ever active. It is scheduled-only, since a continuous `Run` lives for the process.
 
 ### Panics are recorded without their stack
 
@@ -206,7 +179,7 @@ The snapshot and the log make the policy visible. The snapshot echoes the resolv
 
 ### Run admission is one ordered step
 
-The activation time is computed without side effects, the worker's context is checked, one commit records the run, and `Run` is called ([worker spec](../specs/worker.md#run-admission)). The commit is the only writer of `StatusRunning`. If the check observes cancellation, no new run starts and nothing is recorded. The order is what lets an in-package test policy prove the property without a production test seam.
+The activation time is computed without side effects, the worker's context is checked, one commit records the run, and `Run` is called ([worker spec](../specs/worker.md#run-admission)). The commit is the only writer of `WorkerStatusRunning`. If the check observes cancellation, no new run starts and nothing is recorded. The order is what lets an in-package test policy prove the property without a production test seam.
 
 ### Scheduling is serial and skip-only
 
@@ -218,17 +191,15 @@ Each configuration carries only the readiness conditions its kind can meet, name
 
 ### One run-context value
 
-> **Pending v0.25.0 (W4):** until W4 ships, the accessor is `worker.CurrentRun(ctx) (worker.RunInfo, bool)`, with the same fields and rules; the root names below replace it.
-
 `credo.CurrentWorkerRun(ctx) (WorkerRun, bool)` returns the worker's name, the run's identifier and the intended activation time. One context key carries them, the boolean says whether the context is a run context at all, and a field can be added without adding a function. The run context carries execution metadata only: services, loggers and configuration come from constructors.
 
 ### Logging has one vocabulary and a fixed shape
 
-Every started worker writes exactly one `worker started` and one `worker stopped` line, both owned by the loop so no exit path can miss them. One message names each event whatever the kind, and run lines carry the `run_id` that `CurrentRun` returns inside the run. A successful scheduled run is logged at Debug, since liveness is answered by the snapshot and readiness, not by an Info line per run. A single terminal line, `worker failed`, with a `reason`, gives one alerting rule for "a worker gave up" whatever the kind. The stop line stays at Info even for a failed worker: the preceding Error line is the alerting signal. The [worker spec](../specs/worker.md#logging-contract) lists every message and attribute.
+Every started worker writes exactly one `worker started` and one `worker stopped` line, both owned by the loop so no exit path can miss them. One message names each event whatever the kind, and run lines carry the `run_id` that `CurrentWorkerRun` returns inside the run. A successful scheduled run is logged at Debug, since liveness is answered by the snapshot and readiness, not by an Info line per run. A single terminal line, `worker failed`, with a `reason`, gives one alerting rule for "a worker gave up" whatever the kind. The stop line stays at Info even for a failed worker: the preceding Error line is the alerting signal. The [worker spec](../specs/worker.md#logging-contract) lists every message and attribute.
 
 ### State
 
-The shutdown deadline is the application's; there is no worker-specific shutdown timeout, which would only create ambiguity about which deadline wins. `StatusFailed` is permanent until the application restarts; there is no paused state and no per-worker cancellation. Runner state is guarded by a mutex rather than an `atomic.Value`, whose stores must share one concrete type. The supervisor logs through `App.Logger()` with `module=worker` rather than through a logger registered in DI, which would let services bypass the per-service logger of `credo.Infra`. Timing tests use `testing/synctest` instead of a clock abstraction that production code would carry only for tests.
+The shutdown deadline is the application's; there is no worker-specific shutdown timeout, which would only create ambiguity about which deadline wins. `WorkerStatusFailed` is permanent until the application restarts; there is no paused state and no per-worker cancellation. Runner state is guarded by a mutex rather than an `atomic.Value`, whose stores must share one concrete type. The registry logs through `App.Logger()` with `module=worker`, and each worker's records carry `component=worker:<name>`, rather than through a logger registered in DI, which would let services bypass the per-service logger of `credo.Infra`. Timing tests use `testing/synctest` instead of a clock abstraction that production code would carry only for tests.
 
 ## Rejected Alternatives
 
@@ -243,10 +214,10 @@ The shutdown deadline is the application's; there is no worker-specific shutdown
 - **One interface with the kind chosen by an option** (`WithSchedule`). Rejected: the contract of a nil return would be decided far from the call that registers the worker, and every kind-specific option becomes a cell of a runtime validation matrix.
 - **Two interfaces** (`Run` for continuous work, `Do` for scheduled work). Rejected: the registration method already names the contract, and closures — the common form — would need two adapters.
 - **Functional options with presence flags**, distinguishing an omitted setting from an explicit zero. Rejected: configuration structs are the framework's convention, and an omitted-versus-zero distinction exists only to give meaning to a three-level resolution no application needs.
-- **A `worker` configuration section** read by the package. Rejected: it would be the only section a feature package owns beside the root's `server`, it moves the source of a worker's delays away from the call that states everything else about the worker, and typed application configuration passed in code covers the need.
+- **A `worker` configuration section** read by the registry. Rejected: it would be the only section a subsystem owns beside the root's `server`, it moves the source of a worker's delays away from the call that states everything else about the worker, and typed application configuration passed in code covers the need.
 > **Current until v0.25.0 (W5):** the next two items give the reasons of the provided form's era.
 
-- **A placeholder value for provided workers** (`workers.Continuous(name, worker.Provided[T]())`). Rejected: it halves the method count, but it puts into the `Worker` type a value that cannot do what the interface promises; the supervisor would have to recognize it through an unexported interface, and the recognition is lost the moment an application wraps it, so a valid-looking `Worker` fails at run time — for a continuous worker, in a restart loop. Four literal methods add no rule to learn.
+- **A placeholder value for provided workers** (`workers.Continuous(name, worker.Provided[T]())`). Rejected: it halves the method count, but it puts into the `Worker` type a value that cannot do what the interface promises; the registry would have to recognize it through an unexported interface, and the recognition is lost the moment an application wraps it, so a valid-looking `Worker` fails at run time — for a continuous worker, in a restart loop. Four literal methods add no rule to learn.
 - **`worker.Provide[T](app, constructor, opts...)`**, combining provider and registration. Rejected: it duplicates `app.Provide`, hides the provider from ordinary DI reading, and still needs the name outside the interface.
 
 > **Pending v0.25.0 (W5):** the next two items replace the two above when W5 ships.
@@ -256,24 +227,17 @@ The shutdown deadline is the application's; there is no worker-specific shutdown
 
 - **A `Name()` method on the worker as its identity**, with a name parameter only for the provided form, checked at start. Rejected: two sources of truth for one identity.
 - **A provided worker as a value that resolves `T` in its `Start`.** Rejected: a value has no edges, so the order a worker that writes to a database needs would become a registration-order convention.
-- **The supervisor as a component, or attached through its own start and drain hooks and a DI binding.** Rejected: one stop moment for every worker cannot serve both a queue consumer that must outlive the handlers and a cron job that must not start a run during the drain, and several mechanisms for one resource reach its shutdown more than once. Each worker is a component instead.
-- **A tier for the whole supervisor.** Rejected for the same reason: the tier belongs to each registration.
-- **A root `RegistrationOpen()` predicate, or registration guards of the supervisor's own.** Rejected: the window is the component registry's, bootstrap is sequential by contract (ADR-022), and a late registration panics where the registry refuses it.
-> **Current until v0.25.0 (W4):** the next item gives the reason of the `worker` package's era.
-
-- **A "one supervisor per App" slot in the kernel.** Rejected: each `Use` is an independent registry, and the one duplicate that matters — a worker name — is caught by the supervisor within one registry and by the component registry's unique names across registries. A process-wide guard is rejected because one test process runs many Apps.
-
-> **Pending v0.25.0 (W4):** the next item replaces the item above when W4 ships.
-
+- **The registry as a component, or attached through its own start and drain hooks and a DI binding.** Rejected: one stop moment for every worker cannot serve both a queue consumer that must outlive the handlers and a cron job that must not start a run during the drain, and several mechanisms for one resource reach its shutdown more than once. Each worker is a component instead.
+- **A tier for the whole registry.** Rejected for the same reason: the tier belongs to each registration.
+- **A root `RegistrationOpen()` predicate, or registration guards of the registry's own.** Rejected: the window is the component registry's, bootstrap is sequential by contract (ADR-022), and a late registration panics where the component registry refuses it.
 - **A "one supervisor per App" slot in the kernel.** Rejected for the `worker` package, whose registries were independent: the one duplicate that matters — a worker name — was caught across them by the component registry's unique names. That reason never addressed a snapshot that covers every worker. In the root package the registry is a field of the App, so one registry per App needs no slot in a kernel, and `Snapshot` and `Lookup` see every worker. A process-wide guard stays rejected because one test process runs many Apps.
-
 - **The verbs `Supervise` and `Schedule` as method names.** Rejected: `Schedule` would name both a method and the parsed-cron type, and both kinds are supervised.
-- **`Pool` as the supervisor's name.** Rejected: a worker pool is N interchangeable goroutines draining one queue; this type supervises named, distinct, long-lived workers.
+- **`Pool` as the registry's name.** Rejected: a worker pool is N interchangeable goroutines draining one queue; this type supervises named, distinct, long-lived workers.
 - **Echo the configuration exactly as given in the snapshot.** Rejected in favor of the effective policy: an echoed zero delay would misreport what the runner does.
 - **Flat state and configuration on `Info`, or one union configuration for both kinds.** Rejected: the first mixes configuration with state; the second leaves half its fields "zero because not applicable" for any worker.
 - **Repurposing a zero restart limit as "no restart".** Rejected: `Limit` keeps zero for "unlimited", and "no restart" is a separate word, `Disabled`.
 - **A first-class liveness twin of `UnreadyWhenFailed`.** Not offered: a liveness probe should report only a failure a restart can fix, and a worker usually fails terminally because a dependency is down, so a restart repairs nothing and every replica restarts in a loop. Tying liveness to a worker is a decision the application writes down.
-- **A `worker.ErrGracefulStop` sentinel.** Rejected: a nil return once the context is done is already the graceful stop; a sentinel honored only while stopping is a second spelling of it, and honored while alive it would restore the silent stop permanence removes. A client that reports a cancelled call as its own error is translated at that call, while the context is done, and the worker guide shows how without masking a real flush error.
+- **An `ErrWorkerGracefulStop` sentinel.** Rejected: a nil return once the context is done is already the graceful stop; a sentinel honored only while stopping is a second spelling of it, and honored while alive it would restore the silent stop permanence removes. A client that reports a cancelled call as its own error is translated at that call, while the context is done, and the worker guide shows how without masking a real flush error.
 - **Treat a nil return after the deadline as a success.** Rejected for the laundering reason above.
 - **An exported panic error that unwraps its value.** Rejected: it would let a context-error panic during shutdown pass as a graceful stop, and no caller would receive the error.
 - **An attempt number unified as `consecutiveFailures + 1` for scheduled workers.** Rejected: activations are not retries of each other.
@@ -290,13 +254,11 @@ The shutdown deadline is the application's; there is no worker-specific shutdown
 - **Reserve the `credo.` prefix for worker names.** Rejected: nothing needs it now, and restricting names later must account for the names the contract already allows.
 - **Overlap policies "allow" and "queue".** Deferred: allowing overlap needs per-execution state (several running flags and last errors, completion-order failure counting) that breaks the one-runner model; queueing adds buffering and staleness rules.
 - **A scheduler goroutine feeding an executor goroutine per worker.** Rejected: the serial loop has the same observable semantics without the coordination channels.
-- **Preemptive timeouts or a supervisor-level default budget.** Rejected: abandoning a goroutine breaks the one-run-at-a-time guarantee, and budgets differ per job.
+- **Preemptive timeouts or a registry-level default budget.** Rejected: abandoning a goroutine breaks the one-run-at-a-time guarantee, and budgets differ per job.
 - **A worker test package.** Not offered: a `Run`-only worker is tested by calling `Run`.
 - **Supervisor trees and in-process leader election.** Rejected: lifecycle components are start-once (ADR-024), and restart stays a worker concern.
 
-> **Pending v0.25.0 (W4):** the next items record the alternatives to the root-package placement; until W4 ships, the workers live in the `worker` package.
-
-- **Keeping the `worker` package.** Rejected: its registries are separate by construction, so no snapshot covers every worker of an App, and the package's placement contradicts the rule that a subsystem the App holds one of lives in the root ([ADR-002](002-code-acquisition-strategy.md#what-lives-in-the-root-package)).
+- **A `worker` package of its own.** Rejected: a package cannot keep a field of the App, so its registries are separate by construction and no snapshot covers every worker of an App, and the placement contradicts the rule that a subsystem the App holds one of lives in the root ([ADR-002](002-code-acquisition-strategy.md#what-lives-in-the-root-package)).
 - **Registration methods flat on the App** (`app.Continuous`, `app.Snapshot`). Rejected: the names would not say what they register or report, and the worker's methods would sit among the App's routing and DI methods; one noun accessor names the subsystem whose many registrations it holds.
 - **One `Add` method with the kind as an argument, and its variants that infer or default the kind.** Rejected: the kind would no longer be stated by the call that registers the worker, which is where the contract of a nil return must be visible, and one method cannot take each kind's own configuration type, so a setting of the other kind would be writable again.
 - **The registry in the root package with its types in `worker`.** Rejected: the types name `credo.Tier` and the registry names the types, an import cycle through `credo.Tier`.
@@ -319,7 +281,7 @@ Deferred, each until something needs it:
 - **A worker kind that runs once at start** — background work at start whose success is terminal `stopped` and whose failure follows a restart policy, for a warm-up that must not block startup but should gate readiness. The kind-per-method registration makes adding it non-breaking.
 - **A policy by which a terminal worker failure stops the App** — the process exits non-zero and whatever supervises it restarts it, the one escalation that works outside Kubernetes. It needs a lifecycle decision of its own: no component ends the App (ADR-024), and exit semantics, the interaction with the drain and the error `Run` returns belong to that decision, not to the worker system. Until then the liveness recipe is the documented route.
 - **A lock hook for scheduled runs** (`ScheduledConfig.Lock`) that `store/sqldb` could implement; the documented workaround is an application-level lock. A hook field is excluded from the snapshot's echo.
-- **A per-run logger** (`worker.Logger(ctx)`) pre-tagged with `worker` and `run_id`. It raises which base logger it derives from, and belongs to the observability release ([ADR-014](014-observability.md)).
+- **A per-run logger** (`credo.WorkerLogger(ctx)`) pre-tagged with `component=worker:<name>` and `run_id`. It raises which base logger it derives from, and belongs to the observability release ([ADR-014](014-observability.md)).
 
 ## Consequences
 
