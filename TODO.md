@@ -17,9 +17,9 @@ Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) de
 - [ ] W5: worker constructors; built values claim nothing — the value, run-function and constructor forms, the holder of record, one tier per resource
 - [ ] W6: the first `Resolve` finalizes — and a late registration's panic names what finalized the container, where, and the calls that led there
 - [ ] W7: a type declares its ingress tier — `credo.IngressComponent`, implemented by `websocket.Server`
-- [ ] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted
+- [x] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted
 - [ ] W9: examples, guides and the release
-- [ ] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field
+- [x] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field
 - [ ] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached
 - [ ] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer`
 - [ ] Checkpoint, once W5 has landed: judge splitting `internal/di` into DI and lifecycle, and dividing `App`'s implementation into internal parts; record the outcome in ADR-004 and here (a split ships in a later release)
