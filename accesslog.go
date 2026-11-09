@@ -6,11 +6,7 @@
 package credo
 
 import (
-	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"time"
 
 	internalobserve "github.com/credo-go/credo/internal/observe"
 )
@@ -28,49 +24,6 @@ import (
 //
 // Health probes use it internally; see [HealthConfig.LogRequests].
 var MetaAccessLog = NewKey[bool]("credo.accesslog")
-
-// AccessLogEntry is an immutable value snapshot captured at the access-log
-// observation boundary, after the final response: error rendering, panic
-// recovery and response finalization (the compressor's trailer included) have
-// completed, so Status, Bytes and Duration are final. Bytes counts the bytes
-// the underlying transport writer accepted — compressed output when response
-// compression applied. Duration is measured from executor entry to response
-// finalization; the result filter and the log emission itself are excluded.
-// If recovery is disabled and a panic escapes, Status uses the 500 fallback
-// while Bytes reflects only what was written before the panic.
-//
-// Route is the matched route's registered pattern (for example
-// "/v1/jobs/{job_id}"), empty when no route matched (404/405). It is emitted as
-// the "route" attribute, so a deployment that must not persist concrete path
-// values can drop "path"/"path_original" in its slog handler (for example via
-// slog.HandlerOptions.ReplaceAttr) and keep the low-cardinality route instead.
-// RouteName is available to [AccessLogResultFilter] but is not added to the
-// emitted structured-log attributes. RemoteAddr is the result of
-// [Request.RealIP]. RequestID is populated independently of whether the target
-// logger already carries the request_id attribute.
-type AccessLogEntry struct {
-	Method       string
-	Path         string
-	OriginalPath string
-	Route        string
-	Status       int
-	Bytes        int64
-	Duration     time.Duration
-	RemoteAddr   string
-	UserAgent    string
-	RequestID    string
-	RouteName    string
-}
-
-// AccessLogResultFilter decides whether an observed access-log entry is
-// submitted to its logger. Returning true emits the entry; false skips it.
-// The Context is pooled and must not be retained. The same filter may be called
-// concurrently for multiple requests and must be concurrency-safe.
-//
-// The filter runs after the final response. A panic inside it is logged as a
-// framework diagnostic and the entry is skipped; the response is unaffected.
-// With [WithoutRecover] the panic propagates after request cleanup.
-type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
 
 // accessLogSilenced reports whether the matched route (or an ancestor group)
 // set MetaAccessLog to false; an unmatched request (404/405, ctx.route ==
@@ -107,26 +60,48 @@ type AccessLogConfig struct {
 	Skipper func(ctx *Context) bool
 
 	// ResultFilter is a post-response predicate: it runs only after
-	// MetaAccessLog silencing and the MinLevel check, sees the final entry,
-	// and emits it on true. It cannot restore an entry MinLevel rejected.
-	ResultFilter AccessLogResultFilter
+	// MetaAccessLog silencing and the MinLevel check, sees the final
+	// [Exchange], and emits the record on true. It cannot restore a record
+	// MinLevel rejected. It may be called concurrently for multiple requests
+	// and must be concurrency-safe. A panic inside it is logged as a
+	// framework diagnostic and the record is skipped; with [WithoutRecover]
+	// the panic propagates.
+	ResultFilter func(ex *Exchange) bool
+
+	// Attrs returns application attributes for a record that is a candidate
+	// for emission: after MetaAccessLog, MinLevel and ResultFilter, and only
+	// when the logger is enabled for the record's level. They are emitted
+	// inside one "attrs" group, so an application attribute never shadows a
+	// framework attribute; "attrs" is a reserved key on the access record.
+	// The returned slice passes to the framework and must not be reused. A
+	// panic inside Attrs is logged as a framework diagnostic and the record
+	// is emitted without the group; with [WithoutRecover] the panic
+	// propagates. Attrs may be called concurrently and must be
+	// concurrency-safe.
+	Attrs func(ex *Exchange) []slog.Attr
 }
 
-// accessLogFeature is the normalized access-log configuration.
+// accessLogFeature is the normalized access-log configuration and the
+// access log's [Observer].
 type accessLogFeature struct {
+	app      *App
 	logger   *slog.Logger
 	minLevel slog.Leveler
 	skipper  func(*Context) bool
-	filter   AccessLogResultFilter
+	filter   func(*Exchange) bool
+	attrs    func(*Exchange) []slog.Attr
 }
 
 // UseAccessLog installs access logging: one "request completed" record per
 // request with method, path, route, status, bytes, duration, remote_addr
-// (from [Request.RealIP]), user_agent and request_id. The record is observed
-// after the final response — error rendering, panic recovery and response
-// finalization included — so status and bytes are what the client received.
-// Order: Skipper → request → [MetaAccessLog] → status/level → MinLevel →
-// snapshot → ResultFilter → emit.
+// (from [Request.RealIP]), user_agent and request_id, and the application's
+// attributes from Attrs in an "attrs" group. The access log is an [Observer]:
+// it records the final response — error rendering, panic recovery and
+// response finalization included — so status and bytes are what the client
+// received, and it runs among the observers in the order UseAccessLog was
+// called relative to [App.AddObserver]. Order: Skipper → request →
+// [MetaAccessLog] → status/level → MinLevel → ResultFilter → logger level →
+// Attrs → emit.
 //
 // The feature is off by default and independent of [App.UseRequestID]: the
 // request_id attribute is empty when only access logging is installed.
@@ -139,10 +114,12 @@ func (app *App) UseAccessLog(cfgs ...AccessLogConfig) {
 		panic("credo: App.UseAccessLog: typed-nil slog.Leveler")
 	}
 	f := &accessLogFeature{
+		app:      app,
 		logger:   cfg.Logger,
 		minLevel: cfg.MinLevel,
 		skipper:  cfg.Skipper,
 		filter:   cfg.ResultFilter,
+		attrs:    cfg.Attrs,
 	}
 	if f.minLevel == nil {
 		f.minLevel = slog.LevelInfo
@@ -152,43 +129,30 @@ func (app *App) UseAccessLog(cfgs ...AccessLogConfig) {
 			panic("credo: App.UseAccessLog called twice")
 		}
 		app.accessLog = f
+		app.observers = append(app.observers, f)
 	})
 }
 
-// observeAccess is the executor's access-log observation stage. It runs after
-// response finalization for every request the feature selected. outBytes is
-// the byte count taken at the output boundary when the response passed
-// through a finalized writer (compression); counted reports that it applies,
-// otherwise the plain Response size is the transport count.
-func (app *App) observeAccess(c *Context, outBytes int64, counted bool) {
-	f := app.accessLog
-
+// Observe records one access-log line for an exchange the feature selected.
+func (f *accessLogFeature) Observe(ex *Exchange) {
+	c := ex.c
+	if !c.exec.logging {
+		return
+	}
 	// Per-route or per-group silencing via MetaAccessLog. Checked first so
-	// silenced routes skip the duration/status work entirely.
+	// silenced routes skip the level work entirely.
 	if accessLogSilenced(c) {
 		return
 	}
-
-	status := c.response.Status()
-	if status == 0 {
-		if c.exec.panicked {
-			// Only reachable when recovery is disabled and a panic escaped:
-			// the response is uncommitted and the client sees the server's
-			// abort.
-			status = http.StatusInternalServerError
-		} else {
-			status = http.StatusOK
-		}
-	}
+	status := ex.status
 	if internalobserve.BelowMinLevel(status, f.minLevel) {
 		return
 	}
 
-	req := c.request
-	r := req.Request
+	r := c.request.Request
 
 	// The target logger depends only on the configuration and the request
-	// logger, never on the entry, so it is selected first.
+	// logger, never on the exchange, so it is selected first.
 	logger := f.logger
 	explicitRequestID := true
 	switch {
@@ -207,66 +171,67 @@ func (app *App) observeAccess(c *Context, outBytes int64, counted bool) {
 		logger = c.baseLogger()
 	}
 
-	// Without a result filter nobody observes the entry but the logger, so a
-	// level the logger will not record skips the entry construction (client
-	// address, user agent, route, request ID). With a filter installed the
-	// entry is always built: the filter observes every response.
-	if f.filter == nil && !logger.Enabled(r.Context(), internalobserve.Level(status)) {
+	// Without a result filter nobody sees the record but the logger, so a
+	// level the logger will not record skips the record construction (client
+	// address, user agent, route, request ID). A filter sees every response
+	// MinLevel admits, whether or not the logger records it.
+	level := internalobserve.Level(status)
+	enabled := logger.Enabled(r.Context(), level)
+	if f.filter != nil && !f.runFilter(ex) {
+		return
+	}
+	if !enabled {
 		return
 	}
 
-	bytes := c.response.Size()
-	if counted {
-		bytes = outBytes
-	}
-	entry := AccessLogEntry{
+	rec := internalobserve.AccessLogRecord{
 		Method:       r.Method,
 		Path:         r.URL.Path,
 		OriginalPath: c.OriginalPath(),
+		Route:        ex.Route(),
 		Status:       status,
-		Bytes:        bytes,
-		Duration:     time.Since(c.exec.start),
-		RemoteAddr:   req.RealIP(),
+		Bytes:        ex.bytes,
+		Duration:     ex.duration,
+		RemoteAddr:   c.request.RealIP(),
 		UserAgent:    r.UserAgent(),
-		RequestID:    c.RequestID(),
 	}
-	if route := c.Route(); route != nil {
-		entry.Route = route.GetPattern()
-		entry.RouteName = route.GetName()
-	}
-	if f.filter != nil && !app.runAccessFilter(c, f.filter, entry) {
-		return
-	}
-
-	requestID := ""
 	if explicitRequestID {
-		requestID = entry.RequestID
+		rec.RequestID = c.RequestID()
 	}
-	internalobserve.EmitAccessLog(r.Context(), logger,
-		internalobserve.AccessLogRecord(entry), requestID)
+	var attrs []slog.Attr
+	if f.attrs != nil {
+		attrs = f.runAttrs(ex)
+	}
+	internalobserve.EmitAccessLog(r.Context(), logger, level, rec, attrs)
 }
 
-// runAccessFilter invokes the result filter. A panic inside it cannot change
-// the response any more, so with recovery enabled it is logged as a framework
-// diagnostic and the entry is skipped; http.ErrAbortHandler and, with recovery
-// disabled, every panic propagate.
-func (app *App) runAccessFilter(c *Context, filter AccessLogResultFilter, entry AccessLogEntry) (emit bool) {
-	if app.recover != nil {
+// runFilter invokes the result filter. A panic inside it cannot change the
+// response any more, so with recovery enabled it is logged as a framework
+// diagnostic and the record is skipped; http.ErrAbortHandler and, with
+// recovery disabled, every panic propagate.
+func (f *accessLogFeature) runFilter(ex *Exchange) (emit bool) {
+	if f.app.recover != nil {
 		defer func() {
 			if rvr := recover(); rvr != nil {
-				if err, ok := rvr.(error); ok && errors.Is(err, http.ErrAbortHandler) {
-					panic(rvr)
-				}
-				r := c.request.Request
-				c.Logger().LogAttrs(r.Context(), slog.LevelError, "credo: access-log result filter panicked",
-					slog.String("panic", fmt.Sprint(rvr)),
-					slog.String("method", r.Method),
-					slog.String("path", r.URL.Path),
-					slog.Int("status", entry.Status),
-				)
+				f.app.observerPanicked(ex, "credo: access-log result filter panicked", rvr)
 				emit = false
 			}
 		}()
 	}
-	return filter(c, entry)
+	return f.filter(ex)
+}
+
+// runAttrs invokes Attrs. With recovery enabled a panic inside it is logged
+// as a framework diagnostic and the record is emitted without the group;
+// http.ErrAbortHandler and, with recovery disabled, every panic propagate.
+func (f *accessLogFeature) runAttrs(ex *Exchange) (attrs []slog.Attr) {
+	if f.app.recover != nil {
+		defer func() {
+			if rvr := recover(); rvr != nil {
+				f.app.observerPanicked(ex, "credo: access-log attrs panicked", rvr)
+				attrs = nil
+			}
+		}()
+	}
+	return f.attrs(ex)
 }

@@ -137,11 +137,11 @@ func TestRoutedTier_AuthenticationCoversAMount(t *testing.T) {
 func TestMount_IsARoute(t *testing.T) {
 	app := mustNew(t)
 	app.SetMeta(keyTier, "app")
-	var entries []credo.AccessLogEntry
+	var entries []string
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.DiscardHandler),
-		ResultFilter: func(_ *credo.Context, e credo.AccessLogEntry) bool {
-			entries = append(entries, e)
+		ResultFilter: func(ex *credo.Exchange) bool {
+			entries = append(entries, ex.Route())
 			return false
 		},
 	})
@@ -172,8 +172,8 @@ func TestMount_IsARoute(t *testing.T) {
 	if childPath != "/x" || tenant != "acme" {
 		t.Fatalf("child request: path=%q tenant=%q, want \"/x\", \"acme\"", childPath, tenant)
 	}
-	if len(entries) != 1 || entries[0].Route != "/t/{tenant}" {
-		t.Fatalf("access entries = %+v, want one naming /t/{tenant}", entries)
+	if len(entries) != 1 || entries[0] != "/t/{tenant}" {
+		t.Fatalf("access routes = %q, want one naming /t/{tenant}", entries)
 	}
 
 	var info *credo.RouteInfo

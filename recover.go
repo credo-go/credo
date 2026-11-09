@@ -99,9 +99,10 @@ func (app *App) recoverPanic(c *Context, rec *recoverFeature, rvr any) {
 	}
 	logger.LogAttrs(r.Context(), slog.LevelError, "panic recovered", attrs...)
 
-	// The response below is the request's final state: the access record
-	// observes it rather than the escaped-panic fallback.
+	// The response below is the request's final state: the observers see it
+	// rather than the escaped-panic fallback.
 	c.exec.panicked = false
+	c.exec.recovered = true
 
 	if c.response.Hijacked() {
 		return

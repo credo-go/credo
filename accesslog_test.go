@@ -657,15 +657,15 @@ func TestUseAccessLog_TypedNilMinLevelPanics(t *testing.T) {
 
 func TestAccessLog_ResultFilterSnapshot(t *testing.T) {
 	logger, buf := newTestLogger(t)
-	var captured credo.AccessLogEntry
+	var captured exchangeSnapshot
 	var calls atomic.Int32
 
 	app := mustNew(t, credo.WithLogger(logger))
 	app.UseRequestID()
 	app.UseAccessLog(credo.AccessLogConfig{
-		ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+		ResultFilter: func(ex *credo.Exchange) bool {
 			calls.Add(1)
-			captured = entry
+			captured = snapshotOf(ex)
 			return true
 		},
 	})
@@ -674,7 +674,9 @@ func TestAccessLog_ResultFilterSnapshot(t *testing.T) {
 	}).Name("users.create")
 
 	w := httptest.NewRecorder()
-	app.ServeHTTP(w, httptest.NewRequest("POST", "/users", nil))
+	r := httptest.NewRequest("POST", "/users", nil)
+	r.Header.Set("User-Agent", "probe/1")
+	app.ServeHTTP(w, r)
 	if calls.Load() != 1 {
 		t.Fatalf("filter calls = %d, want 1", calls.Load())
 	}
@@ -684,8 +686,11 @@ func TestAccessLog_ResultFilterSnapshot(t *testing.T) {
 	if captured.Bytes != int64(len("created")) || captured.Duration < 0 {
 		t.Errorf("snapshot bytes/duration = %d/%v", captured.Bytes, captured.Duration)
 	}
-	if captured.RouteName != "users.create" {
-		t.Errorf("RouteName = %q, want users.create", captured.RouteName)
+	if captured.RouteName != "users.create" || captured.Route != "/users" {
+		t.Errorf("RouteName/Route = %q/%q, want users.create and /users", captured.RouteName, captured.Route)
+	}
+	if captured.OriginalPath != "/users" || captured.RemoteAddr != "192.0.2.1" || captured.UserAgent != "probe/1" {
+		t.Errorf("OriginalPath/RemoteAddr/UserAgent = %q/%q/%q", captured.OriginalPath, captured.RemoteAddr, captured.UserAgent)
 	}
 	if captured.RequestID == "" || captured.RequestID != w.Header().Get("X-Request-Id") {
 		t.Errorf("RequestID = %q, header = %q", captured.RequestID, w.Header().Get("X-Request-Id"))
@@ -704,7 +709,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		var handled atomic.Bool
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog(credo.AccessLogConfig{
-			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
+			ResultFilter: func(*credo.Exchange) bool {
 				return false
 			},
 		})
@@ -728,7 +733,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog(credo.AccessLogConfig{
 			MinLevel: slog.LevelWarn,
-			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
+			ResultFilter: func(*credo.Exchange) bool {
 				calls.Add(1)
 				return true
 			},
@@ -751,7 +756,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		var calls atomic.Int32
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog(credo.AccessLogConfig{
-			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool {
+			ResultFilter: func(*credo.Exchange) bool {
 				calls.Add(1)
 				return true
 			},
@@ -824,11 +829,11 @@ func TestAccessLog_ResultFilterSeesFinalErrorResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, _ := newTestLogger(t)
-			var captured credo.AccessLogEntry
+			var captured exchangeSnapshot
 			app := mustNew(t, credo.WithLogger(logger))
 			app.UseAccessLog(credo.AccessLogConfig{
-				ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
-					captured = entry
+				ResultFilter: func(ex *credo.Exchange) bool {
+					captured = snapshotOf(ex)
 					return true
 				},
 			})
@@ -873,10 +878,10 @@ func TestAccessLog_ResultFilterObservesLoggerFilteredResponse(t *testing.T) {
 	var calls atomic.Int32
 	app := mustNew(t, credo.WithLogger(logger))
 	app.UseAccessLog(credo.AccessLogConfig{
-		ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
+		ResultFilter: func(ex *credo.Exchange) bool {
 			calls.Add(1)
-			if entry.Status != 200 || entry.Route != "/" {
-				t.Errorf("filter entry = %+v, want status 200 on route /", entry)
+			if ex.Status() != 200 || ex.Route() != "/" {
+				t.Errorf("filter exchange = %+v, want status 200 on route /", snapshotOf(ex))
 			}
 			return true
 		},

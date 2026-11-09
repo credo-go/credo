@@ -28,8 +28,8 @@ func BenchmarkContextHead_NestedChain(b *testing.B) {
 	var sawUser int
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.DiscardHandler),
-		ResultFilter: func(c *credo.Context, _ credo.AccessLogEntry) bool {
-			if _, ok := c.GetUser[*benchUser](); ok {
+		ResultFilter: func(ex *credo.Exchange) bool {
+			if _, ok := ex.GetUser[*benchUser](); ok {
 				sawUser++
 			}
 			return false

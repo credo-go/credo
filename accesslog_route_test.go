@@ -42,11 +42,11 @@ func TestAccessLog_ResultFilterSeesRoutePattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credo.New: %v", err)
 	}
-	var seen credo.AccessLogEntry
+	var seen string
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.NewJSONHandler(&buf, nil)),
-		ResultFilter: func(_ *credo.Context, entry credo.AccessLogEntry) bool {
-			seen = entry
+		ResultFilter: func(ex *credo.Exchange) bool {
+			seen = ex.Route()
 			return true
 		},
 	})
@@ -56,8 +56,8 @@ func TestAccessLog_ResultFilterSeesRoutePattern(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/items/42", nil))
-	if seen.Route != "/items/{id}" {
-		t.Fatalf("AccessLogEntry.Route = %q, want /items/{id}", seen.Route)
+	if seen != "/items/{id}" {
+		t.Fatalf("Exchange.Route = %q, want /items/{id}", seen)
 	}
 	if got := buf.String(); !strings.Contains(got, `"route":"/items/{id}"`) {
 		t.Fatalf("access log = %s, want route attribute", got)

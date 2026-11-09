@@ -190,7 +190,7 @@ func TestAccessLog_ResultFilterPanic(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog(credo.AccessLogConfig{
-			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool { panic("filter boom") },
+			ResultFilter: func(*credo.Exchange) bool { panic("filter boom") },
 		})
 		app.GET("/", func(ctx *credo.Context) error {
 			return ctx.Response().Text(http.StatusOK, "ok")
@@ -212,7 +212,7 @@ func TestAccessLog_ResultFilterPanic(t *testing.T) {
 	t.Run("recovery off: propagates after cleanup", func(t *testing.T) {
 		app := mustNew(t, credo.WithoutRecover())
 		app.UseAccessLog(credo.AccessLogConfig{
-			ResultFilter: func(*credo.Context, credo.AccessLogEntry) bool { panic("filter boom") },
+			ResultFilter: func(*credo.Exchange) bool { panic("filter boom") },
 		})
 		app.GET("/", func(ctx *credo.Context) error {
 			return ctx.Response().Text(http.StatusOK, "ok")

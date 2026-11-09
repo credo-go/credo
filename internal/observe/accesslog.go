@@ -6,12 +6,10 @@ import (
 	"time"
 )
 
-// AccessLogRecord is the transport-neutral snapshot an access-log producer
-// captures at its observation boundary. The root package's public
-// credo.AccessLogEntry has the identical field list and converts to it
-// field-for-field; RouteName is carried for result filters but never emitted,
-// while Route (the matched route's registered pattern) is emitted as "route"
-// whenever a route matched.
+// AccessLogRecord is the transport-neutral set of values an access-log
+// producer emits. Route (the matched route's registered pattern) is emitted as
+// "route" whenever a route matched; RequestID is emitted only when non-empty,
+// so a producer whose logger already carries the request ID leaves it empty.
 type AccessLogRecord struct {
 	Method       string
 	Path         string
@@ -23,8 +21,12 @@ type AccessLogRecord struct {
 	RemoteAddr   string
 	UserAgent    string
 	RequestID    string
-	RouteName    string
 }
+
+// AppAttrsKey is the key of the group that carries the application's
+// attributes on the access record. It is reserved: no framework attribute
+// uses it, so an application attribute never shadows one.
+const AppAttrsKey = "attrs"
 
 // BelowMinLevel reports whether the status-derived log level is below the
 // producer's configured minimum, in which case the record is dropped before
@@ -33,33 +35,30 @@ func BelowMinLevel(status int, minLevel slog.Leveler) bool {
 	return Level(status) < minLevel.Level()
 }
 
-// EmitAccessLog writes the single "request completed" entry for rec at the
-// status-derived level, or returns without building attributes when logger
-// is not enabled for that level. requestID is attached explicitly only when the logger
-// does not already carry it; callers pass "" otherwise. It is the one source
-// for the attribute set, message, and level of the access-log feature (this
-// package cannot import the root package, so callers collect the per-request
-// primitives).
-func EmitAccessLog(ctx context.Context, logger *slog.Logger, rec AccessLogRecord, requestID string) {
-	level := Level(rec.Status)
-	// A handler that would discard the record (a Warn-only access logger, say)
-	// must not pay for the attribute set; slog itself checks Enabled only
-	// after the attrs are built.
-	if !logger.Enabled(ctx, level) {
-		return
+// EmitAccessLog writes the single "request completed" entry for rec at level,
+// the status-derived level the caller found the logger enabled for, with the
+// application's attributes app, when there are any, in the reserved
+// [AppAttrsKey] group. It is the one source for the attribute set and the
+// message of the access-log feature (this package cannot import the root
+// package, so callers collect the per-request primitives).
+func EmitAccessLog(ctx context.Context, logger *slog.Logger, level slog.Level, rec AccessLogRecord, app []slog.Attr) {
+	attrs, n := AccessLogAttrs(rec)
+	if len(app) != 0 {
+		attrs[n] = slog.Attr{Key: AppAttrsKey, Value: slog.GroupValue(app...)}
+		n++
 	}
-	attrs, n := AccessLogAttrs(rec, requestID)
 	logger.LogAttrs(ctx, level, "request completed", attrs[:n]...)
 }
 
 // AccessLogAttrs builds the common structured attributes for rec. path_original
 // is added only when the served path differs from the client path, route only
 // when a route matched (its registered pattern, never a concrete value), and
-// request_id only when requestID is non-empty.
-func AccessLogAttrs(rec AccessLogRecord, requestID string) ([10]slog.Attr, int) {
+// request_id only when rec.RequestID is non-empty. The array keeps one slot
+// free for the application's group.
+func AccessLogAttrs(rec AccessLogRecord) ([11]slog.Attr, int) {
 	const baseAccessLogAttrCount = 7
 
-	var attrs [10]slog.Attr
+	var attrs [11]slog.Attr
 	attrs[0] = slog.String("method", rec.Method)
 	attrs[1] = slog.String("path", rec.Path)
 	attrs[2] = slog.Int("status", rec.Status)
@@ -76,8 +75,8 @@ func AccessLogAttrs(rec AccessLogRecord, requestID string) ([10]slog.Attr, int) 
 		attrs[n] = slog.String("route", rec.Route)
 		n++
 	}
-	if requestID != "" {
-		attrs[n] = slog.String("request_id", requestID)
+	if rec.RequestID != "" {
+		attrs[n] = slog.String("request_id", rec.RequestID)
 		n++
 	}
 	return attrs, n

@@ -10,13 +10,24 @@ import (
 // execState is the per-request bookkeeping of the executor. It lives inside
 // the pooled Context so a request allocates nothing for it.
 type execState struct {
-	// start is the executor entry time; access-log duration is measured from
-	// it through response finalization.
+	// start is the executor entry time; the exchange's duration is measured
+	// from it through response finalization.
 	start time.Time
 
 	// logging records that the access-log feature selected this request
-	// (installed and not skipped), so finishRequest observes it.
+	// (installed and not skipped), so its observer records it.
 	logging bool
+
+	// code is the error code the pipeline classified, captured before the
+	// renderer runs; a fallback replaces it with its own. Empty when the
+	// pipeline rendered nothing.
+	code string
+
+	// recovered is true once recovery caught a panic.
+	recovered bool
+
+	// exchange is the record the observers receive.
+	exchange Exchange
 
 	// panicked is true while the request runs and cleared when the chain (or
 	// recovery) completed normally. It survives only when a panic escaped
@@ -57,8 +68,9 @@ func (s *execState) reset() {
 //     selectors included, is logged and rendered as 500 through the same
 //     pipeline; http.ErrAbortHandler always propagates;
 //  7. finalization: the compressor is closed before anything observes the
-//     response, so the access record sees the bytes the transport accepted;
-//  8. access-log observation (when selected), after the final response;
+//     response, so the observers see the bytes the transport accepted;
+//  8. observation: the observers, the access log among them, run in
+//     registration order on the final response;
 //  9. Context release — on normal completion, on a propagating panic and on
 //     a transport abort alike.
 //
@@ -66,7 +78,7 @@ func (s *execState) reset() {
 // with the callback-free 503 first.
 func (app *App) execute(c *Context, chain Handler) {
 	c.exec.reset()
-	if app.accessLog != nil {
+	if len(app.observers) != 0 {
 		c.exec.start = time.Now()
 	}
 	defer app.finishRequest(c)
@@ -118,7 +130,7 @@ func (app *App) runRequest(c *Context, chain Handler) {
 
 // finishRequest runs after the recovered region on every path — normal
 // completion, a propagating panic and a transport abort. It finalizes the
-// response (closing the compressor), observes the access record, removes the
+// response (closing the compressor), runs the observers, removes the
 // temporary files of multipart forms parsed during the request and releases
 // the Context to the pool.
 func (app *App) finishRequest(c *Context) {
@@ -150,8 +162,8 @@ func (app *App) finishRequest(c *Context) {
 		c.exec.body = nil
 		_ = body.Close()
 	}
-	if c.exec.logging {
-		app.observeAccess(c, outBytes, counted)
+	if len(app.observers) != 0 {
+		app.observe(c, outBytes, counted)
 	}
 	// Before the abort below, so that path removes the files as well. The
 	// check is inlined: a request without a multipart form pays two loads.
