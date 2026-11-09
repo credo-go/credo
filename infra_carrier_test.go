@@ -184,3 +184,28 @@ func TestInfra_ConstructorScopeNamesTheComponent(t *testing.T) {
 		t.Errorf("managed constructor: component = %v, want relay", got)
 	}
 }
+
+// carrierCloser is released through credo.CloseOnShutdown() and logs
+// through InfraFrom in its Close.
+type carrierCloser struct{}
+
+func (*carrierCloser) Close(ctx context.Context) error {
+	credo.InfraFrom(ctx).Logger.Info("in Close")
+	return nil
+}
+
+// TestInfraFrom_CloseCarriesTheComponentScope: the Close(ctx) of a
+// credo.CloseOnShutdown() binding receives the component's scoped Infra, as
+// every call the App makes on a component does.
+func TestInfraFrom_CloseCarriesTheComponentScope(t *testing.T) {
+	buf := &carrierBuffer{}
+	app := mustNew(t, credo.WithLogger(slog.New(slog.NewJSONHandler(buf, nil))))
+	app.ProvideValue(&carrierCloser{}, credo.CloseOnShutdown())
+	startComponents(t, app)
+	if err := shutdownApp(t, app, 2*time.Second); err != nil {
+		t.Fatalf("Shutdown() = %v", err)
+	}
+	if got := buf.find(t, "in Close")["component"]; got != "*credo_test.carrierCloser" {
+		t.Errorf("Close: component = %v, want *credo_test.carrierCloser", got)
+	}
+}
