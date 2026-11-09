@@ -383,6 +383,7 @@ func (s *Workers) register(call string, def *internalworker.Definition, tier Tie
 		Ingress:       tier == TierIngress,
 		Name:          internalworker.ComponentName(name),
 		IngressRemedy: "Tier: credo.TierIngress in its worker configuration",
+		Call:          call,
 	}
 
 	c := internalworker.NewComponent(s.engine, def, form.worker)

@@ -63,6 +63,10 @@ type Options struct {
 	// credo.ComponentName option, and the value need not be a component by
 	// its type: a Shutdown found on it is its teardown.
 	Worker string
+	// Call is the application's call that added the unit (Manage only), such
+	// as Workers.Continuous("x") for a worker's loop: the unit's messages
+	// name it in place of Manage(name), a call the application never made.
+	Call string
 }
 
 // closeKind is the shape of the Close method a credo.CloseOnShutdown() binding calls.
@@ -159,6 +163,9 @@ type Unit struct {
 	// worker is the registration call of the worker whose constructor builds
 	// the unit's value; empty for every other unit. See Options.Worker.
 	worker string
+	// call is the application's call that added the unit; empty for a
+	// value or constructor handed to Manage. See Options.Call.
+	call string
 	// edges are the units the unit depends on beside its constructor's
 	// parameters (AddEdge): a worker's loop depends on its built value.
 	edges []*Unit
@@ -211,11 +218,14 @@ func (u *Unit) Managed() bool { return u.managed }
 // that is not a binding builds.
 func (u *Unit) registration() bool { return !u.managed || u.claimant }
 
-// label names the unit in a misuse or conflict message.
+// label names the unit in a misuse or conflict message, in the
+// application's terms: the call that added it.
 func (u *Unit) label() string {
 	switch {
 	case u.worker != "":
-		return u.name
+		return "the value " + u.worker + " builds"
+	case u.call != "":
+		return u.call
 	case u.managed:
 		return fmt.Sprintf("Manage(%s)", u.name)
 	}
