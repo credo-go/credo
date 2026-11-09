@@ -21,9 +21,9 @@ func Example() {
 		Subprotocols:       []string{"echo.v1"},
 		RequireSubprotocol: true,
 	})
-	// An ingress component: it starts with the App and drains beside the
-	// HTTP drain, before the components its handlers use.
-	app.Manage(ws, credo.Ingress())
+	// The server declares the ingress tier: it starts with the App and
+	// drains beside the HTTP drain, before the components its handlers use.
+	app.Manage(ws)
 	app.GET("/echo", ws.Handler(func(_ *credo.Context, conn *credows.Conn) error {
 		typ, payload, readErr := conn.Read(conn.Context())
 		if readErr != nil {

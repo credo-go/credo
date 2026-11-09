@@ -490,10 +490,10 @@ func run() error {
 	workers := worker.Use(app)
 	workers.ScheduledProvided[*UsageReporter]("usage-report", "@every 1h")
 
-	// The WebSocket server is an ingress component: it starts with the App
+	// The WebSocket server declares the ingress tier: it starts with the App
 	// and drains beside the HTTP drain, before the services its handlers use.
 	ws := websocket.New()
-	app.Manage(ws, credo.Ingress())
+	app.Manage(ws)
 
 	// Hooks. OnConfigChange makes the "app" section reloadable: flip
 	// app.debug in the config file and `systemctl reload` (SIGHUP) or

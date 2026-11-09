@@ -186,17 +186,20 @@ func TestServerStartOpensAdmissionOnce(t *testing.T) {
 }
 
 func TestNotStartedErrorNamesTheRegistration(t *testing.T) {
-	for _, want := range []string{"app.Manage(server, credo.Ingress())", "credo.Ingress()"} {
-		if !strings.Contains(errNotStarted.Error(), want) {
-			t.Errorf("errNotStarted = %q, want it to name %q", errNotStarted, want)
-		}
+	const want = "credo/websocket: the server was never started; hand it to the App with " +
+		"app.Manage(server), or bind it"
+	if errNotStarted.Error() != want {
+		t.Errorf("errNotStarted = %q, want %q", errNotStarted, want)
 	}
 }
 
+// TestServerStartedThroughTheAppDrainsInTheIngressTier: a server handed to
+// the App without credo.Ingress() drains in the ingress tier, which its type
+// declares.
 func TestServerStartedThroughTheAppDrainsInTheIngressTier(t *testing.T) {
 	app := mustNewWebSocketApp(t)
 	server := New()
-	app.Manage(server, credo.Ingress())
+	app.Manage(server)
 	var drainRan bool
 	app.OnStop(func(context.Context) error {
 		drainRan = true

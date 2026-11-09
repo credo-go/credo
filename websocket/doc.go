@@ -1,11 +1,12 @@
 // Package websocket provides Credo's server-side WebSocket adapter over the
 // exact-pinned github.com/coder/websocket protocol engine.
 //
-// Create a Server with [New] and register it as an ingress component with
-// app.Manage(server, credo.Ingress()) — or bind it with credo.Ingress() when
-// controllers take it as a dependency — so the App starts it in the start
-// phase and drains it beside the HTTP drain, before the internal components
-// its handlers use. Then register [Server.Handler] through the normal Credo
+// Create a Server with [New] and hand it to the App with app.Manage(server) —
+// or bind it with app.ProvideValue(server) when controllers take it as a
+// dependency. The server declares the ingress tier itself
+// ([credo.IngressComponent]), so the App starts it in the start phase and
+// drains it beside the HTTP drain, before the internal components its
+// handlers use. Then register [Server.Handler] through the normal Credo
 // GET route API. Global, group, route, authentication, rewrite, and
 // access-log middleware retain their normal ordering.
 //
