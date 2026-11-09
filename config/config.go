@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"unicode"
@@ -79,7 +81,7 @@ type options struct {
 	dotenvOptional bool         // true: missing explicit .env is a warning, not an error
 	noProcessEnv   bool         // true: ignore the process environment entirely (merge layer + bootstrap keys)
 	noDotenv       bool         // true: never read a .env file
-	strict         bool         // true: reject unknown keys and disable weak type coercion
+	weak           bool         // true: mapstructure's weak coercion, unknown keys ignored
 	logger         *slog.Logger // load-time warnings; nil means slog.Default()
 }
 
@@ -144,35 +146,18 @@ func WithoutDotenv() Option {
 	return func(o *options) { o.noDotenv = true }
 }
 
-// WithStrictDecoding makes every typed decode from this Config strict:
-// unknown keys — keys present in the configuration that do not map to a field
-// of the target — become errors (nested sections included), and weak type
-// coercion is disabled, so a string "123" no longer decodes into an int and a
-// string "true" no longer decodes into a bool. Two deliberate coercions are
-// retained: strings still decode through [encoding.TextUnmarshaler]
-// implementations, and duration strings such as "5s" still decode into
-// [time.Duration]. Numeric kind conversions (a JSON number into an int or
-// float field) are native decoding, not weak coercion, and keep working.
+// WithWeakDecoding makes every typed decode from this Config use
+// mapstructure's weak coercion, under which unknown keys are ignored.
 //
-// The policy rides on the Config instance: it applies to [Config.Unmarshal],
-// [Config.Get], [Config.MustGet], the [Staged] candidate produced by
-// [Config.Stage] (and therefore to reload subscriber validation), and to the
-// framework's own decode of the "server" section when the Config is passed to
-// credo.New — an unknown key under "server" then fails app construction.
-//
-// Strict decoding is designed for typed sources (config files, [LoadBytes]
-// documents). Environment variables and .env entries are always strings, so
-// string-to-number and string-to-bool overrides on typed fields fail to
-// decode under strict mode — pair it with [WithoutProcessEnv] and
-// [WithoutDotenv], or keep the default weak decoding when such overrides are
-// needed. Under strict mode every typed view must also be complete: a struct
-// that decodes a section (including narrow reload subscribers) must cover all
-// of that section's keys.
-//
-// Unknown-key errors report key paths and never configuration values; type
-// mismatch errors may quote the offending value.
-func WithStrictDecoding() Option {
-	return func(o *options) { o.strict = true }
+// Without it a Config decodes strictly: a key that maps to no field of the
+// target is an error, and a value is not converted across kinds. Strings
+// still parse into the basic type of their target field, so an environment
+// or .env override such as CREDO_SERVER__PORT=9090 decodes into an int.
+// The policy rides on the Config instance: it covers [Config.Unmarshal], a
+// reload's candidate and the framework's own decode of the "server" section
+// in credo.New.
+func WithWeakDecoding() Option {
+	return func(o *options) { o.weak = true }
 }
 
 // WithDotenvPath overrides the .env file path. Takes precedence over
@@ -255,27 +240,123 @@ func (c *Config) get(key string) (any, bool) {
 	return val, true
 }
 
-// newDecoder creates a mapstructure decoder with Credo's standard settings.
+// newDecoder creates a mapstructure decoder with Credo's standard settings
+// for decoding the value at key into dst.
 //
 // MapFieldName converts PascalCase struct field names to snake_case so that
 // config keys like "max_open" automatically match fields like "MaxOpen"
 // without explicit struct tags. Explicit "credo" tags always take precedence.
+// RootName is the decoded key, so a failure names the full key path.
 //
-// Under [WithStrictDecoding] unknown keys are rejected and weak type coercion
-// is off; the decode hooks (TextUnmarshaler, duration strings) stay active in
-// both modes.
-func (c *Config) newDecoder(dst any) (*mapstructure.Decoder, error) {
+// Strict decoding (the default) reports the keys no field decodes and parses
+// strings into the basic type of their target. The duration and
+// TextUnmarshaler hooks run in both modes, and run first, so a string becomes
+// a duration or a TextUnmarshaler before the basic hooks see it. Under
+// [WithWeakDecoding] mapstructure's weak coercion applies.
+func (c *Config) newDecoder(key string, dst any) (*mapstructure.Decoder, error) {
+	hooks := []mapstructure.DecodeHookFunc{
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.TextUnmarshallerHookFunc(),
+	}
+	if !c.opts.weak {
+		hooks = append(hooks, mapstructure.StringToBasicTypeHookFunc())
+	}
 	return mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           dst,
-		WeaklyTypedInput: !c.opts.strict,
-		ErrorUnused:      c.opts.strict,
+		RootName:         key,
+		WeaklyTypedInput: c.opts.weak,
+		ErrorUnused:      !c.opts.weak,
 		TagName:          "credo",
 		MapFieldName:     toSnakeCase,
-		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			mapstructure.StringToTimeDurationHookFunc(),
-			mapstructure.TextUnmarshallerHookFunc(),
-		),
+		DecodeHook:       mapstructure.ComposeDecodeHookFunc(hooks...),
 	})
+}
+
+// strictRemedy ends every strict failure that weak coercion would accept.
+const strictRemedy = "fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()"
+
+// decodeError rewrites a failure to decode into dst as one error per offending
+// key, each naming the key's full path: a value of the wrong kind (strict
+// decoding converts none), a value that does not parse, and — strictly —
+// every key that no field of the target decodes. A failure that weak
+// coercion would accept carries the remedy. Unknown keys are reported by
+// path only, so the error never quotes a configuration value.
+func (c *Config) decodeError(err error, dst any) error {
+	var errs []error
+	for _, leaf := range leafErrors(err) {
+		de, ok := errors.AsType[*mapstructure.DecodeError](leaf)
+		if !ok {
+			errs = append(errs, fmt.Errorf("config: %w", leaf))
+			continue
+		}
+		inner := de.Unwrap()
+		switch {
+		case !c.opts.weak && strings.HasPrefix(inner.Error(), unusedPrefix):
+			for _, k := range strings.Split(strings.TrimPrefix(inner.Error(), unusedPrefix), ", ") {
+				errs = append(errs, fmt.Errorf(
+					"config: unknown key %q: no field of the target decodes it; %s",
+					unusedPath(de.Name(), k, dst), strictRemedy))
+			}
+		case !c.opts.weak && refusedConversion(inner):
+			errs = append(errs, fmt.Errorf(
+				"config: key %q: %w; strict decoding converts no value across kinds: %s",
+				de.Name(), inner, strictRemedy))
+		default:
+			errs = append(errs, fmt.Errorf("config: key %q: %w", de.Name(), inner))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// unusedPrefix opens mapstructure's report of the keys of one map that no
+// field of the struct decodes, which it gives as an untyped error whose text
+// a test pins.
+const unusedPrefix = "has invalid keys: "
+
+// unusedPath joins the name mapstructure gives a struct with one of its
+// unknown keys. A struct decoded at the root of the tree has no name, and
+// mapstructure names it by its type instead.
+func unusedPath(name, key string, dst any) string {
+	if name == "" || name == reflect.TypeOf(dst).Elem().String() {
+		return key
+	}
+	return name + keyDelim + key
+}
+
+// refusedConversion reports whether a decode failure is one that weak
+// coercion accepts: a value of another kind, or a scalar where a list is
+// expected, which weak coercion lifts into a one-element list. mapstructure
+// reports the second as an untyped error, matched by its text as
+// [unusedPrefix] is.
+func refusedConversion(err error) bool {
+	if _, ok := errors.AsType[*mapstructure.UnconvertibleTypeError](err); ok {
+		return true
+	}
+	return strings.HasPrefix(err.Error(), "source data must be an array or slice")
+}
+
+// leafErrors flattens mapstructure's joined and wrapped errors into the
+// individual failures, each a [mapstructure.DecodeError] that names its key.
+func leafErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*mapstructure.DecodeError); ok { //nolint:errorlint // This walk unwraps the tree itself.
+		return []error{err}
+	}
+	switch e := err.(type) { //nolint:errorlint // This walk unwraps the tree itself.
+	case interface{ Unwrap() []error }:
+		var out []error
+		for _, sub := range e.Unwrap() {
+			out = append(out, leafErrors(sub)...)
+		}
+		return out
+	case interface{ Unwrap() error }:
+		if sub := e.Unwrap(); sub != nil {
+			return leafErrors(sub)
+		}
+	}
+	return []error{err}
 }
 
 // toSnakeCase converts a PascalCase or camelCase string to snake_case.
@@ -371,11 +452,13 @@ func (c *Config) Exists(key string) bool {
 // Pass an empty key ("") to decode the entire configuration tree into dst.
 // Dots in the key always act as path separators.
 //
-// By default, type coercion uses mapstructure's WeaklyTypedInput, which
-// handles common conversions like string to int, string to bool, int to
-// float64, etc. This is particularly useful when env vars (always strings)
-// override typed YAML/JSON values. Under [WithStrictDecoding], weak coercion
-// is off and unknown keys are rejected; see that option for the full policy.
+// Decoding is strict unless the Config was loaded with [WithWeakDecoding]: a
+// key under key that maps to no field of dst is an error, and a value is not
+// converted across kinds — a boolean into a number, a number into a string,
+// a scalar into a list. Strings parse into the basic type of their target
+// (int, bool, float64 and the other numeric kinds), as do duration strings
+// and [encoding.TextUnmarshaler] targets, so an environment or .env override
+// of a typed field decodes. Each failure names its full key path.
 //
 // If dst implements Validate() error, validation is called automatically
 // after a successful decode.
@@ -408,11 +491,11 @@ func (c *Config) Unmarshal(key string, dst any) error {
 			return fmt.Errorf("config: configuration is empty")
 		}
 	}
-	dec, err := c.newDecoder(dst)
+	dec, err := c.newDecoder(key, dst)
 	if err != nil {
 		return err
 	}
-	if err := dec.Decode(val); err != nil {
+	if err := c.decodeError(dec.Decode(val), dst); err != nil {
 		return err
 	}
 	if v, ok := dst.(interface{ Validate() error }); ok {
@@ -431,7 +514,7 @@ func (c *Config) Unmarshal(key string, dst any) error {
 //
 // T may be a struct, map, slice, or primitive. The same rules as
 // [Config.Unmarshal] apply: a missing key or decode failure returns an error,
-// type coercion is weak by default and strict under [WithStrictDecoding], and
+// decoding is strict unless the Config was loaded with [WithWeakDecoding], and
 // a T implementing Validate() error is validated after decoding. On error the
 // zero value of T is returned.
 //

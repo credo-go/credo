@@ -1,21 +1,25 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// strictAppConfig is the common target for strict-decoding tests.
+// strictAppConfig is the common target for decoding-mode tests.
 type strictAppConfig struct {
 	Name    string
 	Port    int
 	Debug   bool
+	Ratio   float64
 	Timeout time.Duration
 	Level   testLogLevel
+	Tags    []string
 }
 
-// testLogLevel exercises the retained TextUnmarshaler hook under strict mode.
+// testLogLevel exercises the TextUnmarshaler hook, which runs in both modes.
 type testLogLevel string
 
 func (l *testLogLevel) UnmarshalText(text []byte) error {
@@ -23,45 +27,55 @@ func (l *testLogLevel) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// loadStrict builds a hermetic strict Config from a JSON document.
-func loadStrict(t *testing.T, doc string) *Config {
+// loadHermetic builds a Config from a JSON document with no environment or
+// .env source, in the default (strict) mode unless opts say otherwise.
+func loadHermetic(t *testing.T, doc string, opts ...Option) *Config {
 	t.Helper()
-	c, err := LoadBytes([]byte(doc), FormatJSON,
-		WithoutProcessEnv(), WithoutDotenv(), WithStrictDecoding())
+	opts = append([]Option{WithoutProcessEnv(), WithoutDotenv()}, opts...)
+	c, err := LoadBytes([]byte(doc), FormatJSON, opts...)
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}
 	return c
 }
 
+// assertRemedy checks that a strict failure names the key path, the refused
+// conversion or the unknown key, and the opt-in.
+func assertRemedy(t *testing.T, err error, parts ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected a strict decoding error, got nil")
+	}
+	for _, p := range append(parts, "config.WithWeakDecoding()") {
+		if !strings.Contains(err.Error(), p) {
+			t.Errorf("error %q does not contain %q", err, p)
+		}
+	}
+}
+
 func TestStrictDecodingRejectsUnknownKeys(t *testing.T) {
 	tests := []struct {
 		name string
 		doc  string
-		key  string
+		path string
 	}{
 		{
-			name: "top-level unknown key",
+			name: "unknown key in a section",
 			doc:  `{"app":{"name":"x","porrt":8080}}`,
-			key:  "porrt",
+			path: `"app.porrt"`,
 		},
 		{
-			name: "nested unknown key",
+			name: "unknown nested section",
 			doc:  `{"app":{"name":"x","nested":{"deep":"secret-value"}}}`,
-			key:  "nested",
+			path: `"app.nested"`,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := loadStrict(t, tt.doc)
+			c := loadHermetic(t, tt.doc)
 			var cfg strictAppConfig
 			err := c.Unmarshal("app", &cfg)
-			if err == nil {
-				t.Fatal("Unmarshal: expected unknown-key error, got nil")
-			}
-			if !strings.Contains(err.Error(), tt.key) {
-				t.Errorf("error %q does not name the unknown key %q", err, tt.key)
-			}
+			assertRemedy(t, err, "unknown key", tt.path)
 			if strings.Contains(err.Error(), "secret-value") {
 				t.Errorf("unknown-key error leaked a config value: %q", err)
 			}
@@ -69,80 +83,156 @@ func TestStrictDecodingRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
-func TestStrictDecodingDisablesWeakCoercion(t *testing.T) {
+// TestStrictDecodingUnknownKeyThroughLoad covers the file path: a Config
+// built by Load from a file decodes strictly by default.
+func TestStrictDecodingUnknownKeyThroughLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("app:\n  name: x\n  db:\n    hots: localhost\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(WithFiles(path), WithoutProcessEnv(), WithoutDotenv())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var cfg struct {
+		Name string
+		DB   struct{ Host string }
+	}
+	assertRemedy(t, c.Unmarshal("app", &cfg), "unknown key", `"app.db.hots"`)
+}
+
+// TestStrictDecodingStringOverrides pins that strings parse into the basic
+// type of their target: an environment override of a typed field decodes.
+func TestStrictDecodingStringOverrides(t *testing.T) {
+	t.Setenv("CREDO_APP__PORT", "9090")
+	t.Setenv("CREDO_APP__DEBUG", "true")
+	t.Setenv("CREDO_APP__RATIO", "0.25")
+	t.Setenv("CREDO_APP__TIMEOUT", "5s")
+	t.Setenv("CREDO_APP__LEVEL", "info")
+	c, err := LoadBytes([]byte(`{"app":{"name":"x","port":8080}}`), FormatJSON, WithoutDotenv())
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	var cfg strictAppConfig
+	if err := c.Unmarshal("app", &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := strictAppConfig{Name: "x", Port: 9090, Debug: true, Ratio: 0.25, Timeout: 5 * time.Second, Level: "level:info"}
+	if cfg.Name != want.Name || cfg.Port != want.Port || cfg.Debug != want.Debug ||
+		cfg.Ratio != want.Ratio || cfg.Timeout != want.Timeout || cfg.Level != want.Level {
+		t.Errorf("Unmarshal = %+v, want %+v", cfg, want)
+	}
+}
+
+// TestStrictDecodingRefusesCrossKind pins the conversions strict decoding
+// refuses, each named with its key path and the remedy.
+func TestStrictDecodingRefusesCrossKind(t *testing.T) {
 	tests := []struct {
 		name string
 		doc  string
+		path string
+		part string
 	}{
-		{name: "string to int", doc: `{"app":{"port":"8080"}}`},
-		{name: "string to bool", doc: `{"app":{"debug":"true"}}`},
+		{name: "boolean into int", doc: `{"app":{"port":true}}`, path: `"app.port"`, part: "'int'"},
+		{name: "number into string", doc: `{"app":{"name":42}}`, path: `"app.name"`, part: "'string'"},
+		{name: "scalar into slice", doc: `{"app":{"tags":"a"}}`, path: `"app.tags"`, part: "array or slice"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Default mode: weak coercion accepts the string form.
-			weak, err := LoadBytes([]byte(tt.doc), FormatJSON, WithoutProcessEnv(), WithoutDotenv())
-			if err != nil {
-				t.Fatalf("LoadBytes: %v", err)
-			}
+			c := loadHermetic(t, tt.doc)
 			var cfg strictAppConfig
-			if err := weak.Unmarshal("app", &cfg); err != nil {
-				t.Fatalf("default mode must coerce: %v", err)
-			}
+			assertRemedy(t, c.Unmarshal("app", &cfg), tt.path, tt.part, "converts no value across kinds")
 
-			// Strict mode: the same document fails to decode.
-			c := loadStrict(t, tt.doc)
+			weak := loadHermetic(t, tt.doc, WithWeakDecoding())
 			cfg = strictAppConfig{}
-			if err := c.Unmarshal("app", &cfg); err == nil {
-				t.Error("strict mode: expected coercion error, got nil")
+			if err := weak.Unmarshal("app", &cfg); err != nil {
+				t.Errorf("WithWeakDecoding: %v", err)
 			}
 		})
 	}
 }
 
-// TestStrictDecodingRetainedCoercions pins the deliberate exceptions: duration
-// strings, TextUnmarshaler fields, and native numeric kind conversions (JSON
-// numbers arrive as float64 and must still decode into int and Duration).
-func TestStrictDecodingRetainedCoercions(t *testing.T) {
-	c := loadStrict(t, `{"app":{"name":"x","port":8080,"debug":true,"timeout":"5s","level":"info"}}`)
+// TestStrictDecodingParseErrorHasNoRemedy pins that a string that does not
+// parse is reported with its key path but without the opt-in, which would
+// not decode it either.
+func TestStrictDecodingParseErrorHasNoRemedy(t *testing.T) {
+	c := loadHermetic(t, `{"app":{"port":"eighty"}}`)
+	var cfg strictAppConfig
+	err := c.Unmarshal("app", &cfg)
+	if err == nil || !strings.Contains(err.Error(), `"app.port"`) {
+		t.Fatalf("Unmarshal = %v, want an error naming app.port", err)
+	}
+	if strings.Contains(err.Error(), "WithWeakDecoding") {
+		t.Errorf("parse error %q offers an opt-in that would not decode the value", err)
+	}
+}
+
+// TestStrictDecodingReportsEveryKey checks that one decode reports every
+// offending key, not only the first.
+func TestStrictDecodingReportsEveryKey(t *testing.T) {
+	c := loadHermetic(t, `{"app":{"port":true,"zeta":1,"alpha":2}}`)
+	var cfg strictAppConfig
+	err := c.Unmarshal("app", &cfg)
+	assertRemedy(t, err, `"app.port"`, `"app.alpha"`, `"app.zeta"`)
+	if a, z := strings.Index(err.Error(), "app.alpha"), strings.Index(err.Error(), "app.zeta"); a > z {
+		t.Errorf("unknown keys are not reported in sorted order: %q", err)
+	}
+}
+
+// TestWeakDecodingRestoresCoercion pins the opt-in: weak coercion and unknown
+// keys ignored, as mapstructure's WeaklyTypedInput does.
+func TestWeakDecodingRestoresCoercion(t *testing.T) {
+	c := loadHermetic(t, `{"app":{"port":"8080","debug":1,"tags":"a","unknown":true}}`, WithWeakDecoding())
 	var cfg strictAppConfig
 	if err := c.Unmarshal("app", &cfg); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if cfg.Port != 8080 {
-		t.Errorf("Port = %d, want 8080 (float64→int is native, not weak)", cfg.Port)
+	if cfg.Port != 8080 || !cfg.Debug || len(cfg.Tags) != 1 || cfg.Tags[0] != "a" {
+		t.Errorf("Unmarshal = %+v, want port 8080, debug true, tags [a]", cfg)
 	}
-	if cfg.Timeout != 5*time.Second {
-		t.Errorf("Timeout = %v, want 5s (duration hook must stay active)", cfg.Timeout)
+}
+
+// TestStrictDecodingNativeNumbers pins that JSON numbers decode into integer
+// and duration fields: a number into a number is no conversion across kinds.
+func TestStrictDecodingNativeNumbers(t *testing.T) {
+	c := loadHermetic(t, `{"app":{"name":"x","port":8080,"debug":true,"timeout":"5s","level":"info"}}`)
+	var cfg strictAppConfig
+	if err := c.Unmarshal("app", &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
-	if cfg.Level != "level:info" {
-		t.Errorf("Level = %q, want %q (TextUnmarshaler hook must stay active)", cfg.Level, "level:info")
+	if cfg.Port != 8080 || cfg.Timeout != 5*time.Second || cfg.Level != "level:info" {
+		t.Errorf("Unmarshal = %+v", cfg)
 	}
 }
 
 func TestStrictDecodingPrimitives(t *testing.T) {
-	c := loadStrict(t, `{"app":{"port":8080}}`)
+	c := loadHermetic(t, `{"app":{"port":8080}}`)
 	var port int
 	if err := c.Unmarshal("app.port", &port); err != nil || port != 8080 {
 		t.Errorf("Unmarshal(app.port) = %d, %v; want 8080", port, err)
 	}
 	var got string
-	if err := c.Unmarshal("app.port", &got); err == nil {
-		t.Error("strict mode: int into *string must fail, got nil error")
-	}
+	assertRemedy(t, c.Unmarshal("app.port", &got), `"app.port"`)
 }
 
-// TestStrictDecodingAppliesToStaged verifies that the staged candidate
-// produced by Stage inherits the strict policy — the seam reload subscriber
-// validation decodes through.
-func TestStrictDecodingAppliesToStaged(t *testing.T) {
-	c := loadStrict(t, `{"app":{"name":"x","unknown_key":1}}`)
-	s, err := c.Stage()
+// TestReloadCandidateDecodesInInstanceMode verifies that the staged candidate
+// inherits the instance's mode, strict and weak.
+func TestReloadCandidateDecodesInInstanceMode(t *testing.T) {
+	const doc = `{"app":{"name":"x","unknown_key":1}}`
+	s, err := loadHermetic(t, doc).Stage()
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	var cfg strictAppConfig
-	if err := s.Unmarshal("app", &cfg); err == nil {
-		t.Error("staged Unmarshal: expected unknown-key error, got nil")
+	assertRemedy(t, s.Unmarshal("app", &cfg), `"app.unknown_key"`)
+
+	s, err = loadHermetic(t, doc, WithWeakDecoding()).Stage()
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := s.Unmarshal("app", &cfg); err != nil {
+		t.Errorf("weak staged Unmarshal: %v", err)
 	}
 }
 
@@ -150,11 +240,9 @@ func TestStrictDecodingAppliesToStaged(t *testing.T) {
 // target struct does not cover (such as the framework's "server" section)
 // fails a strict full-tree decode.
 func TestStrictDecodingFullTree(t *testing.T) {
-	c := loadStrict(t, `{"app":{"name":"x"},"server":{"port":9090}}`)
+	c := loadHermetic(t, `{"app":{"name":"x"},"server":{"port":9090}}`)
 	var cfg struct{ App strictAppConfig }
-	if err := c.Unmarshal("", &cfg); err == nil {
-		t.Error("full-tree decode without a Server field: expected error, got nil")
-	}
+	assertRemedy(t, c.Unmarshal("", &cfg), `unknown key "server"`)
 	var full struct {
 		App    strictAppConfig
 		Server struct{ Port int }
