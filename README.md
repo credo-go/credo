@@ -37,7 +37,6 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Health checks | Beta |
 | Data access — contracts (`store`) | Beta |
 | Data access — Bun SQL wrapper + migrations (`store/sqldb`) | Beta |
-| Background workers + cron (`worker`) | Beta |
 | Pagination | Beta |
 | Outbound HTTP client (`httpclient`) | Beta |
 | Server WebSocket adapter (`websocket`) | Beta |
@@ -168,7 +167,7 @@ app.Provide(NewOrderController)
 app.Provide(NewOutboxRelay)
 
 app.UseHealth()                               // 3. feature mounts and satellites
-worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
+app.Workers().ContinuousProvided[*OutboxRelay]("outbox-relay")
 
 if err := app.Finalize(); err != nil {        // 4. every missing dependency and cycle
     log.Fatal(err)

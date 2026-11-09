@@ -38,7 +38,7 @@ Exact upstream commits are **not** pinned: this code was adapted and has since d
 | [go-i18n](https://github.com/nicksnyder/go-i18n) | MIT | `internal/i18n/` | v2 |
 | [ozzo-validation](https://github.com/go-ozzo/ozzo-validation) | MIT | `validation/rule.go` | 2016 |
 | [GoFr](https://github.com/gofr-dev/gofr) | Apache-2.0 | `store/health.go`, `store/lifecycle.go` | 2021 |
-| [robfig/cron](https://github.com/robfig/cron) | MIT | `worker/schedule.go` | v3 |
+| [robfig/cron](https://github.com/robfig/cron) | MIT | `internal/worker/schedule.go` | v3 |
 
 See [NOTICES](NOTICES) for the full per-file breakdown and copyright notices.
 

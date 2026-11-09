@@ -52,7 +52,6 @@ import (
 	"github.com/credo-go/credo/middleware"
 	"github.com/credo-go/credo/validation"
 	"github.com/credo-go/credo/websocket"
-	"github.com/credo-go/credo/worker"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,7 +255,7 @@ func NewUsageReporter(infra credo.Infra, store *TenantStore) *UsageReporter {
 	return &UsageReporter{infra: infra, store: store}
 }
 
-// Run implements worker.Worker.
+// Run implements credo.Worker.
 func (r *UsageReporter) Run(ctx context.Context) error {
 	r.infra.Logger.InfoContext(ctx, "usage report", "tenants", len(r.store.All()))
 	return nil
@@ -480,8 +479,7 @@ func run() error {
 	app.UseHealth() // /health (liveness) and /ready (readiness)
 
 	// A scheduled worker built from the container: one run per hour.
-	workers := worker.Use(app)
-	workers.ScheduledProvided[*UsageReporter]("usage-report", "@every 1h")
+	app.Workers().ScheduledProvided[*UsageReporter]("usage-report", "@every 1h")
 
 	// The WebSocket server declares the ingress tier: it starts with the App
 	// and drains beside the HTTP drain, before the services its handlers use.

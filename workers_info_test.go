@@ -1,20 +1,23 @@
-package worker
+package credo
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
-	"github.com/credo-go/credo"
+	internalworker "github.com/credo-go/credo/internal/worker"
 )
+
+// infoWorkerFunc adapts a function to Worker.
+type infoWorkerFunc func(context.Context) error
+
+func (f infoWorkerFunc) Run(ctx context.Context) error { return f(ctx) }
 
 // infoBlocking is a continuous body that runs until its context ends.
 func infoBlocking(ctx context.Context) error {
@@ -27,54 +30,65 @@ type infoProvided struct{}
 
 func (*infoProvided) Run(ctx context.Context) error { return infoBlocking(ctx) }
 
-func TestSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) {
-	app := newTestApp(t)
-	workers := Use(app)
-	workers.Continuous("consumer", Func(infoBlocking), ContinuousConfig{
-		Restart:           Restart{Limit: 4, MinDelay: 2 * time.Second},
+// infoNewApp returns an App that logs nothing.
+func infoNewApp(t *testing.T) *App {
+	t.Helper()
+	app, err := New(WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	return app
+}
+
+func TestWorkersSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) {
+	app := infoNewApp(t)
+	workers := app.Workers()
+	workers.Continuous("consumer", infoWorkerFunc(infoBlocking), ContinuousConfig{
+		Restart:           RestartPolicy{Limit: 4, MinDelay: 2 * time.Second},
 		UnreadyWhenFailed: true,
 	})
-	workers.Scheduled("report", "@every 1h", Func(func(context.Context) error { return nil }), ScheduledConfig{
-		RunOnStart:               true,
-		RunTimeout:               time.Minute,
-		MaxConsecutiveFailures:   3,
-		UnreadyUntilFirstSuccess: true,
-		UnreadyAfterSuccessAge:   2 * time.Hour,
-	})
+	workers.Scheduled("report", "@every 1h", infoWorkerFunc(func(context.Context) error { return nil }),
+		ScheduledConfig{
+			RunOnStart:               true,
+			RunTimeout:               time.Minute,
+			MaxConsecutiveFailures:   3,
+			UnreadyUntilFirstSuccess: true,
+			UnreadyAfterSuccessAge:   2 * time.Hour,
+		})
 	app.Provide(func() *infoProvided { return &infoProvided{} })
-	workers.ContinuousProvided[*infoProvided]("provided", ContinuousConfig{Tier: credo.TierIngress})
-	workers.Continuous("plain", Func(infoBlocking))
+	workers.ContinuousProvided[*infoProvided]("provided", ContinuousConfig{Tier: TierIngress})
+	workers.Continuous("plain", infoWorkerFunc(infoBlocking))
 
 	want := []struct {
 		name       string
-		kind       Kind
+		kind       WorkerKind
 		schedule   string
 		continuous *ContinuousConfig
 		scheduled  *ScheduledConfig
 	}{
-		{"consumer", KindContinuous, "", &ContinuousConfig{
-			Tier:              credo.TierInternal,
-			Restart:           Restart{Limit: 4, MinDelay: 2 * time.Second, MaxDelay: DefaultMaxRestartDelay},
+		{"consumer", WorkerKindContinuous, "", &ContinuousConfig{
+			Tier:              TierInternal,
+			Restart:           RestartPolicy{Limit: 4, MinDelay: 2 * time.Second, MaxDelay: DefaultMaxRestartDelay},
 			UnreadyWhenFailed: true,
 		}, nil},
-		{"report", KindScheduled, "@every 1h", nil, &ScheduledConfig{
-			Tier:                     credo.TierIngress,
+		{"report", WorkerKindScheduled, "@every 1h", nil, &ScheduledConfig{
+			Tier:                     TierIngress,
 			RunOnStart:               true,
 			RunTimeout:               time.Minute,
 			MaxConsecutiveFailures:   3,
 			UnreadyUntilFirstSuccess: true,
 			UnreadyAfterSuccessAge:   2 * time.Hour,
 		}},
-		{"provided", KindContinuous, "", &ContinuousConfig{
-			Tier:    credo.TierIngress,
-			Restart: Restart{MinDelay: DefaultMinRestartDelay, MaxDelay: DefaultMaxRestartDelay},
+		{"provided", WorkerKindContinuous, "", &ContinuousConfig{
+			Tier:    TierIngress,
+			Restart: RestartPolicy{MinDelay: DefaultMinRestartDelay, MaxDelay: DefaultMaxRestartDelay},
 		}, nil},
-		{"plain", KindContinuous, "", &ContinuousConfig{
-			Tier:    credo.TierInternal,
-			Restart: Restart{MinDelay: DefaultMinRestartDelay, MaxDelay: DefaultMaxRestartDelay},
+		{"plain", WorkerKindContinuous, "", &ContinuousConfig{
+			Tier:    TierInternal,
+			Restart: RestartPolicy{MinDelay: DefaultMinRestartDelay, MaxDelay: DefaultMaxRestartDelay},
 		}, nil},
 	}
-	check := func(phase string, wantStatus Status) {
+	check := func(phase string, wantStatus WorkerStatus) {
 		t.Helper()
 		infos := workers.Snapshot()
 		if len(infos) != len(want) {
@@ -100,9 +114,11 @@ func TestSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) {
 		}
 	}
 
-	check("registered", StatusPending)
-	finalize(t, app)
-	check("finalized", StatusPending)
+	check("registered", WorkerStatusPending)
+	if err := app.Finalize(); err != nil {
+		t.Fatalf("Finalize() = %v", err)
+	}
+	check("finalized", WorkerStatusPending)
 
 	if err := app.Start(t.Context()); err != nil {
 		t.Fatalf("App.Start() = %v", err)
@@ -113,18 +129,19 @@ func TestSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) {
 	if err := app.Shutdown(ctx); err != nil {
 		t.Fatalf("App.Shutdown() = %v", err)
 	}
-	check("shut down", StatusStopped)
+	check("shut down", WorkerStatusStopped)
 }
 
-func TestSnapshot_EachSnapshotOwnsItsConfiguration(t *testing.T) {
-	s := newTestSupervisor()
-	addWorker(s, continuousDef("consumer", ContinuousConfig{Restart: Restart{Limit: 3}}), Func(infoBlocking))
-	addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{RunTimeout: time.Minute}), Func(infoBlocking))
+func TestWorkersSnapshot_EachSnapshotOwnsItsConfiguration(t *testing.T) {
+	s := infoNewApp(t).Workers()
+	s.Continuous("consumer", infoWorkerFunc(infoBlocking), ContinuousConfig{Restart: RestartPolicy{Limit: 3}})
+	s.Scheduled("report", "@every 1m", infoWorkerFunc(infoBlocking), ScheduledConfig{RunTimeout: time.Minute})
 
 	first := s.Snapshot()
 	first[0].Continuous.Restart.Limit = 99
-	first[0].Continuous.Tier = credo.TierIngress
+	first[0].Continuous.Tier = TierIngress
 	first[1].Scheduled.RunTimeout = time.Hour
+	first[1].Scheduled.Tier = TierInternal
 
 	second := s.Snapshot()
 	looked, _ := s.Lookup("consumer")
@@ -133,70 +150,20 @@ func TestSnapshot_EachSnapshotOwnsItsConfiguration(t *testing.T) {
 		t.Fatal("two snapshots share one *ContinuousConfig")
 	case second[1].Scheduled == first[1].Scheduled:
 		t.Fatal("two snapshots share one *ScheduledConfig")
-	case second[0].Continuous.Restart.Limit != 3 || second[0].Continuous.Tier != credo.TierInternal ||
+	case second[0].Continuous.Restart.Limit != 3 || second[0].Continuous.Tier != TierInternal ||
 		looked.Continuous.Restart.Limit != 3:
-		t.Fatalf("a snapshot mutation reached the supervisor: %+v", *second[0].Continuous)
-	case second[1].Scheduled.RunTimeout != time.Minute:
-		t.Fatalf("a snapshot mutation reached the supervisor: %+v", *second[1].Scheduled)
-	case s.components[0].def.continuous.Restart.Limit != 3:
+		t.Fatalf("a snapshot mutation reached the registry: %+v", *second[0].Continuous)
+	case second[1].Scheduled.RunTimeout != time.Minute || second[1].Scheduled.Tier != TierIngress:
+		t.Fatalf("a snapshot mutation reached the registry: %+v", *second[1].Scheduled)
+	case s.workers[0].c.Definition().Continuous().Restart.Limit != 3:
 		t.Fatal("a snapshot mutation reached the definition")
 	}
 }
 
-func TestSnapshot_CountersPerKind(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-		s := newTestSupervisor()
-		var continuousRuns, scheduledRuns atomic.Int32
-		consumer := addWorker(s, continuousDef("consumer", ContinuousConfig{
-			Restart: Restart{MinDelay: time.Second, MaxDelay: time.Second},
-		}), Func(func(ctx context.Context) error {
-			if continuousRuns.Add(1) <= 2 {
-				return errors.New("boom")
-			}
-			return infoBlocking(ctx)
-		}))
-		report := addWorker(s, scheduledDef("report", "@every 1m"), Func(func(context.Context) error {
-			if scheduledRuns.Add(1) <= 2 {
-				return errors.New("boom")
-			}
-			return nil
-		}))
-		startWorker(t, consumer)
-		startWorker(t, report)
-
-		// +2m: the continuous worker is in its third run; the scheduled
-		// worker has failed twice.
-		time.Sleep(2 * time.Minute)
-		synctest.Wait()
-		c, _ := s.Lookup("consumer")
-		if c.Status != StatusRunning || c.Restarts != 2 || c.ConsecutiveFailures != 0 || c.LastError != "boom" ||
-			!c.LastStartedAt.Equal(start.Add(2*time.Second)) || !c.LastSucceededAt.IsZero() {
-			t.Errorf("consumer = %+v, want running, 2 restarts, no consecutive failures, "+
-				"last error boom, started at +2s, never succeeded", c)
-		}
-		r, _ := s.Lookup("report")
-		if r.Status != StatusWaiting || r.Restarts != 0 || r.ConsecutiveFailures != 2 || r.LastError != "boom" ||
-			!r.LastStartedAt.Equal(start.Add(2*time.Minute)) || !r.LastSucceededAt.IsZero() {
-			t.Errorf("report = %+v, want waiting, no restarts, 2 consecutive failures, "+
-				"last error boom, started at +2m, never succeeded", r)
-		}
-
-		// +3m: the third scheduled run succeeds and resets the streak.
-		time.Sleep(time.Minute)
-		synctest.Wait()
-		r, _ = s.Lookup("report")
-		if r.Status != StatusWaiting || r.ConsecutiveFailures != 0 || r.LastError != "" ||
-			!r.LastSucceededAt.Equal(start.Add(3*time.Minute)) {
-			t.Errorf("report = %+v, want waiting, streak reset, error cleared, succeeded at +3m", r)
-		}
-	})
-}
-
-func TestLookup_ExactName(t *testing.T) {
-	s := newTestSupervisor()
-	addWorker(s, continuousDef("consumer"), Func(infoBlocking))
-	addWorker(s, scheduledDef("report", "@every 1m"), Func(infoBlocking))
+func TestWorkersLookup_ExactName(t *testing.T) {
+	s := infoNewApp(t).Workers()
+	s.Continuous("consumer", infoWorkerFunc(infoBlocking))
+	s.Scheduled("report", "@every 1m", infoWorkerFunc(infoBlocking))
 
 	for _, name := range []string{"consumer", "report"} {
 		info, ok := s.Lookup(name)
@@ -206,39 +173,39 @@ func TestLookup_ExactName(t *testing.T) {
 	}
 	for _, name := range []string{"", "unknown", "Consumer", " consumer", "consumer ", "worker:consumer", "repor"} {
 		info, ok := s.Lookup(name)
-		if ok || !reflect.DeepEqual(info, Info{}) {
-			t.Errorf("Lookup(%q) = %+v, %t, want a zero Info and false", name, info, ok)
+		if ok || !reflect.DeepEqual(info, WorkerInfo{}) {
+			t.Errorf("Lookup(%q) = %+v, %t, want a zero WorkerInfo and false", name, info, ok)
 		}
 	}
 }
 
-// TestInfo_JSONShape pins the wire contract of Snapshot under Credo's
+// TestWorkerInfo_JSONShape pins the wire contract of Snapshot under Credo's
 // response profile against the spec's example: snake_case names throughout,
 // the tier as text, durations as integer nanoseconds, zero schedule,
 // configuration, timestamps and errors omitted.
-func TestInfo_JSONShape(t *testing.T) {
-	s := newTestSupervisor()
-	addWorker(s, continuousDef("consumer", ContinuousConfig{
-		Restart:           Restart{Limit: 5},
+func TestWorkerInfo_JSONShape(t *testing.T) {
+	s := infoNewApp(t).Workers()
+	s.Continuous("consumer", infoWorkerFunc(infoBlocking), ContinuousConfig{
+		Restart:           RestartPolicy{Limit: 5},
 		UnreadyWhenFailed: true,
-	}), Func(infoBlocking))
-	report := addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{
+	})
+	s.Scheduled("report", "@every 1m", infoWorkerFunc(infoBlocking), ScheduledConfig{
 		RunTimeout:             15 * time.Second,
 		MaxConsecutiveFailures: 3,
-	}), Func(infoBlocking))
-	// One failed run, as the runner records it.
-	report.r.update(func(st *runState) {
-		st.status = StatusWaiting
-		st.consecutiveFailures = 1
-		st.lastStartedAt = time.Date(2000, 1, 1, 0, 1, 0, 0, time.UTC)
-		st.lastError = "boom"
 	})
+	infos := s.Snapshot()
+	// One failed run of report, as the engine reports it.
+	report := s.workers[1].c.Snapshot()
+	report.Status = internalworker.StatusWaiting
+	report.ConsecutiveFailures = 1
+	report.LastStartedAt = time.Date(2000, 1, 1, 0, 1, 0, 0, time.UTC)
+	report.LastError = "boom"
+	infos[1] = workerInfo(report, s.workers[1].tier)
 
-	app := newTestApp(t)
-	app.GET("/workers", func(ctx *credo.Context) error {
-		return ctx.Response().JSON(http.StatusOK, s.Snapshot())
+	app := infoNewApp(t)
+	app.GET("/workers", func(ctx *Context) error {
+		return ctx.Response().JSON(http.StatusOK, infos)
 	})
-	startApp(t, app)
 	rec := httptest.NewRecorder()
 	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workers", nil))
 	body, err := io.ReadAll(rec.Body)

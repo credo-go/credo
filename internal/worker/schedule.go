@@ -7,6 +7,7 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -56,12 +57,12 @@ func (s *Schedule) String() string {
 func ParseSchedule(expr string) (*Schedule, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
-		return nil, fmt.Errorf("worker: schedule expression must not be empty")
+		return nil, errors.New("credo: schedule expression must not be empty")
 	}
 
 	compiled, err := parseCron(expr)
 	if err != nil {
-		return nil, fmt.Errorf("worker: parse schedule %q: %w", expr, err)
+		return nil, fmt.Errorf("credo: parse schedule %q: %w", expr, err)
 	}
 
 	return &Schedule{expr: expr, next: compiled}, nil

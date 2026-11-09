@@ -10,15 +10,13 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
-
-	"github.com/credo-go/credo"
 )
 
-// runnerStart adds w under def to a fresh test supervisor, starts its
+// runnerStart adds w under def to a fresh test engine, starts its
 // component and returns both; the component stops when the test ends.
-func runnerStart(t *testing.T, def *definition, w Worker) (*Supervisor, *component) {
+func runnerStart(t *testing.T, def *Definition, w Worker) (*testEngine, *Component) {
 	t.Helper()
-	s := newTestSupervisor()
+	s := newTestEngine()
 	c := addWorker(s, def, w)
 	startWorker(t, c)
 	return s, c
@@ -26,7 +24,7 @@ func runnerStart(t *testing.T, def *definition, w Worker) (*Supervisor, *compone
 
 // runnerBlocking returns a continuous worker that runs until its context is
 // cancelled, the idiomatic way.
-func runnerBlocking() Func {
+func runnerBlocking() workerFunc {
 	return func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -50,7 +48,7 @@ func newRunnerRecorder() *runnerRecorder { return &runnerRecorder{origin: time.N
 
 // wrap returns a worker that records the call and then runs fn with the
 // 1-based call number.
-func (rec *runnerRecorder) wrap(fn func(ctx context.Context, n int) error) Func {
+func (rec *runnerRecorder) wrap(fn func(ctx context.Context, n int) error) workerFunc {
 	return func(ctx context.Context) error {
 		info, _ := CurrentRun(ctx)
 		rec.mu.Lock()
@@ -76,7 +74,7 @@ func (rec *runnerRecorder) offsets() []time.Duration {
 }
 
 func TestSafeRun_RecoversPanics(t *testing.T) {
-	err := safeRun(t.Context(), Func(func(context.Context) error {
+	err := safeRun(t.Context(), workerFunc(func(context.Context) error {
 		panic("boom")
 	}))
 	p, ok := errors.AsType[*panicError](err)
@@ -96,10 +94,10 @@ func TestSafeRun_RecoversPanics(t *testing.T) {
 
 func TestSafeRun_ReturnsTheRunError(t *testing.T) {
 	boom := errors.New("boom")
-	if err := safeRun(t.Context(), Func(func(context.Context) error { return boom })); !errors.Is(err, boom) {
+	if err := safeRun(t.Context(), workerFunc(func(context.Context) error { return boom })); !errors.Is(err, boom) {
 		t.Fatalf("safeRun() = %v, want the error Run returned", err)
 	}
-	if err := safeRun(t.Context(), Func(func(context.Context) error { return nil })); err != nil {
+	if err := safeRun(t.Context(), workerFunc(func(context.Context) error { return nil })); err != nil {
 		t.Fatalf("safeRun() = %v, want nil", err)
 	}
 }
@@ -107,7 +105,7 @@ func TestSafeRun_ReturnsTheRunError(t *testing.T) {
 func TestRunContinuous_RestartsAndStopsGracefully(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var calls atomic.Int64
-		w := Func(func(ctx context.Context) error {
+		w := workerFunc(func(ctx context.Context) error {
 			if calls.Add(1) == 1 {
 				return errors.New("boom")
 			}
@@ -150,7 +148,7 @@ func TestRunContinuous_RestartLimit(t *testing.T) {
 			var calls atomic.Int64
 			s, _ := runnerStart(t, continuousDef("continuous-fail", ContinuousConfig{
 				Restart: Restart{Limit: 2, MinDelay: time.Minute, MaxDelay: time.Minute}, // a fixed cadence
-			}), Func(func(context.Context) error {
+			}), workerFunc(func(context.Context) error {
 				calls.Add(1)
 				return errors.New("boom")
 			}))
@@ -188,7 +186,7 @@ func TestRunContinuous_RestartLimit(t *testing.T) {
 			var runs atomic.Int32
 			s, _ := runnerStart(t, continuousDef("consumer", ContinuousConfig{
 				Restart: Restart{Limit: 1, MinDelay: time.Second},
-			}), Func(func(context.Context) error {
+			}), workerFunc(func(context.Context) error {
 				runs.Add(1)
 				return errors.New("boom")
 			}))
@@ -206,7 +204,7 @@ func TestRunContinuous_RestartLimit(t *testing.T) {
 			var runs atomic.Int32
 			s, c := runnerStart(t, continuousDef("consumer", ContinuousConfig{
 				Restart: Restart{MinDelay: time.Second, MaxDelay: time.Second},
-			}), Func(func(context.Context) error {
+			}), workerFunc(func(context.Context) error {
 				runs.Add(1)
 				return errors.New("boom")
 			}))
@@ -231,7 +229,7 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, _ := runnerStart(t, continuousDef("deadline", ContinuousConfig{
 			Restart: Restart{Limit: 1, MinDelay: time.Second, MaxDelay: time.Second},
-		}), Func(func(ctx context.Context) error {
+		}), workerFunc(func(ctx context.Context) error {
 			childCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
 			defer cancel()
 			<-childCtx.Done()
@@ -254,7 +252,7 @@ func TestRunContinuous_SubcontextDeadlineCountsAsFailure(t *testing.T) {
 func TestRunContinuous_RestartDisabled(t *testing.T) {
 	cases := []struct {
 		name string
-		run  Func
+		run  workerFunc
 		want string
 	}{
 		{"error", func(context.Context) error { return errors.New("boom") }, "boom"},
@@ -267,7 +265,7 @@ func TestRunContinuous_RestartDisabled(t *testing.T) {
 				var runs atomic.Int32
 				s, _ := runnerStart(t, continuousDef("consumer", ContinuousConfig{
 					Restart: Restart{Disabled: true},
-				}), Func(func(ctx context.Context) error {
+				}), workerFunc(func(ctx context.Context) error {
 					runs.Add(1)
 					return tc.run(ctx)
 				}))
@@ -285,7 +283,7 @@ func TestRunContinuous_RestartDisabled(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			s, c := runnerStart(t, continuousDef("consumer", ContinuousConfig{
 				Restart: Restart{Disabled: true},
-			}), Func(func(ctx context.Context) error {
+			}), workerFunc(func(ctx context.Context) error {
 				<-ctx.Done()
 				return errors.New("flush failed")
 			}))
@@ -324,10 +322,7 @@ func TestSnapshot_WhileRunning(t *testing.T) {
 		if info.Name != "snapshot" || info.Kind != KindContinuous || info.Schedule != "" || info.Scheduled != nil {
 			t.Fatalf("identity = %+v, want a continuous worker named snapshot", info)
 		}
-		want := ContinuousConfig{
-			Tier:    credo.TierInternal,
-			Restart: Restart{Limit: 2, MinDelay: time.Second, MaxDelay: time.Second},
-		}
+		want := ContinuousConfig{Restart: Restart{Limit: 2, MinDelay: time.Second, MaxDelay: time.Second}}
 		if info.Continuous == nil || *info.Continuous != want {
 			t.Fatalf("Continuous = %+v, want %+v", info.Continuous, want)
 		}
@@ -345,8 +340,8 @@ func TestSnapshot_WhileRunning(t *testing.T) {
 
 func TestRunScheduled_StatusBeforeTheFirstActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestSupervisor()
-		c := addWorker(s, scheduledDef("report", "@every 1m"), Func(func(context.Context) error { return nil }))
+		s := newTestEngine()
+		c := addWorker(s, scheduledDef("report", "@every 1m"), workerFunc(func(context.Context) error { return nil }))
 		if got := s.Snapshot()[0].Status; got != StatusPending {
 			t.Fatalf("before Start: status = %q, want pending", got)
 		}
@@ -471,7 +466,7 @@ func TestRunScheduled_MaxConsecutiveFailures(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			var runs atomic.Int32
 			s, _ := runnerStart(t, scheduledDef("scheduled-fail", "@every 1m", ScheduledConfig{MaxConsecutiveFailures: 2}),
-				Func(func(context.Context) error {
+				workerFunc(func(context.Context) error {
 					runs.Add(1)
 					return errors.New("boom")
 				}))
@@ -542,7 +537,7 @@ func TestRunScheduled_ScheduleExhausted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var runs atomic.Int32
-				s, _ := runnerStart(t, scheduledDef("never", never, tc.cfg), Func(func(context.Context) error {
+				s, _ := runnerStart(t, scheduledDef("never", never, tc.cfg), workerFunc(func(context.Context) error {
 					runs.Add(1)
 					return nil
 				}))

@@ -1,4 +1,4 @@
-package worker
+package credo_test
 
 import (
 	"context"
@@ -41,9 +41,9 @@ type (
 
 // providedRegister registers T under name as kind, with RunOnStart for a
 // scheduled worker so that it runs at once.
-func providedRegister[T Worker](s *Supervisor, kind Kind, name string) {
-	if kind == KindScheduled {
-		s.ScheduledProvided[T](name, "@every 1h", ScheduledConfig{RunOnStart: true})
+func providedRegister[T credo.Worker](s *credo.Workers, kind credo.WorkerKind, name string) {
+	if kind == credo.WorkerKindScheduled {
+		s.ScheduledProvided[T](name, "@every 1h", credo.ScheduledConfig{RunOnStart: true})
 		return
 	}
 	s.ContinuousProvided[T](name)
@@ -58,12 +58,12 @@ func providedAwaitRun[K any](t *testing.T, w *providedStub[K]) {
 	}
 }
 
-func TestProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
-	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+func TestWorkersProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
+	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		for _, order := range []string{"provide-first", "register-first"} {
 			t.Run(string(kind)+"/"+order, func(t *testing.T) {
-				app := newTestApp(t)
-				s := Use(app)
+				app := mustNew(t)
+				s := app.Workers()
 				provide := func() { app.Provide(newProvidedStub[providedKindA]) }
 				register := func() { providedRegister[*providedStub[providedKindA]](s, kind, "provided") }
 				if order == "provide-first" {
@@ -73,7 +73,7 @@ func TestProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
 					register()
 					provide()
 				}
-				startApp(t, app)
+				startWorkersApp(t, app)
 
 				w, err := app.Resolve[*providedStub[providedKindA]]()
 				if err != nil {
@@ -94,20 +94,20 @@ func TestProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
 // providedAliased is an application-level interface that a concrete worker
 // is bound to through app.Alias.
 type providedAliased interface {
-	Worker
+	credo.Worker
 	aliased()
 }
 
 func (*providedStub[K]) aliased() {}
 
-func TestProvided_InterfaceBoundWithAlias(t *testing.T) {
-	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+func TestWorkersProvided_InterfaceBoundWithAlias(t *testing.T) {
+	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		t.Run(string(kind), func(t *testing.T) {
-			app := newTestApp(t)
+			app := mustNew(t)
 			app.Provide(newProvidedStub[providedKindB])
 			app.Alias[providedAliased, *providedStub[providedKindB]]()
-			providedRegister[providedAliased](Use(app), kind, "aliased")
-			startApp(t, app)
+			providedRegister[providedAliased](app.Workers(), kind, "aliased")
+			startWorkersApp(t, app)
 
 			w, err := app.Resolve[*providedStub[providedKindB]]()
 			if err != nil {
@@ -169,10 +169,10 @@ func (w *providedOwner) Shutdown(context.Context) error {
 	return nil
 }
 
-func TestProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.T) {
-	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+func TestWorkersProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.T) {
+	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		t.Run(string(kind), func(t *testing.T) {
-			app := newTestApp(t)
+			app := mustNew(t)
 			order := &providedOrder{}
 			owner := &providedOwner{order: order, running: make(chan struct{})}
 			app.Provide(func() *providedDep { return &providedDep{order: order} })
@@ -180,12 +180,12 @@ func TestProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.
 				order.add("T built")
 				return owner
 			})
-			providedRegister[*providedOwner](Use(app), kind, "owner")
+			providedRegister[*providedOwner](app.Workers(), kind, "owner")
 
 			if err := app.Start(t.Context()); err != nil {
 				t.Fatalf("App.Start() = %v", err)
 			}
-			lifecycleAwait(t, owner.running, "the worker to run")
+			workersAwait(t, owner.running, "the worker to run")
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 			defer cancel()
 			if err := app.Shutdown(ctx); err != nil {
@@ -200,16 +200,16 @@ func TestProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.
 	}
 }
 
-func TestProvided_MissingBindingFailsFinalize(t *testing.T) {
-	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+func TestWorkersProvided_MissingBindingFailsFinalize(t *testing.T) {
+	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		t.Run(string(kind), func(t *testing.T) {
-			app := newTestApp(t)
-			providedRegister[*providedStub[providedKindA]](Use(app), kind, "orphan")
+			app := mustNew(t)
+			providedRegister[*providedStub[providedKindA]](app.Workers(), kind, "orphan")
 			err := app.Finalize()
 			if err == nil {
 				t.Fatal("Finalize() = nil, want the missing binding")
 			}
-			for _, want := range []string{"worker:orphan", "*worker.providedStub[", "providedKindA]"} {
+			for _, want := range []string{"worker:orphan", "*credo_test.providedStub[", "providedKindA]"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("Finalize() = %v\nwant it to contain %q", err, want)
 				}
@@ -232,7 +232,7 @@ func (d *providedRecordingDep) Shutdown(context.Context) error {
 	return nil
 }
 
-func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
+func TestWorkersProvided_ConstructionFailureFailsStart(t *testing.T) {
 	type stub = providedStub[providedKindA]
 	cases := []struct {
 		name    string
@@ -259,15 +259,15 @@ func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
 			want:    "resolved to nil",
 		},
 	}
-	for _, kind := range []Kind{KindContinuous, KindScheduled} {
+	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		for _, tc := range cases {
 			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
 				capture := newLogCapture()
-				app := newTestApp(t, credo.WithLogger(capture.logger()))
+				app := mustNew(t, credo.WithLogger(capture.logger()))
 				dep := &providedRecordingDep{}
 				app.Provide(func() *providedRecordingDep { return dep })
 				app.Provide(tc.ctor)
-				s := Use(app)
+				s := app.Workers()
 				providedRegister[*stub](s, kind, "broken")
 
 				err := app.Start(t.Context())
@@ -275,7 +275,7 @@ func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
 				if !ok {
 					t.Fatalf("App.Start() = %v, want a *credo.LifecycleError", err)
 				}
-				entry, n := lifecycleEntry(lerr, "worker:broken")
+				entry, n := workersLifecycleEntry(lerr, "worker:broken")
 				if n != 1 || entry.Phase != credo.PhaseStart || entry.Outcome != tc.outcome {
 					t.Fatalf("App.Start() = %v, want worker:broken start %s, once", err, tc.outcome)
 				}
@@ -296,7 +296,7 @@ func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
 				if got := app.State(); got != "stopped" {
 					t.Errorf("State() = %q, want stopped", got)
 				}
-				if info, _ := s.Lookup("broken"); info.Status != StatusPending {
+				if info, _ := s.Lookup("broken"); info.Status != credo.WorkerStatusPending {
 					t.Errorf("broken = %s, want pending (its component never started)", info.Status)
 				}
 				if lines := capture.withMessage("worker started"); len(lines) != 0 {
@@ -312,27 +312,27 @@ type providedIngressDep struct{}
 
 func (*providedIngressDep) Shutdown(context.Context) error { return nil }
 
-func TestProvided_InternalWorkerOnIngressComponentFailsFinalize(t *testing.T) {
+func TestWorkersProvided_InternalWorkerOnIngressComponentFailsFinalize(t *testing.T) {
 	type stub = providedStub[providedKindA]
 	newApp := func(t *testing.T) *credo.App {
-		app := newTestApp(t)
+		app := mustNew(t)
 		app.Provide(func() *providedIngressDep { return &providedIngressDep{} }, credo.Ingress())
 		app.Provide(func(*providedIngressDep) *stub { return newProvidedStub[providedKindA]() })
 		return app
 	}
 
 	app := newApp(t)
-	Use(app).ContinuousProvided[*stub]("consumer")
+	app.Workers().ContinuousProvided[*stub]("consumer")
 	err := app.Finalize()
 	if err == nil {
 		t.Fatal("Finalize() = nil, want the internal worker's dependency on an ingress component")
 	}
 	for _, want := range []string{
 		"worker:consumer", // the worker
-		"the ingress component *worker.providedIngressDep", // the ingress component
-		"worker:consumer) → *worker.providedStub[",         // the path, through T
-		"] → *worker.providedIngressDep",                   // ... to the ingress component
-		"split *worker.providedIngressDep",                 // remedy: split the ingress component
+		"the ingress component *credo_test.providedIngressDep", // the ingress component
+		"worker:consumer) → *credo_test.providedStub[",         // the path, through T
+		"] → *credo_test.providedIngressDep",                   // ... to the ingress component
+		"split *credo_test.providedIngressDep",                 // remedy: split the ingress component
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Finalize() = %v\nwant it to contain %q", err, want)
@@ -343,13 +343,13 @@ func TestProvided_InternalWorkerOnIngressComponentFailsFinalize(t *testing.T) {
 	// ingress, and a scheduled worker, ingress by default.
 	t.Run("continuous worker declared ingress", func(t *testing.T) {
 		app := newApp(t)
-		Use(app).ContinuousProvided[*stub]("consumer", ContinuousConfig{Tier: credo.TierIngress})
-		finalize(t, app)
+		app.Workers().ContinuousProvided[*stub]("consumer", credo.ContinuousConfig{Tier: credo.TierIngress})
+		mustFinalize(t, app)
 	})
 	t.Run("scheduled worker", func(t *testing.T) {
 		app := newApp(t)
-		Use(app).ScheduledProvided[*stub]("report", "@every 1h")
-		finalize(t, app)
+		app.Workers().ScheduledProvided[*stub]("report", "@every 1h")
+		mustFinalize(t, app)
 	})
 
 	// The remedy names the worker's own setting, its Tier field: a worker

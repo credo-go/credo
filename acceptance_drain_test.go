@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/worker"
 )
 
 // acceptanceDB is a database component: writes fail once it has shut down.
@@ -101,8 +100,7 @@ func TestAcceptance_DrainDeliversLastJob(t *testing.T) {
 	app.Provide(func(q *jobQueue, d *acceptanceDB, l *acceptanceLog) *jobWriter {
 		return &jobWriter{queue: q, db: d, log: l}
 	})
-	workers := worker.Use(app)
-	workers.ContinuousProvided[*jobWriter]("job-writer")
+	app.Workers().ContinuousProvided[*jobWriter]("job-writer")
 
 	entered := make(chan struct{})
 	release := make(chan struct{})

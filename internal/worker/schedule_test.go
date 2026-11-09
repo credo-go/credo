@@ -201,3 +201,24 @@ func TestParseSchedule_Rejected(t *testing.T) {
 		})
 	}
 }
+
+// TestParseSchedule_ErrorText pins the two forms of a rejection: an empty
+// expression, and a parse error under the expression it names.
+func TestParseSchedule_ErrorText(t *testing.T) {
+	cases := []struct {
+		expr string
+		want string
+	}{
+		{"", "credo: schedule expression must not be empty"},
+		{"   ", "credo: schedule expression must not be empty"},
+		{"1 2 3 4", `credo: parse schedule "1 2 3 4": expected exactly 5 fields, found 4: [1 2 3 4]`},
+		{" TZ=UTC 0 0 * * * ", `credo: parse schedule "TZ=UTC 0 0 * * *": timezone prefixes are not supported; ` +
+			"schedules run in the server's local time"},
+	}
+	for _, tc := range cases {
+		_, err := ParseSchedule(tc.expr)
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("ParseSchedule(%q) = %v, want %q", tc.expr, err, tc.want)
+		}
+	}
+}
