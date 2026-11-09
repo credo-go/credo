@@ -1,6 +1,304 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0, the restart backoff of v0.21.0 and the v0.24.0 workers as components are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n), its seven-method DI surface under [DI surface](#di-surface), and its workers as components under [Workers as components](#workers-as-components); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions. Its error rules are described under [Error handling](#error-handling) and its `StatusHandler` check under [Router](#router). [v0.24.0 at a glance](#v0240-at-a-glance) lists first the v0.24.0 changes that compile unchanged, then what the release deletes, and ends with [what an application keeps](#what-an-application-keeps-v0240). [v0.25.0 at a glance](#v0250-at-a-glance), first, opens with the v0.25.0 changes that compile unchanged, maps every name v0.25.0 deletes or renames — the bound store, the first `Resolve` that finalizes, `Provide` without a type argument, the WebSocket server's declared tier, the workers in the root package, `middleware/ratelimit`, `credo.ComponentName` and `credo.CloseOnShutdown` — and ends with [what an application keeps](#what-an-application-keeps-v0250); the sections after it describe each earlier release with the calls of that release.
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0, the restart backoff of v0.21.0 and the v0.24.0 workers as components are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n), its seven-method DI surface under [DI surface](#di-surface), and its workers as components under [Workers as components](#workers-as-components); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions. Its error rules are described under [Error handling](#error-handling) and its `StatusHandler` check under [Router](#router). [v0.24.0 at a glance](#v0240-at-a-glance) lists first the v0.24.0 changes that compile unchanged, then what the release deletes, and ends with [what an application keeps](#what-an-application-keeps-v0240). [v0.26.0 at a glance](#v0260-at-a-glance), first, opens with the v0.26.0 changes that compile unchanged, maps every row the release deletes or renames by area — errors and message keys, context values and meta, routing and middleware, configuration and reload, validation, authentication, store and `sqldb`, and the removed root APIs — and ends with [what an application keeps](#what-an-application-keeps-v0260). [v0.25.0 at a glance](#v0250-at-a-glance), after it, opens with the v0.25.0 changes that compile unchanged, maps every name v0.25.0 deletes or renames — the bound store, the first `Resolve` that finalizes, `Provide` without a type argument, the WebSocket server's declared tier, the workers in the root package, `middleware/ratelimit`, `credo.ComponentName` and `credo.CloseOnShutdown` — and ends with [what an application keeps](#what-an-application-keeps-v0250); the sections after it describe each earlier release with the calls of that release.
+
+## v0.26.0 at a glance
+
+v0.26.0 reshapes the contracts v1 will freeze, so that each has one way to do each thing:
+
+- an error has one status channel;
+- a request value or a route meta entry is a typed key;
+- route meta is read after the match, by a routed middleware tier;
+- configuration is read through typed section descriptors, decoded strictly, and live where it must change on reload;
+- the access log is one observer of the final response;
+- the Context is not pooled;
+- validation names a field as the client sent it;
+- JWT is in its own package;
+- `store/sqldb` counts only what it can prove.
+
+The release also removes the parallel APIs left beside each of these. The decisions are recorded in:
+
+| Area | ADRs |
+| --- | --- |
+| Configuration | [ADR-005](../adr/005-configuration-architecture.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md) |
+| Routing and middleware | [ADR-007](../adr/007-router-and-routing.md), [ADR-010](../adr/010-middleware-architecture.md), [ADR-018](../adr/018-host-routing-and-rewrite.md) |
+| Context and errors | [ADR-008](../adr/008-context-design.md), [ADR-009](../adr/009-handler-and-error-handling.md) |
+| Validation | [ADR-011](../adr/011-validation-strategy.md) |
+| Authentication | [ADR-012](../adr/012-authentication-and-authorization.md) |
+| Observability | [ADR-014](../adr/014-observability.md) |
+| Data access | [ADR-015](../adr/015-data-access.md) |
+| Application modules | [ADR-003](../adr/003-application-architecture.md) |
+
+Where an earlier section below names a call this release renames or deletes, this section gives the current one.
+
+### Check first: changes that compile unchanged (v0.26.0)
+
+The compiler finds every removed or renamed call ([below](#what-v0260-deletes-or-renames)). It does not find the changes below: code that builds as before and behaves differently. Look for them first.
+
+- **Configuration decodes strictly.** An unknown key, or a value of another kind than its field (`port: true`, `name: 42`, `tags: "a"`), now fails the decode that reads it.
+  - Under `server`, it fails `credo.New`.
+  - Under an application section, it fails the `Decode`, `GetConfig` or `Unmarshal` that reads the section.
+  - The error names the key path (`config: unknown key "server.prot"`) and `config.WithWeakDecoding()`, the opt-in that restores the previous decoding.
+  - String overrides from the process environment and `.env` still decode into typed fields ([configuration guide](configuration.md)).
+- **An error status comes from one channel.**
+  - An error type that relied on `HTTPStatus() int` now renders 500.
+  - Code that matches `interface{ HTTPStatus() int }` with `errors.As` still compiles, but no longer matches Credo's errors, `store`'s included.
+- **Fault codes are their kind.** A store error, or another fault without a code of its own, renders its kind as its code:
+  - `already_exists`, `constraint`, `serialization`, `deadlock`, `contention` and `conflict`, where every 409 rendered `conflict`;
+  - `timeout`, where it rendered `gateway_timeout`;
+  - `unavailable` and `read_only`, where they rendered `service_unavailable`.
+
+  `not_found` and every status are unchanged. A client that matches `conflict` must match the kind's code.
+- **A missing catalog key is never rendered as text.**
+  - A message key no catalog defines falls back to the built-in message for the code, then to the status text. Debug mode logs a Warn naming the key, the code and the route.
+  - `WithMessageKey("literal text")` compiles unchanged and now renders, for example, "Bad Request". Literal text is `WithMessage`.
+  - `I18nConfig.ResolveMessageKey` now maps `middleware.Timeout`'s code `request_timeout`.
+- **The framework's own rejections carry the client's value in `details`.** These render fixed messages, and the rejected value is in `error.details`, no longer in the message:
+  - an unsupported content encoding (`encoding`) or content type (`content_type`);
+  - `ContractGuard`'s rejected content type (`content_type`), header (`header`), query parameter (`query`) and scope (`scope`).
+- **Two misuses are internal errors.** Both used to answer otherwise; the reason is now logged.
+  - An unsupported bind field type answers 500 `invalid_bind_target`, where it answered 400.
+  - `Response.Redirect` with a status outside 300..308 answers 500.
+- **Validation names fields by their source.** A violation of `BindQuery`, or of a form or multipart `BindBody`, names its field by the `query` or `form` tag, the name the client sent. It used to use the `json` tag, or the Go field name where the struct had none. Rename those keys in `fields.json` too. A JSON body is unchanged, and an XML body keeps the `json` names.
+- **Slices of structs and nested values are validated.**
+  - A slice or array element that implements `validation.Validatable`, or a struct whose pointer does, is now validated, and its violations are named `items[0].name`. Such elements used to pass unless the field's rules said `Each`.
+  - A field with rules now runs its value's `Validate` once those rules pass: `validation.Field(&r.Billing, validation.NotNil[Address]())` checks presence, then runs `Billing.Validate`. A field whose rules fail still reports their violations only.
+  - The former pair `Field(&x, NotNil[T]())` + `Field(&x)` now runs `x.Validate` twice and reports each nested violation twice; keep the first `Field` only.
+- **`ContractGuard` before routing fails closed.** A `ContractGuard` registered before routing (the former `GlobalMiddleware`, now `PreRouting`) answers 500 for every request and logs one Error naming the registration and the remedy. It used to let every request through. Register it with `app.Middleware`.
+- **A mounted request carries its mount as its route.**
+  - `HasRoute` is true for it.
+  - App-level meta such as `MetaAccessLog` applies to it.
+  - Its access record names the mount's prefix pattern.
+  - For a mounted QUERY request without a Content-Type, the routed and pre-routing middleware now run before the 415, as they do for a route.
+- **The request has one context.**
+  - A user or value set inside `middleware.Timeout` or a wrapped stdlib middleware is now visible after the chain returns: to access-log filters, observers and error rendering.
+  - A deadline or span that a stdlib middleware adds is visible to the handler through `c.Context()`.
+  - A stdlib middleware that passes on a context not derived from the request's now hides the values set before it from the handlers after it.
+  - Assigning `c.Request().Request` no longer changes `c.Context()`; `c.Within(ctx, next)` does. Debug mode logs a warning once per route.
+  - The embedded request's own `c.Request().Request.Context()` does not carry values set with `Set` or `SetUser`.
+  - A mounted `http.Handler` sees the values set before the mount.
+- **A `*Context` kept past its request reads its own request.** The Context is no longer pooled. A `*Context` captured by a goroutine or stored by a hook keeps reading its own request's state; it no longer reads a later request's, another tenant's user included. It is still not safe for concurrent use.
+- **`middleware.Rewrite` matches the wire form, as the router does.**
+  - An encoded slash is data inside a segment: a rule that matched across `%2F` (`/old/{a}/{b}` against `/old/x%2Fy`) no longer does, and a captured `%2F` stays one segment in the target.
+  - A `{name:regex}` parameter is one segment, and its constraint is checked on the decoded value: `{rest:.+}` no longer spans segments, and `%31` satisfies `[0-9]+`.
+  - A `{name}` ends at the byte that follows it in the pattern: `/d/{a}-{b}` splits `x-y-z` at the first `-`.
+  - A `To` with a literal `%` (`/new/100%`), or a `From` with text after its catch-all, now panics when the middleware is built ([routing guide](routing.md#encoded-paths)).
+- **A static URL whose file path needs escaping is now escaped.** `StaticRoute.BuildURI` percent-encodes each segment of the file path (a space, `%`, `?`, `#`, `;`, non-ASCII), so the URL serves the file it names. Its new error result is a compile error at each call site.
+- **Certificate files rotate when they change on disk.** With `WithTLSFiles` or `server.tls.*`, a changed pair is picked up at the next handshake, checked at most once a second, without a signal or a reload. A reload no longer moves the pair to new `server.tls.*` paths: a changed path is reported as needing a restart.
+- **The restart report is computed against the start.** A reload's result names every key whose value differs from the start's outside a live section, on every reload until the key reverts. It used to name only the keys that reload changed and no subscriber covered.
+- **`testutil.NewApp` without `WithConfig` pairs has no sections.** Decoding a key returns the not-found error a loaded configuration returns. It used to succeed and leave the target unchanged.
+- **`sqldb` counts only a provable query.** `Count` and `Page` return `ErrUnsupportedCountQuery` before any I/O for these queries, which used to count through a derived table:
+  - a query built with `Apply`, `Unwrap` or a `Relation` callback;
+  - a raw `ColumnExpr` or `Having` without `GroupExpr` or `Distinct`;
+  - a model that implements `bun.BeforeSelectHook`.
+
+  Page them with `PageWithCount` ([data-access guide](data-access.md#paging-with-your-own-count)). The count is Bun's own statement (`SELECT count(*) …`, or a `_count_wrapper` CTE), not `… FROM (…) AS _credo_count_source`. It runs no model SELECT hook, so a query hook or log that matched the old SQL sees the new form.
+- **Only the wrapper's `Conn` chooses a connection.** A `Conn` set inside `SelectQuery.Apply` is overridden by transaction injection. A typed terminal on a model-bound query reports `ErrTypedTerminalModel` before a Bun builder error recorded on the same query.
+- **The access log is an observer.** Its records are unchanged byte for byte. It now runs among the observers, in the order `UseAccessLog` was called relative to `AddObserver`. Its `Skipper` skips the access record alone: a skipped request still reaches every other observer.
+
+### What v0.26.0 deletes or renames
+
+Each row below is a compile error, or a log line, message or code the compiler cannot see, with its replacement. The rows are grouped by area.
+
+#### Errors and message keys
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| An error type with `HTTPStatus() int` | Implement `fault.Provider`, return a `fault.Error`, or wrap it in `credo.NewHTTPError(status).WithInternal(err)` |
+| `errors.As(err, &interface{ HTTPStatus() int })` | `ErrorInfo.Status` in a renderer; `errors.AsType[*credo.HTTPError](err)` and its `Status`; or `fault.KindOf(err)` |
+| `WithMessageKey("literal text")` | `WithMessage("literal text")` |
+| `WithMessageKey(catalogKey)` with a literal or a typed constant | Unchanged |
+| `WithMessageKey(s)`, `RenderMessageKey(s)` or `ValidationError{MessageKey: s}` with a computed `string` | `credo.MessageKey(s)` |
+| An `ErrorRenderer` or `SuccessRenderer` reading `MessageKey` as a `string` | It is a `credo.MessageKey`; use `string(info.MessageKey)` where a string is needed |
+| `NewHTTPError(http.StatusNotFound, credo.MsgKeyNotFound)`, with a `MsgKey*` constant that is its status's own code | `NewHTTPError(http.StatusNotFound)` |
+| `NewHTTPError(status, credo.MsgKeyX)` where X is not the status's code | `NewHTTPError(status, "x_code")` |
+| `credo.MsgKeyValidationFailed`, `credo.MsgKeyBindFailed` | `credo.CodeValidationFailed`, `credo.CodeBindFailed` |
+| A client matching `conflict` for a store or fault error | The kind's code: `already_exists`, `constraint`, `serialization`, `deadlock`, `contention` or `conflict`; `gateway_timeout` → `timeout`; `service_unavailable` → `unavailable` or `read_only` |
+| A service returning `credo.NewHTTPError(409, "domain_taken")` | `fault.New(fault.KindAlreadyExists, "domain_taken")`. This is optional: the `HTTPError` still works |
+| A client reading the rejected value from a 415, 400 or 403 message | `error.details`: `encoding`, `content_type`, `header`, `query`, `scope` |
+| 400 `unsupported_bind_field_type` | 500 `invalid_bind_target`, with the reason logged |
+
+A domain layer returns a `fault.Error`, and the handler returns it unchanged ([error-handling guide](error-handling.md)):
+
+```go
+var ErrDomainTaken = fault.New(fault.KindAlreadyExists, "domain_taken")
+
+func (s *Service) Claim(ctx context.Context, domain string) error {
+    if s.exists(ctx, domain) {
+        return ErrDomainTaken // 409 {"code":"domain_taken"}
+    }
+    // …
+}
+```
+
+#### Context, values and meta
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `c.Set("tenant", t)` / `c.Get("tenant").(T)` | `var tenantKey = credo.NewKey[T]("tenant")`; then `c.Set(tenantKey, t)` / `t, ok := c.Get(tenantKey)` |
+| `r.SetMeta("permission", "admin")` / `r.LookupMeta("permission")` | `var permKey = credo.NewKey[string]("permission")`; then `r.SetMeta(permKey, "admin")` / `c.Route().GetMeta(permKey)` |
+| `info.Meta["k"]` | `info.GetMeta(k)` |
+| `r.SetMeta(credo.MetaAccessLog, false)` | Unchanged at the call site; the key is now a `Key[bool]` |
+| `SetMeta(middleware.MetaScope, "read")`, or any `any` value | `SetMeta(middleware.MetaScope, []string{"read"})`; `MetaMaxBody` takes an `int64` |
+| `SetMeta(middleware.MetaScope, string(scope))`, or a named type in a contract value | `SetMeta(middleware.MetaScope, []string{string(scope)})`: a `[]Scope` does not compile |
+| `SetMeta(middleware.MetaRequireHeaders, nil)` to keep a contract (rejected before) | A `nil` list is an empty list and lifts the contract; `RemoveMeta` restores the group's |
+| `c.Request().Request = r.WithContext(ctx); return next(c)` | `return c.Within(ctx, next)` |
+| `x(c.Request().Request)`, handing the stdlib request onwards | `x(c.Request().Std())` |
+| `c.Request().Request.Context()` | `c.Context()`, or `c.Request().Context()`, which now returns the same context |
+
+```go
+var tenantKey = credo.NewKey[*Tenant]("tenant")
+
+func Tenant(next credo.Handler) credo.Handler {
+    return func(c *credo.Context) error {
+        c.Set(tenantKey, lookupTenant(c))
+        return next(c)
+    }
+}
+
+// In a handler, or in a repository given c.Context():
+t, ok := c.Get(tenantKey) // *Tenant, no type assertion
+```
+
+#### Routing, middleware and observers
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `app.GlobalMiddleware(m...)` | `app.PreRouting(m...)` |
+| A middleware on `GlobalMiddleware` that reads route meta (`ContractGuard`, authorization) | `app.Middleware(m...)`, the routed tier |
+| `CORS`, `Rewrite`, `Secure` or `RateLimit` on `GlobalMiddleware` | `app.PreRouting(...)`: they stay before routing |
+| Authentication repeated on every group, or registered as global middleware where it also covered 404s | `app.Middleware(auth.Middleware[...](...))`, which covers mounts too |
+| `ContractGuard` repeated on every group | `app.Middleware(middleware.ContractGuard())` |
+| A `Rewrite` rule that matched the decoded `URL.Path`, so `{a}/{b}` matched `x%2Fy` | Rules match the wire form, where an encoded slash is data inside one segment: match it with one `{name}`, or with `{name...}` |
+| A `{name:regex}` in a `Rewrite` `From` that matched across segments (`{rest:.+}`) | It is one segment, as in a route: use `{rest...}`, or a `Regexp` rule, for a capture that spans segments |
+| A `Rewrite` target that was a decoded path with `RawPath` cleared, so a captured `%2F` became a separator | `To` is a wire-form path: a captured `%2F` stays one segment, and a literal `%` is written `%25` |
+| `ResultFilter: func(c *credo.Context, e credo.AccessLogEntry) bool { … e.Status … }` | `ResultFilter: func(ex *credo.Exchange) bool { … ex.Status() … }`; every entry field is a method of the same name |
+| `c.GetUser[T]()` / `c.Get(key)` inside a `ResultFilter` | `ex.GetUser[T]()` / `ex.Get(key)`; `ex.Context()` for the request's context |
+| A variable or parameter of type `credo.AccessLogEntry` | Copy the values you keep from the `*credo.Exchange`, which is valid only during the call |
+| `credo.AccessLogResultFilter` | `func(*credo.Exchange) bool` |
+| A middleware that observes the response to export metrics | An `Observer` added with `app.AddObserver`, which sees the final status, bytes and duration |
+
+The user tiers run in the order PreRouting → routed → Group → Route:
+
+```go
+app.PreRouting(middleware.Secure(), middleware.CORS(corsCfg)) // before the match, 404 and 405 included
+app.Middleware(auth.Middleware(authn, nil), middleware.ContractGuard()) // every route and mount, after the match
+app.AddObserver(metrics) // sees each final response: ex.Status(), ex.Bytes(), ex.Duration(), ex.ErrorCode()
+```
+
+#### Configuration and reload
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `config.Load(config.WithStrictDecoding(), …)` | `config.Load(…)`: strict decoding is the default, and the option is gone |
+| A configuration with keys no struct field decodes (a typo, a key another deployment reads, a stale section field), or a value of another kind than its field | Fix the configuration. To keep mapstructure's weak coercion and ignore unknown keys, load it with `config.Load(config.WithWeakDecoding())` and pass it through `credo.WithRawConfig` |
+| A constructor that calls `rc.Unmarshal("app", &cfg)` and returns `cfg` | `app.Provide(config.Section[AppConfig]("app").Decode)`, or keep the constructor |
+| `cfg.Get[T]("app")` | `config.Section[T]("app").Decode(cfg)` |
+| `cfg.MustGet[T]("app")` | `config.Section[T]("app").Decode(cfg)`, with its error handled |
+| `app.GetConfig[T]("app")` / `app.MustGetConfig[T]("app")` | Unchanged, since the untyped key converts. `app.GetConfig[T](key)` with a `string` variable becomes `app.GetConfig(config.Section[T](key))` |
+| A test that relied on `testutil.NewApp`'s empty configuration accepting any key | Provide the section with `testutil.WithConfig` |
+| `app.OnConfigChange(key, fn)` with a holder the consumer reads | A live section: `var S = config.Section[T](key)`, `app.Provide(S.Live)`. The consumer takes `*config.Live[T]` and calls `Load()` where it read its holder. When `fn` derived state (a limiter, a `slog.LevelVar`), it becomes `live.OnChange(func(ctx, prev, next T) error)` |
+| `app.OnReload(fn)` that refreshed derived state | The section's `OnChange` |
+| `app.OnReload(fn)` that reopened a file or did other work unrelated to configuration | Its own SIGHUP handler with `signal.Notify`, which runs beside Credo's |
+| A custom `RawConfig` that implemented `config.Stager` or `config.Reloader` | It no longer reloads. Load the configuration with `config.Load` (or `config.LoadBytes`) and pass it through `credo.WithRawConfig` |
+| `cfg.Reload()` returning `config.Changes` | `cfg.Reload(ctx)` returning `config.ReloadResult`: `changes.Keys()` → `res.Changed`; `changes.Affects(p)` → a prefix test over `res.Changed`; `changes.Empty()` → `len(res.Changed) == 0` |
+| `cfg.Stage()`, `Staged` and its `Commit` | No replacement: `Reload` validates every live section against the candidate before it publishes |
+| `err := app.Reload(ctx)` | `res, err := app.Reload(ctx)`; `res` says what was applied and what needs a restart |
+| A reload to move the served certificate to new `server.tls.*` paths | A restart. Rewriting the files at the same paths, or swapping the link they resolve through, rotates them without a reload |
+| A reload (SIGHUP) to rotate certificate files rewritten in place | Nothing: the files are checked at most once a second, at a handshake |
+
+A section is a snapshot unless it is declared live ([configuration guide](configuration.md)):
+
+```go
+var AppSection = config.Section[AppConfig]("app")      // static: read once
+var LimitsSection = config.Section[Limits]("limits")   // live: replaced by a reload that changes it
+
+app.Provide(AppSection.Decode)  // binds AppConfig
+app.Provide(LimitsSection.Live) // binds *config.Live[Limits]
+
+func NewLimiter(limits *config.Live[Limits]) *Limiter {
+    l := &Limiter{}
+    l.set(limits.Load())
+    limits.OnChange(func(ctx context.Context, prev, next Limits) error {
+        l.set(next)
+        return nil
+    })
+    return l
+}
+```
+
+#### Validation
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| A client or test that matches a query or form violation's `field` by its `json` name (or Go field name) | Match the `query` or `form` tag name, and rename those keys in `fields.json` |
+| `validation.Field(&x, validation.NotNil[T]())` and `validation.Field(&x)` for a required nested value | `validation.Field(&x, validation.NotNil[T]())` alone: it validates `x` once `NotNil` passes, and the pair now reports each violation twice |
+| `validation.Each[T](validation.By(func(v T) error { return v.Validate() }))`, or similar, to validate a slice of structs | Drop it: the elements are validated once the field's rules pass |
+| A slice of structs whose elements' `Validate` must not run on bind | Give the slice field a type with a `Validate` of its own, which replaces the element walk |
+
+#### Authentication
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `import "github.com/credo-go/credo/auth"` for the JWT authenticator | `import "github.com/credo-go/credo/auth/jwtauth"`; `auth.Middleware` stays in `auth` |
+| `auth.JWTConfig[T]`, `auth.JWTAdvanced[T]`, `auth.JWTClaims` | `jwtauth.Config[T]`, `jwtauth.Advanced[T]`, `jwtauth.Claims` |
+| `auth.NewJWTAuthenticator[T](cfg)`, returning `*auth.JWTAuthenticator[T]` | `jwtauth.NewAuthenticator[T](cfg)`, returning `*jwtauth.Authenticator[T]` |
+| `auth.ErrJWTMissing`, `auth.ErrJWTInvalid` (text `auth: jwt token is …`) | `jwtauth.ErrTokenMissing`, `jwtauth.ErrTokenInvalid` (text `jwtauth: token is …`) |
+| Matching `auth: jwt signing key is required` | `jwtauth: Config has no signing key; set SigningKey, SigningKeys or Advanced.KeyFunc` |
+
+An application that does not verify JWTs no longer compiles golang-jwt.
+
+#### Store and sqldb
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `Count` or `Page` on a query built with `Apply`, `Unwrap` or a `Relation` callback | `PageWithCount[T](ctx, req, countQuery.Count)`, with the count built without the escape hatch (or a count of your own) |
+| `Count` or `Page` on a raw `ColumnExpr` (or `Having`) without `GroupExpr` or `Distinct` | Add `GroupExpr` or `Distinct` if that is what the query means, else use `PageWithCount` |
+| `Page[T]` where `T` implements `bun.BeforeSelectHook` | `PageWithCount[T](ctx, req, count)`, with the count applying the hook's predicate itself, for example through the same `ApplyFilter` function |
+| `q.ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder { return qb.Where(...) })` | `q.ApplyFilter(func(f *sqldb.Filter) { f.Where(...) })`: the callback returns nothing, and `WhereGroup`'s callback takes a `*sqldb.Filter` |
+| An `ApplyQueryBuilder` callback that needs more than predicates (`Unwrap`, other builder methods) | `Apply` on the query type; a select built with it pages with `PageWithCount` |
+| `Apply(func(q *bun.SelectQuery) *bun.SelectQuery { return q.Conn(c) })` | `q.Conn(c)` |
+| `store.WithTx[T](ctx, tx)`, `store.GetTx[T](ctx)`, `store.Conn[T](ctx, base)` | Make `scope := store.NewTxScope[T]()` once at wiring time, then call `scope.WithTx(ctx, tx)`, `scope.GetTx(ctx)`, `scope.Conn(ctx, base)` |
+| `store.WithTxInScope(ctx, scope, tx)`, `GetTxInScope(ctx, scope)`, `RequireTxInScope(ctx, scope)`, `ConnInScope(ctx, scope, base)` | `scope.WithTx(ctx, tx)`, `scope.GetTx(ctx)`, `scope.RequireTx(ctx)`, `scope.Conn(ctx, base)` |
+| `store.ErrDuplicate` | `store.ErrAlreadyExists` |
+| `errors.Is(err, store.ErrConflict)` | A check of `store.ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`, whichever it meant |
+| `sqldb.RunInTx(ctx, db, fn)` | `db.InTx(ctx, fn)` |
+| `sqldb.RunInTxWith(ctx, db, opts, fn)` | `db.InTxWith(ctx, opts, fn)` |
+| Matching `sqldb: unsupported Count/Page query shape` | `sqldb: unsupported Count/Page query`; `errors.Is` against `ErrUnsupportedCountQuery` is unchanged |
+
+The usual shape is a cheap count beside the expensive data query, both scoped by one predicate ([data-access guide](data-access.md#paging-with-your-own-count)):
+
+```go
+scope := func(f *sqldb.Filter) { f.Where("tenant_id = ?", tenantID) }
+page, err := db.Select((*Report)(nil)).ApplyFilter(scope).Apply(withJoins).
+    PageWithCount[Report](ctx, req, db.Select((*Report)(nil)).ApplyFilter(scope).Count)
+```
+
+#### Removed root APIs
+
+| v0.25 | v0.26.0 |
+| --- | --- |
+| `credo.RouteContext`, `resp.Reset(w)` | No replacement: nothing returned the one, and an application has nothing to reset with the other |
+| `uri := sr.BuildURI(path)` on a `*StaticRoute` | `uri, err := sr.BuildURI(path)`: the file path is escaped per segment, and a path that is not valid UTF-8, or has a `.` or `..` segment, is an error |
+| `sr.BuildURI()` | `sr.BuildURI("")`: the prefix with its trailing slash |
+| `credo.Walk(app, fn)` / `credo.WalkRoutes(app, fn)` | `for _, ri := range app.Routes() { … }`. To keep `Walk`'s skip of mounts, add `if ri.Kind == credo.RouteKindMount { continue }` |
+| `credo.NewRequest(r)` / `credo.NewResponse(w)` | `credo.NewContext(w, r).Request()` / `.Response()` |
+| `return c.Rewrite(path)` | A `middleware.Rewrite` rule in `app.PreRouting`, static's SPA mode, or `return targetHandler(c)` ([routing guide](routing.md#conditional-forwarding)) |
+| `if c.IsRewriting() { … }` in a middleware | Delete the check: middleware runs once per request |
+
+### What an application keeps (v0.26.0)
+
+- **Errors.** An error carries its status as an `*HTTPError` or a `fault.Error`. A message key is a catalog key; literal text is `WithMessage`.
+- **Request values and meta.** Both use typed keys made with `credo.NewKey[T]`, and a middleware changes the request's context with `c.Within`.
+- **Middleware tiers.** `PreRouting` holds what runs before the match; `app.Middleware` holds what reads route meta.
+- **Configuration.**
+  - It is read through `config.Section[T]` descriptors.
+  - It decodes strictly unless it is loaded with `WithWeakDecoding()`.
+  - A section that must change on reload is declared live.
+- **Access log.** A `ResultFilter` reads the `*credo.Exchange`.
+- **`store/sqldb`.** A query the wrapper cannot count pages with `PageWithCount`. A transaction runs through a `store.TxScope` and `db.InTx`.
+
+New, and optional: an application split into parts that it registered in a hand-kept order can turn each part into a `credo.Module` (`Services` and `Handlers`) and pass them all to one `app.UseModules` call. Every module's services are then registered before any module's handlers resolve. Its tests use `testutil.WithModules` with `WithOverride` ([dependency-injection guide](dependency-injection.md)).
 
 ## v0.25.0 at a glance
 
@@ -188,7 +486,7 @@ New with it: the capabilities `credo.Starter`, `credo.Readier` and `credo.Resour
 
 ### Stores, WebSocket and i18n
 
-**Implemented (v0.24.0).** Stores, the WebSocket server and i18n run on the lifecycle components. A store is a DI binding that `store.Register` names and the start phase pings; the WebSocket server is an ingress component the application registers; `UseI18n` validates at the call and reads its locale files in the start phase. Registering any of them does no I/O and panics on misuse, and what touches the outside world fails the start instead. The [store spec](../specs/store.md#registration) is the contract; the [data-access guide](data-access.md#what-storeregister-does), the [WebSocket guide](websocket.md#registering-the-server) and the [localization guide](localization.md#enabling-i18n) show the calls. The rows that compile unchanged come first.
+**Implemented (v0.24.0).** Stores, the WebSocket server and i18n run on the lifecycle components. A store is a DI binding that `store.Register` names and the start phase pings; the WebSocket server is an ingress component the application registers; `UseI18n` validates at the call and reads its locale files in the start phase. Registering any of them does no I/O and panics on misuse, and what touches the outside world fails the start instead. The [store spec](../specs/store.md#lifecycle-of-a-bound-database) is the contract; the [data-access guide](data-access.md#what-a-bound-database-does), the [WebSocket guide](websocket.md#registering-the-server) and the [localization guide](localization.md#enabling-i18n) show the calls. The rows that compile unchanged come first.
 
 | Before v0.24.0 | Now |
 | --- | --- |
@@ -426,10 +724,10 @@ New with it: the restart cap (`Restart.MaxDelay`, `restart.max_delay` in JSON, d
 | a `jsonb`, `bytea` or `numeric` column scanned into `map[string]any` on Go 1.27 with pgx deadlocked | scans normally (Bun v1.3.0 fix, pinned by a real-PostgreSQL subtest) |
 | pgx returns a text-format `timestamptz` in a location that differs from the binary format's | both formats return `time.Local` (or the codec's `ScanLocation`); `date` rejects impossible dates such as `2024-02-30` instead of normalizing them |
 
-Unchanged: `SelectQuery.Clone` still restores the execution state Bun's `Clone` used to omit (v1.3.0 copies it itself; the compatibility layer is removed in a later minor), zero and negative `Limit`/`Offset` values still omit the clause, and standalone `Having` or a direct compound root still returns `ErrUnsupportedCountQuery` from `Count` and `Page`.
+Unchanged in v0.22.0: `SelectQuery.Clone` still restores the execution state Bun's `Clone` used to omit (v1.3.0 copies it itself; the compatibility layer is removed in a later minor), zero and negative `Limit`/`Offset` values still omit the clause, and standalone `Having` or a direct compound root still returns `ErrUnsupportedCountQuery` from `Count` and `Page`. v0.26.0 supersedes the `Clone` sentence: the compatibility layer is gone and `Clone` forwards to Bun's own, and `Count` and `Page` run only on a query the wrapper can prove ([v0.26.0 at a glance](#store-and-sqldb)).
 
 ## Examples and downstream impact
 
-The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS finalizes before resolving TenantService (DI minor), enables RequestID/AccessLog explicitly and installs compression with `UseCompress` instead of global middleware (HTTP minor). For v0.24.0, SaaS follows the documented bootstrap order, with its feature mounts and satellite registrations between `Provide` and `Finalize`. For v0.25.0, SaaS binds its opened store stand-in with `ProvideValue` and `credo.ComponentName` alone, hands the WebSocket server to `app.Manage(ws)` without an option, registers its worker through its constructor on `app.Workers()`, and keeps `Finalize` as an optional early check. Hello remains a minimal default-profile example and needed no change.
+The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS finalizes before resolving TenantService (DI minor), enables RequestID/AccessLog explicitly and installs compression with `UseCompress` instead of global middleware (HTTP minor). For v0.24.0, SaaS follows the documented bootstrap order, with its feature mounts and satellite registrations between `Provide` and `Finalize`. For v0.25.0, SaaS binds its opened store stand-in with `ProvideValue` and `credo.ComponentName` alone, hands the WebSocket server to `app.Manage(ws)` without an option, registers its worker through its constructor on `app.Workers()`, and keeps `Finalize` as an optional early check. For v0.26.0, SaaS keeps Secure and CORS on `PreRouting`, verifies its tokens with `auth/jwtauth`, and declares its log level a live section whose `OnChange` sets the `slog.LevelVar`, while `app` stays static, so a reload that changes `app.name` reports a restart. Hello remains a minimal default-profile example and needed no change.
 
 DI evidence comes from a 2026-09-05 scan of the maintainer's downstream applications: no factory/Replace calls, pre-Run resolution, and a worker-pool existence probe. The same applications install renderers once at bootstrap and use no scoped Recover, so their HTTP-minor migration is a rename of the renderer setters plus explicit `UseRequestID`/`UseAccessLog` calls.
