@@ -164,10 +164,9 @@ app.Provide(NewPgOrderRepo)
 app.Alias[OrderRepo, *PgOrderRepo]()
 app.Provide(NewOrderService)
 app.Provide(NewOrderController)
-app.Provide(NewOutboxRelay)
 
 app.UseHealth()                               // 3. feature mounts and satellites
-app.Workers().ContinuousProvided[*OutboxRelay]("outbox-relay")
+app.Workers().Continuous("outbox-relay", NewOutboxRelay) // built in the start phase, after its dependencies
 
 if err := app.Finalize(); err != nil {        // 4. every missing dependency and cycle
     log.Fatal(err)

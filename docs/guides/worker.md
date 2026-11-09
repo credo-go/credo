@@ -20,16 +20,16 @@ Workers are optional. If your app only serves HTTP requests, it never calls `app
 
 ## Mental Model
 
-A worker is anything with a `Run(ctx context.Context) error` method. You register it through the App's **worker registry** — `workers := app.Workers()` — under a name, and the registration method decides its kind:
+A worker is anything with a `Run(ctx context.Context) error` method, or a plain `func(ctx context.Context) error`. You register it through the App's **worker registry** — `workers := app.Workers()` — under a name, and the registration method decides its kind:
 
-| Method | Kind | The worker comes from |
-| --- | --- | --- |
-| `workers.Continuous(name, w, cfg...)` | continuous | the value you pass |
-| `workers.Scheduled(name, expr, w, cfg...)` | scheduled | the value you pass |
-| `workers.ContinuousProvided[T](name, cfg...)` | continuous | the DI container, as `T` |
-| `workers.ScheduledProvided[T](name, expr, cfg...)` | scheduled | the DI container, as `T` |
+| Method | Kind |
+| --- | --- |
+| `workers.Continuous(name, w, cfg...)` | continuous |
+| `workers.Scheduled(name, expr, w, cfg...)` | scheduled |
 
-Each registration adds one lifecycle component to the App, named `worker:<name>`. The App starts it in the start phase and stops it in the drain like every other component: its `Start` launches the worker's loop, its `Shutdown` cancels the worker's context and waits for `Run` to return. The registry itself has no lifecycle — it is what you register through and what you ask for each worker's state.
+`w` takes one of [three forms](#three-forms): the worker itself, a run function whose other parameters the container supplies, or a constructor of the worker.
+
+Each registration adds the worker's loop to the App as a lifecycle component named `worker:<name>`. The App starts it in the start phase and stops it in the drain like every other component: its `Start` launches the worker's loop, its `Shutdown` cancels the worker's context and waits for `Run` to return. The registry itself has no lifecycle — it is what you register through and what you ask for each worker's state.
 
 ### Continuous worker
 
@@ -93,9 +93,8 @@ func main() {
 
     app.Provide(NewQueue)
     app.Provide(NewSender)
-    app.Provide(NewEmailConsumer)
 
-    app.Workers().ContinuousProvided[*EmailConsumer]("email-consumer", credo.ContinuousConfig{
+    app.Workers().Continuous("email-consumer", NewEmailConsumer, credo.ContinuousConfig{
         Restart: credo.RestartPolicy{MinDelay: 5 * time.Second},
     })
 
@@ -107,7 +106,7 @@ func main() {
 
 Important points:
 
-- The container builds the consumer, so the App knows it depends on the queue and the sender: it starts the worker after them and stops it before them.
+- The registration takes the constructor, `NewEmailConsumer`, and the App calls it in the start phase with the queue and the sender. It therefore knows the consumer depends on them: it starts the worker after them and stops it before them. The constructor is not a `Provide` binding — nothing else resolves the consumer.
 - `Run` blocks until shutdown or a real failure. Returning nil or `ctx.Err()` — wrapped or not — after `ctx` is cancelled is a graceful stop. An error that carries anything else is a failure even then: `errors.Join(ctx.Err(), flushErr)` is recorded and logged, so a final write that failed during shutdown is never lost. A client that reports a cancelled call in words of its own needs [one translation](#reporting-a-cancelled-call-at-shutdown).
 - Restarts are unlimited unless you set `Restart.Limit`. `MinDelay: 5 * time.Second` sets the first wait; repeated failures back off from there up to a one-minute cap.
 - `Queue`, `Sender` and their constructors stand for your application's dependencies.
@@ -117,16 +116,10 @@ Important points:
 ## Quick Start: Scheduled Worker
 
 ```go
-type CleanupWorker struct {
-    repo *CleanupRepository
-}
-
-func NewCleanupWorker(repo *CleanupRepository) *CleanupWorker {
-    return &CleanupWorker{repo: repo}
-}
-
-func (w *CleanupWorker) Run(ctx context.Context) error {
-    return w.repo.DeleteExpired(ctx) // one execution, then return
+// cleanup does one execution and returns. The registry supplies ctx on every
+// run, and the container supplies repo once.
+func cleanup(ctx context.Context, repo *CleanupRepository) error {
+    return repo.DeleteExpired(ctx)
 }
 
 func main() {
@@ -136,9 +129,8 @@ func main() {
     }
 
     app.Provide(NewCleanupRepository)
-    app.Provide(NewCleanupWorker)
 
-    app.Workers().ScheduledProvided[*CleanupWorker]("cleanup", "0 */6 * * *", credo.ScheduledConfig{
+    app.Workers().Scheduled("cleanup", "0 */6 * * *", cleanup, credo.ScheduledConfig{
         RunOnStart:             true,
         RunTimeout:             10 * time.Minute,
         MaxConsecutiveFailures: 5,
@@ -152,7 +144,8 @@ func main() {
 
 Important points:
 
-- `Run` does one cleanup execution and returns.
+- A job this small needs no type of its own. `cleanup` is a run function: it takes one `context.Context`, which each run receives, and its other parameters come from the container, resolved once after their components have started. The worker stops before the repository it uses.
+- Each run does one cleanup execution and returns.
 - `RunOnStart` runs once as soon as the worker starts, before waiting for the first cron activation.
 - `RunTimeout` gives every run a budget; see [Timeouts](#timeouts).
 - After five consecutive failures the worker is failed until the application restarts.
@@ -186,7 +179,13 @@ func (h Heartbeat) Run(ctx context.Context) error {
 app.Workers().Continuous("heartbeat", Heartbeat{log: app.Logger()})
 ```
 
-A function you already have becomes a worker the same way, through a type whose `Run` calls it. Such a worker is registered by value, so read [Registering by value](#registering-by-value) before you give it a database to use.
+A function you already have needs no type at all: a `func(context.Context) error` is a worker as it is.
+
+```go
+app.Workers().Scheduled("metrics-report", "@every 1m", reportMetrics) // func reportMetrics(ctx context.Context) error
+```
+
+Both are registered as values, so read [Registering a value](#registering-a-value) before you give one a database to use.
 
 ---
 
@@ -199,8 +198,7 @@ A function you already have becomes a worker the same way, through a type whose 
 ```go
 // RegisterBilling is the billing module's registration.
 func RegisterBilling(app *credo.App) {
-    app.Provide(NewInvoiceWorker)
-    app.Workers().ScheduledProvided[*InvoiceWorker]("invoice-worker", "@every 1m", credo.ScheduledConfig{
+    app.Workers().Scheduled("invoice-worker", "@every 1m", NewInvoiceWorker, credo.ScheduledConfig{
         RunTimeout: 15 * time.Second,
     })
 }
@@ -222,21 +220,80 @@ credo: Workers.Continuous("x"): a worker named "x" is already registered; give e
 credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly
 ```
 
-A nil worker, a malformed name, more than one configuration, a negative value and a cron expression that does not parse panic the same way. A schedule that comes from configuration is checked first with `credo.ParseSchedule`, which returns the error instead of panicking ([Configuration](#configuration)). What only the whole graph reveals — a provided worker whose `T` has no binding — is an error `Finalize` returns, and a constructor that fails in the start phase fails the start.
+A nil worker, a `w` of none of the [three forms](#three-forms), a malformed name, more than one configuration, a negative value and a cron expression that does not parse panic the same way. A schedule that comes from configuration is checked first with `credo.ParseSchedule`, which returns the error instead of panicking ([Configuration](#configuration)). What only the whole graph reveals — a parameter of a run function or a constructor that nothing provides — is an error `Finalize` returns, with its path, and a constructor that fails in the start phase fails the start.
 
-### Provided workers
+### Three forms
 
-`ContinuousProvided[T]` and `ScheduledProvided[T]` register a worker that the container builds. They record the type, not an instance: the worker's component is a constructor over `T`, which the start phase builds after `T`'s dependencies have started.
+`Continuous` and `Scheduled` take `w` in one of three forms, and the registration tells them apart by their shape:
 
-- The `app.Provide` binding of `T` and the registration may come in either order, both before `Finalize`.
-- `T` must have a `Run` method — the constraint is `T credo.Worker`, so anything else does not compile. `T` may be an interface bound with `app.Alias`.
-- A `T` without a binding fails `Finalize` with the dependency path. A constructor error, a panic or a nil `T` fails the start: what was built is rolled back, and `Run` returns a `*credo.LifecycleError` naming `worker:<name>`.
-- The worker stops **before** the components `T` depends on: the database a consumer writes to is still open while the consumer flushes its last batch. If `T` itself has `Shutdown`, it is a component too and is shut down after the worker.
-- One `T` registered under two names panics: the container hands every registration the same instance, and two loops would share it.
+| Form | Shape | Fits |
+| --- | --- | --- |
+| a worker | a value whose type has `Run(ctx) error`, or a `func(context.Context) error` | self-contained work that uses no component: a heartbeat, a ticker that logs |
+| a run function | a function that takes exactly one `context.Context`, in any position, and returns only an `error`; its other parameters come from the container | a job over components that keeps nothing between runs: `func(ctx context.Context, db *sqldb.DB) error` needs no type of its own |
+| a constructor | any other function, `func(deps...) W` or `func(deps...) (W, error)`, whose `W` is a worker in either form | a worker with fields of its own — state, settings, a teardown — built from its dependencies |
 
-### Registering by value
+```go
+workers := app.Workers()
+workers.Continuous("heartbeat", Heartbeat{log: app.Logger()})             // a worker
+workers.Scheduled("session-cleanup", "0 */6 * * *", purgeExpiredSessions) // a run function over *sqldb.DB
+workers.Continuous("email-consumer", NewEmailConsumer)                    // a constructor
+workers.Continuous("outbox-relay", (*OutboxRelay).Run)                    // the Run of a bound worker
+```
 
-`Continuous` and `Scheduled` take a value you built. The App cannot see what that value uses — a closure's captures and a struct's fields are invisible to the dependency graph — so the worker has **no edges**: it takes its place in its tier by registration order alone, and nothing orders it after the database it writes to at start or before it at shutdown. A worker that uses infrastructure — a database, a client, a queue — is therefore registered in its provided form, so the graph orders it in both directions. Register by value only what is self-contained: a heartbeat, a ticker that logs, a function over values that are not components.
+The last line is a run function too: a method expression's first parameter is its receiver, so `(*OutboxRelay).Run` is a `func(*OutboxRelay, context.Context) error`, and the container supplies the receiver ([A worker that other code uses](#a-worker-that-other-code-uses)). A function that takes two contexts, or takes a context and returns anything but a lone `error`, panics at registration, naming the run function's shape; any other shape panics naming the three forms.
+
+### Resources come in as parameters
+
+A worker gets the components it uses — a database, a client, a queue — as parameters of its constructor or its run function, so the App sees its dependencies: it starts the worker after them and stops it before them, and the database a consumer writes to is still open while the consumer flushes its last batch. A run function's parameters are resolved once, after their components have started, and every run receives them with its own context. A constructor is called once in the start phase, after its parameters' components have started:
+
+- A parameter nothing provides fails `Finalize` with its path, which starts at the worker: `di: missing dependency: worker-value:email-consumer → *app.Queue (not registered); provide *app.Queue before Finalize`. For a run function the path starts at `Manage(worker:<name>)`, the loop.
+- A constructor error, a panic or a nil worker fails the start, reported as the start failure of `worker-value:<name>`: what was built is rolled back, the loop never starts, and the worker stays `pending`.
+- The constructor is not a binding. Nothing else resolves the value it builds, and each registration calls its constructor separately, so two registrations of one constructor get two values, `worker-value:a` and `worker-value:b`.
+
+A worker that embeds a bound handle shares it with the binding: a consumer whose type embeds a `*sqldb.DB` bound with `ProvideValue` is one resource with the database, whose one readiness entry and one teardown stay the binding's, with its name and its options, after the worker's loop and every other consumer of the database. A worker with a readiness or a teardown of its own therefore holds the handle in a named field, so that it is a resource of its own ([dependency-injection guide](dependency-injection.md#wrappers-and-resource-identity)).
+
+### A worker's own `Shutdown`
+
+A restart calls `Run` again on the same value, so what one run uses is built inside `Run` ([A continuous `Run` is re-entered](#a-continuous-run-is-re-entered)). A `Shutdown` on the worker type is for state that outlives a single `Run` — a buffer flushed once at the end, a connection the constructor opened:
+
+```go
+type AuditShipper struct {
+    db      *sqldb.DB // named field: the database keeps its own teardown
+    pending *Batch    // filled across runs
+}
+
+func NewAuditShipper(db *sqldb.DB) *AuditShipper {
+    return &AuditShipper{db: db, pending: NewBatch()}
+}
+
+func (s *AuditShipper) Run(ctx context.Context) error { /* ... */ }
+
+// Shutdown writes what is still pending, once, after the loop has stopped.
+func (s *AuditShipper) Shutdown(ctx context.Context) error {
+    return s.pending.WriteTo(ctx, s.db)
+}
+
+app.Workers().Continuous("audit-shipper", NewAuditShipper)
+```
+
+The value a constructor builds is a component like any constructor result. Its `Shutdown` runs once, after its loop has stopped and before the components it depends on, in the internal tier — for a scheduled worker too, whose loop stops with the HTTP drain while its value is torn down after it. Its `Start` and `Ready` are planned from the constructor's declared result type, so declare the constructor to return the concrete type: one declared to return `credo.Worker` hides a `Start` or `Ready` its value has, and the start fails naming that remedy, while a hidden `Shutdown` still runs. A worker value you pass in stays yours: the App runs it and never calls its `Shutdown`. A constructor that returns a method value such as `shipper.Run` hands over the function alone, which has no teardown.
+
+### A worker that other code uses
+
+The value a constructor builds is not a binding, so handlers cannot reach it. A worker they also use — an outbox relay whose `Enqueue` they call — is bound with `Provide` and registered through the method expression of its `Run`:
+
+```go
+app.Provide(NewOutboxRelay) // handlers take *OutboxRelay and call Enqueue
+app.Workers().Continuous("outbox-relay", (*OutboxRelay).Run)
+```
+
+Handlers and the loop share the binding's one singleton, and the binding keeps everything a binding has. The singleton starts once, before the loop. `/ready` shows its one entry, with the binding's options — `credo.ComponentName`, `credo.OptionalReadiness()`. Its `Shutdown` runs once, after the loop, whichever of the two calls comes first, and `testutil.WithOverride[*OutboxRelay]` replaces it for both. The compiler checks that `Run` exists; the registration checks its shape.
+
+Bind it without `credo.Ingress()`. The binding's teardown then runs in the internal tier, after the HTTP drain, which the handlers that call `Enqueue` need; bound ingress, the relay would be torn down beside the drain while they still call it, and a continuous worker's internal loop could not take it at all — `Finalize` refuses an internal loop over an ingress binding. The loop's own tier comes from the worker's configuration. Registering `NewOutboxRelay` itself as the worker's constructor beside its binding would build a second relay, one the handlers never see.
+
+### Registering a value
+
+A worker you pass as a value — a struct with `Run`, or a `func(context.Context) error` — is one the App cannot see into: a closure's captures and a struct's fields are invisible to the dependency graph, so the worker has **no edges**. It takes its place in its tier by registration order alone, and nothing orders it after the database it writes to at start or before it at shutdown. A worker that uses infrastructure — a database, a client, a queue — is therefore registered as a run function or a constructor, so the graph orders it in both directions. Register a value only for what is self-contained: a heartbeat, a ticker that logs, a function over values that are not components.
 
 ---
 
@@ -254,12 +311,12 @@ The defaults fit the common case. A continuous worker that consumes what your HT
 Choose the ingress tier for a continuous worker when work enters the process through it — a consumer of an external queue or broker, a watcher of an outside source — so it stops taking new work while the listener does:
 
 ```go
-app.Workers().ContinuousProvided[*BrokerConsumer]("payments-events", credo.ContinuousConfig{
+app.Workers().Continuous("payments-events", NewBrokerConsumer, credo.ContinuousConfig{
     Tier: credo.TierIngress, // work enters the process here: stop taking it with the listener
 })
 ```
 
-The two mistakes are not equal: an external consumer left internal merely stops a little later, while an in-process consumer moved to ingress stops before the handlers that feed it have finished and loses what they enqueue during the drain. A provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path; declare the worker `Tier: credo.TierIngress`, or split the ingress component so that what the worker uses is an internal part.
+The two mistakes are not equal: an external consumer left internal merely stops a little later, while an in-process consumer moved to ingress stops before the handlers that feed it have finished and loses what they enqueue during the drain. A worker of the internal tier whose parameters — of its run function or its constructor — depend on an ingress component fails `Finalize` with the path; declare the worker `Tier: credo.TierIngress`, or split the ingress component so that what the worker uses is an internal part. The value a constructor builds is internal whatever its worker's tier, so one with a teardown of its own that depends on an ingress component fails `Finalize` with the remedy of splitting the worker — or, when that component is the binding the constructor returns, of binding it without `credo.Ingress()`.
 
 One drain deadline serves both tiers and is spent in order, so a long HTTP drain leaves less time for an internal worker's final flush. A `Run` that ignores cancellation past the deadline is abandoned: the App keeps the components the worker depends on open — nothing closes a database under a run that may still use it — and `Run` returns a `*credo.LifecycleError` naming `worker:<name>`.
 
@@ -302,10 +359,10 @@ if _, err := credo.ParseSchedule(settings.CleanupSchedule); err != nil {
 }
 
 workers := app.Workers()
-workers.ContinuousProvided[*OrderConsumer]("order-consumer", credo.ContinuousConfig{
+workers.Continuous("order-consumer", NewOrderConsumer, credo.ContinuousConfig{
     Restart: credo.RestartPolicy{MinDelay: settings.RestartMinDelay, MaxDelay: settings.RestartMaxDelay},
 })
-workers.ScheduledProvided[*SessionCleanup]("session-cleanup", settings.CleanupSchedule)
+workers.Scheduled("session-cleanup", settings.CleanupSchedule, NewSessionCleanup)
 ```
 
 Zero settings fall through to the defaults. A changed schedule, limit or timeout takes effect at the next start: a [config reload](#reloadable-settings) does not re-register workers.
@@ -344,7 +401,7 @@ A run that lasted at least `MaxDelay` resets the sequence: its failure waits `Mi
 **Fixed delay.** Set both delays to the same value:
 
 ```go
-app.Workers().ContinuousProvided[*Poller]("poller", credo.ContinuousConfig{
+app.Workers().Continuous("poller", NewPoller, credo.ContinuousConfig{
     Restart: credo.RestartPolicy{MinDelay: 10 * time.Second, MaxDelay: 10 * time.Second},
 })
 ```
@@ -525,7 +582,7 @@ admin.GET("/workers/{name}", func(ctx *credo.Context) error {
 })
 ```
 
-A controller built by the container takes `*credo.Workers` as a constructor parameter once you bind it with `app.ProvideValue(app.Workers())`.
+A controller built by the container takes `*credo.Workers` as a constructor parameter once you bind it with `app.ProvideValue(app.Workers())`. The registry is also the way to a worker's state: a worker its constructor builds is in no binding, so code that needs to know whether it runs asks `Lookup` for it by name rather than resolving it.
 
 Each `WorkerInfo` carries:
 
@@ -580,7 +637,7 @@ A worker can take the instance out of rotation through `/ready` (`app.UseHealth(
 ```go
 app.UseHealth()
 
-app.Workers().ScheduledProvided[*Recovery]("recovery", "@every 5m", credo.ScheduledConfig{
+app.Workers().Scheduled("recovery", "@every 5m", NewRecovery, credo.ScheduledConfig{
     RunOnStart:               true,
     UnreadyUntilFirstSuccess: true,             // unready until the first run succeeds
     UnreadyWhenFailed:        true,             // unready once the worker is failed
@@ -604,7 +661,7 @@ Readiness takes an instance out of rotation and restarts nothing. A worker that 
 app.UseHealth()
 
 workers := app.Workers()
-workers.ContinuousProvided[*OrderConsumer]("order-consumer", credo.ContinuousConfig{
+workers.Continuous("order-consumer", NewOrderConsumer, credo.ContinuousConfig{
     Restart: credo.RestartPolicy{Limit: 5}, // with unlimited restarts it never fails
 })
 
@@ -647,6 +704,10 @@ func (s *Sync) Run(ctx context.Context) error {
     }
 }
 
+// The subscriber resolves the worker, so the worker is a binding.
+app.Provide(NewSync)
+app.Workers().Continuous("sync", (*Sync).Run)
+
 // After Finalize:
 syncer := app.MustResolve[*Sync]()
 app.OnConfigChange("sync", func(ctx context.Context, next SyncConfig) error {
@@ -661,7 +722,7 @@ A changed cron expression is restart-only; the reload logs it as `restart requir
 
 ## Testing Workers
 
-A worker is a type with a `Run` method, so its logic is tested by calling `Run` directly — no registry, no App:
+A worker is a type with a `Run` method or a function, so its logic is tested by calling it directly — `Run`, or the run function with its parameters — with no registry and no App:
 
 ```go
 func TestInvoiceWorker(t *testing.T) {
@@ -728,13 +789,14 @@ srv := httptest.NewServer(app)
 t.Cleanup(srv.Close) // drained before the workers stop
 ```
 
-Swap a worker's dependencies with `testutil.WithOverride[T]` as for any binding; the provided worker is built from the override.
+A worker its constructor builds is not a binding, so a test swaps its dependencies: `testutil.WithOverride[T]` on a parameter's type, as for any binding, and the constructor receives the override. A worker bound with `Provide` and registered through `(*T).Run` is replaced by `testutil.WithOverride[*T]`, for the handlers and the loop alike.
 
 ---
 
 ## Best Practices
 
-- register a worker that uses infrastructure in its provided form, so the App starts it after its dependencies and stops it before them
+- give a worker what it uses as parameters of a run function or a constructor, so the App starts it after its dependencies and stops it before them
+- bind a worker that other code calls with `Provide`, without `credo.Ingress()`, and register `(*T).Run`; register a constructor only for a worker nothing else uses
 - continuous workers own their loop, are re-enterable, and return only when stopped or on a real failure; scheduled workers do one execution and return
 - treat shutdown as normal control flow: return nil or `ctx.Err()` once `ctx.Done()` closes, translate a client's own "cancelled" error at the call, and never swallow errors with a blanket `ctx.Err()` check
 - keep the default tiers unless work enters the process through the worker
