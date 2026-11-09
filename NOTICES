@@ -197,7 +197,7 @@ Wrapped in:
     Files:
       db.go           — DB type wrapping *bun.DB
       query_*.go      — Query builder proxy types
-      tx.go           — RunInTx transaction management
+      tx.go           — InTx transaction management
       errors.go       — Bun/driver error → store.Err* mapping
 
 ----------------------------------------------------------------------

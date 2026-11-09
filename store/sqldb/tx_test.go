@@ -100,8 +100,8 @@ func TestFinishTransaction_CallbackErrorIdentity(t *testing.T) {
 	if got != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
 		t.Fatalf("finishTransaction = %v (%T), want exact callback error %p", got, got, callbackErr)
 	}
-	if errors.Is(got, store.ErrDuplicate) {
-		t.Fatal("domain callback error was incorrectly classified as ErrDuplicate")
+	if errors.Is(got, store.ErrAlreadyExists) {
+		t.Fatal("domain callback error was incorrectly classified as ErrAlreadyExists")
 	}
 	if tx.rollbacks != 1 || tx.commits != 0 {
 		t.Fatalf("rollback/commit calls = %d/%d, want 1/0", tx.rollbacks, tx.commits)
@@ -120,7 +120,7 @@ func TestFinishTransaction_RollbackErrorPreservesBothCauses(t *testing.T) {
 	if !errors.Is(got, rollbackErr) {
 		t.Errorf("finishTransaction error does not preserve rollback cause: %v", got)
 	}
-	if !errors.Is(got, store.ErrDuplicate) {
+	if !errors.Is(got, store.ErrAlreadyExists) {
 		t.Errorf("finishTransaction error does not map rollback SQLSTATE: %v", got)
 	}
 	if tx.rollbacks != 1 || tx.commits != 0 {
@@ -137,7 +137,7 @@ func TestFinishTransaction_DoesNotClassifyFromCallbackOnRollbackFailure(t *testi
 	if !errors.Is(got, callbackErr) || !errors.Is(got, rollbackErr) {
 		t.Fatalf("finishTransaction = %v, want both causes", got)
 	}
-	if errors.Is(got, store.ErrDuplicate) {
+	if errors.Is(got, store.ErrAlreadyExists) {
 		t.Fatal("callback text incorrectly classified the rollback composite")
 	}
 }
@@ -172,7 +172,7 @@ func TestFinishTransaction_CommitErrorMappedAtCommitLayer(t *testing.T) {
 	if !errors.Is(got, commitErr) {
 		t.Errorf("finishTransaction error does not preserve commit cause: %v", got)
 	}
-	if !errors.Is(got, store.ErrSerialization) || !errors.Is(got, store.ErrConflict) {
+	if !errors.Is(got, store.ErrSerialization) {
 		t.Errorf("finishTransaction error does not map commit SQLSTATE: %v", got)
 	}
 	if !strings.Contains(got.Error(), "sqldb: commit:") {
@@ -214,7 +214,7 @@ func TestFinishTransaction_NestedCommitFailureAbortsAmbient(t *testing.T) {
 	if !errors.Is(got, commitErr) || !errors.Is(got, abortErr) {
 		t.Fatalf("finishTransaction = %v, want commit and abort causes", got)
 	}
-	if !errors.Is(got, store.ErrSerialization) || !errors.Is(got, store.ErrConflict) {
+	if !errors.Is(got, store.ErrSerialization) {
 		t.Fatalf("finishTransaction = %v, want mapped abort SQLSTATE", got)
 	}
 	if abortCalls != 1 {

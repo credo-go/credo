@@ -62,8 +62,8 @@
 //
 // The companion store/sqldb adapter owns a private typed scope per DB. Its
 // proxy terminals participate automatically; db.Conn(ctx) is the
-// transaction-aware Bun escape hatch. The standalone [WithTx], [GetTx], and
-// [Conn] helpers remain only as deprecated compatibility APIs.
+// transaction-aware Bun escape hatch. The scope's methods are the one
+// transaction API.
 //
 // Maturity: beta
 package store

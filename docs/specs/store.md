@@ -53,13 +53,7 @@ func Wrap(kind error, cause error) error
 | `ErrUnavailable` | `KindUnavailable` | yes | 503 |
 | `ErrReadOnly` | `KindReadOnly` | no | 503 |
 
-> **Current until v0.26.0 (R14):** the next paragraph describes `ErrDuplicate` and `ErrConflict`, which go.
-
-`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` match it through `errors.Is` without losing their exact kind.
-
-> **Pending v0.26.0 (R14):** the next paragraph states the sentinels without the deprecated names; until R14 ships, `ErrDuplicate` and `ErrConflict` are exported as the paragraph above says.
-
-The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that checked a coarse conflict checks the sentinel of the condition it meant: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
+The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that needs a coarse conflict checks the sentinels of the conditions it means: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
 
 A store error reaches the client through its kind alone: the root reads `FaultKind` and maps the kind to the table's status, and no store type has an `HTTPStatus` method. A fault without an explicit code renders its kind as its code — `not_found`, `already_exists`, `constraint`, `serialization`, `deadlock`, `contention`, `conflict`, `timeout`, `unavailable`, `read_only` — so a client tells a duplicate from a serialization or deadlock failure; the statuses do not change. `Error.Code` is the driver's code, a diagnostic that is never rendered.
 
@@ -92,41 +86,6 @@ Status, latency, details, and the typed cause travel as one snapshot, so a calle
 
 ### TX Context
 
-> **Current until v0.26.0 (R14):** the next code block lists the `…InScope` functions beside the methods, and the second paragraph after it describes the deprecated unscoped `WithTx[T]`, `GetTx[T]` and `Conn[T]` functions; both sets go, and the methods of `TxScope[T]` are the one transaction API.
-
-```go
-var ErrTxMissing = errors.New("store: transaction missing from context")
-
-// NewTxScope creates a unique logical transaction scope and fixes its
-// transaction type T for every subsequent operation.
-func NewTxScope[T any]() *TxScope[T]
-
-// WithTxInScope stores a transaction handle in the context for a scope.
-func WithTxInScope[T any](ctx context.Context, scope *TxScope[T], tx T) context.Context
-
-// GetTxInScope retrieves a transaction handle for the scope.
-func GetTxInScope[T any](ctx context.Context, scope *TxScope[T]) (T, bool)
-
-// RequireTxInScope returns ErrTxMissing instead of falling back.
-func RequireTxInScope[T any](ctx context.Context, scope *TxScope[T]) (T, error)
-
-// ConnInScope returns the scoped transaction from context if present,
-// otherwise returns the fallback connection.
-func ConnInScope[T any](ctx context.Context, scope *TxScope[T], fallback T) T
-
-// Preferred method form; T is already fixed by TxScope[T].
-func (s *TxScope[T]) WithTx(ctx context.Context, tx T) context.Context
-func (s *TxScope[T]) GetTx(ctx context.Context) (T, bool)
-func (s *TxScope[T]) RequireTx(ctx context.Context) (T, error)
-func (s *TxScope[T]) Conn(ctx context.Context, fallback T) T
-```
-
-`TxScope[T]` deliberately binds the type at construction. For example, `NewTxScope[bun.IDB]()` accepts a concrete `bun.Tx` through the `bun.IDB` contract and reads it back with the same context key; a later call cannot accidentally select `bun.Tx` as a different `T`. Distinct scopes still isolate two databases that share `bun.IDB`. `WithTx` rejects nil values — including a typed-nil pointer held by an interface `T` — as a programming error, so `RequireTx` cannot report a nil handle as present. `RequireTx` is for operations where fallback would violate correctness.
-
-The unscoped `WithTx[T]`, `GetTx[T]` and `Conn[T]` functions are deprecated: separate call sites can choose different concrete/interface forms, and the type-only context key cannot isolate two logical connections that share `T`. New adapters must use a typed scope.
-
-> **Pending v0.26.0 (R14):** the next code block and paragraph state the transaction scope without the free functions; until R14 ships, they are exported as above.
-
 ```go
 var ErrTxMissing = errors.New("store: transaction missing from context")
 
@@ -141,6 +100,8 @@ func (s *TxScope[T]) Conn(ctx context.Context, fallback T) T  // the scoped tran
 ```
 
 The methods of `TxScope[T]` are the one transaction API, which `sqldb` uses: every operation goes through the scope that fixed `T`, so no call site can store a transaction under one type and read it back under another, and two logical connections that share `T` stay apart.
+
+`TxScope[T]` deliberately binds the type at construction. For example, `NewTxScope[bun.IDB]()` accepts a concrete `bun.Tx` through the `bun.IDB` contract and reads it back with the same context key; a later call cannot accidentally select `bun.Tx` as a different `T`. Distinct scopes still isolate two databases that share `bun.IDB`. `WithTx` rejects nil values — including a typed-nil pointer held by an interface `T` — as a programming error, so `RequireTx` cannot report a nil handle as present. `RequireTx` is for operations where fallback would violate correctness. Every method panics on a nil scope: a scope is created once at wiring time.
 
 ## Bun Wrapper: store/sqldb/
 
@@ -449,32 +410,6 @@ func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) er
 
 ### TX Management
 
-> **Current until v0.26.0 (R14):** the next code block declares the free functions `RunInTx` and `RunInTxWith` beside the methods `InTx` and `InTxWith`; the free functions go, and the paragraphs below that name `RunInTx` apply to `InTx` and `InTxWith`.
-
-```go
-var (
-    ErrNilTxCallback  = errors.New("sqldb: transaction callback must not be nil")
-    ErrNestedTxOptions = errors.New("sqldb: nested transaction options are not supported")
-    ErrTxRollbackOnly = errors.New("sqldb: transaction is rollback-only")
-)
-
-// RunInTx starts a transaction, stores it in this DB's typed scope,
-// executes fn, and commits on nil / rolls back on error.
-// Nested calls use savepoints. A nil fn fails before BEGIN.
-func RunInTx(ctx context.Context, db *DB, fn func(ctx context.Context) error) error
-
-// RunInTxWith applies sql.TxOptions to an outer transaction. Non-default
-// options on a nested savepoint return ErrNestedTxOptions.
-func RunInTxWith(ctx context.Context, db *DB, opts *sql.TxOptions, fn func(ctx context.Context) error) error
-
-// InTx / InTxWith are the method forms of RunInTx / RunInTxWith —
-// handler-side ergonomics: db.InTx(ctx.Context(), fn).
-func (db *DB) InTx(ctx context.Context, fn func(ctx context.Context) error) error
-func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error
-```
-
-> **Pending v0.26.0 (R14):** the next code block states the transaction methods without the free functions; until R14 ships, `RunInTx` and `RunInTxWith` are exported as above.
-
 ```go
 var (
     ErrNilTxCallback  = errors.New("sqldb: transaction callback must not be nil")
@@ -507,7 +442,7 @@ The callback is the transaction lifetime boundary: it must not retain its transa
 
 **Commit outcome:** a commit error does not universally prove that the transaction was not applied. The mapped error describes the driver cause, not a definite rollback result. Calling code must not retry blindly from the mere presence of a commit error; retry policy requires a driver/state classification whose outcome is known.
 
-**Nested TX:** When `RunInTx` is called within an existing transaction for the same `DB`, Bun creates a `SAVEPOINT`. Bun's savepoint implementation cannot change isolation or read-only mode. A nil or zero-valued `TxOptions` is accepted; a nested non-default option returns `ErrNestedTxOptions` before the savepoint and callback rather than being silently ignored. Bun also stores the context used to create a savepoint and reuses it for `RELEASE` / `ROLLBACK TO SAVEPOINT`; Credo therefore controls a cancellation-detached savepoint context while callback queries keep the original context. Savepoint creation observes callback cancellation and the cleanup budget; the callback does not run if creation becomes uncertain. If a callback returns nil after cancellation, Credo rolls back and returns the context error; a canceled nested callback rolls back only its savepoint, and a healthy outer transaction stays usable. Creation, release/rollback, and fail-safe ambient abort each have a five-second default wait budget, configurable with `WithTxCleanupTimeout`; callback execution time is not counted. Before an uncertain savepoint operation starts its asynchronous ambient abort, Credo synchronously marks shared transaction state rollback-only. Every outer level checks that state before commit; a level that would otherwise commit returns `ErrTxRollbackOnly`, while an existing callback or context error remains the more specific rollback result. This prevents abort goroutine scheduling from creating a commit race, and further nested calls fail immediately without invoking their callback. Panic cleanup follows the same fail-safe path while re-raising the original panic value. A driver that ignores cancellation can retain its goroutine/connection until it returns, but the caller path is bounded and the transaction remains fail-closed.
+**Nested TX:** When `InTx` is called within an existing transaction for the same `DB`, Bun creates a `SAVEPOINT`. Bun's savepoint implementation cannot change isolation or read-only mode. A nil or zero-valued `TxOptions` is accepted; a nested non-default option returns `ErrNestedTxOptions` before the savepoint and callback rather than being silently ignored. Bun also stores the context used to create a savepoint and reuses it for `RELEASE` / `ROLLBACK TO SAVEPOINT`; Credo therefore controls a cancellation-detached savepoint context while callback queries keep the original context. Savepoint creation observes callback cancellation and the cleanup budget; the callback does not run if creation becomes uncertain. If a callback returns nil after cancellation, Credo rolls back and returns the context error; a canceled nested callback rolls back only its savepoint, and a healthy outer transaction stays usable. Creation, release/rollback, and fail-safe ambient abort each have a five-second default wait budget, configurable with `WithTxCleanupTimeout`; callback execution time is not counted. Before an uncertain savepoint operation starts its asynchronous ambient abort, Credo synchronously marks shared transaction state rollback-only. Every outer level checks that state before commit; a level that would otherwise commit returns `ErrTxRollbackOnly`, while an existing callback or context error remains the more specific rollback result. This prevents abort goroutine scheduling from creating a commit race, and further nested calls fail immediately without invoking their callback. Panic cleanup follows the same fail-safe path while re-raising the original panic value. A driver that ignores cancellation can retain its goroutine/connection until it returns, but the caller path is bounded and the transaction remains fail-closed.
 
 ### Transaction-Aware Bun Connection
 
@@ -594,7 +529,7 @@ The SQLSTATE rows apply to any driver that exposes SQLSTATE, not only PostgreSQL
 
 ### Client Escape Hatch
 
-**Warning**: queries executed via the `*bun.DB` that `Client()` returns bypass the proxy interceptors. There is no automatic TX injection from context (so `InTx` / `RunInTx` will not affect them) and no error mapping to `store.Err*` sentinels. Use `DB.Exec`, `Query`, and `QueryRow` for raw SQL and `DB.Conn(ctx)` for a native Bun operation that must join the ambient transaction. Reserve `Client()` for model registration, work intentionally tied to the base pool, and migration operations beyond `Migrate` (rollback, status, file generation); use the proxy layer for normal repository code.
+**Warning**: queries executed via the `*bun.DB` that `Client()` returns bypass the proxy interceptors. There is no automatic TX injection from context (so `InTx` will not affect them) and no error mapping to `store.Err*` sentinels. Use `DB.Exec`, `Query`, and `QueryRow` for raw SQL and `DB.Conn(ctx)` for a native Bun operation that must join the ambient transaction. Reserve `Client()` for model registration, work intentionally tied to the base pool, and migration operations beyond `Migrate` (rollback, status, file generation); use the proxy layer for normal repository code.
 
 Credo installs no Bun `ConnResolver`; `DB.Conn(ctx)` is the explicit transaction-aware native path ([ADR-015](../adr/015-data-access.md#context-based-tx)).
 
@@ -635,8 +570,6 @@ func (r *UserRepo) Create(ctx context.Context, user *User) error {
 
 ### Service with TX
 
-> **Current until v0.26.0 (R14):** the example calls `sqldb.RunInTx(ctx, s.db, fn)`, which becomes `s.db.InTx(ctx, fn)`.
-
 ```go
 import (
     "context"
@@ -654,7 +587,7 @@ type OrderService struct {
 
 func (s *OrderService) PlaceOrder(ctx context.Context, input OrderInput) (*Order, error) {
     var order *Order
-    err := sqldb.RunInTx(ctx, s.db, func(ctx context.Context) error {
+    err := s.db.InTx(ctx, func(ctx context.Context) error {
         // TX is in context — sqldb proxies pick up this DB's typed scope
         if err := s.stockRepo.Decrement(ctx, input.ProductID, input.Qty); err != nil {
             return err // rollback
@@ -679,9 +612,6 @@ The rationale and the rejected alternatives are in ADR-015:
 - No finite pool default and no automatic `DEGRADED` — [Connection-Pool Policy](../adr/015-data-access.md#connection-pool-policy)
 - A thin `bun/migrate` wrapper run as a pre-deploy job — [Migrations](../adr/015-data-access.md#migrations)
 - A bound database is an ordinary component, pinged in `Start` and reported through `Ready`, with an optional start that is the module's — [A Database Is a Component](../adr/015-data-access.md#a-database-is-a-component)
-
 - Bun through its exported API only, with conformance tests in place of a layout check — [Bun Through Its Exported API](../adr/015-data-access.md#bun-through-its-exported-api)
-
-> **Pending v0.26.0 (R14):** the next decision is not implemented yet.
 
 - One exported spelling per operation: the `TxScope` methods, `InTx`, the exact sentinels — [One API per operation](../adr/015-data-access.md#one-api-per-operation)

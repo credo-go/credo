@@ -25,12 +25,10 @@ func TestSentinelErrors_ErrorsIs(t *testing.T) {
 	}{
 		{"ErrNotFound", store.ErrNotFound},
 		{"ErrAlreadyExists", store.ErrAlreadyExists},
-		{"ErrDuplicate", store.ErrDuplicate},
 		{"ErrConstraint", store.ErrConstraint},
 		{"ErrSerialization", store.ErrSerialization},
 		{"ErrDeadlock", store.ErrDeadlock},
 		{"ErrContention", store.ErrContention},
-		{"ErrConflict", store.ErrConflict},
 		{"ErrTimeout", store.ErrTimeout},
 		{"ErrUnavailable", store.ErrUnavailable},
 		{"ErrReadOnly", store.ErrReadOnly},
@@ -52,8 +50,8 @@ func TestSentinelErrors_StatusIsTheKindOnly(t *testing.T) {
 		kind fault.Kind
 	}{
 		{"ErrNotFound", store.ErrNotFound, fault.KindNotFound},
-		{"ErrDuplicate", store.ErrDuplicate, fault.KindAlreadyExists},
-		{"ErrConflict", store.ErrConflict, fault.KindConflict},
+		{"ErrAlreadyExists", store.ErrAlreadyExists, fault.KindAlreadyExists},
+		{"KindConflict", &store.Error{Kind: store.KindConflict}, fault.KindConflict},
 		{"ErrTimeout", store.ErrTimeout, fault.KindTimeout},
 		{"ErrReadOnly", store.ErrReadOnly, fault.KindReadOnly},
 		{"Error", store.Wrap(store.ErrConstraint, errors.New("driver")), fault.KindConstraint},
@@ -88,8 +86,8 @@ func TestSentinelErrors_ErrorMessage(t *testing.T) {
 		want string
 	}{
 		{store.ErrNotFound, "store: record not found"},
-		{store.ErrDuplicate, "store: duplicate record"},
-		{store.ErrConflict, "store: conflict"},
+		{store.ErrAlreadyExists, "store: duplicate record"},
+		{&store.Error{Kind: store.KindConflict}, "store: conflict"},
 		{store.ErrTimeout, "store: timeout"},
 		{store.ErrReadOnly, "store: read-only"},
 	}
@@ -101,11 +99,11 @@ func TestSentinelErrors_ErrorMessage(t *testing.T) {
 }
 
 func TestSentinelErrors_NotEqual(t *testing.T) {
-	if errors.Is(store.ErrNotFound, store.ErrDuplicate) {
-		t.Error("ErrNotFound should not match ErrDuplicate")
+	if errors.Is(store.ErrNotFound, store.ErrAlreadyExists) {
+		t.Error("ErrNotFound should not match ErrAlreadyExists")
 	}
-	if errors.Is(store.ErrDuplicate, store.ErrConflict) {
-		t.Error("ErrDuplicate should not match ErrConflict")
+	if errors.Is(store.ErrAlreadyExists, store.ErrConstraint) {
+		t.Error("ErrAlreadyExists should not match ErrConstraint")
 	}
 }
 
@@ -116,12 +114,11 @@ func TestSentinelErrors_SemanticKinds(t *testing.T) {
 	}{
 		{store.ErrNotFound, store.KindNotFound},
 		{store.ErrAlreadyExists, store.KindAlreadyExists},
-		{store.ErrDuplicate, store.KindAlreadyExists},
 		{store.ErrConstraint, store.KindConstraint},
 		{store.ErrSerialization, store.KindSerialization},
 		{store.ErrDeadlock, store.KindDeadlock},
 		{store.ErrContention, store.KindContention},
-		{store.ErrConflict, store.KindConflict},
+		{&store.Error{Kind: store.KindConflict}, store.KindConflict},
 		{store.ErrTimeout, store.KindTimeout},
 		{store.ErrUnavailable, store.KindUnavailable},
 		{store.ErrReadOnly, store.KindReadOnly},
@@ -138,23 +135,27 @@ func TestSentinelErrors_SemanticKinds(t *testing.T) {
 	}
 }
 
-func TestSentinelErrors_LegacyAliases(t *testing.T) {
-	if store.ErrAlreadyExists != store.ErrDuplicate { //nolint:errorlint // Exact alias identity is the contract.
-		t.Fatal("ErrDuplicate must remain an alias of ErrAlreadyExists")
+// KindConflict is a kind an adapter may return, not an umbrella: a conflict
+// matches no constraint or concurrency sentinel, and none of them matches a
+// conflict.
+func TestKindConflict_IsAKindNotAnUmbrella(t *testing.T) {
+	conflict := &store.Error{Kind: store.KindConflict, Cause: errors.New("driver conflict")}
+	if got, ok := store.KindOf(fmt.Errorf("repo: %w", conflict)); !ok || got != store.KindConflict {
+		t.Fatalf("KindOf(conflict) = (%q, %v), want (%q, true)", got, ok, store.KindConflict)
 	}
-
-	for _, err := range []error{
+	for _, sentinel := range []error{
+		store.ErrAlreadyExists,
 		store.ErrConstraint,
 		store.ErrSerialization,
 		store.ErrDeadlock,
 		store.ErrContention,
 	} {
-		if !errors.Is(err, store.ErrConflict) {
-			t.Errorf("errors.Is(%v, ErrConflict) = false, want legacy umbrella match", err)
+		if errors.Is(conflict, sentinel) {
+			t.Errorf("errors.Is(conflict, %v) = true, want false", sentinel)
 		}
-	}
-	if errors.Is(store.ErrAlreadyExists, store.ErrConflict) {
-		t.Fatal("AlreadyExists must not match legacy ErrConflict")
+		if errors.Is(store.Wrap(sentinel, errors.New("driver")), conflict) {
+			t.Errorf("errors.Is(%v, conflict) = true, want false", sentinel)
+		}
 	}
 }
 
@@ -198,8 +199,8 @@ func TestError_PreservesStructuredMetadataAndCause(t *testing.T) {
 		Cause:      cause,
 	}
 
-	if !errors.Is(err, store.ErrConstraint) || !errors.Is(err, store.ErrConflict) {
-		t.Fatal("structured constraint must match exact and legacy sentinels")
+	if !errors.Is(err, store.ErrConstraint) {
+		t.Fatal("structured constraint must match its exact sentinel")
 	}
 	if !errors.Is(err, cause) {
 		t.Fatal("structured error must unwrap to the original cause")
@@ -259,10 +260,10 @@ func TestKindOfAndIsTransient_UseSamePrimaryStoreError(t *testing.T) {
 
 func TestWrap_PreservesCauseAndStatus(t *testing.T) {
 	original := errors.New("duplicate key value violates unique constraint users_email_key")
-	wrapped := store.Wrap(store.ErrDuplicate, original)
+	wrapped := store.Wrap(store.ErrAlreadyExists, original)
 
-	if !errors.Is(wrapped, store.ErrDuplicate) {
-		t.Fatal("wrapped error should match ErrDuplicate")
+	if !errors.Is(wrapped, store.ErrAlreadyExists) {
+		t.Fatal("wrapped error should match ErrAlreadyExists")
 	}
 	if !errors.Is(wrapped, original) {
 		t.Fatal("wrapped error should preserve original cause")
