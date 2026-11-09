@@ -150,7 +150,7 @@ func NewOrderService(infra credo.Infra, cfg *OrderConfig, repo OrderRepo) *Order
 }
 ```
 
-Bootstrap is sequential and follows one order — configuration, `Provide`, feature mounts and satellite registrations, `Finalize`, `Resolve` and routes, `Run`:
+Bootstrap is sequential and follows one order — configuration, `Provide`, feature mounts and satellite registrations, `Resolve` and routes, `Run`. The first `Resolve` finalizes the container: it validates the whole graph before any constructor runs, and a registration after it panics naming that call and its line:
 
 ```go
 app, err := credo.New() // 1. configuration
@@ -168,14 +168,10 @@ app.Provide(NewOrderController)
 app.UseHealth()                               // 3. feature mounts and satellites
 app.Workers().Continuous("outbox-relay", NewOutboxRelay) // built in the start phase, after its dependencies
 
-if err := app.Finalize(); err != nil {        // 4. every missing dependency and cycle
-    log.Fatal(err)
-}
+orders := app.MustResolve[*OrderController]() // 4. resolve and route; the first call validates
+app.GET("/orders/{id}", orders.Show)          //    the graph, every missing dependency and cycle
 
-orders := app.MustResolve[*OrderController]() // 5. resolve and route
-app.GET("/orders/{id}", orders.Show)
-
-if err := app.Run(); err != nil {             // 6. start, serve, drain
+if err := app.Run(); err != nil {             // 5. start, serve, drain
     log.Fatal(err)
 }
 ```
@@ -185,8 +181,8 @@ if err := app.Run(); err != nil {             // 6. start, serve, drain
 | `Provide`, `ProvideValue[T]` | Register a constructor, bound as the type it returns, or a built value; misuse panics at the call |
 | `Alias[I, T]`, `BindMany[I, T]` | Resolve an interface as `T`'s singleton; build an ordered `[]I` collection |
 | `Has[T]` | Ask whether `T` is registered, without constructing it |
-| `Finalize` | Freeze registrations and report every missing dependency (with its path) and cycle |
-| `Resolve[T]`, `ResolveAll[I]` (`MustResolve`, `MustResolveAll`) | Retrieve singletons after `Finalize`; before it they panic |
+| `Finalize` | Optional early check: freeze registrations and return every missing dependency (with its path) and cycle as one error |
+| `Resolve[T]`, `ResolveAll[I]` (`MustResolve`, `MustResolveAll`) | Retrieve singletons; the first call finalizes the container, and its error is the graph's report when validation fails |
 | `credo.Component`, `credo.Starter`, `credo.Readier` | A value with `Shutdown` is a component the App stops after its consumers; `Start` and `Ready` on its binding's type are called in the start phase and by `/ready` |
 | `app.Manage(v)` | A component that is not a binding, such as a WebSocket server or a mounted child App |
 | `app.OnStart`, `app.OnStop` | Leaf start and stop actions, run in their tier |

@@ -103,13 +103,7 @@ The cost accepted is the size of the root package, answered by grouping its pack
 
 ### Finalize Phase
 
-> **Current until v0.25.0 (W6):** this paragraph states the current rule — `Resolve` before `Finalize` panics; with W6 the next section replaces it.
-
-Constructors run only against a validated graph. `app.Finalize()` freezes the container and validates the dependency graph; `Resolve` is admitted only after it, `Has` is the registration phase's one read, and a DI registration after it panics. Construction is terminal: one value, error or panic per singleton, shared by every waiter and never retried. [ADR-022](022-bootstrap-and-di-ownership.md#resolution-after-finalize-overrides-before-it) records why and the bootstrap phases around it; the [container spec](../specs/container.md#finalize-and-container-lifecycle) states what `Finalize` reports and when it runs implicitly.
-
-> **Pending v0.25.0 (W6):** not implemented yet; until W6 ships, `Resolve` before `Finalize` panics, as the previous paragraph states.
-
-Constructors run only against a validated graph, and the first resolving call validates it: the first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container when it is not finalized yet, then resolves. `app.Finalize()` stays public as an optional early check, and the serve entry points, `App.Start` and the first `ServeHTTP` call still finalize implicitly. `Has` and the configuration reads (`GetConfig`, `MustGetConfig`, `ConfigExists`) never finalize, because registration uses them to decide what to register. A `Finalize` failure is the triggering call's error and every later `Resolve` returns it; a registration after the freeze panics naming what finalized the container and where. Construction is terminal: one value, error or panic per singleton, shared by every waiter and never retried. [ADR-022](022-bootstrap-and-di-ownership.md#the-registration-window-ends-at-the-first-resolution) records why the window ends at the first resolution; the [container spec](../specs/container.md#finalize-and-container-lifecycle) states the trigger, its record and the message.
+Constructors run only against a validated graph, and the first resolving call validates it: the first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container when it is not finalized yet, then resolves. `app.Finalize()` stays public as an optional early check that returns the whole report as an error, and the serve entry points, `App.Start` and the first `ServeHTTP` call finalize an App that resolved nothing. `Has` and the configuration reads (`GetConfig`, `MustGetConfig`, `ConfigExists`) never finalize, because registration uses them to decide what to register. A `Finalize` failure is the triggering call's error and every later `Resolve` returns it; a registration after the freeze panics naming what finalized the container, where, and the calls that led there. Construction is terminal: one value, error or panic per singleton, shared by every waiter and never retried. [ADR-022](022-bootstrap-and-di-ownership.md#the-registration-window-ends-at-the-first-resolution) records why the window ends at the first resolution; the [container spec](../specs/container.md#finalize-and-container-lifecycle) states the trigger, its record and the message.
 
 ### Shutdown
 
@@ -187,13 +181,11 @@ Rejected:
 - Immutable — snapshot semantics, no race conditions
 - `Alias[I, T]()` enables programming to interfaces without duplicate registrations
 - `BindMany[I, T]()` / `ResolveAll[I]` support ordered plugin-style composition without manual registry bootstrapping
-- `Finalize()` catches dependency graph errors at startup, not at first request, and is the only gate before any constructor runs
+- Finalizing — at `Finalize` or at the first resolving call — catches dependency graph errors at startup, not at first request, and is the only gate before any constructor runs
 - Registration misuse panics at the line that caused it, and `Finalize`'s report names each missing dependency's whole path
 - A resource's teardown, its owner and its tier are declared where it is bound; a resource several bindings hold is torn down once
 - The container holds only the application's bindings; seven methods and `Finalize` are its whole surface, and none of them exists for a framework integration
-- An override is never a runtime replacement: `credo.Override()`, checked before `Finalize`, is the one way to override a binding, and an override that matches nothing panics
-
-> **Current until v0.25.0 (W6):** the item below on an explicit `Finalize` holds until W6; with it, the first `Resolve` finalizes and `Finalize` is an optional early check.
+- An override is never a runtime replacement: `credo.Override()`, checked before the container is finalized, is the one way to override a binding, and an override that matches nothing panics
 
 **Negative:**
 
@@ -202,5 +194,4 @@ Rejected:
 - A framework-provider hook in `internal/di` produces `credo.Infra` — one map lookup per constructor parameter
 - `BindMany` adds ordering and empty-collection semantics that must be documented clearly
 - Container is in `internal/di` — cannot be used as a standalone DI library
-- The composition root needs an explicit, error-checked `Finalize` between registration and the first `Resolve`
 - Several instances of one type take a wrapper type each — more types in exchange for signatures that say which instance they receive

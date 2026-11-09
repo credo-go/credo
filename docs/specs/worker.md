@@ -25,7 +25,7 @@ The App's worker registry, `app.Workers()`, runs background tasks — queue cons
 
 1. One abstraction for continuous and scheduled background work; cron is a scheduling strategy, not a separate system.
 2. The kind's contract is visible at the call that registers the worker, and a setting of the other kind cannot be written.
-3. Constructor-injected workers work with the framework's bootstrap order (register → `Finalize` → start) and are ordered against the components they use, in both directions.
+3. Constructor-injected workers work with the framework's bootstrap order (register → resolve, which finalizes → start) and are ordered against the components they use, in both directions.
 4. Registration is verifiable: a test can read the effective policy of every registered worker without running it.
 5. The lifecycle is legible from default-level logs and from readiness; no worker can end without reaching a reported state.
 6. Every timing path is deterministically testable with `testing/synctest`, without a clock seam.
@@ -218,7 +218,7 @@ Handlers and the loop share one singleton, which starts once, before the loop, a
 Each message names what failed — the call, the binding or the component — and the remedy, in the application's terms: its calls, types and options. "Holder of record" and "defers" name rules of [ADR-024](../adr/024-lifecycle-components.md) and appear in no message.
 
 - **A `w` of none of the forms** names the forms accepted: a worker, which is a `Worker` or a `func(context.Context) error`; a run function, which takes one `context.Context` and returns only an `error`; a constructor of a worker. A function that takes two contexts, or takes a context and returns anything but a lone `error`, names the run function's shape.
-- **A missing parameter** fails `Finalize` with the path from the unit that takes it: `worker-value:<name>` for a constructor, `Manage(worker:<name>)` for a run function — `di: missing dependency: worker-value:orphan → *app.Queue (not registered); provide *app.Queue before Finalize`.
+- **A missing parameter** fails `Finalize` with the path from the unit that takes it, named by the worker's registration call: `the value Workers.Continuous("<name>") builds` for a constructor, `Workers.Continuous("<name>")` for a run function — `di: missing dependency: the value Workers.Continuous("orphan") builds → *app.Queue (not registered); provide *app.Queue before Finalize`.
 - **A failed construction** is the start failure of `worker-value:<name>`, in the internal tier: the constructor's error, its panic, or a nil result, `Workers.Continuous("broken"): the constructor returned a nil *app.Relay; return a worker, or an error`. The loop never starts, and the worker stays `pending`.
 - **A capability the result type hides** names the constructor and the remedy of returning the concrete type: `the constructor of Workers.Continuous("relay") returns a *app.Relay, whose Shutdown and Start its result type credo.Worker hides, and the App plans Start, Ready and the ingress tier only from that type; declare the constructor to return *app.Relay`.
 - **A built value that depends on an ingress component** names the path and the remedy that fits: splitting the worker, or, when that component is the binding whose type the constructor returns, binding it without `credo.Ingress()`.
@@ -300,30 +300,26 @@ The two methods share one path. In order, a registration panics when:
 4. a configuration value is rejected by the table above;
 5. the schedule does not parse (see [Schedules](#schedules));
 6. the name is already registered in the App, whoever registered it;
-7. the component registry refuses the worker's units: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App's shutdown began, or a `credo.ComponentName` component already holds `worker:<name>`, or, for a constructor, `worker-value:<name>`; the panic gives the container's reason under the worker's call.
+7. the component registry refuses the worker's units: the registration comes after the container was finalized — by `Finalize`, the first resolving call or the App's preparation — or after the App's shutdown began, or a `credo.ComponentName` component already holds `worker:<name>`, or, for a constructor, `worker-value:<name>`; the panic gives the container's reason under the worker's call.
 
 Every panic follows one format, `credo: <Call>: <problem>; <remedy>`, where `<Call>` is `Workers.Continuous("name")` or `Workers.Scheduled("name")`, and a type in the message is spelled as Go prints it (package-qualified). For example:
 
 - `credo: Workers.Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay`;
 - `credo: Workers.Scheduled("x"): 2 configurations given; pass at most one credo.ScheduledConfig`.
 
-> **Current until v0.25.0 (W6):** the first sentence of the next paragraph gives the two phase messages, which [Registration after the freeze](#registration-after-the-freeze) replaces.
-
-A registration the phase refuses gives the container's reason: `credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly`, and `credo: Workers.Scheduled("report"): called after shutdown began; registration ends when the App shuts down`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Messages](#messages)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
+A registration the phase refuses gives the container's reason: after the container was finalized, what finalized it ([Registration after the freeze](#registration-after-the-freeze)), and after a shutdown began, `credo: Workers.Scheduled("report"): called after shutdown began; registration ends when the App shuts down`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Messages](#messages)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
 
 ### Registration after the freeze
 
-> **Pending v0.25.0 (W6):** until W6 ships, a registration after `Finalize` panics with `credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly`, which names no trigger.
-
-The first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container, as `Finalize` and the App's preparation do. A worker registration after that names its call, what finalized the container with its site and up to three callers, and the remedy, in the template every registration of the App uses ([container spec](container.md#sequential-bootstrap)):
+The first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container, as `Finalize` and the App's preparation do. A worker registration after that names its call, what finalized the container with its site and up to three callers, and the remedy, in the template every registration of the App uses ([container spec](container.md#the-first-resolve-finalizes)):
 
 ```text
-credo: Workers.Continuous("outbox-relay"): called after the container was finalized by Finalize at main.go:40; register before that call
-credo: Workers.Scheduled("report"): called after the container was finalized by Resolve[*UserController] at main.go:42; register before that call
+credo: Workers.Continuous("outbox-relay"): called after the container was finalized by Finalize at /src/main.go:40; register before that call
+credo: Workers.Scheduled("report"): called after the container was finalized by Resolve[*app.UserController] at /src/main.go:42 (called from /src/main.go:12); register before that call
 credo: Workers.Continuous("outbox-relay"): called after the container was finalized by the first ServeHTTP call; register before the App serves
 ```
 
-The site is the first frame outside Credo's packages and `testutil`; the first `ServeHTTP` call has no site, since its caller is `net/http`. The message for a registration after a shutdown began is unchanged.
+The site is the first frame outside Credo's packages and `testutil`, as the file path the binary records and the line; the first `ServeHTTP` call has no site, since its caller is `net/http`. A registration after a shutdown began gives the shutdown message above.
 
 ## Components
 
@@ -811,7 +807,7 @@ The registry and the public types are in the root package (`workers.go`, `worker
 
 - **Virtual time.** Every timing test runs in a `testing/synctest` bubble; the runner calls the `time` package directly and there is no clock seam. `synctest.Wait` does not advance the clock — sleep past a deadline to fire timers.
 - **Configuration tables.** Each field's resolution and each rejected value is a table entry for both configuration types: zero → default per kind (the tier included), the `RestartPolicy` resolution (`MinDelay` first, a zero `MaxDelay` raised to it, a positive `MaxDelay` below it panicking with both values named, `Disabled` beside any other field panicking), more than one configuration panicking. The snapshot is asserted for each, without running a worker.
-- **Registration misuse.** Every row of [Validation](#validation) panics with a message naming the worker, the call and the remedy, a `w` of none of the three forms, registration after `Finalize`, a duplicate name across two calls of `app.Workers()` and a `credo.ComponentName` component that holds `worker:<name>` included; a missing parameter of a run function or a constructor fails `Finalize` with the path.
+- **Registration misuse.** Every row of [Validation](#validation) panics with a message naming the worker, the call and the remedy, a `w` of none of the three forms, registration after the container was finalized, a duplicate name across two calls of `app.Workers()` and a `credo.ComponentName` component that holds `worker:<name>` included; a missing parameter of a run function or a constructor fails `Finalize` with the path.
 - **Classification as a table.** The outcome classifier is a pure function; each row of the outcome table and each ordering edge (timeout then shutdown, shutdown then deadline, panic with a context-error value during shutdown) is a table entry.
 - **Admission without a production seam.** An in-package test policy blocks in its activation step, the test cancels and releases it, and the admission check must observe the cancellation: zero `Run` calls and a zero `LastStartedAt` before the first run; unchanged invocation count, `LastStartedAt` and `Restarts` before a restart.
 - **Logs through a capturing handler.** One `slog.Handler` records level, message and attributes; each event of the [vocabulary](#logging-contract) is asserted — one `started` and one `stopped` per exit path, `worker failed` once with each `reason`, `run_id` equal to `CurrentWorkerRun(ctx).ID`, the skip collapse, `component=worker:<name>` and `module=worker` on every line and no `worker` key.

@@ -239,7 +239,7 @@ String keys appear **once** at the module boundary. Beyond that, everything is t
 
 ### Typed Getter Shorthand
 
-`app.GetConfig[T](key)` reads one section of the App's configuration in a single call, the auto-loaded one included — the container hands out `RawConfig` only after `Finalize`, so the getter is how registration code reads it. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
+`app.GetConfig[T](key)` reads one section of the App's configuration in a single call, the auto-loaded one included — resolving `RawConfig` would finalize the container and end registration, while the getter never does, so the getter is how registration code reads it. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
 
 ```go
 app, err := credo.New()

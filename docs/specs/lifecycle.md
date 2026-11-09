@@ -50,7 +50,7 @@ This separation allows:
 1. `httptest.NewServer(app)` — prepares (freezes HTTP writes) on the first request but doesn't change state; an App with something to start calls `app.Start` first.
 2. `app.Run()` — claims the start slot, prepares, freezes, runs the start walk AND enters running state.
 3. `app.Start(ctx)` — the same without a listener, for an App served through `ServeHTTP`.
-4. `app.Finalize()` followed by controller resolution and route binding — DI frozen, HTTP writes still open.
+4. Controller resolution and route binding — the first `Resolve`, or an explicit `app.Finalize()` before it, freezes DI, and HTTP writes stay open.
 
 ## Preparation
 
@@ -290,7 +290,7 @@ Whoever serves the App through `ServeHTTP` owns that server's admission and drai
 
 ### `app.Manage(v, opts...)`
 
-Adds a component that is not a DI binding: a value with `Shutdown`, or a constructor over DI parameters — `func(deps...) C` or `func(deps...) (C, error)` — that the start walk builds and that never becomes a binding. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. `credo.ComponentName("…")` names it (default: its type name; a duplicate panics), and `credo.Ingress()` places it in the ingress tier. A value has no edges and stops in reverse registration order within its tier; a constructor has its parameters' edges. A value without `Shutdown`, an App handed to its own `Manage`, a call after `Finalize` or shutdown, a value whose resource a `ProvideValue` binding holds, and a resource handed to `Manage` twice panic ([container spec](container.md#resource-identity-and-teardown)).
+Adds a component that is not a DI binding: a value with `Shutdown`, or a constructor over DI parameters — `func(deps...) C` or `func(deps...) (C, error)` — that the start walk builds and that never becomes a binding. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. `credo.ComponentName("…")` names it (default: its type name; a duplicate panics), and `credo.Ingress()` places it in the ingress tier. A value has no edges and stops in reverse registration order within its tier; a constructor has its parameters' edges. A value without `Shutdown`, an App handed to its own `Manage`, a call after the container was finalized or after shutdown began, a value whose resource a `ProvideValue` binding holds, and a resource handed to `Manage` twice panic ([container spec](container.md#resource-identity-and-teardown)).
 
 Only a value handed to `Manage` claims what it holds; the value a constructor handed to `Manage` builds claims nothing a registration already holds. When that value holds a resource that a binding or another `Manage` value holds — the binding's own value, or a wrapper that embeds its handle, with or without `credo.Borrowed()` on the binding — it defers to that registration, the resource's holder of record ([One teardown per resource](#shutdown-in-tiers)): it starts, adds no readiness entry and never runs the teardown, so `/ready` shows the registration's one entry, with its options, and the teardown carries the registration's name and tier. A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers fails the start once the value is built, since the value has no entry and no teardown for the option to shape. The error names the holder it defers to and the remedies — move the option to that holder's registration, or, when the value has a readiness or a teardown of its own, hold the handle in a named field, so that it is a resource of its own — in the application's terms:
 
@@ -467,7 +467,7 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
 
-`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
+`app.Manage()` and the DI registrations are guarded by the container's phase instead: once the container is finalized — by `Finalize`, the first resolving call or preparation — or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
 
 Registration is sequential and unsynchronized ([container spec](container.md#sequential-bootstrap)): each method checks `frozen` once and then publishes, from the goroutine that builds the App. The guard catches a call made after preparation or shutdown admission, not one that races them, so registering while the App may already be served is unsupported.
 

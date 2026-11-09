@@ -10,7 +10,7 @@ A worker system has to settle a set of contract questions before v1 freezes it:
 
 - **Two opposite contracts behind one method.** A continuous `Run` must block until its context is cancelled, so a nil return is a failure; a scheduled `Run` does one unit of work, so a nil return is the success. Which contract a worker signed must be visible where it is registered, not decided by an option far from the call.
 - **Settings that belong to one kind.** Restart settings mean nothing to a scheduled worker, and run timeouts and failure streaks nothing to a continuous one. A kind-specific setting on the wrong kind must not be writable, rather than rejected at run time by a validation matrix that grows with every setting.
-- **DI-built workers.** Constructor injection is the framework's headline pattern, `Resolve` is admitted only after `Finalize` (ADR-022), and a worker built by the container must still be registered before `Finalize`.
+- **DI-built workers.** Constructor injection is the framework's headline pattern, the first `Resolve` finalizes the container (ADR-022), and a worker built by the container must still be registered before it.
 - **Identity.** Registration needs the name before the instance exists — for duplicate detection, logging and the readiness name — so the name cannot live on the instance.
 - **Stop order.** A worker that drains a queue the HTTP handlers fill must stop after the handlers have finished and before the database it writes to; a cron job must not start a run while the App drains.
 - **Honest state.** The snapshot must report the configuration the runner executes, not the arguments as passed, and status names must carry their operational meaning: a continuous worker waiting to restart after a failure is unhealthy, a scheduled worker waiting for its next activation is not.
@@ -97,9 +97,7 @@ Each kind has its own configuration struct, `ContinuousConfig` and `ScheduledCon
 
 The registration methods panic on misuse, under the framework's three-phase rule (ADR-022): registration performs no I/O and panics on misuse known at the call site — a `w` of none of the three forms, and a registration after the container was finalized or after the App shut down, included ([worker spec](../specs/worker.md#validation)); `Finalize` returns what only the whole graph reveals, such as a missing parameter of a run function or a constructor; the start phase returns I/O errors, among them a constructor's failure. No `Must*` twins exist. `ParseSchedule(expr) (*Schedule, error)` serves applications that validate a configuration-supplied expression and want an error.
 
-> **Pending v0.25.0 (W6):** until W6 ships, a registration after `Finalize` panics with `worker: Scheduled("report") after app.Finalize; register workers before Finalize`, which names no trigger.
-
-A registration after the container was finalized names, under the worker's own call, what finalized it — `Finalize`, the first resolving call with its type, or the App's preparation with its entry point — where, and the calls that led there, with the remedy: `credo: Workers.Continuous("outbox-relay"): called after the container was finalized by Finalize at main.go:40; register before that call`. One template serves every registration of the App ([ADR-022](022-bootstrap-and-di-ownership.md)).
+A registration after the container was finalized names, under the worker's own call, what finalized it — `Finalize`, the first resolving call with its type, or the App's preparation with its entry point — where, and the calls that led there, with the remedy: `credo: Workers.Continuous("outbox-relay"): called after the container was finalized by Finalize at /src/main.go:40; register before that call`, where the site is the file path the binary records. One template serves every registration of the App ([ADR-022](022-bootstrap-and-di-ownership.md)).
 
 ### The snapshot carries the effective configuration
 
@@ -175,7 +173,7 @@ The shutdown deadline is the application's; there is no worker-specific shutdown
 
 ## Rejected Alternatives
 
-- **Registering workers after `Finalize`, or a builder/App type split** that would make a late registration a compile error — both rejected in [ADR-022](022-bootstrap-and-di-ownership.md#rejected-alternatives). A worker set that depends on data is one worker whose `Run` reads the data and fans out, or a component whose `Start` does that work; a DI-built worker is a run function or a constructor, registered before the container is finalized and built in the start walk.
+- **Registering workers after the container is finalized, or a builder/App type split** that would make a late registration a compile error — both rejected in [ADR-022](022-bootstrap-and-di-ownership.md#rejected-alternatives). A worker set that depends on data is one worker whose `Run` reads the data and fans out, or a component whose `Start` does that work; a DI-built worker is a run function or a constructor, registered before the container is finalized and built in the start walk.
 - **One interface with the kind chosen by an option** (`WithSchedule`). Rejected: the contract of a nil return would be decided far from the call that registers the worker, and every kind-specific option becomes a cell of a runtime validation matrix.
 - **Two interfaces** (`Run` for continuous work, `Do` for scheduled work). Rejected: the registration method already names the contract, and closures — the common form — would need two adapters.
 - **Functional options with presence flags**, distinguishing an omitted setting from an explicit zero. Rejected: configuration structs are the framework's convention, and an omitted-versus-zero distinction exists only to give meaning to a three-level resolution no application needs.
