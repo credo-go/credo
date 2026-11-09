@@ -1,6 +1,96 @@
 # Pre-v1 Migration Guide
 
-**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0, the restart backoff of v0.21.0 and the v0.24.0 workers as components are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n), its seven-method DI surface under [DI surface](#di-surface), and its workers as components under [Workers as components](#workers-as-components); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions. Its error rules are described under [Error handling](#error-handling) and its `StatusHandler` check under [Router](#router). [v0.24.0 at a glance](#v0240-at-a-glance) lists first the v0.24.0 changes that compile unchanged, then what the release deletes, and ends with [what an application keeps](#what-an-application-keeps-v0240).
+**Status:** The bootstrap/DI changes (DI minor), the router parameter-name change (router minor) and the built-in HTTP feature changes (HTTP minor) are implemented as of 2026-09-05; the [Bootstrap and DI](#bootstrap-and-di), [Built-in HTTP features](#built-in-http-features) and [Router](#router) sections below describe shipped behavior. The URL round-trip change (wire minor) is implemented as of 2026-09-05 and described under [Router](#router) as well. The accepted decisions are recorded in [ADR-022](../adr/022-bootstrap-and-di-ownership.md) (bootstrap and DI ownership), [ADR-007](../adr/007-router-and-routing.md#url-round-trip) (URL round trips) and [ADR-010](../adr/010-middleware-architecture.md#built-in-http-feature-configuration-criterion) (built-in HTTP features); [TODO](../../TODO.md#pre-v1-contract-migration) tracks progress. The worker contract of v0.20.0, the restart backoff of v0.21.0 and the v0.24.0 workers as components are described under [Workers](#workers); their decisions are recorded in [ADR-023](../adr/023-worker-system.md). The `store/sqldb` move to Bun v1.3.0 in v0.22.0 is described under [Data access](#data-access); [ADR-015](../adr/015-data-access.md) records the data-access decisions. The v0.23.0 router fixes are described under [Router](#router), and its YAML change under [Configuration](#configuration). The v0.24.0 sequential bootstrap is described under [Sequential bootstrap](#sequential-bootstrap), its lifecycle components under [Lifecycle components](#lifecycle-components), its stores, WebSocket server and i18n on the components under [Stores, WebSocket and i18n](#stores-websocket-and-i18n), its seven-method DI surface under [DI surface](#di-surface), and its workers as components under [Workers as components](#workers-as-components); [ADR-024](../adr/024-lifecycle-components.md) records the component decisions. Its error rules are described under [Error handling](#error-handling) and its `StatusHandler` check under [Router](#router). [v0.24.0 at a glance](#v0240-at-a-glance) lists first the v0.24.0 changes that compile unchanged, then what the release deletes, and ends with [what an application keeps](#what-an-application-keeps-v0240). [v0.25.0 at a glance](#v0250-at-a-glance), first, opens with the v0.25.0 changes that compile unchanged, maps every name v0.25.0 deletes or renames — the bound store, the first `Resolve` that finalizes, `Provide` without a type argument, the WebSocket server's declared tier, the workers in the root package, `middleware/ratelimit`, `credo.ComponentName` and `credo.CloseOnShutdown` — and ends with [what an application keeps](#what-an-application-keeps-v0250); the sections after it describe each earlier release with the calls of that release.
+
+## v0.25.0 at a glance
+
+v0.25.0 shortens the composition root to what only the application knows. A bound store is an ordinary component, the first `Resolve` finalizes the container, `Provide` takes its binding's type from the constructor, a WebSocket server declares its tier, workers are registered through `app.Workers()` in the root package, and rate limiting moves into `middleware/ratelimit`. The decisions are recorded in [ADR-004](../adr/004-dependency-injection-and-infra.md), [ADR-015](../adr/015-data-access.md), [ADR-016](../adr/016-health-checks.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-023](../adr/023-worker-system.md) and [ADR-024](../adr/024-lifecycle-components.md). Where a v0.24.0 section below names a call this release renames or deletes, this section gives the current one.
+
+### Check first: changes that compile unchanged (v0.25.0)
+
+The compiler finds every removed or renamed call ([below](#what-v0250-deletes-or-renames)). These changes it does not find — code that builds as before and behaves differently:
+
+- **Every bound database gates readiness.** Every `*sqldb.DB` bound with `ProvideValue` or `Provide`, and every component whose binding's type shows `Ready`, is pinged at start and enters `/ready`, whether or not `store.Register` named it before; a borrowed database is no longer pinged, since its owner starts it. A dependency that must not gate readiness is bound with `credo.OptionalReadiness()`: while it fails, its entry shows `down` and `/ready` answers 200 with the status `degraded`. A database whose outage must not stop the start is opened with `sqldb.WithOptionalStart()` ([data-access guide](data-access.md#what-a-bound-database-does)).
+- **The `/ready` body.** Every entry carries `latency`; the top-level status gains `degraded`; a database's entry is named `*sqldb.DB` or by `credo.ComponentName`; a resource held by two registrations — a raw handle and a wrapper that embeds it — reports one entry where two `store.Register` calls reported two; a store that reports DEGRADED, or up with a cause, is what its `Ready` says (`*sqldb.DB` reports `down` for any status but UP); and a failure is logged in the check shape, with its latency ([deployment guide](deployment.md#what-ready-reports)).
+- **A WebSocket server is ingress without the option.** `websocket.Server` declares its tier, so a server registered without `credo.Ingress()` moves into the ingress tier, and an internal component that depends on it now fails `Finalize`, with the path and the two remedies.
+- **Log keys.** A constructor's `Infra` logger and `app.NewInfra(name)` write `component` in place of `service`, with the binding's full name (`component=*users.Service`, where `service=Service` dropped the package and the pointer); a worker's records write `component=worker:<name>` in place of `worker=<name>`; the `http.Server.ErrorLog` bridge writes `module=net/http` in place of `component=net/http`; WebSocket connection logs gain `module=websocket`; and `sqldb`'s pool warning carries `module=sqldb` in place of `component=store` and `store=<name>`, with `component=<name>` when it goes to the App's logger rather than to one given with `sqldb.WithLogger`. Log queries, filters and alerts on the old keys must change.
+- **One worker registry.** `Snapshot` and `Lookup` cover every worker of the App, and a duplicate worker name panics at the second registration whoever made the first, where two supervisors kept separate names.
+- **`Resolve` before `Finalize` works.** The first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container and resolves, where it panicked; a registration after it panics. A late registration's panic names what finalized the container, where, and the calls that led there ([dependency-injection guide](dependency-injection.md#finalize)).
+- **A hidden capability is refused.** A binding under an interface that hides its value's `Start`, `Ready` or ingress tier is refused — `ProvideValue` at the call, a constructor's value at the start — where the method was skipped without a word, unless another registration of the same resource plans it or the binding is borrowed. A direct binding after an `Alias` of its type panics as a duplicate. `testutil.WithOverride` of an aliased interface replaces it, where it panicked, and the type the alias pointed at is no longer built when nothing else uses it.
+- **A value a constructor builds claims nothing.** `Manage` of a constructor over a handle bound with `ProvideValue`, with or without `credo.Borrowed()`, now starts, where it failed the start. Such a value — from a constructor handed to `Manage`, or from a worker's constructor — no longer adds a readiness entry or a teardown of its own: `/ready` shows the binding's one entry, with its name and options, even when the constructor was registered first, and a `Manage` call of such a constructor with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` fails the start, naming the binding ([dependency-injection guide](dependency-injection.md#what-each-registration-form-claims)).
+- **Registrations of one resource agree on its tier.** A raw handle bound internal and a wrapper that embeds it bound with `credo.Ingress()` are refused, naming both, where the first registered decided the teardown's tier without a word.
+- **Two registrations of one worker constructor** no longer panic: each builds its own value.
+- **Nested validation.** A nested `Validate` with a pointer receiver runs on the field itself, so what it normalizes is kept, and a nil nested pointer checked with `validation.Field(&r.Address)` and no rules is valid where it panicked and answered 500 ([validation spec](../specs/validation.md)).
+
+### What v0.25.0 deletes or renames
+
+Each row is a compile error, or a log key or message the compiler cannot see, with its replacement:
+
+| v0.24 | v0.25.0 |
+| --- | --- |
+| `app.Provide[T](NewT)` | `app.Provide(NewT)`, when `T` is the constructor's result type |
+| `app.Provide[I](NewConcrete)`, where `I` is an interface the result implements | `app.Provide(NewConcrete)` with `app.Alias[I, *Concrete]()`, or a constructor declared to return `I`. The concrete binding plans the `Start` and `Ready` the interface hid, so a component that ran unstarted starts |
+| `app.ProvideValue[I](v)` whose `I` hides `v`'s `Start`, `Ready` or ingress tier | `app.ProvideValue(v)` with `app.Alias[I, *V]()`, or `credo.Borrowed()` when the caller starts and stops `v` |
+| A direct binding after an `Alias` of its type | Add `credo.Override()`, which replaces the alias, or drop the alias. `Alias` takes `credo.Override()` to point an interface at another type |
+| `credo.Named(name)` | `credo.ComponentName(name)`, which names a component and is not a DI key; it now also applies to `Provide` and `ProvideValue` |
+| `credo.Closer()` | `credo.CloseOnShutdown()` |
+| `app.Finalize()` before the first `Resolve`, required | Optional: the first `Resolve` finalizes; keep `Finalize` as an early check that returns the whole report as an error |
+| Late registration: `called after Finalize; make every registration before Finalize, …` | `called after the container was finalized by <trigger> at <file:line> (called from …); register before that call` |
+| `called before Finalize; call Finalize first …` | Gone: `Resolve` finalizes |
+| `websocket.New(app.NewInfra("websocket"), cfg)` | `websocket.New(cfg)`: the server settles its logger in `Start` |
+| A logger of the WebSocket server's own | `websocket.Config{Logger: l}` |
+| `app.Manage(ws, credo.Ingress())`, `app.ProvideValue(ws, credo.Ingress())` | `app.Manage(ws)`, `app.ProvideValue(ws)`: the type declares the tier, and the option stays accepted |
+| An internal component that depends on a WebSocket server registered without `credo.Ingress()` | Declare the dependent ingress with `credo.Ingress()`, or split it so that what internal components use is an internal part; `Finalize` names both |
+| `service=Service`, written by a constructor's `Infra` logger | `component=*users.Service`, the binding's type as the lifecycle prints it, or its `credo.ComponentName` name |
+| `service=name`, written by `app.NewInfra(name)` | `component=name` |
+| `component=net/http`, written by the `http.Server.ErrorLog` bridge | `module=net/http` |
+| WebSocket connection logs | Gain `module=websocket`; with `Config.Logger` they go there, with `connection_id` and `request_id` |
+| `app.ProvideValue(db)` with `store.Register[*sqldb.DB](app)` | `app.ProvideValue(db)`: the binding pings the database at start, reports it in `/ready` and shuts it down after its consumers |
+| `store.Register`, `store.RegisterOption` | Deleted: the binding alone does what they did |
+| `store.WithName("primary")` | `credo.ComponentName("primary")` on the binding |
+| `store.WithPingTimeout(d)` | `sqldb.Config{PingTimeout: d}`, the `ping_timeout` key when the configuration is decoded |
+| `store.DefaultPingTimeout` | `sqldb.DefaultPingTimeout` |
+| A database bound without `store.Register`, absent from `/ready` | It gates readiness; bind it with `credo.OptionalReadiness()` if it must not |
+| A borrowed database pinged by `store.Register` | Pinged by its owner |
+| `(*sqldb.DB).StoreRegistrationWarningCodes()` | Deleted: `Start` logs the code; a program that runs the database without an App calls `db.Start(ctx)` or reads `db.Stats().MaxOpenConnections` |
+| Pool warning with `component=store` and `store=<name>` | `module=sqldb`, with `component=<name>` on the App's logger |
+| A store adapter of the application's own implementing `store.Lifecycle` | It implements `Start`, `Ready` and `Shutdown`, as every component does; `store.Lifecycle` is deleted |
+| `/ready` entry `credo.store_name_conflict.<i>` | `credo.contributed_name_conflict.<i>` |
+| `import "github.com/credo-go/credo/worker"` | Deleted, with no aliases: the types live in the root package |
+| `workers := worker.Use(app)` | `workers := app.Workers()`, the App's one registry, not bound in DI |
+| A module that takes a `*worker.Supervisor` | It takes the `*credo.App` it already receives and calls `app.Workers()` |
+| `worker.Supervisor` | `credo.Workers` |
+| `worker.Worker` | `credo.Worker` |
+| `worker.Func(fn)` | `fn`: a `func(context.Context) error` is a worker as it is |
+| `worker.Info` | `credo.WorkerInfo`, whose JSON is unchanged |
+| `worker.Kind`, `worker.KindContinuous`, `worker.KindScheduled` | `credo.WorkerKind`, `credo.WorkerKindContinuous`, `credo.WorkerKindScheduled` |
+| `worker.Status`, `worker.StatusPending`, `StatusRunning`, `StatusBackoff`, `StatusWaiting`, `StatusStopped`, `StatusFailed` | `credo.WorkerStatus`, `credo.WorkerStatusPending`, `WorkerStatusRunning`, `WorkerStatusBackoff`, `WorkerStatusWaiting`, `WorkerStatusStopped`, `WorkerStatusFailed` |
+| `worker.Restart{…}` | `credo.RestartPolicy{…}` |
+| `worker.RunInfo`, `worker.CurrentRun(ctx)` | `credo.WorkerRun`, `credo.CurrentWorkerRun(ctx)` |
+| `worker.ErrRunTimeout` | `credo.ErrWorkerRunTimeout`, with the same message |
+| `worker.ContinuousConfig`, `worker.ScheduledConfig`, `worker.Schedule`, `worker.ParseSchedule`, `worker.DefaultMinRestartDelay`, `worker.DefaultMaxRestartDelay` | The same names in the root package: `credo.ContinuousConfig`, `credo.ScheduledConfig`, `credo.Schedule`, `credo.ParseSchedule`, `credo.DefaultMinRestartDelay`, `credo.DefaultMaxRestartDelay` |
+| Two supervisors, each with its own `Snapshot` and `Lookup` | One registry: `Snapshot` and `Lookup` cover every worker of the App |
+| Worker log key `worker=<name>` | `component=worker:<name>`; `module=worker`, `kind`, `status` and `reason` stay |
+| Registration panic `worker: Continuous("x"): …` | `credo: Workers.Continuous("x"): …`, and likewise for `Scheduled` |
+| `app.Provide(NewT)` with `workers.ContinuousProvided[T](name, cfg...)`, when nothing else resolves `T` | `app.Workers().Continuous(name, NewT, cfg...)`, and the `Provide` call goes, since kept beside the constructor it builds a second value; likewise `ScheduledProvided` becomes `Scheduled(name, expr, NewT, cfg...)` |
+| A provided worker that other code also resolves | Keep `app.Provide(NewT)` and register the method expression of its `Run`: `app.Workers().Continuous(name, (*T).Run, cfg...)`. The binding keeps its options, and the loop's tier comes from the worker's configuration |
+| Resolving a worker its constructor builds | Not injectable: bind it as above, or share a handle that the code handing it work also holds |
+| `testutil.WithOverride` on a provided worker's type | Unchanged for a bound worker; for a worker its constructor builds, override its dependencies |
+| A worker whose built value owns state and uses an ingress component | Split it: `Finalize` fails with the path |
+| `app.Manage(NewT, credo.ComponentName(…))`, `credo.Ingress()` or `credo.OptionalReadiness()`, whose value holds a bound resource | Move the option to the binding, or hold the handle in a named field so that the value is a resource of its own |
+| A raw handle and a wrapper that embeds it, registered in different tiers | One tier for both, or a wrapper that holds the handle in a named field |
+| `middleware.NewRateLimiter(cfg).Middleware()`, `middleware.RateLimit(cfg)` | `ratelimit.Middleware(cfg)`, in `github.com/credo-go/credo/middleware/ratelimit`; one value attached to several routes spends one budget |
+| `middleware.RateLimitConfig` | `ratelimit.Config`, whose `Skipper` keeps the type `middleware.Skipper` |
+| `middleware.DefaultRateLimitConfig()` | `ratelimit.DefaultConfig()` |
+| `app.Manage(limiter)` of a `*middleware.RateLimiter` | Nothing: delete the call with the variable it named; the rate limiter is not a component |
+
+### What an application keeps (v0.25.0)
+
+- a database is bound, not registered: `app.ProvideValue(db)`;
+- a WebSocket server is handed over with `app.Manage(ws)`;
+- workers are registered through `app.Workers()`, as a value, a run function or a constructor;
+- `Provide` takes the constructor, and an interface is bound with `Alias`;
+- `Finalize` is optional.
 
 ## v0.24.0 at a glance
 
@@ -43,6 +133,8 @@ After the deletions, an application writes four things it did not write before:
 Everything else in v0.24.0 removes API, states the bootstrap order, or adds an option an application reaches for only when it needs one — `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`, `app.Manage`. The release is judged by this list as well as by what it deletes.
 
 ## Bootstrap and DI
+
+> **v0.25.0:** the tables in this section and its subsections name the calls of the release that introduced them. v0.25.0 makes `Finalize` optional — the first `Resolve` finalizes, where it panicked — drops `Provide`'s type argument, renames `credo.Named` and `credo.Closer` to `credo.ComponentName` and `credo.CloseOnShutdown`, deletes `store.Register`, and lets `app.Manage(ws)` place a WebSocket server in the ingress tier without `credo.Ingress()`: [v0.25.0 at a glance](#v0250-at-a-glance) gives the current calls.
 
 Complete dependency registrations, store/worker setup and overrides before an explicit, error-checked `app.Finalize()`. Then resolve controllers/services, capture hook dependencies and bind routes or DI-backed renderers. HTTP setup remains open until shared preparation or shutdown admission. Run's implicit Finalize remains an idempotent safeguard; it cannot precede a Resolve that the composition root has already executed.
 
@@ -220,6 +312,8 @@ Migration: merge a multi-document config into one mapping — the application ra
 
 ## Workers
 
+> **v0.25.0:** the tables in this section name the calls of the `worker` package as v0.24.0 and earlier releases shipped them. v0.25.0 deletes the package: workers are registered through `app.Workers()` in the root package, `ContinuousProvided` and `ScheduledProvided` give way to a constructor or a run function passed to `Continuous` and `Scheduled`, `worker.Func(fn)` becomes `fn`, and the types are renamed (`worker.Info` → `credo.WorkerInfo`, `worker.Restart` → `credo.RestartPolicy`, …). [What v0.25.0 deletes or renames](#what-v0250-deletes-or-renames) maps every name.
+
 ### Workers as components
 
 **Implemented (v0.24.0).** Each worker is a lifecycle component of the App. `worker.Use(app)` returns a supervisor — a registry and reporting object with no lifecycle of its own — whose registration method chooses the worker's kind, and each registration adds a component named `worker:<name>` that the App starts in the start phase and stops in its tier: a scheduled worker with the HTTP drain, a continuous worker after it and before the components it depends on. Configuration is a per-kind struct in code. The [worker spec](../specs/worker.md) is the contract and the [worker guide](worker.md) shows the calls.
@@ -276,7 +370,7 @@ New with it: per-worker `Tier`, `Restart.Disabled` (the first failure is termina
 
 ### Worker contract and restart backoff
 
-**Implemented (v0.20.0; restart backoff in v0.21.0).** The rows below name today's calls; [Workers as components](#workers-as-components) maps the v0.20.0 names to them. One change compiles unchanged but behaves differently, so check it first:
+**Implemented (v0.20.0; restart backoff in v0.21.0).** The rows below name the v0.24.0 calls; [Workers as components](#workers-as-components) maps the v0.20.0 names to them, and [What v0.25.0 deletes or renames](#what-v0250-deletes-or-renames) maps them to the root package. One change compiles unchanged but behaves differently, so check it first:
 
 > **A continuous worker whose `Run` returns nil while the application is running is restarted.** Before v0.20.0 it stopped silently. Now the early return is a failure: it is logged as `worker run failed` with `unexpected_exit=true` and the message `worker: Run returned nil before shutdown; a continuous worker must run until its context is cancelled`, and the worker is restarted with the restart backoff (3 s at first, up to a minute while failures repeat) — for ever, unless `Restart.Limit` is set. Before upgrading, look for continuous workers that return nil on purpose. Move finite work to `app.OnStart`, or end `Run` with `<-ctx.Done()` after the work is done. Returning nil after the context is cancelled remains a graceful stop.
 
@@ -336,6 +430,6 @@ Unchanged: `SelectQuery.Clone` still restores the execution state Bun's `Clone` 
 
 ## Examples and downstream impact
 
-The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS finalizes before resolving TenantService (DI minor), enables RequestID/AccessLog explicitly and installs compression with `UseCompress` instead of global middleware (HTTP minor). For v0.24.0, SaaS follows the documented bootstrap order, with its feature mounts and satellite registrations between `Provide` and `Finalize`. Hello remains a minimal default-profile example.
+The [example migration map](../../examples/README.md) identifies runnable changes by release. SaaS finalizes before resolving TenantService (DI minor), enables RequestID/AccessLog explicitly and installs compression with `UseCompress` instead of global middleware (HTTP minor). For v0.24.0, SaaS follows the documented bootstrap order, with its feature mounts and satellite registrations between `Provide` and `Finalize`. For v0.25.0, SaaS binds its opened store stand-in with `ProvideValue` and `credo.ComponentName` alone, hands the WebSocket server to `app.Manage(ws)` without an option, registers its worker through its constructor on `app.Workers()`, and keeps `Finalize` as an optional early check. Hello remains a minimal default-profile example and needed no change.
 
 DI evidence comes from a 2026-09-05 scan of the maintainer's downstream applications: no factory/Replace calls, pre-Run resolution, and a worker-pool existence probe. The same applications install renderers once at bootstrap and use no scoped Recover, so their HTTP-minor migration is a rename of the renderer setters plus explicit `UseRequestID`/`UseAccessLog` calls.
