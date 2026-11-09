@@ -6,9 +6,27 @@
 
 ---
 
+## Bootstrap Simplification
+
+Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
+
+- [x] W1: promotion and the decisions that change no code — the decisions written into the ADRs and specs, each marked pending until its work item ships; the root package's module allowlist and the rule that places a package (ADR-002); no automatic bindings and DI in the core (ADR-004) (2026-11-09)
+- [ ] W2: the logger of a framework module — `credo.InfraFrom(ctx)`, `websocket.New(cfg...)` with `Config.Logger`, the `component` and `module` log keys
+- [ ] W3: a store is an ordinary component — `*sqldb.DB` gains `Start` and `Ready`, `credo.OptionalReadiness()`, `sqldb.WithOptionalStart()`, `latency` on every readiness entry; `store.Register` and `store.Lifecycle` deleted
+- [ ] W4: workers in the root package — `app.Workers()`, the engine in `internal/worker`; the `worker` package and `internal/kernel` deleted
+- [ ] W5: worker constructors; built values claim nothing — the value, run-function and constructor forms, the holder of record, one tier per resource
+- [ ] W6: the first `Resolve` finalizes — and a late registration's panic names what finalized the container, where, and the calls that led there
+- [ ] W7: a type declares its ingress tier — `credo.IngressComponent`, implemented by `websocket.Server`
+- [ ] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted
+- [ ] W9: examples, guides and the release
+- [ ] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field
+- [ ] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached
+- [ ] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer`
+- [ ] Checkpoint, once W5 has landed: judge splitting `internal/di` into DI and lifecycle, and dividing `App`'s implementation into internal parts; record the outcome in ADR-004 and here (a split ships in a later release)
+
 ## Components, Kernel Registries and Sequential Bootstrap
 
-All of it ships in v0.24.0. The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle-components.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-006](docs/adr/006-application-lifecycle.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-013](docs/adr/013-internationalization.md), [ADR-023](docs/adr/023-worker-system.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-009](docs/adr/009-handler-and-error-handling.md) and [ADR-007](docs/adr/007-router-and-routing.md), the [lifecycle](docs/specs/lifecycle.md), [container](docs/specs/container.md), [store](docs/specs/store.md), [WebSocket](docs/specs/websocket.md), [i18n](docs/specs/i18n.md), [worker](docs/specs/worker.md), [validation](docs/specs/validation.md) and [router](docs/specs/router.md) specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-10-08; only the release remains. These boxes are the only progress tracker.
+The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle-components.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-006](docs/adr/006-application-lifecycle.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-013](docs/adr/013-internationalization.md), [ADR-023](docs/adr/023-worker-system.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-009](docs/adr/009-handler-and-error-handling.md) and [ADR-007](docs/adr/007-router-and-routing.md), the [lifecycle](docs/specs/lifecycle.md), [container](docs/specs/container.md), [store](docs/specs/store.md), [WebSocket](docs/specs/websocket.md), [i18n](docs/specs/i18n.md), [worker](docs/specs/worker.md), [validation](docs/specs/validation.md) and [router](docs/specs/router.md) specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-10-08; shipped in v0.24.0. These boxes are the only progress tracker.
 
 - [x] The header-limit test ignores network addresses and timestamps when it asserts that a 431 is never logged (2026-10-07)
 - [x] Promote the decisions into the ADRs and specs; the release cadence; three rejections that no tracked document recorded (2026-10-07)
@@ -19,7 +37,7 @@ All of it ships in v0.24.0. The delivery plan for this work was folded into [ADR
 - [x] The DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
 - [x] A rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error; `validation.NewError` builds the client-visible one (2026-10-08)
 - [x] `StatusHandler` panics for any code but 404 and 405 (2026-10-08)
-- [ ] Examples, guides and the release
+- [x] Examples, guides and the release
 
 ## Restart Backoff and Startup Features
 
@@ -572,7 +590,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] `middleware.ContractGuard()` — single meta-driven middleware that reads meta and enforces:
   - [x] `Accept` → Content-Type check (wildcards, param-insensitive) → 415 Unsupported Media Type
   - [x] `ContractConfig.RequireContentType` — missing/empty Content-Type on a body-carrying request → 415 (default off)
-    - [ ] v1: flip `RequireContentType` default to true (breaking; announce one minor ahead)
+    - [ ] v1: flip `RequireContentType` default to true (breaking)
   - [x] `MaxBody` → eager Content-Length + `http.MaxBytesReader` wrap → 413 Payload Too Large
   - [x] `RequireHeaders` → header existence check → 400 Bad Request
   - [x] `RequireQuery` → query param existence check → 400 Bad Request
@@ -655,17 +673,17 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 **Must land before v1** (each touches a surface that v1 freezes):
 
-- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, the _types_ of the metrics/tracing fields on `credo.Infra` (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0.
+- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, first whether `credo.Infra` gains metrics and tracing fields at all — instrumentation may instead reach requests through an observer of the final response — and only then their _types_ (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0.
 - [x] **json/v2 output profile** (`Response.JSON`, default error bodies, renderer bodies, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
 - [x] **Typed endpoint / operation model decision** — out of the pre-v1 reshaping (2026-10-02); reopened once the architecture has settled and real applications have run on it. v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface, and until the question reopens the root adds no package-level non-generic route verbs, so an additive typed layer stays possible. Open before v1 in its own right: whether `Validatable.Validate` takes a `context.Context` (a later addition would break every implementor).
 - [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
-- [ ] **Deferred breaking changes applied in one batch at v1.0.0**, each announced one minor ahead in CHANGELOG:
+- [ ] **Deferred breaking changes**, each shipped in a minor before the stability window opens, under its own CHANGELOG heading:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
   - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) was **deleted in v0.24.0** rather than kept or batched ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#the-public-surface)): framework infrastructure moved to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
-  - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide, and if flipped announce one minor ahead
+  - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide
 - [ ] **Lifecycle acceptance scenarios** ([ADR-024](docs/adr/024-lifecycle-components.md#consequences), added in v0.24.0) stay pinned by tests (`TestAcceptance_DrainDeliversLastJob`, `TestAcceptance_FailedStartStopsWhatWasBuilt`): the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
@@ -675,8 +693,8 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 ### Architecture Governance
 
-- [ ] **Kernel + Modules model**: Kernel = root + router + middleware + internal (must be stable first)
-- [ ] Optional modules (i18n, health, openapi, pubsub) mature independently via capability interfaces
+- [ ] **Kernel + modules model**: the kernel is the root package with its subsystems — routing, DI and components, health, i18n and workers — the packages it builds on (`config`, `validation`, `fault`, `internal/`) and the first-party `middleware`, and must be stable first; modules are the packages that build on the kernel and that it never imports: adapters over a third-party engine or protocol (`store/sqldb`, `websocket`, later `pubsub` and `grpc`) and standalone utilities (`httpclient`).
+- [ ] Modules (`store/sqldb`, `websocket`, later `openapi`, `pubsub` and `grpc`) mature independently through their own maturity labels; a kernel subsystem matures with the root package.
 - [x] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable` — `// Maturity: <label>` closes every public package doc; `maturity_test.go` enforces the line and its agreement with the README table
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
