@@ -146,7 +146,7 @@ app.ProvideValue(db)           // owned by the App: shut down after its consumer
 store.Register[*sqldb.DB](app) // pinged at start, reported by /ready
 ```
 
-The binding may also be a constructor (`app.Provide[*sqldb.DB](openDB)`), which the start phase builds when nothing resolved it earlier — a store constructor therefore runs in the start phase, not at registration — or a shared handle bound with `credo.Borrowed()` on `ProvideValue`, which is pinged and reported and never shut down by the App. `R` may be bound directly or be an interface an `app.Alias` names.
+The binding may also be a constructor (`app.Provide(openDB)`), which the start phase builds when nothing resolved it earlier — a store constructor therefore runs in the start phase, not at registration — or a shared handle bound with `credo.Borrowed()` on `ProvideValue`, which is pinged and reported and never shut down by the App. `R` may be bound directly or be an interface an `app.Alias` names.
 
 #### Phases
 

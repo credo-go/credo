@@ -10,21 +10,6 @@ It does not provide a client, hub/room registry, broadcast, reconnect, heartbeat
 
 ## Canonical Registration
 
-> **Current until v0.25.0 (W7):** the next code block, which is the canonical registration today; it also shows the `credo.Infra` argument that W2 removes.
-
-```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
-    AllowedOrigins:     []string{"https://app.example.com"},
-    Subprotocols:       []string{"events.v1"},
-    RequireSubprotocol: true,
-})
-app.Manage(ws, credo.Ingress())
-```
-
-> **Pending v0.25.0 (W2):** in the next code block, `New` takes no `credo.Infra`; until W2 ships, its first parameter is the `Infra` whose logger the server uses.
-
-> **Pending v0.25.0 (W7):** in the next code block, `app.Manage(ws)` takes no `credo.Ingress()`; until W7 ships, the server is internal unless its registration carries `credo.Ingress()`.
-
 ```go
 ws := websocket.New(websocket.Config{
     AllowedOrigins:     []string{"https://app.example.com"},
@@ -44,20 +29,6 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 
 `New` accepts zero or one `Config`, validates it, copies its slices defensively — caller mutation does not alter the server policy — and returns a `*Server`; it registers nothing and performs no I/O. An invalid configuration panics (`credo/websocket: invalid Config: …`), and so does more than one `Config` (`credo/websocket: New accepts at most one Config`), as startup misuse.
 
-> **Current until v0.25.0 (W7):** the next two paragraphs and the code block between them, which state how the server reaches the ingress tier today; the block also shows the `credo.Infra` parameter that W2 removes.
-
-The application registers the server as an ingress [component](lifecycle.md#components-and-the-start-phase), by value as above, or as a binding when controllers depend on it:
-
-```go
-app.Provide[*websocket.Server](func(infra credo.Infra) *websocket.Server {
-    return websocket.New(infra, cfg)
-}, credo.Ingress())
-```
-
-A server bound with `ProvideValue` or `Provide` and `credo.Ingress()` is one component; also handing a `ProvideValue`-bound server to `Manage` panics. Without `credo.Ingress()` the server would take the internal tier and drain after the HTTP drain; the option is what places it beside the listener. `Manage` and the binding follow the App's [registration guards](lifecycle.md#registration-guards). The rationale for construction with `New` and registration as a component is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
-
-> **Pending v0.25.0 (W7):** the next three paragraphs and the code block among them; until W7 ships, the server has no `IngressTier` method and takes the ingress tier only from `credo.Ingress()` on its registration.
-
 The server is an ingress [component](lifecycle.md#components-and-the-start-phase) by its type: `*websocket.Server` implements `credo.IngressComponent`, whose `IngressTier()` method is never called, so every registration of it plans the ingress tier with no option — handed over by value as above, or bound when controllers depend on it:
 
 ```go
@@ -67,15 +38,11 @@ app.ProvideValue(ws)
 
 A `Provide` constructor whose result type is `*websocket.Server` is ingress likewise, and `Finalize` validates the tier before anything is built. `credo.Ingress()` on any of these registrations is redundant and accepted. A binding under an interface that hides `IngressTier` is refused, as one that hides `Start` is: `ProvideValue` panics at the call, and a value a constructor builds fails the start once it is built.
 
-A bound server is one component; also handing a `ProvideValue`-bound server to `Manage` panics. `Manage` and the binding follow the App's [registration guards](lifecycle.md#registration-guards). An internal component that depends on the server, directly or through bindings that are not components, fails `Finalize` (see Dependents under [Lifecycle](#lifecycle)); a server registered without `credo.Ingress()` before its type declared the tier moves into the ingress tier, so such a dependant now fails `Finalize`, with the same message and its two remedies.
+A bound server is one component; also handing a `ProvideValue`-bound server to `Manage` panics. `Manage` and the binding follow the App's [registration guards](lifecycle.md#registration-guards). An internal component that depends on the server, directly or through bindings that are not components, fails `Finalize` (see Dependents under [Lifecycle](#lifecycle)). The rationale for construction with `New` and registration as a component is in [ADR-019](../adr/019-websocket-integration-and-drain.md#construct-with-new-register-as-an-ingress-component).
 
 `Server.Handler(nil)` also panics as registration misuse. `Server.Shutdown(nil)` returns an error without starting the drain. Runtime handshake, network, application, cancellation, and deadline failures return errors or protocol close outcomes; they are not panics.
 
 ## Public API
-
-> **Pending v0.25.0 (W2):** `New`'s signature in the next code block; until W2 ships, it is `func New(infra credo.Infra, cfg ...Config) *Server`.
-
-> **Pending v0.25.0 (W7):** `IngressTier` in the next code block; until W7 ships, the server has no such method.
 
 ```go
 type Handler func(req *credo.Context, conn *Conn) error
@@ -105,8 +72,6 @@ func CloseStatus(err error) StatusCode
 `StatusCode` exports the standard 1000–1015 status names used by the adapter. A server may send the explicitly supported statuses, registered codes (3000–3999), and private-use codes (4000–4999). Synthetic/not-on-wire statuses 1005, 1006, and 1015, plus the client-only status 1010, are rejected before a close frame is written.
 
 ## Configuration
-
-> **Pending v0.25.0 (W2):** the `Logger` row of the next table; until W2 ships, `Config` has no logger and the server logs to the `Infra` given to `New`.
 
 | Field | Zero/default | Contract |
 | --- | --- | --- |
@@ -195,15 +160,9 @@ Every connection must have an active `Read` or `CloseRead`, otherwise pong and c
 
 **Start.** The start walk calls `Start` in the ingress tier. `Start` opens admission; it does no I/O and starts no goroutine, so it keeps no context — connection contexts derive from the request context as described under [Handler and Connection Lifetime](#handler-and-connection-lifetime). A second `Start`, or `Start` after `Shutdown`, returns an error.
 
-> **Pending v0.25.0 (W2):** the next paragraph; until W2 ships, the server's logger is fixed by `New`.
-
 **Logger.** `Start` also settles the server's logger: `Config.Logger` when set, else the logger of the `credo.Infra` that `credo.InfraFrom` reads from the `Start` context — the App's logger scoped to the server's component — else the framework default. A server that was never started has not settled it and refuses every upgrade (next paragraph), so no request reads an unset logger.
 
-**Never started.** Until `Start` has run, the handler refuses every upgrade before 101 with a plain error that names the missing registration — `credo/websocket: the server was never started; register it as an ingress component with app.Manage(server, credo.Ingress()) or bind it with credo.Ingress()` — which the centralized error pipeline renders as a 500 and logs. The check is the admission step of the handshake order, so mechanical, origin and subprotocol failures still win. A forgotten registration therefore fails at the first upgrade instead of silently skipping the drain.
-
-> **Pending v0.25.0 (W7):** the message in the next paragraph, which replaces the one quoted in the paragraph above; until W7 ships, that one is current.
-
-The never-started refusal names the remedy without an option: `credo/websocket: the server was never started; hand it to the App with app.Manage(server), or bind it`.
+**Never started.** Until `Start` has run, the handler refuses every upgrade before 101 with a plain error that names the missing registration — `credo/websocket: the server was never started; hand it to the App with app.Manage(server), or bind it` — which the centralized error pipeline renders as a 500 and logs. The check is the admission step of the handshake order, so mechanical, origin and subprotocol failures still win. A forgotten registration therefore fails at the first upgrade instead of silently skipping the drain.
 
 **Shutdown order.** The server is an ingress component: in `Run`, `RunContext`, `ServeContext` and `App.Shutdown` after `App.Start`, its `Shutdown` runs concurrently with the HTTP drain and before any internal stop hook or component ([drain in tiers](lifecycle.md#shutdown-in-tiers)).
 
@@ -220,12 +179,6 @@ A non-nil result does not always mean incomplete. All tracked work may finish, t
 ## Observability
 
 The HTTP access log records one request-completed event for the upgraded request: status 101, zero response bytes, and full handler lifetime. Normal connection open/close events are Debug so they do not duplicate the access-log Info record. Policy/read-limit outcomes are Warn; application, transport, panic, close-failure, handshake-transport, and incomplete-shutdown outcomes are Error.
-
-> **Current until v0.25.0 (W2):** the next paragraph, which states where each record goes today.
-
-Connection records — opened, closed, failed, close failed, and a handshake transport failure — go to the request's logger with `connection_id` added. Only `websocket: shutdown incomplete` goes to the server's logger: `infra.Logger` (`slog.Default()` when nil) with `module=websocket` added.
-
-> **Pending v0.25.0 (W2):** the next two paragraphs; until W2 ships, records go as the paragraph above states.
 
 Every record the server writes carries `module=websocket`, added with `Logger.With`, whichever logger it goes to, so a routing `slog.Handler` that keeps the attributes it receives through `WithAttrs` can send the server's records to a sink of their own. The server's logger is `Config.Logger`, unscoped, when set; otherwise the logger of the `credo.Infra` that `credo.InfraFrom` reads from the `Start` context, which carries the App's logger with `component=<name>`; otherwise the framework default. The server has no `slog.Default()` fallback of its own.
 

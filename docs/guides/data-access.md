@@ -510,7 +510,7 @@ page := pagination.NewPage(
 cfg := app.MustGetConfig[sqldb.Config]("databases.default")
 
 // The constructor runs in the start phase, after Finalize and every override.
-app.Provide[*sqldb.DB](func() (*sqldb.DB, error) { return sqldb.Open(&cfg) })
+app.Provide(func() (*sqldb.DB, error) { return sqldb.Open(&cfg) })
 store.Register[*sqldb.DB](app,
     store.WithName("primary"),
     store.WithPingTimeout(10*time.Second),
@@ -605,7 +605,7 @@ func setupMultiDB(app *credo.App) error {
     store.Register[PrimaryDB](app, store.WithName("primary"))
 
     // A constructor opens the database in the start phase instead.
-    app.Provide[AnalyticsDB](func() (AnalyticsDB, error) {
+    app.Provide(func() (AnalyticsDB, error) {
         db, err := sqldb.Open(&analyticsCfg)
         return AnalyticsDB{db}, err
     })
@@ -653,8 +653,8 @@ The rest of the rule:
 
   func NewOutboxRepo[D OutboxDB](db D) *OutboxRepo[D] { return &OutboxRepo[D]{db: db} }
 
-  app.Provide[*OutboxRepo[PrimaryDB]](NewOutboxRepo[PrimaryDB])
-  app.Provide[*OutboxRepo[AnalyticsDB]](NewOutboxRepo[AnalyticsDB])
+  app.Provide(NewOutboxRepo[PrimaryDB])
+  app.Provide(NewOutboxRepo[AnalyticsDB])
   ```
 
 - **Databases whose number comes from configuration** — shards, tenants — are one binding of a collection type that owns and closes them all, since a type per instance cannot be written:
@@ -690,7 +690,7 @@ The rest of the rule:
   }
 
   shardCfgs := app.MustGetConfig[[]sqldb.Config]("databases.shards")
-  app.Provide[*Shards](func() (*Shards, error) { return OpenShards(shardCfgs) })
+  app.Provide(func() (*Shards, error) { return OpenShards(shardCfgs) })
   ```
 
   To have the shards pinged at start and reported by `/ready`, give `*Shards` `Ping` and `Health` methods — it then implements `store.Lifecycle` — and register it with `store.Register[*Shards](app, store.WithName("shards"))`.

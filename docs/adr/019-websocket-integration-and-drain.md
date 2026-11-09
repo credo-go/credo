@@ -18,18 +18,6 @@ The upstream connection is reachable only through `Conn.Unwrap` as an expert esc
 
 ### Keep routing explicit
 
-> **Current until v0.25.0 (W7):** the next code block, which is the canonical API today; it also shows the `credo.Infra` argument that W2 removes.
-
-```go
-ws := websocket.New(app.NewInfra("websocket"), cfg)
-app.Manage(ws, credo.Ingress())
-app.GET("/events", ws.Handler(handler))
-```
-
-> **Pending v0.25.0 (W2):** in the next code block, `New` takes no `credo.Infra`; until W2 ships, its first parameter is the `Infra` whose logger the server uses.
-
-> **Pending v0.25.0 (W7):** in the next code block, `app.Manage(ws)` takes no `credo.Ingress()`; until W7 ships, the server is internal unless its registration carries `credo.Ingress()`.
-
 The canonical API is:
 
 ```go
@@ -60,37 +48,21 @@ This preservation also means a transaction stored in the request context can acc
 
 `New` builds and validates the server without I/O and registers nothing; the [spec](../specs/websocket.md#canonical-registration) holds the signature and the misuse panics.
 
-> **Current until v0.25.0 (W2):** the next paragraph, which gives the reason for today's `New(infra, cfg...)`.
-
-**Why `New`.** Under the API verb convention `Use` attaches a subsystem to the App; `New` attaches nothing, and the server attaches only when the application registers it, so the name promises no attachment the call does not make. It takes `credo.Infra` rather than the App because the server needs only a logger, which `Infra` carries; taking the App would imply the attachment that `New` leaves to the registration. `worker.Use` keeps the verb because the supervisor it returns registers each worker as a component of that App ([ADR-023](023-worker-system.md)).
-
-> **Pending v0.25.0 (W2):** the next two paragraphs; until W2 ships, `New` takes `credo.Infra` first, the server logs to `infra.Logger` or else `slog.Default()`, and connection records go to the request's logger without `module=websocket`.
-
 **Why `New(cfg...)`.** Under the API verb convention `Use` attaches a subsystem to the App; `New` attaches nothing, and the server attaches only when the application registers it, so the name promises no attachment the call does not make. It takes neither the App nor `credo.Infra`: taking the App would imply the attachment that `New` leaves to the registration, and the logger, the one piece of infrastructure the server needs, reaches it without a parameter. The worker registry, by contrast, is reached through the App, since it registers each worker as a component of that App ([ADR-023](023-worker-system.md)).
 
-**The server's logger.** The server follows the rule for a framework module whose value is built outside the App and started by it ([ADR-004](004-dependency-injection-and-infra.md)): it takes an optional logger in its own configuration, `Config.Logger`, and otherwise uses the App's. Precedence: `Config.Logger`, unscoped; then the logger of the `credo.Infra` that `credo.InfraFrom` reads from its `Start` context; then the framework default — `slog.Default()` as a second default goes. The server settles its logger in `Start`, and refuses upgrades until then, so no request reads an unset logger. Every record it writes carries `module=websocket`, added with `Logger.With`, whichever logger it goes to, so a routing `slog.Handler` can send them to a sink of their own. Request-time records follow the access-log rule ([ADR-010](010-middleware-architecture.md#access-log-filtering)): without `Config.Logger`, the connection records — opened, closed, failed, close failed, handshake transport failure — stay on the request's logger, which carries the request's enrichment, with `connection_id` added; with `Config.Logger`, every record goes to that logger, a connection record carrying `connection_id`, and `request_id` from `ctx.RequestID()` when the request ID feature is active, while the server-level "shutdown incomplete" record carries neither. A logger option on every module and an `Infra` parameter on every module constructor are rejected in ADR-004, with the rule's other alternatives.
+**The server's logger.** The server follows the rule for a framework module whose value is built outside the App and started by it ([ADR-004](004-dependency-injection-and-infra.md)): it takes an optional logger in its own configuration, `Config.Logger`, and otherwise uses the App's. Precedence: `Config.Logger`, unscoped; then the logger of the `credo.Infra` that `credo.InfraFrom` reads from its `Start` context; then the framework default; `slog.Default()` is never consulted. The server settles its logger in `Start`, and refuses upgrades until then, so no request reads an unset logger. Every record it writes carries `module=websocket`, added with `Logger.With`, whichever logger it goes to, so a routing `slog.Handler` can send them to a sink of their own. Request-time records follow the access-log rule ([ADR-010](010-middleware-architecture.md#access-log-filtering)): without `Config.Logger`, the connection records — opened, closed, failed, close failed, handshake transport failure — stay on the request's logger, which carries the request's enrichment, with `connection_id` added; with `Config.Logger`, every record goes to that logger, a connection record carrying `connection_id`, and `request_id` from `ctx.RequestID()` when the request ID feature is active, while the server-level "shutdown incomplete" record carries neither. A logger option on every module and an `Infra` parameter on every module constructor are rejected in ADR-004, with the rule's other alternatives.
 
-> **Current until v0.25.0 (W7):** the next paragraph, which states how the server reaches the ingress tier today.
-
-**The application registers the server as an ingress component** ([ADR-024](024-lifecycle-components.md)): the ingress tier is where work enters the process, and a WebSocket connection is such an entry. It hands the server to `app.Manage` with `credo.Ingress()` when only routes use it, or binds it with `credo.Ingress()` when controllers take it as a dependency.
-
-> **Pending v0.25.0 (W7):** the next paragraph; until W7 ships, the server is internal unless its registration carries `credo.Ingress()`, and a server never started refuses upgrades naming that option.
-
-**The server declares its ingress tier** ([ADR-024](024-lifecycle-components.md)): the ingress tier is where work enters the process, and a WebSocket connection is such an entry, so no registration could rightly place the server internal. `*websocket.Server` implements `credo.IngressComponent`, the optional capability whose `IngressTier()` method is never called, and the tier is planned from the type: `app.Manage(ws)` when only routes use the server, or a binding — `ProvideValue` or a `Provide` constructor whose result type is `*websocket.Server` — when controllers take it as a dependency, both place it in the ingress tier with no option. `credo.Ingress()` on its registration is redundant and accepted. A binding under an interface that hides `IngressTier` is refused, as a binding that hides `Start` is, so the server cannot fall silently into the internal tier. A server registered before the type declared its tier, without `credo.Ingress()`, therefore moves into the ingress tier, and an internal component that depends on it fails `Finalize` (below).
+**The server declares its ingress tier** ([ADR-024](024-lifecycle-components.md)): the ingress tier is where work enters the process, and a WebSocket connection is such an entry, so no registration could rightly place the server internal. `*websocket.Server` implements `credo.IngressComponent`, the optional capability whose `IngressTier()` method is never called, and the tier is planned from the type: `app.Manage(ws)` when only routes use the server, or a binding — `ProvideValue` or a `Provide` constructor whose result type is `*websocket.Server` — when controllers take it as a dependency, both place it in the ingress tier with no option. `credo.Ingress()` on its registration is redundant and accepted. A binding under an interface that hides `IngressTier` is refused, as a binding that hides `Start` is, so the server cannot fall silently into the internal tier.
 
 **Start.** The server's `Start` opens admission. A server that was never started refuses every upgrade with a 500 — a missing registration is a developer error, not an availability outcome — so a forgotten registration fails at the first upgrade instead of silently skipping the drain. The [spec](../specs/websocket.md#lifecycle) gives the state rules and the status of each refusal.
 
-> **Pending v0.25.0 (W7):** the refusal's message; until W7 ships, it tells the application to register the server with `credo.Ingress()`.
-
-The refusal's message names the remedy without an option: `credo/websocket: the server was never started; hand it to the App with app.Manage(server), or bind it`.
+The refusal's message names the remedy: `credo/websocket: the server was never started; hand it to the App with app.Manage(server), or bind it`.
 
 ### Drain WebSockets before infrastructure
 
 Hijacked connections are not tracked by `http.Server.Shutdown`, so nothing ends them unless the server's own drain does, and their handlers may use repositories and clients. The server is therefore an ingress component: the ingress tier stops concurrently with the HTTP drain and before any internal component, so every WebSocket handler has returned before the infrastructure it uses stops. Running beside the HTTP drain rather than after it lets the two drains spend the shared deadline concurrently, and peers receive 1001 Going Away — the RFC 6455 code for a server going down — while the HTTP drain runs rather than after it, so a client can tell a shutdown from a failure (1011). The server's `Shutdown` closes admission, sends 1001, cancels connection contexts and returns only when every handler and its cleanup have finished ([drain mechanics](../specs/websocket.md#lifecycle)).
 
 The first `Shutdown` caller owns the drain budget; an incomplete drain is reported with remaining counts in the App's `*credo.LifecycleError` and is never treated as graceful success. The [spec](../specs/websocket.md#lifecycle) covers concurrent callers, stable results and the complete-with-error outcome; the deadline rule, under which no teardown starts once the deadline has passed, is the [lifecycle spec](../specs/lifecycle.md#shutdown-in-tiers)'s.
-
-> **Pending v0.25.0 (W7):** in the next paragraph, the tier declaration among the server's methods; until W7 ships, the server has no `IngressTier` method.
 
 **An internal component that depends on the server fails `Finalize`.** No dependency crosses the tiers backwards ([ADR-024](024-lifecycle-components.md)). The case that seems to need one does not: the server exports only `Handler`, `Start` and `Shutdown`, besides a tier declaration that nothing calls, so an in-process consumer that broadcasts depends on the application's own connection registry — an internal component that the server's handlers fill and its drain empties — and what it sends after the ingress drain finds no peers. A controller that is not a component creates no edge to order, so injecting the server into controllers is unaffected.
 

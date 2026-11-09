@@ -40,12 +40,12 @@ Provide / ProvideValue / Alias / BindMany
                   Run
 ```
 
-- `Provide[T]`: register a constructor
+- `Provide`: register a constructor, bound as the type it returns
 - `ProvideValue[T]`: register a pre-built singleton
-- registration options — `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()`: decide a binding's tier, its owner, its teardown, or that it replaces an earlier binding ([Registration options](#registration-options))
+- registration options — `credo.Ingress()`, `credo.Borrowed()`, `credo.CloseOnShutdown()`, `credo.Override()`: decide a binding's tier, its owner, its teardown, or that it replaces an earlier binding ([Registration options](#registration-options))
 - `app.Manage(v, opts...)`: add a component — a value with `Shutdown`, or a constructor — that is not a binding ([Shutdown and Lifecycle](#shutdown-and-lifecycle))
 - `Has[T]`: check whether `T` is registered, without constructing anything ([Checking for an optional binding](#checking-for-an-optional-binding))
-- `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`
+- `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`; an alias is a binding of `I`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
 - `app.Finalize()`: freeze registrations and validate the dependency graph
 - `Resolve[T]`: retrieve a fully wired singleton (available after `Finalize`)
@@ -170,11 +170,11 @@ func main() {
 
     // 2. Provide, with Alias for the interface consumers take.
     app.ProvideValue(&dbCfg)
-    app.Provide[*DB](NewDB)
-    app.Provide[*PgUserRepository](NewPgUserRepository)
+    app.Provide(NewDB)
+    app.Provide(NewPgUserRepository)
     app.Alias[UserRepository, *PgUserRepository]()
-    app.Provide[*UserService](NewUserService)
-    app.Provide[*UserController](NewUserController)
+    app.Provide(NewUserService)
+    app.Provide(NewUserController)
 
     // 3. Feature mounts and satellites would go here (UseHealth, stores, workers).
 
@@ -234,7 +234,7 @@ Important rules:
 - `credo.Infra` is for infrastructure, not business dependencies
 - config does not belong in `credo.Infra`
 - request data does not belong in `credo.Infra`
-- the logger is scoped per service automatically
+- the logger is scoped automatically: it writes `component=<name>`, the name of the binding the constructor builds (`*users.Service`)
 - services can still be tested by constructing `credo.Infra` directly or by using `app.NewInfra(name)` outside DI
 
 Tracing and metrics carriers are planned for the observability release. They are not part of the current `Infra` surface.
@@ -246,8 +246,8 @@ Tracing and metrics carriers are planned for the observability release. They are
 Use `Provide` when Credo should create the singleton for you:
 
 ```go
-app.Provide[*DB](NewDB)
-app.Provide[*UserService](NewUserService)
+app.Provide(NewDB)
+app.Provide(NewUserService)
 ```
 
 Use `ProvideValue` when you already have the instance:
@@ -269,29 +269,29 @@ Typical `ProvideValue` use cases:
 `Provide` and `ProvideValue` take registration options. Handing a value to DI and handing over its teardown are separate decisions, and the options make the second one explicit:
 
 ```go
-app.Provide[*OrderConsumer](NewOrderConsumer, credo.Ingress())  // stops with the HTTP drain
-app.ProvideValue[*pgxpool.Pool](sharedPool, credo.Borrowed())   // the caller starts and closes it
-app.ProvideValue[*search.Client](searchClient, credo.Closer())  // the App calls Close
-app.ProvideValue[UserRepository](fakeRepo, credo.Override())    // replaces the earlier binding
+app.Provide(NewOrderConsumer, credo.Ingress())                          // stops with the HTTP drain
+app.ProvideValue[*pgxpool.Pool](sharedPool, credo.Borrowed())           // the caller starts and closes it
+app.ProvideValue[*search.Client](searchClient, credo.CloseOnShutdown()) // the App calls Close
+app.ProvideValue[UserRepository](fakeRepo, credo.Override())            // replaces the earlier binding
 ```
 
 | Option | Accepted by | Effect |
 | --- | --- | --- |
-| `credo.Ingress()` | `Provide`, `ProvideValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.Closer()` |
+| `credo.Ingress()` | `Provide`, `ProvideValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.CloseOnShutdown()` |
 | `credo.Borrowed()` | `ProvideValue` | Keeps the binding and the value's `Ready`, and leaves starting and shutting the value down to the caller — a pool two Apps in one process share, a fixture a test suite reuses |
-| `credo.Closer()` | `Provide`, `ProvideValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
-| `credo.Override()` | `Provide`, `ProvideValue` | Replaces an earlier binding of the same type before `Finalize` |
-| `credo.Named(name)` | `Manage` | Names a managed component in reports and readiness |
+| `credo.CloseOnShutdown()` | `Provide`, `ProvideValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
+| `credo.Override()` | `Provide`, `ProvideValue`, `Alias` | Replaces an earlier binding of the same type, or an alias of it, before `Finalize`; on `Alias`, points the interface at another type |
+| `credo.ComponentName(name)` | `Manage` | Names a managed component in logs, reports and readiness; it is not a DI key |
 
-Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.Closer()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.Closer()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
+Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
 
 ### Replacing a binding
 
 A binding is replaced at registration, before `Finalize`, with `credo.Override()` on `Provide` or `ProvideValue` — in a composition root that swaps one implementation for another, or in a module that lets the application substitute a default:
 
 ```go
-app.Provide[*sql.DB](NewDB)                                  // the default wiring
-app.ProvideValue[*sql.DB](replicaDB, credo.Override())       // replaces it; NewDB never runs
+app.Provide(NewDB)                                     // the default wiring
+app.ProvideValue[*sql.DB](replicaDB, credo.Override()) // replaces it; NewDB never runs
 ```
 
 The override panics when there is no earlier binding of the type, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Since constructors run only after `Finalize`, an override never supersedes an instance the App built, and the value it replaces never becomes the App's: the App neither starts nor shuts it down. A value you built, bound and then overrode is yours to release. In tests, `testutil.WithOverride[T](v)` applies `credo.Override()` to the App the test builds and is equally strict ([Testing](#testing)).
@@ -304,7 +304,7 @@ There is no runtime replacement: after `Finalize` the graph is fixed, and every 
 
 ```go
 if !app.Has[*AuditLog]() {
-    app.Provide[*AuditLog](NewNoopAuditLog)
+    app.Provide(NewNoopAuditLog)
 }
 ```
 
@@ -332,7 +332,7 @@ type UserRepository interface {
 
 type PgUserRepository struct{ /* ... */ }
 
-app.Provide[*PgUserRepository](NewPgUserRepository)
+app.Provide(NewPgUserRepository)
 app.Alias[UserRepository, *PgUserRepository]()
 ```
 
@@ -346,7 +346,7 @@ func NewUserService(infra credo.Infra, repo UserRepository) *UserService {
 
 `Alias` is the preferred way to program to interfaces while keeping constructor return types concrete.
 
-It is also the one recipe for a value the App should start or ask for readiness. The App plans `Start`, `Ready` and the tier at registration, from the binding's type, before any constructor runs; a `Start` or `Ready` that only the built value has is neither called nor asked. Provide the concrete type, whose method set shows them, and `Alias` the interface the application uses:
+It is also the one recipe for a value the App should start or ask for readiness. `Provide` binds the type the constructor is declared to return, and the App plans `Start`, `Ready` and the tier at registration, from that type, before any constructor runs. Declare the constructor to return the concrete type, whose method set shows them, and `Alias` the interface the application uses:
 
 ```go
 type OrderEvents interface {
@@ -354,11 +354,13 @@ type OrderEvents interface {
 }
 
 // *KafkaPublisher has Start, Ready and Shutdown.
-app.Provide[*KafkaPublisher](NewKafkaPublisher)
+app.Provide(NewKafkaPublisher)
 app.Alias[OrderEvents, *KafkaPublisher]()
 ```
 
-Registered as `app.Provide[OrderEvents](NewKafkaPublisher)` instead, the publisher would still be shut down — the App finds `Shutdown` on the value it owns ([Shutdown and Lifecycle](#shutdown-and-lifecycle)) — but never started or asked. A type with `Start` and without `Shutdown` is not a component and is never started.
+Were `NewKafkaPublisher` declared to return `OrderEvents` instead, the binding would be the interface, which hides the publisher's `Start` and `Ready`, and the start would fail once the publisher is built, naming that remedy; `ProvideValue[OrderEvents](publisher)` panics at the call for the same reason. The refusal holds only when no other registration of the same resource plans the hidden method: after `app.ProvideValue(publisher)`, a second `app.ProvideValue[OrderEvents](publisher)` is accepted, since the first binding starts it. A type with `Start` and without `Shutdown` is not a component and is never started.
+
+An alias is a binding of its interface: a direct binding of `OrderEvents` after the `Alias` panics as a duplicate unless it carries `credo.Override()`, which replaces the alias — what `testutil.WithOverride[OrderEvents](fake)` does in a test. `Alias[OrderEvents, *FakePublisher](credo.Override())` points the interface at another registered type. When nothing else reaches the type an overridden alias pointed at, `Finalize` drops it, so the real publisher is never built or started.
 
 ---
 
@@ -387,13 +389,13 @@ func NewSenderRegistry(senders []Sender) *SenderRegistry {
     return &SenderRegistry{senders: senders}
 }
 
-app.Provide[*EmailSender](NewEmailSender)
-app.Provide[*InAppSender](NewInAppSender)
+app.Provide(NewEmailSender)
+app.Provide(NewInAppSender)
 
 app.BindMany[Sender, *EmailSender]()
 app.BindMany[Sender, *InAppSender]()
 
-app.Provide[*SenderRegistry](NewSenderRegistry)
+app.Provide(NewSenderRegistry)
 ```
 
 You can also resolve the same collection explicitly:
@@ -440,7 +442,7 @@ A wrapper and the handle it wraps can be one resource held through two bindings,
 
   func (p ProductIndex) ResourceIdentity() any { return p.Client }
 
-  app.ProvideValue[*search.Client](client, credo.Closer())
+  app.ProvideValue[*search.Client](client, credo.CloseOnShutdown())
   app.ProvideValue[ProductIndex](ProductIndex{client})
   ```
 
@@ -458,7 +460,7 @@ A wrapper and the handle it wraps can be one resource held through two bindings,
   }
   ```
 
-The holders of one resource that have a teardown agree on its kind: `Shutdown`, or `Close` through `credo.Closer()`. A client bound with `credo.Closer()` beside a holder whose teardown is `Shutdown` is refused — the later `ProvideValue` panics when both values are given, and otherwise the construction of the holder built later fails — with both bindings and both remedies named: drop `credo.Closer()`, or bind the holder that has `Shutdown` under a type that shows `Close` and not `Shutdown`, with `credo.Closer()`. Among holders of one kind, the one registered first runs the teardown, whichever is built first. A holder without a teardown, such as `ProductIndex` above, takes no part in the choice, and the resource still waits for its consumers. A resource handed to `app.Manage` that a `ProvideValue` binding already holds, or handed to `Manage` twice, panics; a `ResourceIdentity()` that panics or returns nil or a non-comparable token panics at `ProvideValue` and `Manage` and fails a constructor's construction.
+The holders of one resource that have a teardown agree on its kind: `Shutdown`, or `Close` through `credo.CloseOnShutdown()`. A client bound with `credo.CloseOnShutdown()` beside a holder whose teardown is `Shutdown` is refused — the later `ProvideValue` panics when both values are given, and otherwise the construction of the holder built later fails — with both bindings and both remedies named: drop `credo.CloseOnShutdown()`, or bind the holder that has `Shutdown` under a type that shows `Close` and not `Shutdown`, with `credo.CloseOnShutdown()`. Among holders of one kind, the one registered first runs the teardown, whichever is built first. A holder without a teardown, such as `ProductIndex` above, takes no part in the choice, and the resource still waits for its consumers. A resource handed to `app.Manage` that a `ProvideValue` binding already holds, or handed to `Manage` twice, panics; a `ResourceIdentity()` that panics or returns nil or a non-comparable token panics at `ProvideValue` and `Manage` and fails a constructor's construction.
 
 For the full multi-database pattern, see the [Data Access Guide](data-access.md).
 
@@ -653,34 +655,34 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
     return c.client.Close()
 }
 
-app.Provide[*Consumer](NewConsumer, credo.Ingress())
+app.Provide(NewConsumer, credo.Ingress())
 ```
 
 `Shutdown` runs on a component that was built but never started — the rollback of a failed start stops it too — so it tolerates a `Start` that never ran.
 
 ### Two tiers
 
-Every component belongs to a tier. The **ingress** tier is where work enters the process — the WebSocket server, a scheduled worker, a consumer of an external queue — and is chosen with `credo.Ingress()` (a worker's tier is a field of its configuration). Everything else is **internal**, the default. The start phase starts the internal tier in dependency order, then the ingress tier, then the listener accepts. The drain mirrors it: the ingress tier stops first, concurrently with the HTTP drain, with its components that no edge orders stopping concurrently; the internal tier then stops one component at a time in reverse dependency order.
+Every component belongs to a tier. The **ingress** tier is where work enters the process — the WebSocket server, a scheduled worker, a consumer of an external queue — and is chosen with `credo.Ingress()` on the registration (a worker's tier is a field of its configuration). A type whose nature puts it there declares it instead: it implements `credo.IngressComponent`, whose `IngressTier()` method is never called, and every registration of it is ingress without the option — `websocket.Server` does, so `app.Manage(ws)` suffices. Your own consumer type can declare it the same way; a binding whose type hides the method is refused, as one that hides `Start` is. Everything else is **internal**, the default. The start phase starts the internal tier in dependency order, then the ingress tier, then the listener accepts. The drain mirrors it: the ingress tier stops first, concurrently with the HTTP drain, with its components that no edge orders stopping concurrently; the internal tier then stops one component at a time in reverse dependency order.
 
 No dependency crosses the tiers backwards: an internal component that depends on an ingress one, directly or through bindings that are not components, fails `Finalize` with the path and both remedies — declare the dependent ingress, or split the ingress component so that what internal components use is an internal part. A producer that hands work to a consumer component takes the consumer (or a handle it owns) as a constructor parameter, and "consumers before dependencies" then stops the producer first; there is no separate ordering API.
 
 ### A value whose binding's type does not show `Shutdown`
 
-Ownership, not the view consumers take, decides the teardown. A value the App owns whose `Shutdown` only the built value has — bound as an interface without the method, say — is still a component and is shut down after its consumers. Because `Finalize` cannot see it, it is internal, and if it depends on an ingress component its construction fails with the path and the remedies. Its `Start` and `Ready` are neither called nor asked, since they are planned from the binding's type: to have the App start or ask it, provide the concrete type and `Alias` the interface ([Interface Wiring with `Alias`](#interface-wiring-with-alias)). To keep the teardown of a value you built with yourself, bind it with `app.ProvideValue[T](v, credo.Borrowed())`.
+Ownership, not the view consumers take, decides the teardown. A value the App owns whose `Shutdown` only the built value has — bound as an interface without the method, say — is still a component and is shut down after its consumers. Because `Finalize` cannot see it, it is internal, and if it depends on an ingress component its construction fails with the path and the remedies. Its `Start` and `Ready` are planned from the binding's type, so a binding whose type hides them is refused unless another registration of the same resource plans them: provide the concrete type and `Alias` the interface ([Interface Wiring with `Alias`](#interface-wiring-with-alias)). A binding whose type shows `Start` but hides the `Shutdown` its value has is a component, and the App starts it. To keep the teardown of a value you built with yourself, bind it with `app.ProvideValue[T](v, credo.Borrowed())`.
 
-A value that a constructor builds over a borrowed resource stays the caller's as well, even when it has `Shutdown`, unless its binding carries `credo.Closer()`. A teardown that is neither `Shutdown` nor a `Close` — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges.
+A value that a constructor builds over a borrowed resource stays the caller's as well, even when it has `Shutdown`, unless its binding carries `credo.CloseOnShutdown()`. A teardown that is neither `Shutdown` nor a `Close` — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges.
 
 ### Components that are not bindings, and hooks
 
 | Mechanism | When to use | Order |
 | --- | --- | --- |
 | A DI singleton with `Shutdown` (optionally `Start`, `Ready`) | Anything the application wires through DI that holds a resource | Its tier, after its consumers; started before them |
-| `credo.Closer()` on a binding | A client whose teardown is `Close` | Like a component with `Shutdown` |
+| `credo.CloseOnShutdown()` on a binding | A client whose teardown is `Close` | Like a component with `Shutdown` |
 | `app.Manage(v, opts...)` | A value with `Shutdown` built outside DI, a constructor over DI parameters that should not be injectable, a mounted child App | Its tier; a value has no edges and stops in reverse registration order, a constructor has its parameters' edges |
 | `app.OnStart(fn, opts...)` | A leaf action at startup, such as warming a cache | FIFO after its tier's components have started |
 | `app.OnStop(fn, opts...)` | A leaf action at shutdown that may still use its tier's components | LIFO before its tier's components stop |
 
-`Manage` names a component with `credo.Named` (default: its type name; a duplicate name panics). A hook is an anonymous component of a tier, internal unless `credo.Ingress()` says otherwise; anything with a teardown of its own is a component, not a hook, and process-level cleanup that must outlive every component belongs after `Run` returns.
+`Manage` names a component with `credo.ComponentName` (default: its type name; a duplicate name panics). A hook is an anonymous component of a tier, internal unless `credo.Ingress()` says otherwise; anything with a teardown of its own is a component, not a hook, and process-level cleanup that must outlive every component belongs after `Run` returns.
 
 During graceful shutdown the full sequence is:
 
@@ -739,7 +741,7 @@ Use the container in tests when you want to verify wiring:
 app := testutil.NewApp(t) // hermetic: reads no configuration from disk or the environment
 
 app.ProvideValue[UserRepository](&FakeUserRepository{})
-app.Provide[*UserService](NewUserService)
+app.Provide(NewUserService)
 
 if err := app.Finalize(); err != nil { // a missing dependency fails here, with its path
     t.Fatal(err)

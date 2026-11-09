@@ -6,13 +6,13 @@ This spec states the DI container: its surface, registration and its options, `F
 
 ## Overview
 
-Credo's DI system has two parts: a generics-based container in `internal/di`, adapted from samber/do and exposed as generic methods on `*App` — `app.Provide[T](constructor)`, `app.BindMany[I, T]()`, `app.Resolve[T]()`, `app.ResolveAll[I]()` — with no code generation; and `credo.Infra`, a framework-managed carrier defined in the root package, which the container produces for a constructor parameter while it stays visible in the constructor's signature. The container is Credo-specific, not a standalone DI library ([ADR-004](../adr/004-dependency-injection-and-infra.md)).
+Credo's DI system has two parts: a generics-based container in `internal/di`, adapted from samber/do and exposed as methods on `*App` — `app.Provide(constructor)`, `app.BindMany[I, T]()`, `app.Resolve[T]()`, `app.ResolveAll[I]()` — with no code generation; and `credo.Infra`, a framework-managed carrier defined in the root package, which the container produces for a constructor parameter while it stays visible in the constructor's signature. The container is Credo-specific, not a standalone DI library ([ADR-004](../adr/004-dependency-injection-and-infra.md)).
 
 ## Goals
 
 > **Current until v0.25.0 (W6):** the third goal's explicit `Finalize` step holds until W6; with it, the first resolving call finalizes the container.
 
-1. **Generics over reflection**: `Resolve[T]` is fully compile-time typed. `Provide[T]`'s `constructor` parameter is necessarily `any` (Go cannot express "a function with arbitrary parameters returning T"), so its signature is checked at the `Provide` call and the dependency graph at `Finalize`. Reflection stays on the cold path ([Registration](#registration-root-package)).
+1. **Generics over reflection**: `Resolve[T]` is fully compile-time typed. `Provide`'s `constructor` parameter is necessarily `any` (Go cannot express "a function with arbitrary parameters"), so its signature is checked at the `Provide` call and the dependency graph at `Finalize`. Reflection stays on the cold path ([Registration](#registration-root-package)).
 2. **Framework-managed infrastructure, explicit boundary**: `credo.Infra` is a visible constructor parameter; services do not receive hidden field population or struct-tag injection.
 3. **Composition root first**: registrations, then `Finalize`, then resolution ([Resolution](#resolution-root-package)).
 4. **Always available**: `credo.Infra` works without a configured logger ([below](#always-available-default-logger-fallback)).
@@ -47,33 +47,7 @@ This guarantees:
 - **Tests work without container setup.** Construct a service directly, pass a custom `Infra{Logger: testLogger}`. No panics.
 - **Gradual opt-in.** Services work immediately; observability is layered on when ready.
 
-### Per-Service Scoping
-
-> **Current until v0.25.0 (W2):** this section and the next state the current `service` key, whose value is the built type's bare name (`deriveServiceName` in `internal/di/infra.go`: `*users.Service` and `*orders.Service` both write `service=Service`); W2 replaces them with [Log Keys](#log-keys).
-
-When the container produces `Infra`, the Logger is **scoped** to the service's type name:
-
-```go
-// Container internally does:
-infra.Logger = appLogger.With("service", "OrderService")
-```
-
-`appLogger` is the App's logger — the one `credo.WithLogger` configures, else the framework default — captured at `credo.New`; a `*slog.Logger` binding in the container is never consulted. Every log line from `OrderService` automatically includes `"service"="OrderService"` without the developer passing it manually.
-
-### Non-DI Infra
-
-For components outside the DI container (middleware factories, startup helpers, manually created workers), use `app.NewInfra(name)`:
-
-```go
-rbacMW := rbac.NewMiddleware(app.NewInfra("RBACMiddleware"))
-app.GlobalMiddleware(rbacMW)
-```
-
-The returned Infra has a Logger scoped with `"service"=name`. `NewInfra` is nil-safe: when the app has no logger configured it falls back to the framework default logger. For DI-managed services, Infra is injected automatically — prefer DI when possible.
-
 ### Log Keys
-
-> **Pending v0.25.0 (W2):** not implemented yet; until W2 ships, the scoped loggers write `service=<name>` as the two previous sections state, and the `http.Server.ErrorLog` bridge writes `component=net/http`.
 
 The framework's records use four keys to say where a record comes from or what it is about ([ADR-004](../adr/004-dependency-injection-and-infra.md#one-key-names-an-application-part)):
 
@@ -84,7 +58,7 @@ The framework's records use four keys to say where a record comes from or what i
 | `request_id` | the request | the request's logger under `UseRequestID` |
 | `connection_id` | a WebSocket connection | the WebSocket server's connection records |
 
-`service` is not written. When the container produces `Infra` for a constructor, its Logger is scoped with the name of the binding the constructor builds — its type as the lifecycle prints it, or its `credo.ComponentName` name:
+When the container produces `Infra` for a constructor, its Logger is scoped with the name of the binding the constructor builds — its type as the lifecycle prints it, or its `credo.ComponentName` name:
 
 ```go
 // Container internally does, for app.Provide(users.NewService):
@@ -94,7 +68,7 @@ infra.Logger = appLogger.With("component", "*users.Service")
 infra.Logger = appLogger.With("component", "primary")
 ```
 
-`*users.Service` and `*orders.Service` therefore stay apart, and a component's records from its constructor and the lifecycle's records about it share one key and value. `app.NewInfra(name)` returns an Infra whose Logger is scoped with `component=name`, nil-safe as before:
+`appLogger` is the App's logger — the one `credo.WithLogger` configures, else the framework default — captured at `credo.New`; a `*slog.Logger` binding in the container is never consulted. `*users.Service` and `*orders.Service` therefore stay apart, and a component's records from its constructor and the lifecycle's records about it share one key and value. For code outside the DI container — middleware factories, startup helpers, manually created workers — `app.NewInfra(name)` returns an Infra whose Logger is scoped with `component=name`; it is nil-safe, falling back to the framework default logger when the App has no logger configured:
 
 ```go
 rbacMW := rbac.NewMiddleware(app.NewInfra("rbac")) // logs component=rbac
@@ -104,15 +78,13 @@ A stable event identity for framework records is the observability release's; it
 
 ### The Context Carrier
 
-> **Pending v0.25.0 (W2):** not implemented yet; until W2 ships, there is no `credo.InfraFrom`, and a framework module receives its `Infra` as a constructor argument (`websocket.New(infra, cfg...)`).
-
 ```go
 // InfraFrom returns the Infra the App scoped to the component whose call
 // received ctx, or the zero Infra outside such a call.
 func InfraFrom(ctx context.Context) Infra
 ```
 
-Every call the App makes on a component — `Start`, `Ready`, `Shutdown`, and the `OnStart` and `OnStop` hooks — receives a context carrying the component's scoped `Infra`: the App's logger with `component=<name>`, the component's unit name, which its readiness entry, a `LifecycleError` and the lifecycle's records show and `credo.ComponentName` sets. The root installs it around each call `internal/di` makes, through an internal hook, and around each readiness check the aggregation runs. Outside such a call `InfraFrom` returns the zero `Infra`, whose logger falls back to the framework default. `context.WithoutCancel` keeps values, so work derived from the `Start` context sees the same `Infra`. Only framework infrastructure travels in the context, never an application service. Request code logs through `c.Logger()`, and a constructor takes `credo.Infra`; the [lifecycle spec](lifecycle.md) states the carrier's place in the start walk and the drain.
+Every call the App makes on a component — `Start`, `Ready`, `Shutdown`, the `Close` of a `credo.CloseOnShutdown()` binding, and the `OnStart` and `OnStop` hooks — receives a context carrying the component's scoped `Infra`: the App's logger with `component=<name>`, the component's unit name, which its readiness entry, a `LifecycleError` and the lifecycle's records show and `credo.ComponentName` sets. The root installs it around each call `internal/di` makes, through an internal hook, and around each readiness check the aggregation runs. Outside such a call `InfraFrom` returns the zero `Infra`, whose logger falls back to the framework default. `context.WithoutCancel` keeps values, so work derived from the `Start` context sees the same `Infra`. Only framework infrastructure travels in the context, never an application service. Request code logs through `c.Logger()`, and a constructor takes `credo.Infra`; the [lifecycle spec](lifecycle.md) states the carrier's place in the start walk and the drain.
 
 A framework module whose value is built outside the App and started by it takes an optional logger in its own configuration (`websocket.Config.Logger`; `sqldb.WithLogger(l)` arrives with the database's `Start`, [store spec](store.md)) and otherwise uses the App's, in this precedence: the logger given to the module, unscoped; then `InfraFrom(ctx).Logger`; then the framework default. Every record a module writes carries `module=<name>`, added with `Logger.With`, whichever logger it goes to. The App's own subsystems — the `Use*` features and the worker registry — log to the App's logger and are outside the rule; `httpclient` takes a `*slog.Logger` and does not import the root package.
 
@@ -181,15 +153,13 @@ The root package registers `credo.Infra` with the container as a framework-provi
 
 The container's public surface is seven methods and the phase verb ([ADR-004](../adr/004-dependency-injection-and-infra.md#the-public-surface)):
 
-> **Current until v0.25.0 (W11):** the block below shows `app.Provide[T](constructor, options...)`; with W11 it reads `app.Provide(constructor, options...)` and `app.Alias[I, T](options...)` ([Registration](#registration-root-package)).
-
 > **Current until v0.25.0 (W6):** the block's "after Finalize only" and the sentence after it ("`Resolve` becomes available") hold until W6; with it, the first resolving call finalizes ([Finalize and Container Lifecycle](#finalize-and-container-lifecycle)).
 
 ```text
 // Registration — returns nothing, panics on misuse
-app.Provide[T](constructor, options...)
+app.Provide(constructor, options...)
 app.ProvideValue[T](value, options...)
-app.Alias[I, T]()
+app.Alias[I, T](options...)
 app.BindMany[I, T]()
 
 // Observation — never constructs
@@ -217,7 +187,7 @@ Registration performs no I/O and panics on misuse known at the call site, with a
 
 | Misuse | Panics at |
 | --- | --- |
-| A constructor that is nil, not a function, does not return T first, or returns more than `(T, error)` | `Provide` |
+| A constructor that is nil, not a function, or returns anything but `T` or `(T, error)` for some type `T` | `Provide` |
 | A second binding of the same type without `credo.Override()` | `Provide`, `ProvideValue` |
 | `Alias` or `BindMany` whose types do not fit (non-interface I, unregistered or non-implementing T, existing alias or pair) | `Alias`, `BindMany` |
 | A misused registration option (Registration Options) | `Provide`, `ProvideValue`, `Manage` |
@@ -229,9 +199,7 @@ Registration performs no I/O and panics on misuse known at the call site, with a
 
 A resolving call before `Finalize` finalizes the container instead of panicking, so the table's last row goes. A registration after the freeze — `Provide`, `ProvideValue`, `Alias`, `BindMany`, `credo.Override()` on either binding call, `Manage`, `Workers().Continuous`, `Workers().Scheduled` and `testutil.WithOverride` — panics naming the call, what finalized the container with its site and callers, and the remedy ([Finalize and Container Lifecycle](#finalize-and-container-lifecycle)).
 
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, `Provide` checks the constructor against its type argument, a direct binding of an aliased type is accepted, `Alias` takes no option, and a hidden capability is skipped.
-
-`Provide` panics on a constructor that is nil, not a function, or returns anything but `T` or `(T, error)` for some type `T`, naming the forms accepted. A direct binding of a type an `Alias` names, without `credo.Override()`, panics as a duplicate naming the alias and `credo.Override()`, and `Alias` panics on any option other than `credo.Override()`. A `ProvideValue` binding whose type hides its value's `Start` or `Ready` panics at the call, naming the binding, the methods its type hides and the remedy (Registration Options).
+`Provide` panics on a constructor that is nil, not a function, or returns anything but `T` or `(T, error)` for some type `T`, naming the forms accepted. A direct binding of a type an `Alias` names, without `credo.Override()`, panics as a duplicate naming the alias and `credo.Override()`, and `Alias` panics on any option other than `credo.Override()`. A `ProvideValue` binding whose type hides its value's `Start`, `Ready` or declared ingress tier, when no earlier registration of the same resource plans it, panics at the call, naming the binding, the methods its type hides and the remedy (Registration Options).
 
 > **Pending v0.25.0 (W3):** not implemented yet; until W3 ships, `credo.ComponentName` is accepted on `Manage` only and there is no `credo.OptionalReadiness()`.
 
@@ -243,15 +211,9 @@ Registration calls are not safe for concurrent use; bootstrap is sequential ([Se
 
 **Which bindings are components.** A singleton the App owns is a component when it has `Shutdown(ctx) error` — its binding's type shows the method at registration, or its built value has it — because ownership, not the view its consumers take, decides the teardown; a component found only on its built value is internal. `Start`, `Ready` and the tier are planned from the binding's type before any constructor runs ([lifecycle spec](lifecycle.md#component-types)), and [the start walk](lifecycle.md#the-start-walk) states what that means for a value behind an interface.
 
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, a `Start` or `Ready` only the built value has is never called, and the value starts without it.
-
-**A capability the binding's type hides is refused.** A component whose binding's type hides its value's `Start` or `Ready` — and the ingress tier its type declares ([lifecycle spec](lifecycle.md#component-types)) — is refused instead of being run without it: `ProvideValue` panics at the call, and a value a constructor builds fails the start once it is built, where the container already finds a `Shutdown` the type hides. The message names the binding, the methods its type hides and the remedy: bind the concrete type, and bind the interface with `Alias`. `credo.Borrowed()` is exempt, since the App neither starts nor stops the value, and a hidden `Shutdown` still makes the value a component whose teardown follows it. The values a worker constructor and a constructor handed to `Manage` build follow the same rule.
-
-> **Pending v0.25.0 (W12):** until W12 ships, the `credo.CloseOnShutdown()` of the table and the bullets below is spelled `credo.Closer()` and `credo.ComponentName(name)` is spelled `credo.Named(name)`, and the duplicate-binding panic does not mention the name.
+**A capability the binding's type hides is refused.** A component whose binding's type hides its value's `Start` or `Ready` — and the ingress tier its type declares ([lifecycle spec](lifecycle.md#component-types)) — is refused instead of being run without it: `ProvideValue` panics at the call, and a value a constructor builds fails the start once it is built, where the container already finds a `Shutdown` the type hides. It is refused only when no other registration that holds the same resource ([Resource Identity](#resource-identity-and-teardown)) plans that capability, since the App calls it through that holder; `ProvideValue` decides against the registrations made before it, so `ProvideValue(db)` followed by `ProvideValue[Querier](db)` is accepted and the reverse order panics (`hiddenCapabilityErrorLocked`, `internal/di/unit.go`). The message names the binding, the methods its type hides and the remedy: bind the concrete type, and bind the interface with `Alias`. `credo.Borrowed()` is exempt, since the App neither starts nor stops the value. A hidden `Shutdown` is not refused: it still makes the value a component whose teardown follows it, so a binding whose type shows `Start` but hides the `Shutdown` its value has is a component, and the App starts it; a value with `Start` and no `Shutdown` at all is not a component and is never started. The values a worker constructor and a constructor handed to `Manage` build follow the same rule.
 
 > **Pending v0.25.0 (W3):** until W3 ships, `credo.ComponentName` is accepted on `Manage` only, its duplicate check covers managed components only, and the `credo.OptionalReadiness()` row does not exist.
-
-> **Pending v0.25.0 (W11):** until W11 ships, `Alias` accepts no option, so the `credo.Override()` row's "`Alias`" does not hold.
 
 `Provide` and `ProvideValue` take registration options of type `credo.RegistrationOption`. Each is checked at the call, and misuse — an option the call does not accept, a zero option, an option given twice — panics there:
 
@@ -277,8 +239,6 @@ A duplicate binding where neither registration carries the option keeps the mess
 - **`Override`** is strict: without an earlier binding of the type it panics, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Without the option a duplicate still panics. The replaced binding may be a constructor or a value; since constructors run only after `Finalize`, an override never supersedes a built instance. A value that an override replaces never becomes the App's: the App neither starts nor shuts it down, and a replaced `ProvideValue` value stays with the caller who created it.
 - **`testutil.WithOverride[T](v)`** builds on `credo.Override()` and is equally strict: without an earlier binding of T, wired by the test or by `testutil.WithWiring`, it panics. Adding a binding is `WithWiring`'s job.
 
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, an override applies to a direct binding only, so `testutil.WithOverride[I]` of an interface bound through `Alias` panics, and an alias's target is always kept.
-
 **An alias is a binding** for the duplicate and override rules (`bindLocked` and `checkOverrideLocked` in `internal/di/provide.go` consult the aliases as well as the registrations). A direct binding of an aliased type with `credo.Override()` — `ProvideValue[I](fake, credo.Override())` or `testutil.WithOverride[I](fake)` after `Alias[I, T]()` — replaces the alias, and `Alias[I, T2](credo.Override())` points `I` at `T2`. The type the overridden alias pointed at stays registered until `Finalize`, which drops it before validating the graph when no other alias, `BindMany` entry or constructor parameter — of a binding, a worker or a constructor handed to `Manage` — reaches it, and removes its holder records. A dropped type is never built or started, and `Resolve` of it returns an error naming the override that dropped it; with a constructor that also takes `T`, or another alias or a `BindMany` entry naming it, `T` is kept, built and started.
 
 `app.Manage(v, opts...)` adds a component that is not a binding — a value with `Shutdown`, or a constructor `func(deps...) C` or `func(deps...) (C, error)` that the start walk builds — and accepts the options the table gives it; the [lifecycle spec](lifecycle.md#appmanagev-opts) states its rules, and a child App handed to its parent's `Manage` runs its start phase in the parent's ([mounted Apps](lifecycle.md#mounted-apps)).
@@ -294,8 +254,6 @@ A teardown that is neither `Shutdown` nor one of the `Close` shapes — a client
 3. otherwise its binding alone.
 
 Values that share an identity — one pointer under several bindings, the interface view an adapter constructor returns, a wrapper and the handle it embeds, two wrappers over one handle, a value that a constructor returns after `Manage` received it — are one component. It is torn down once, when the last holder retires, so the consumers of every holder stop first, and started once, through the first holder the start walk reaches whose binding plans a `Start`. A holder that obtains the resource through one of its consumers does not keep that consumer open: the consumer stops first, then the resource. Only that route is dropped — the edge a holder which reached the resource through another holder contributes, when it closes a cycle; a dependency that a holder which reached the resource on its own contributes always holds. Component values that are not comparable are their bindings' own, each torn down once.
-
-> **Pending v0.25.0 (W12):** until W12 ships, the `credo.CloseOnShutdown()` of this section is spelled `credo.Closer()`.
 
 > **Current until v0.25.0 (W5):** in the next paragraph "among holders of one kind, the one registered first runs it" is the current rule, under which a constructor's value handed to `Manage` claims like a value handed in; with W5 the teardown is the holder of record's ([The Holder of Record](#the-holder-of-record)).
 
@@ -336,15 +294,16 @@ The order in which components stop — the tiers, the shared deadline, the aband
 ### Registration (root package)
 
 ```go
-// Provide registers a constructor for type T. The constructor's parameters
-// are resolved from the container automatically. Lifecycle: Singleton.
-// It accepts credo.Ingress(), credo.Closer() and credo.Override(), and
-// panics on misuse (Registration Misuse).
-func (app *App) Provide[T any](constructor any, opts ...RegistrationOption)
+// Provide registers a constructor. The binding's type is the constructor's
+// first result type: func(deps...) T or func(deps...) (T, error). The
+// constructor's parameters are resolved from the container. Lifecycle:
+// Singleton. It accepts credo.Ingress(), credo.CloseOnShutdown() and
+// credo.Override(), and panics on misuse (Registration Misuse).
+func (app *App) Provide(constructor any, opts ...RegistrationOption)
 
 // ProvideValue registers a pre-built value as a Singleton. It accepts
-// credo.Ingress(), credo.Borrowed(), credo.Closer() and credo.Override(),
-// and panics on misuse, like Provide.
+// credo.Ingress(), credo.Borrowed(), credo.CloseOnShutdown() and
+// credo.Override(), and panics on misuse, like Provide.
 func (app *App) ProvideValue[T any](value T, opts ...RegistrationOption)
 
 // Has reports whether T is registered (directly or through Alias). It never
@@ -355,7 +314,7 @@ func (app *App) Has[T any]() bool
 
 A binding is replaced with `credo.Override()` (Registration Options), never after the fact.
 
-The `constructor` parameter accepts any function whose parameters are resolvable types and whose first return value is `T`:
+The `constructor` parameter accepts any function whose parameters are resolvable types; its first return value is the binding's type:
 
 ```go
 // All valid constructor signatures:
@@ -365,18 +324,6 @@ func NewUserRepo(infra credo.Infra, db *sql.DB) (*UserRepo, error)
 ```
 
 Constructor parameter types are inspected via reflection at registration time and matched against registered types. The first construction of each singleton invokes the constructor with `reflect.Value.Call`. Resolving a built singleton afterwards is a map lookup with no `reflect.Value` call; `ResolveAll` assembles its slice with reflection on each call.
-
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, `Provide` has the type parameter shown above and the constructor's first result must be `T`.
-
-`Provide` takes its binding's type from the constructor:
-
-```go
-// Provide registers a constructor. The binding's type is the constructor's
-// first result type: func(deps...) T or func(deps...) (T, error). The
-// constructor's parameters are resolved from the container. Lifecycle:
-// Singleton. It panics on misuse (Registration Misuse).
-func (app *App) Provide(constructor any, opts ...RegistrationOption)
-```
 
 A constructor declared to return a concrete type binds that type, and the interfaces it serves are bound with `Alias`; one declared to return an interface binds the interface, and its value's `Start` and `Ready` must be shown by that interface (Registration Options). `ProvideValue[T]`, `Resolve[T]`, `Alias[I, T]` and `BindMany[I, T]` keep their type parameters. A message that names a binding keeps the form `App.Provide[*Mailer]`, the call with its binding's type, since a constructor written as a function literal has no useful name.
 
@@ -393,15 +340,17 @@ Because `constructor` is typed `any`, a signature mistake (wrong return type, no
 ```go
 // Alias creates an alias so that Resolve[I] returns the instance registered
 // for concrete type T. I must be an interface, T must implement I, and T
-// must already be registered. It panics on misuse.
-func (app *App) Alias[I, T any]()
+// must already be registered. It accepts credo.Override(), its one option,
+// which points an already aliased I at T, and panics on misuse and on any
+// other option.
+func (app *App) Alias[I, T any](opts ...RegistrationOption)
 ```
 
 Alias enables resolving by interface without requiring the constructor to return the interface type:
 
 ```go
 // Register the concrete type.
-app.Provide[*PgUserRepo](NewPgUserRepo)
+app.Provide(NewPgUserRepo)
 
 // Alias interface to concrete type.
 app.Alias[UserRepo, *PgUserRepo]()
@@ -418,14 +367,6 @@ Contract rules enforced by `Alias`, each violation a panic at the call:
 - `I` must not already have a direct registration or existing alias
 - `Finalize` must not have been called yet, and shutdown must not have begun
 
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, `Alias` takes no option and an alias is not consulted by the duplicate and override checks.
-
-```go
-// Alias accepts credo.Override(), its one option, which points an already
-// aliased I at T, and panics on any other option.
-func (app *App) Alias[I, T any](opts ...RegistrationOption)
-```
-
 An alias is a binding of `I` for the duplicate and override rules: with `credo.Override()`, the rule against an existing alias gives way and `I` is pointed at `T`, and a later direct binding of `I` without `credo.Override()` panics as a duplicate naming the alias. What an override leaves unreached is dropped at `Finalize` ([Registration Options](#registration-options)).
 
 ### Ordered Interface Collections
@@ -440,8 +381,8 @@ func (app *App) BindMany[I, T any]()
 `BindMany[I, T]` is collection wiring, not default resolution. It does not change `Resolve[I]`; it only affects `ResolveAll[I]` and constructor injection of `[]I`.
 
 ```go
-app.Provide[*EmailSender](NewEmailSender)
-app.Provide[*InAppSender](NewInAppSender)
+app.Provide(NewEmailSender)
+app.Provide(NewInAppSender)
 
 app.BindMany[Sender, *EmailSender]()
 app.BindMany[Sender, *InAppSender]()
@@ -486,10 +427,10 @@ func (app *App) Finalize() error
 
 ```go
 // Registration phase
-app.Provide[*sql.DB](NewDB)
-app.Provide[*PgUserRepo](NewPgUserRepo)
+app.Provide(NewDB)
+app.Provide(NewPgUserRepo)
 app.Alias[UserRepo, *PgUserRepo]()
-app.Provide[*UserService](NewUserService)
+app.Provide(NewUserService)
 
 // Finalize phase --- freeze + validate
 if err := app.Finalize(); err != nil {
@@ -501,7 +442,7 @@ userSvc := app.MustResolve[*UserService]()
 
 // These panic after Finalize ("called after Finalize; make every
 // registration before Finalize, ..."):
-// app.Provide[*Foo](NewFoo)
+// app.Provide(NewFoo)
 // app.Alias[Bar, *Baz]()
 // app.BindMany[Qux, *Baz]()
 ```
@@ -544,8 +485,6 @@ The message for a registration after a shutdown began is unchanged: "called afte
 - after the graph's findings, a store registration whose type has no binding — neither a direct binding nor an interface an `Alias` names: `di: store.Register[T]: T has no binding; bind it with Provide or ProvideValue before Finalize` ([store spec](store.md#registration)).
 
 The report is deterministic: the same wiring yields the same text on every run. A consumer registered earlier is reported earlier, its parameters left to right, and every cycle's text starts at the member that was registered first. Registration order does not otherwise matter: a constructor may depend on a type registered after it. `Alias` and `BindMany` check their types when the binding is made, so `Finalize` does not check them again. Dependencies inside pre-built values are opaque to the container and take no part in validation or shutdown ordering. A component found only on its built value is internal and is checked when it is built: such a component that depends on an ingress one fails its construction with the same message as the `Finalize` finding.
-
-> **Pending v0.25.0 (W11):** not implemented yet; until W11 ships, no registration is ever removed.
 
 Before it validates the graph, `Finalize` drops the type an overridden alias pointed at when nothing else reaches it, as [Registration Options](#registration-options) states, so a dropped type contributes no finding and no edge.
 
@@ -616,7 +555,7 @@ Ordering follows the static graph built at `Finalize` (or extracted from the fro
 - The ingress tier stops while resolutions are still admitted; its components that no edge orders stop concurrently with each other. The internal tier enters closing first and stops one component at a time, in reverse dependency order with reverse registration order as the tie-break; it also stops an ingress component built after the ingress tier ran.
 - A built value that is no component, and a borrowed resource, is transparent: edges pass through it, so ordering survives intermediate services, and it retires without calling user code. Aliases and collection members are the same vertex as their singleton and are attempted once.
 - Never-started and terminally failed constructors are inactive and contribute no live edges. The HTTP drain proceeds past its deadline with requests still running, so a construction can be in flight when closing begins. A build still in progress is a pending vertex: it blocks its dependencies while independent ready vertices proceed; a failed build retires and releases them, a successful one becomes an ordinary vertex.
-- Each eligible teardown — `Shutdown`, or `Close` for a `credo.Closer()` binding — runs on a helper goroutine with the shared drain context; the container waits for completion or context end, preferring a completed result at the boundary. A returned error or recovered panic completes the attempt as a failure and releases the vertex's dependencies. A wait that ends because the context ended is not completion: the component is abandoned, its dependencies stay open (kept open by it), and the same instance is never retried nor given extra budget. A later result or panic is logged without mutating the returned report.
+- Each eligible teardown — `Shutdown`, or `Close` for a `credo.CloseOnShutdown()` binding — runs on a helper goroutine with the shared drain context; the container waits for completion or context end, preferring a completed result at the boundary. A returned error or recovered panic completes the attempt as a failure and releases the vertex's dependencies. A wait that ends because the context ended is not completion: the component is abandoned, its dependencies stay open (kept open by it), and the same instance is never retried nor given extra budget. A later result or panic is logged without mutating the returned report.
 - Once the context ends, no further teardown starts and the remaining vertices are reported with their actual state and blockers; there is no out-of-order fallback. A tier's pass also ends when none of its vertices is ready or pending; a vertex still held by a live consumer when the drain ends — the dependency of an abandoned consumer, or a graph inconsistency — is reported as kept open with its blockers, never closed out of order.
 - An instance whose construction completes after the context ended gets one separate, fixed five-second best-effort cleanup attempt on its own goroutine (result-or-deadline, a completed result wins the boundary) — for a component its binding's type shows and for one found only on its built value alike — unless another holder still holds its resource, that resource was already torn down, or a holder borrows it. The attempt is logged, never reported, not configurable, never granted to ordinary entries, and does not guarantee dependency order; it is best effort because the process may exit once `Shutdown` returns.
 - Recovery wraps every invocation, construction and `Start` included. A recovered teardown panic is a completed failed attempt reported as `*credo.DIPanicError` with phase `DIPanicShutdown` or `DIPanicLateCleanup`; a `Start` panic has phase `DIPanicStart`.
@@ -660,18 +599,18 @@ func main() {
     }
 
     // 2. Provide
-    app.Provide[*sqldb.DB](NewDatabase) // built and pinged by the start phase
-    app.Provide[*PaymentClient](NewPaymentClient)
-    app.Provide[*OrderService](NewOrderService)
-    app.Provide[*OrderController](NewOrderController)
-    app.Provide[*OutboxRelay](NewOutboxRelay)
+    app.Provide(NewDatabase) // built and pinged by the start phase
+    app.Provide(NewPaymentClient)
+    app.Provide(NewOrderService)
+    app.Provide(NewOrderController)
+    app.Provide(NewOutboxRelay)
 
     // 3. Feature mounts and component registrations, in any order
     app.UseI18n(credo.I18nConfig{Dir: "locales"})
     app.UseHealth()
     store.Register[*sqldb.DB](app)
     worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
-    app.Manage(NewSearchIndexer, credo.Named("search-indexer"))
+    app.Manage(NewSearchIndexer, credo.ComponentName("search-indexer"))
 
     // 4. Finalize
     if err := app.Finalize(); err != nil {

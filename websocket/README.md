@@ -16,11 +16,11 @@ browser-CSRF boundary, not authentication.
 Minimal managed usage:
 
 ```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+ws := websocket.New(websocket.Config{
     AllowedOrigins: []string{"https://app.example.com"},
     Subprotocols:   []string{"events.v1"},
 })
-app.Manage(ws, credo.Ingress())
+app.Manage(ws)
 
 app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) error {
     typ, data, err := conn.Read(conn.Context())
@@ -31,7 +31,7 @@ app.GET("/events", ws.Handler(func(req *credo.Context, conn *websocket.Conn) err
 }))
 ```
 
-`New` validates the configuration and registers nothing; the application registers the server as an ingress component — `app.Manage(ws, credo.Ingress())`, or a binding with `credo.Ingress()` when controllers depend on it. The App starts it, which opens admission, and drains it beside the HTTP drain, before the internal components its handlers use. A server that was never started refuses every upgrade with an error naming the missing registration. When the App is served only as an `http.Handler`, the caller starts it with `App.Start` before serving, drains its own `http.Server`, then calls `App.Shutdown`, which drains the hijacked WebSocket connections in the ingress tier. The guide includes both managed and external-server examples, error-free, complete-with-error, and incomplete outcomes, plus shutdown-budget sizing.
+`New` validates the configuration and registers nothing; the application hands the server to the App — `app.Manage(ws)`, or a binding when controllers depend on it — and the server's type places it in the ingress tier. The App starts it, which opens admission, and drains it beside the HTTP drain, before the internal components its handlers use. A server that was never started refuses every upgrade with an error naming the missing registration. When the App is served only as an `http.Handler`, the caller starts it with `App.Start` before serving, drains its own `http.Server`, then calls `App.Shutdown`, which drains the hijacked WebSocket connections in the ingress tier. The guide includes both managed and external-server examples, error-free, complete-with-error, and incomplete outcomes, plus shutdown-budget sizing.
 
 ## Operational boundaries
 

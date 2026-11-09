@@ -409,8 +409,8 @@ if err != nil {
 }
 
 // 2. Provide: constructors and values, in any order.
-app.Provide[*UserRepository](NewUserRepository)
-app.Provide[*UserService](NewUserService)
+app.Provide(NewUserRepository)
+app.Provide(NewUserService)
 
 // 3. Feature mounts and satellite registrations.
 app.UseHealth()
@@ -597,7 +597,7 @@ Shutdown sequence:
 
 The steps share one deadline (`WithShutdownTimeout`, 30 seconds by default) and spend it in order, so a long HTTP drain leaves less time for the internal tier. A `Shutdown` or stop hook that has not returned at the deadline is abandoned: the components it depends on stay open, and the returned `*credo.LifecycleError` names it and every component it kept open.
 
-DI singletons that have `Shutdown` take part automatically; components are internal unless registered with `credo.Ingress()`. Prefer a component for anything with its own teardown, and an `OnStop` hook for a leaf action. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for components, tiers and the registration options, and the [Deployment guide](deployment.md#shutdown-and-readiness) for sizing the deadline.
+DI singletons that have `Shutdown` take part automatically. Prefer a component for anything with its own teardown, and an `OnStop` hook for a leaf action. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for components, tiers and the registration options, and the [Deployment guide](deployment.md#shutdown-and-readiness) for sizing the deadline.
 
 If you need managed background tasks, register them with a worker supervisor — `workers := worker.Use(app)`, then `workers.ContinuousProvided[T](name)` or `workers.ScheduledProvided[T](name, expr)` for a worker the container builds — instead of starting goroutines in `main()`. Each worker is a component: the App starts it in the start phase and, at shutdown, cancels its context and waits for its `Run` in its tier's turn — a scheduled worker with the HTTP drain, a continuous worker after it and before the components it uses. See the [Worker Guide](worker.md).
 
@@ -681,7 +681,7 @@ func main() {
     }
 
     // 2. Provide.
-    app.Provide[*ItemService](NewItemService)
+    app.Provide(NewItemService)
 
     // 3. Feature mounts: health probes, request IDs and access logs.
     // Panic recovery is on by default.
