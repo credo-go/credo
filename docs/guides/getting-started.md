@@ -117,7 +117,7 @@ if err != nil {
 }
 ```
 
-File-based certificates rotate without a restart: every `app.Reload` (or `systemctl reload` / `SIGHUP` under `Run()`) re-reads the pair, and new handshakes pick it up immediately — see [Reloading at Runtime](#reloading-at-runtime).
+File-based certificates rotate without a restart or a reload: the handshake that finds the last check older than a second stats both files, and a changed pair is loaded and used for new handshakes; a pair that fails to load keeps the old one and is logged at Error. The paths are read at start, so moving the pair to new paths takes a restart — see [Reloading at Runtime](#reloading-at-runtime).
 
 Use `WithTLSConfig` when you need the full `crypto/tls` surface, such as mTLS, SNI, embedded certificates, or your own certificate rotation (Credo never touches a caller-supplied config):
 
