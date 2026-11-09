@@ -8,12 +8,10 @@ This file is the contract of Credo's worker system: what registration accepts, h
 
 The App's worker registry, `app.Workers()`, runs background tasks — queue consumers, watchers, periodic cleanups, reports — inside a Credo application. Continuous and scheduled work share one interface; the kind is chosen by the registration method.
 
-> **Current until v0.25.0 (W5):** the "Four registration methods" item below describes the provided methods; [Registration Forms](#registration-forms) states what replaces them.
-
 - **One interface** — `Worker` has a single method, `Run(ctx) error`. The name is given at registration and is the worker's identity.
 - **One registry** — `app.Workers()` returns the App's `*credo.Workers`, a registry and reporting object with no lifecycle of its own; `Snapshot` and `Lookup` cover every worker of the App.
-- **Four registration methods** — `Continuous` and `Scheduled` for a constructed value, `ContinuousProvided[T]` and `ScheduledProvided[T]` for a worker the DI container provides; `T` is built in the start walk.
-- **One component per worker** — each registration adds a component named `worker:<name>` to the App: its `Start` launches the loop, its `Shutdown` cancels the worker's context and waits for `Run`, and its `Ready`, present only when the registration sets a readiness condition, reports those conditions.
+- **Two registration methods, three forms** — `Continuous` and `Scheduled` take a worker value, a run function whose other parameters the container supplies, or a constructor of a worker ([Registration Forms](#registration-forms)); none of them becomes a binding.
+- **One loop component per worker** — each registration adds a component named `worker:<name>` to the App, and a constructor registration adds the value it builds, `worker-value:<name>`, beside it. The loop component's `Start` launches the loop, its `Shutdown` cancels the worker's context and waits for `Run`, and its `Ready`, present only when the registration sets a readiness condition, reports those conditions.
 - **A tier per registration** — a scheduled worker defaults to the ingress tier and stops with the HTTP drain; a continuous worker defaults to the internal tier and stops after it, in reverse dependency order.
 - **Per-kind configuration in code** — `ContinuousConfig` and `ScheduledConfig`, zero meaning the default; the registry reads no configuration section.
 - **Fail-fast registration** — names, configurations and cron expressions are validated when the registration method is called, and misuse panics; nothing is parsed at run time.
@@ -47,10 +45,10 @@ The App's worker registry, `app.Workers()`, runs background tasks — queue cons
 ## Three-Layer Model
 
 ```
-Continuous / Scheduled / …Provided       component Start                   Snapshot / Lookup
+Continuous / Scheduled                   component Start                   Snapshot / Lookup
           │                                     │                                  │
           ▼                                     ▼                                  ▼
-  ┌──────────────────┐   build (+ T) + launch  ┌──────────────────┐  snapshot  ┌───────────────────────────┐
+  ┌──────────────────┐   build + launch        ┌──────────────────┐  snapshot  ┌───────────────────────────┐
   │ definition       │ ──────────────────────► │ runner           │ ─────────► │ WorkerInfo                │
   │ (internal,       │                         │ (internal,       │            │ Name, Kind, Schedule      │
   │  immutable)      │                         │  mutable, mu)    │            │ Continuous | Scheduled    │
@@ -67,17 +65,13 @@ Configuration and live state never share a mutable struct. The definition holds 
 
 ## Public API
 
-> **Current until v0.25.0 (W5):** the listing takes `w Worker` and has the provided methods; with the [registration forms](#registration-forms), `Continuous` and `Scheduled` take `w any` and the provided methods go.
-
 Signatures only; the godoc in `workers.go` and `worker.go` is authoritative for wording.
 
 ```go
 // Registry
 func (app *App) Workers() *Workers
-func (s *Workers) Continuous(name string, w Worker, cfg ...ContinuousConfig)
-func (s *Workers) Scheduled(name, expr string, w Worker, cfg ...ScheduledConfig)
-func (s *Workers) ContinuousProvided[T Worker](name string, cfg ...ContinuousConfig)
-func (s *Workers) ScheduledProvided[T Worker](name, expr string, cfg ...ScheduledConfig)
+func (s *Workers) Continuous(name string, w any, cfg ...ContinuousConfig)
+func (s *Workers) Scheduled(name, expr string, w any, cfg ...ScheduledConfig)
 func (s *Workers) Snapshot() []WorkerInfo
 func (s *Workers) Lookup(name string) (WorkerInfo, bool)
 
@@ -112,7 +106,7 @@ func (s *Schedule) Next(now time.Time) time.Time
 func (s *Schedule) String() string
 ```
 
-The registration methods return nothing and panic on misuse ([Validation](#validation)).
+`w` is a worker, a run function or a constructor of a worker ([Registration Forms](#registration-forms)). The registration methods return nothing and panic on misuse ([Validation](#validation)).
 
 ## Workers in the Root Package
 
@@ -143,11 +137,7 @@ The public types are defined in the root package, not aliased from an internal o
 - **Unchanged:** component names (`worker:<name>`), tiers and their defaults, readiness conditions, the snapshot's JSON, and the restart and schedule semantics.
 - **No aliases:** no other package declares the registry or its types.
 
-> **Current until v0.25.0 (W5):** `ContinuousProvided[T]` and `ScheduledProvided[T]` are methods of the registry, which keeps the per-App record of provided types in a field; [Registration Forms](#registration-forms) replaces them.
-
 ## Registration Forms
-
-> **Pending v0.25.0 (W5):** not implemented yet; a registration takes a `Worker` value, and a DI-built worker is registered through `ContinuousProvided[T]` or `ScheduledProvided[T]` ([Provided workers](#provided-workers)).
 
 ### The three forms
 
@@ -159,7 +149,7 @@ The public types are defined in the root package, not aliased from an internal o
 | run function | a function that takes exactly one `context.Context`, in any position, and returns only an `error`; `func(context.Context) error` is its case without other parameters | the loop `worker:<name>`, whose edges are the other parameters |
 | constructor | any other function, `func(deps...) W` or `func(deps...) (W, error)`, whose `W` is a worker in either form | the built value `worker-value:<name>` and the loop `worker:<name>`, with an edge from the loop to the value |
 
-Anything else panics at registration, naming the forms accepted, and so do a function that takes two contexts and one that takes a context and returns anything but a lone `error`, naming the run function's shape. The forms cannot be mistaken for one another: `Finalize` refuses a constructor that takes a `context.Context`, and a constructor returns `W` or `(W, error)`. The function of a run function is called through `reflect` on each run, and a constructor once, a cold path, as for every constructor.
+Anything else panics at registration, naming the forms accepted, and so do a function that takes two contexts and one that takes a context and returns anything but a lone `error`, naming the run function's shape. The forms cannot be mistaken for one another: a function that takes a `context.Context` is a run function, which returns a lone `error`, while a constructor takes no context and returns `W` or `(W, error)`. A nil `w`, a typed-nil function or pointer included, panics before its form is decided. The function of a run function is called through `reflect` on each run, and a constructor once, a cold path, as for every constructor.
 
 ```go
 app.Workers().Continuous("heartbeat", heartbeat)                  // func(context.Context) error
@@ -168,6 +158,8 @@ app.Workers().Scheduled("session-cleanup", "0 */6 * * *",
 app.Workers().Continuous("order-consumer", NewOrderConsumer)       // constructor
 app.Workers().Continuous("outbox-relay", (*OutboxRelay).Run)        // method expression of a binding
 ```
+
+A worker value has no edges the dependency graph can see — a closure's captures and a struct's fields are invisible — and takes its place in its tier by registration order. A worker that uses infrastructure is registered as a run function or a constructor, so the graph orders it in both directions.
 
 ### Run functions
 
@@ -191,7 +183,7 @@ A constructor never becomes a binding. It is handed to the component registry as
 
 Each constructor registration adds two units that are not bindings — the built value and the loop — with an edge from the loop to the value. The loop's component is `worker:<name>` and the value's is `worker-value:<name>`. Worker names admit any printable character, so a suffix could collide with another worker's name; a distinct prefix cannot.
 
-Each registration calls its constructor separately, so two registrations of one constructor get two values, `worker-value:a` and `worker-value:b`, and do not collide. Two loops share a value only when the constructor returns one it did not create, and the registry tears that value down once. A value handed in stays the caller's. A constructor that returns a method value such as `relay.Run` hands over the function alone, which has no teardown; a worker with a teardown of its own is returned as itself, and its `Shutdown` is for state that outlives a single `Run`, since a restart calls `Run` again on the same value.
+Each registration calls its constructor separately, so two registrations of one constructor get two values, `worker-value:a` and `worker-value:b`, and do not collide. Two loops share a value only when the constructor returns one it did not create, and the registry tears that value down once. A worker value handed in stays the caller's: the App runs it and never calls a `Shutdown` it has. A constructor that returns a method value such as `relay.Run` hands over the function alone, which has no teardown; a worker with a teardown of its own is returned as itself, and its `Shutdown` is for state that outlives a single `Run`, since a restart calls `Run` again on the same value.
 
 ### The built value
 
@@ -226,9 +218,12 @@ Handlers and the loop share one singleton, which starts once, before the loop, a
 Each message names what failed — the call, the binding or the component — and the remedy, in the application's terms: its calls, types and options. "Holder of record" and "defers" name rules of [ADR-024](../adr/024-lifecycle-components.md) and appear in no message.
 
 - **A `w` of none of the forms** names the forms accepted: a worker, which is a `Worker` or a `func(context.Context) error`; a run function, which takes one `context.Context` and returns only an `error`; a constructor of a worker. A function that takes two contexts, or takes a context and returns anything but a lone `error`, names the run function's shape.
+- **A missing parameter** fails `Finalize` with the path from the unit that takes it: `worker-value:<name>` for a constructor, `Manage(worker:<name>)` for a run function — `di: missing dependency: worker-value:orphan → *app.Queue (not registered); provide *app.Queue before Finalize`.
+- **A failed construction** is the start failure of `worker-value:<name>`, in the internal tier: the constructor's error, its panic, or a nil result, `Workers.Continuous("broken"): the constructor returned a nil *app.Relay; return a worker, or an error`. The loop never starts, and the worker stays `pending`.
+- **A capability the result type hides** names the constructor and the remedy of returning the concrete type: `the constructor of Workers.Continuous("relay") returns a *app.Relay, whose Shutdown and Start its result type credo.Worker hides, and the App plans Start, Ready and the ingress tier only from that type; declare the constructor to return *app.Relay`.
 - **A built value that depends on an ingress component** names the path and the remedy that fits: splitting the worker, or, when that component is the binding whose type the constructor returns, binding it without `credo.Ingress()`.
 - **Two registrations that hold one resource with different tiers** — bindings and values handed to `Manage`; a value a worker's constructor builds takes no part — name both, their tiers and the remedies.
-- **A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers** names the holder and the remedies, for example: `*Relay shares the database of the ProvideValue binding of *sqldb.DB, whose readiness and shutdown follow that binding; give credo.ComponentName to that binding, or hold the database in a named field`.
+- **A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers** names the holder and the remedies, for example: `*Relay shares the resource of the ProvideValue binding of *sqldb.DB, whose readiness and shutdown follow that binding; give credo.ComponentName to that binding, or hold the *sqldb.DB in a named field`.
 
 ## Registration
 
@@ -240,22 +235,16 @@ The framework publishes nothing into the application's container. A module that 
 
 ### Names
 
-The name is the registration identity. It is the `Name` of the snapshot, the suffix of the component name `worker:<name>` — the `component` attribute of every log line, under which readiness and the lifecycle's reports name the worker — and `WorkerRun.Worker` inside `Run`. Rules, the same for all four methods:
+The name is the registration identity. It is the `Name` of the snapshot, the suffix of the component name `worker:<name>` — the `component` attribute of every log line, under which readiness and the lifecycle's reports name the worker — and `WorkerRun.Worker` inside `Run`. Rules, the same for both methods:
 
 - non-empty;
 - no leading or trailing whitespace (names are never trimmed or otherwise normalized);
 - no control characters;
-- unique within the App, across all four methods and every call of `app.Workers()`, whoever registered the first (`credo: Workers.Continuous("x"): a worker named "x" is already registered; give each worker its own name`); the component registry's unique-name rule also refuses a component of that name added with `credo.ComponentName` (`credo: Workers.Continuous("x"): a component named "worker:x" is already registered, as Manage(worker:x); give each component its own name with credo.ComponentName`).
+- unique within the App, across both methods and every call of `app.Workers()`, whoever registered the first (`credo: Workers.Continuous("x"): a worker named "x" is already registered; give each worker its own name`); the component registry's unique-name rule also refuses a component of that name added with `credo.ComponentName` (`credo: Workers.Continuous("x"): a component named "worker:x" is already registered, as Manage(worker:x); give each component its own name with credo.ComponentName`), and, for a constructor, one named `worker-value:<name>`.
 
 No prefix is reserved. The health engine's reserved `credo.` prefix applies to the full name, which always starts with `worker:`.
 
-> **Current until v0.25.0 (W5):** the next paragraph describes the provided methods' record of `T`.
-
-Registering the same `Worker` value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Registering one `T` under two names through the provided methods panics, because the container would hand both loops one instance (`credo: Workers.ContinuousProvided[*app.Relay]("b"): *app.Relay is already registered as worker "a"; the container hands every registration the same instance, so register it once`). The registry keeps that record in a field; a registration the App refuses leaves no entry.
-
-> **Pending v0.25.0 (W5):** the next paragraph replaces the paragraph above when W5 ships.
-
-Registering the same worker value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Two registrations of one constructor call it separately and get two values, `worker-value:a` and `worker-value:b`; they share one only when the constructor returns a value it did not create, which the registry then tears down once ([Constructors](#constructors)). No record of constructors or types is kept.
+Registering the same worker value under two names runs it on two independent loops; the worker must then be safe for concurrent `Run` calls. Two registrations of one constructor call it separately and get two values, `worker-value:a` and `worker-value:b`; they share one only when the constructor returns a value it did not create, which the registry then tears down once ([Constructors](#constructors)). No record of constructors or types is kept. A registration the App refuses leaves no entry: a constructor registration checks the loop's name before it adds the value, so a refusal adds neither unit.
 
 ### Configuration
 
@@ -303,26 +292,24 @@ The registry reads no configuration section. An application that wants environme
 
 ### Validation
 
-> **Current until v0.25.0 (W5):** rows 1 and 6 of the list below name a `Worker` value and the provided `T`; with the [registration forms](#registration-forms), row 1 also refuses a `w` of none of the three forms, naming the forms accepted, and row 6 refuses a duplicate name only.
+The two methods share one path. In order, a registration panics when:
 
-The four methods share one path. In order, a registration panics when:
-
-1. (for `Continuous` and `Scheduled`) the worker is nil, a typed-nil pointer or function included;
+1. `w` is nil, a typed-nil pointer or function included (`the worker is nil; pass a value with a Run method`), or of none of the three [forms](#registration-forms), naming the forms accepted;
 2. the name breaks a rule above;
 3. more than one configuration is given;
 4. a configuration value is rejected by the table above;
 5. the schedule does not parse (see [Schedules](#schedules));
-6. the name is already registered in the App, whoever registered it, or a provided `T` is already registered in the App;
-7. the component registry refuses the worker's component: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App's shutdown began, or a `credo.ComponentName` component already holds `worker:<name>`; the panic gives the container's reason under the worker's call.
+6. the name is already registered in the App, whoever registered it;
+7. the component registry refuses the worker's units: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App's shutdown began, or a `credo.ComponentName` component already holds `worker:<name>`, or, for a constructor, `worker-value:<name>`; the panic gives the container's reason under the worker's call.
 
-Every panic follows one format, `credo: <Call>: <problem>; <remedy>`, where `<Call>` is `Workers.Continuous("name")`, `Workers.Scheduled("name")`, `Workers.ContinuousProvided[*T]("name")` or `Workers.ScheduledProvided[*T]("name")`, with `T` spelled as Go prints the type (package-qualified). For example:
+Every panic follows one format, `credo: <Call>: <problem>; <remedy>`, where `<Call>` is `Workers.Continuous("name")` or `Workers.Scheduled("name")`, and a type in the message is spelled as Go prints it (package-qualified). For example:
 
 - `credo: Workers.Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay`;
 - `credo: Workers.Scheduled("x"): 2 configurations given; pass at most one credo.ScheduledConfig`.
 
 > **Current until v0.25.0 (W6):** the first sentence of the next paragraph gives the two phase messages, which [Registration after the freeze](#registration-after-the-freeze) replaces.
 
-A registration the phase refuses gives the container's reason: `credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly`, and `credo: Workers.Scheduled("report"): called after shutdown began; registration ends when the App shuts down`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Provided workers](#provided-workers)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
+A registration the phase refuses gives the container's reason: `credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly`, and `credo: Workers.Scheduled("report"): called after shutdown began; registration ends when the App shuts down`. Registration performs no I/O. Errors that only the whole graph reveals are `Finalize`'s, and I/O errors are the start phase's ([Messages](#messages)). For a schedule that comes from configuration, `ParseSchedule` returns the parse error instead of panicking.
 
 ### Registration after the freeze
 
@@ -338,34 +325,17 @@ credo: Workers.Continuous("outbox-relay"): called after the container was finali
 
 The site is the first frame outside Credo's packages and `testutil`; the first `ServeHTTP` call has no site, since its caller is `net/http`. The message for a registration after a shutdown began is unchanged.
 
-### Provided workers
-
-> **Current until v0.25.0 (W5):** this section describes `ContinuousProvided[T]` and `ScheduledProvided[T]`, which the [registration forms](#registration-forms) replace.
-
-`ContinuousProvided[T]` and `ScheduledProvided[T]` add the worker's component to the registry as a constructor over `T` — the App's component registry receives a `func(T) (component, error)` — so `T` is an edge: the start walk builds the component, resolving `T` from the container, after `T`'s component dependencies have started. Consequences:
-
-- The `Provide` binding of `T` and the provided registration may be called in either order, both before `Finalize`.
-- The constraint `T Worker` makes a type without `Run` a compile error. `T` may be an interface bound with `app.Alias`.
-- A `T` with no binding is a missing dependency: `Finalize` returns it with its path. `T`'s own constructor graph is validated by `Finalize` like any provider's.
-- A constructor error or panic while building `T`, or a nil value (`worker: "name": *app.Relay resolved to nil`), is a start failure of the worker's component: the start phase rolls back what was built and `Run` returns the error naming `worker:<name>`.
-- The worker stops before `T`'s component dependencies: if `T` itself is a component — it has `Shutdown` — it is shut down after the worker, in dependency order.
-- A provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path and both remedies: declare the worker ingress with `Tier: credo.TierIngress` in its configuration — the message names the worker's own setting, since a worker registration takes no `RegistrationOption` — or split the ingress component so that what the worker uses is an internal part.
-
-A worker registered by value has no edges the dependency graph can see — a closure's captures are invisible — and takes its place in its tier by registration order. A worker that uses infrastructure is registered in its provided form, so the graph orders it.
-
 ## Components
 
 ### Start, Shutdown, Ready
 
-Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to, exactly as `app.Manage(component, credo.ComponentName("worker:<name>"))` would add it, with `credo.Ingress()` when that tier is ingress. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
+Each registration adds one loop component, named `worker:<name>`, in the tier its configuration resolves to, exactly as `app.Manage(component, credo.ComponentName("worker:<name>"))` would add it, with `credo.Ingress()` when that tier is ingress. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
 
-- **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A provided worker's construction precedes `Start`, so its failure is the component's start failure. A second `Start`, or a `Start` after `Shutdown`, returns an error; the lifecycle never makes either call.
+- **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A second `Start`, or a `Start` after `Shutdown`, returns an error; the lifecycle never makes either call.
 - **`Shutdown(ctx)`** cancels the worker's context and returns when `Run` and the loop have returned — and not before. It does not return at the deadline itself: a `Run` that ignores cancellation past the drain deadline is abandoned by the lifecycle, reported in the error `Run` returns, and the components the worker depends on stay open, so nothing closes a database under a run that may still use it. A worker whose component was built but never started shuts down at once.
 - **`Ready(ctx)`** exists only when the registration sets a readiness condition ([Health Integration](#health-integration)): the component has one of two types, and the App plans `Ready` from the type. It reads the runner's last state in memory and never performs I/O.
 
 The lifecycle starts and stops each worker's component once, in order, and owns the race between a start and a shutdown requested during it.
-
-> **Pending v0.25.0 (W5):** until W5 ships, a provided worker's construction precedes its component's `Start`, as the list above says.
 
 A constructor registration has two components: the built value, `worker-value:<name>`, which the start walk builds after its dependencies and starts when its result type shows `Start`, and the loop, `worker:<name>`, which depends on it and whose `Start` launches the loop. A constructor's failure is the value's start failure. The drain stops the loop before the value, and the value before the components it depends on ([The built value](#the-built-value)). A run function's loop resolves its parameters before its `Start` launches the loop.
 
@@ -384,8 +354,9 @@ A scheduled worker originates its runs, so it stops with the listener and no run
 app.Run()
   ├─ prepare: Finalize (graph errors) → compile → publish
   ├─ start walk, internal tier, dependency order
-  │   ├─ the components a provided worker's T depends on start first
-  │   └─ worker:<name> (continuous default): build (provided: resolve T) → Start launches the loop
+  │   ├─ the components a worker's parameters depend on start first
+  │   ├─ worker-value:<name> (a constructor's value, either kind): build → Start when its result type shows it
+  │   └─ worker:<name> (continuous default): build (a run function: resolve its parameters) → Start launches the loop
   ├─ start walk, ingress tier
   │   └─ worker:<name> (scheduled default): Start launches the loop
   └─ the listener accepts
@@ -402,6 +373,7 @@ app.Shutdown(ctx)
   │   └─ worker:<name> (scheduled default): cancel the worker's context, wait for Run
   └─ internal tier, reverse dependency order
       ├─ worker:<name> (continuous default): cancel the worker's context, wait for Run
+      ├─ worker-value:<name> (a constructor's value, either kind): its teardown, after its loop
       └─ then the components the worker depends on
 ```
 
@@ -673,13 +645,11 @@ Cron expressions are compiled into a `Schedule` at registration; no raw string i
 - As in crontab(5), when both day-of-month and day-of-week are restricted (neither is `*`), the schedule fires when **either** matches; a step on `*` counts as restricted.
 - `@every` takes a Go duration that must be positive and a whole number of seconds: `@every 0s`, `@every -1h` and `@every 1500ms` are rejected (`@every duration must be positive, got …`, `@every duration must be a whole number of seconds, got 1.5s`). No input is rounded or clamped.
 - Not supported, each with a targeted error: the 6-field seconds form (use `@every` for sub-minute periods), `@yearly`/`@annually` (use `0 0 1 1 *`), and `TZ=`/`CRON_TZ=` prefixes.
-- `Scheduled` and `ScheduledProvided` panic with the parse error; `ParseSchedule` returns it, for an expression that comes from configuration and should be validated before registration.
+- `Scheduled` panics with the parse error; `ParseSchedule` returns it, for an expression that comes from configuration and should be validated before registration.
 
 ## Usage Examples
 
-> **Current until v0.25.0 (W5):** examples 1 and 2 register through `ContinuousProvided[T]` and `ScheduledProvided[T]`, and example 3 wraps its functions in types with a `Run` method; with the [registration forms](#registration-forms) they pass the constructor and the function as they are.
-
-### Example 1: Queue consumer (continuous, provided by DI)
+### Example 1: Queue consumer (continuous, built by its constructor)
 
 ```go
 type OrderConsumer struct {
@@ -714,11 +684,11 @@ func main() {
 	}
 	app.Provide(NewQueue)
 	app.Provide(NewOrderService)
-	app.Provide(NewOrderConsumer)
 
-	// Internal tier: stops after the HTTP drain, before the queue and the service.
+	// The constructor is not a binding: the start walk calls it after the queue and
+	// the service have started. Internal tier: stops after the HTTP drain, before them.
 	// Restarts after 5s, backing off up to the cap (1m by default) while failures repeat.
-	app.Workers().ContinuousProvided[*OrderConsumer]("order-consumer", credo.ContinuousConfig{
+	app.Workers().Continuous("order-consumer", NewOrderConsumer, credo.ContinuousConfig{
 		Restart: credo.RestartPolicy{MinDelay: 5 * time.Second},
 	})
 
@@ -728,7 +698,7 @@ func main() {
 }
 ```
 
-### Example 2: Scheduled cleanup (provided by DI)
+### Example 2: Scheduled cleanup (built by its constructor)
 
 ```go
 type SessionCleanup struct {
@@ -754,11 +724,10 @@ func (w *SessionCleanup) Run(ctx context.Context) error {
 }
 
 func registerCleanup(app *credo.App) {
-	app.Provide(NewSessionCleanup)
-
 	// Every 6 hours plus once at startup; each run gets 10 minutes;
-	// failed after 3 consecutive failures. Ingress tier: no run starts during the drain.
-	app.Workers().ScheduledProvided[*SessionCleanup]("session-cleanup", "0 */6 * * *", credo.ScheduledConfig{
+	// failed after 3 consecutive failures. Ingress tier: no run starts during the drain;
+	// the database stays open until after the HTTP drain.
+	app.Workers().Scheduled("session-cleanup", "0 */6 * * *", NewSessionCleanup, credo.ScheduledConfig{
 		RunOnStart:             true,
 		RunTimeout:             10 * time.Minute,
 		MaxConsecutiveFailures: 3,
@@ -770,9 +739,7 @@ func registerCleanup(app *credo.App) {
 
 ```go
 // heartbeat logs a line every 30 seconds until the worker stops.
-type heartbeat struct{}
-
-func (heartbeat) Run(ctx context.Context) error {
+func heartbeat(ctx context.Context) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -786,19 +753,15 @@ func (heartbeat) Run(ctx context.Context) error {
 	}
 }
 
-// metricsReport runs reportMetrics once per activation.
-type metricsReport struct{}
-
-func (metricsReport) Run(ctx context.Context) error { return reportMetrics(ctx) }
-
 workers := app.Workers()
-workers.Continuous("heartbeat", heartbeat{})
+workers.Continuous("heartbeat", heartbeat)
 
+// reportMetrics is a func(context.Context) error, run once per activation.
 // Skips an activation if the previous report is still running.
-workers.Scheduled("metrics-report", "@every 1m", metricsReport{})
+workers.Scheduled("metrics-report", "@every 1m", reportMetrics)
 ```
 
-Both are registered by value: they have no edges, and each takes its place in its tier by registration order.
+Both are functions registered as they are, a `func(context.Context) error` being a worker: they have no edges, and each takes its place in its tier by registration order. A job that uses a component takes it as a parameter instead, `func(ctx context.Context, db *sqldb.DB) error`, and becomes a run function the graph orders.
 
 ### Example 4: File watcher (ingress, limited restarts)
 
@@ -848,11 +811,12 @@ The registry and the public types are in the root package (`workers.go`, `worker
 
 - **Virtual time.** Every timing test runs in a `testing/synctest` bubble; the runner calls the `time` package directly and there is no clock seam. `synctest.Wait` does not advance the clock — sleep past a deadline to fire timers.
 - **Configuration tables.** Each field's resolution and each rejected value is a table entry for both configuration types: zero → default per kind (the tier included), the `RestartPolicy` resolution (`MinDelay` first, a zero `MaxDelay` raised to it, a positive `MaxDelay` below it panicking with both values named, `Disabled` beside any other field panicking), more than one configuration panicking. The snapshot is asserted for each, without running a worker.
-- **Registration misuse.** Every row of [Validation](#validation) panics with a message naming the worker, the call and the remedy, registration after `Finalize`, a duplicate name across two calls of `app.Workers()` and a `credo.ComponentName` component that holds `worker:<name>` included; a provided worker whose `T` has no binding fails `Finalize` with the path.
+- **Registration misuse.** Every row of [Validation](#validation) panics with a message naming the worker, the call and the remedy, a `w` of none of the three forms, registration after `Finalize`, a duplicate name across two calls of `app.Workers()` and a `credo.ComponentName` component that holds `worker:<name>` included; a missing parameter of a run function or a constructor fails `Finalize` with the path.
 - **Classification as a table.** The outcome classifier is a pure function; each row of the outcome table and each ordering edge (timeout then shutdown, shutdown then deadline, panic with a context-error value during shutdown) is a table entry.
 - **Admission without a production seam.** An in-package test policy blocks in its activation step, the test cancels and releases it, and the admission check must observe the cancellation: zero `Run` calls and a zero `LastStartedAt` before the first run; unchanged invocation count, `LastStartedAt` and `Restarts` before a restart.
 - **Logs through a capturing handler.** One `slog.Handler` records level, message and attributes; each event of the [vocabulary](#logging-contract) is asserted — one `started` and one `stopped` per exit path, `worker failed` once with each `reason`, `run_id` equal to `CurrentWorkerRun(ctx).ID`, the skip collapse, `component=worker:<name>` and `module=worker` on every line and no `worker` key.
 - **Timing against the lifecycle.** A continuous worker's context is cancelled in its tier's turn, after the HTTP drain for the internal default ([lifecycle spec](lifecycle.md#background-work)). A scheduled worker stops concurrently with the HTTP drain. A `Run` that ignores cancellation past the deadline keeps its dependencies open, and `Run` returns an error naming `worker:<name>` as abandoned.
-- **Provided workers in the start walk.** `T` is built after its component dependencies have started and the worker stops before them; a constructor error fails the start and rolls back what was built; a provided worker of the internal tier whose `T` depends on an ingress component fails `Finalize` with the path.
+- **Forms in the start walk.** A run function's parameters are resolved once, after their components have started, and a constructor's value is built after its parameters' components have started; the worker stops before them. A constructor error, panic or nil worker fails the start as `worker-value:<name>` and rolls back what was built; an internal loop whose parameters depend on an ingress component fails `Finalize` with the path.
+- **Shared resources.** A built value that holds a binding's resource defers to it: one readiness entry and one teardown, the binding's, in either registration order; a bound worker registered through `(*T).Run` shares one singleton with the handlers; registrations that disagree on a resource's tier are refused.
 - **Wire shape.** A JSON golden encodes `Snapshot()` through the framework's response profile, for each kind and status.
 - **Schedules.** Pinned parse and `Next` behavior, rejected syntax, the `@every` rejection matrix, DST and end-of-month edges.
