@@ -57,6 +57,12 @@ type Options struct {
 	// places it in the ingress tier, for the finding of an internal component
 	// that depends on an ingress one; empty means "credo.Ingress()".
 	IngressRemedy string
+	// Worker marks the value a worker's constructor builds (Manage only): it
+	// is the worker's registration call, such as Workers.Continuous("x"),
+	// which the unit's messages name. Name is then the unit's own name, not a
+	// credo.ComponentName option, and the value need not be a component by
+	// its type: a Shutdown found on it is its teardown.
+	Worker string
 }
 
 // closeKind is the shape of the Close method a credo.CloseOnShutdown() binding calls.
@@ -132,13 +138,30 @@ type Unit struct {
 	// registrations of one resource agree on.
 	nameGiven bool
 
+	// managed marks a unit that is not a binding: a value or constructor
+	// handed to Manage, or a unit a worker registration adds. Nothing
+	// resolves it.
 	managed bool
+	// claimant marks a value handed to Manage, the one managed unit that
+	// claims what it holds. A value a constructor builds — one handed to
+	// Manage, or a worker's — claims nothing: it defers to a registration of
+	// its resource (holderOfRecord).
+	claimant bool
 	// prov and entry belong to a managed unit; a binding's live in
 	// Container.registrations and Container.singletons.
 	prov  provider
 	entry *singletonEntry
 	// valueBinding marks a binding made with a value (ProvideValue).
 	valueBinding bool
+	// ingressGiven marks credo.Ingress() given on a Manage call, which a
+	// value that defers refuses.
+	ingressGiven bool
+	// worker is the registration call of the worker whose constructor builds
+	// the unit's value; empty for every other unit. See Options.Worker.
+	worker string
+	// edges are the units the unit depends on beside its constructor's
+	// parameters (AddEdge): a worker's loop depends on its built value.
+	edges []*Unit
 
 	component bool
 	tier      Tier
@@ -179,12 +202,21 @@ func (u *Unit) Starts() bool { return u.starts }
 // Readies reports whether the unit's Ready contributes to readiness.
 func (u *Unit) Readies() bool { return u.readies }
 
-// Managed reports whether the unit was handed to Manage.
+// Managed reports whether the unit is not a binding: it was handed to
+// Manage, or a worker registration added it.
 func (u *Unit) Managed() bool { return u.managed }
+
+// registration reports whether the unit is a registration of its value — a
+// binding, or a value handed to Manage — rather than a value a constructor
+// that is not a binding builds.
+func (u *Unit) registration() bool { return !u.managed || u.claimant }
 
 // label names the unit in a misuse or conflict message.
 func (u *Unit) label() string {
-	if u.managed {
+	switch {
+	case u.worker != "":
+		return u.name
+	case u.managed:
 		return fmt.Sprintf("Manage(%s)", u.name)
 	}
 	return u.t.String()
@@ -298,13 +330,15 @@ func (u *Unit) teardownOf(value any) teardownKind {
 }
 
 // claims reports whether holder u claims its resource's teardown: a
-// credo.CloseOnShutdown() binding, a value bound with a teardown, or anything handed
-// to Manage. A Shutdown found on a value a constructor built is no claim.
+// credo.CloseOnShutdown() binding, a value bound with a teardown, or a value
+// handed to Manage. A Shutdown found on a value a constructor built is no
+// claim, and neither is a constructor handed to Manage or to a worker
+// registration.
 func (u *Unit) claims(value any) bool {
 	if u.borrowed {
 		return false
 	}
-	if u.managed || u.closer != closeNone {
+	if u.claimant || u.closer != closeNone {
 		return true
 	}
 	return u.valueBinding && u.teardownOf(value) != teardownNone
@@ -378,6 +412,10 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 			"Ready and the ingress tier only from the binding's type; bind the value as %s and the interface with "+
 			"app.Alias[%s, %s](), or give credo.Borrowed() when the caller starts and stops it",
 			u.t, methods, vt, vt, u.t, vt)
+	case u.worker != "":
+		return fmt.Errorf("the constructor of %s returns a %s, whose %s its result type %s hides, and the "+
+			"App plans Start, Ready and the ingress tier only from that type; declare the constructor to "+
+			"return %s", u.worker, vt, methods, u.t, vt)
 	case u.managed:
 		return fmt.Errorf("the constructor handed to %s returns a %s, whose %s its result type %s hides, "+
 			"and the App plans Start, Ready and the ingress tier only from that type; declare the constructor "+

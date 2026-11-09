@@ -39,8 +39,9 @@ type Component struct {
 }
 
 // NewComponent returns the component that runs w under def. w is nil for a
-// worker the container provides, which SetWorker attaches before Start. The
-// loop's records carry component=worker:<name>.
+// run function or a worker constructor, whose worker the component's
+// constructor attaches with SetWorker before Start. The loop's records carry
+// component=worker:<name>.
 func NewComponent(e *Engine, def *Definition, w Worker) *Component {
 	r := newRunner(def, w)
 	r.logger = e.logger.With("component", ComponentName(def.name))
@@ -54,8 +55,9 @@ func ComponentName(name string) string { return "worker:" + name }
 // Definition returns the worker's registration.
 func (c *Component) Definition() *Definition { return c.def }
 
-// SetWorker attaches the worker a provided registration resolved; the
-// component's constructor calls it before Start.
+// SetWorker attaches the worker the component's constructor made, from a
+// run function and its resolved parameters or from a worker constructor's
+// value; the constructor calls it before Start.
 func (c *Component) SetWorker(w Worker) { c.r.worker = w }
 
 // Snapshot returns the worker's live state.

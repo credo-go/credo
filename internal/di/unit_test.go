@@ -266,14 +266,14 @@ func TestManage_Misuse(t *testing.T) {
 		{"nil", nil, nil, di.Options{}, "must not be nil"},
 		{"not a component", nil, &noClose{}, di.Options{}, "no Shutdown"},
 		{"twice", func(c *di.Container) {
-			if err := c.Manage(pool, di.Options{Name: "a"}); err != nil {
+			if _, err := c.Manage(pool, di.Options{Name: "a"}); err != nil {
 				t.Fatal(err)
 			}
 		}, pool, di.Options{Name: "b"}, "handed to Manage"},
 		{"held by ProvideValue", func(c *di.Container) { c.MustProvideValue[*unitPool](pool) },
 			pool, di.Options{}, "already managed through DI"},
 		{"duplicate name", func(c *di.Container) {
-			if err := c.Manage(&unitPool{ev: ev}, di.Options{Name: "x"}); err != nil {
+			if _, err := c.Manage(&unitPool{ev: ev}, di.Options{Name: "x"}); err != nil {
 				t.Fatal(err)
 			}
 		}, &unitPool{ev: ev}, di.Options{Name: "x"}, "a component named \"x\" is already registered, as Manage(x); give each component its own name with credo.ComponentName"},
@@ -285,7 +285,8 @@ func TestManage_Misuse(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(c)
 			}
-			reason := misuseReason(t, c.Manage(tt.v, tt.o))
+			_, err := c.Manage(tt.v, tt.o)
+			reason := misuseReason(t, err)
 			if !strings.Contains(reason, tt.want) {
 				t.Fatalf("reason = %q, want it to contain %q", reason, tt.want)
 			}
@@ -297,7 +298,7 @@ func TestManage_ConstructorIsBuiltByTheStartWalk(t *testing.T) {
 	ev := &events{}
 	c := di.New()
 	c.MustProvideValue[*events](ev)
-	if err := c.Manage(func(e *events) *unitPool { return &unitPool{ev: e, name: "managed"} },
+	if _, err := c.Manage(func(e *events) *unitPool { return &unitPool{ev: e, name: "managed"} },
 		di.Options{Name: "managed"}); err != nil {
 		t.Fatal(err)
 	}

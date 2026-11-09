@@ -12,7 +12,8 @@ import (
 type runner struct {
 	def *Definition
 	// worker is set at registration for a value, and by the component's
-	// constructor for a provided worker, before Start launches the loop.
+	// constructor for a run function or a worker constructor, before Start
+	// launches the loop.
 	worker Worker
 	// logger writes the loop's records; NewComponent scopes it to the
 	// worker's component.

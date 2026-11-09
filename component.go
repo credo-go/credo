@@ -72,11 +72,16 @@ type IngressComponent interface {
 
 // ResourceIdentifier names the resource a value holds. Values that share an
 // identity are one resource, started once and torn down once: the teardown
-// runs when the last holder retires, through the holder registered first
-// among those that have a teardown. Without the method a comparable value — a pointer, or a struct
-// over one — is its own identity. A value that releases state of its own must
-// not share an identity: a wrapper that does holds the handle in a named
-// field instead of embedding it.
+// runs when the last holder retires, through its holder of record: the first
+// registration that holds it — a binding, or a value handed to [App.Manage],
+// one that is a component by its type preferred — else its first holder. A
+// value a constructor builds without becoming a binding, a worker's or one
+// from a constructor handed to Manage, defers to a registration: it adds no
+// readiness entry and never runs the teardown. The registrations of one
+// resource agree on its tier. Without the method a comparable value — a
+// pointer, or a struct over one — is its own identity. A value that releases
+// state of its own must not share an identity: a wrapper that does holds the
+// handle in a named field instead of embedding it.
 type ResourceIdentifier interface {
 	ResourceIdentity() any
 }
@@ -302,13 +307,23 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // parameters' edges. A mounted child App is handed to Manage so that its
 // start phase runs in the parent's.
 //
+// Only a value claims the resource it holds. The value a constructor builds
+// claims nothing: when it holds a resource a registration holds too, such as
+// a wrapper that embeds a bound handle, it defers to that registration, which
+// gives the resource's one readiness entry and runs its one teardown. Such a
+// constructor with ComponentName, Ingress or OptionalReadiness fails the
+// start once its value is built, since the value has no entry and no
+// teardown of its own for them to shape.
+//
 // Manage panics on a value without Shutdown, on a duplicate name, on a
 // resource a ProvideValue binding already holds, on a resource handed to
-// Manage twice, and after Finalize or shutdown.
+// Manage twice, on a resource whose registrations are placed in different
+// tiers, and after Finalize or shutdown.
 func (app *App) Manage(v any, opts ...RegistrationOption) {
 	o := registrationOptions("App.Manage", opts, optIngress, optComponentName, optOptionalReadiness)
 	if v != nil && reflect.TypeOf(v) == reflect.TypeFor[*App]() && v.(*App) == app {
 		panic("credo: App.Manage: an App cannot manage itself")
 	}
-	panicOnMisuse(app.container.Manage(v, o))
+	_, err := app.container.Manage(v, o)
+	panicOnMisuse(err)
 }
