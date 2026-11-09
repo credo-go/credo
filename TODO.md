@@ -22,7 +22,7 @@ Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) de
 - [x] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field (2026-11-09)
 - [x] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached (2026-11-09)
 - [x] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer` (2026-11-09)
-- [ ] Checkpoint, once W5 has landed: judge splitting `internal/di` into DI and lifecycle, and dividing `App`'s implementation into internal parts; record the outcome in ADR-004 and here (a split ships in a later release)
+- [x] Checkpoint, once W5 has landed: judge splitting `internal/di` into DI and lifecycle, and dividing `App`'s implementation into internal parts; record the outcome in ADR-004 and here (a split ships in a later release) — `internal/di` stays one package; `App`'s division is tracked under Architecture Governance ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#di-and-lifecycle-stay-one-package)) (2026-11-09)
 
 ## Components, Kernel Registries and Sequential Bootstrap
 
@@ -698,6 +698,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] **Maturity labels** on each package `doc.go`: `experimental`, `beta`, `stable` — `// Maturity: <label>` closes every public package doc; `maturity_test.go` enforces the line and its agreement with the README table
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
+- [ ] **Divide `App`'s implementation into internal parts**, with no API change, after the request-path reshaping: the lifecycle manager's back-pointer (logger, container, server configuration, reload, the preparation lock) becomes an explicit dependency, and the App's fields are grouped by subsystem, routing and HTTP and the server and TLS first ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#di-and-lifecycle-stay-one-package))
 - [ ] **Decisions left outside v0.24.0**, each taken on its own and none reopening the component model: exporting `App`'s parts and giving the satellite packages narrow interfaces instead of `*credo.App`; an observer over the final response and a post-match middleware tier; `Context` pooling — kept or dropped on a measurement whose metric is fixed in advance — and typed context keys; the rest of the error model (one error channel, message keys separate from messages, fault codes); `store/sqldb`'s private-field layer and its count rule; typed configuration sections and reload's mechanisms, which stay outside the component model ([ADR-024](docs/adr/024-lifecycle-components.md#scope)); a pre-v1 pruning of the public surface (`MustResolve`/`MustResolveAll` included) and a split of the specs v1 freezes into a normative contract and informative notes. Typed endpoints and the strict-decoding default are tracked in the [v1 Gate](#v1-gate).
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
   - [ ] Routes with `Scope` meta must have auth middleware registered

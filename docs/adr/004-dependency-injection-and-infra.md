@@ -109,6 +109,12 @@ Constructors run only against a validated graph, and the first resolving call va
 
 The container keeps the static dependency graph that orders teardown — constructor parameters, aliases and collection edges, not dependencies hidden inside pre-built values — along which the component registry tears components down consumers first, once per resource, with bounded, never-retried attempts ([ADR-024](024-lifecycle-components.md#shutdown), [ADR-022](022-bootstrap-and-di-ownership.md#dependency-ordered-bounded-teardown)); the [container spec](../specs/container.md#shutdown) states the container's rules and the [lifecycle spec](../specs/lifecycle.md#shutdown-in-tiers) the drain sequence.
 
+### DI and Lifecycle Stay One Package
+
+`internal/di` holds both the container and the component lifecycle, and it is not split into a DI package and a lifecycle package. The two sides share one `Container` and its lock, and one record per registration (`Unit`) and per singleton carries the fields of both: `Provide` plans a registration's component, tier and readiness at the call, `Resolve` admits a built value as a component and signals the drain under that lock, and the start walk, the drain order and the tier check walk the DI graph. A package boundary would export twenty to thirty of these internals and a lock shared across it, or give the lifecycle a registry of its own that the container notifies — a redesign rather than a cut, with no API to gain, since both sides sit behind the App's methods. The question reopens only with a change that gives the lifecycle state of its own.
+
+The App's implementation, by contrast, is divided into internal parts in a later release, with no API change. The lifecycle manager reaches back into the App through about fifteen members — the logger, the container, the server configuration, reload and the preparation lock — which become an explicit dependency, and the App's fields are grouped by subsystem, routing and HTTP and the server and TLS first. The division follows the reshaping of the request path, which rewrites the same root code.
+
 ### credo.Infra: Explicit Infrastructure Carrier
 
 `credo.Infra` is a fixed struct defined by the framework; applications cannot add fields. It carries the service-scoped Logger. Metrics and tracing are deferred to the observability release, which decides whether and how they reach `Infra` ([ADR-014](014-observability.md)); the keyed-literal guard (`_ struct{}`) is deliberate, so that adding fields does not break existing `credo.Infra{Logger: ...}` literals.
