@@ -28,7 +28,7 @@ One branch, one commit per item, one PR. Every item updates its spec and adds a 
   - **Problem:** `ContractConfig.RequireContentType` defaults to false, so a body-carrying request with no Content-Type passes a `MetaAccept` contract.
   - **Fix:** the default becomes "require". A bool cannot default to true, so the field becomes its opt-out: `ContractConfig.AllowMissingContentType bool`, whose zero value requires the header on a body-carrying request. `RequireContentType` is removed, so code that set it fails to compile.
   - **Docs:** the middleware spec (the `MetaAccept` row and the paragraph after it), the contract-guards guide if it shows the option, the migration guide (one row in a new `[Unreleased]` section), CHANGELOG as **BREAKING**. Tick both `TODO.md` boxes.
-- [ ] **A4. The bind failures that are not `bind_failed`** (the error-handling guide).
+- [x] **A4. The bind failures that are not `bind_failed`** (the error-handling guide).
   - **Problem:** the error-handling guide's "Validation and bind failures" section lists only `bind_failed` reasons. Two neighbouring outcomes go unmentioned: the 415 `unsupported_content_encoding` (`credo.CodeUnsupportedContentEncoding`) for a non-identity `Content-Encoding` that `app.UseDecompress` did not unwrap, and the 500 `invalid_bind_target` (`credo.CodeInvalidBindTarget`) for a nil or non-pointer target or a field of a type the binder does not bind, whose reason is logged and never sent.
   - **Fix:** one short paragraph after the `bind_failed` reasons, with today's names. The local branch `docs/bind-error-codes` holds an older draft of it that says `middleware.Decompress` and omits the unsupported field type. Once this lands, that branch and its remote are deleted (the maintainer deletes the remote).
 
