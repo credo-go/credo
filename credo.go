@@ -198,7 +198,24 @@ func assembleApp(
 		app.recover = newRecoverFeature(o.recoverCfg)
 	}
 	app.root = &Group{registrar: app}
-	app.lifecycle = &lifecycleManager{app: app}
+	app.lifecycle = &lifecycleManager{deps: lifecycleDeps{
+		logger:     app.Logger(),
+		container:  c,
+		config:     app.rawConfig,
+		server:     &app.appServer,
+		reloadSlot: &app.reload,
+		prep:       &app.appPrep,
+		newInfra:   app.NewInfra,
+		prepare:    app.prepare,
+		newServer: func() *http.Server {
+			return buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
+		},
+		features: app.effectiveFeatures,
+		reload: func(ctx context.Context) error {
+			_, err := app.Reload(ctx)
+			return err
+		},
+	}}
 	return app
 }
 

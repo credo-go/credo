@@ -174,9 +174,9 @@ func (app *App) logReload(ctx context.Context, res config.ReloadResult, err erro
 }
 
 // reloadTimeout returns the budget for signal-triggered reloads.
-func (app *App) reloadTimeout() time.Duration {
-	if app.serverCfg.ReloadTimeout > 0 {
-		return app.serverCfg.ReloadTimeout
+func (s *appServer) reloadTimeout() time.Duration {
+	if s.serverCfg.ReloadTimeout > 0 {
+		return s.serverCfg.ReloadTimeout
 	}
 	return defaultReloadTimeout
 }

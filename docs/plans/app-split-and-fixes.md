@@ -70,7 +70,7 @@ One branch, opened after Part A has merged, one commit per step, one PR, and no 
   - DI: `container`, `rawConfig`, `modulesUsed`, `workers`.
   - Preparation: `prep`, `prepMu`, `frozen`.
   - What stays at the top of `App` is the logger, the lifecycle manager and the reload slot.
-- [ ] **B5. The lifecycle manager's dependencies.**
+- [x] **B5. The lifecycle manager's dependencies.**
   - **Problem:** `lifecycleManager` holds `app *App` and reaches back through it. In `lifecycle_manager.go` and `lifecycle_start.go` it uses the logger (`app.logger`, `app.Logger()`), the container, `serverCfg`, `reload`, `withComponentInfra` and `NewInfra`. In the files outside them, it uses the members the App's own methods call on its behalf.
   - **Fix:** replace the back-pointer with a dependencies struct passed at construction. The struct holds the logger, the container, the server group, the reload slot and the infra factory, and the preparation lock if the shutdown path needs it.
   - **Where the struct cannot hold a value:** where the manager calls back into App behaviour (preparation, the server build), take a function value rather than an interface with one implementation.
