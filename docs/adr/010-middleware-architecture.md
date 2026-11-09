@@ -114,6 +114,22 @@ The managed start line, `credo: server started`, carries a `features` attribute 
 
 The attribute is a permanent diagnostic, in keeping with observable-by-default. Rejected: a separate startup line (the start line already exists and carries the address); a Warn for each feature that is off (default-off is this ADR's deliberate choice, and a warning on every start would train operators to silence it); a public feature-introspection API or registry (no consumer needs more than the log line).
 
+### Rate limiting: one constructor, in its own package
+
+> **Pending v0.25.0 (W8):** not implemented yet; until W8 ships, rate limiting is `middleware.RateLimit(cfg...)` beside the object form `middleware.NewRateLimiter(cfg)`, a `credo.Component` that the application hands to `app.Manage`, and every build that imports `middleware` links go-limiter.
+
+`ratelimit.Middleware(cfg ...ratelimit.Config)`, in package `middleware/ratelimit`, is the one constructor of rate limiting. The middleware it returns shares its store across every route it is attached to, so one value attached to two routes spends one budget. There is no object form, and the rate limiter is not a component ([middleware spec](../specs/middleware.md#rate-limiting-middlewareratelimit)).
+
+**Not a component.** A value is a component when it owns something the App must release or prepare — a goroutine, a connection it opened, a buffer to flush, state it loads at start ([ADR-024](024-lifecycle-components.md)); being middleware is a reason neither way. The default in-memory store runs no goroutine — expired buckets are swept inline during `Take` — so it holds nothing the drain must stop, and the object form's `Shutdown` only released its memory early. The in-memory store keeps `Close`, which go-limiter's `limiter.Store` interface requires. A store the application passes in through `Config.Store` stays its owner's: when it holds a connection or a goroutine, the application registers it as a component of its own, and the middleware never closes it.
+
+**Its own package.** Rate limiting is the one part of `middleware` that imports a third-party module, so today a build that imports `middleware` for `CORS` alone links go-limiter and needs its `go.sum` entry. In `middleware/ratelimit` only its users compile it. The package keeps the configuration-struct convention and follows `auth.Middleware`'s naming: `Middleware(cfg ...Config)`, `Config` and `DefaultConfig()`, with `Config.Skipper` keeping the type `middleware.Skipper`. It stays in the root module: a module of its own waits for a consumer that cannot resolve a version conflict or must keep go-limiter out of its module graph.
+
+Rejected:
+
+- **A no-op `Component` on every middleware**, so that any middleware could be handed to `Manage` alike: it registers teardowns that do nothing and makes the type say "component" for values that own nothing, which is the question the component rule answers.
+- **"Middleware is never a component"**: a middleware that does own a goroutine or a connection would be left without a teardown; the rule is about what a value owns, not about its role.
+- **Keeping `NewRateLimiter` without its lifecycle, for sharing a store across routes**: the function form already shares its store across every route its value is attached to, so the object would be a second spelling of one middleware.
+
 ## Rejected Alternatives
 
 ### Configuration-Driven Activation (Rejected)

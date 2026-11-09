@@ -24,7 +24,25 @@ DI validation and freeze (`Finalize`) are separate from HTTP preparation and fre
 
 ### Resolution after Finalize, overrides before it
 
+> **Current until v0.25.0 (W6):** this section's "`Resolve` belongs after `Finalize`" is the current rule, under which `Resolve` before `Finalize` panics; with W6 the first resolving call finalizes ([The registration window ends at the first resolution](#the-registration-window-ends-at-the-first-resolution)).
+
 Constructors run only after `Finalize`, so the only graph that ever executes is a validated one, and no registration helper can trigger construction as a side effect. `Resolve` belongs after `Finalize` and an override before it: `credo.Override()` replaces a binding while no constructor has run ([Ownership through the component registry](#ownership-through-the-component-registry)). There is no general early `Resolve`/`Peek`; the non-resolving `Has[T]` is the registration phase's one read, a snapshot that never constructs and reserves nothing. There is no factory registration: a constructor's dependencies are its parameters, and a constructor that captures `app.Resolve` is unsupported ([ADR-004](004-dependency-injection-and-infra.md)).
+
+### The registration window ends at the first resolution
+
+> **Pending v0.25.0 (W6):** not implemented yet; until W6 ships, `Resolve` before `Finalize` panics and a registration after `Finalize` names only the phase.
+
+The registration window ends at the first resolving call or at `Finalize`, whichever comes first. The first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container when it is not finalized yet, then resolves; `Finalize` stays public as an optional early check, and the App's preparation still finalizes for an App that resolved nothing. Constructors therefore still run only against a validated graph, and `Has` and the configuration reads, which registration uses to decide what to register, never finalize. Finalizing stays DI-only: routes registered after the first `Resolve`, such as a controller's handlers, are accepted until the App is prepared.
+
+A freeze the application did not write must say where it happened, so the container records what finalized it — `Finalize`, the first resolving call with its type, or the App's preparation with its entry point — and the site, the first frame outside Credo's packages and `testutil`, with up to three callers of it. A registration after the freeze names the call, that trigger with its site and callers, and the remedy ([container spec](../specs/container.md#finalize-and-container-lifecycle)).
+
+`MustResolve` and `MustResolveAll` stay. After an implicit `Finalize` their panic carries the `Finalize` report or a constructor's failure at the composition root — the startup misuse the panic rule covers.
+
+Rejected:
+
+- **Keeping the explicit call as a required step** — a ceremony that guards nothing an implicit freeze does not: the graph is validated before any constructor runs either way, and the report is the triggering call's error.
+- **`app.Build()` returning a separate resolver** — the same step under a new type, with the costs of the `Builder → Build() → App` split (Rejected Alternatives).
+- **Finalizing on `Has`** — registration uses `Has` to decide what to register, so a presence probe that froze the container would refuse the registration it was asked about.
 
 ### Terminal construction
 
@@ -49,6 +67,8 @@ An instance whose construction completes after the drain deadline would otherwis
 ### Sequential bootstrap and three error phases
 
 **The contract.** Bootstrap is sequential: registration calls come from the goroutine that builds the App, before it runs, and are not safe for concurrent use; each checks once that it is in its phase, and an application that registers from several goroutines serializes the calls itself. The root package documentation and the [container spec](../specs/container.md#sequential-bootstrap) state it.
+
+> **Current until v0.25.0 (W6):** in the next paragraph `Finalize` is a step of the documented order; with W6 the step is optional, since the first `Resolve` finalizes, and the order reads configuration, bindings, feature mounts and component registrations, then resolution and routes, then `Run`.
 
 **The documented order** gives every DI, feature and component registration its place — configuration, the application's bindings, feature mounts and component registrations, `Finalize`, then resolution and routes, then `Run` — so that a bootstrap written by following it meets no ordering panic ([container spec](../specs/container.md#documented-order)). There is no resolve-then-provide step: a value that needs a resolved dependency and I/O to exist is a component whose `Start` does that work ([ADR-024](024-lifecycle-components.md)), not a late registration. `credo.New()`, routes and `Run()` stay the minimal shape ([ADR-001](001-framework-identity-and-goals.md)).
 
@@ -92,5 +112,7 @@ The dependency bookkeeping and the teardown diagnostics are adapted from samber/
 Bootstrap has an explicit composition boundary and a cleanup path even after failed validation. Shutdown order follows observable dependencies, and cancellation limits waiting without claiming to stop arbitrary user code.
 
 Sequential bootstrap is a promise about what every bootstrap does, and registration carries no synchronization. Every mistake has one phase: the line that misused a registration panics, `Finalize` reports the whole graph at once, and `Start` reports the I/O — a component's `Start`, a store's ping and the i18n catalog reads.
+
+> **Current until v0.25.0 (W6):** the next paragraph's first cost goes with W6: the first `Resolve` finalizes, and its error or `MustResolve`'s panic carries the `Finalize` report.
 
 The cost: the composition root calls an error-checked `Finalize` before its first `Resolve`, an application that registers from several goroutines serializes the calls itself, and a value that needs resolved dependencies and I/O is written as a component rather than registered late.

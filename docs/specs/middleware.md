@@ -160,6 +160,8 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 
 ## Middleware Catalog
 
+> **Current until v0.25.0 (W8):** the `RateLimit` row of the next table; rate limiting moves to [`middleware/ratelimit`](#rate-limiting-middlewareratelimit) as `ratelimit.Middleware`.
+
 | Middleware | Source | Description |
 | --- | --- | --- |
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
@@ -255,7 +257,49 @@ No test pins the stdlib's own handling of QUERY ([why](../adr/010-middleware-arc
 
 CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cross-origin response; CSRF protection stops state-changing cross-origin requests from being _processed_.
 
+### Rate Limiting (`middleware/ratelimit`)
+
+> **Pending v0.25.0 (W8):** not implemented yet; until W8 ships, rate limiting is `middleware.RateLimit(cfg...)` with `middleware.RateLimitConfig` and `middleware.DefaultRateLimitConfig()`, beside the object form described under [RateLimit Lifecycle](#ratelimit-lifecycle).
+
+```go
+package ratelimit // github.com/credo-go/credo/middleware/ratelimit
+
+func Middleware(cfg ...Config) credo.Middleware
+func DefaultConfig() Config
+
+type Config struct {
+    Skipper              middleware.Skipper
+    Store                limiter.Store // default: in-memory store with Tokens/Interval
+    Tokens               uint64        // default 60
+    Interval             time.Duration // default 1 minute
+    KeyFunc              func(ctx *credo.Context) (string, error) // default: Request.RealIP()
+    InternalErrorHandler func(ctx *credo.Context, err error) error
+    DeniedHandler        func(ctx *credo.Context, limit, remaining uint64, reset time.Time) error
+}
+```
+
+Token-bucket rate limiting over go-limiter lives in a package of its own, so that importing `middleware` — for `CORS`, say — does not link go-limiter: the dependency graph of `middleware` contains no go-limiter package. The package stays in the root module. `Middleware` follows the configuration-struct convention (zero arguments for the defaults, one to customize) and the naming of `auth.Middleware`; `Config.Skipper` keeps the type `middleware.Skipper`.
+
+| `middleware` before | `middleware/ratelimit` |
+| --- | --- |
+| `RateLimit(cfg...)` | `Middleware(cfg...)` |
+| `RateLimitConfig` | `Config` |
+| `DefaultRateLimitConfig()` | `DefaultConfig()` |
+| `NewRateLimiter(cfg)`; `RateLimiter` with `Middleware`, `Close` and `Shutdown` | none: `Middleware(cfg...)` is the one constructor |
+
+**One budget per value.** The middleware `Middleware` returns shares its store across every route it is attached to: one value attached to two routes spends one budget, and two calls build two budgets.
+
+```go
+limit := ratelimit.Middleware(ratelimit.Config{Tokens: 120})
+app.GET("/search", search).Middleware(limit)
+app.GET("/export", export).Middleware(limit) // spends the /search budget
+```
+
+**Lifecycle.** The rate limiter is not a component, so nothing is handed to `app.Manage` ([why](../adr/010-middleware-architecture.md#rate-limiting-one-constructor-in-its-own-package)). Without `Config.Store`, `Middleware` creates an in-memory store that the middleware owns for its lifetime; the store runs no goroutine — expired buckets are swept inline during `Take` — so nothing must be stopped at shutdown. The in-memory store keeps `Close`, which `limiter.Store` requires. A store passed in through `Config.Store` stays its owner's: the middleware never closes it, and a store that holds a connection or a goroutine is registered by the application as a component of its own.
+
 ### RateLimit Lifecycle
+
+> **Current until v0.25.0 (W8):** this section, which the removal of the object form deletes.
 
 `RateLimit()` is a convenience constructor. For explicit lifecycle management, use `NewRateLimiter(...)`: the limiter is a `credo.Component`, so hand it to `app.Manage` and the App shuts it down after the HTTP drain, in the internal tier:
 

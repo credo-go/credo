@@ -65,6 +65,8 @@ Every serve path reaches the same validated runtime model through one shared pre
 
 An App **has something to start** when it has a component with `Start` or `Ready` (planned from its binding's type, or handed to `app.Manage`), a constructor handed to `app.Manage`, a start hook, a store registration ([store spec](store.md)) or `UseI18n`, whose catalogs the start phase reads ([i18n spec](i18n.md)). A WebSocket server is a component with `Start`, so an App that registers one has something to start as well ([WebSocket spec](websocket.md)). Such an App refuses to serve until the start phase has completed successfully:
 
+> **Pending v0.25.0 (W3):** until W3 ships, a store registration is start work of its own. Afterwards there is none: a bound database is a component whose binding's type shows `Start` and `Ready`, so an App that binds one has something to start through the first clause above.
+
 | When `ServeHTTP` is called | App with something to start | App with nothing to start |
 | --- | --- | --- |
 | Before `App.Start`, or while it runs | panics with `credo: ServeHTTP: the App has start work (components, start hooks, store registrations or UseI18n) and has not been started; …`, naming `App.Start`, `testutil.Start`, `Run`/`RunContext`/`ServeContext` and `parent.Manage(child)` | prepares and serves, as above |
@@ -144,7 +146,9 @@ Managed serving (`Run`, `RunContext`, `ServeContext`) writes one Info line after
 
 ### Server diagnostics (`http.Server.ErrorLog`)
 
-`net/http` reports its own problems — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls, hijacked-connection writes — through `http.Server.ErrorLog`. Credo wires that to the application logger, so those records arrive as structured entries at `ERROR` with `component=net/http` instead of going to the standard `log` package's stderr output. The stdlib message text is preserved verbatim (`http: TLS handshake error from …`), so existing greps and alerts keep matching. The redirect listener from `WithHTTPRedirect` shares the same bridge.
+> **Pending v0.25.0 (W2):** until W2 ships, the bridge writes `component=net/http` where the next paragraph says `module=net/http`.
+
+`net/http` reports its own problems — TLS handshake failures, listener accept errors, panics that escape the framework recovery, superfluous `WriteHeader` calls, hijacked-connection writes — through `http.Server.ErrorLog`. Credo wires that to the application logger, so those records arrive as structured entries at `ERROR` with `module=net/http` — `module` names the framework package that wrote a record, as it does for every framework module ([The scoped `Infra` carrier](#the-scoped-infra-carrier)) — instead of going to the standard `log` package's stderr output. The stdlib message text is preserved verbatim (`http: TLS handshake error from …`), so existing greps and alerts keep matching. The redirect listener from `WithHTTPRedirect` shares the same bridge.
 
 Two rejections are **not** observable this way: a request that exceeds the header limits (`max_header_bytes` or `max_header_value_count`) is answered with `431 Request Header Fields Too Large`, and an unsupported transfer encoding with `501`, both written straight to the connection by `net/http` without ever reaching `ErrorLog`.
 
@@ -265,6 +269,27 @@ type Tier uint8
 
 A value the App owns is a component when it has `Shutdown` (a DI singleton whose binding's type shows the method or whose built value has it, or a value or constructor handed to [`app.Manage`](#appmanagev-opts)), or when its binding carries `credo.Closer()`. `Start`, `Ready` and the tier are planned from the binding's type at registration ([The start walk](#the-start-walk)); a capability absent from it has its documented default — no start step, no readiness entry. `Component` never gains a method; it grows through optional capabilities. The zero `Tier` is unset and means the registration's default. The zero `Tier` encodes as the empty text, `TierIngress` and `TierInternal` as `"ingress"` and `"internal"`; any other value or text is an encoding error.
 
+> **Pending v0.25.0 (W7):** not implemented yet; until then the tier comes from `credo.Ingress()` alone.
+
+```go
+// IngressComponent is a component whose type places it in the ingress tier.
+// IngressTier is never called.
+type IngressComponent interface {
+    Component
+    IngressTier()
+}
+```
+
+A unit is placed in the ingress tier when its registration carries `credo.Ingress()` or the type its plan reads implements `IngressComponent`: the binding's type for `Provide` and `ProvideValue`, the value's type for `Manage` of a value, and the constructor's result type for `Manage` of a constructor. The check needs no value, so `Finalize` validates the tiers before anything is built. On a declaring type `credo.Ingress()` is redundant and accepted. There is no `credo.Internal()`: a type declares the tier only when no registration could rightly place it internal. A worker takes its tier from its configuration, as before. `websocket.Server` implements the interface ([WebSocket spec](websocket.md)).
+
+> **Pending v0.25.0 (W11):** until W11 ships, a `Start` or `Ready` that only the built value has is never called or asked, as [The start walk](#the-start-walk) states.
+
+**A capability the binding's type hides is refused.** A component whose binding's type hides its value's `Start` or `Ready` — or, with W7, `IngressTier` — is refused instead of being run without it: `ProvideValue` panics at the call, and a value a constructor builds fails the start once it is built, where the container finds a `Shutdown` the type hides. The panic or the start failure names the binding, the methods its type hides and the remedy: bind the concrete type, and bind the interface with `Alias`. `credo.Borrowed()` is exempt, since the App neither starts nor stops the value, and a hidden `Shutdown` still makes the value a component whose teardown follows it. The values a worker constructor and a constructor handed to `Manage` build follow the same rule, checked against the constructor's result type.
+
+> **Pending v0.25.0 (W12):** until W12 ships, the options are named `credo.Closer()` and `credo.Named(name)`, as the rest of this spec names them.
+
+The option that makes a binding's `Close` method its teardown is `credo.CloseOnShutdown()`, and the one that names a component is `credo.ComponentName(name)`; `credo.Closer()` and `credo.Named(name)` are removed with no alias. A component's name — its `credo.ComponentName` name, else its type as the lifecycle prints it (`*users.Service`) — labels it in logs, `/ready` and a `LifecycleError`; it is not a DI key ([container spec](container.md#registration-options)).
+
 ### `app.Start(ctx context.Context) error`
 
 Start runs the start phase without a listener; `Run`, `RunContext` and `ServeContext` serve. It claims `building → starting`, prepares the App (`Finalize` and compile), runs the [start walk](#the-start-walk) and enters `running`, for an App served through `ServeHTTP` by an external `http.Server` or in a test. `app.Shutdown` stops what it started. It is accepted only in `building`: a second call, or a serve entry point after it, returns the state error. A preparation failure returns `credo: Start: …` and gives the slot back to `building`, as for the serve entry points. A failed `App.Start` rolls back what was built and leaves the App `stopped`, returning the [lifecycle error](#the-lifecycle-error); `ctx` interrupts the start phase like any [shutdown during the start phase](#a-shutdown-during-the-start-phase).
@@ -277,6 +302,16 @@ Whoever serves the App through `ServeHTTP` owns that server's admission and drai
 
 Adds a component that is not a DI binding: a value with `Shutdown`, or a constructor over DI parameters — `func(deps...) C` or `func(deps...) (C, error)` — that the start walk builds and that never becomes a binding. A function whose own type has `Shutdown` (a named func type) is a value, not a constructor. `credo.Named("…")` names it (default: its type name; a duplicate panics), and `credo.Ingress()` places it in the ingress tier. A value has no edges and stops in reverse registration order within its tier; a constructor has its parameters' edges. A value without `Shutdown`, an App handed to its own `Manage`, a call after `Finalize` or shutdown, a value whose resource a `ProvideValue` binding holds, and a resource handed to `Manage` twice panic ([container spec](container.md#resource-identity-and-teardown)).
 
+> **Pending v0.25.0 (W5):** not implemented yet. Until W5 ships, a constructor handed to `Manage` claims what its value holds, so one whose value embeds a handle bound with `ProvideValue` fails the start with the remedy of dropping the `Manage` call, and its options apply whatever its value holds.
+
+Only a value handed to `Manage` claims what it holds; the value a constructor handed to `Manage` builds claims nothing a registration already holds. When that value holds a resource that a binding or another `Manage` value holds — the binding's own value, or a wrapper that embeds its handle, with or without `credo.Borrowed()` on the binding — it defers to that registration, the resource's holder of record ([One teardown per resource](#shutdown-in-tiers)): it starts, adds no readiness entry and never runs the teardown, so `/ready` shows the registration's one entry, with its options, and the teardown carries the registration's name and tier. A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers fails the start once the value is built, since the value has no entry and no teardown for the option to shape. The error names the holder it defers to and the remedies — move the option to that holder's registration, or, when the value has a readiness or a teardown of its own, hold the handle in a named field, so that it is a resource of its own — in the application's terms:
+
+```text
+*Relay shares the database of the ProvideValue binding of *sqldb.DB, whose readiness and shutdown follow that binding; give credo.ComponentName to that binding, or hold the database in a named field
+```
+
+A value handed to `Manage` and a binding that hold one resource agree on its tier. Beside a `ProvideValue` binding the `Manage` call is refused anyway; beside a `Provide` binding whose constructor returns the value, or a wrapper over it, with another tier — `app.Manage(v, credo.Ingress())` beside an internal binding — the start fails once the binding's value is built, naming both registrations, their tiers and the remedies: give them one tier, or hold the handle in a named field ([container spec](container.md#resource-identity-and-teardown)).
+
 ### Contexts
 
 Every context the lifecycle hands out lives as long as its call:
@@ -288,6 +323,22 @@ Every context the lifecycle hands out lives as long as its call:
 | `Ready` | The probe request's values without its cancellation, with `CheckTimeout` as its deadline ([health spec](health.md#check-execution)) |
 
 Work that outlives `Start` runs on a goroutine whose context derives from `context.WithoutCancel(ctx)` with its own cancel, which `Shutdown` calls; `Shutdown` is the one stop signal. A loop that keeps `Start`'s context stops as soon as `Start` returns. The session context the App keeps internally is observed only by reload ([`app.Reload`](#appreloadctx-contextcontext-error)).
+
+### The scoped `Infra` carrier
+
+> **Pending v0.25.0 (W2):** not implemented yet; until W2 ships, the contexts above carry no `Infra`, a constructor's `Infra` logger writes `service=<type name without package or pointer>`, and `app.NewInfra(name)` writes `service=<name>`.
+
+```go
+// InfraFrom returns the scoped Infra of the component whose call ctx belongs
+// to, or the zero Infra outside such a call.
+func InfraFrom(ctx context.Context) credo.Infra
+```
+
+Every call the App makes on a component — `Start`, `Ready`, `Shutdown` and `Close(ctx)` — and every `OnStart` and `OnStop` hook receives a context carrying the component's scoped `Infra`, read with `credo.InfraFrom(ctx)`. The root installs the carrier around each call `internal/di` makes, through an internal hook, and around each readiness check its aggregation runs. The scoped `Infra` carries the App's logger with `component=<name>`, the component's unit name: the name its readiness entry, a `LifecycleError` and the lifecycle's own records show, the one `credo.ComponentName` sets, else its type as the lifecycle prints it (`*users.Service`), `OnStart[i]`/`OnStop[i]` for a hook and `worker:<name>` for a worker. `context.WithoutCancel` keeps values, so work derived from the `Start` context sees the same `Infra`. Outside such a call `InfraFrom` returns the zero `Infra`, whose logger falls back to the framework default — a call in a handler compiles and logs there, so `InfraFrom`'s godoc names the other two paths: request code logs through `c.Logger()`, the request's logger or else the App's, and a constructor takes `credo.Infra`.
+
+One key names an application part in the framework's records. The logger a constructor receives through an `Infra` parameter writes `component=<name>` too, with the name of the binding it builds — its type as the lifecycle prints it (`*users.Service`), or its `credo.ComponentName` name — and `app.NewInfra(name)`, a scope for code outside a lifecycle call, writes `component=<name>`. `service` is retired: `*users.Service` and `*orders.Service` stay apart. `module=<name>` names the framework package that wrote a record — the `http.Server.ErrorLog` bridge's `module=net/http` included — beside `request_id` and `connection_id`. Only framework infrastructure travels in the context, never application services.
+
+A framework module whose value is built outside the App and started by it takes an optional logger in its own configuration and otherwise uses the App's. Precedence: the logger given to the module, unscoped; then `InfraFrom(ctx).Logger`; then the framework default. Every record a module writes carries `module=<name>`, added with `Logger.With`, whichever logger it goes to. The App's own subsystems — the `Use*` features and the worker registry — already log to the App's logger and are outside the rule; `httpclient` stays credo-free ([ADR-004](../adr/004-dependency-injection-and-infra.md)).
 
 ### The start walk
 
@@ -303,11 +354,19 @@ Work that outlives `Start` runs on a goroutine whose context derives from `conte
 5. state = running; managed serving logs "credo: server started" and accepts
 ```
 
+> **Current until v0.25.0 (W3):** the store registration and its start steps in step 1 above, and the binding start steps of the fourth item below (a failed start step and the value it leaves to the rollback), which W3 deletes with the start-step mechanism; `UseI18n`'s framework start step stays.
+
+> **Current until v0.25.0 (W11):** the second item below, from its second sentence to the `Alias` remedy, which W11 replaces with the refusal in [Component types](#component-types).
+
 - A component's `Start` runs after the `Start` of every component it depends on. No dependency crosses the tiers backwards: an internal component that depends on an ingress one fails `Finalize` (or, for a component found only on its built value, its construction) with the path and both remedies, so the order holds across the tiers. An ingress component that depends on an internal one starts after it.
 - `Start`, `Ready` and the tier are planned from the binding's type. A `Start` that only the built value has is never called, and a type with only `Start` is not a component and is never started. A value whose binding's type shows both `Start` and `Shutdown` is started exactly once, by the walk — an `OnStart` hook that also starts it starts it a second time. A value behind an interface that hides `Start` is not started by the walk, so an `OnStart` hook that starts it starts it once; to have the walk start it, provide the concrete type and `Alias` the interface the application uses. Holders that share a resource identity start it once, through the first holder the walk reaches whose binding plans a `Start`; a resource that any holder borrows is not started.
 - A component with neither `Start` nor `Ready` stays lazy: it is built when first resolved — during a request included — and shut down by the drain only if built.
 - A framework start step that fails, a constructor error in step 1 or 3, and a failed start step are start failures. A failed start step leaves the value it was given to the rollback, which shuts it down unless it is borrowed: the step opened nothing the value had not. `Start` returns once the component is usable; it never blocks for the component's lifetime.
 - Under managed serving the listener is bound before the walk, so `app.Addr()` is available in `Start` and in start hooks; it is nil under `App.Start`.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships, a database is pinged only when `store.Register` names its binding, as a start step before its dependants.
+
+**A bound store is an ordinary component.** Step 1 builds and starts a database like any component with `Start`: `app.ProvideValue(db)` alone pings it in `(*sqldb.DB).Start` before its dependants start, reports it through its `Ready` and shuts it down after its consumers. There is no store registration and no start step. Holders that share the database — a raw handle and a wrapper that embeds it — give it one ping (`Container.ClaimStart`, start once per resource) and one readiness entry ([Readiness](#readiness)). A borrowed database is not pinged, since its owner starts it. A failed ping is a failed `Start`: `sqldb` closes the database before `Start` returns the error, since the pool was opened by `Open`, not by `Start`, and [the failed-start rule](#a-failed-start) does not shut down a component whose `Start` failed. A database opened with `sqldb.WithOptionalStart()` logs a failed ping at Warn, with the component's name, the deadline and the error, and its `Start` returns nil with the pool open, since `database/sql` opens connections on demand once the server is back; the failed-start rule is unchanged, and the database still gates readiness unless it is bound with `credo.OptionalReadiness()` ([store spec](store.md)).
 
 ### A failed start
 
@@ -358,11 +417,21 @@ Stop hooks run before their tier's components, so a hook can still use them; a r
 
 **One teardown per resource.** Values that share a resource identity are shut down once, when the last holder retires, through the holder registered first among those that have a teardown; a borrowed resource is shut down by none of them. A holder that obtained the resource through one of its consumers does not keep that consumer open: the consumer stops first. Every other dependency holds, including one between two such groups. A value whose construction the registry failed after its constructor returned it is released in order when no other holder carries it ([container spec](container.md#resource-identity-and-teardown)).
 
+> **Pending v0.25.0 (W5):** not implemented yet; until W5 ships, the holder registered first among those with a teardown runs it, as the previous paragraph states, whether a registration holds the resource or a value a constructor built, and its tier decides the teardown's tier without a check.
+
+**The holder of record runs the teardown.** A binding, or a value handed to `Manage`, that holds a resource is its holder of record — the first registered of them when several do — and the teardown carries its name and tier. A value a constructor builds that holds the resource too — a worker's, or one from a constructor handed to `Manage` — defers to it and never runs the teardown, even when the constructor was registered first; without such a registration the first registered holder is the holder of record. The teardown snapshot takes the holder of record from two flags of each holder, "not a binding" and "claims what it holds", instead of from registration order alone. The registrations that hold one resource agree on its tier: the admission of whichever value becomes known second fails, naming both registrations, their tiers and the remedies — give them one tier, or, when one has a teardown of its own to run in its tier, hold the handle in a named field — a panic at registration for a value handed in (`ProvideValue`, `Manage`), a failed start for a value a binding's constructor builds. A borrowed resource is exempt from the tier check; a value a constructor builds takes no part in it.
+
 ### Background work
 
 Background work is a component: its `Start` launches the work and its `Shutdown` cancels it and waits for it ([Contexts](#contexts)). Its tier places its stop: ingress for work that enters the process — a consumer of an external queue, registered with `credo.Ingress()`, or a scheduled job — which stops beside the HTTP drain and before the internal components it uses, and internal for in-process work that handlers feed, which stops after the HTTP drain and before the components it depends on, so a job a request enqueues during the drain is still processed. A producer that hands work to a consumer component takes the consumer as a constructor dependency, so the producer stops first.
 
+> **Current until v0.25.0 (W5):** the next paragraph: a provided worker (`ContinuousProvided[T]`, `ScheduledProvided[T]`) is one component over its bound `T`.
+
 Each worker is such a component, named `worker:<name>`, which the worker package adds as `app.Manage` adds one — a provided worker as a constructor over its `T`, so it starts after `T`'s component dependencies and stops before them — except that a `Finalize` finding for an internal worker that depends on an ingress component names the worker's `Tier` field as the remedy. A scheduled worker defaults to the ingress tier and a continuous worker to the internal tier; the registration's configuration may declare the other ([worker spec](worker.md#components)).
+
+> **Pending v0.25.0 (W5):** not implemented yet; until then the previous paragraph holds.
+
+A worker is registered with `app.Workers()` as a value, a run function or a constructor ([worker spec](worker.md)), and none of them becomes a binding. A value adds one unit, the loop `worker:<name>`, with no edges. A run function — a function that takes exactly one `context.Context`, in any position, and returns only an `error`, such as the method expression `(*OutboxRelay).Run` of a bound worker — adds the loop alone, whose edges are its other parameters: the start walk resolves them once, after their components have started, and the drain stops the loop before them; under an internal loop a parameter bound in the ingress tier fails `Finalize` with the message and the two remedies of every internal component that depends on an ingress one. A constructor adds two units that are not bindings, the built value `worker-value:<name>` and the loop `worker:<name>`, with an edge from the loop to the value: the start walk builds the value after its parameters' components have started and starts it before its loop when the constructor's result type shows `Start` and `Shutdown`, and the drain stops the loop, then tears the value down through the component registry, after the loop and before its dependencies. The built value is internal, as a constructor result bound without `credo.Ingress()` is, and the loop keeps its worker's tier: a scheduled worker's loop stops beside the HTTP drain while its value is torn down in the internal tier, after the handlers that use it. A built value with a teardown of its own that depends on an ingress component fails `Finalize` — or its build, when the teardown is found only on the value — with the path and the remedy of splitting the worker; when that ingress component is the binding whose type the constructor returns, the remedy is to bind it without `credo.Ingress()`. A built value that holds a registration's resource defers to it ([One teardown per resource](#shutdown-in-tiers)).
 
 ### The lifecycle error
 
@@ -371,6 +440,12 @@ A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEnt
 ### Readiness
 
 The lifecycle contributes to `/ready` the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), asked of the value the start walk built and never resolved per request; a worker contributes through its component's `Ready` when its registration sets a readiness condition ([worker spec](worker.md#health-integration)). The [health spec](health.md#readiness-aggregation) states the entry names, when the probes are built and how the sources combine; once the drain begins, `/ready` answers 503 `shutting_down` without asking ([health spec](health.md#shutdown)).
+
+> **Pending v0.25.0 (W3):** not implemented yet. Until W3 ships, every unit whose type plans `Ready` adds an entry of its own, every entry gates readiness, and a store enters `/ready` through `store.Register`'s own branch instead.
+
+**One resource, one readiness entry.** `componentReadiness` builds one check per resource instead of one per unit that answers `Ready`: the entry of its holder of record ([One teardown per resource](#shutdown-in-tiers)), whose `Ready` it asks, named by the `credo.ComponentName` name its registrations give it, else by the holder of record's type (`*sqldb.DB`). A unit plans an entry when its type shows `Ready` and it is a component or borrowed. The registrations that plan an entry for one resource agree on its options: `credo.OptionalReadiness()` on every one of them or on none, and one `credo.ComponentName` name; a disagreement is refused when the second value becomes known, naming both registrations, the option and the remedies — the same options on both, or a named field — as a panic at registration for a value handed in and a failed start for a value a binding's constructor builds, a borrowed resource included. A wrapper with readiness of its own, one that overrides the `Ready` it embeds, holds the handle in a named field.
+
+**Optional entries.** `credo.OptionalReadiness()` on `Provide`, `ProvideValue` or `Manage` reports the entry without letting it gate. `planUnit` records the option on the unit and `componentReadiness` carries it on the resource's check; `Ready` is still asked under the same deadline, the entry shows its own status — `down` when its check fails — and its latency, and a failure is logged like any failing check. The aggregation computes the top-level status from the gating checks, then reports `degraded`, answered with 200, in place of `up` when an optional check fails; `shutting_down` and a down gating entry still answer 503 ([health spec](health.md#readiness-aggregation)). The option panics at registration where the registration plans no readiness entry — a type without `Ready`, or one that is neither a component nor borrowed — and `Start` and `Shutdown` are unchanged by it.
 
 A failure after `Start` has returned is reported through `Ready`. No component ends the App — the App's own listeners excepted — so a component that has stopped for good leaves the process alive and unready, and a failing readiness probe restarts nothing ([ADR-024](../adr/024-lifecycle-components.md#start) records the policy and the liveness alternative).
 
@@ -420,6 +495,8 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.Middleware()` | `checkFrozen("Group.Middleware")` |
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
+
+> **Current until v0.25.0 (W3):** the next paragraph's second sentence, which goes with `store.Register`.
 
 `app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
 
