@@ -34,7 +34,7 @@ One branch, one commit per item, one PR. Every item updates its spec and adds a 
 
 A5–A8 came after Part A merged: one more branch, one commit per item, one PR, under the same rules.
 
-- [ ] **A5. A whole-tree decode fails on `.env` entries.**
+- [x] **A5. A whole-tree decode fails on `.env` entries.**
   - **Problem:** `config.Load()` reads `.env` entries without a prefix, and decoding is strict by default, so `Unmarshal("", &cfg)` fails on every `.env` entry and every `server.*` key the target does not cover. The Quick Start in `config/doc.go` decodes the whole tree.
   - **Fix:** the Quick Start reads its sections through `config.Section[T]`, and the README and guides are checked for other whole-tree examples. The config spec (strict decoding, next to the `.env` prefix policy) and the configuration guide state that a whole-tree decode sees every `.env` entry and the framework's `server` keys, with the remedies: decode sections, cover those keys, or load with `config.WithoutDotenv()`. The `.env` prefix policy stays.
   - **Error:** an unknown-key error names the source of a key that `.env` or the process environment set, from the record behind `ReloadResult.Overridden`: `config: unknown key "x_y" (from .env entry X_Y): …`.

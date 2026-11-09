@@ -98,6 +98,8 @@ export CREDO_DEBUG=true
 
 Rationale: [ADR-005](../adr/005-configuration-architecture.md#env-entries-are-not-prefix-filtered).
 
+Every `.env` entry therefore reaches the tree, so a strict whole-tree decode sees each one ([Decoding](#decoding)).
+
 ## API
 
 ### config.Load() — Primary Entry Point
@@ -286,6 +288,7 @@ The policy rides on the Config instance, so it covers every decode path: `Unmars
 
 - **Environment overrides decode.** Process environment and `.env` values are strings, and the string hook parses each by its target type, so `CREDO_SERVER__PORT=9090` decodes into an `int`. The hook does not know a value's source, so a quoted number in a file decodes too; parsing a string by its target type is not a conversion between kinds.
 - **Complete typed views**: every struct that decodes a section — a live section's `T` and full-tree decodes included — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
+- **A full-tree decode sees every source.** `Unmarshal("", &dst)` decodes every `.env` entry (read with no prefix), every prefixed environment variable and the framework's `server` keys, and fails on each its target does not cover. The remedies: decode sections (`config.Section[T]`), give the target fields for those keys, or load with `config.WithoutDotenv()`. An unknown key that a `.env` entry or an environment variable set names that source, from the record behind `ReloadResult.Overridden`: `config: unknown key "x_y" (from .env entry X_Y): …`.
 - **The error names the remedy.** A value strict decoding refuses fails with the key path, the conversion refused, and `config.WithWeakDecoding()` as the opt-in; a string that does not parse as its target type names the key path without the remedy, since weak coercion would not parse it either. Every offending key of one decode is reported. Unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
 
 ## Default Values

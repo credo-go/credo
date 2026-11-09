@@ -102,6 +102,49 @@ func TestStrictDecodingUnknownKeyThroughLoad(t *testing.T) {
 	assertRemedy(t, c.Unmarshal("app", &cfg), "unknown key", `"app.db.hots"`)
 }
 
+// TestStrictDecodingUnknownKeyNamesItsSource pins that a whole-tree decode
+// sees every .env entry, and that an unknown key a .env entry or an
+// environment variable set names that source, for a leaf and for a sub-tree.
+func TestStrictDecodingUnknownKeyNamesItsSource(t *testing.T) {
+	dir := t.TempDir()
+	dotenv := filepath.Join(dir, ".env")
+	if err := os.WriteFile(dotenv, []byte("X_Y=1\nDB__HOST=localhost\nDB__PORT=5432\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STRICTSRC_EXTRA", "1")
+	c, err := LoadBytes([]byte(`{"name":"a","stale":true}`), FormatJSON,
+		WithDotenvPath(dotenv), WithPrefix("STRICTSRC_"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	var cfg struct{ Name string }
+	err = c.Unmarshal("", &cfg)
+	assertRemedy(t, err,
+		`unknown key "x_y" (from .env entry X_Y):`,
+		`unknown key "db" (from .env entry DB__HOST, .env entry DB__PORT):`,
+		`unknown key "extra" (from environment variable STRICTSRC_EXTRA):`,
+		`unknown key "stale": no field`)
+	if strings.Contains(err.Error(), "localhost") {
+		t.Errorf("unknown-key error leaked a config value: %q", err)
+	}
+}
+
+// TestKeySourceCapsTheNames pins that an unknown sub-tree set by many
+// sources names the first few and counts the rest.
+func TestKeySourceCapsTheNames(t *testing.T) {
+	c := loadHermetic(t, `{"a":1}`)
+	for _, k := range []string{"p.a", "p.b", "p.c", "p.d", "p.e"} {
+		c.recordOverride(k, ".env entry "+strings.ToUpper(strings.ReplaceAll(k, ".", "__")))
+	}
+	want := " (from .env entry P__A, .env entry P__B, .env entry P__C and 2 more)"
+	if got := c.keySource("p"); got != want {
+		t.Errorf("keySource(p) = %q, want %q", got, want)
+	}
+	if got := c.keySource("pp"); got != "" {
+		t.Errorf("keySource(pp) = %q, want none: a key that only shares a prefix is another key", got)
+	}
+}
+
 // TestStrictDecodingStringOverrides pins that strings parse into the basic
 // type of their target: an environment override of a typed field decodes.
 func TestStrictDecodingStringOverrides(t *testing.T) {

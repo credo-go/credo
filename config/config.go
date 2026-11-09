@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -295,7 +296,9 @@ const strictRemedy = "fix the configuration, or opt in to weak coercion with con
 // decoding converts none), a value that does not parse, and — strictly —
 // every key that no field of the target decodes. A failure that weak
 // coercion would accept carries the remedy. Unknown keys are reported by
-// path only, so the error never quotes a configuration value.
+// path only, so the error never quotes a configuration value; an unknown key
+// that a .env entry or an environment variable set also names that source,
+// since a .env entry reaches the tree with no prefix to tell it apart.
 func (c *Config) decodeError(err error, dst any) error {
 	var errs []error
 	for _, leaf := range leafErrors(err) {
@@ -308,9 +311,10 @@ func (c *Config) decodeError(err error, dst any) error {
 		switch {
 		case !c.opts.weak && strings.HasPrefix(inner.Error(), unusedPrefix):
 			for _, k := range strings.Split(strings.TrimPrefix(inner.Error(), unusedPrefix), ", ") {
+				path := unusedPath(de.Name(), k, dst)
 				errs = append(errs, fmt.Errorf(
-					"config: unknown key %q: no field of the target decodes it; %s",
-					unusedPath(de.Name(), k, dst), strictRemedy))
+					"config: unknown key %q%s: no field of the target decodes it; %s",
+					path, c.keySource(path), strictRemedy))
 			}
 		case !c.opts.weak && refusedConversion(inner):
 			errs = append(errs, fmt.Errorf(
@@ -336,6 +340,31 @@ func unusedPath(name, key string, dst any) string {
 		return key
 	}
 	return name + keyDelim + key
+}
+
+// maxKeySources caps the sources an unknown-key error names.
+const maxKeySources = 3
+
+// keySource names, as " (from …)", the .env entries and environment
+// variables that set key or a key under it, or returns "" when only the files
+// set it. The names come from the record behind [ReloadResult.Overridden].
+func (c *Config) keySource(key string) string {
+	c.mu.RLock()
+	var sources []string
+	for k, source := range c.overrides {
+		if k == key || strings.HasPrefix(k, key+keyDelim) {
+			sources = append(sources, source)
+		}
+	}
+	c.mu.RUnlock()
+	if len(sources) == 0 {
+		return ""
+	}
+	slices.Sort(sources)
+	if n := len(sources) - maxKeySources; n > 0 {
+		return fmt.Sprintf(" (from %s and %d more)", strings.Join(sources[:maxKeySources], ", "), n)
+	}
+	return " (from " + strings.Join(sources, ", ") + ")"
 }
 
 // refusedConversion reports whether a decode failure is one that weak
@@ -465,7 +494,10 @@ func (c *Config) Exists(key string) bool {
 // (e.g., *int, *string, *bool, *float64, *time.Duration).
 //
 // Pass an empty key ("") to decode the entire configuration tree into dst.
-// Dots in the key always act as path separators.
+// That tree holds every .env entry, which is read with no prefix, and the
+// framework's server keys, so a strict whole-tree target must cover them;
+// decoding a section avoids it. Dots in the key always act as path
+// separators.
 //
 // Decoding is strict unless the Config was loaded with [WithWeakDecoding]: a
 // key under key that maps to no field of dst is an error, and a value is not

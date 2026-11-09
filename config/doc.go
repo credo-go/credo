@@ -24,22 +24,30 @@
 // # Quick Start
 //
 //	type AppConfig struct {
-//	    Debug  bool         // auto-mapped to key "debug"
-//	    Server ServerConfig `credo:"server"` // decodes the nested "server" sub-tree
+//	    Debug bool     // auto-mapped to key "debug"
+//	    DB    DBConfig `credo:"db"` // decodes the nested "app.db" sub-tree
 //	}
 //
-//	type ServerConfig struct {
-//	    Port int // auto-mapped to key "port"
+//	type DBConfig struct {
+//	    Host string // auto-mapped to key "host"
 //	}
+//
+//	var AppSection = config.Section[AppConfig]("app")
 //
 //	c, err := config.Load()
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	var cfg AppConfig
-//	if err := c.Unmarshal("", &cfg); err != nil {
+//	cfg, err := AppSection.Decode(c)
+//	if err != nil {
 //	    log.Fatal(err)
 //	}
+//
+// A section decodes its own keys only. A whole-tree decode,
+// [Config.Unmarshal] with the empty key, sees every key: each .env entry,
+// which is read with no prefix, each prefixed environment variable, and the
+// framework's server keys. Under strict decoding its target must cover them
+// all, or the Config is loaded with [WithoutDotenv].
 //
 // # Sub-Tree Access
 //

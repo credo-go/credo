@@ -102,6 +102,12 @@ A value is not converted across kinds: a boolean into a number, a number into a 
 
 The policy applies to every decode from that store: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own `server` section read in `credo.New`, so a typo under `server.*` fails startup. Every struct that decodes a section must therefore cover all of that section's keys, full-tree decodes included (a config with a `server` section needs a `Server` field on a full-tree target).
 
+A full-tree decode (`rawCfg.Unmarshal("", &cfg)`) is where this bites first. `.env` entries are read with no prefix, so every entry in `.env` lands in the tree beside the framework's `server` keys, and the target must cover each one. Decode the sections you own instead (`config.Section[AppConfig]("app").Decode(rawCfg)`), give the target fields for those keys, or load with `config.WithoutDotenv()`. An unknown key that a `.env` entry or an environment variable set names its source:
+
+```text
+config: unknown key "x_y" (from .env entry X_Y): no field of the target decodes it; fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()
+```
+
 An application that relies on mapstructure's weak coercion (a number into a string field, a single value into a slice, unknown keys ignored) opts in for the whole store:
 
 ```go
