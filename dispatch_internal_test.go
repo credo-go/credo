@@ -93,19 +93,16 @@ func TestMountPrefixParams(t *testing.T) {
 }
 
 // dispatchOnceForTest runs a single dispatchOnce pass against app for the
-// given request, returning the recorder and the handler-chain error. It mirrors
-// ServeHTTP's pool acquire/reset/release but stops below the rewrite loop and
-// the centralized error renderer, so sentinel returns stay observable.
+// given request, returning the recorder and the handler-chain error. It builds
+// the Context as ServeHTTP does but stops below the rewrite loop and the
+// centralized error renderer, so sentinel returns stay observable.
 func dispatchOnceForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	if p := app.prepare(""); p == nil || p.err != nil {
 		t.Fatalf("prepare: %v", p)
 	}
 	rec := httptest.NewRecorder()
-	c := app.ctxPool.get()
-	c.reset(rec, httptest.NewRequest(method, target, nil))
-	err := app.dispatchOnce(c)
-	app.ctxPool.put(c)
+	err := app.dispatchOnce(newContext(app, rec, httptest.NewRequest(method, target, nil)))
 	return rec, err
 }
 

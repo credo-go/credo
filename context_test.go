@@ -35,7 +35,7 @@ func TestContext_SetLogger(t *testing.T) {
 		return ctx.Response().NoContent(200)
 	})
 
-	// Two requests: the second proves the pooled context cleared the logger.
+	// Two requests: the second starts with no request logger of its own.
 	for range 2 {
 		app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	}

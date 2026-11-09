@@ -15,21 +15,27 @@ import (
 )
 
 // Context is the request-scoped struct that holds the Request, Response,
-// matched Route, logger, and a key-value store.
+// matched Route, logger, and the request's values.
 //
-// Context is pooled via sync.Pool for zero-allocation request handling.
-// Access fields only through methods (not direct field access) to ensure
-// pool safety. Because it is pooled, Context deliberately does not implement
-// context.Context; call [Context.Context] to obtain the request's
-// context.Context for context-taking APIs.
+// Each request gets its own Context, one allocation that holds its Request,
+// its Response and the first route parameters. A *Context kept past its
+// request reads that request's state and no other. It is not safe for
+// concurrent use: its context head moves as scopes return. Its response
+// cannot be written after the handler returns, as net/http forbids for every
+// ResponseWriter.
+//
+// Context does not implement context.Context: its head moves as scopes open
+// and return, so a *Context held as a context.Context would not be one fixed
+// context. Call [Context.Context] to obtain the request's context.Context, a
+// fixed node, for context-taking APIs.
 //
 // Context is Credo's HTTP request context. Lifecycle hooks such as
 // [App.OnStart] and [App.OnStop] receive a standard context.Context,
 // not *Context.
 type Context struct {
 	app      *App
-	request  *Request
-	response *Response
+	request  Request
+	response Response
 	route    *Route
 	logger   *slog.Logger
 	// mountRouteCtx is the pooled RouteContext a mount's handler is given,
@@ -55,13 +61,14 @@ type Context struct {
 	head             context.Context
 	scope            headScope
 	values           []valueEntry
+	valuesBuf        [2]valueEntry // the first entries of values
 	seq              uint64
 	pending          bool // values set after pendingStart await reapplication
 	pendingStart     uint64
 	headGen          uint64
 	installed        *http.Request
 	installedGen     uint64
-	originalPath     string // set in reset(), never modified after
+	originalPath     string // set when the Context is built, never modified after
 	rewriteTarget    string // set by Rewrite(), consumed by dispatch loop
 	rewriteRequested bool   // set by Rewrite(), read by dispatch loop
 	rewriteCount     int    // loop detection counter
@@ -85,23 +92,36 @@ var errRewrite = errors.New("credo: internal rewrite")
 // NewContext creates a new Context wrapping the given ResponseWriter and Request.
 // This is primarily useful for testing error handlers and middleware.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {
-	c := &Context{
-		request:  NewRequest(r),
-		response: NewResponse(w),
-	}
+	return newContext(nil, w, r)
+}
+
+// newContext builds the Context of one request in a single allocation: the
+// Request and the Response are embedded by value, and the first route
+// parameters and values land in fixed arrays inside it. app is nil for a
+// Context built with NewContext.
+func newContext(app *App, w http.ResponseWriter, r *http.Request) *Context {
+	c := &Context{app: app}
+	c.request.Request = r
 	c.request.owner = c
+	c.request.app = app
+	c.request.paramKeys = c.request.paramKeyBuf[:0]
+	c.request.paramValues = c.request.paramValueBuf[:0]
+	c.response.ResponseWriter = w
+	c.response.app = app
+	c.values = c.valuesBuf[:0]
 	c.initHead(r)
+	c.originalPath = r.URL.EscapedPath()
 	return c
 }
 
 // Request returns the Request for this context.
 func (c *Context) Request() *Request {
-	return c.request
+	return &c.request
 }
 
 // Response returns the Response for this context.
 func (c *Context) Response() *Response {
-	return c.response
+	return &c.response
 }
 
 // Route returns the matched Route (for accessing Meta, Name, BuildURI).
@@ -320,10 +340,10 @@ func (c *Context) TPlural(key string, count any, data ...map[string]any) string 
 //	bg := context.WithoutCancel(c.Context())
 //	go process(bg)
 //
-// Context deliberately does NOT implement context.Context itself: it is pooled
-// (sync.Pool) and reused across requests, so retaining a *Context as a
-// long-lived context.Context would observe a later request's state.
-// Context hands back the request's context instead.
+// Context deliberately does NOT implement context.Context itself: its head
+// moves as scopes open and return, so a *Context held as a context.Context
+// would not be one fixed context, and a *Context is not safe for concurrent
+// use. Context hands back the head as it stands instead.
 func (c *Context) Context() context.Context {
 	if c.head == nil {
 		return c.request.Request.Context()
@@ -331,25 +351,6 @@ func (c *Context) Context() context.Context {
 	c.noteForeignRequest()
 	c.materialize()
 	return c.head
-}
-
-// --- Pool reuse ---
-
-// reset prepares the Context for pool reuse.
-func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
-	c.request.reset(r)
-	c.response.Reset(w)
-	c.route = nil
-	c.mountRouteCtx = nil
-	c.logger = nil
-	c.pendingLogAttrID = ""
-	c.locale = ""
-	c.localeState = localeUnresolved
-	c.initHead(r)
-	c.originalPath = r.URL.EscapedPath()
-	c.rewriteTarget = ""
-	c.rewriteRequested = false
-	c.rewriteCount = 0
 }
 
 // OriginalPath returns the request path as received from the client in its

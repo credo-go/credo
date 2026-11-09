@@ -40,31 +40,32 @@ type Request struct {
 	// with NewRequest outside a Context.
 	owner *Context
 
-	// app is a back-reference to the application, set by the context pool.
+	// app is a back-reference to the application, set when the Context is built.
 	// Used for debug-mode bind warnings. Nil for externally created Requests.
 	app *App
 
 	// paramKeys/paramValues hold URL parameters populated during dispatch
 	// as parallel slices in insertion order. Typical routes carry at most a
-	// handful of parameters, so a linear scan beats a map and the backing
-	// arrays are retained across pool reuse — steady-state dispatch does not
-	// allocate for parameters. For host-scoped routes they include both
-	// path params and host params (collisions are rejected at registration).
-	paramKeys   []string
-	paramValues []string
+	// handful of parameters, so a linear scan beats a map; inside a Context
+	// the slices start on paramKeyBuf and paramValueBuf, so a route with up
+	// to four parameters allocates nothing for them. For host-scoped routes
+	// they include both path params and host params (collisions are rejected
+	// at registration).
+	paramKeys     []string
+	paramValues   []string
+	paramKeyBuf   [4]string
+	paramValueBuf [4]string
 
 	// paramsMap is the lazily materialized view served by RouteParams.
-	// Rebuilt from the slices when paramsMapValid is false; backing storage
-	// is retained across pool reuse.
+	// Rebuilt from the slices when paramsMapValid is false.
 	paramsMap      map[string]string
 	paramsMapValid bool
 
 	// cachedQuery is lazy-parsed from URL.Query() on first access.
-	// Cleared on reset to avoid leaking across pooled reuse.
 	cachedQuery url.Values
 
 	// cachedScheme and cachedRealIP avoid repeated proxy-header parsing within
-	// one request. Cleared on reset to avoid leaking across pooled reuse.
+	// one request.
 	cachedScheme    string
 	cachedSchemeSet bool
 	cachedRealIP    string
@@ -113,10 +114,8 @@ func (r *Request) RouteParam(name string) string {
 // For host-scoped routes, host params and path params share the same namespace.
 //
 // The map is a read-only view, materialized lazily on first call: writes
-// to it are not seen by [Request.RouteParam]. It is owned by the framework
-// and recycled after the request completes — do not retain it or read it
-// from another goroutine after the handler returns. For single values,
-// prefer [Request.RouteParam].
+// to it are not seen by [Request.RouteParam], and a re-dispatch that changes
+// the parameters rebuilds it. For single values, prefer [Request.RouteParam].
 func (r *Request) RouteParams() map[string]string {
 	if !r.paramsMapValid {
 		if r.paramsMap == nil {
@@ -522,16 +521,4 @@ func handOverMultipartForm(dst, src *http.Request) {
 	if dst != src && dst.MultipartForm == nil && src.MultipartForm != nil {
 		dst.MultipartForm = src.MultipartForm
 	}
-}
-
-// reset prepares the Request for pool reuse.
-func (r *Request) reset(hr *http.Request) {
-	r.Request = hr
-	r.multipartForm = nil
-	r.resetRouteParams() // retains backing storage for reuse
-	r.cachedQuery = nil  // drop reference so next request parses its own URL
-	r.cachedScheme = ""
-	r.cachedSchemeSet = false
-	r.cachedRealIP = ""
-	r.cachedRealIPSet = false
 }

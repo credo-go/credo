@@ -25,7 +25,7 @@ import (
 )
 
 // App is the main Credo application. It holds the router, middleware stack,
-// context pool, error handler, and route registry.
+// error handler, and route registry.
 type App struct {
 	// container is the DI container for service registration and resolution.
 	container *di.Container
@@ -54,9 +54,6 @@ type App struct {
 	// set via UseSuccessRenderer. nil = default JSON (no envelope). Raw
 	// Response helpers (JSON/XML/Text/Blob/...) never consult it.
 	successRenderer SuccessRenderer
-
-	// pool reuses Context instances.
-	ctxPool *pool[*Context]
 
 	// root is the root route group: empty prefix, default mux, no host
 	// scope. App's route-registration surface (HTTP verbs, Group, Static,
@@ -335,7 +332,7 @@ func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 }
 
 // assembleApp wires the App value from the resolved pieces: router, root
-// group, lifecycle manager, and the context pool.
+// group and lifecycle manager.
 func assembleApp(
 	o *appOptions,
 	serverCfg serverConfig,
@@ -369,21 +366,6 @@ func assembleApp(
 	}
 	app.root = &Group{registrar: app}
 	app.lifecycle = &lifecycleManager{app: app}
-	app.ctxPool = newPool(func() *Context {
-		c := &Context{
-			app: app,
-			request: &Request{
-				app: app,
-				// Most routes carry 1-4 parameters; pre-size so steady-state
-				// dispatch never grows the backing arrays.
-				paramKeys:   make([]string, 0, 4),
-				paramValues: make([]string, 0, 4),
-			},
-			response: &Response{app: app},
-		}
-		c.request.owner = c
-		return c
-	})
 	return app
 }
 

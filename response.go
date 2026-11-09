@@ -76,8 +76,8 @@ type Response struct {
 	envelopeBypassed bool
 
 	// delegated wraps the source of a delegated ReadFrom (see
-	// Response.delegate); it lives on the pooled Response so delegation
-	// allocates nothing. R is cleared as soon as the delegation returns.
+	// Response.delegate); it lives on the Response so delegation allocates
+	// nothing. R is cleared as soon as the delegation returns.
 	delegated io.LimitedReader
 
 	// app supplies the JSON encoding profile. Nil for a Response built with

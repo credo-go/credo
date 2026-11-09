@@ -18,8 +18,9 @@
 //
 // A Conn is borrowed for the synchronous lifetime of a Handler. Its Context is
 // the connection-lifetime context and should be used for WebSocket I/O instead
-// of the HTTP request context. Neither the pooled *credo.Context nor Conn may
-// be retained after the Handler returns. Every connection needs an active Read
+// of the HTTP request context. Neither the *credo.Context nor Conn may be used
+// after the Handler returns: the response cannot be written then, and the
+// adapter's cleanup owns the connection. Every connection needs an active Read
 // or CloseRead so control frames are processed.
 //
 // Maturity: beta
