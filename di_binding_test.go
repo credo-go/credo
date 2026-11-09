@@ -357,3 +357,62 @@ func TestHiddenCapability_ViewOfAHeldResource(t *testing.T) {
 		}
 	})
 }
+
+// startView shows Start and hides the Shutdown of what it binds.
+type startView interface{ Start(context.Context) error }
+
+// startStopper has Start and Shutdown.
+type startStopper struct {
+	name string
+	j    *journal
+}
+
+func (s *startStopper) Start(context.Context) error    { s.j.add("start:" + s.name); return nil }
+func (s *startStopper) Shutdown(context.Context) error { s.j.add("stop:" + s.name); return nil }
+
+// startOnlyValue has Start and no Shutdown: it is not a component.
+type startOnlyValue struct{ j *journal }
+
+func (s *startOnlyValue) Start(context.Context) error { s.j.add("start:only"); return nil }
+
+// TestHiddenCapability_HiddenShutdownStillStarts: a binding whose type shows
+// Start and hides the Shutdown its value has is a component — the hidden
+// Shutdown makes it one, and its teardown follows it — and is started;
+// nothing is refused. A value with Start and no Shutdown is not a component
+// and is never started.
+func TestHiddenCapability_HiddenShutdownStillStarts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bind func(app *credo.App, v *startStopper)
+	}{
+		{"ProvideValue", func(app *credo.App, v *startStopper) { app.ProvideValue[startView](v) }},
+		{"constructor", func(app *credo.App, v *startStopper) {
+			app.Provide(func() startView { return v })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := &journal{}
+			app := mustNew(t)
+			tc.bind(app, &startStopper{name: "view", j: j})
+			startComponents(t, app)
+			if err := shutdownApp(t, app, 2*time.Second); err != nil {
+				t.Fatalf("Shutdown() = %v", err)
+			}
+			if want := []string{"start:view", "stop:view"}; !slices.Equal(j.list(), want) {
+				t.Errorf("events = %v, want %v", j.list(), want)
+			}
+		})
+	}
+	t.Run("no Shutdown", func(t *testing.T) {
+		j := &journal{}
+		app := mustNew(t)
+		app.ProvideValue[startView](&startOnlyValue{j: j})
+		startComponents(t, app)
+		if err := shutdownApp(t, app, 2*time.Second); err != nil {
+			t.Fatalf("Shutdown() = %v", err)
+		}
+		if got := j.list(); len(got) != 0 {
+			t.Errorf("events = %v; a value without Shutdown is not a component and is never started", got)
+		}
+	})
+}

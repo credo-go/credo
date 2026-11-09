@@ -532,7 +532,7 @@ func (lm *lifecycleManager) componentReadiness() []internalhealth.ReadinessCheck
 		}
 		v, built := c.UnitValue(u)
 		readier, ok := v.(Readier)
-		if !built || !ok {
+		if !built || !ok || !u.RunsCapabilities(v) {
 			continue
 		}
 		infra := lm.app.NewInfra(u.Name())
