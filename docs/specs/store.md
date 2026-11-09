@@ -61,12 +61,6 @@ func Wrap(kind error, cause error) error
 
 The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that checked a coarse conflict checks the sentinel of the condition it meant: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
 
-> **Current until v0.26.0 (R2):** the next paragraph describes the store errors' `HTTPStatus()` bridge.
-
-The store errors' `HTTPStatus()` is a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` is the service/domain override and preserves the internal store cause.
-
-> **Pending v0.26.0 (R2):** the next two paragraphs state the one status channel and the kind as the code; until R2 ships, `*Error` and the sentinels also implement `HTTPStatus()`, and a store error renders the code its status gives: `not_found`, `conflict` for every 409 kind, `gateway_timeout` and `service_unavailable`.
-
 A store error reaches the client through its kind alone: the root reads `FaultKind` and maps the kind to the table's status, and no store type has an `HTTPStatus` method. A fault without an explicit code renders its kind as its code — `not_found`, `already_exists`, `constraint`, `serialization`, `deadlock`, `contention`, `conflict`, `timeout`, `unavailable`, `read_only` — so a client tells a duplicate from a serialization or deadlock failure; the statuses do not change. `Error.Code` is the driver's code, a diagnostic that is never rendered.
 
 The root classifies `*credo.HTTPError` first and `*fault.Error` second, both before any other `fault.Provider`, so a service overrides a store error by wrapping it: an `HTTPError` with `WithInternal(err)`, or a domain `fault.Error` with `WithInternal(err)`, which renders its own kind's status and its own code ([HTTP features spec](http-features.md)). The store error stays the logged internal cause and never reaches the client.

@@ -176,14 +176,12 @@ Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) trea
 
 #### Render and the envelope seam
 
-> **Current until v0.26.0 (R2):** in the next block, the `string` type of `RenderMessageKey`'s parameter, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey`; each becomes `credo.MessageKey`.
-
 ```go
 // Method on *Context — the single call site that consults App.UseSuccessRenderer
 func (c *Context) Render(status int, data any, opts ...RenderOption) error
 
 // Side channels for the renderer's envelope; silently dropped with no renderer
-func RenderMessageKey(key string) RenderOption
+func RenderMessageKey(key MessageKey) RenderOption
 func RenderMeta(v any) RenderOption
 
 // Renderers, each installed once with App.UseSuccessRenderer / App.UseErrorRenderer
@@ -193,8 +191,8 @@ type ErrorRenderer func(ctx *Context, info *ErrorInfo) any
 type RenderInfo struct {
     Status     int
     Data       any
-    MessageKey string // from RenderMessageKey
-    Meta       any    // from RenderMeta
+    MessageKey MessageKey // from RenderMessageKey
+    Meta       any        // from RenderMeta
 }
 
 // Request-scoped; must not be retained after the renderer returns.
@@ -202,7 +200,7 @@ type ErrorInfo struct {
     Err        error                        // original error, for logging and errors.As
     Status     int                          // effective status; the renderer may change it
     Code       string                       // stable machine code
-    MessageKey string                       // exact key before resolution
+    MessageKey MessageKey                   // catalog key before resolution; empty for a literal message
     Message    string                       // resolved message, including safe fallback
     Details    any                          // client-safe detail
     Violations []validation.ValidationError // validation or bind violations
@@ -222,9 +220,7 @@ type ErrorBody struct {
 }
 ```
 
-> **Pending v0.26.0 (R2):** not implemented yet; a message key is a `string`, and a key the catalog lacks is rendered as the message text.
-
-A message key has its own named string type, `credo.MessageKey`, an alias of `validation.MessageKey`, so a violation's key has it too: `RenderMessageKey(key MessageKey)`, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey` take it, as `HTTPError.WithMessageKey` does. A key is a catalog key only, never rendered as text and never carrying client input: a key the catalog lacks falls back to the built-in message for the code and then to the status text, and in debug mode the pipeline warns with the key, the code and the route. Literal client text is set with `HTTPError.WithMessage`, which is never looked up. A key computed as a `string` converts to `MessageKey`; a `string` variable passed without a conversion does not compile ([ADR-009](../adr/009-handler-and-error-handling.md)).
+A message key has its own named string type, `credo.MessageKey`, an alias of `validation.MessageKey`, so a violation's key has it too: `RenderMessageKey(key MessageKey)`, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey` take it, as `HTTPError.WithMessageKey` does. A key is a catalog key only, never rendered as text and never carrying client input: a key the catalog lacks falls back to the built-in message for the code and then to the status text, and in debug mode the pipeline warns with the key, the code and the route. Literal client text is set with `HTTPError.WithMessage`, which is never looked up and wins over a key; `ErrorInfo.MessageKey` is then empty. A key computed as a `string` converts to `MessageKey`; a `string` variable passed without a conversion does not compile ([ADR-009](../adr/009-handler-and-error-handling.md)).
 
 `Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it.
 
@@ -412,9 +408,7 @@ For ordinary methods, a missing `Content-Type` retains the JSON convenience defa
 
 `BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `app.UseDecompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before `PreRouting` middleware runs (see the [HTTP features spec](http-features.md#locale-and-transport-features)).
 
-> **Pending v0.26.0 (R2):** not implemented yet; the rejected coding and the rejected media type are appended to the error's message key.
-
-An unsupported content encoding and an unsupported content type carry the rejected value in the error's `Details`, never in its message key or its message: the error sets no key, so its message is resolved from its code.
+An unsupported content encoding and an unsupported content type carry the rejected value in the error's `Details`, under `encoding` and `content_type`, never in its message key or its message: the error sets no key, so its message is resolved from its code.
 
 A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
 
@@ -522,9 +516,7 @@ app.GET("/users", func(c *credo.Context) error {
 
 **Supported field types**: `string`, `bool`, all integer types (`int`, `int8`–`int64`, `uint`–`uint64`), `float32`, `float64`, any type implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`, custom types — takes precedence over native conversions, matching the config decoder), slices of all of these (`[]string`, `[]int`, `[]float64`, repeated params), and pointer variants of all scalar types (`*string`, `*int`, `*time.Time`, etc.). Pointer fields stay `nil` when the parameter is absent, enabling nil-vs-zero-value distinction (e.g., PATCH partial updates, optional filters). Embedded structs and pointer-to-embedded-structs are supported recursively. The same type support applies to `form:"..."` tags used by `BindBody` for form-urlencoded and multipart content types.
 
-> **Pending v0.26.0 (R2):** not implemented yet; a field of an unsupported type fails the bind with 400 and the code `unsupported_bind_field_type`, whose message key names the field and its kind.
-
-A field of a type outside this list is a developer error: the bind returns a 500, the reason is logged as the error's internal cause, as for an invalid bind target, and nothing about it reaches the client.
+A field of a type outside this list is a developer error: the bind returns a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, as for an invalid bind target, and nothing about it reaches the client.
 
 ## Design Decisions
 

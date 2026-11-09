@@ -18,8 +18,7 @@ When i18n is active, Credo also translates:
 
 - validation field messages returned from `BindBody()` and `BindQuery()`
 - `credo.HTTPError` messages such as `credo.ErrNotFound`
-- semantic `fault.Provider` errors such as store errors, through root HTTP policy
-- legacy/explicit errors that expose only an HTTP status via `HTTPStatus() int`
+- semantic `fault.Provider` errors such as store errors and `fault.Error`, through root HTTP policy
 
 You do not import a public `i18n` package. The implementation stays internal.
 
@@ -508,7 +507,7 @@ Notes:
 
 ## Automatic HTTP Error Translation
 
-Credo localizes error messages automatically. An explicit `MessageKey` is an exact key and falls back to its literal value. Otherwise Credo invokes the optional scope-aware resolver, then uses the bare code. An implicit lookup miss falls back to built-in/HTTP status text, never to the resolver-generated key.
+Credo localizes error messages automatically. An explicit `MessageKey` is an exact catalog key. Otherwise Credo invokes the optional scope-aware resolver, then uses the bare code. A lookup miss falls back to the built-in message for the code, then to the HTTP status text, never to the key.
 
 ```go
 app.GET("/users/{id}", func(c *credo.Context) error {
@@ -539,7 +538,7 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
     WithMessageKey("user.email_exists")
 ```
 
-If no translation is found, the explicit key itself (`"user.email_exists"`) is used as the message. It may therefore be a literal hard-coded message.
+If no translation is found, the message is the built-in one for the code, then the status text (`Conflict`), never the key; with `WithDebug` the pipeline warns with the key, the code and the route. A hard-coded message is set with `WithMessage("…")`, which is never looked up. The [error-handling guide](error-handling.md#httperror) shows `testutil.CheckMessageKeys`, which fails a test for a key the catalogs do not define.
 
 ---
 

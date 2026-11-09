@@ -89,8 +89,6 @@ Rules are grouped by topic (string, numeric, date, collection, file, common), on
 
 Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the [default error envelope](009-handler-and-error-handling.md#default-error-envelope). `Code` and `Params` let the error pipeline translate a message without changing the wire shape ([ADR-013](013-internationalization.md)).
 
-> **Pending v0.26.0 (R2):** until R2 ships, a violation's message key is a plain `string`.
-
 A violation's message key has the named type `validation.MessageKey`, `type MessageKey string`, which the root aliases as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type; a key is a catalog key, never rendered as text ([ADR-009](009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
 
 ### Rule Errors: Client Messages and Internal Failures
