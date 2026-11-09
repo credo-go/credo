@@ -42,9 +42,9 @@ server:
   strict_bodies: false                 # true: BindBody rejects unknown JSON members (400)
   # trusted_proxies:                   # CIDRs allowed to set X-Forwarded-* (empty = none)
   #   - "10.0.0.0/8"
-  # tls:                               # Serving HTTPS requires BOTH paths; the pair is
-  #   cert_file: "/etc/ssl/app.pem"    # re-read on every reload, rotating the certificate
-  #   key_file: "/etc/ssl/app.key"     # without dropping open connections.
+  # tls:                               # Serving HTTPS requires BOTH paths; the pair
+  #   cert_file: "/etc/ssl/app.pem"    # rotates when its files change on disk, without
+  #   key_file: "/etc/ssl/app.key"     # a signal; a new path takes a restart.
 
 # ---------------------------------------------------------------------------
 # Databases [user-read]
@@ -78,6 +78,14 @@ databases:
   #   max_idle: 2
   #   max_lifetime: "30m"
   #   ssl_mode: "require"
+
+# ---------------------------------------------------------------------------
+# Logging [user-read, live]
+# A live section: main.go reads it with LogSection.Live, and a reload
+# (SIGHUP / app.Reload) that changes log.level switches the level in place.
+# ---------------------------------------------------------------------------
+log:
+  level: "info"                        # debug | info | warn | error
 
 # ---------------------------------------------------------------------------
 # Application [user-read]

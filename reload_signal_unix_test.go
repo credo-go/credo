@@ -14,7 +14,24 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/config"
 )
+
+// feature is the live section the signal tests reload.
+type feature struct {
+	Limit int `credo:"limit"`
+}
+
+// onFeature declares the fixture's "feature" section live and runs fn with
+// each new value a reload publishes.
+func onFeature(t *testing.T, f *reloadFixture, fn func(feature) error) {
+	t.Helper()
+	live, err := config.Section[feature]("feature").Live(f.cfg)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	live.OnChange(func(_ context.Context, _, next feature) error { return fn(next) })
+}
 
 // startRun runs the fixture through Run (the signal-aware entry point) and
 // waits until it is running. It returns a stop function that shuts the app
@@ -64,20 +81,14 @@ func sendHUP(t *testing.T) {
 }
 
 // TestRun_SIGHUPTriggersReload is the end-to-end signal path: a SIGHUP under
-// Run re-reads the config file and notifies the affected subscriber; a second
-// SIGHUP after a failing hook still leaves the server running.
+// Run re-reads the config file and replaces the live section; a second
+// SIGHUP after a failing callback still leaves the server running.
 func TestRun_SIGHUPTriggersReload(t *testing.T) {
 	f := newReloadFixture(t, "feature:\n  limit: 1\n")
-	type feature struct {
-		Limit int `credo:"limit"`
-	}
 	got := make(chan int, 4)
-	f.app.OnConfigChange("feature", func(_ context.Context, c feature) error {
-		got <- c.Limit
-		return nil
-	})
 	var fail atomic.Bool
-	f.app.OnReload(func(context.Context) error {
+	onFeature(t, f, func(c feature) error {
+		got <- c.Limit
 		if fail.Load() {
 			return os.ErrInvalid
 		}
@@ -90,10 +101,10 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 	select {
 	case v := <-got:
 		if v != 2 {
-			t.Fatalf("subscriber got limit=%d, want 2", v)
+			t.Fatalf("callback got limit=%d, want 2", v)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("SIGHUP did not trigger the OnConfigChange subscriber")
+		t.Fatal("SIGHUP did not trigger the live section")
 	}
 
 	// A failing reload is logged, not fatal: the server keeps running and the
@@ -104,10 +115,10 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 	select {
 	case v := <-got:
 		if v != 3 {
-			t.Fatalf("subscriber got limit=%d, want 3", v)
+			t.Fatalf("callback got limit=%d, want 3", v)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("second SIGHUP did not trigger the subscriber")
+		t.Fatal("second SIGHUP did not reload the live section")
 	}
 	if !f.app.IsRunning() {
 		t.Fatal("a failing reload must not stop the server")
@@ -125,11 +136,8 @@ func TestRun_SIGHUPTriggersReload(t *testing.T) {
 // which the test proves by surviving its own SIGHUP without signal.Ignore.
 func TestRun_WithoutReloadSignals(t *testing.T) {
 	f := newReloadFixture(t, "feature:\n  limit: 1\n", credo.WithoutReloadSignals())
-	type feature struct {
-		Limit int `credo:"limit"`
-	}
 	got := make(chan int, 2)
-	f.app.OnConfigChange("feature", func(_ context.Context, c feature) error {
+	onFeature(t, f, func(c feature) error {
 		got <- c.Limit
 		return nil
 	})
@@ -139,7 +147,7 @@ func TestRun_WithoutReloadSignals(t *testing.T) {
 	sendHUP(t)
 	select {
 	case v := <-got:
-		t.Fatalf("SIGHUP must be ignored under WithoutReloadSignals, but subscriber got limit=%d", v)
+		t.Fatalf("SIGHUP must be ignored under WithoutReloadSignals, but callback got limit=%d", v)
 	case <-time.After(300 * time.Millisecond):
 	}
 	if !f.app.IsRunning() {
@@ -149,16 +157,16 @@ func TestRun_WithoutReloadSignals(t *testing.T) {
 	// Programmatic Reload is unaffected by the option.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := f.app.Reload(ctx); err != nil {
+	if _, err := f.app.Reload(ctx); err != nil {
 		t.Fatalf("programmatic Reload: %v", err)
 	}
 	select {
 	case v := <-got:
 		if v != 2 {
-			t.Fatalf("subscriber got limit=%d, want 2", v)
+			t.Fatalf("callback got limit=%d, want 2", v)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("programmatic Reload did not notify the subscriber")
+		t.Fatal("programmatic Reload did not reload the live section")
 	}
 
 	stop() // quiesce the logger before reading the buffer
@@ -178,11 +186,8 @@ func TestRun_WithoutReloadSignals(t *testing.T) {
 func TestRunContext_IgnoresSIGHUP(t *testing.T) {
 	signalIgnore(t)
 	f := newReloadFixture(t, "feature:\n  limit: 1\n")
-	type feature struct {
-		Limit int `credo:"limit"`
-	}
 	got := make(chan int, 1)
-	f.app.OnConfigChange("feature", func(_ context.Context, c feature) error {
+	onFeature(t, f, func(c feature) error {
 		got <- c.Limit
 		return nil
 	})
@@ -192,7 +197,7 @@ func TestRunContext_IgnoresSIGHUP(t *testing.T) {
 	sendHUP(t)
 	select {
 	case v := <-got:
-		t.Fatalf("RunContext must not handle SIGHUP, but subscriber got limit=%d", v)
+		t.Fatalf("RunContext must not handle SIGHUP, but callback got limit=%d", v)
 	case <-time.After(300 * time.Millisecond):
 	}
 }

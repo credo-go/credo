@@ -70,8 +70,7 @@
 //     [App.UseAccessLog], [App.UseErrorRenderer]).
 //   - Set<X> / Remove<X> — imperative mutators for a single request-state or
 //     route value (e.g. [Context.SetUser], [Route.SetMeta]).
-//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnStop],
-//     [App.OnReload]).
+//   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnStop]).
 //   - Add<X> — adds one of several registrations of a kind (e.g.
 //     [App.AddLivenessCheck], [App.AddReadinessCheck]).
 //   - A noun accessor returns the App's one registry of a subsystem that
@@ -189,9 +188,10 @@
 //
 // This is why [App.UseI18n] panics on misuse at the call while a missing or
 // malformed locale file fails the start: the files are read in the start
-// phase. The same split applies to reload: registering [App.OnConfigChange] on a store
-// that cannot reload panics, while [App.Reload] itself — which re-reads files
-// and runs user hooks — returns an error.
+// phase. Reload follows the same split by cause: it re-reads files and runs
+// the live sections' callbacks, so [App.Reload] returns an error, and so does
+// declaring a section live over a configuration that cannot reload, a
+// constructor error at Resolve or at start.
 //
 // The split is drawn by cause, not by execution phase: a developer invariant
 // violation panics even when the offending call happens to run during a

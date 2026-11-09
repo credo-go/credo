@@ -95,8 +95,7 @@ type App struct {
 	// rawConfig holds the RawConfig passed via WithRawConfig option.
 	rawConfig RawConfig
 
-	// reload holds the OnReload hooks, OnConfigChange subscribers, framework
-	// reload participants, and the mutex serializing Reload (ADR-020).
+	// reload holds the slot serializing Reload (ADR-020).
 	reload reloadState
 
 	// serverCfg holds the server configuration (host, port, timeouts).
@@ -119,8 +118,9 @@ type App struct {
 	tlsFilesSet bool
 
 	// tlsFiles serves the file-based key pair (WithTLSFiles / server.tls.*)
-	// through GetCertificate so a reload can rotate it (see tls_rotation.go).
-	// Inactive when TLS comes from WithTLSConfig or the server is plaintext.
+	// through GetCertificate and rotates it when the files change on disk
+	// (see tls_rotation.go). Inactive when TLS comes from WithTLSConfig or the
+	// server is plaintext.
 	tlsFiles fileCertSource
 
 	// httpRedirectAddr, when non-empty, is the plaintext listen address for the
@@ -285,16 +285,23 @@ func loadRawConfig(o *appOptions) error {
 	return nil
 }
 
+// serverSection is the framework's own section. It is read through its
+// descriptor, so the configuration records it as static and a live read of it
+// fails: a server setting takes a restart.
+const serverSection config.Section[serverConfig] = "server"
+
 // resolveServerConfig produces the effective server settings: the "server"
 // config section when present, the explicit With* options overlaid on top
 // (see appOptions.overlayServer), then framework defaults and validation. A
 // missing section is fine (defaults apply); a decode error is surfaced.
 func resolveServerConfig(o *appOptions) (serverConfig, error) {
 	var cfg serverConfig
-	if o.rawConfig.Exists("server") {
-		if err := o.rawConfig.Unmarshal("server", &cfg); err != nil {
+	if o.rawConfig.Exists(string(serverSection)) {
+		decoded, err := serverSection.Decode(o.rawConfig)
+		if err != nil {
 			return serverConfig{}, fmt.Errorf("credo: invalid server config: %w", err)
 		}
+		cfg = decoded
 	}
 	o.overlayServer(&cfg)
 	applyServerDefaults(&cfg)
@@ -324,7 +331,7 @@ func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 }
 
 // assembleApp wires the App value from the resolved pieces: router, root
-// group, lifecycle manager, reload participants, and the context pool.
+// group, lifecycle manager, and the context pool.
 func assembleApp(
 	o *appOptions,
 	serverCfg serverConfig,
@@ -356,7 +363,6 @@ func assembleApp(
 	if !o.disableRecover {
 		app.recover = newRecoverFeature(o.recoverCfg)
 	}
-	app.addReloadParticipant(app.tlsReloadParticipant())
 	app.root = &Group{registrar: app}
 	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {

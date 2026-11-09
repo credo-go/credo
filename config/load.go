@@ -61,6 +61,7 @@ func Load(opts ...Option) (*Config, error) {
 	if err := c.populate(dotenv); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	c.markStart()
 	return c, nil
 }
 
@@ -94,7 +95,15 @@ func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	if err := c.populate(dotenv); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	c.markStart()
 	return c, nil
+}
+
+// markStart records the tree the first load built, against which a reload
+// reports the keys that need a restart.
+func (c *Config) markStart() {
+	c.start = copyMap(c.data)
+	c.startFiles = copyMap(c.files)
 }
 
 // populate fills the tree from the recorded source (embedded bytes or files
@@ -111,6 +120,7 @@ func (c *Config) populate(dotenv map[string]string) error {
 	} else if err := c.loadFiles(c.src.env); err != nil {
 		return fmt.Errorf("load config file: %w", err)
 	}
+	c.files = copyMap(c.data)
 	c.mergeDotenv(dotenv)
 	if !c.opts.noProcessEnv {
 		c.mergeEnv(os.Environ())
@@ -337,6 +347,7 @@ func (c *Config) mergeDotenv(pairs map[string]string) {
 		}
 		if k := normalizeKey(key); k != "" {
 			flat[k] = val
+			c.recordOverride(k, ".env entry "+key)
 		}
 	}
 	c.merge(unflatten(flat))
@@ -366,9 +377,18 @@ func (c *Config) mergeEnv(environ []string) {
 		}
 		if k := normalizeKey(strings.TrimPrefix(key, c.opts.prefix)); k != "" {
 			flat[k] = val
+			c.recordOverride(k, "environment variable "+key)
 		}
 	}
 	c.merge(unflatten(flat))
+}
+
+// recordOverride records that a source later than the files sets key.
+func (c *Config) recordOverride(key, source string) {
+	if c.overrides == nil {
+		c.overrides = make(map[string]string)
+	}
+	c.overrides[key] = source
 }
 
 // normalizeKey converts an environment-style key to a config key path:

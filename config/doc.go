@@ -59,14 +59,27 @@
 //
 // # Reload
 //
-// [Config.Reload] re-reads every source the Config was built from and swaps
-// the tree in atomically, returning the leaf keys that changed. It never
-// switches CREDO_ENV, and a failed re-read leaves the previous snapshot in
-// place. [Config.Stage] is the two-phase form: inspect the candidate through
-// the returned [Staged] handle, then Commit. The credo package drives these
-// from SIGHUP or app.Reload, validating typed per-section subscribers against
-// the candidate before committing (ADR-020); call them directly only when you
-// own the reload trigger yourself.
+// A section is a snapshot unless it is declared live. [Section.Live] binds a
+// [Live] handle whose value each reload that changes the section replaces
+// whole; [Live.Load] reads it once per operation, and [Live.OnChange] keeps
+// derived state in step:
+//
+//	var Limits = config.Section[LimitsConfig]("limits")
+//
+//	app.Provide(Limits.Live) // *config.Live[LimitsConfig]
+//
+// A section is static or live within one configuration: reading one section
+// through [Section.Decode] and through [Section.Live] fails, naming both
+// reads. A raw [Config.Unmarshal] with a string key is outside that check.
+//
+// [Config.Reload] re-reads every source the Config was built from, validates
+// every live section the change touches before anything is published, then
+// publishes the snapshot and the changed sections as one generation and runs
+// their callbacks. It returns a [ReloadResult] naming the keys that changed,
+// the sections it replaced, the keys whose change takes a restart and the file
+// keys a later source keeps. It never switches CREDO_ENV, and a failed re-read
+// or validation publishes nothing. The credo package calls it from SIGHUP and
+// app.Reload (ADR-020).
 //
 // # Strict Decoding
 //

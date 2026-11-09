@@ -5,11 +5,15 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/credo-go/credo/config"
 )
 
 // signalLoopFixture drives lifecycleManager.signalLoop with plain channels in
@@ -27,11 +31,38 @@ type signalLoopFixture struct {
 // terminate closes the termination channel once.
 func (f *signalLoopFixture) terminate() { f.terminated.Do(func() { close(f.termination) }) }
 
-func newSignalLoopFixture(t *testing.T) *signalLoopFixture {
+// newSignalLoopFixture builds an App over a one-key configuration file. A
+// non-nil onReload runs in the OnChange callback of a live section over that
+// key; the callback first rewrites the file with the key's next value, so
+// every reload, including one queued behind a running callback, changes the
+// section again.
+func newSignalLoopFixture(t *testing.T, onReload func(ctx context.Context) error) *signalLoopFixture {
 	t.Helper()
-	app, err := New(WithLogger(slog.New(slog.DiscardHandler)))
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func(n int) {
+		if err := os.WriteFile(path, []byte("n: "+strconv.Itoa(n)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(1)
+	cfg, err := config.Load(config.WithFiles(path), config.WithoutProcessEnv(), config.WithoutDotenv())
 	if err != nil {
 		t.Fatal(err)
+	}
+	app, err := New(WithRawConfig(cfg), WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onReload != nil {
+		live, err := config.Section[int]("n").Live(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live.OnChange(func(ctx context.Context, _, next int) error {
+			write(next + 1)
+			return onReload(ctx)
+		})
+		write(2)
 	}
 	return &signalLoopFixture{
 		app:         app,
@@ -89,10 +120,9 @@ func (f *signalLoopFixture) sendReload(t *testing.T) {
 // the reload's context is cancelled, and the loop returns once the drain has
 // waited for the reload.
 func TestSignalLoop_TerminationDuringReload(t *testing.T) {
-	f := newSignalLoopFixture(t)
 	entered := make(chan struct{})
 	var sawCancel atomic.Bool
-	f.app.OnReload(func(ctx context.Context) error {
+	f := newSignalLoopFixture(t, func(ctx context.Context) error {
 		close(entered)
 		<-ctx.Done()
 		sawCancel.Store(true)
@@ -127,10 +157,9 @@ func TestSignalLoop_TerminationDuringReload(t *testing.T) {
 // TestSignalLoop_CoalescesReloadSignals: signals that land while a reload is
 // in flight produce exactly one follow-up reload, and reloads never overlap.
 func TestSignalLoop_CoalescesReloadSignals(t *testing.T) {
-	f := newSignalLoopFixture(t)
 	var runs, inFlight, maxInFlight atomic.Int32
 	gate := make(chan struct{})
-	f.app.OnReload(func(context.Context) error {
+	f := newSignalLoopFixture(t, func(context.Context) error {
 		n := inFlight.Add(1)
 		for {
 			old := maxInFlight.Load()

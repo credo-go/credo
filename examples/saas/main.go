@@ -14,8 +14,9 @@
 // Features shown:
 //   - Configuration loading (config.Load with YAML + .env + env overrides)
 //   - Typed config at the module boundary, injected via DI
-//   - Configuration reload: OnConfigChange re-reads one section on SIGHUP
-//     (systemctl reload) or app.Reload, here swapping the log level in place
+//   - Configuration reload: the "log" section is live, so a SIGHUP
+//     (systemctl reload) or app.Reload swaps the log level in place, while a
+//     change to the static "app" section is reported as needing a restart
 //   - Framework HTTP features (recovery on by default; request ID, access
 //     log and compression enabled explicitly) plus global CORS and secure
 //     headers middleware
@@ -66,6 +67,15 @@ type AppConfig struct {
 	Environment string
 	Debug       bool
 }
+
+// LogConfig is the live "log" section. slog.Level decodes from its text form
+// ("debug", "info", "warn", "error").
+type LogConfig struct {
+	Level slog.Level
+}
+
+// LogSection declares the "log" section; run reads it live.
+var LogSection = config.Section[LogConfig]("log")
 
 // DatabaseConfig holds database connection settings. Field names map to
 // snake_case config keys automatically (e.g. MaxOpen → "max_open",
@@ -435,8 +445,9 @@ func requireRole(role string) credo.Middleware {
 func run() error {
 	// 1. Configuration. Load the YAML/JSON file + .env + env vars, read the
 	// application's typed sections at the module boundary, build the logger
-	// and create the App. The log level lives in a slog.LevelVar so a config
-	// reload (SIGHUP / app.Reload) can change it without a restart.
+	// and create the App. The log level is a live section: it lives in a
+	// slog.LevelVar that the section's OnChange sets, so a config reload
+	// (SIGHUP / app.Reload) changes it without a restart.
 	rawCfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
@@ -451,10 +462,12 @@ func run() error {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 
-	var logLevel slog.LevelVar
-	if appCfg.Debug {
-		logLevel.Set(slog.LevelDebug)
+	logCfg, err := LogSection.Live(rawCfg)
+	if err != nil {
+		return err
 	}
+	var logLevel slog.LevelVar
+	logLevel.Set(logCfg.Load().Level)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel}))
 
 	app, err := credo.New(
@@ -501,18 +514,14 @@ func run() error {
 	ws := websocket.New()
 	app.Manage(ws)
 
-	// Hooks. OnConfigChange makes the "app" section reloadable: flip
-	// app.debug in the config file and `systemctl reload` (SIGHUP) or
-	// app.Reload switches the log level in place. The new value is decoded
-	// and published atomically before this runs; nothing else in "app" is
-	// live.
-	app.OnConfigChange("app", func(ctx context.Context, next AppConfig) error {
-		if next.Debug {
-			logLevel.Set(slog.LevelDebug)
-		} else {
-			logLevel.Set(slog.LevelInfo)
-		}
-		logger.Info("log level reloaded", "debug", next.Debug)
+	// Hooks. The live "log" section's OnChange keeps the slog.LevelVar in
+	// step: change log.level in the config file and `systemctl reload`
+	// (SIGHUP) or app.Reload switches the level in place. The new value is
+	// decoded, validated and published before this runs; "app" stays static,
+	// so a reload that changes app.name reports a restart.
+	logCfg.OnChange(func(_ context.Context, _, next LogConfig) error {
+		logLevel.Set(next.Level)
+		logger.Info("log level reloaded", "level", next.Level.String())
 		return nil
 	})
 	app.OnStart(func(context.Context) error {

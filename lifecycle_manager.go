@@ -204,9 +204,9 @@ func (app *App) resolveTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("TLS requires both cert_file and key_file (cert=%q key=%q)", cf, kf)
 	}
 	// Load the initial pair now so startup fails fast exactly as before, but
-	// serve it through GetCertificate + an atomic pointer so a reload can
-	// rotate it without touching the running server (tls_rotation.go).
-	if err := app.tlsFiles.load(cf, kf); err != nil {
+	// serve it through GetCertificate + an atomic pointer so a change on disk
+	// rotates it without touching the running server (tls_rotation.go).
+	if err := app.tlsFiles.load(cf, kf, app.logger); err != nil {
 		return nil, err
 	}
 	return &tls.Config{GetCertificate: app.tlsFiles.getCertificate}, nil
@@ -216,8 +216,8 @@ func (app *App) resolveTLSConfig() (*tls.Config, error) {
 // Preflight resolves the TLS config once — before stateRunning, so an invalid
 // certificate fails fast and rolls back to building. serveFn then serves HTTPS
 // with that resolved config when TLS is configured, or plaintext otherwise.
-// ServeTLS reuses srv.TLSConfig rather than reading the files again; for the
-// file-based sources only a reload re-reads them (tls_rotation.go).
+// ServeTLS reuses srv.TLSConfig rather than reading the files again; the
+// file-based sources re-read them when they change on disk (tls_rotation.go).
 func (app *App) serveFuncs() (func() error, func(*http.Server, net.Listener) error) {
 	var cfg *tls.Config
 	preflight := func() error {
@@ -363,8 +363,8 @@ func (lm *lifecycleManager) signalLoop(
 
 // awaitReloadQuiescence takes the reload slot and keeps it: a reload that was
 // in flight when shutdown began has already seen its context cancelled with
-// the session, and its participants, subscribers, and hooks may still be
-// using internal components, so the internal tier waits for it to return. Holding the slot
+// the session, and its OnChange callbacks may still be using internal
+// components, so the internal tier waits for it to return. Holding the slot
 // afterwards means no later reload can start. If ctx ends first, the reload is
 // reported as incomplete and teardown proceeds with the expired context, the
 // same contract as an abandoned stop hook.
@@ -407,7 +407,7 @@ func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
 	defer cancel()
 	app.logger.LogAttrs(ctx, slog.LevelInfo, "credo: reload signal received",
 		slog.String("signal", sig.String()))
-	if err := app.Reload(ctx); err != nil && !app.IsRunning() {
+	if _, err := app.Reload(ctx); err != nil && !app.IsRunning() {
 		app.logger.LogAttrs(ctx, slog.LevelWarn, "credo: reload signal ignored",
 			slog.String("signal", sig.String()), slog.String("error", err.Error()))
 	}

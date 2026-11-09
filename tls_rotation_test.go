@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/credo-go/credo"
 )
@@ -48,11 +50,35 @@ func tlsYAML(certFile, keyFile string) string {
 		filepath.ToSlash(certFile), filepath.ToSlash(keyFile))
 }
 
-// TestReload_TLSFiles_RotatesInPlace is the ADR-020 rotation path for
-// WithTLSFiles: the pair is rewritten on disk with no config change, a reload
-// picks it up, new handshakes see the new certificate, and the old one is no
-// longer served.
-func TestReload_TLSFiles_RotatesInPlace(t *testing.T) {
+// eventually polls cond until it holds or the deadline passes, so a test can
+// wait out the certificate check interval.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not happen within 5s", what)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// serves reports whether one HTTPS GET /ping trusting only certFile succeeds.
+func serves(t *testing.T, app *credo.App, certFile string) bool {
+	t.Helper()
+	client := httpsClient(t, certFile)
+	client.Transport.(*http.Transport).DisableKeepAlives = true
+	resp, err := client.Get("https://" + app.Addr().String() + "/ping")
+	if err == nil {
+		resp.Body.Close()
+	}
+	return err == nil
+}
+
+// TestTLSFiles_RotatesOnChange is the end-to-end rotation path for
+// WithTLSFiles: the pair is rewritten on disk, no signal and no reload is
+// sent, and a handshake after the check interval serves the new certificate.
+func TestTLSFiles_RotatesOnChange(t *testing.T) {
 	certA, keyA := generateSelfSignedCert(t)
 	certB, keyB := generateSelfSignedCert(t)
 	f := newReloadFixture(t, "feature: 1\n", credo.WithTLSFiles(certA, keyA))
@@ -62,22 +88,18 @@ func TestReload_TLSFiles_RotatesInPlace(t *testing.T) {
 	assertServes(t, f.app, certA, true)
 	assertServes(t, f.app, certB, false)
 
-	// Rotate in place: same paths, new material; nothing in the config diff.
 	copyFile(t, certB, certA)
 	copyFile(t, keyB, keyA)
-	if err := f.app.Reload(t.Context()); err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	assertServes(t, f.app, certB, true)
+	eventually(t, "serving the rotated certificate", func() bool { return serves(t, f.app, certB) })
 	if !strings.Contains(f.logs.String(), "credo: TLS certificate reloaded") {
 		t.Errorf("missing rotation log:\n%s", f.logs)
 	}
 }
 
-// TestReload_TLSFiles_BadPairKeepsCurrent locks in the failure mode: a
-// corrupt key on disk makes Reload return an error, and the previous pair
-// keeps serving.
-func TestReload_TLSFiles_BadPairKeepsCurrent(t *testing.T) {
+// TestTLSFiles_BadPairKeepsCurrent locks in the failure mode: a corrupt key
+// on disk is logged once, the previous pair keeps serving, and the server
+// keeps running.
+func TestTLSFiles_BadPairKeepsCurrent(t *testing.T) {
 	certA, keyA := generateSelfSignedCert(t)
 	f := newReloadFixture(t, "feature: 1\n", credo.WithTLSFiles(certA, keyA))
 	f.app.GET("/ping", pongHandler)
@@ -86,22 +108,19 @@ func TestReload_TLSFiles_BadPairKeepsCurrent(t *testing.T) {
 	if err := os.WriteFile(keyA, []byte("not a key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := f.app.Reload(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "tls rotation") {
-		t.Fatalf("Reload error = %v, want a tls rotation error", err)
-	}
+	eventually(t, "the failed load being logged", func() bool {
+		assertServes(t, f.app, certA, true)
+		return strings.Contains(f.logs.String(), "failed to load after a change on disk")
+	})
 	if !f.app.IsRunning() {
 		t.Fatal("a failed rotation must not stop the server")
 	}
-	assertServes(t, f.app, certA, true)
 }
 
-// TestReload_TLSConfigKeys_FollowsNewPaths covers the server.tls.* source:
-// a reload that changes the paths in the config file moves the served pair to
-// the new location, and a subsequent in-place rotation at the new paths works
-// too. The changed keys are owned by the participant, so no restart-required
-// warning is logged.
-func TestReload_TLSConfigKeys_FollowsNewPaths(t *testing.T) {
+// TestReload_TLSPathsTakeARestart covers the server.tls.* source: the paths
+// are read at start, so a reload that changes them reports a restart and the
+// served pair stays where it was.
+func TestReload_TLSPathsTakeARestart(t *testing.T) {
 	certA, keyA := generateSelfSignedCert(t)
 	certB, keyB := generateSelfSignedCert(t)
 	f := newReloadFixture(t, tlsYAML(certA, keyA))
@@ -110,46 +129,33 @@ func TestReload_TLSConfigKeys_FollowsNewPaths(t *testing.T) {
 	assertServes(t, f.app, certA, true)
 
 	f.rewrite(t, tlsYAML(certB, keyB))
-	if err := f.app.Reload(t.Context()); err != nil {
+	res, err := f.app.Reload(t.Context())
+	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	assertServes(t, f.app, certB, true)
-	assertServes(t, f.app, certA, false)
-	if strings.Contains(f.logs.String(), "restart required") {
-		t.Errorf("server.tls keys are owned by the rotation participant; got restart-required warning:\n%s", f.logs)
+	if want := []string{"server.tls.cert_file", "server.tls.key_file"}; !slices.Equal(res.RestartRequired, want) {
+		t.Errorf("RestartRequired = %v, want %v", res.RestartRequired, want)
 	}
-
-	// A partial pair in the new snapshot is rejected and the current pair stays.
-	f.rewrite(t, fmt.Sprintf("server:\n  tls:\n    cert_file: '%s'\n", filepath.ToSlash(certA)))
-	if err := f.app.Reload(t.Context()); err == nil || !strings.Contains(err.Error(), "requires both") {
-		t.Fatalf("Reload error = %v, want partial-pair rejection", err)
-	}
-	assertServes(t, f.app, certB, true)
+	assertServes(t, f.app, certA, true)
+	assertServes(t, f.app, certB, false)
 }
 
-// TestReload_WithTLSConfig_Untouched verifies the caller-owned source is left
-// alone: Reload succeeds, the participant does nothing, and changed
-// server.tls.* keys are reported as restart-required because no active
-// participant owns them.
-func TestReload_WithTLSConfig_Untouched(t *testing.T) {
+// TestTLSConfig_Untouched verifies the caller-owned source is left alone:
+// rewriting the files it was built from changes nothing served.
+func TestTLSConfig_Untouched(t *testing.T) {
 	certA, keyA := generateSelfSignedCert(t)
 	certB, keyB := generateSelfSignedCert(t)
 	cfg := &tls.Config{Certificates: []tls.Certificate{tlsCertificate(t, certA, keyA)}}
-	f := newReloadFixture(t, tlsYAML(certA, keyA), credo.WithTLSConfig(cfg))
+	f := newReloadFixture(t, "feature: 1\n", credo.WithTLSConfig(cfg))
 	f.app.GET("/ping", pongHandler)
 	f.start(t)
 	assertServes(t, f.app, certA, true)
 
-	f.rewrite(t, tlsYAML(certB, keyB))
-	if err := f.app.Reload(t.Context()); err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	assertServes(t, f.app, certA, true)
-	logs := f.logs.String()
-	if strings.Contains(logs, "TLS certificate reloaded") {
-		t.Errorf("WithTLSConfig must not be rotated by the framework:\n%s", logs)
-	}
-	if !strings.Contains(logs, "restart required") {
-		t.Errorf("server.tls keys changed under WithTLSConfig should be restart-required:\n%s", logs)
+	copyFile(t, certB, certA)
+	copyFile(t, keyB, keyA)
+	time.Sleep(1200 * time.Millisecond) // past the check interval of a file source
+	assertServes(t, f.app, certB, false)
+	if strings.Contains(f.logs.String(), "TLS certificate reloaded") {
+		t.Errorf("WithTLSConfig must not be rotated by the framework:\n%s", f.logs)
 	}
 }
