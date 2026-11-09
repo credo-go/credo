@@ -82,6 +82,13 @@ func (c *Container) teardownValueOf(u *Unit) any {
 // one resource with one teardown, so their holders must agree on who owns it
 // and how it is released. c.mu must be held.
 func (c *Container) admitValueLocked(u *Unit, value any, token any, hasToken bool) error {
+	key := any(u)
+	if hasToken {
+		key = token
+	}
+	if err := c.nameConflictLocked(u, key); err != nil {
+		return err
+	}
 	if !hasToken {
 		u.key = u
 		return nil
@@ -107,9 +114,104 @@ func (c *Container) admitValueLocked(u *Unit, value any, token any, hasToken boo
 	if err := c.kindConflict(all, u, value); err != nil {
 		return err
 	}
+	if err := c.entryConflict(all, u, value); err != nil {
+		return err
+	}
 	u.key = token
 	c.resources[token] = all
+	// The resource has one name, which every holder carries: its readiness
+	// entry, its teardown and the scope of each call made on it.
+	for _, h := range all {
+		if h.nameGiven {
+			for _, other := range all {
+				other.name = h.name
+			}
+			break
+		}
+	}
 	return nil
+}
+
+// nameConflictLocked refuses a credo.ComponentName name — or a managed
+// component's name — another registration already carries, unless both
+// hold one resource. key is u's resource, nil while its value does not
+// exist; a registration whose resource is not yet known is checked when its
+// value is built. c.mu must be held.
+func (c *Container) nameConflictLocked(u *Unit, key any) error {
+	if !u.nameGiven && !u.managed {
+		return nil
+	}
+	for _, o := range c.names[u.name] {
+		if o == u {
+			continue
+		}
+		conflict := false
+		switch {
+		case (u.managed && key == nil) || (o.managed && o.key == nil):
+			// A constructor handed to Manage shares its name with no one.
+			conflict = true
+		case key == nil || o.key == nil:
+			// A binding's constructor has not run yet: checked once its
+			// value is built.
+		default:
+			_, own := o.key.(*Unit)
+			conflict = own || o.key != key
+		}
+		if conflict {
+			return fmt.Errorf("a component named %q is already registered, as %s; give each component its own "+
+				"name with credo.ComponentName", u.name, o.label())
+		}
+	}
+	return nil
+}
+
+// forgetNameLocked removes a unit an override or Finalize removed from the
+// name index. c.mu must be held.
+func (c *Container) forgetNameLocked(u *Unit) {
+	if u == nil {
+		return
+	}
+	names := slices.DeleteFunc(slices.Clone(c.names[u.name]), func(x *Unit) bool { return x == u })
+	if len(names) == 0 {
+		delete(c.names, u.name)
+		return
+	}
+	c.names[u.name] = names
+}
+
+// entryConflict refuses holders of one resource that disagree on the
+// options that shape its one readiness entry and its teardown: every holder
+// that plans a readiness entry gives credo.OptionalReadiness(), or none
+// does, and the names given with credo.ComponentName are one name.
+func (c *Container) entryConflict(holders []*Unit, admitted *Unit, v any) error {
+	var optional, gating, named *Unit
+	for _, h := range holders {
+		if h.nameGiven {
+			if named != nil && named.name != h.name {
+				return fmt.Errorf("%s and %s hold one resource, which has one readiness entry and one "+
+					"teardown, but name it differently with credo.ComponentName, %q and %q; give both the same "+
+					"options, or hold the handle in a named field so that each is a resource of its own",
+					named.label(), h.label(), named.name, h.name)
+			}
+			named = h
+		}
+		if !h.readies || !h.RunsCapabilities(c.holderValue(h, admitted, v)) {
+			continue
+		}
+		switch {
+		case h.optional && optional == nil:
+			optional = h
+		case !h.optional && gating == nil:
+			gating = h
+		}
+	}
+	if optional == nil || gating == nil {
+		return nil
+	}
+	return fmt.Errorf("%s and %s hold one resource, which has one readiness entry, but disagree on "+
+		"credo.OptionalReadiness(): %s has it and %s does not; give both the same options, or hold the handle "+
+		"in a named field so that each is a resource of its own",
+		optional.label(), gating.label(), optional.label(), gating.label())
 }
 
 // holderValue is a holder's built value, or v for the holder being admitted.

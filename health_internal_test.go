@@ -96,3 +96,22 @@ func TestShutdown_MarksDraining(t *testing.T) {
 		t.Error("draining should be true after shutdown")
 	}
 }
+
+// TestReadinessHandler_DrainingIgnoresOptionalEntries: during the drain
+// /ready answers 503 shutting_down whatever the optional entries show.
+func TestReadinessHandler_DrainingIgnoresOptionalEntries(t *testing.T) {
+	app, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.UseHealth()
+	app.AddReadinessCheck("cache", HealthCheckFunc(func(context.Context) error { return nil }), OptionalReadiness())
+	app.lifecycle.draining.Store(true)
+	w := httptest.NewRecorder()
+	if err := app.readinessHandler(NewContext(w, httptest.NewRequest(http.MethodGet, "/ready", nil))); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "shutting_down") {
+		t.Errorf("draining: %d %s, want 503 shutting_down", w.Code, w.Body)
+	}
+}

@@ -357,8 +357,7 @@ func TestReadiness_ExposeErrorsOptIn(t *testing.T) {
 }
 
 func TestReadiness_StoreIntegration(t *testing.T) {
-	// Store health comes from the probe the start phase built for the
-	// registered store.
+	// A bound store's entry is its Ready, under its credo.ComponentName name.
 	app := mustNew(t)
 	registerReadinessStore(app, "postgres", store.Health{Status: store.StatusUp, Latency: 2 * time.Millisecond})
 	app.UseHealth()
@@ -421,32 +420,12 @@ func TestReadiness_StoreFailureLoggedAndMasked(t *testing.T) {
 			if got := strings.Contains(w.Body.String(), secret); got != tt.wantBodyCause {
 				t.Errorf("body contains cause = %v, want %v; body: %s", got, tt.wantBodyCause, w.Body.String())
 			}
-			if !strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), `"source":"store"`) {
-				t.Errorf("operator log must contain typed store cause and source; log: %s", logs.String())
+			if !strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), `"check":"postgres"`) ||
+				!strings.Contains(logs.String(), `"latency":`) {
+				t.Errorf("operator log must contain the typed store cause, the check and its latency; log: %s",
+					logs.String())
 			}
 		})
-	}
-}
-
-func TestReadiness_InvalidStoreStatusIsMaskedAndFailsClosed(t *testing.T) {
-	const invalidStatus = "dial tcp 10.0.1.5:5432"
-	logger, logs := newTestLogger(t)
-	app := mustNew(t, credo.WithLogger(logger))
-	registerReadinessStore(app, "bad-adapter", store.Health{Status: store.HealthStatus(invalidStatus)})
-	app.UseHealth()
-	startServing(t, app)
-
-	w := httptest.NewRecorder()
-	app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", w.Code)
-	}
-	if strings.Contains(w.Body.String(), invalidStatus) {
-		t.Fatalf("masked response leaked raw adapter status: %s", w.Body.String())
-	}
-	if !strings.Contains(logs.String(), invalidStatus) {
-		t.Errorf("operator log should retain invalid raw status: %s", logs.String())
 	}
 }
 
@@ -476,7 +455,7 @@ func TestReadiness_CustomStoreNameCollisionDoesNotOverwrite(t *testing.T) {
 	}
 	foundConflict := false
 	for name, result := range body.Checks {
-		if strings.HasPrefix(name, "credo.store_name_conflict.") && result.Status == "down" {
+		if strings.HasPrefix(name, "credo.contributed_name_conflict.") && result.Status == "down" {
 			foundConflict = true
 		}
 	}

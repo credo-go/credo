@@ -47,8 +47,12 @@ type Options struct {
 	CloseOnShutdown bool
 	// Override replaces an earlier binding of the same type.
 	Override bool
-	// Name names a managed component; empty means its type name.
+	// Name is the credo.ComponentName name of a component: a managed one or
+	// a binding's; empty means its type name.
 	Name string
+	// OptionalReadiness reports the component's readiness entry without
+	// letting it gate readiness.
+	OptionalReadiness bool
 	// IngressRemedy is how the registration that added a managed component
 	// places it in the ingress tier, for the finding of an internal component
 	// that depends on an ingress one; empty means "credo.Ingress()".
@@ -124,6 +128,9 @@ type Unit struct {
 	// managed constructor returns.
 	t    reflect.Type
 	name string
+	// nameGiven marks a name given with credo.ComponentName, which the
+	// registrations of one resource agree on.
+	nameGiven bool
 
 	managed bool
 	// prov and entry belong to a managed unit; a binding's live in
@@ -139,6 +146,8 @@ type Unit struct {
 	borrowed  bool
 	starts    bool
 	readies   bool
+	// optional reports the unit's readiness entry without letting it gate.
+	optional bool
 	// ingressRemedy names how to declare the unit ingress; see
 	// Options.IngressRemedy.
 	ingressRemedy string
@@ -146,13 +155,10 @@ type Unit struct {
 	// key is the resource identity of the built value: a comparable token,
 	// or the unit itself. nil until the value exists.
 	key any
-
-	// steps run on the built value before Start; Seal attaches them.
-	steps []StartStep
 }
 
-// Name is the unit's name in reports: a managed component's credo.ComponentName
-// name, otherwise its type.
+// Name is the unit's name in reports: the credo.ComponentName name of the
+// unit or of another registration of its resource, otherwise its type.
 func (u *Unit) Name() string { return u.name }
 
 // Type is the binding type, or the type of a managed value or constructor
@@ -210,6 +216,23 @@ func planUnit(u *Unit, o Options) string {
 		return fmt.Sprintf("credo.Ingress() on %s, which is not a component: it shows no Shutdown method "+
 			"and has no credo.CloseOnShutdown(), and the tier is planned before the value exists; give %s a "+
 			"Shutdown method, or provide the concrete type that has one", u.t, u.t)
+	}
+	if o.Name != "" && !u.component {
+		return fmt.Sprintf("credo.ComponentName(%q) on %s, which is not a component: it shows no Shutdown "+
+			"method and has no credo.CloseOnShutdown(), and the name is planned before the value exists; give "+
+			"%s a Shutdown method, or provide the concrete type that has one", o.Name, u.t, u.t)
+	}
+	if o.OptionalReadiness {
+		switch {
+		case !u.t.Implements(readierType):
+			return fmt.Sprintf("credo.OptionalReadiness() on %s, which plans no readiness entry: its type shows "+
+				"no Ready method; give the option to a registration whose type shows Ready", u.t)
+		case !u.component && !u.borrowed:
+			return fmt.Sprintf("credo.OptionalReadiness() on %s, which plans no readiness entry: it is neither a "+
+				"component nor borrowed; give the option to a registration whose type shows Ready and "+
+				"Shutdown, or to a borrowed one", u.t)
+		}
+		u.optional = true
 	}
 	u.tier = TierInternal
 	if o.Ingress || u.t.Implements(ingressType) {

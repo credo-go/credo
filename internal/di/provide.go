@@ -42,12 +42,17 @@ func (c *Container) ProvideWith(constructor any, o Options) error {
 		return misuse("Provide", types, "credo.Borrowed() is accepted on ProvideValue only: a value a "+
 			"constructor builds belongs to the App")
 	}
-	if err := c.checkOverrideLocked("Provide", targetType, o.Override); err != nil {
+	if err := c.checkOverrideLocked("Provide", targetType, o); err != nil {
 		return err
 	}
-	u := &Unit{t: targetType, name: targetType.String()}
+	u := newBindingUnit(targetType, o)
 	if reason := planUnit(u, o); reason != "" {
 		return misuse("Provide", types, "%s", reason)
+	}
+	// The value does not exist yet: a name shared with a registration whose
+	// resource is unknown is checked when the value is built.
+	if err := c.nameConflictLocked(u, nil); err != nil {
+		return misuse("Provide", types, "%v", err)
 	}
 
 	// Pre-create singleton entry for later lazy resolution.
@@ -60,12 +65,17 @@ func (c *Container) ProvideWith(constructor any, o Options) error {
 // override and that an override has a binding to replace. An alias is a
 // binding of its interface: a direct binding after it is a duplicate, and an
 // override replaces it.
-func (c *Container) checkOverrideLocked(op string, t reflect.Type, override bool) error {
+func (c *Container) checkOverrideLocked(op string, t reflect.Type, o Options) error {
+	override := o.Override
 	_, exists := c.registrations[t]
 	target, aliased := c.aliases[t]
 	switch {
 	case exists && !override:
-		return duplicateError(op, t)
+		name := o.Name
+		if old := c.unitOf[t]; name == "" && old != nil && old.nameGiven {
+			name = old.name
+		}
+		return duplicateError(op, t, name)
 	case aliased && !override:
 		return misuse(op, []reflect.Type{t}, "%s is already bound through app.Alias[%s, %s](); give "+
 			"credo.Override() to replace the alias, or drop the Alias call", t, t, target)
@@ -97,6 +107,7 @@ func (c *Container) bindLocked(u *Unit, reg provider, entry *singletonEntry) {
 		u.index = old.index
 		c.units[old.index] = u
 		c.forgetHolderLocked(old)
+		c.forgetNameLocked(old)
 	} else {
 		u.index = len(c.units)
 		c.units = append(c.units, u)
@@ -105,6 +116,19 @@ func (c *Container) bindLocked(u *Unit, reg provider, entry *singletonEntry) {
 	c.unitOf[u.t] = u
 	c.registrations[u.t] = reg
 	c.singletons[u.t] = entry
+	if u.nameGiven {
+		c.names[u.name] = append(c.names[u.name], u)
+	}
+}
+
+// newBindingUnit returns the unit of a binding of t, named by its
+// credo.ComponentName name or its type.
+func newBindingUnit(t reflect.Type, o Options) *Unit {
+	u := &Unit{t: t, name: t.String()}
+	if o.Name != "" {
+		u.name, u.nameGiven = o.Name, true
+	}
+	return u
 }
 
 // MustProvide is like Provide but panics on error.
@@ -137,10 +161,11 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 	if err := c.closedLocked(op, targetType); err != nil {
 		return err
 	}
-	if err := c.checkOverrideLocked(op, targetType, o.Override); err != nil {
+	if err := c.checkOverrideLocked(op, targetType, o); err != nil {
 		return err
 	}
-	u := &Unit{t: targetType, name: targetType.String(), valueBinding: true}
+	u := newBindingUnit(targetType, o)
+	u.valueBinding = true
 	if reason := planUnit(u, o); reason != "" {
 		return misuse(op, types, "%s", reason)
 	}
@@ -164,8 +189,14 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 
 // duplicateError rejects a second binding of one type. Two instances of one
 // type are bound as two wrapper types, so each consumer names the one it
-// needs in its constructor.
-func duplicateError(op string, targetType reflect.Type) error {
+// needs in its constructor. name is the credo.ComponentName name either
+// registration carries, which reads as a DI key to some.
+func duplicateError(op string, targetType reflect.Type, name string) error {
+	if name != "" {
+		return misuse(op, []reflect.Type{targetType}, "%s is already registered; credo.ComponentName(%q) "+
+			"names a component in logs, /ready and lifecycle errors and is not a DI key; bind a second "+
+			"instance under a wrapper type of its own", targetType, name)
+	}
 	return misuse(op, []reflect.Type{targetType}, "%s is already registered; bind a second instance "+
 		"under a wrapper type of its own", targetType)
 }

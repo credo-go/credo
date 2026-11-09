@@ -50,11 +50,8 @@ func (c *Container) Manage(v any, o Options) error {
 	if err := c.closedLocked("Manage", u.t); err != nil {
 		return err
 	}
-	if _, dup := c.names[u.name]; dup {
-		return misuse("Manage", types, "a component named %q is already managed; "+
-			"give each component its own name with credo.ComponentName", u.name)
-	}
-	if reason := planUnit(u, Options{Ingress: o.Ingress}); reason != "" {
+	u.nameGiven = o.Name != ""
+	if reason := planUnit(u, Options{Ingress: o.Ingress, OptionalReadiness: o.OptionalReadiness}); reason != "" {
 		return misuse("Manage", types, "%s", reason)
 	}
 	if !u.component {
@@ -65,10 +62,12 @@ func (c *Container) Manage(v any, o Options) error {
 		if err := c.admitValueLocked(u, v, token, hasToken); err != nil {
 			return misuse("Manage", types, "%v", err)
 		}
+	} else if err := c.nameConflictLocked(u, nil); err != nil {
+		return misuse("Manage", types, "%v", err)
 	}
 	u.index = len(c.units)
 	c.units = append(c.units, u)
-	c.names[u.name] = u
+	c.names[u.name] = append(c.names[u.name], u)
 	return nil
 }
 
@@ -105,14 +104,10 @@ func (c *Container) Units() []*Unit {
 }
 
 // HasStartWork reports whether any unit is started by the start walk, asks
-// for readiness, has a start step, or is a managed constructor the walk
-// builds.
+// for readiness, or is a managed constructor the walk builds.
 func (c *Container) HasStartWork() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(c.steps) > 0 {
-		return true
-	}
 	for _, u := range c.units {
 		if u.plannedLocked() {
 			return true
@@ -124,5 +119,5 @@ func (c *Container) HasStartWork() bool {
 // plannedLocked reports whether the start walk visits the unit. c.mu must be
 // held.
 func (u *Unit) plannedLocked() bool {
-	return u.starts || u.readies || len(u.steps) > 0 || (u.managed && u.entry.state != entryBuilt)
+	return u.starts || u.readies || (u.managed && u.entry.state != entryBuilt)
 }

@@ -241,12 +241,6 @@ func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 					Outcome: outcomeOf(err), Err: err})
 				return startFailed
 			}
-			for _, step := range u.Steps() {
-				run := func(ctx context.Context) error { return step.Run(ctx, v) }
-				if outcome := lm.startUnit(r, u, tier, run, false); outcome != startOK {
-					return outcome
-				}
-			}
 			starter, ok := v.(Starter)
 			if !ok || !c.ClaimStart(u) {
 				continue
@@ -520,24 +514,21 @@ func (lm *lifecycleManager) runLifecycleHook(
 	return fn(ctx)
 }
 
-// componentReadiness builds the readiness checks of the components that
-// answer Ready, once, from the values the start walk built: no DI resolution
-// happens per probe.
+// componentReadiness builds the readiness checks of the resources whose
+// holders answer Ready, once, from the values the start walk built: one per
+// resource, its holder of record's, under the resource's name and with its
+// credo.OptionalReadiness() option. No DI resolution happens per probe.
 func (lm *lifecycleManager) componentReadiness() []internalhealth.ReadinessCheck {
-	c := lm.app.container
 	var checks []internalhealth.ReadinessCheck
-	for _, u := range c.Units() {
-		if !u.Readies() {
+	for _, e := range lm.app.container.ReadinessEntries() {
+		readier, ok := e.Value.(Readier)
+		if !ok {
 			continue
 		}
-		v, built := c.UnitValue(u)
-		readier, ok := v.(Readier)
-		if !built || !ok || !u.RunsCapabilities(v) {
-			continue
-		}
-		infra := lm.app.NewInfra(u.Name())
+		infra := lm.app.NewInfra(e.Name)
 		checks = append(checks, internalhealth.ReadinessCheck{
-			Name: u.Name(),
+			Name:     e.Name,
+			Optional: e.Optional,
 			Probe: internalhealth.NewProbe(func(ctx context.Context) internalhealth.Result {
 				if err := readier.Ready(context.WithValue(ctx, infraKey{}, infra)); err != nil {
 					return internalhealth.FailureResult(err)

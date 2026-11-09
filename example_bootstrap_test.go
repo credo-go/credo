@@ -9,18 +9,16 @@ import (
 	"net/http"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/worker"
 )
 
-// exampleDB stands in for a database handle such as *sqldb.DB.
+// exampleDB stands in for a database handle such as *sqldb.DB: Start pings
+// it, Ready reports it in /ready, and Shutdown closes it.
 type exampleDB struct{}
 
-func (*exampleDB) Ping(context.Context) error     { return nil }
+func (*exampleDB) Start(context.Context) error    { return nil }
+func (*exampleDB) Ready(context.Context) error    { return nil }
 func (*exampleDB) Shutdown(context.Context) error { return nil }
-func (*exampleDB) Health(context.Context) store.Health {
-	return store.Health{Status: store.StatusUp}
-}
 
 type examplePayments struct{}
 
@@ -64,7 +62,7 @@ func Example_bootstrapOrder() {
 	}
 
 	// 2. Provide. A misused registration panics here, at its line.
-	app.ProvideValue(&exampleDB{})
+	app.ProvideValue(&exampleDB{}, credo.ComponentName("orders-db"))
 	app.Provide(func() *examplePayments { return &examplePayments{} })
 	app.Provide(newExampleOrders)
 	app.Provide(newExampleRelay)
@@ -75,7 +73,6 @@ func Example_bootstrapOrder() {
 		Messages: credo.I18nMessages{"orders.empty": "No orders yet"},
 	})
 	app.UseHealth()
-	store.Register[*exampleDB](app, store.WithName("orders-db"))
 	worker.Use(app).ContinuousProvided[*exampleRelay]("outbox-relay")
 
 	// 4. Finalize reports every missing dependency and cycle at once.

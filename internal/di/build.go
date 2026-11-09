@@ -31,7 +31,6 @@ func (c *Container) doSeal() {
 	err := c.validate()
 
 	c.mu.Lock()
-	c.attachStepsLocked()
 	c.sealErr = err
 	c.sealed = true
 	c.mu.Unlock()

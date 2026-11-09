@@ -16,7 +16,6 @@ import (
 
 	"github.com/uptrace/bun"
 
-	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/pagination"
 	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/store/sqldb"
@@ -2005,54 +2004,6 @@ func TestApplyQueryBuilder_WhereGroup(t *testing.T) {
 		t.Errorf("count = %d, want 2", n)
 	}
 }
-
-// --- store.Register integration ---
-
-func TestRegister_Integration(t *testing.T) {
-	db := openTestDB(t)
-	if err := db.Ping(t.Context()); err != nil {
-		t.Fatalf("Ping() = %v", err)
-	}
-
-	h := db.Health(t.Context())
-	if h.Status != store.StatusUp {
-		t.Errorf("Health() = %q, want UP", h.Status)
-	}
-}
-
-// ordersDB is a semantic wrapper: it embeds the handle and keeps no state
-// of its own, so it shares the handle's resource identity.
-type ordersDB struct{ *sqldb.DB }
-
-func TestRegister_RawAndWrapperHoldOneDatabase(t *testing.T) {
-	db := openTestDB(t)
-	app, err := credo.New(credo.WithRawConfig(emptyConfig{}))
-	if err != nil {
-		t.Fatalf("credo.New() = %v", err)
-	}
-	app.ProvideValue(db)
-	app.ProvideValue(&ordersDB{DB: db})
-	store.Register[*sqldb.DB](app, store.WithName("primary"))
-	store.Register[*ordersDB](app, store.WithName("orders"))
-
-	if err := app.Start(t.Context()); err != nil {
-		t.Fatalf("Start() = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := app.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-	if err := db.Ping(t.Context()); err == nil {
-		t.Fatal("Ping() after Shutdown = nil, want the database closed")
-	}
-}
-
-// emptyConfig is a hermetic RawConfig.
-type emptyConfig struct{}
-
-func (emptyConfig) Unmarshal(string, any) error { return nil }
-func (emptyConfig) Exists(string) bool          { return false }
 
 // --- Conn explicit override ---
 

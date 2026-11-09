@@ -25,8 +25,8 @@
 //   - Dependency injection (Provide/Resolve with typed constructors)
 //   - Validation (programmatic rules and one custom rule, no struct tags)
 //   - Centralized error handling (Credo JSON envelope)
-//   - A data store registered with store.Register: pinged at start,
-//     reported by /ready, shut down after its consumers
+//   - A data store bound as a component: pinged at start, reported by
+//     /ready, shut down after its consumers
 //   - A scheduled worker built from the container
 //   - A WebSocket echo endpoint served by an ingress component
 //   - Health probes (/health, /ready) for container orchestration
@@ -50,7 +50,6 @@ import (
 	"github.com/credo-go/credo/auth"
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/middleware"
-	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/validation"
 	"github.com/credo-go/credo/websocket"
 	"github.com/credo-go/credo/worker"
@@ -149,10 +148,10 @@ type Tenant struct {
 // ---------------------------------------------------------------------------
 
 // TenantStore stands in for a database handle such as *sqldb.DB, which an
-// application builds from DatabaseConfig with sqldb.Open. It implements
-// store.Lifecycle, so store.Register can name its binding: the start phase
-// pings it, /ready reports its health, and the App shuts it down after the
-// services that use it.
+// application builds from DatabaseConfig with sqldb.Open. Like *sqldb.DB it
+// is a component: its binding's type shows Start, Ready and Shutdown, so the
+// start phase pings it before the services that use it start, /ready reports
+// it, and the App shuts it down after those services.
 type TenantStore struct {
 	infra   credo.Infra
 	mu      sync.Mutex
@@ -167,17 +166,14 @@ func NewTenantStore(infra credo.Infra, cfg *DatabaseConfig) *TenantStore {
 	return &TenantStore{infra: infra, tenants: make(map[string]Tenant)}
 }
 
-// Ping implements store.Lifecycle; the start phase calls it once.
-func (s *TenantStore) Ping(context.Context) error { return nil }
+// Start pings the store; the start phase calls it once, before the services
+// that depend on it start.
+func (s *TenantStore) Start(context.Context) error { return nil }
 
-// Health implements store.Lifecycle; /ready reports it under the store's name.
-func (s *TenantStore) Health(context.Context) store.Health {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return store.Health{Status: store.StatusUp, Details: map[string]any{"tenants": len(s.tenants)}}
-}
+// Ready reports the store in /ready, under its component name.
+func (s *TenantStore) Ready(context.Context) error { return nil }
 
-// Shutdown implements store.Lifecycle and makes the store a component.
+// Shutdown closes the store and makes it a component.
 func (s *TenantStore) Shutdown(context.Context) error {
 	s.infra.Logger.Info("tenant store closed")
 	return nil
@@ -468,7 +464,7 @@ func run() error {
 	// Nothing is built yet; a misused registration panics at its line.
 	app.ProvideValue(&appCfg)
 	app.ProvideValue(&dbCfg)
-	app.Provide(NewTenantStore)
+	app.Provide(NewTenantStore, credo.ComponentName("tenants-db"))
 	app.Provide(NewTenantService)
 	app.Provide(NewUsageReporter)
 
@@ -482,9 +478,6 @@ func run() error {
 	app.UseCompress()
 	app.UseI18n(i18nConfig())
 	app.UseHealth() // /health (liveness) and /ready (readiness)
-
-	// The store binding is named for the start-phase ping and /ready.
-	store.Register[*TenantStore](app, store.WithName("tenants-db"))
 
 	// A scheduled worker built from the container: one run per hour.
 	workers := worker.Use(app)

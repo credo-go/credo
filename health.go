@@ -149,33 +149,27 @@ func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
 	app.healthEngine.AddLiveness(name, checker.Check)
 }
 
-// AddReadinessCheck registers a named readiness check.
-// Panics if [App.UseHealth] has not been called first, checker is nil, or name
-// is empty, padded with whitespace, contains control characters, uses the
-// reserved "credo." prefix, or duplicates another readiness check.
-func (app *App) AddReadinessCheck(name string, checker HealthChecker) {
+// AddReadinessCheck registers a named readiness check. [OptionalReadiness],
+// its one option, reports the check in /ready without letting it gate
+// readiness: a check of a cache or of a third-party API. Panics if
+// [App.UseHealth] has not been called first, checker is nil, an option other
+// than [OptionalReadiness] is given, or name is empty, padded with
+// whitespace, contains control characters, uses the reserved "credo."
+// prefix, or duplicates another readiness check.
+func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...RegistrationOption) {
 	if app.healthEngine == nil {
 		panic("credo: UseHealth() must be called before AddReadinessCheck")
 	}
+	o := registrationOptions("App.AddReadinessCheck", opts, optOptionalReadiness)
 	if checker == nil {
 		panic("credo: AddReadinessCheck: checker must not be nil")
 	}
-	app.healthEngine.AddReadiness(name, checker.Check)
+	app.healthEngine.AddReadiness(name, checker.Check, o.OptionalReadiness)
 }
 
-// storeHealthFunc returns the checks of the stores the start phase pinged,
-// or nil when there are none. The probes were built once, from the values
-// the start phase pinged; a readiness request resolves nothing.
-func (app *App) storeHealthFunc() internalhealth.StoreFunc {
-	if len(app.stores) == 0 {
-		return nil
-	}
-	return app.storeChecks
-}
-
-// contributedReadinessFunc returns the readiness contributions: the Ready of
-// every component that answers it — a worker with a readiness condition among
-// them — built once by the start walk, so a readiness request resolves
+// contributedReadinessFunc returns the readiness contributions: one per
+// resource whose holder answers Ready — a worker with a readiness condition
+// among them — built once by the start walk, so a readiness request resolves
 // nothing. It returns nil before the App has started or when there are none.
 func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {
 	if !app.lifecycle.started.Load() || len(app.lifecycle.readiness) == 0 {
@@ -207,31 +201,22 @@ func (app *App) readinessHandler(ctx *Context) error {
 		return ctx.Response().JSON(http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
 	}
 
-	status, checks, stores := app.healthEngine.CheckReadiness(ctx.Request().Context(), app.storeHealthFunc(), app.contributedReadinessFunc())
+	status, checks := app.healthEngine.CheckReadiness(ctx.Request().Context(), app.contributedReadinessFunc())
 	code := http.StatusOK
-	if status != "up" {
+	if status == "down" {
 		code = http.StatusServiceUnavailable
-		app.logFailedChecks("readiness", checks)
-		app.logFailedStores(stores)
 	}
+	// A failing entry is logged whenever an execution finds it failing, an
+	// optional one while readiness answers degraded included.
+	app.logFailedChecks("readiness", checks)
 
-	checksMap := make(map[string]any, len(checks)+len(stores))
+	checksMap := make(map[string]any, len(checks))
 	for _, c := range checks {
-		entry := map[string]string{"status": c.Status}
+		entry := map[string]string{"status": c.Status, "latency": c.Latency.String()}
 		if c.Error != "" && app.healthExposeErrors {
 			entry["error"] = c.Error
 		}
 		checksMap[c.Name] = entry
-	}
-	for _, s := range stores {
-		entry := map[string]any{
-			"status":  s.Status,
-			"latency": s.Latency.String(),
-		}
-		if s.Error != "" && app.healthExposeErrors {
-			entry["error"] = s.Error
-		}
-		checksMap[s.Name] = entry
 	}
 
 	body := map[string]any{"status": status}
@@ -247,23 +232,7 @@ func (app *App) logFailedChecks(kind string, checks []internalhealth.CheckResult
 	for _, c := range checks {
 		if c.Status != "up" {
 			app.logger.Warn("credo: health check failed",
-				"kind", kind, "check", c.Name, "error", c.Error)
+				"kind", kind, "check", c.Name, "error", c.Error, "latency", c.Latency)
 		}
-	}
-}
-
-func (app *App) logFailedStores(stores []internalhealth.StoreResult) {
-	for _, result := range stores {
-		if result.Status == "up" {
-			continue
-		}
-		app.logger.Warn("credo: health check failed",
-			"kind", "readiness",
-			"source", "store",
-			"check", result.Name,
-			"status", result.Status,
-			"latency", result.Latency,
-			"error", result.Error,
-		)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 	"github.com/credo-go/credo/internal/kernel"
 )
 
@@ -145,8 +146,9 @@ func (t *Tier) UnmarshalText(text []byte) error {
 }
 
 // RegistrationOption is an option of a component registration: [Ingress],
-// [Borrowed], [CloseOnShutdown], [Override] or [ComponentName]. Each call
-// accepts the options that apply to it and panics on any other.
+// [Borrowed], [CloseOnShutdown], [Override], [ComponentName] or
+// [OptionalReadiness]. Each call accepts the options that apply to it and
+// panics on any other.
 type RegistrationOption struct {
 	kind optionKind
 	name string
@@ -160,6 +162,7 @@ const (
 	optCloseOnShutdown
 	optOverride
 	optComponentName
+	optOptionalReadiness
 )
 
 func (k optionKind) String() string {
@@ -174,6 +177,8 @@ func (k optionKind) String() string {
 		return "credo.Override()"
 	case optComponentName:
 		return "credo.ComponentName()"
+	case optOptionalReadiness:
+		return "credo.OptionalReadiness()"
 	}
 	return "a zero RegistrationOption"
 }
@@ -208,13 +213,32 @@ func CloseOnShutdown() RegistrationOption { return RegistrationOption{kind: optC
 // else uses it.
 func Override() RegistrationOption { return RegistrationOption{kind: optOverride} }
 
-// ComponentName names a component handed to [App.Manage] in logs, readiness
-// and lifecycle errors; the default is its type name. Each managed component
-// has its own name. The name labels the component and is not a DI key: a
-// second value of one type is bound under a wrapper type of its own.
+// ComponentName names a component — a binding made with [App.Provide] or
+// [App.ProvideValue], or a value handed to [App.Manage] — in logs, readiness
+// and lifecycle errors; the default is its type as the lifecycle prints it,
+// such as *sqldb.DB. The name follows the rules of a health check name. Each
+// component has its own name, except the registrations of one resource, a
+// raw handle and a wrapper that embeds it, which give it one name: the name
+// given on either, which its readiness entry and its teardown carry. The name
+// labels the component and is not a DI key: a second value of one type is
+// bound under a wrapper type of its own. On a binding it panics when the
+// binding is not a component at registration, since the name is planned
+// before the value exists.
 func ComponentName(name string) RegistrationOption {
 	return RegistrationOption{kind: optComponentName, name: name}
 }
+
+// OptionalReadiness reports a component in /ready without letting it gate
+// readiness: its Ready is asked under the same deadline, its entry shows its
+// own status and latency, and a failure is logged like any failing check,
+// while /ready answers 200 with the status "degraded" when every gating
+// entry is up. Start and Shutdown are unchanged, so a component whose Start
+// fails still fails the start. It applies to [App.Provide], [App.ProvideValue]
+// and [App.Manage] wherever the registration plans a readiness entry — its
+// type shows Ready, and it is a component or borrowed — and panics elsewhere
+// at registration; [App.AddReadinessCheck] takes it too. The registrations of
+// one resource all give it or none does.
+func OptionalReadiness() RegistrationOption { return RegistrationOption{kind: optOptionalReadiness} }
 
 // registrationOptions checks opts against the options call accepts and
 // converts them. It panics, naming call, on any other option, a zero option,
@@ -226,7 +250,7 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 		switch {
 		case opt.kind == 0:
 			panic("credo: " + call + ": a zero RegistrationOption; use credo.Ingress, credo.Borrowed, " +
-				"credo.CloseOnShutdown, credo.Override or credo.ComponentName")
+				"credo.CloseOnShutdown, credo.Override, credo.ComponentName or credo.OptionalReadiness")
 		case !containsKind(accepted, opt.kind):
 			panic(fmt.Sprintf("credo: %s does not accept %s; it accepts %s", call, opt.kind, kindList(accepted)))
 		case seen[opt.kind]:
@@ -246,7 +270,12 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 			if opt.name == "" {
 				panic("credo: " + call + ": credo.ComponentName needs a non-empty name")
 			}
+			if err := internalhealth.ValidateName(opt.name); err != nil {
+				panic(fmt.Sprintf("credo: %s: credo.ComponentName(%q): %v", call, opt.name, err))
+			}
 			o.Name = opt.name
+		case optOptionalReadiness:
+			o.OptionalReadiness = true
 		}
 	}
 	return o
@@ -278,7 +307,8 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // func(deps...) C or func(deps...) (C, error) — that the start walk builds and
 // that never becomes a binding. A function whose own type has Shutdown is a
 // value, not a constructor. [ComponentName] names it (default: its type name);
-// [Ingress] places it in the ingress tier. A value has no edges and stops in
+// [Ingress] places it in the ingress tier; [OptionalReadiness] keeps its
+// readiness entry from gating. A value has no edges and stops in
 // reverse registration order within its tier; a constructor has its
 // parameters' edges. A mounted child App is handed to Manage so that its
 // start phase runs in the parent's.
@@ -287,7 +317,7 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // resource a ProvideValue binding already holds, on a resource handed to
 // Manage twice, and after Finalize or shutdown.
 func (app *App) Manage(v any, opts ...RegistrationOption) {
-	o := registrationOptions("App.Manage", opts, optIngress, optComponentName)
+	o := registrationOptions("App.Manage", opts, optIngress, optComponentName, optOptionalReadiness)
 	if v != nil && reflect.TypeOf(v) == reflect.TypeFor[*App]() && v.(*App) == app {
 		panic("credo: App.Manage: an App cannot manage itself")
 	}

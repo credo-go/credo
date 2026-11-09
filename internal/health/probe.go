@@ -102,8 +102,11 @@ func (p *Probe) execute(flight *probeFlight, ctx context.Context, cancel context
 	select {
 	case result := <-workerResult:
 		if err := ctx.Err(); err != nil {
-			result = failureResult(err, time.Since(flight.started))
+			result = failureResult(err, 0)
 		}
+		// The latency is the run's, from the start of the flight to its
+		// result, whatever the callback reported.
+		result.Latency = time.Since(flight.started)
 		cancel()
 		p.complete(flight, result)
 	case <-ctx.Done():

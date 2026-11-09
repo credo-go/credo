@@ -35,11 +35,10 @@ type Container struct {
 	units []*Unit
 	// unitOf indexes the binding units by type.
 	unitOf map[reflect.Type]*Unit
-	// names indexes managed components by name.
-	names map[string]*Unit
-	// steps holds the start steps added for binding types, in registration
-	// order; Seal hands each to the unit of its type.
-	steps []pendingStep
+	// names indexes the components that carry a name of their own — every
+	// managed component, and a binding given credo.ComponentName — by name.
+	// Registrations of one resource may share a name.
+	names map[string][]*Unit
 	// resources holds, per resource identity token, the holders whose values
 	// carry it, in registration order.
 	resources map[any][]*Unit
@@ -137,7 +136,7 @@ func New() *Container {
 		manyBindings:   make(map[reflect.Type][]reflect.Type),
 		manyBindingSet: make(map[reflect.Type]map[reflect.Type]struct{}),
 		unitOf:         make(map[reflect.Type]*Unit),
-		names:          make(map[string]*Unit),
+		names:          make(map[string][]*Unit),
 		resources:      make(map[any][]*Unit),
 		started:        make(map[any]bool),
 		unreached:      make(map[reflect.Type]string),

@@ -3,22 +3,35 @@ package sqldb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
 
+	"github.com/credo-go/credo"
 	"github.com/credo-go/credo/store"
 )
 
+// DefaultPingTimeout is the deadline of the ping [DB.Start] sends when
+// Config.PingTimeout is zero.
+const DefaultPingTimeout = 5 * time.Second
+
 // DB wraps *bun.DB with lifecycle management, query builder proxies,
-// error mapping, and transaction support.
+// error mapping, and transaction support. It is a component: bound with
+// app.ProvideValue, it is pinged by [DB.Start] before its dependants start,
+// reported in /ready through [DB.Ready], and shut down after its consumers.
 type DB struct {
 	db               *bun.DB
 	family           driverFamily
 	txScope          *store.TxScope[bun.IDB]
 	txCleanupTimeout time.Duration
+	pingTimeout      time.Duration
+	logger           *slog.Logger
+	optionalStart    bool
 
 	// migrations is the set registered via RegisterMigrations; nil until then.
 	migrations   *migrate.Migrations
@@ -47,16 +60,85 @@ func (db *DB) ResourceIdentity() any {
 	return db
 }
 
-// StoreRegistrationWarningCodes returns secret-safe warning codes that the
-// store integration logs after pinging this database in the start phase. It returns
-// sqldb.pool.max_open_unlimited when the pool's effective maximum is unlimited
-// at inspection time. The returned slice is independent of the DB and may be
-// modified by the caller.
-func (db *DB) StoreRegistrationWarningCodes() []string {
+// poolWarningCodes returns the secret-safe warning codes of the effective
+// pool: sqldb.pool.max_open_unlimited when its maximum is unlimited.
+func (db *DB) poolWarningCodes() []string {
 	if db.Stats().MaxOpenConnections != 0 {
 		return nil
 	}
 	return []string{maxOpenUnlimitedWarningCode}
+}
+
+// Start pings the database under Config.PingTimeout, so the App's start walk
+// reaches it before the components that depend on it start. On success it
+// logs each pool warning once at Warn — today the code
+// sqldb.pool.max_open_unlimited, read from the effective pool, so a
+// SetMaxOpenConns on its client before the start counts. A failed ping
+// closes the database before Start returns the error, since Open opened the
+// pool and the App does not shut down a component whose Start failed; with
+// [WithOptionalStart] it is logged instead, and Start returns nil.
+//
+// The records go to [WithLogger]'s logger, else to the logger of the App's
+// call (credo.InfraFrom), scoped to the database's component, and carry
+// module=sqldb.
+func (db *DB) Start(ctx context.Context) error {
+	logger := db.startLogger(ctx)
+	pingCtx, cancel := context.WithTimeout(ctx, db.pingTimeout)
+	defer cancel()
+	if err := db.db.PingContext(pingCtx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(pingCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("sqldb: ping did not answer within %s: %w", db.pingTimeout, err)
+		} else {
+			err = fmt.Errorf("sqldb: ping: %w", err)
+		}
+		if db.optionalStart {
+			logger.Warn("sqldb: ping failed; starting without the database, which gates readiness until it answers",
+				"ping_timeout", db.pingTimeout, "error", err)
+			db.logPoolWarnings(logger)
+			return nil
+		}
+		if closeErr := db.db.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("sqldb: close after the failed ping: %w", closeErr))
+		}
+		return err
+	}
+	db.logPoolWarnings(logger)
+	return nil
+}
+
+// Ready reports whether the database answers: nil when [DB.Health] is up,
+// else an error naming the status that wraps Health's cause, so errors.Is and
+// errors.As reach it.
+func (db *DB) Ready(ctx context.Context) error {
+	h := db.Health(ctx)
+	switch {
+	case h.Status == store.StatusUp:
+		return nil
+	case h.Cause != nil:
+		return fmt.Errorf("sqldb: database is %s: %w", h.Status, h.Cause)
+	default:
+		return fmt.Errorf("sqldb: database is %s", h.Status)
+	}
+}
+
+// startLogger is the logger of what Start logs: WithLogger's, else the App
+// call's, else the framework default, with module=sqldb.
+func (db *DB) startLogger(ctx context.Context) *slog.Logger {
+	logger := db.logger
+	if logger == nil {
+		logger = credo.InfraFrom(ctx).Logger
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	return logger.With("module", "sqldb")
+}
+
+// logPoolWarnings logs each pool warning code once, at Warn.
+func (db *DB) logPoolWarnings(logger *slog.Logger) {
+	for _, code := range db.poolWarningCodes() {
+		logger.Warn("credo: store configuration warning", "code", code)
+	}
 }
 
 // Open creates a DB from Config.
@@ -120,11 +202,18 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 
 	bunDB := bun.NewDB(sqlDB, dialect)
 
+	pingTimeout := cfg.PingTimeout
+	if pingTimeout == 0 {
+		pingTimeout = DefaultPingTimeout
+	}
 	return &DB{
 		db:               bunDB,
 		family:           family,
 		txScope:          store.NewTxScope[bun.IDB](),
 		txCleanupTimeout: o.txCleanupTimeout,
+		pingTimeout:      pingTimeout,
+		logger:           o.logger,
+		optionalStart:    o.optionalStart,
 	}, nil
 }
 

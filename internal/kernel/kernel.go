@@ -6,31 +6,6 @@
 // integrations call them.
 package kernel
 
-import (
-	"context"
-	"reflect"
-
-	internalhealth "github.com/credo-go/credo/internal/health"
-)
-
-// Store is one store registration: the binding type the start phase pings
-// and readiness reports.
-type Store struct {
-	// Name is the store's name in readiness reports.
-	Name string
-	// Type is the binding type R of store.Register[R].
-	Type reflect.Type
-	// Ping verifies the built value; the start phase calls it once, before
-	// the value's consumers start, and a failure is a start failure.
-	Ping func(ctx context.Context, value any) error
-	// Probe builds the readiness probe of the built value, once.
-	Probe func(value any) *internalhealth.Probe
-}
-
-// RegisterStore adds a store registration to app, a *credo.App. It panics
-// on misuse, naming the registering call. The root package sets it at init.
-var RegisterStore func(app any, s Store)
-
 // Component is a component an integration adds to an App on behalf of its
 // own registration call.
 type Component struct {
