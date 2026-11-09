@@ -610,8 +610,8 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] Define standard meta key constants in `middleware/` (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`)
 - [x] `middleware.ContractGuard()` — single meta-driven middleware that reads meta and enforces:
   - [x] `Accept` → Content-Type check (wildcards, param-insensitive) → 415 Unsupported Media Type
-  - [x] `ContractConfig.RequireContentType` — missing/empty Content-Type on a body-carrying request → 415 (default off)
-    - [ ] v1: flip `RequireContentType` default to true (breaking)
+  - [x] Missing/empty Content-Type on a body-carrying request → 415 by default; `ContractConfig.AllowMissingContentType` lets it pass
+    - [x] v1: the default requires the header (breaking; `RequireContentType` removed)
   - [x] `MaxBody` → eager Content-Length + `http.MaxBytesReader` wrap → 413 Payload Too Large
   - [x] `RequireHeaders` → header existence check → 400 Bad Request
   - [x] `RequireQuery` → query param existence check → 400 Bad Request
@@ -697,7 +697,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] **Typed endpoint / operation model decision** — out of the pre-v1 reshaping (2026-10-02); reopened once the architecture has settled and real applications have run on it. v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface, and until the question reopens the root adds no package-level non-generic route verbs, so an additive typed layer stays possible. Decided for v1 in its own right: `Validatable.Validate` takes no `context.Context` ([ADR-011](docs/adr/011-validation-strategy.md#validatable-interface)); a context-taking interface would be additive, added beside it.
 - [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
 - [ ] **Deferred breaking changes**, each shipped in a minor before the stability window opens, under its own CHANGELOG heading:
-  - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
+  - [x] `ContractGuard` requires a Content-Type on a body by default; `ContractConfig.AllowMissingContentType` opts out, `RequireContentType` removed (4.7)
   - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) was **deleted in v0.24.0** rather than kept or batched ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#the-public-surface)): framework infrastructure moved to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [x] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3) — shipped in v0.26.0 (R14)

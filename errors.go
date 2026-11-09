@@ -44,7 +44,7 @@ const (
 
 // codeContentTypeRequired is the code for a request that must carry a
 // Content-Type and does not: a QUERY request (400), or a body under
-// ContractGuard's RequireContentType (415).
+// ContractGuard's MetaAccept contract (415).
 const codeContentTypeRequired = "content_type_required"
 
 // codeInvalidPathEncoding is the 400 code for a request path whose parameter

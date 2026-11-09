@@ -787,7 +787,7 @@ api.GET("/health", healthCheck).SetMeta(RequireAuth, false) // auth = false (ove
 
 | Meta key | Key type | Enforced as |
 | --- | --- | --- |
-| `middleware.MetaAccept` | `credo.Key[[]string]` | Content-Type allow-list -> 415 (missing header passes unless `RequireContentType`) |
+| `middleware.MetaAccept` | `credo.Key[[]string]` | Content-Type allow-list -> 415 (a body without the header too, unless `AllowMissingContentType`) |
 | `middleware.MetaMaxBody` | `credo.Key[int64]` | body byte cap (`MaxBytesReader`) -> 413 |
 | `middleware.MetaRequireHeaders` | `credo.Key[[]string]` | required headers -> 400 |
 | `middleware.MetaRequireQuery` | `credo.Key[[]string]` | required query params -> 400 |
@@ -819,11 +819,11 @@ api.GET("/reports", listReports).
 
 A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` or a `nil` list for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `RemoveMeta` on the route drops its own value and lets the group's contract apply again.
 
-By default a request with **no** `Content-Type` header passes the `MetaAccept` contract — there may be nothing to police. For a JSON API where every body must be labelled, set `ContractConfig.RequireContentType: true`: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected, so the switch arms a declared contract rather than adding a new one:
+A `MetaAccept` contract polices every body: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415, since a body that does not say what it is cannot meet the contract. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected. For clients that send unlabelled bodies, set `ContractConfig.AllowMissingContentType`, and such a body passes the contract:
 
 ```go
 api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
-    RequireContentType: true, // JSON API: every body must say what it is
+    AllowMissingContentType: true, // legacy clients send bodies without a Content-Type
 }))
 ```
 

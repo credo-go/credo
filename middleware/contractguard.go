@@ -35,16 +35,17 @@ import (
 // A route overrides a contract inherited from its group by setting the key
 // itself, and lifts an inherited requirement with the value that requires
 // nothing: an empty list for MetaRequireHeaders, MetaRequireQuery and
-// MetaScope, []string{"*/*"} for MetaAccept (every media type;
-// ContractConfig.RequireContentType still applies), a negative value for
+// MetaScope, []string{"*/*"} for MetaAccept (every media type; a body still
+// needs a Content-Type unless ContractConfig.AllowMissingContentType is
+// set), a negative value for
 // MetaMaxBody. An empty MetaAPIVersion list accepts no version, so that
 // contract can be replaced but not lifted.
 var (
 	// MetaAccept restricts the request Content-Type to the listed media types.
-	// Values may use a "type/*" or "*/*" wildcard. Requests without a
-	// Content-Type header (or with an empty one) pass by default; set
-	// ContractConfig.RequireContentType to reject them with 415 when the
-	// request carries a body.
+	// Values may use a "type/*" or "*/*" wildcard. A request that carries a
+	// body without a Content-Type header (or with an empty one) is rejected
+	// with 415 unless ContractConfig.AllowMissingContentType is set; a
+	// bodiless request passes.
 	MetaAccept = credo.NewKey[[]string]("accept")
 
 	// MetaMaxBody caps the request body size in bytes for the route. It is
@@ -90,13 +91,14 @@ type ContractConfig struct {
 	// contract. Defaults to "X-API-Version".
 	APIVersionHeader string
 
-	// RequireContentType arms the MetaAccept contract against requests that
-	// carry a body but no (or an empty) Content-Type header: such requests
-	// are rejected with 415 instead of passing. A body is assumed when
-	// Content-Length is positive or unknown (chunked, HTTP/2 streams);
-	// requests with Content-Length 0 and bodiless requests pass, and routes
-	// without a MetaAccept contract are unaffected. Default false.
-	RequireContentType bool
+	// AllowMissingContentType lets a request that carries a body but no (or
+	// an empty) Content-Type header pass the MetaAccept contract. By default
+	// such a request is rejected with 415: a declared contract polices every
+	// body, and a body that does not say what it is cannot meet it. A body is
+	// assumed when Content-Length is positive or unknown (chunked, HTTP/2
+	// streams); requests with Content-Length 0 and bodiless requests always
+	// pass, and routes without a MetaAccept contract are unaffected.
+	AllowMissingContentType bool
 
 	// CustomChecks run after all built-in contracts have passed, in order.
 	// A check returns a non-nil error (typically a *credo.HTTPError) to reject
@@ -154,7 +156,7 @@ func ContractGuard(cfg ...ContractConfig) credo.Middleware {
 			route := ctx.Route()
 
 			if accepted, ok := route.GetMeta(MetaAccept); ok {
-				if err := checkAccept(ctx, accepted, config.RequireContentType); err != nil {
+				if err := checkAccept(ctx, accepted, !config.AllowMissingContentType); err != nil {
 					return err
 				}
 			}
@@ -204,8 +206,8 @@ func normalizeContractConfig(c ContractConfig) ContractConfig {
 }
 
 // checkAccept enforces the Content-Type against the accepted media types.
-// A missing or empty Content-Type passes unless require is set and the
-// request carries a body, in which case it is rejected with 415.
+// A missing or empty Content-Type is rejected with 415 when require is set
+// and the request carries a body; otherwise it passes.
 func checkAccept(ctx *credo.Context, accepted []string, require bool) error {
 	ct := ctx.Request().Header.Get("Content-Type")
 	if strings.TrimSpace(ct) == "" {
