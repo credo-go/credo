@@ -8,23 +8,23 @@
 
 ## Pre-v1 Reshaping
 
-Ships in v0.26.0 and the minors after it, before v1.0.0. The [delivery plan](docs/plans/pre-v1-reshaping.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
+Shipped in v0.26.0 (2026-11-09), before v1.0.0. The [delivery plan](docs/plans/pre-v1-reshaping.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
 
 - [x] R1: promotion and the decisions that change no code — the decisions written into the ADRs and specs, each marked pending until its work item ships; the path as received (ADR-007, pinned by tests), no stdlib path values (ADR-008), `Validate` takes no context (ADR-011), the App stays the one facade (ADR-003) (2026-11-09)
-- [ ] R2: one error channel; keys, messages and fault codes — `HTTPStatus() int` and `store`'s bridge deleted, `credo.MessageKey` a named type, `WithMessage` literal, client input in `Details`, `Code*` constants, the fault kind as the default code, `fault.Error`, `testutil.CheckMessageKeys`
-- [ ] R3: strict configuration decoding by default — `config.WithWeakDecoding()` the opt-in; `WithStrictDecoding` deleted
-- [ ] R4: typed keys over one context head — `credo.NewKey[T]`, typed route meta and `GetMeta`, `Request.Std()`, `Context.Within`
-- [ ] R5: typed configuration sections — `config.Section[T]` with `Decode`, `GetConfig` takes the descriptor; `Config.Get` and `MustGet` deleted
-- [ ] R6: validation names fields by their source and validates slices and nested values
-- [ ] R7: `Rewrite` matches the wire form
-- [ ] R8: application modules — `Module`, `app.UseModules`, `testutil.WithModules`
-- [ ] R9: `sqldb` without Bun's private fields — `ApplyFilter`, `PageWithCount`, `ErrUnsupportedCountQuery`; the private-field layer deleted
-- [ ] R10: the Context is not pooled — the measurement recorded in ADR-008
-- [ ] R11: JWT in `auth/jwtauth`
-- [ ] R12: observers of the final response — `app.AddObserver`, `Exchange`; the access log an observer, `AccessLogEntry` deleted
-- [ ] R13: a routed middleware tier — `app.Middleware`, a mount is a route, `GlobalMiddleware` becomes `PreRouting`, `ContractGuard` fails closed
-- [ ] R14: normative specs and the last prunings
-- [ ] R15: live configuration sections; certificates rotate on change — `Section.Live`, `config.Live[T]`; `OnConfigChange`, `OnReload` and staging deleted
+- [x] R2: one error channel; keys, messages and fault codes — `HTTPStatus() int` and `store`'s bridge deleted, `credo.MessageKey` a named type, `WithMessage` literal, client input in `Details`, `Code*` constants, the fault kind as the default code, `fault.Error`, `testutil.CheckMessageKeys` (2026-11-09)
+- [x] R3: strict configuration decoding by default — `config.WithWeakDecoding()` the opt-in; `WithStrictDecoding` deleted (2026-11-09)
+- [x] R4: typed keys over one context head — `credo.NewKey[T]`, typed route meta and `GetMeta`, `Request.Std()`, `Context.Within` (2026-11-09)
+- [x] R5: typed configuration sections — `config.Section[T]` with `Decode`, `GetConfig` takes the descriptor; `Config.Get` and `MustGet` deleted (2026-11-09)
+- [x] R6: validation names fields by their source and validates slices and nested values (2026-11-09)
+- [x] R7: `Rewrite` matches the wire form (2026-11-09)
+- [x] R8: application modules — `Module`, `app.UseModules`, `testutil.WithModules` (2026-11-09)
+- [x] R9: `sqldb` without Bun's private fields — `ApplyFilter`, `PageWithCount`, `ErrUnsupportedCountQuery`; the private-field layer deleted (2026-11-09)
+- [x] R10: the Context is not pooled — the measurement recorded in ADR-008 (2026-11-09)
+- [x] R11: JWT in `auth/jwtauth` (2026-11-09)
+- [x] R12: observers of the final response — `app.AddObserver`, `Exchange`; the access log an observer, `AccessLogEntry` deleted (2026-11-09)
+- [x] R13: a routed middleware tier — `app.Middleware`, a mount is a route, `GlobalMiddleware` becomes `PreRouting`, `ContractGuard` fails closed (2026-11-09)
+- [x] R14: normative specs and the last prunings — the frozen specs split into contract and current behaviour, a normative-sections header on every other spec, the frozen specs' examples as `Example*` tests; the root and store prunings (2026-11-09)
+- [x] R15: live configuration sections; certificates rotate on change — `Section.Live`, `config.Live[T]`; `OnConfigChange`, `OnReload` and staging deleted (2026-11-09)
 
 ## Bootstrap Simplification
 
@@ -98,7 +98,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 ### 1.2 Radix Tree Router (`internal/radix/` + root package)
 
-> Note: `router/` package was merged into root package on 2026-02-28. Files now live in root: `mux.go`, `routectx.go`, `walk.go`, `route.go`, `group.go`. **Source**: Chi `tree.go` (MIT, primary) + httprouter (BSD-3, reference) + Goyave (MIT) **Spec**: [`docs/specs/router.md`](docs/specs/router.md) **ADRs**: [`docs/adr/007-router-and-routing.md`](docs/adr/007-router-and-routing.md)
+> Note: `router/` package was merged into root package on 2026-02-28. Files now live in root: `mux.go`, `routectx.go`, `route.go`, `group.go`. **Source**: Chi `tree.go` (MIT, primary) + httprouter (BSD-3, reference) + Goyave (MIT) **Spec**: [`docs/specs/router.md`](docs/specs/router.md) **ADRs**: [`docs/adr/007-router-and-routing.md`](docs/adr/007-router-and-routing.md)
 
 - [x] Adapt Chi `tree.go` → `internal/radix/` (split into method.go, context.go, pattern.go, sort.go, tree.go)
 - [x] Add copyright headers (Chi primary, httprouter reference), update package name to `radix`
@@ -265,6 +265,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `MaxFileSize(bytes)` — reject files exceeding size limit
   - [x] `AllowedMimeTypes(types...)` — restrict to specific MIME types (case-insensitive, ignores media-type params)
   - [x] `AllowedExtensions(exts...)` — restrict to specific file extensions (case-insensitive, optional leading dot)
+- [ ] **Fields promoted from an unexported embedded struct**: such a field gets an empty field name in its violation, because the engine's name table (`buildFieldMappingList`) skips unexported fields, unexported embedded structs included; `decodeValues` skips them too, so they are never bound from a query or form either (found during R6)
 
 ### 2.4 Error Handling
 
@@ -361,7 +362,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 **Auth Implementations** (`auth/`):
 
-- [x] `auth/jwt.go` — JWT validation (Authenticator[T] implementation)
+- [x] `auth/jwt.go` — JWT validation (Authenticator[T] implementation) (moved to `auth/jwtauth/jwtauth.go` in v0.26.0, R11)
 - [x] `auth/apikey.go` — API key (header/query)
 - [x] `auth/basic.go` — HTTP Basic
 
@@ -397,7 +398,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] `Config` struct (Driver, Host, Port, Name, User, Password, DSN, ConnectTimeout, MaxOpen, pointer-valued MaxIdle, MaxLifetime, MaxIdleTime, SSLMode, Options) + fail-loud pool validation, `DB.Stats`, cumulative health diagnostics, successful-registration unlimited-pool warning, exact driver aliases, IPv6-safe generated DSNs, non-zero network ports, rounded-up PostgreSQL sub-second timeouts, secret-safe option-conflict rejection, and explicit-nil plus known-family-mismatch dialect/connector rejection
 - [x] `Open(cfg, opts...)` — factory with functional options
 - [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
-- [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure
+- [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure (removed in v0.26.0, R14; `db.InTx` / `db.InTxWith` are the API)
 - [x] Query builder proxies: `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`
 - [x] 7 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, and fail-loud unsupported Count/Page shapes
 - [x] Select execution snapshots preserve explicit/raw `Conn`, builder errors, `WherePK`, soft-delete flags, model hooks and relation state across `Scan`/`Count`/`Exists`/`Page`
@@ -423,7 +424,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 **Phase 3.3e — Migrations & TX ergonomics**:
 
-- [x] `db.InTx(ctx, fn)` — method-form TX sugar over `RunInTx` (handler-side ergonomics; called with `ctx.Context()`) — plus `db.InTxWith` for `sql.TxOptions` symmetry
+- [x] `db.InTx(ctx, fn)` — method-form TX sugar over `RunInTx` (handler-side ergonomics; called with `ctx.Context()`) — plus `db.InTxWith` for `sql.TxOptions` symmetry (`RunInTx` / `RunInTxWith` removed in v0.26.0, R14; `db.InTx` / `db.InTxWith` are the API)
 - [x] Migration wrapper over `bun/migrate` (replaces the goose plan; the optional `credo migrate:*` CLI sugar lives in Phase 5.1):
   - [x] `db.RegisterMigrations(...)` — accept `*migrate.Migrations` (+ pass-through `migrate.MigratorOption`s; mark-applied-on-success gives at-least-once re-attempt for Up errors surfaced by Bun, not automatic retry safety)
   - [x] `OnStart` lifecycle integration (dev/single-replica opt-in) — `db.Migrate` matches the `App.OnStart` hook signature: `app.OnStart(db.Migrate)`
@@ -658,10 +659,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 > Small convention API completing the Clean Architecture story: controllers implement an interface and register their own routes.
 
-- [ ] Registration interface (e.g. `RegisterRoutes(g *credo.Group)`)
-- [ ] `app.Register(controllers...)` / group-level equivalent
-- [ ] Align CLI `credo make:controller` output with it (Phase 5.1)
-- [ ] Tests
+- [x] Superseded by `credo.Module` (v0.26.0, R8): a controller's routes are a method its module's `Handlers` calls on a group ([ADR-003](docs/adr/003-application-architecture.md#application-modules)); the `RegisterRoutes` interface, `app.Register(controllers...)` and their tests are not built
 
 ---
 
@@ -672,7 +670,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 > `credo new` is the priority — it delivers the "Clean Architecture as default via CLI scaffolding" promise (philosophy #2). `make:*` generators are secondary.
 
 - [ ] `credo new <project>` — scaffold Clean Architecture project (priority)
-- [ ] `credo make:controller <name>` (secondary; aligns with Phase 4.10)
+- [ ] `credo make:controller <name>` (secondary; generates a `credo.Module` whose `Handlers` registers the controller's routes on a group)
 - [ ] `credo make:usecase <name>` (secondary)
 - [ ] `credo make:repository <name>` (secondary)
 - [ ] `credo migrate:up`, `migrate:down`, `migrate:create` — optional sugar over the `store/sqldb` migration wrapper (Phase 3.3e), not a separate engine
@@ -702,14 +700,14 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
   - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) was **deleted in v0.24.0** rather than kept or batched ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#the-public-surface)): framework infrastructure moved to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
-  - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
-  - [ ] strict decoding as the default, mapstructure's weak coercion the opt-in through `config.WithWeakDecoding()`, `WithStrictDecoding` deleted — decided; ships with the [Pre-v1 Reshaping](#pre-v1-reshaping)'s R3
+  - [x] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3) — shipped in v0.26.0 (R14)
+  - [x] strict decoding as the default, mapstructure's weak coercion the opt-in through `config.WithWeakDecoding()`, `WithStrictDecoding` deleted — shipped in v0.26.0 (R3)
 - [ ] **Lifecycle acceptance scenarios** ([ADR-024](docs/adr/024-lifecycle-components.md#consequences), added in v0.24.0) stay pinned by tests (`TestAcceptance_DrainDeliversLastJob`, `TestAcceptance_FailedStartStopsWhatWasBuilt`): the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` points at the migration guide, where each deferred breaking change is recorded with the minor that shipped it under its own CHANGELOG heading.
 - [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.
 
-**Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — not a v1 blocker), admin server (4.9), controller registration (4.10), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
+**Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — not a v1 blocker), admin server (4.9), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
 
 ### Architecture Governance
 
@@ -730,22 +728,22 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 ### Performance Budgets
 
-- [ ] Define threshold benchmarks for hot paths: router match, context pool, DI resolve
+- [ ] Define threshold benchmarks for hot paths: router match, context allocation, DI resolve
 - [ ] CI benchmark regression tests (fail on >10% regression)
 - [ ] Middleware overhead budget: max added latency per middleware layer
 
 ### Router Improvements
 
-- [x] **Mount introspection**: mounts now appear as a single clean `RouteKindMount` entry in `Routes()`/`WalkRoutes` (cleaned prefix + sorted forwarded method set); internal catch-all/fan-out hidden. Shipped with route introspection v2 (`RouteInfo` gained `Name`/`Meta`/`Methods`/`Kind`/`AutoHead`, deterministic total-order output)
+- [x] **Mount introspection**: mounts now appear as a single clean `RouteKindMount` entry in `Routes()`/`WalkRoutes` (cleaned prefix + sorted forwarded method set); internal catch-all/fan-out hidden. Shipped with route introspection v2 (`RouteInfo` gained `Name`/`Meta`/`Methods`/`Kind`/`AutoHead`, deterministic total-order output). `WalkRoutes` removed in v0.26.0 (R14); `app.Routes()` is the one introspection call
 - [x] **Document middleware ordering**: group middleware is collected at compile time from the group parent chain — registration order affects execution order only, never membership (semantics changed 2026-06-11 from registration-time capture; documented in `doc.go`, the middleware spec, and the guide)
 - [x] **Mount registration atomicity**: `Mount` now preflights its exact + catch-all method fan-out (read-only `radix.Node.FindEndpoint` + `mux.wouldConflict`) and panics before mutating the tree when an explicit route already conflicts, so a recovered duplicate panic leaves no partial radix/store entries (the radix tree has no delete — guarantee is check-before-insert, not rollback). Regression test covers a pre-existing exact route + overlapping `Mount`; structural conflicts need no preflight because the catch-all registers first and shares the exact prefix, so they always fire on the first insert. See [ADR-007](docs/adr/007-router-and-routing.md).
+- [ ] **Reject text after a catch-all at registration**: the router accepts a route with text after a catch-all (`GET /a/{p...}/x`), which can never match and answers 405 for `/a/b/x`, `/a/b/c/x` and `/a/b` alike; registration should panic, as `middleware.Rewrite` now does for such a `From` pattern (found during R7)
 
 ### Deferred Features (from specs/ADRs)
 
 > These are explicitly deferred — tracked here for visibility, not scheduled.
 
 - [x] ~~**RequestScoped middleware**~~: Removed — RequestScoped lifecycle rejected in favor of context+middleware
-- [x] Controller registration (Goyave pattern) — tracked in **Phase 4.10**
 - [x] Static file serving — [ADR-017](docs/adr/017-static-file-serving.md), [Spec](docs/specs/static.md)
 - [ ] BuildProxyURL — [ADR-007](docs/adr/007-router-and-routing.md), deferred to Phase 3+
 - [ ] Optional `.Validate()` on Route — [Router Spec](docs/specs/router.md), deferred (add if demand warrants)
