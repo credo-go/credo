@@ -45,7 +45,12 @@ type fieldRules[T any] struct {
 // fieldPtr.
 //
 // When fieldPtr points to a field that implements Validatable and no explicit
-// rules are given, Validate() is called automatically (nested struct support).
+// rules are given, Validate() is called automatically (nested struct support),
+// and its failures are prefixed with the field's name. A struct field's
+// Validate runs on the field itself, so what a pointer-receiver Validate
+// normalizes is kept. A nil pointer or nil interface is valid and its Validate
+// is not called; presence is what [NotNil] and [Required] check. A field with
+// rules runs its rules only.
 func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules {
 	return &fieldRules[T]{
 		ptr:   fieldPtr,
@@ -89,14 +94,14 @@ func ValidateStruct(structPtr any, fields ...FieldRules) error {
 
 func (f *fieldRules[T]) validate(structPtr any) error {
 	fieldName := resolveFieldName(structPtr, f.ptr)
-	value := *f.ptr
 
-	// If no explicit rules, check if the value implements Validatable
-	// (nested struct auto-validation).
+	// With no explicit rules, a field that implements Validatable is
+	// validated by its own Validate (nested struct auto-validation).
 	if len(f.rules) == 0 {
-		return validateNested(fieldName, value)
+		return validateNested(fieldName, f.ptr)
 	}
 
+	value := *f.ptr
 	var fieldErrors Errors
 	for _, rule := range f.rules {
 		if err := rule.Validate(value); err != nil {
@@ -118,30 +123,38 @@ func (f *fieldRules[T]) validate(structPtr any) error {
 // after decoding ("parse, don't validate").
 //
 // Nested struct fields that implement Validatable are auto-validated
-// by [Field] when no explicit rules are given.
+// by [Field] when no explicit rules are given; a nil nested pointer is
+// valid.
 type Validatable interface {
 	Validate() error
 }
 
-// validateNested checks if value implements Validatable and calls Validate().
-// Failures are prefixed with the field name; an internal error is returned
-// unchanged. Handles both value and pointer
-// receivers: if the value itself doesn't implement Validatable, a pointer
-// to the value is tried.
-func validateNested(fieldName string, value any) error {
-	v, ok := value.(Validatable)
-	if !ok {
-		// Try pointer receiver: if value is addressable via reflect,
-		// create a pointer and check again.
-		rv := reflect.ValueOf(value)
-		if rv.Kind() == reflect.Struct {
-			ptr := reflect.New(rv.Type())
-			ptr.Elem().Set(rv)
-			v, ok = ptr.Interface().(Validatable)
-		}
+// validateNested calls the Validate method of the field fieldPtr points to,
+// when the field has one. Failures are prefixed with the field name; an
+// internal error is returned unchanged.
+//
+// A struct field is validated through fieldPtr, the field's own pointer, so a
+// pointer-receiver Validate keeps what it normalizes and the field is not
+// copied. A nil pointer or nil interface is valid and its Validate is not
+// called: presence is what [NotNil] and [Required] check.
+func validateNested[T any](fieldName string, fieldPtr *T) error {
+	var v Validatable
+	if reflect.TypeFor[T]().Kind() == reflect.Struct {
+		pv, ok := any(fieldPtr).(Validatable)
 		if !ok {
 			return nil
 		}
+		v = pv
+	} else {
+		value := any(*fieldPtr)
+		vv, ok := value.(Validatable)
+		if !ok {
+			return nil
+		}
+		if rv := reflect.ValueOf(value); rv.Kind() == reflect.Pointer && rv.IsNil() {
+			return nil
+		}
+		v = vv
 	}
 	err := v.Validate()
 	if err == nil {
