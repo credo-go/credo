@@ -131,7 +131,7 @@ The status body is rendered by Credo's centralized error pipeline; raw upstream 
 
 ## Handler and Connection Lifetime
 
-The application `Handler` runs synchronously until the connection ends. Both arguments are borrowed and must not be retained after return. `*credo.Context` is pooled and may be reused for another request after the handler exits.
+The application `Handler` runs synchronously until the connection ends. Both arguments are borrowed and must not be used after return: the `*credo.Context`'s response cannot be written after the handler exits, and the adapter's cleanup owns the connection.
 
 `Conn.Context()` is the connection-lifetime context. It preserves request values but drops the HTTP request cancellation and deadline. It is cancelled when adapter cleanup finishes. WebSocket I/O should use it or a child deadline, not `req.Context()`.
 
