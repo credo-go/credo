@@ -6,7 +6,7 @@
 //  2. Provide: typed config values and constructors, Infra first
 //  3. Feature mounts and satellite registrations: request features, i18n,
 //     health, the store, a scheduled worker, the WebSocket server and hooks
-//  4. Finalize: the whole graph is validated before anything is built
+//  4. Finalize: an optional early check of the whole graph
 //  5. Resolve, middleware and routes, built from resolved values
 //  6. Run: signal-aware serving with a graceful drain
 //
@@ -511,7 +511,8 @@ func run() error {
 	})
 
 	// 4. Finalize validates the whole graph — missing dependencies, cycles —
-	// and reports every problem at once. Constructors run only after this.
+	// and reports every problem at once, before anything is built. It is
+	// optional: without it, the first Resolve below finalizes the container.
 	if err := app.Finalize(); err != nil {
 		return fmt.Errorf("DI finalize: %w", err)
 	}

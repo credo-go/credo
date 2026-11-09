@@ -12,8 +12,9 @@ import (
 // Provide registers a constructor in the application's DI container. The
 // binding's type is the constructor's first result type: func(deps...) T or
 // func(deps...) (T, error) binds T. Its parameters are themselves resolved
-// from the container. It runs at most once, on the first resolution after
-// [App.Finalize].
+// from the container. It runs at most once, on its first resolution; the
+// first resolving call finalizes the container ([App.Finalize]) when nothing
+// has.
 //
 //	app.Provide(NewUserService) // binds *UserService
 //
@@ -26,9 +27,10 @@ import (
 // function, no result, a second result that is not an error) panics here, at
 // the call, not at compile time. So do a nil constructor, a second binding of
 // T — a direct one, or an alias of T — without [Override], and a call after
-// [App.Finalize] or after shutdown began; each is misuse known at the call
-// site (see "Panics and Errors" in the package documentation). The dependency
-// graph itself is validated at [App.Finalize]. A constructor that captures
+// the container was finalized or after shutdown began; each is misuse known
+// at the call site (see "Panics and Errors" in the package documentation).
+// The dependency graph itself is validated when the container is finalized
+// ([App.Finalize]). A constructor that captures
 // app and calls [App.Resolve] inside its body is unsupported: such a
 // dependency is invisible to graph validation, cycle detection and
 // dependency-ordered shutdown.
@@ -84,34 +86,33 @@ func (app *App) Has[T any]() bool {
 }
 
 // Resolve retrieves an instance of type T from the application's DI
-// container. It is admitted only after [App.Finalize] (Run and ServeHTTP
-// finalize implicitly) and panics when called before it: constructors run at
-// first resolution, exactly once, and a constructor panic is returned as a
-// [DIPanicError] to every caller. After a failed Finalize, Resolve returns the
-// Finalize error. Once shutdown has reached DI teardown, Resolve returns an
-// error wrapping [ErrDIClosed]. After Finalize, Resolve is safe for concurrent
-// use.
+// container. The first resolving call — Resolve, [App.ResolveAll],
+// [App.MustResolve] or [App.MustResolveAll] — finalizes the container when
+// nothing has ([App.Finalize]) and records itself, with its site, as what
+// finalized it; a failed Finalize is that call's error, and every later
+// Resolve returns it. Constructors run at first resolution, exactly once,
+// and a constructor panic is returned as a [DIPanicError] to every caller.
+// Once shutdown has begun, Resolve returns an error wrapping [ErrDIClosed].
+// Resolve is safe for concurrent use; concurrent first calls finalize once.
 //
-// Resolve is primarily intended for bootstrap/composition-root code after
-// Finalize; runtime calls remain available, but Credo's recommended
-// application pattern is constructor injection. Stop hooks ([App.OnStop])
-// must not resolve: take their dependencies at registration time instead.
-// [App.OnStart] hooks run after Finalize and before traffic, and may
-// resolve.
+// Resolve is primarily intended for bootstrap/composition-root code; runtime
+// calls remain available, but Credo's recommended application pattern is
+// constructor injection. Stop hooks ([App.OnStop]) must not resolve: take
+// their dependencies at registration time instead. [App.OnStart] hooks run
+// after Finalize and before traffic, and may resolve.
 //
 //	svc, err := app.Resolve[*UserService]()
 func (app *App) Resolve[T any]() (T, error) {
-	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	v, err := app.container.Resolve[T]()
-	panicOnMisuse(err)
-	return v, err
+	return resolveAs[T](app, "Resolve")
 }
 
-// MustResolve is like [App.Resolve] but panics on error. It is primarily
-// intended for bootstrap/composition-root code. A constructor panic surfaces
-// here as a panic whose value is the [DIPanicError], not the original value.
+// MustResolve is like [App.Resolve] but panics on error: the whole Finalize
+// report when the implicit Finalize fails, or a constructor's failure. It is
+// primarily intended for bootstrap/composition-root code. A constructor panic
+// surfaces here as a panic whose value is the [DIPanicError], not the
+// original value.
 func (app *App) MustResolve[T any]() T {
-	v, err := app.Resolve[T]()
+	v, err := resolveAs[T](app, "MustResolve")
 	if err != nil {
 		panic(err)
 	}
@@ -122,19 +123,37 @@ func (app *App) MustResolve[T any]() T {
 // [App.BindMany], preserving bind order. When no bindings exist, it returns an
 // empty slice and nil error. The same phase rules as [App.Resolve] apply.
 func (app *App) ResolveAll[T any]() ([]T, error) {
-	app.noteResolveDuringDrain(reflect.TypeFor[T]())
-	v, err := app.container.ResolveAll[T]()
-	panicOnMisuse(err)
-	return v, err
+	return resolveAllAs[T](app, "ResolveAll")
 }
 
 // MustResolveAll is like [App.ResolveAll] but panics on error.
 func (app *App) MustResolveAll[T any]() []T {
-	v, err := app.ResolveAll[T]()
+	v, err := resolveAllAs[T](app, "MustResolveAll")
 	if err != nil {
 		panic(err)
 	}
 	return v
+}
+
+// resolveAs resolves T for the resolving call named call, which finalizes
+// the container when nothing has.
+func resolveAs[T any](app *App, call string) (T, error) {
+	t := reflect.TypeFor[T]()
+	app.noteResolveDuringDrain(t)
+	app.container.SealOnResolve(func() di.Trigger { return callTrigger(call + "[" + t.String() + "]") })
+	v, err := app.container.Resolve[T]()
+	panicOnMisuse(err)
+	return v, err
+}
+
+// resolveAllAs is resolveAs for ResolveAll and MustResolveAll.
+func resolveAllAs[T any](app *App, call string) ([]T, error) {
+	t := reflect.TypeFor[T]()
+	app.noteResolveDuringDrain(t)
+	app.container.SealOnResolve(func() di.Trigger { return callTrigger(call + "[" + t.String() + "]") })
+	v, err := app.container.ResolveAll[T]()
+	panicOnMisuse(err)
+	return v, err
 }
 
 // panicOnMisuse panics with err when the container rejected a call because of
@@ -189,8 +208,9 @@ func (app *App) BindMany[I, T any]() {
 }
 
 // Finalize freezes the DI container and validates the dependency graph.
-// After Finalize, a Provide, ProvideValue, Alias or BindMany call panics, and
-// [App.Resolve] becomes available. Finalize is DI-only: routes, hooks,
+// After Finalize, a Provide, ProvideValue, Alias, BindMany or Manage call
+// and a worker registration panic, naming what finalized the container,
+// where, and the calls that led there. Finalize is DI-only: routes, hooks,
 // renderers and other HTTP registrations stay open until the App prepares to
 // serve, so controllers built from resolved services can still be wired
 // afterwards.
@@ -205,12 +225,14 @@ func (app *App) BindMany[I, T any]() {
 // each internal component that depends on an ingress one, with the path and
 // both remedies.
 //
-// Finalize is idempotent. If not called explicitly, the Run* entry points and
-// the first [App.ServeHTTP] call it implicitly.
+// Finalize is idempotent and optional: an early check of the graph. If not
+// called explicitly, the first resolving call ([App.Resolve] and its
+// siblings), [App.Run], [App.Start] and the first [App.ServeHTTP] call make
+// it implicitly, whichever comes first.
 //
 //	if err := app.Finalize(); err != nil {
 //		log.Fatal(err)
 //	}
 func (app *App) Finalize() error {
-	return app.container.Seal()
+	return app.container.SealBy(callTrigger("Finalize"))
 }

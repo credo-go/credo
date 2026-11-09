@@ -98,22 +98,26 @@
 //  2. [App.Provide] and [App.ProvideValue];
 //  3. feature mounts and satellite registrations, in any order among
 //     themselves — [App.UseI18n], [App.UseHealth], stores and workers;
-//  4. [App.Finalize], handling its error;
-//  5. [App.Resolve], routes and anything built from a resolved value, a
-//     readiness check included;
-//  6. [App.Run].
+//  4. [App.Resolve], routes and anything built from a resolved value, a
+//     readiness check included: the first resolving call finalizes the
+//     container, and [App.Finalize], called before it, is an optional early
+//     check of the graph that returns its report as an error;
+//  5. [App.Run].
 //
 // A mistake surfaces in one of three phases:
 //
 //   - Registration panics on misuse known at the call site, with a message
 //     naming the call and the remedy: a constructor of the wrong shape, a
 //     duplicate binding, an [App.Alias] or [App.BindMany] whose types do not
-//     fit, a dependency registration after [App.Finalize] or after shutdown
-//     began, and [App.Resolve] before [App.Finalize].
-//   - [App.Finalize] returns what only the whole dependency graph reveals —
+//     fit, and a dependency registration after shutdown began or after the
+//     container was finalized, naming what finalized it — [App.Finalize],
+//     the first resolving call, or the App's start or first request — where,
+//     and the calls that led there.
+//   - Finalizing returns what only the whole dependency graph reveals —
 //     every missing dependency with its whole path from the registration that
 //     needs it, every cycle — joined in registration order, with the same
-//     text on every run.
+//     text on every run: [App.Finalize] returns it, and so does the first
+//     resolving call when it is the one that finalizes.
 //   - Starting and serving return errors for what touches the outside world.
 //
 // This is why [App.UseI18n] panics on misuse at the call while a missing or

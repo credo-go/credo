@@ -15,8 +15,9 @@ import (
 // panicStackSize bounds the stack captured into a PanicError.
 const panicStackSize = 8192
 
-// Resolve retrieves an instance of type T from the container. It is admitted
-// only after Seal; during shutdown it returns an error wrapping [ErrClosed].
+// Resolve retrieves an instance of type T from the container, sealing it
+// first when nothing has (SealBy); during shutdown it returns an error
+// wrapping [ErrClosed].
 //
 //	svc, err := c.Resolve[MyService]()
 func (c *Container) Resolve[T any]() (T, error) {
@@ -77,19 +78,20 @@ func (c *Container) MustResolveAll[T any]() []T {
 }
 
 // admitResolve applies the phase rules shared by every resolution entry:
-// closing wins over everything, then Seal must have run, then a failed Seal
-// rejects. op names the API for the error text. A resolution before Seal is a
-// [*MisuseError]: the App panics with it at the call.
+// closing wins over everything, and so does a shutdown that froze the
+// container before anything sealed it; then the container is sealed, with
+// the resolving call as its trigger when nothing sealed it; then a failed
+// seal rejects. op names the API for the error text.
 func (c *Container) admitResolve(op string, targetType reflect.Type) error {
 	c.mu.RLock()
-	closing, sealed, sealErr := c.closing, c.sealed, c.sealErr
+	closing, sealed, sealErr := c.closing || (c.frozen && c.trigger == nil), c.sealed, c.sealErr
 	c.mu.RUnlock()
+	if !closing && !sealed {
+		sealErr = c.SealBy(Trigger{By: fmt.Sprintf("%s[%s]", op, targetType), Remedy: "register before that call"})
+	}
 	switch {
 	case closing:
 		return fmt.Errorf("di: %s[%s]: %w", op, targetType, ErrClosed)
-	case !sealed:
-		return misuse(op, []reflect.Type{targetType}, "called before Finalize; call Finalize first "+
-			"(Run and the first ServeHTTP call it implicitly)")
 	case sealErr != nil:
 		return fmt.Errorf("di: %s[%s]: container seal failed: %w", op, targetType, sealErr)
 	}

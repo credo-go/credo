@@ -92,7 +92,8 @@ func TestServeHTTP_ImplicitFinalizeThenServe(t *testing.T) {
 	if w.Code != http.StatusOK || built.Load() != 1 {
 		t.Fatalf("status = %d, built = %d; want 200 and one construction", w.Code, built.Load())
 	}
-	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after Finalize", func() {
+	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after the container was "+
+		"finalized by the first ServeHTTP call; register before the App serves", func() {
 		app.Provide(func() *prepMissing { return &prepMissing{} })
 	})
 }

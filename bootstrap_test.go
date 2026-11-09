@@ -62,8 +62,7 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 		return app
 	}
 	const (
-		afterFinalize = "called after Finalize; make every registration before Finalize, " +
-			"which Run and the first ServeHTTP call implicitly"
+		afterFinalize = "called after the container was finalized by Finalize at "
 		afterShutdown = "called after shutdown began; registration ends when the App shuts down"
 		frozenApp     = "called after app was compiled or shut down"
 	)
@@ -138,25 +137,16 @@ func TestBootstrap_MisusePanicsAtTheCall(t *testing.T) {
 			app.BindMany[bootPlugin, *bootAudit]()
 		}, []string{"credo: App.BindMany[credo_test.bootPlugin, *credo_test.bootAudit]: binding already exists"}},
 
-		// Resolution before Finalize.
-		{"Resolve before Finalize", newApp, func(app *credo.App) { _, _ = app.Resolve[*bootPgRepo]() },
-			[]string{"credo: App.Resolve[*credo_test.bootPgRepo]: called before Finalize; call Finalize first " +
-				"(Run and the first ServeHTTP call it implicitly)"}},
-		{"MustResolve before Finalize", newApp, func(app *credo.App) { app.MustResolve[*bootPgRepo]() },
-			[]string{"credo: App.Resolve[*credo_test.bootPgRepo]: called before Finalize"}},
-		{"ResolveAll before Finalize", newApp, func(app *credo.App) { _, _ = app.ResolveAll[bootPlugin]() },
-			[]string{"credo: App.ResolveAll[credo_test.bootPlugin]: called before Finalize"}},
-
 		// Each DI registration after Finalize.
 		{"Provide after Finalize", finalized,
 			func(app *credo.App) { app.Provide(func() *bootUnbound { return nil }) },
-			[]string{"credo: App.Provide[*credo_test.bootUnbound]: " + afterFinalize}},
+			[]string{"credo: App.Provide[*credo_test.bootUnbound]: " + afterFinalize, "; register before that call"}},
 		{"ProvideValue after Finalize", finalized, func(app *credo.App) { app.ProvideValue(&bootUnbound{}) },
-			[]string{"credo: App.ProvideValue[*credo_test.bootUnbound]: " + afterFinalize}},
+			[]string{"credo: App.ProvideValue[*credo_test.bootUnbound]: " + afterFinalize, "; register before that call"}},
 		{"Alias after Finalize", finalized, func(app *credo.App) { app.Alias[bootRepo, *bootPgRepo]() },
-			[]string{"credo: App.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]: " + afterFinalize}},
+			[]string{"credo: App.Alias[credo_test.bootRepo, *credo_test.bootPgRepo]: " + afterFinalize, "; register before that call"}},
 		{"BindMany after Finalize", finalized, func(app *credo.App) { app.BindMany[bootPlugin, *bootAudit]() },
-			[]string{"credo: App.BindMany[credo_test.bootPlugin, *credo_test.bootAudit]: " + afterFinalize}},
+			[]string{"credo: App.BindMany[credo_test.bootPlugin, *credo_test.bootAudit]: " + afterFinalize, "; register before that call"}},
 
 		// Each registration after shutdown.
 		{"Provide after shutdown", shutDown,

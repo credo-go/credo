@@ -264,7 +264,8 @@ func TestAddEdge_Misuse(t *testing.T) {
 			t.Fatal(err)
 		}
 		seal(t, c)
-		if reason := misuseReason(t, c.AddEdge(a, b)); !strings.Contains(reason, "called after Finalize") {
+		const want = "called after the container was finalized by Finalize"
+		if reason := misuseReason(t, c.AddEdge(a, b)); !strings.Contains(reason, want) {
 			t.Errorf("reason = %q", reason)
 		}
 	})
