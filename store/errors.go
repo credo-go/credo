@@ -87,17 +87,6 @@ func (e *Error) Is(target error) bool {
 	return ok && kindsMatch(e.Kind, targetKind)
 }
 
-// HTTPStatus returns the legacy default HTTP mapping for this error.
-//
-// Deprecated: inspect [KindOf] and apply transport policy at the application
-// boundary. Credo's root error pipeline now uses FaultKind before this bridge.
-func (e *Error) HTTPStatus() int {
-	if e == nil {
-		return 500
-	}
-	return legacyHTTPStatus(e.Kind)
-}
-
 type kindError struct {
 	kind    Kind
 	message string
@@ -110,12 +99,6 @@ func (e *kindError) Is(target error) bool {
 	targetKind, ok := directStoreKind(target)
 	return ok && kindsMatch(e.kind, targetKind)
 }
-
-// HTTPStatus returns the sentinel's legacy default HTTP mapping.
-//
-// Deprecated: inspect [KindOf] and apply transport policy at the application
-// boundary. Credo's root error pipeline now uses FaultKind before this bridge.
-func (e *kindError) HTTPStatus() int { return legacyHTTPStatus(e.kind) }
 
 // Sentinel errors for data access operations.
 var (
@@ -328,25 +311,5 @@ func kindMessage(kind Kind) string {
 		return "store: read-only"
 	default:
 		return "store: unknown error"
-	}
-}
-
-func legacyHTTPStatus(kind Kind) int {
-	switch kind {
-	case KindNotFound:
-		return 404
-	case KindAlreadyExists,
-		KindConstraint,
-		KindSerialization,
-		KindDeadlock,
-		KindContention,
-		KindConflict:
-		return 409
-	case KindTimeout:
-		return 504
-	case KindUnavailable, KindReadOnly:
-		return 503
-	default:
-		return 500
 	}
 }

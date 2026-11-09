@@ -19,8 +19,9 @@
 //
 // [Error] retains diagnostic code/constraint/resource metadata and the
 // original cause without exposing them in Credo's default HTTP response.
-// The sentinel HTTPStatus methods remain only as a deprecated compatibility
-// bridge; new application policy should use Kind.
+// Its HTTP status comes from its kind alone, through [fault.Provider]: the
+// error pipeline maps the kind to a status, and the kind is the response's
+// code.
 //
 // # A Bound Store
 //

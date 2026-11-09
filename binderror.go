@@ -1,7 +1,6 @@
 package credo
 
 import (
-	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -104,13 +103,6 @@ func (e *BindError) Error() string {
 // Unwrap returns the underlying decoder error, supporting errors.Is/As.
 func (e *BindError) Unwrap() error {
 	return e.Internal
-}
-
-// HTTPStatus returns 400 Bad Request. The error pipeline classifies
-// BindError directly; this method keeps the status visible to custom
-// renderers and middleware that only understand the HTTPStatus interface.
-func (e *BindError) HTTPStatus() int {
-	return http.StatusBadRequest
 }
 
 // message returns the default English client-facing message for the

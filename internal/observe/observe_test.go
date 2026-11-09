@@ -3,61 +3,10 @@ package observe
 import (
 	"errors"
 	"log/slog"
-	"net/http"
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/credo-go/credo/fault"
 )
-
-type statusError struct{ code int }
-
-func (e statusError) Error() string   { return "status error" }
-func (e statusError) HTTPStatus() int { return e.code }
-
-type semanticStatusError struct {
-	kind   fault.Kind
-	legacy int
-}
-
-func (e semanticStatusError) Error() string         { return "semantic status error" }
-func (e semanticStatusError) FaultKind() fault.Kind { return e.kind }
-func (e semanticStatusError) HTTPStatus() int       { return e.legacy }
-
-func TestStatus(t *testing.T) {
-	tests := []struct {
-		name   string
-		status int
-		err    error
-		want   int
-	}{
-		{"tracked status wins over error", 201, errors.New("ignored"), 201},
-		{"no status, no error is 200", 0, nil, http.StatusOK},
-		{"semantic status", 0, semanticStatusError{kind: fault.KindNotFound}, http.StatusNotFound},
-		{
-			"semantic status wins over conflicting legacy status",
-			0,
-			semanticStatusError{kind: fault.KindNotFound, legacy: http.StatusServiceUnavailable},
-			http.StatusNotFound,
-		},
-		{
-			"unknown semantic status fails closed",
-			0,
-			semanticStatusError{kind: fault.KindUnknown, legacy: http.StatusTeapot},
-			http.StatusInternalServerError,
-		},
-		{"status-provider error", 0, statusError{code: 404}, 404},
-		{"generic error is 500", 0, errors.New("boom"), http.StatusInternalServerError},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := Status(tt.status, tt.err); got != tt.want {
-				t.Errorf("Status(%d, %v) = %d, want %d", tt.status, tt.err, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestLevel(t *testing.T) {
 	tests := []struct {

@@ -70,7 +70,7 @@ var modulePolicies = map[string]importPolicy{
 	"internal/httpheader":  {},
 	"internal/httpwriter":  {},
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
-	"internal/observe":     {credo: []string{"fault", "internal/faultstatus"}},
+	"internal/observe":     {},
 	"internal/origin":      {},
 	"internal/pattern":     {},
 	"internal/proxy":       {},

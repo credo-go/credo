@@ -16,6 +16,7 @@ import (
 	"testing/fstest"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/validation"
 )
 
@@ -357,7 +358,7 @@ func TestCtx_T_NoI18n(t *testing.T) {
 	}
 }
 
-func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
+func TestHandleError_FaultProvider_I18n(t *testing.T) {
 	app := mustNew(t)
 	app.UseI18n(credo.I18nConfig{
 		DirFS:   i18nTestFS(),
@@ -365,7 +366,7 @@ func TestHandleError_HTTPStatusProvider_I18n(t *testing.T) {
 	})
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusError{msg: "store: not found", status: 404}
+		return store.ErrNotFound
 	})
 
 	startServing(t, app)

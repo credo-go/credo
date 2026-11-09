@@ -9,11 +9,6 @@ import (
 	"github.com/credo-go/credo/store"
 )
 
-type httpStatusError interface {
-	error
-	HTTPStatus() int
-}
-
 type outerFaultError struct {
 	kind  fault.Kind
 	cause error
@@ -49,26 +44,27 @@ func TestSentinelErrors_ErrorsIs(t *testing.T) {
 	}
 }
 
-func TestSentinelErrors_HTTPStatus(t *testing.T) {
+func TestSentinelErrors_StatusIsTheKindOnly(t *testing.T) {
+	type statusMethod interface{ HTTPStatus() int }
 	tests := []struct {
-		name   string
-		err    error
-		status int
+		name string
+		err  error
+		kind fault.Kind
 	}{
-		{"ErrNotFound", store.ErrNotFound, 404},
-		{"ErrDuplicate", store.ErrDuplicate, 409},
-		{"ErrConflict", store.ErrConflict, 409},
-		{"ErrTimeout", store.ErrTimeout, 504},
-		{"ErrReadOnly", store.ErrReadOnly, 503},
+		{"ErrNotFound", store.ErrNotFound, fault.KindNotFound},
+		{"ErrDuplicate", store.ErrDuplicate, fault.KindAlreadyExists},
+		{"ErrConflict", store.ErrConflict, fault.KindConflict},
+		{"ErrTimeout", store.ErrTimeout, fault.KindTimeout},
+		{"ErrReadOnly", store.ErrReadOnly, fault.KindReadOnly},
+		{"Error", store.Wrap(store.ErrConstraint, errors.New("driver")), fault.KindConstraint},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			se, ok := errors.AsType[httpStatusError](tt.err)
-			if !ok {
-				t.Fatalf("errors.As did not match HTTPStatus interface for %v", tt.err)
+			if kind, _ := fault.KindOf(tt.err); kind != tt.kind {
+				t.Errorf("KindOf = %q, want %q", kind, tt.kind)
 			}
-			if got := se.HTTPStatus(); got != tt.status {
-				t.Errorf("HTTPStatus() = %d, want %d", got, tt.status)
+			if _, ok := tt.err.(statusMethod); ok {
+				t.Errorf("%v has an HTTPStatus method", tt.err)
 			}
 		})
 	}
@@ -81,12 +77,8 @@ func TestSentinelErrors_WrappedPreservesChain(t *testing.T) {
 		t.Error("errors.Is on wrapped error should match ErrNotFound")
 	}
 
-	se, ok := errors.AsType[httpStatusError](wrapped)
-	if !ok {
-		t.Fatal("errors.As should unwrap to find HTTPStatus on wrapped error")
-	}
-	if got := se.HTTPStatus(); got != 404 {
-		t.Errorf("HTTPStatus() = %d, want 404", got)
+	if kind, _ := fault.KindOf(wrapped); kind != fault.KindNotFound {
+		t.Errorf("KindOf(wrapped) = %q, want not_found", kind)
 	}
 }
 
@@ -279,12 +271,8 @@ func TestWrap_PreservesCauseAndStatus(t *testing.T) {
 		t.Fatalf("wrapped error message = %q, want %q", wrapped.Error(), original.Error())
 	}
 
-	se, ok := errors.AsType[httpStatusError](wrapped)
-	if !ok {
-		t.Fatal("wrapped error should expose HTTPStatus")
-	}
-	if got := se.HTTPStatus(); got != 409 {
-		t.Fatalf("HTTPStatus() = %d, want 409", got)
+	if kind, _ := fault.KindOf(wrapped); kind != fault.KindAlreadyExists {
+		t.Fatalf("KindOf(wrapped) = %q, want already_exists", kind)
 	}
 }
 
