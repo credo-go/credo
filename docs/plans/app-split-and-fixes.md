@@ -32,6 +32,23 @@ One branch, one commit per item, one PR. Every item updates its spec and adds a 
   - **Problem:** the error-handling guide's "Validation and bind failures" section lists only `bind_failed` reasons. Two neighbouring outcomes go unmentioned: the 415 `unsupported_content_encoding` (`credo.CodeUnsupportedContentEncoding`) for a non-identity `Content-Encoding` that `app.UseDecompress` did not unwrap, and the 500 `invalid_bind_target` (`credo.CodeInvalidBindTarget`) for a nil or non-pointer target or a field of a type the binder does not bind, whose reason is logged and never sent.
   - **Fix:** one short paragraph after the `bind_failed` reasons, with today's names. The local branch `docs/bind-error-codes` holds an older draft of it that says `middleware.Decompress` and omits the unsupported field type. Once this lands, that branch and its remote are deleted (the maintainer deletes the remote).
 
+A5–A8 came after Part A merged: one more branch, one commit per item, one PR, under the same rules.
+
+- [ ] **A5. A whole-tree decode fails on `.env` entries.**
+  - **Problem:** `config.Load()` reads `.env` entries without a prefix, and decoding is strict by default, so `Unmarshal("", &cfg)` fails on every `.env` entry and every `server.*` key the target does not cover. The Quick Start in `config/doc.go` decodes the whole tree.
+  - **Fix:** the Quick Start reads its sections through `config.Section[T]`, and the README and guides are checked for other whole-tree examples. The config spec (strict decoding, next to the `.env` prefix policy) and the configuration guide state that a whole-tree decode sees every `.env` entry and the framework's `server` keys, with the remedies: decode sections, cover those keys, or load with `config.WithoutDotenv()`. The `.env` prefix policy stays.
+  - **Error:** an unknown-key error names the source of a key that `.env` or the process environment set, from the record behind `ReloadResult.Overridden`: `config: unknown key "x_y" (from .env entry X_Y): …`.
+  - **Docs:** CHANGELOG under Changed (the error text).
+- [ ] **A6. Migration rows for the whole-tree reads.**
+  - **Problem:** the v0.26.0 migration rows map `cfg.Get[T]("app")` to a section, but not the whole-tree form with an empty key, which a section rejects.
+  - **Fix:** rows map `cfg.Get[T]("")` and `cfg.MustGet[T]("")` to `cfg.Unmarshal("", &v)`, and `app.GetConfig[T]("")` and `app.MustGetConfig[T]("")` to `Unmarshal("", &v)` on the `RawConfig`, pointing to A5's caveat. The published v0.26.0 release notes stay as they are.
+- [ ] **A7. A reload signal over a configuration that cannot reload is ignored silently.**
+  - **Problem:** with a `RawConfig` other than `*config.Config`, SIGHUP logs that it was received, `app.Reload` returns its "cannot reload" error, and the handler logs that error only when the server is not running.
+  - **Fix:** the handler decides before calling `Reload`, by the configuration's type, never by the error's text, and logs at Info `credo: reload signal ignored: the configuration cannot reload` with the signal and the configuration's type, in the shape of the `WithoutReloadSignals` line. The signal stays subscribed, so a routine SIGHUP (a log rotation, say) stays harmless.
+  - **Docs:** one line in the lifecycle spec or the configuration guide; CHANGELOG under Changed (a log line).
+- [ ] **A8. Input and access outcomes in `fault.Kind`** (`TODO.md` only).
+  - `fault.Kind` covers data and concurrency outcomes but has no kind for invalid input, unauthenticated, permission denied or rate limited. One unchecked entry under 2.4 Error Handling records the design question, with gRPC's InvalidArgument, Unauthenticated, PermissionDenied and ResourceExhausted as the reference. No code.
+
 ## Part B: App's implementation in internal parts
 
 One branch, opened after Part A has merged, one commit per step, one PR, and no API change. ADR-004 ("DI and Lifecycle Stay One Package") records the decision: the lifecycle manager's back-pointer becomes an explicit dependency, and the App's fields are grouped by subsystem, routing and HTTP and the server and TLS first.
