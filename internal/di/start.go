@@ -13,7 +13,7 @@ import (
 func (c *Container) ClaimStart(u *Unit) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !u.starts {
+	if !u.starts || !u.RunsCapabilities(c.valueOf(u)) {
 		return false
 	}
 	key := resourceKey(u)

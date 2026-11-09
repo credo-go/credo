@@ -215,10 +215,22 @@ func planUnit(u *Unit, o Options) string {
 	if o.Ingress || u.t.Implements(ingressType) {
 		u.tier = TierIngress
 	}
-	// A borrowed value is never started; its Ready still contributes.
-	u.starts = u.component && !u.borrowed && u.t.Implements(starterType)
-	u.readies = (u.component || u.borrowed) && u.t.Implements(readierType)
+	// A borrowed value is never started; its Ready still contributes. A type
+	// that shows Start or Ready but no Shutdown plans them for a value whose
+	// Shutdown the type hides: that value is a component, and the walk calls
+	// them once it is built and found to be one (RunsCapabilities).
+	u.starts = !u.borrowed && u.t.Implements(starterType)
+	u.readies = u.t.Implements(readierType)
 	return ""
+}
+
+// RunsCapabilities reports whether the App calls the Start and Ready the
+// unit plans on value, its built value: the unit is a component or
+// borrowed, or the value has a Shutdown the binding's type hides. A value of
+// a type that shows only Start or Ready, with no Shutdown, is not a
+// component, and nothing is called on it.
+func (u *Unit) RunsCapabilities(value any) bool {
+	return u.component || u.borrowed || u.teardownOf(value) == teardownShutdown
 }
 
 // closeShape reports which of the three Close shapes t has.
