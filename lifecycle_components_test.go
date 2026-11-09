@@ -188,8 +188,8 @@ func TestComponents_IngressTierStopsConcurrently(t *testing.T) {
 		}
 	}
 	app := mustNew(t)
-	app.Manage(componentFunc(barrier), credo.Ingress(), credo.Named("first"))
-	app.Manage(componentFunc(barrier), credo.Ingress(), credo.Named("second"))
+	app.Manage(componentFunc(barrier), credo.Ingress(), credo.ComponentName("first"))
+	app.Manage(componentFunc(barrier), credo.Ingress(), credo.ComponentName("second"))
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -480,14 +480,14 @@ func (c *closeErr) Close() error                { c.j.add("close:err"); return n
 func (c *closeVoid) Close()                     { c.j.add("close:void") }
 func (c *closeCtx) Close(context.Context) error { c.j.add("close:ctx"); return nil }
 
-// TestComponents_CloserShapes: credo.Closer() makes each Close shape the
+// TestComponents_CloserShapes: credo.CloseOnShutdown() makes each Close shape the
 // binding's teardown, in reverse registration order.
 func TestComponents_CloserShapes(t *testing.T) {
 	j := &journal{}
 	app := mustNew(t)
-	app.ProvideValue[*closeErr](&closeErr{j}, credo.Closer())
-	app.ProvideValue[*closeVoid](&closeVoid{j}, credo.Closer())
-	app.ProvideValue[*closeCtx](&closeCtx{j}, credo.Closer())
+	app.ProvideValue[*closeErr](&closeErr{j}, credo.CloseOnShutdown())
+	app.ProvideValue[*closeVoid](&closeVoid{j}, credo.CloseOnShutdown())
+	app.ProvideValue[*closeCtx](&closeCtx{j}, credo.CloseOnShutdown())
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -527,7 +527,7 @@ func TestComponents_RegistrationMisusePanics(t *testing.T) {
 			app.Provide(func() *partA { return nil }, credo.Borrowed())
 		}},
 		{"closer on manage", "does not accept", func(app *credo.App) {
-			app.Manage(&stopOnly{}, credo.Closer())
+			app.Manage(&stopOnly{}, credo.CloseOnShutdown())
 		}},
 		{"repeated option", "given twice", func(app *credo.App) {
 			app.Manage(&stopOnly{}, credo.Ingress(), credo.Ingress())
@@ -536,14 +536,14 @@ func TestComponents_RegistrationMisusePanics(t *testing.T) {
 			app.Manage(&stopOnly{}, credo.RegistrationOption{})
 		}},
 		{"empty name", "non-empty name", func(app *credo.App) {
-			app.Manage(&stopOnly{}, credo.Named(""))
+			app.Manage(&stopOnly{}, credo.ComponentName(""))
 		}},
 		{"manage without shutdown", "Manage", func(app *credo.App) {
 			app.Manage(struct{}{})
 		}},
 		{"duplicate name", "worker", func(app *credo.App) {
-			app.Manage(&stopOnly{}, credo.Named("worker"))
-			app.Manage(&stopOnly{}, credo.Named("worker"))
+			app.Manage(&stopOnly{}, credo.ComponentName("worker"))
+			app.Manage(&stopOnly{}, credo.ComponentName("worker"))
 		}},
 		{"manage itself", "cannot manage itself", func(app *credo.App) {
 			app.Manage(app)
@@ -564,9 +564,9 @@ func TestComponents_ManagedValueAndConstructor(t *testing.T) {
 	j := &journal{}
 	app := mustNew(t)
 	app.ProvideValue[*partA](&partA{&part{name: "store", j: j}})
-	app.Manage(&stopOnly{j: j, name: "first"}, credo.Named("first"))
-	app.Manage(func(*partA) *partB { return &partB{&part{name: "managed", j: j}} }, credo.Named("managed"))
-	app.Manage(&stopOnly{j: j, name: "last"}, credo.Named("last"))
+	app.Manage(&stopOnly{j: j, name: "first"}, credo.ComponentName("first"))
+	app.Manage(func(*partA) *partB { return &partB{&part{name: "managed", j: j}} }, credo.ComponentName("managed"))
+	app.Manage(&stopOnly{j: j, name: "last"}, credo.ComponentName("last"))
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -738,7 +738,7 @@ func TestComponents_ManagedChildApp(t *testing.T) {
 
 	parent := mustNew(t)
 	parent.Mount("/c", child)
-	parent.Manage(child, credo.Named("child"))
+	parent.Manage(child, credo.ComponentName("child"))
 	startComponents(t, parent)
 
 	rec := httptest.NewRecorder()

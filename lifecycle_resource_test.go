@@ -195,7 +195,7 @@ func TestComponents_ConflictingHolderIsNotReleased(t *testing.T) {
 	app := mustNew(t)
 	conn := &borrowedConn{}
 	app.ProvideValue(conn, credo.Borrowed())
-	app.Provide(func(c *borrowedConn) connCloser { return c }, credo.Closer())
+	app.Provide(func(c *borrowedConn) connCloser { return c }, credo.CloseOnShutdown())
 	if err := app.Finalize(); err != nil {
 		t.Fatal(err)
 	}

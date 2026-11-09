@@ -28,7 +28,7 @@ func (app *App) IsRunning() bool {
 // start: nothing further starts, what was built is rolled back, and the entry
 // point returns a *LifecycleError. A hook is a leaf action: a resource with
 // its own teardown is a component — handed to [App.Manage], or bound with
-// [Closer].
+// [CloseOnShutdown].
 //
 // Typical uses include cache warm-up. The store/sqldb migration wrapper plugs
 // in directly as app.OnStart(db.Migrate) for development and deliberate

@@ -42,8 +42,8 @@ const (
 
 // LifecycleEntry is one component's record in a [LifecycleError].
 type LifecycleEntry struct {
-	// Name is the component's credo.Named name, its type name, worker:<name>
-	// for a worker, or OnStart[i]/OnStop[i] for a hook.
+	// Name is the component's credo.ComponentName name, its type name,
+	// worker:<name> for a worker, or OnStart[i]/OnStop[i] for a hook.
 	Name string
 	// Tier is the component's tier.
 	Tier Tier

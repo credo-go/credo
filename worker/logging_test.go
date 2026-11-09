@@ -224,7 +224,7 @@ func (*loggingFailingStart) Shutdown(context.Context) error { return nil }
 func TestLogging_FailedStartPhaseLogsNothingForUnstartedWorkers(t *testing.T) {
 	logs := newLogCapture()
 	app := newTestApp(t, credo.WithLogger(logs.logger()))
-	app.Manage(&loggingFailingStart{}, credo.Named("database"))
+	app.Manage(&loggingFailingStart{}, credo.ComponentName("database"))
 	workers := Use(app)
 	// Ingress: it would start after the internal tier, which fails first.
 	workers.Scheduled("report", "@every 1h", Func(loggingSucceed), ScheduledConfig{RunOnStart: true})
