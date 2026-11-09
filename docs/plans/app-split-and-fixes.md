@@ -65,7 +65,7 @@ One branch, opened after Part A has merged, one commit per step, one PR, and no 
 - [x] **B1. Server and TLS.** Moves `serverCfg`, `tlsConfig`, `tlsConfigSet`, `tlsFilesSet`, `tlsFiles`, `httpRedirectAddr`, `configureServer` and `disableReloadSignals`.
 - [x] **B2. Routing.** Moves `mux`, `root`, `hosts`, `staticHosts`, `namedRoutes`, `mounts`, `statusHandlers`, `redirectTrailingSlash` and `preRoutingMW`.
 - [x] **B3. HTTP features and request settings.** Moves `recover`, `requestID`, `accessLog`, `compress`, `decompress`, `observers`, `errorRenderer`, `successRenderer`, `i18n` and `i18nRegistered`, and the request settings `debug`, `strictBodies`, `multipartMaxMemory`, `jsonOpts`, `errorJSONOpts`, `trustedProxies` and `foreignRequestReported`. The request path reads most of these, in `context.go`, `request.go`, `response.go`, `errors.go`, `accesslog.go` and `contexthead.go`, so this step needs the benchstat table.
-- [ ] **B4. Health, DI and preparation.**
+- [x] **B4. Health, DI and preparation.**
   - Health: `healthEngine`, `healthProbes`, `healthExposeErrors`.
   - DI: `container`, `rawConfig`, `modulesUsed`, `workers`.
   - Preparation: `prep`, `prepMu`, `frozen`.

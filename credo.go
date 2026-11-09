@@ -14,47 +14,20 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
-	"sync"
-	"sync/atomic"
 
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
-	internalhealth "github.com/credo-go/credo/internal/health"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
 // App is the main Credo application. It holds the router, middleware stack,
 // error handler, and route registry.
 type App struct {
-	// container is the DI container for service registration and resolution.
-	container *di.Container
-
-	// workers holds the App's one worker registry, created on first use of
-	// App.Workers.
-	workers struct {
-		once     sync.Once
-		registry *Workers
-	}
-
 	// logger is the application-level logger, set via WithLogger.
 	// Used by framework internals (error handler, server lifecycle, i18n setup).
 	// Component-scoped loggers (Infra.Logger, component=<name>) are derived
 	// from this.
 	logger *slog.Logger
-
-	// prep is the stored Finalize → compile → publish result shared by every
-	// serve path (see prepare). nil until the first preparation publishes.
-	prep atomic.Pointer[preparation]
-
-	// prepMu serialises preparation and bootstrap-shutdown admission so an
-	// unfinished preparation can never publish a handler after Shutdown won.
-	prepMu sync.Mutex
-
-	// frozen closes route/middleware/hook/renderer registration. It is set at
-	// preparation admission and at bootstrap-shutdown admission. Separate from
-	// state because ServeHTTP prepares (frozen) without entering the Running
-	// state — the user may manage their own *http.Server.
-	frozen atomic.Bool
 
 	// lifecycle owns the state machine, the start phase, the bound server and
 	// session context, the start and stop hooks, and the drain in tiers. The
@@ -62,33 +35,16 @@ type App struct {
 	// it.
 	lifecycle *lifecycleManager
 
-	// rawConfig holds the RawConfig passed via WithRawConfig option.
-	rawConfig RawConfig
-
 	// reload holds the slot serializing Reload (ADR-020).
 	reload reloadState
-
-	// modulesUsed records that UseModules was called so a second call is
-	// rejected.
-	modulesUsed bool
-
-	// healthEngine holds the health check engine (nil if UseHealth not called).
-	healthEngine *internalhealth.Engine
-
-	// healthProbes records that UseHealth registered at least one probe route.
-	// The engine alone is not enough: with both probes disabled it exists but
-	// nothing is mounted.
-	healthProbes bool
-
-	// healthExposeErrors includes check error strings in readiness responses.
-	// Set from HealthConfig.ExposeErrors; default false (errors are logged,
-	// not exposed to probe callers).
-	healthExposeErrors bool
 
 	appServer
 	appRouting
 	appFeatures
 	appRequest
+	appHealth
+	appDI
+	appPrep
 }
 
 // New creates a new App with the given options. When no RawConfig is provided,
@@ -210,9 +166,7 @@ func assembleApp(
 	trustedProxies []netip.Prefix,
 ) *App {
 	app := &App{
-		container: c,
-		logger:    logger,
-		rawConfig: o.rawConfig,
+		logger: logger,
 		appServer: appServer{
 			serverCfg:            serverCfg,
 			tlsConfig:            o.tlsConfig.value,
@@ -233,6 +187,10 @@ func assembleApp(
 			strictBodies:   o.strictBodies || serverCfg.StrictBodies,
 			jsonOpts:       jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 			trustedProxies: trustedProxies,
+		},
+		appDI: appDI{
+			container: c,
+			rawConfig: o.rawConfig,
 		},
 	}
 	app.errorJSONOpts = jsonv2.JoinOptions(app.jsonOpts, jsonv2.Deterministic(true))

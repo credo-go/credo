@@ -5,7 +5,11 @@ import (
 	jsonv2 "encoding/json/v2"
 	"net/http"
 	"net/netip"
+	"sync"
 	"sync/atomic"
+
+	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
 // App's fields are grouped by subsystem. Each group is a struct embedded in
@@ -178,4 +182,65 @@ type appRequest struct {
 
 	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
 	trustedProxies []netip.Prefix
+}
+
+// appHealth holds the health feature: the check engine, whether a probe route
+// was registered, and whether readiness responses expose check errors.
+// UseHealth writes it during bootstrap; the probe handlers read it.
+type appHealth struct {
+	// healthEngine holds the health check engine (nil if UseHealth not called).
+	healthEngine *internalhealth.Engine
+
+	// healthProbes records that UseHealth registered at least one probe route.
+	// The engine alone is not enough: with both probes disabled it exists but
+	// nothing is mounted.
+	healthProbes bool
+
+	// healthExposeErrors includes check error strings in readiness responses.
+	// Set from HealthConfig.ExposeErrors; default false (errors are logged,
+	// not exposed to probe callers).
+	healthExposeErrors bool
+}
+
+// appDI holds dependency injection: the container, the raw configuration,
+// the application-modules guard and the worker registry. New writes the
+// container and the configuration, and bootstrap registers into them; the
+// lifecycle reads the container to start and stop the components.
+type appDI struct {
+	// container is the DI container for service registration and resolution.
+	container *di.Container
+
+	// workers holds the App's one worker registry, created on first use of
+	// App.Workers.
+	workers struct {
+		once     sync.Once
+		registry *Workers
+	}
+
+	// rawConfig holds the RawConfig passed via WithRawConfig option.
+	rawConfig RawConfig
+
+	// modulesUsed records that UseModules was called so a second call is
+	// rejected.
+	modulesUsed bool
+}
+
+// appPrep holds the preparation: its published result, the lock that
+// serializes it with bootstrap shutdown, and the registration freeze. The
+// first serve path writes it; ServeHTTP reads the published result on every
+// request.
+type appPrep struct {
+	// prep is the stored Finalize → compile → publish result shared by every
+	// serve path (see prepare). nil until the first preparation publishes.
+	prep atomic.Pointer[preparation]
+
+	// prepMu serialises preparation and bootstrap-shutdown admission so an
+	// unfinished preparation can never publish a handler after Shutdown won.
+	prepMu sync.Mutex
+
+	// frozen closes route/middleware/hook/renderer registration. It is set at
+	// preparation admission and at bootstrap-shutdown admission. Separate from
+	// state because ServeHTTP prepares (frozen) without entering the Running
+	// state — the user may manage their own *http.Server.
+	frozen atomic.Bool
 }
