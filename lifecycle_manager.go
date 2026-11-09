@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
@@ -401,6 +403,15 @@ func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
 		app.logger.LogAttrs(context.Background(), slog.LevelInfo,
 			"credo: reload signal ignored (reload signals disabled)",
 			slog.String("signal", sig.String()))
+		return
+	}
+	// A configuration other than *config.Config cannot reload, so the signal
+	// is ignored as above, by the type Reload would reject.
+	if _, ok := app.rawConfig.(*config.Config); !ok {
+		app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+			"credo: reload signal ignored: the configuration cannot reload",
+			slog.String("signal", sig.String()),
+			slog.String("config_type", fmt.Sprint(reflect.TypeOf(app.rawConfig))))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), app.reloadTimeout())

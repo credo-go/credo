@@ -205,7 +205,9 @@ app.AddObserver(metrics) // sees each final response: ex.Status(), ex.Bytes(), e
 | A constructor that calls `rc.Unmarshal("app", &cfg)` and returns `cfg` | `app.Provide(config.Section[AppConfig]("app").Decode)`, or keep the constructor |
 | `cfg.Get[T]("app")` | `config.Section[T]("app").Decode(cfg)` |
 | `cfg.MustGet[T]("app")` | `config.Section[T]("app").Decode(cfg)`, with its error handled |
+| `cfg.Get[T]("")` / `cfg.MustGet[T]("")`, the whole tree | `cfg.Unmarshal("", &v)`, since a section has no empty key. A strict whole-tree target must cover every `.env` entry and the `server` keys ([Strict Decoding](configuration.md#strict-decoding)) |
 | `app.GetConfig[T]("app")` / `app.MustGetConfig[T]("app")` | Unchanged, since the untyped key converts. `app.GetConfig[T](key)` with a `string` variable becomes `app.GetConfig(config.Section[T](key))` |
+| `app.GetConfig[T]("")` / `app.MustGetConfig[T]("")`, the whole tree | `Unmarshal("", &v)` on the `credo.RawConfig` a constructor takes, or on the one passed to `credo.WithRawConfig`, with the same caveat |
 | A test that relied on `testutil.NewApp`'s empty configuration accepting any key | Provide the section with `testutil.WithConfig` |
 | `app.OnConfigChange(key, fn)` with a holder the consumer reads | A live section: `var S = config.Section[T](key)`, `app.Provide(S.Live)`. The consumer takes `*config.Live[T]` and calls `Load()` where it read its holder. When `fn` derived state (a limiter, a `slog.LevelVar`), it becomes `live.OnChange(func(ctx, prev, next T) error)` |
 | `app.OnReload(fn)` that refreshed derived state | The section's `OnChange` |
