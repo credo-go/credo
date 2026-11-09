@@ -20,7 +20,7 @@ func (c *Container) Manage(v any, o Options) (*Unit, error) {
 	if v == nil {
 		return nil, &MisuseError{Call: "Manage", Reason: "the component must not be nil"}
 	}
-	u := &Unit{managed: true, worker: o.Worker, ingressGiven: o.Ingress}
+	u := &Unit{managed: true, worker: o.Worker, call: o.Call, ingressGiven: o.Ingress}
 	var token any
 	var hasToken bool
 	// A function is a constructor unless its own type is a component — a

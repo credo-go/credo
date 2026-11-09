@@ -604,7 +604,7 @@ func (*ctorIngressDep) Shutdown(context.Context) error { return nil }
 func TestWorkersConstructor_BuiltValueOnAnIngressComponent(t *testing.T) {
 	split := func(call string) string {
 		return "the value the constructor of " + call + " builds is internal and has a teardown of its own, " +
-			"but depends on the ingress component *credo_test.ctorIngressDep: worker-value:report → " +
+			"but depends on the ingress component *credo_test.ctorIngressDep: the value " + call + " builds → " +
 			"*credo_test.ctorIngressDep; split the worker, so that the part with the teardown does not use " +
 			"*credo_test.ctorIngressDep"
 	}
@@ -639,7 +639,8 @@ func TestWorkersConstructor_BuiltValueOnAnIngressComponent(t *testing.T) {
 		app.Workers().Scheduled("relay", "@every 1h", func(r *ctorRelay) *ctorRelay { return r })
 		const want = `di: the constructor of Workers.Scheduled("relay") returns the ingress component ` +
 			"*credo_test.ctorRelay, and the value a worker's constructor builds is torn down in the internal " +
-			"tier, after the HTTP drain: worker-value:relay → *credo_test.ctorRelay; bind *credo_test.ctorRelay " +
+			`tier, after the HTTP drain: the value Workers.Scheduled("relay") builds → *credo_test.ctorRelay; ` +
+			"bind *credo_test.ctorRelay " +
 			"without credo.Ingress()"
 		if err := app.Finalize(); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Finalize() = %v\nwant it to contain %q", err, want)

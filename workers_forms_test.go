@@ -3,6 +3,7 @@ package credo_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -246,24 +247,27 @@ func TestWorkersForms_MissingParameterFailsFinalize(t *testing.T) {
 		want string
 	}{
 		{"constructor", func(*formsMissing) *formsRunner { return &formsRunner{} },
-			"di: missing dependency: worker-value:orphan → *credo_test.formsMissing (not registered); " +
+			"di: missing dependency: the value %s builds → *credo_test.formsMissing (not registered); " +
 				"provide *credo_test.formsMissing before Finalize"},
 		{"run function", func(context.Context, *formsMissing) error { return nil },
-			"di: missing dependency: Manage(worker:orphan) → *credo_test.formsMissing (not registered); " +
+			"di: missing dependency: %s → *credo_test.formsMissing (not registered); " +
 				"provide *credo_test.formsMissing before Finalize"},
 	}
 	for _, kind := range []credo.WorkerKind{credo.WorkerKindContinuous, credo.WorkerKindScheduled} {
 		for _, tt := range tests {
 			t.Run(string(kind)+"/"+tt.name, func(t *testing.T) {
 				app := mustNew(t)
+				call := `Workers.Continuous("orphan")`
 				if kind == credo.WorkerKindScheduled {
+					call = `Workers.Scheduled("orphan")`
 					app.Workers().Scheduled("orphan", "@every 1h", tt.w)
 				} else {
 					app.Workers().Continuous("orphan", tt.w)
 				}
+				want := fmt.Sprintf(tt.want, call)
 				err := app.Finalize()
-				if err == nil || !strings.Contains(err.Error(), tt.want) {
-					t.Fatalf("Finalize() = %v\nwant it to contain %q", err, tt.want)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("Finalize() = %v\nwant it to contain %q", err, want)
 				}
 			})
 		}
@@ -465,9 +469,9 @@ func TestWorkersRunFunction_IngressParameterUnderAnInternalLoop(t *testing.T) {
 	}
 	app := newApp(t)
 	app.Workers().Continuous("consumer", run)
-	const want = "di: internal component Manage(worker:consumer) depends on the ingress component " +
-		"*credo_test.formsIngress: Manage(worker:consumer) → *credo_test.formsIngress; declare " +
-		"Manage(worker:consumer) ingress with Tier: credo.TierIngress in its worker configuration, or split " +
+	const want = `di: internal component Workers.Continuous("consumer") depends on the ingress component ` +
+		`*credo_test.formsIngress: Workers.Continuous("consumer") → *credo_test.formsIngress; declare ` +
+		`Workers.Continuous("consumer") ingress with Tier: credo.TierIngress in its worker configuration, or split ` +
 		"*credo_test.formsIngress so that what internal components use is an internal part it depends on"
 	if err := app.Finalize(); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Finalize() = %v\nwant it to contain %q", err, want)
@@ -497,7 +501,8 @@ func TestWorkersRunFunction_AddsNoBuiltValue(t *testing.T) {
 	app.ProvideValue(newFormsDep())
 	app.Workers().Continuous("x", func(d *formsDep) *formsRunner { return &formsRunner{dep: d} })
 	msg := mustPanicMessage(t, func() { app.Manage(&registerComponent{}, credo.ComponentName("worker-value:x")) })
-	if !strings.Contains(msg, `a component named "worker-value:x" is already registered, as worker-value:x`) {
+	const want = `a component named "worker-value:x" is already registered, as the value Workers.Continuous("x") builds`
+	if !strings.Contains(msg, want) {
 		t.Fatalf("message = %q, want the constructor's built value to hold the name", msg)
 	}
 }
