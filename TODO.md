@@ -687,7 +687,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 ### v1 Gate
 
-> v1.0.0 is cut when every box below is checked — never because a minor number got "high". Pre-1.0 minors are unbounded (`v0.10`, `v0.15`, …); a security fix ships at once as a patch; otherwise a minor collects what is ready when it is cut, findings made while preparing it included, and names each break under its own CHANGELOG heading. A separate minor is cut only for a change that consumers must be able to adopt on its own. Items listed as **post-v1** are additive packages that do not block the tag and ship as `v1.x` minors.
+> v1.0.0 is cut when every box below is checked — never because a minor number got "high". Pre-1.0 minors are unbounded (`v0.10`, `v0.15`, …); work accumulates on `main` under `[Unreleased]`, and a release is cut only for a security fix (a patch, at once), a consumer that needs a tag, or a milestone the maintainer names ([CONTRIBUTING](CONTRIBUTING.md#releasing)); work done together ships as one release, and each break is named under its own CHANGELOG heading. Items listed as **post-v1** are additive packages that do not block the tag and ship as `v1.x` minors.
 
 **Must land before v1** (each touches a surface that v1 freezes):
 
