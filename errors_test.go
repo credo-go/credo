@@ -887,7 +887,7 @@ func TestHandleError_ErrorRendererNil(t *testing.T) {
 
 func TestHandleError_RemovesImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			return next(ctx)
@@ -911,7 +911,7 @@ func TestHandleError_RemovesImmutableCacheControl(t *testing.T) {
 
 func TestHandleError_PreservesNonImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("Cache-Control", "public, max-age=60")
 			return next(ctx)
@@ -935,7 +935,7 @@ func TestHandleError_PreservesNonImmutableCacheControl(t *testing.T) {
 
 func TestHandleError_HEADRemovesImmutableCacheControl(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("Cache-Control", "public, max-age=31536000, Immutable")
 			return next(ctx)

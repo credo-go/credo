@@ -460,7 +460,7 @@ func TestContextHead_MountReadsParentValues(t *testing.T) {
 			return false
 		},
 	})
-	parent.GlobalMiddleware(setHeadUser, func(next credo.Handler) credo.Handler {
+	parent.PreRouting(setHeadUser, func(next credo.Handler) credo.Handler {
 		return func(c *credo.Context) error {
 			c.Set(keyTenant, "acme")
 			return next(c)

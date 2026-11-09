@@ -28,7 +28,7 @@
 //
 // Create middleware from any Authenticator:
 //
-//	app.GlobalMiddleware(auth.Middleware[*User](myAuth, nil))
+//	app.Middleware(auth.Middleware[*User](myAuth, nil)) // every route, mounts included
 //
 // For custom auth failure handling, provide an ErrorFunc:
 //

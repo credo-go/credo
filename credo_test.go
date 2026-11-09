@@ -357,9 +357,9 @@ func TestApp_Routes_MetaIsASnapshot(t *testing.T) {
 	}
 }
 
-func TestApp_GlobalMiddleware(t *testing.T) {
+func TestApp_PreRouting(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("X-Global", "yes")
 			return next(ctx)
@@ -584,7 +584,7 @@ func TestMiddlewareTiers_ExecutionOrder(t *testing.T) {
 		}
 	}
 
-	app.GlobalMiddleware(tag("global1"), tag("global2"))
+	app.PreRouting(tag("global1"), tag("global2"))
 
 	api := app.Group("/api")
 	v1 := api.Group("/v1")
@@ -724,7 +724,7 @@ func TestApp_ResponseHelpers(t *testing.T) {
 func TestApp_ContextStore(t *testing.T) {
 	app := mustNew(t)
 
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			// Global MW can now access credo.Context directly
 			return next(ctx)
@@ -1272,7 +1272,7 @@ func TestRouting_Mount_CredoSubApp_ParamIsolation(t *testing.T) {
 func TestRouting_Mount_HostScopeInteraction(t *testing.T) {
 	app := mustNew(t)
 
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("X-Global", "1")
 			return next(ctx)
@@ -2401,7 +2401,7 @@ func TestApp_WrapStdMiddleware(t *testing.T) {
 		})
 	}
 
-	app.GlobalMiddleware(credo.WrapStdMiddleware(stdMW))
+	app.PreRouting(credo.WrapStdMiddleware(stdMW))
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})
@@ -2444,7 +2444,7 @@ func TestApp_WrapStdMiddleware_WrappedWriter(t *testing.T) {
 		})
 	}
 
-	app.GlobalMiddleware(credo.WrapStdMiddleware(stdMW))
+	app.PreRouting(credo.WrapStdMiddleware(stdMW))
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "hello")
 	})
@@ -2478,7 +2478,7 @@ func TestApp_WrapStdMiddleware_RestoresWriterForErrorPipeline(t *testing.T) {
 		})
 	}
 
-	app.GlobalMiddleware(credo.WrapStdMiddleware(stdMW))
+	app.PreRouting(credo.WrapStdMiddleware(stdMW))
 	app.GET("/fail", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(418)
 	})

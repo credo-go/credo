@@ -5,7 +5,7 @@
 // middleware package: zero arguments for the defaults (60 requests a minute
 // per client IP), one [Config] for custom settings:
 //
-//	app.GlobalMiddleware(ratelimit.Middleware())
+//	app.PreRouting(ratelimit.Middleware())
 //	api.Middleware(ratelimit.Middleware(ratelimit.Config{Tokens: 120}))
 //
 // The response of every request it counts carries X-RateLimit-Limit,

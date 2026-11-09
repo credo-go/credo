@@ -146,7 +146,7 @@ func TestDecompress_UnsupportedCoding(t *testing.T) {
 func TestDecompress_RejectsBeforeUserMiddleware(t *testing.T) {
 	var middlewareRan bool
 	app := newDecompressApp(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			middlewareRan = true
 			return next(ctx)
@@ -161,10 +161,10 @@ func TestDecompress_RejectsBeforeUserMiddleware(t *testing.T) {
 	}
 }
 
-func TestDecompress_GlobalMiddlewareSeesDecodedBody(t *testing.T) {
+func TestDecompress_PreRoutingSeesDecodedBody(t *testing.T) {
 	var seen string
 	app := newDecompressApp(t)
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			req := ctx.Request()
 			if got := req.Header.Get("Content-Encoding"); got != "" {

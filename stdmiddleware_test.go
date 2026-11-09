@@ -200,7 +200,7 @@ func TestWrapStdMiddleware_ShortCircuitIsRecorded(t *testing.T) {
 
 			var probe responseProbe
 			handlerRan := false
-			app.GlobalMiddleware(probe.observe(nil), answering(tt.answer))
+			app.PreRouting(probe.observe(nil), answering(tt.answer))
 			app.GET("/", func(ctx *credo.Context) error {
 				handlerRan = true
 				return ctx.Response().Text(http.StatusOK, "handler")
@@ -244,9 +244,9 @@ func TestWrapStdMiddleware_PassThroughIsCountedOnce(t *testing.T) {
 			app.UseAccessLog()
 
 			var probe responseProbe
-			app.GlobalMiddleware(probe.observe(nil))
+			app.PreRouting(probe.observe(nil))
 			for _, m := range tt.mws {
-				app.GlobalMiddleware(credo.WrapStdMiddleware(m))
+				app.PreRouting(credo.WrapStdMiddleware(m))
 			}
 			app.GET("/", func(ctx *credo.Context) error {
 				return ctx.Response().Text(http.StatusCreated, "hello")
@@ -272,7 +272,7 @@ func TestWrapStdMiddleware_PassThroughIsCountedOnce(t *testing.T) {
 func TestWrapStdMiddleware_NestedShortCircuitIsCountedOnce(t *testing.T) {
 	app := mustNew(t)
 	var probe responseProbe
-	app.GlobalMiddleware(
+	app.PreRouting(
 		probe.observe(nil),
 		credo.WrapStdMiddleware(passingOn),
 		answering(func(w http.ResponseWriter, _ *http.Request) {
@@ -301,7 +301,7 @@ func TestWrapStdMiddleware_ShortCircuitUnderCompression(t *testing.T) {
 
 	body := strings.Repeat("denied ", 200)
 	var probe responseProbe
-	app.GlobalMiddleware(probe.observe(nil), answering(func(w http.ResponseWriter, _ *http.Request) {
+	app.PreRouting(probe.observe(nil), answering(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, body)
@@ -356,7 +356,7 @@ func TestWrapStdMiddleware_FlushReachesTheUnderlyingWriter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			app := mustNew(t)
 			var flushErr error
-			app.GlobalMiddleware(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
+			app.PreRouting(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					flushErr = http.NewResponseController(w).Flush()
 					next.ServeHTTP(w, r)
@@ -398,7 +398,7 @@ func (w *pushSpy) Push(target string, _ *http.PushOptions) error {
 func TestWrapStdMiddleware_PushIsForwarded(t *testing.T) {
 	newApp := func(pushErr *error) *credo.App {
 		app := mustNew(t)
-		app.GlobalMiddleware(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
+		app.PreRouting(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				*pushErr = w.(http.Pusher).Push("/app.css", nil)
 				next.ServeHTTP(w, r)
@@ -442,7 +442,7 @@ func (w *stringWriterSpy) WriteString(s string) (int, error) {
 // without the []byte copy a writer lacking the method would force.
 func TestWrapStdMiddleware_KeepsWriteString(t *testing.T) {
 	app := mustNew(t)
-	app.GlobalMiddleware(credo.WrapStdMiddleware(func(next http.Handler) http.Handler { return next }))
+	app.PreRouting(credo.WrapStdMiddleware(func(next http.Handler) http.Handler { return next }))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, "hello")
 	})
@@ -465,7 +465,7 @@ func TestWrapStdMiddleware_ErrorAfterShortCircuitWritesNoSecondResponse(t *testi
 		app := mustNew(t, credo.WithLogger(logger))
 
 		var probe responseProbe
-		app.GlobalMiddleware(
+		app.PreRouting(
 			probe.observe(errors.New("failure after the answer")),
 			answering(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -494,7 +494,7 @@ func TestWrapStdMiddleware_ErrorAfterShortCircuitWritesNoSecondResponse(t *testi
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog()
 
-		app.GlobalMiddleware(answering(func(w http.ResponseWriter, _ *http.Request) {
+		app.PreRouting(answering(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("denied"))
 			panic("after the answer")
@@ -583,7 +583,7 @@ func TestWrapStdMiddleware_HijackIsRecorded(t *testing.T) {
 				probe     responseProbe
 				hijackErr error
 			)
-			app.GlobalMiddleware(
+			app.PreRouting(
 				probe.observe(errors.New("failure after the hijack")),
 				answering(func(w http.ResponseWriter, _ *http.Request) { hijackErr = tt.hijack(w) }),
 			)
@@ -619,7 +619,7 @@ func TestWrapStdMiddleware_HijackIsRecorded(t *testing.T) {
 			probe     responseProbe
 			hijackErr error
 		)
-		app.GlobalMiddleware(
+		app.PreRouting(
 			probe.observe(credo.NewHTTPError(http.StatusBadGateway)),
 			answering(func(w http.ResponseWriter, _ *http.Request) {
 				_, _, hijackErr = http.NewResponseController(w).Hijack()
@@ -645,7 +645,7 @@ func TestWrapStdMiddleware_HijackIsRecorded(t *testing.T) {
 	t.Run("a hijack through Response stays as Response recorded it", func(t *testing.T) {
 		app := mustNew(t)
 		var probe responseProbe
-		app.GlobalMiddleware(
+		app.PreRouting(
 			probe.observe(nil),
 			credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -679,7 +679,7 @@ func TestWrapStdMiddleware_LiveServer(t *testing.T) {
 	t.Run("an informational status is not the response status", func(t *testing.T) {
 		app := mustNew(t)
 		var probe responseProbe
-		app.GlobalMiddleware(
+		app.PreRouting(
 			probe.observe(nil),
 			answering(func(w http.ResponseWriter, _ *http.Request) {
 				if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Minute)); err != nil {
@@ -732,7 +732,7 @@ func TestWrapStdMiddleware_LiveServer(t *testing.T) {
 
 		const answer = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
 		var probe responseProbe
-		app.GlobalMiddleware(
+		app.PreRouting(
 			probe.observe(errors.New("failure after the hijack")),
 			answering(func(w http.ResponseWriter, _ *http.Request) {
 				conn, buf, err := http.NewResponseController(w).Hijack()
@@ -819,7 +819,7 @@ func TestWrapStdMiddleware_KeepsReadFromDelegation(t *testing.T) {
 	const size = 100 << 10
 	app := mustNew(t)
 	var probe responseProbe
-	app.GlobalMiddleware(
+	app.PreRouting(
 		probe.observe(nil),
 		credo.WrapStdMiddleware(func(next http.Handler) http.Handler { return next }),
 	)
@@ -868,7 +868,7 @@ func TestWrapStdMiddleware_MiddlewareCopyIsRecorded(t *testing.T) {
 				copyErr error
 			)
 			src := &patternReader{n: size}
-			app.GlobalMiddleware(probe.observe(nil), answering(func(w http.ResponseWriter, _ *http.Request) {
+			app.PreRouting(probe.observe(nil), answering(func(w http.ResponseWriter, _ *http.Request) {
 				if tt.status != 0 {
 					w.WriteHeader(tt.status)
 				}
@@ -918,7 +918,7 @@ func TestWrapStdMiddleware_MiddlewareCopyPanicIsCounted(t *testing.T) {
 		logger, logs := newTestLogger(t)
 		app := mustNew(t, credo.WithLogger(logger))
 		app.UseAccessLog()
-		app.GlobalMiddleware(answering(func(w http.ResponseWriter, _ *http.Request) {
+		app.PreRouting(answering(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = io.Copy(w, &zeroThenPanicReader{remaining: size})
 		}))
 		app.GET("/", func(ctx *credo.Context) error { return ctx.Response().NoContent(http.StatusNoContent) })

@@ -170,7 +170,7 @@ func TestResponse_FlushWithoutFlusher(t *testing.T) {
 func TestWrapStdMiddleware_FlushIsRecorded(t *testing.T) {
 	logs := &syncBuffer{}
 	app := mustNew(t, credo.WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
-	app.GlobalMiddleware(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
+	app.PreRouting(credo.WrapStdMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := http.NewResponseController(w).Flush(); err != nil {
 				t.Errorf("middleware Flush() = %v", err)

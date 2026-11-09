@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/credo-go/credo"
 )
@@ -111,31 +114,42 @@ func DefaultContractConfig() ContractConfig {
 	}
 }
 
+// errContractNoRoute is the guard's answer to a request without a route.
+var errContractNoRoute = errors.New("contractguard: no route is matched, so no contract can be checked: " +
+	"the guard is registered with App.PreRouting, which runs before the match; " +
+	"register it with app.Middleware, on a group or on a route; request denied")
+
 // ContractGuard returns a single middleware that enforces declarative,
 // meta-driven request contracts. Routes (or groups) opt in by setting the
 // Meta* keys; routes without any contract meta pass through untouched.
 //
-// Register it at the group (or route) level, not via App.GlobalMiddleware:
-// the guard reads matched-route metadata, and a route is only matched after
-// app-global middleware has run. Group and route middleware run after the
-// match, so the route — and its inherited group meta — is available there.
+// Register it on the routed tier, a group or a route: the guard reads the
+// matched route's meta, which exists only after the match.
 //
-//	api := app.Group("/api")
-//	api.Middleware(middleware.ContractGuard())
-//	api.POST("/users", createUser).
+//	app.Middleware(middleware.ContractGuard()) // every route of the App
+//	app.POST("/users", createUser).
 //	    SetMeta(middleware.MetaAccept, []string{"application/json"}).
 //	    SetMeta(middleware.MetaMaxBody, 1<<20)
 //
-// Applied globally the guard is a safe no-op (it skips when no route is
-// matched) rather than an error. Each contract maps a route meta key to an
-// HTTP rejection: see the Meta* keys for the value types and status codes.
+// It fails closed without a route. Registered with App.PreRouting it sees no
+// route on any request, so it answers 500 through the error pipeline for
+// every request and logs one Error naming the registration and the remedy.
+// Each contract maps a route meta key to an HTTP rejection: see the Meta*
+// keys for the value types and status codes.
 func ContractGuard(cfg ...ContractConfig) credo.Middleware {
 	config := resolveConfig(cfg, DefaultContractConfig(), normalizeContractConfig)
+	var reported atomic.Bool
 
 	return func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			if config.Skipper(ctx) || !ctx.HasRoute() {
+			if config.Skipper(ctx) {
 				return next(ctx)
+			}
+			if !ctx.HasRoute() {
+				if reported.CompareAndSwap(false, true) {
+					ctx.Logger().LogAttrs(ctx.Context(), slog.LevelError, errContractNoRoute.Error())
+				}
+				return credo.NewHTTPError(http.StatusInternalServerError).WithInternal(errContractNoRoute)
 			}
 			route := ctx.Route()
 

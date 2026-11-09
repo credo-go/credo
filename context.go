@@ -32,6 +32,9 @@ type Context struct {
 	response *Response
 	route    *Route
 	logger   *slog.Logger
+	// mountRouteCtx is the pooled RouteContext a mount's handler is given,
+	// set by dispatch for the mount's chain only (see dispatchOnce).
+	mountRouteCtx *RouteContext
 	// pendingLogAttrID defers the request ID tier's logger enrichment: the
 	// enriched logger (base.With("request_id", …)) is only built when
 	// Logger() is first called, so requests whose handlers never log skip
@@ -108,14 +111,17 @@ func (c *Context) Route() *Route {
 	return c.route
 }
 
-// HasRoute reports whether a route matched for this request.
-// Returns false inside custom 404/405 status handlers where no route exists.
-// Use this to guard [Context.Route] calls in middleware that may run on
-// unmatched-request paths:
+// HasRoute reports whether a route matched for this request; a request a
+// [App.Mount] matches has the mount's route. It is false before the match —
+// in [App.PreRouting] middleware — and inside custom 404/405 status
+// handlers. A middleware that enforces route meta fails closed without a
+// route, since a guard that passes such a request lets every request
+// through:
 //
-//	if c.HasRoute() {
-//	    scopes, _ := c.Route().GetMeta(RequiredScopes)
+//	if !c.HasRoute() {
+//	    return errors.New("authz: no route; register the middleware with app.Middleware, a group or a route")
 //	}
+//	scopes, _ := c.Route().GetMeta(RequiredScopes)
 func (c *Context) HasRoute() bool {
 	return c.route != nil
 }
@@ -334,6 +340,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.request.reset(r)
 	c.response.Reset(w)
 	c.route = nil
+	c.mountRouteCtx = nil
 	c.logger = nil
 	c.pendingLogAttrID = ""
 	c.locale = ""

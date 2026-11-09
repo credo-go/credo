@@ -14,7 +14,7 @@ import (
 func newCSRFApp(t *testing.T, cfg ...middleware.CSRFConfig) *credo.App {
 	t.Helper()
 	app := mustNew(t)
-	app.GlobalMiddleware(middleware.CSRF(cfg...))
+	app.PreRouting(middleware.CSRF(cfg...))
 	ok := func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, "ok")
 	}

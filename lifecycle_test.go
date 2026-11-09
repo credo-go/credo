@@ -424,7 +424,7 @@ func TestApp_Shutdown_HookErrors(t *testing.T) {
 
 // --- Frozen guard tests ---
 
-func TestApp_FrozenPanic_GlobalMiddleware(t *testing.T) {
+func TestApp_FrozenPanic_PreRouting(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/x", func(ctx *credo.Context) error { return nil })
 
@@ -435,10 +435,10 @@ func TestApp_FrozenPanic_GlobalMiddleware(t *testing.T) {
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic from GlobalMiddleware after compile")
+			t.Fatal("expected panic from PreRouting after compile")
 		}
 	}()
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return next
 	})
 }

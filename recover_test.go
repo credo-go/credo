@@ -277,7 +277,7 @@ func TestRecover_CatchesMiddlewarePanic(t *testing.T) {
 		}
 	}
 
-	app.GlobalMiddleware(panicMW)
+	app.PreRouting(panicMW)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})

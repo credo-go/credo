@@ -12,7 +12,7 @@ import (
 // BenchmarkSecure measures security headers with pre-computed HSTS value.
 func BenchmarkSecure(b *testing.B) {
 	app := mustNewBench(b, credo.WithTrustedProxies("10.0.0.0/8"))
-	app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
+	app.PreRouting(middleware.Secure(middleware.SecureConfig{
 		XSSProtection:      "1; mode=block",
 		ContentTypeNosniff: "nosniff",
 		XFrameOptions:      "SAMEORIGIN",

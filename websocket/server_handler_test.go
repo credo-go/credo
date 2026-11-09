@@ -154,7 +154,7 @@ func TestServerHandlerRouterMiddlewareAndAuthIntegration(t *testing.T) {
 		}
 	}
 
-	app.GlobalMiddleware(
+	app.PreRouting(
 		mark("global"),
 		middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/legacy/events", To: "/api/events"}}}),
 	)
@@ -254,7 +254,7 @@ func TestServerHandlerPreAcceptFailuresUseErrorEnvelope(t *testing.T) {
 		AllowedOrigins: []string{"https://allowed.example"},
 		Subprotocols:   []string{"chat.v1"},
 	})
-	app.GlobalMiddleware(func(next credo.Handler) credo.Handler {
+	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
 			ctx.Response().Header().Set("X-Security", "set")
 			return next(ctx)

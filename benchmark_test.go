@@ -151,7 +151,7 @@ func BenchmarkServeHTTP_Middleware(b *testing.B) {
 				mws[i] = benchMiddleware(fmt.Sprintf("X-Bench-%d", i))
 			}
 			if len(mws) > 0 {
-				app.GlobalMiddleware(mws...)
+				app.PreRouting(mws...)
 			}
 
 			app.GET("/", func(ctx *credo.Context) error {

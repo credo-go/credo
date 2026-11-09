@@ -534,9 +534,9 @@ func run() error {
 	// 5. Resolve, middleware and routes, built from resolved values.
 	tenantSvc := app.MustResolve[*TenantService]()
 
-	// Global middleware you add yourself (applied to all requests,
-	// including 404/405).
-	app.GlobalMiddleware(
+	// Pre-routing middleware you add yourself: it runs on every request,
+	// the router's 404 and 405 included.
+	app.PreRouting(
 		middleware.Secure(),
 		middleware.CORS(middleware.CORSConfig{
 			AllowOrigins:     []string{"https://app.example.com", "https://*.example.com"},

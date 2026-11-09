@@ -54,7 +54,7 @@ type decompressFeature struct {
 // (zlib-wrapped per RFC 9110, with raw DEFLATE accepted for clients that omit
 // the zlib header), all from the standard library.
 //
-// Decompression runs before Global middleware, so body-reading middleware and
+// Decompression runs before the PreRouting middleware, so body-reading middleware and
 // binders consume the same decoded stream. For a matching request it replaces
 // the body with the decompressed stream bounded by MaxBytes (the server's
 // max_body_bytes still bounds the compressed wire bytes independently), sets

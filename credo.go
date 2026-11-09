@@ -64,8 +64,9 @@ type App struct {
 	// HEAD-twin wiring — lives in Group alone.
 	root *Group
 
-	// globalMW holds global middleware (applied to all requests, including 404/405).
-	globalMW []Middleware
+	// preRoutingMW holds the pre-routing tier: it runs on every request,
+	// before the match, the router's own 404 and 405 included.
+	preRoutingMW []Middleware
 
 	// foreignRequestReported records that the debug report of a replaced
 	// embedded request was made for a request no route matched.
@@ -436,12 +437,37 @@ func (app *App) OPTIONS(pattern string, h Handler) *Route {
 
 // --- Middleware ---
 
-// GlobalMiddleware appends middleware that runs on every request,
-// including 404 and 405 responses. Must be called before the server starts;
-// panics if called after compile.
-func (app *App) GlobalMiddleware(middlewares ...Middleware) {
-	app.checkFrozen("App.GlobalMiddleware")
-	app.globalMW = append(app.globalMW, middlewares...)
+// PreRouting appends middleware that runs before the match, on every request,
+// the router's own 404 and 405 included. No route is matched yet, so a
+// middleware here cannot read route meta: one that does belongs on
+// [App.Middleware]. PreRouting is for what acts before the match or on a
+// request no route matches — CORS answering a preflight, Rewrite changing
+// the path that routing matches, Secure's headers and a rate limit that
+// cover the 404 and 405 too.
+//
+// The user tiers run PreRouting → [App.Middleware] → [Group.Middleware] →
+// [Route.Middleware], each in registration order. Must be called before the
+// server starts; panics if called after compile.
+func (app *App) PreRouting(middlewares ...Middleware) {
+	app.checkFrozen("App.PreRouting")
+	app.preRoutingMW = append(app.preRoutingMW, middlewares...)
+}
+
+// Middleware appends middleware to the routed tier: it runs on every route
+// registered through the App — directly, in a group, in a host group, as a
+// static route or as a mount — after the match and before group and route
+// middleware, so it reads the matched route and its meta:
+//
+//	app.Middleware(middleware.ContractGuard()) // never runs for a 404 or a 405
+//
+// It does not run for the router's own 404 and 405, which reach the
+// [App.PreRouting] tier only. Like group middleware it is collected when the
+// routes' chains are compiled, so it applies to routes registered before the
+// call too. Must be called before the server starts; panics if called after
+// compile.
+func (app *App) Middleware(middlewares ...Middleware) {
+	app.checkFrozen("App.Middleware")
+	app.root.mws = append(app.root.mws, middlewares...)
 }
 
 // --- Groups ---
@@ -508,8 +534,8 @@ func (app *App) Host(pattern string) *Group {
 // route matches the request; the one for [http.StatusMethodNotAllowed] runs
 // when routes match the path but none of them serves the method, with the
 // Allow header already set. It answers in place of the default error response
-// for that case, inside the global middleware and without a matched route
-// ([Context.HasRoute] reports false).
+// for that case, inside the [App.PreRouting] middleware and without a matched
+// route ([Context.HasRoute] reports false); the routed tier does not run.
 //
 // Only these two codes are consulted, and StatusHandler panics for any other
 // code, so a registration that would never run fails at startup instead of
@@ -582,9 +608,10 @@ func (app *App) Routes() []RouteInfo {
 	for _, m := range app.mounts {
 		out = append(out, RouteInfo{
 			Kind:         RouteKindMount,
-			Pattern:      m.prefix,
+			Pattern:      m.route.pattern,
 			Methods:      mountForwardedMethods(),
 			RegisteredAt: m.registeredAt.String(),
+			meta:         m.route.resolveAllMeta(),
 		})
 	}
 
