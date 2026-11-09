@@ -10,8 +10,9 @@ import (
 	internalrequestid "github.com/credo-go/credo/internal/requestid"
 )
 
-// requestIDKey is the context-store key for the request ID.
-const requestIDKey = internalrequestid.Key
+// requestIDKey is the request-value key of the request ID; Context.RequestID
+// reads it.
+var requestIDKey = NewKey[string]("credo.requestid")
 
 // RequestIDConfig configures the request ID feature installed by
 // [App.UseRequestID]. The zero value selects every default.

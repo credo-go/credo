@@ -93,7 +93,7 @@ func (c DatabaseConfig) DSN() string {
 // Domain types
 // ---------------------------------------------------------------------------
 
-// User represents an authenticated user (attached to the request via ctx.SetUser).
+// User represents an authenticated user (attached to the request via c.SetUser).
 type User struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
@@ -328,7 +328,7 @@ func i18nConfig() credo.I18nConfig {
 // Handlers
 // ---------------------------------------------------------------------------
 
-func loginHandler(ctx *credo.Context) error {
+func loginHandler(c *credo.Context) error {
 	// In production, validate credentials against a database.
 	// This stub issues a JWT for demonstration purposes.
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -343,52 +343,52 @@ func loginHandler(ctx *credo.Context) error {
 		return credo.NewHTTPError(http.StatusInternalServerError, "token_signing_failed").
 			WithInternal(err)
 	}
-	return ctx.Response().JSON(http.StatusOK, map[string]string{
+	return c.Response().JSON(http.StatusOK, map[string]string{
 		"token": signed,
 		"type":  "Bearer",
 	})
 }
 
-func meHandler(ctx *credo.Context) error {
-	user, ok := ctx.GetUser[User]()
+func meHandler(c *credo.Context) error {
+	user, ok := c.GetUser[User]()
 	if !ok {
 		return credo.ErrUnauthorized
 	}
-	return ctx.Response().JSON(http.StatusOK, user)
+	return c.Response().JSON(http.StatusOK, user)
 }
 
 func createTenantHandler(svc *TenantService) credo.Handler {
-	return func(ctx *credo.Context) error {
+	return func(c *credo.Context) error {
 		var req CreateTenantRequest
-		if err := ctx.Request().BindBody(&req); err != nil {
+		if err := c.Request().BindBody(&req); err != nil {
 			return err // validation errors enter the centralized error envelope
 		}
 
-		tenant, err := svc.Create(ctx.Context(), &req)
+		tenant, err := svc.Create(c.Context(), &req)
 		if err != nil {
 			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_create_failed").
 				WithInternal(err)
 		}
 
-		return ctx.Response().JSON(http.StatusCreated, tenant)
+		return c.Response().JSON(http.StatusCreated, tenant)
 	}
 }
 
 func listTenantsHandler(svc *TenantService) credo.Handler {
-	return func(ctx *credo.Context) error {
-		tenants, err := svc.List(ctx.Context())
+	return func(c *credo.Context) error {
+		tenants, err := svc.List(c.Context())
 		if err != nil {
 			return credo.NewHTTPError(http.StatusInternalServerError, "tenant_list_failed").
 				WithInternal(err)
 		}
-		return ctx.Response().JSON(http.StatusOK, tenants)
+		return c.Response().JSON(http.StatusOK, tenants)
 	}
 }
 
-func adminDashboardHandler(ctx *credo.Context) error {
-	user, _ := ctx.GetUser[User]()
-	return ctx.Response().JSON(http.StatusOK, map[string]any{
-		"message": ctx.T("admin.welcome", map[string]any{"email": user.Email}),
+func adminDashboardHandler(c *credo.Context) error {
+	user, _ := c.GetUser[User]()
+	return c.Response().JSON(http.StatusOK, map[string]any{
+		"message": c.T("admin.welcome", map[string]any{"email": user.Email}),
 		"user":    user,
 		"stats": map[string]int{
 			"total_tenants":  42,
@@ -414,8 +414,8 @@ func echoHandler(_ *credo.Context, conn *websocket.Conn) error {
 // requireRole creates middleware that checks the user's role.
 func requireRole(role string) credo.Middleware {
 	return func(next credo.Handler) credo.Handler {
-		return func(ctx *credo.Context) error {
-			user, ok := ctx.GetUser[User]()
+		return func(c *credo.Context) error {
+			user, ok := c.GetUser[User]()
 			if !ok {
 				return credo.ErrUnauthorized
 			}
@@ -423,7 +423,7 @@ func requireRole(role string) credo.Middleware {
 				return credo.NewHTTPError(http.StatusForbidden, "role_required").
 					WithDetails(map[string]string{"required_role": role})
 			}
-			return next(ctx)
+			return next(c)
 		}
 	}
 }
@@ -567,10 +567,10 @@ func run() error {
 
 	// Custom answer for the router's own 404 (StatusHandler accepts 404 and
 	// 405 only).
-	app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
-		return ctx.Response().JSON(http.StatusNotFound, map[string]string{
+	app.StatusHandler(http.StatusNotFound, func(c *credo.Context) error {
+		return c.Response().JSON(http.StatusNotFound, map[string]string{
 			"error":   "not_found",
-			"message": fmt.Sprintf("No route matches %s %s", ctx.Request().Method, ctx.Request().URL.Path),
+			"message": fmt.Sprintf("No route matches %s %s", c.Request().Method, c.Request().URL.Path),
 		})
 	})
 

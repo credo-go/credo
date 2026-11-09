@@ -67,6 +67,10 @@ type App struct {
 	// globalMW holds global middleware (applied to all requests, including 404/405).
 	globalMW []Middleware
 
+	// foreignRequestReported records that the debug report of a replaced
+	// embedded request was made for a request no route matched.
+	foreignRequestReported atomic.Bool
+
 	// prep is the stored Finalize → compile → publish result shared by every
 	// serve path (see prepare). nil until the first preparation publishes.
 	prep atomic.Pointer[preparation]
@@ -355,7 +359,7 @@ func assembleApp(
 	app.root = &Group{registrar: app}
 	app.lifecycle = &lifecycleManager{app: app}
 	app.ctxPool = newPool(func() *Context {
-		return &Context{
+		c := &Context{
 			app: app,
 			request: &Request{
 				app: app,
@@ -366,6 +370,8 @@ func assembleApp(
 			},
 			response: &Response{app: app},
 		}
+		c.request.owner = c
+		return c
 	})
 	return app
 }
@@ -530,27 +536,30 @@ func (app *App) StatusHandler(code int, h Handler) {
 
 // --- Meta ---
 
-// SetMeta sets a root-level metadata key-value pair.
-// Must be called before the server starts; panics if called after compile.
-func (app *App) SetMeta(key string, val any) {
+// SetMeta sets the App's value of a meta key, which every route inherits
+// unless a group or the route sets the key itself. Must be called before the
+// server starts; panics if called after compile, and for a zero Key.
+func (app *App) SetMeta[T any](key Key[T], val T) {
+	key.mustID("App.SetMeta")
 	app.root.SetMeta(key, val)
 }
 
-// RemoveMeta removes a root-level metadata key.
-// Must be called before the server starts; panics if called after compile.
-func (app *App) RemoveMeta(key string) {
+// RemoveMeta removes the App's value of a meta key. Must be called before the
+// server starts; panics if called after compile, and for a zero Key.
+func (app *App) RemoveMeta[T any](key Key[T]) {
+	key.mustID("App.RemoveMeta")
 	app.root.RemoveMeta(key)
 }
 
 // Routes returns introspection data for every registered route across the
 // default mux and all host-scoped muxes, plus one entry per [App.Mount] prefix.
 // See [RouteInfo] for the per-entry fields, including the route Name, the
-// resolved and shallow-copied Meta, and a mount's forwarded method set.
+// resolved meta ([RouteInfo.GetMeta]), and a mount's forwarded method set.
 //
 // The result is a deterministic total order — sorted by (Host, Pattern, Method,
 // Kind), independent of registration order and host compile-sort state — so
 // route/permission catalogs and golden-file tests stay stable. The returned
-// slice and each RouteInfo.Meta map are freshly allocated; the caller owns them.
+// slice is freshly allocated; the caller owns it.
 //
 // Routes reads live *Route fields (Name, metadata) without locking, so it must
 // not run concurrently with route registration or configuration (Name, SetMeta,

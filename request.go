@@ -27,8 +27,18 @@ import (
 
 // Request wraps *http.Request and provides request-side helpers:
 // route parameters, query parameter shortcuts, and body/query binding.
+//
+// The request's current context is [Request.Context], the same as
+// [Context.Context]: it shadows the embedded request's Context. Hand stdlib
+// code the standard request through [Request.Std], which carries that
+// context; the embedded *http.Request keeps the context it was built with and
+// lags behind after a [Context.Set].
 type Request struct {
 	*http.Request
+
+	// owner is the Context the request belongs to; nil for a Request built
+	// with NewRequest outside a Context.
+	owner *Context
 
 	// app is a back-reference to the application, set by the context pool.
 	// Used for debug-mode bind warnings. Nil for externally created Requests.
@@ -79,7 +89,7 @@ func NewRequest(r *http.Request) *Request {
 // RouteParam is the preferred accessor for single values; it never
 // allocates:
 //
-//	id := ctx.Request().RouteParam("id")
+//	id := c.Request().RouteParam("id")
 //
 // The value is percent-decoded exactly once by the router ("a%2Fb" arrives as
 // "a/b" inside one segment); do not unescape it again.
@@ -145,7 +155,7 @@ func (r *Request) addRouteParam(key, value string) {
 // populate the embedded *http.Request's path values with a route's parameters
 // (doing so would cost an allocation per request for data
 // [Request.RouteParam] already serves), so without it
-// ctx.Request().PathValue("id") would silently return "". The raw embedded
+// c.Request().PathValue("id") would silently return "". The raw embedded
 // request — as seen by middleware via [WrapStdMiddleware] — still carries
 // none of them.
 //

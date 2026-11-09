@@ -11,7 +11,7 @@ import "log/slog"
 //	app.Group("/callbacks").SetMeta(credo.MetaRawResponse, true)
 //
 // Groups pass the value to their routes through the usual meta parent chain;
-// a route-level value overrides its group. Only the bool true silences.
+// a route-level value overrides its group.
 //
 // The diagnostic itself is opt-in twice over: it fires only when a
 // [SuccessRenderer] is installed AND the application runs in debug mode
@@ -21,7 +21,7 @@ import "log/slog"
 // are the documented escape hatch) but usually unintentional when a house
 // envelope exists. Non-JSON writers (Text, Blob, XML, streaming) are exempt
 // by design: they are never envelope targets.
-const MetaRawResponse = "credo.rawresponse"
+var MetaRawResponse = NewKey[bool]("credo.rawresponse")
 
 // warnEnvelopeBypass emits the debug-mode diagnostic after the handler chain
 // (and any error handling) completes. At most one warning per request.
@@ -31,10 +31,8 @@ func (app *App) warnEnvelopeBypass(ctx *Context) {
 	}
 	attrs := []slog.Attr{slog.String("path", ctx.Request().URL.Path)}
 	if rt := ctx.Route(); rt != nil {
-		if v, ok := rt.LookupMeta(MetaRawResponse); ok {
-			if b, isBool := v.(bool); isBool && b {
-				return
-			}
+		if raw, _ := rt.GetMeta(MetaRawResponse); raw {
+			return
 		}
 		attrs = append(attrs, slog.String("route", rt.GetPattern()))
 		if name := rt.GetName(); name != "" {

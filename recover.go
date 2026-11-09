@@ -23,7 +23,7 @@ const defaultRecoverStackSize = 8192
 // of option order. The zero value selects every default.
 type RecoverConfig struct {
 	// Logger receives the "panic recovered" record. nil logs through the
-	// request-scoped logger (ctx.Logger()), which already carries the request
+	// request-scoped logger (c.Logger()), which already carries the request
 	// ID when that feature is installed; a dedicated logger gets the request
 	// ID as an explicit attribute instead.
 	Logger *slog.Logger
@@ -85,7 +85,7 @@ func (app *App) recoverPanic(c *Context, rec *recoverFeature, rvr any) {
 		stack = internalobserve.StackTrace(rec.stackSize)
 	}
 	// Add request_id explicitly only when the logger does not already carry
-	// it: a dedicated logger never does; ctx.Logger() does whenever a
+	// it: a dedicated logger never does; c.Logger() does whenever a
 	// request-scoped logger was set.
 	requestID := ""
 	if rec.logger != nil || !c.HasRequestLogger() {

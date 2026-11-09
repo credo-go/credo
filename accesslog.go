@@ -16,20 +16,18 @@ import (
 )
 
 // MetaAccessLog is the route-meta key that toggles built-in access logging for
-// a route — or, via LookupMeta parent-chain inheritance, for a whole group.
+// a route — or, inherited through the group parent chain, for a whole group.
 // Set it to false to silence the access-log line for matched requests:
 //
 //	app.Group("/internal").SetMeta(credo.MetaAccessLog, false)
 //	app.GET("/metrics", h).SetMeta(credo.MetaAccessLog, false)
 //
-// A route-level value overrides a group-level one (LookupMeta reads the route
-// before its parents), so a noisy group can be silenced while one route inside
-// it stays logged. Only a bool false silences; any non-bool value is ignored
-// and the request is logged (fail-open). Keys under the "credo." namespace are
-// reserved by the framework.
+// A route-level value overrides a group-level one ([Route.GetMeta] reads the
+// route before its parents), so a noisy group can be silenced while one route
+// inside it stays logged, with true.
 //
 // Health probes use it internally; see [HealthConfig.LogRequests].
-const MetaAccessLog = internalobserve.MetaAccessLogKey
+var MetaAccessLog = NewKey[bool]("credo.accesslog")
 
 // AccessLogEntry is an immutable value snapshot captured at the access-log
 // observation boundary, after the final response: error rendering, panic
@@ -75,14 +73,14 @@ type AccessLogEntry struct {
 type AccessLogResultFilter func(ctx *Context, entry AccessLogEntry) bool
 
 // accessLogSilenced reports whether the matched route (or an ancestor group)
-// set MetaAccessLog to false. The decode (bool false silences, anything else
-// fails open) lives in internal/observe; an unmatched request (404/405,
-// ctx.route == nil) is never silenced.
+// set MetaAccessLog to false; an unmatched request (404/405, ctx.route ==
+// nil) is never silenced.
 func accessLogSilenced(ctx *Context) bool {
 	if ctx.route == nil {
 		return false
 	}
-	return internalobserve.SilencedByMeta(ctx.route.LookupMeta(MetaAccessLog))
+	enabled, ok := ctx.route.GetMeta(MetaAccessLog)
+	return ok && !enabled
 }
 
 // AccessLogConfig configures the access-log feature installed by

@@ -19,29 +19,29 @@ func main() {
 		log.Fatal(err)
 	}
 
-	app.GET("/", func(ctx *credo.Context) error {
-		return ctx.Response().JSON(http.StatusOK, map[string]string{
+	app.GET("/", func(c *credo.Context) error {
+		return c.Response().JSON(http.StatusOK, map[string]string{
 			"message": "Hello, Credo!",
 		})
 	})
 
-	app.GET("/hello/{name}", func(ctx *credo.Context) error {
-		name := ctx.Request().RouteParam("name")
-		return ctx.Response().JSON(http.StatusOK, map[string]string{
+	app.GET("/hello/{name}", func(c *credo.Context) error {
+		name := c.Request().RouteParam("name")
+		return c.Response().JSON(http.StatusOK, map[string]string{
 			"message": "Hello, " + name + "!",
 		})
 	})
 
 	// QUERY is safe and idempotent like GET, but carries a structured query in
 	// the request body. Credo requires Content-Type before this handler runs.
-	app.QUERY("/search", func(ctx *credo.Context) error {
+	app.QUERY("/search", func(c *credo.Context) error {
 		var query struct {
 			Term string `json:"term"`
 		}
-		if err := ctx.Request().BindBody(&query); err != nil {
+		if err := c.Request().BindBody(&query); err != nil {
 			return err
 		}
-		return ctx.Response().JSON(http.StatusOK, map[string]string{
+		return c.Response().JSON(http.StatusOK, map[string]string{
 			"term": query.Term,
 		})
 	})

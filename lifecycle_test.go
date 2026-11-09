@@ -557,7 +557,7 @@ func TestApp_FrozenPanic_SetMeta(t *testing.T) {
 			t.Fatal("expected panic from SetMeta after compile")
 		}
 	}()
-	app.SetMeta("key", "value")
+	app.SetMeta(keyStr, "value")
 }
 
 func TestApp_FrozenPanic_OnStop(t *testing.T) {
@@ -605,7 +605,7 @@ func TestApp_FrozenPanic_RouteSetMeta(t *testing.T) {
 			t.Fatal("expected panic from Route.SetMeta after compile")
 		}
 	}()
-	route.SetMeta("key", "value")
+	route.SetMeta(keyStr, "value")
 }
 
 func TestApp_FrozenPanic_GroupSetMeta(t *testing.T) {
@@ -622,13 +622,13 @@ func TestApp_FrozenPanic_GroupSetMeta(t *testing.T) {
 			t.Fatal("expected panic from Group.SetMeta after compile")
 		}
 	}()
-	g.SetMeta("key", "value")
+	g.SetMeta(keyStr, "value")
 }
 
 func TestApp_FrozenPanic_GroupRemoveMeta(t *testing.T) {
 	app := mustNew(t)
 	g := app.Group("/api")
-	g.SetMeta("key", "value")
+	g.SetMeta(keyStr, "value")
 	g.GET("/x", func(ctx *credo.Context) error { return nil })
 
 	w := httptest.NewRecorder()
@@ -640,7 +640,7 @@ func TestApp_FrozenPanic_GroupRemoveMeta(t *testing.T) {
 			t.Fatal("expected panic from Group.RemoveMeta after compile")
 		}
 	}()
-	g.RemoveMeta("key")
+	g.RemoveMeta(keyStr)
 }
 
 // --- P1-3: State rollback on run failure ---

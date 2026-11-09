@@ -94,7 +94,7 @@ func (app *App) compileRoutes(m *mux) {
 		// Collect group middleware from the parent chain at compile
 		// time: the route's own group wraps innermost, the root group
 		// outermost — so execution order is parent before child, the
-		// same model LookupMeta uses for metadata.
+		// same model the meta snapshot uses.
 		for g := rh.route.parent; g != nil; g = g.parent {
 			for i := len(g.mws) - 1; i >= 0; i-- {
 				compiled = g.mws[i](compiled)
@@ -102,11 +102,12 @@ func (app *App) compileRoutes(m *mux) {
 		}
 		rh.compiled = compiled
 		rh.handler = nil
+		rh.route.resolveMeta()
 	}
 }
 
 // dispatch is the rewrite-aware dispatch loop. It calls dispatchOnce and
-// re-dispatches if the handler signaled an internal rewrite via ctx.Rewrite.
+// re-dispatches if the handler signaled an internal rewrite via c.Rewrite.
 func (app *App) dispatch(c *Context) error {
 	for {
 		c.rewriteRequested = false
@@ -227,10 +228,13 @@ func (app *App) dispatchOnce(c *Context) error {
 				return err
 			}
 		}
+		// The mounted handler gets the standard request carrying the request's
+		// context, so it reads the values set before the mount.
+		std := c.request.Std()
 		if pooled {
-			rh.mounted.ServeHTTP(c.response, withRouteContext(r, rctx))
+			rh.mounted.ServeHTTP(c.response, withRouteContext(std, rctx))
 		} else {
-			rh.mounted.ServeHTTP(c.response, r)
+			rh.mounted.ServeHTTP(c.response, std)
 		}
 		return nil
 	}
@@ -446,7 +450,7 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // "/y/{year:[0-9]{4}}"). The handler then receives the path below the matched
 // prefix, and each parameter of the prefix as a path value: a stdlib handler
 // reads it with r.PathValue("tenant") or [URLParam], a mounted Credo app with
-// ctx.Request().PathValue("tenant") — [Request.RouteParam] returns that app's
+// c.Request().PathValue("tenant") — [Request.RouteParam] returns that app's
 // own route parameters only. Path values the request already carried are
 // kept; a name used again holds the value of the prefix closest to the
 // handler. A catch-all parameter is not a prefix: it consumes the rest of the

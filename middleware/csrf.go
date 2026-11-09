@@ -116,7 +116,7 @@ func CSRF(cfg ...CSRFConfig) credo.Middleware {
 				return next(ctx)
 			}
 
-			if err := protection.Check(ctx.Request().Request); err != nil {
+			if err := protection.Check(ctx.Request().Std()); err != nil {
 				return config.ErrorHandler(ctx, err)
 			}
 			return next(ctx)

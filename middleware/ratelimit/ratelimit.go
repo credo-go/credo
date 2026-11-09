@@ -41,7 +41,7 @@ type Config struct {
 	Interval time.Duration
 
 	// KeyFunc builds a limiter key from the request context.
-	// Default: client IP from ctx.Request().RealIP().
+	// Default: client IP from c.Request().RealIP().
 	KeyFunc func(ctx *credo.Context) (string, error)
 
 	// InternalErrorHandler handles internal limiter/key errors (key
@@ -94,13 +94,12 @@ func buildMiddleware(config Config) credo.Middleware {
 				return next(ctx)
 			}
 
-			req := ctx.Request().Request
 			key, err := config.KeyFunc(ctx)
 			if err != nil {
 				return config.InternalErrorHandler(ctx, fmt.Errorf("rate limit key: %w", err))
 			}
 
-			limit, remaining, reset, ok, err := config.Store.Take(req.Context(), key)
+			limit, remaining, reset, ok, err := config.Store.Take(ctx.Context(), key)
 			if err != nil {
 				return config.InternalErrorHandler(ctx, fmt.Errorf("rate limit take: %w", err))
 			}

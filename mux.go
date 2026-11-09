@@ -39,11 +39,10 @@ const (
 // sorted forwarded method set in Methods, because one mount answers every
 // forwarded method at its prefix.
 //
-// Meta is the fully resolved route metadata (route ← group ← app) as a shallow
-// copy: callers may read it and add or delete keys without affecting framework
-// state, but the values are read-only by convention — mutating a slice, map, or
-// pointer stored in Meta mutates the live route metadata. Meta is nil when
-// neither the route nor any ancestor group defines metadata.
+// [RouteInfo.GetMeta] reads the fully resolved route metadata (route ← group
+// ← app), taken when the RouteInfo was built. The values are read-only by
+// convention — mutating a slice, map, or pointer read from it mutates the
+// live route metadata.
 type RouteInfo struct {
 	// Method is the HTTP method of a normal route; empty for a mount (see Methods).
 	Method string
@@ -62,9 +61,6 @@ type RouteInfo struct {
 	// Name is the route name, or empty if unnamed.
 	Name string
 
-	// Meta is the resolved, shallow-copied route metadata; nil if none.
-	Meta map[string]any
-
 	// Kind reports whether this entry describes a normal route or a mount.
 	Kind RouteKind
 
@@ -75,6 +71,18 @@ type RouteInfo struct {
 	// route or mount, or "" when the framework could not capture it. Intended
 	// for startup route dumps and /debug/routes diagnostics.
 	RegisteredAt string
+
+	// meta is the resolved metadata GetMeta reads; nil if none.
+	meta map[*keyID]any
+}
+
+// GetMeta returns the route's resolved value of a meta key — the route's own,
+// else its groups', else the App's — and reports whether one was set, as
+// [Route.GetMeta] does. A mount reports none. GetMeta panics for a zero Key.
+func (ri RouteInfo) GetMeta[T any](key Key[T]) (T, bool) {
+	v, ok := ri.meta[key.mustID("RouteInfo.GetMeta")]
+	t, _ := v.(T)
+	return t, ok
 }
 
 // routeEntry is a stored route registration. RouteInfo is derived from it
@@ -252,8 +260,8 @@ func routeInfoHost(rh *routeHandler) string {
 
 // Routes returns introspection data for every normal route in this mux, in
 // registration order. Mount payloads are skipped here — [App.Routes] surfaces
-// a single RouteInfo per mount from a separate registry. The returned slice and
-// each RouteInfo.Meta map are freshly allocated; the caller owns them.
+// a single RouteInfo per mount from a separate registry. The returned slice is
+// freshly allocated; the caller owns it.
 //
 // Routes reads live *Route fields (Name, metadata) without locking them, so it
 // must not run concurrently with route registration or configuration (Name,
@@ -272,7 +280,7 @@ func (mx *mux) Routes() []RouteInfo {
 			Pattern:      e.pattern,
 			Host:         route.hostPattern,
 			Name:         route.name,
-			Meta:         route.resolveAllMeta(),
+			meta:         route.resolveAllMeta(),
 			Kind:         RouteKindRoute,
 			AutoHead:     route.autoHead,
 			RegisteredAt: e.rh.srcLoc.String(),

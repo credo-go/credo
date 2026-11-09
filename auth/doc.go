@@ -11,10 +11,10 @@
 // compile-time type safety:
 //
 //	// In middleware (auth.Middleware calls SetUser for you)
-//	ctx.SetUser(myUser)
+//	c.SetUser(myUser)
 //
 //	// In a Credo handler
-//	user, err := ctx.RequireUser[*MyUser]()
+//	user, err := c.RequireUser[*MyUser]()
 //	if err != nil { ... }
 //
 // # Authenticator Interface
@@ -32,8 +32,8 @@
 //
 // For custom auth failure handling, provide an ErrorFunc:
 //
-//	auth.Middleware[*User](myAuth, func(err error, ctx *credo.Context) error {
-//	    return ctx.Response().JSON(401, map[string]string{"error": err.Error()})
+//	auth.Middleware[*User](myAuth, func(err error, c *credo.Context) error {
+//	    return c.Response().JSON(401, map[string]string{"error": err.Error()})
 //	})
 //
 // # Built-in Authenticators

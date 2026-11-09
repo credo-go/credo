@@ -849,7 +849,7 @@ func TestStaticRoute_SetMeta(t *testing.T) {
 	called := 0
 	authMW := func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			if val, ok := ctx.Route().LookupMeta("public"); ok && val.(bool) {
+			if public, _ := ctx.Route().GetMeta(keyPublic); public {
 				called++
 			}
 			return next(ctx)
@@ -857,7 +857,7 @@ func TestStaticRoute_SetMeta(t *testing.T) {
 	}
 
 	sr := app.Static("/assets", testFS())
-	sr.SetMeta("public", true).Middleware(authMW)
+	sr.SetMeta(keyPublic, true).Middleware(authMW)
 
 	// Test catch-all route
 	serve(t, app, "GET", "/assets/app.js")
@@ -1238,15 +1238,15 @@ func TestStaticRoute_HEAD_AppliesMeta(t *testing.T) {
 	var seen []string
 	metaCheck := func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			if val, ok := ctx.Route().LookupMeta("zone"); ok {
-				seen = append(seen, ctx.Request().Method+":"+val.(string))
+			if val, ok := ctx.Route().GetMeta(keyZone); ok {
+				seen = append(seen, ctx.Request().Method+":"+val)
 			}
 			return next(ctx)
 		}
 	}
 
 	sr := app.Static("/assets", testFS())
-	sr.SetMeta("zone", "public").Middleware(metaCheck)
+	sr.SetMeta(keyZone, "public").Middleware(metaCheck)
 
 	serve(t, app, "GET", "/assets/app.js")
 	serve(t, app, "HEAD", "/assets/app.js")
@@ -1292,14 +1292,14 @@ func TestRoute_GET_HEADTwinInheritsMeta(t *testing.T) {
 	var seen []string
 	mw := func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			if val, ok := ctx.Route().LookupMeta("scope"); ok {
-				seen = append(seen, ctx.Request().Method+":"+val.(string))
+			if val, ok := ctx.Route().GetMeta(keyScope); ok {
+				seen = append(seen, ctx.Request().Method+":"+val)
 			}
 			return next(ctx)
 		}
 	}
 	app.GET("/users", func(c *credo.Context) error { return nil }).
-		SetMeta("scope", "list").
+		SetMeta(keyScope, "list").
 		Middleware(mw)
 
 	serve(t, app, "GET", "/users")

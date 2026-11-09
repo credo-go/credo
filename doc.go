@@ -28,8 +28,8 @@
 //	        panic(err)
 //	    }
 //
-//	    app.GET("/", func(ctx *credo.Context) error {
-//	        return ctx.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
+//	    app.GET("/", func(c *credo.Context) error {
+//	        return c.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
 //	    })
 //
 //	    if err := app.Run(); err != nil {

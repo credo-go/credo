@@ -226,18 +226,18 @@ func TestApp_NamedRoutes_ClearName_NoPanicOnSecondClear(t *testing.T) {
 
 func TestApp_RouteMeta(t *testing.T) {
 	app := mustNew(t)
-	app.SetMeta("app-level", true)
+	app.SetMeta(keyAppLevel, true)
 
 	app.GET("/test", func(ctx *credo.Context) error {
-		val, ok := ctx.Route().LookupMeta("auth")
+		authed, ok := ctx.Route().GetMeta(keyAuth)
 		if !ok {
 			return ctx.Response().Text(200, "no-auth")
 		}
-		if val.(bool) {
+		if authed {
 			return ctx.Response().Text(200, "authed")
 		}
 		return ctx.Response().Text(200, "no-auth")
-	}).SetMeta("auth", true)
+	}).SetMeta(keyAuth, true)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
@@ -250,14 +250,14 @@ func TestApp_RouteMeta(t *testing.T) {
 
 func TestApp_RouteMetaInheritance(t *testing.T) {
 	app := mustNew(t)
-	app.SetMeta("global", "root")
+	app.SetMeta(keyGlobal, "root")
 
 	route := app.GET("/test", func(ctx *credo.Context) error {
 		return nil
 	})
 
 	// Route should inherit app-level meta
-	val, ok := route.LookupMeta("global")
+	val, ok := route.GetMeta(keyGlobal)
 	if !ok {
 		t.Fatal("expected to find 'global' meta via inheritance")
 	}
@@ -266,10 +266,17 @@ func TestApp_RouteMetaInheritance(t *testing.T) {
 	}
 
 	// Route-level meta overrides
-	route.SetMeta("global", "overridden")
-	val, ok = route.LookupMeta("global")
+	route.SetMeta(keyGlobal, "overridden")
+	val, ok = route.GetMeta(keyGlobal)
 	if !ok || val != "overridden" {
 		t.Errorf("meta 'global' = %v, want 'overridden'", val)
+	}
+
+	// RemoveMeta on the route lets the App's value show through again.
+	route.RemoveMeta(keyGlobal)
+	val, ok = route.GetMeta(keyGlobal)
+	if !ok || val != "root" {
+		t.Errorf("after RemoveMeta, meta 'global' = %v, want 'root'", val)
 	}
 }
 
@@ -288,16 +295,16 @@ func findRouteInfo(t *testing.T, routes []credo.RouteInfo, method, pattern strin
 
 func TestApp_Routes_ExposesNameAndResolvedMeta(t *testing.T) {
 	app := mustNew(t)
-	app.SetMeta("scope", "app") // root-group meta
+	app.SetMeta(keyScope, "app") // root-group meta
 
 	api := app.Group("/api")
-	api.SetMeta("group-flag", true)
+	api.SetMeta(keyGroupFlag, true)
 
 	// Name and SetMeta are chained AFTER registration — exercising the live
 	// read path that a registration-time snapshot would miss.
 	api.GET("/users", func(ctx *credo.Context) error { return nil }).
 		Name("users.list").
-		SetMeta("permission", "users:read")
+		SetMeta(keyPermission, "users:read")
 
 	ri := findRouteInfo(t, app.Routes(), "GET", "/api/users")
 
@@ -311,14 +318,14 @@ func TestApp_Routes_ExposesNameAndResolvedMeta(t *testing.T) {
 		t.Errorf("Methods = %v, want nil for a normal route", ri.Methods)
 	}
 	// Resolved meta: route-level, group-level, and app-level all visible.
-	if got := ri.Meta["permission"]; got != "users:read" {
-		t.Errorf("Meta[permission] = %v, want %q", got, "users:read")
+	if got, _ := ri.GetMeta(keyPermission); got != "users:read" {
+		t.Errorf("GetMeta(permission) = %v, want %q", got, "users:read")
 	}
-	if got := ri.Meta["group-flag"]; got != true {
-		t.Errorf("Meta[group-flag] = %v, want true", got)
+	if got, _ := ri.GetMeta(keyGroupFlag); got != true {
+		t.Errorf("GetMeta(group-flag) = %v, want true", got)
 	}
-	if got := ri.Meta["scope"]; got != "app" {
-		t.Errorf("Meta[scope] = %v, want %q", got, "app")
+	if got, _ := ri.GetMeta(keyScope); got != "app" {
+		t.Errorf("GetMeta(scope) = %v, want %q", got, "app")
 	}
 }
 
@@ -330,26 +337,23 @@ func TestApp_Routes_UnnamedRouteWithoutMeta(t *testing.T) {
 	if ri.Name != "" {
 		t.Errorf("Name = %q, want empty", ri.Name)
 	}
-	if ri.Meta != nil {
-		t.Errorf("Meta = %v, want nil when no metadata is defined", ri.Meta)
+	if v, ok := ri.GetMeta(keyScope); ok {
+		t.Errorf("GetMeta(scope) = %v, true; want none when no metadata is defined", v)
 	}
 }
 
-func TestApp_Routes_MetaIsDefensiveCopy(t *testing.T) {
+func TestApp_Routes_MetaIsASnapshot(t *testing.T) {
 	app := mustNew(t)
-	app.GET("/x", func(ctx *credo.Context) error { return nil }).SetMeta("k", "v")
+	route := app.GET("/x", func(ctx *credo.Context) error { return nil }).SetMeta(keyK, "v")
 
-	// Mutating the returned Meta map must not corrupt framework state.
+	// A RouteInfo holds the meta resolved when it was built.
 	ri := findRouteInfo(t, app.Routes(), "GET", "/x")
-	ri.Meta["injected"] = "bad"
-	delete(ri.Meta, "k")
-
-	ri2 := findRouteInfo(t, app.Routes(), "GET", "/x")
-	if ri2.Meta["k"] != "v" {
-		t.Errorf("delete on returned Meta leaked into framework state: %v", ri2.Meta)
+	route.SetMeta(keyK, "changed")
+	if got, _ := ri.GetMeta(keyK); got != "v" {
+		t.Errorf("GetMeta(k) = %q, want the value at Routes() time %q", got, "v")
 	}
-	if _, ok := ri2.Meta["injected"]; ok {
-		t.Errorf("insert on returned Meta leaked into framework state: %v", ri2.Meta)
+	if got, _ := findRouteInfo(t, app.Routes(), "GET", "/x").GetMeta(keyK); got != "changed" {
+		t.Errorf("a later Routes() GetMeta(k) = %q, want %q", got, "changed")
 	}
 }
 
@@ -728,9 +732,9 @@ func TestApp_ContextStore(t *testing.T) {
 	})
 
 	app.GET("/store", func(ctx *credo.Context) error {
-		ctx.Set("key", "value")
-		val := ctx.Get("key")
-		return ctx.Response().Text(200, val.(string))
+		ctx.Set(keyStr, "value")
+		val, _ := ctx.Get(keyStr)
+		return ctx.Response().Text(200, val)
 	})
 
 	w := httptest.NewRecorder()
@@ -2064,8 +2068,8 @@ func assertSingleExplicitHead(t *testing.T, app *credo.App, pattern string) {
 func TestApp_Routes_HostScopedRouteHasHostAndResolvedMeta(t *testing.T) {
 	app := mustNew(t)
 	h := app.Host("api.example.com")
-	h.SetMeta("scope", "host")
-	h.GET("/users", noopHandler).SetMeta("permission", "users:read")
+	h.SetMeta(keyScope, "host")
+	h.GET("/users", noopHandler).SetMeta(keyPermission, "users:read")
 
 	var ri credo.RouteInfo
 	found := false
@@ -2081,11 +2085,11 @@ func TestApp_Routes_HostScopedRouteHasHostAndResolvedMeta(t *testing.T) {
 		t.Errorf("Kind = %q, want %q", ri.Kind, credo.RouteKindRoute)
 	}
 	// Resolved meta on a host-scoped route: route-level + host-group level.
-	if got := ri.Meta["permission"]; got != "users:read" {
-		t.Errorf("Meta[permission] = %v, want %q", got, "users:read")
+	if got, _ := ri.GetMeta(keyPermission); got != "users:read" {
+		t.Errorf("GetMeta(permission) = %v, want %q", got, "users:read")
 	}
-	if got := ri.Meta["scope"]; got != "host" {
-		t.Errorf("Meta[scope] = %v, want %q (host-group inherited)", got, "host")
+	if got, _ := ri.GetMeta(keyScope); got != "host" {
+		t.Errorf("GetMeta(scope) = %v, want %q (host-group inherited)", got, "host")
 	}
 }
 
@@ -2676,20 +2680,22 @@ func TestGroup_AllMethods(t *testing.T) {
 func TestGroup_SetMeta_RemoveMeta(t *testing.T) {
 	app := mustNew(t)
 	g := app.Group("/api")
-	g.SetMeta("auth", true)
+	if g.SetMeta(keyAuth, true) != g {
+		t.Error("Group.SetMeta does not return its group")
+	}
 
 	route := g.GET("/test", func(ctx *credo.Context) error {
 		return nil
 	})
 
-	val, ok := route.LookupMeta("auth")
-	if !ok || val != true {
+	val, ok := route.GetMeta(keyAuth)
+	if !ok || !val {
 		t.Errorf("expected 'auth' meta = true, got %v", val)
 	}
 
-	g.RemoveMeta("auth")
+	g.RemoveMeta(keyAuth)
 
-	_, ok = route.LookupMeta("auth")
+	_, ok = route.GetMeta(keyAuth)
 	if ok {
 		t.Error("expected 'auth' meta to be removed")
 	}

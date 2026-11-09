@@ -6,12 +6,6 @@ import (
 	"time"
 )
 
-// MetaAccessLogKey is the route-meta key that toggles access logging for a
-// route or, through LookupMeta inheritance, a whole group. The root package
-// re-exports it as credo.MetaAccessLog; the access-log feature decodes it
-// through SilencedByMeta so the opt-out semantics live in one place.
-const MetaAccessLogKey = "credo.accesslog"
-
 // AccessLogRecord is the transport-neutral snapshot an access-log producer
 // captures at its observation boundary. The root package's public
 // credo.AccessLogEntry has the identical field list and converts to it
@@ -30,17 +24,6 @@ type AccessLogRecord struct {
 	UserAgent    string
 	RequestID    string
 	RouteName    string
-}
-
-// SilencedByMeta decodes a MetaAccessLogKey lookup result. Only a present bool
-// false silences the request; a missing key or a non-bool value fails open so
-// a mistyped meta value can never hide traffic.
-func SilencedByMeta(value any, present bool) bool {
-	if !present {
-		return false
-	}
-	enabled, ok := value.(bool)
-	return ok && !enabled
 }
 
 // BelowMinLevel reports whether the status-derived log level is below the

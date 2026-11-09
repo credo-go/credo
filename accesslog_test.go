@@ -410,12 +410,6 @@ func TestAccessLog_WithoutRequestIDFeature(t *testing.T) {
 
 // --- MetaAccessLog (per-route/group silencing) ---
 
-func TestMetaAccessLog_ConstantValue(t *testing.T) {
-	if credo.MetaAccessLog != "credo.accesslog" {
-		t.Errorf("MetaAccessLog = %q, want %q", credo.MetaAccessLog, "credo.accesslog")
-	}
-}
-
 func TestAccessLog_MetaSilencesRoute(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
@@ -485,23 +479,6 @@ func TestAccessLog_RouteMetaOverridesGroup(t *testing.T) {
 	app.ServeHTTP(w, httptest.NewRequest("GET", "/internal/audit", nil))
 	if buf.Len() == 0 {
 		t.Error("expected log: route-level true must override group-level false")
-	}
-}
-
-func TestAccessLog_NonBoolMetaFailsOpen(t *testing.T) {
-	logger, buf := newTestLogger(t)
-
-	// A non-bool meta value is ignored (fail-open): the request is logged.
-	app := mustNew(t, credo.WithLogger(logger))
-	app.UseAccessLog()
-	app.GET("/x", func(ctx *credo.Context) error {
-		return ctx.Response().NoContent(200)
-	}).SetMeta(credo.MetaAccessLog, "false") // string, not bool
-
-	w := httptest.NewRecorder()
-	app.ServeHTTP(w, httptest.NewRequest("GET", "/x", nil))
-	if buf.Len() == 0 {
-		t.Error("expected log: a non-bool MetaAccessLog value must fail open")
 	}
 }
 

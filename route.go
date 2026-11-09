@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"sync"
+	"sync/atomic"
 )
 
 // Route represents a registered route with its handler, metadata,
@@ -27,11 +28,17 @@ type Route struct {
 	// chain when the app compiles.
 	middlewares []Middleware
 
-	// meta holds key-value metadata for this route.
-	meta map[string]any
+	// meta holds this route's own metadata, by key identity.
+	meta map[*keyID]any
 
-	// parent is the owning group: meta chain traversal at request time,
-	// group-middleware collection at compile time.
+	// metaSnap is the route's resolved metadata (route ← groups ← App),
+	// taken when its chain is compiled; metaResolved reports that it was, so
+	// a request-time GetMeta reads the snapshot instead of walking the chain.
+	metaSnap     map[*keyID]any
+	metaResolved bool
+
+	// parent is the owning group: meta resolution and group-middleware
+	// collection, both at compile time.
 	parent *Group
 
 	// registrar is the owning App's registration seam (freeze guard and
@@ -48,6 +55,10 @@ type Route struct {
 	// to the twin so HEAD and GET share identical behavior — preventing
 	// silent bypass of auth, rate-limiting, and meta-driven middleware.
 	headTwin *Route
+
+	// foreignRequestReported records that the debug report of a replaced
+	// embedded request was made for this route (see noteForeignRequest).
+	foreignRequestReported atomic.Bool
 
 	// autoHead marks this route as an auto-generated HEAD twin of a GET route.
 	// Surfaced via RouteInfo.AutoHead so introspection can distinguish it from
@@ -89,28 +100,53 @@ func (r *Route) Name(name string) *Route {
 	return r
 }
 
-// SetMeta attaches a key-value metadata pair to this route.
-// Must be called before the server starts; panics if called after compile.
-// Returns the Route for fluent chaining.
+// SetMeta sets the route's value of a meta key, which overrides the value its
+// groups and the App set. The value's type is the key's, checked at compile
+// time:
+//
+//	var RequiredScopes = credo.NewKey[[]Scope]("auth.scope")
+//
+//	app.GET("/reports", h).SetMeta(RequiredScopes, []Scope{"reports:read"})
+//
+// Must be called before the server starts; panics if called after compile,
+// and for a zero Key. Returns the Route for fluent chaining.
 //
 // For GET routes with an auto-generated HEAD twin, the value is also set
 // on the twin so middleware reading meta sees identical values regardless
 // of which method was used.
-func (r *Route) SetMeta(key string, val any) *Route {
+func (r *Route) SetMeta[T any](key Key[T], val T) *Route {
+	id := key.mustID("Route.SetMeta")
 	if r.registrar != nil {
 		r.registrar.checkFrozen("Route.SetMeta")
 	}
-	if r.meta == nil {
-		r.meta = make(map[string]any)
-	}
-	r.meta[key] = val
+	r.setMeta(id, val)
 	if r.headTwin != nil {
-		if r.headTwin.meta == nil {
-			r.headTwin.meta = make(map[string]any)
-		}
-		r.headTwin.meta[key] = val
+		r.headTwin.setMeta(id, val)
 	}
 	return r
+}
+
+// RemoveMeta removes the route's own value of a meta key, so that the value
+// its groups or the App set shows through. Must be called before the server
+// starts; panics if called after compile, and for a zero Key. Returns the
+// Route for fluent chaining. A HEAD twin follows its GET route.
+func (r *Route) RemoveMeta[T any](key Key[T]) *Route {
+	id := key.mustID("Route.RemoveMeta")
+	if r.registrar != nil {
+		r.registrar.checkFrozen("Route.RemoveMeta")
+	}
+	delete(r.meta, id)
+	if r.headTwin != nil {
+		delete(r.headTwin.meta, id)
+	}
+	return r
+}
+
+func (r *Route) setMeta(id *keyID, val any) {
+	if r.meta == nil {
+		r.meta = make(map[*keyID]any)
+	}
+	r.meta[id] = val
 }
 
 // Middleware appends one or more per-route middlewares.
@@ -153,40 +189,69 @@ func (r *Route) GetHost() string {
 	return r.hostPattern
 }
 
-// LookupMeta searches for a metadata value by key, traversing the parent
-// chain (route → group → parent group → ...) until found.
-func (r *Route) LookupMeta(key string) (any, bool) {
-	if r.meta != nil {
-		if val, ok := r.meta[key]; ok {
+// GetMeta returns the value of a meta key for this route and reports whether
+// one was set: the route's own value, else its group's, then the outer
+// groups', then the App's. The value has the key's type:
+//
+//	scopes, ok := c.Route().GetMeta(RequiredScopes) // scopes is a []Scope
+//
+// Once the App is prepared, the route's resolved meta is a snapshot taken
+// when its chain was compiled, so a request-time lookup does not walk the
+// groups. GetMeta panics for a zero Key.
+func (r *Route) GetMeta[T any](key Key[T]) (T, bool) {
+	id := key.mustID("Route.GetMeta")
+	var (
+		v  any
+		ok bool
+	)
+	if r.metaResolved {
+		v, ok = r.metaSnap[id]
+	} else {
+		v, ok = r.lookupMeta(id)
+	}
+	t, _ := v.(T)
+	return t, ok
+}
+
+// lookupMeta walks the route, then its group parent chain.
+func (r *Route) lookupMeta(id *keyID) (any, bool) {
+	if val, ok := r.meta[id]; ok {
+		return val, true
+	}
+	for g := r.parent; g != nil; g = g.parent {
+		if val, ok := g.meta[id]; ok {
 			return val, true
 		}
-	}
-	if r.parent != nil {
-		return r.parent.lookupMeta(key)
 	}
 	return nil, false
 }
 
+// resolveMeta takes the route's meta snapshot. It runs when the route's
+// chain is compiled, after registration was frozen.
+func (r *Route) resolveMeta() {
+	r.metaSnap = r.resolveAllMeta()
+	r.metaResolved = true
+}
+
 // resolveAllMeta returns the route's fully resolved metadata, merging the
-// group parent chain (route → group → ... → root) the same way LookupMeta
+// group parent chain (route → group → ... → root) the same way lookupMeta
 // resolves a single key: nearer scopes override farther ones, and the route's
 // own meta wins over every group. The returned map is freshly allocated and
 // owned by the caller.
 //
 // It returns nil when neither the route nor any ancestor group defines
-// metadata, mirroring the "nil if none" contract of [RouteInfo.Meta] — an
-// empty (but non-nil) map is never returned.
+// metadata; an empty (but non-nil) map is never returned.
 //
 // For any key, the presence and value of resolveAllMeta()[key] match
-// LookupMeta(key): both walk the identical chain.
-func (r *Route) resolveAllMeta() map[string]any {
+// lookupMeta(key): both walk the identical chain.
+func (r *Route) resolveAllMeta() map[*keyID]any {
 	// Collect the group parent chain, nearest first.
 	var groups []*Group
 	for g := r.parent; g != nil; g = g.parent {
 		groups = append(groups, g)
 	}
 
-	var result map[string]any
+	var result map[*keyID]any
 
 	// Merge farthest (root) → nearest group so nearer scopes override farther
 	// ones, then apply the route's own meta last so it wins over every group.
@@ -195,13 +260,13 @@ func (r *Route) resolveAllMeta() map[string]any {
 			continue
 		}
 		if result == nil {
-			result = make(map[string]any)
+			result = make(map[*keyID]any)
 		}
 		maps.Copy(result, groups[i].meta)
 	}
 	if len(r.meta) > 0 {
 		if result == nil {
-			result = make(map[string]any)
+			result = make(map[*keyID]any)
 		}
 		maps.Copy(result, r.meta)
 	}

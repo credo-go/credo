@@ -46,7 +46,7 @@ func RunInTx(ctx context.Context, db *DB, fn func(ctx context.Context) error) er
 //
 // In a handler, call it with the request context:
 //
-//	err := db.InTx(ctx.Context(), func(ctx context.Context) error {
+//	err := db.InTx(c.Context(), func(ctx context.Context) error {
 //	    // repos called with this ctx pick up the TX automatically
 //	    return svc.Transfer(ctx, from, to, amount)
 //	})
