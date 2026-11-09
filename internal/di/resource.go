@@ -1,6 +1,7 @@
 package di
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"slices"
@@ -79,8 +80,9 @@ func (c *Container) teardownValueOf(u *Unit) any {
 
 // admitValueLocked checks a holder's newly known value against the other
 // holders of its resource and records it. Values that share an identity are
-// one resource with one teardown, so their holders must agree on who owns it
-// and how it is released. c.mu must be held.
+// one resource with one teardown and one readiness entry, so their holders
+// must agree on who owns it, how it is released, its tier and the options
+// that shape its entry. c.mu must be held.
 func (c *Container) admitValueLocked(u *Unit, value any, token any, hasToken bool) error {
 	key := any(u)
 	if hasToken {
@@ -96,22 +98,29 @@ func (c *Container) admitValueLocked(u *Unit, value any, token any, hasToken boo
 	holders := c.resources[token]
 	for _, h := range holders {
 		switch {
-		case u.managed && h.managed:
+		case u.claimant && h.claimant:
 			return fmt.Errorf("this resource was already handed to Manage as %s; hand each resource to "+
 				"Manage once", h.name)
-		case u.managed && h.valueBinding:
+		case u.claimant && h.valueBinding:
 			return fmt.Errorf("the resource is already managed through DI by the ProvideValue binding of %s; "+
 				"drop the Manage call, since that binding is already the component", h.t)
-		case u.valueBinding && h.managed:
+		case u.valueBinding && h.claimant:
 			return fmt.Errorf("the resource was already handed to Manage as %s; drop the ProvideValue binding's "+
 				"teardown claim or the Manage call, so that one of them owns it", h.name)
 		}
 	}
 	all := append(slices.Clone(holders), u)
+	slices.SortStableFunc(all, func(a, b *Unit) int { return cmp.Compare(a.index, b.index) })
+	if err := deferringOptionsConflict(all); err != nil {
+		return err
+	}
 	if err := c.ownerConflict(all, u, value); err != nil {
 		return err
 	}
 	if err := c.kindConflict(all, u, value); err != nil {
+		return err
+	}
+	if err := tierConflict(all); err != nil {
 		return err
 	}
 	if err := c.entryConflict(all, u, value); err != nil {
@@ -119,14 +128,129 @@ func (c *Container) admitValueLocked(u *Unit, value any, token any, hasToken boo
 	}
 	u.key = token
 	c.resources[token] = all
-	// The resource has one name, which every holder carries: its readiness
-	// entry, its teardown and the scope of each call made on it.
+	// The resource has one name, which every holder that takes part in it
+	// carries: its readiness entry, its teardown and the scope of each call
+	// made on it. A value a constructor that is not a binding builds keeps
+	// its own name, under which its build is reported.
 	for _, h := range all {
 		if h.nameGiven {
 			for _, other := range all {
-				other.name = h.name
+				if other.registration() {
+					other.name = h.name
+				}
 			}
 			break
+		}
+	}
+	return nil
+}
+
+// holderOfRecord returns the holder of record among the holders of one
+// resource, given in registration order: the first registration — a binding,
+// or a value handed to Manage — that holds it, preferring one that is a
+// component by its type; without one, the first holder. A value a
+// constructor that is not a binding builds — a worker's, or one from a
+// constructor handed to Manage — claims nothing, so it is the holder of
+// record only of a resource no registration holds.
+func holderOfRecord(holders []*Unit) *Unit {
+	var first *Unit
+	for _, h := range holders {
+		if !h.registration() {
+			continue
+		}
+		if h.component {
+			return h
+		}
+		if first == nil {
+			first = h
+		}
+	}
+	if first != nil || len(holders) == 0 {
+		return first
+	}
+	return holders[0]
+}
+
+// takesPart reports whether holder h of a resource takes part in its
+// readiness entry, its teardown and the agreements on them: every
+// registration that holds it, and the holder of record of a resource no
+// registration holds. A holder that takes no part defers to the holder of
+// record: it adds no readiness entry and never runs the teardown.
+func takesPart(h *Unit, holders []*Unit) bool {
+	return h.registration() || h == holderOfRecord(holders)
+}
+
+// deferringOptionsConflict refuses a constructor handed to Manage with
+// credo.ComponentName, credo.Ingress() or credo.OptionalReadiness() whose
+// value defers to its resource's holder of record: the value has no
+// readiness entry and no teardown of its own for the option to shape.
+func deferringOptionsConflict(holders []*Unit) error {
+	for _, h := range holders {
+		if !h.managed || h.worker != "" || takesPart(h, holders) {
+			continue
+		}
+		var given []string
+		if h.nameGiven {
+			given = append(given, "credo.ComponentName")
+		}
+		if h.ingressGiven {
+			given = append(given, "credo.Ingress()")
+		}
+		if h.optional {
+			given = append(given, "credo.OptionalReadiness()")
+		}
+		if len(given) == 0 {
+			continue
+		}
+		record := holderOfRecord(holders)
+		what, noun := record.registrationPhrase()
+		return fmt.Errorf("%s shares the resource of %s, whose readiness and shutdown follow that %s; give %s "+
+			"to that %s, or hold the %s in a named field", h.t, what, noun, joinAnd(given), noun, record.t)
+	}
+	return nil
+}
+
+// registrationPhrase names the registration u is in the application's
+// terms, and the noun a remedy refers to it by.
+func (u *Unit) registrationPhrase() (what, noun string) {
+	switch {
+	case u.valueBinding:
+		return "the ProvideValue binding of " + u.t.String(), "binding"
+	case !u.managed:
+		return "the Provide binding of " + u.t.String(), "binding"
+	case u.claimant:
+		return "the value handed to Manage as " + u.name, "Manage call"
+	case u.worker != "":
+		return "the value the constructor of " + u.worker + " builds", "worker"
+	}
+	return "the value the constructor handed to Manage as " + u.name + " builds", "Manage call"
+}
+
+// tierConflict refuses registrations of one resource that place it in
+// different tiers: its one teardown runs in one tier. The registrations
+// that are components by their type take part; a borrowed resource is
+// exempt, since the App neither starts nor tears it down, and a value a
+// constructor that is not a binding builds takes no part.
+func tierConflict(holders []*Unit) error {
+	var first *Unit
+	for _, h := range holders {
+		if h.borrowed {
+			return nil
+		}
+	}
+	for _, h := range holders {
+		if !h.registration() || !h.component {
+			continue
+		}
+		if first == nil {
+			first = h
+			continue
+		}
+		if h.tier != first.tier {
+			return fmt.Errorf("%s and %s hold one resource, which has one teardown, but are placed in different "+
+				"tiers: %s is %s and %s is %s; give them one tier, or, when one of them has a teardown of its "+
+				"own to run in its tier, hold the handle in a named field, so that it is a resource of its own",
+				first.label(), h.label(), first.label(), first.Tier(), h.label(), h.Tier())
 		}
 	}
 	return nil
@@ -186,6 +310,9 @@ func (c *Container) forgetNameLocked(u *Unit) {
 func (c *Container) entryConflict(holders []*Unit, admitted *Unit, v any) error {
 	var optional, gating, named *Unit
 	for _, h := range holders {
+		if !takesPart(h, holders) {
+			continue
+		}
 		if h.nameGiven {
 			if named != nil && named.name != h.name {
 				return fmt.Errorf("%s and %s hold one resource, which has one readiness entry and one "+
@@ -244,9 +371,9 @@ func (c *Container) ownerConflict(holders []*Unit, admitted *Unit, v any) error 
 }
 
 // kindConflict refuses holders of one resource that release it differently:
-// one through credo.CloseOnShutdown(), another through Shutdown. Among holders of one
-// kind the one registered first runs the teardown, so kinds are all that is
-// compared.
+// one through credo.CloseOnShutdown(), another through Shutdown. The holder
+// of record runs the teardown (teardownHolderLocked), so kinds are all that
+// is compared.
 func (c *Container) kindConflict(holders []*Unit, admitted *Unit, v any) error {
 	for _, h := range holders {
 		if h.borrowed {
@@ -302,11 +429,31 @@ func (c *Container) admitBuiltLocked(u *Unit, value any, token any, hasToken boo
 	}
 	if u.foundOnValue(value) {
 		if path := c.ingressPathLocked(u); path != nil {
+			dep := path[len(path)-1].t
+			if u.worker != "" {
+				return workerValueIngressError(u, dep, reflect.TypeOf(value), path)
+			}
 			return fmt.Errorf("%s is an internal component — its Shutdown is found only on its built value — "+
 				"and depends on the ingress component %s: %s; provide the concrete type with credo.Ingress() "+
 				"and Alias the interface, or split %s so that what internal components use is an internal part",
-				u.t, path[len(path)-1].t, formatPath(path), path[len(path)-1].t)
+				u.t, dep, formatPath(path), dep)
 		}
 	}
 	return c.admitValueLocked(u, value, token, hasToken)
+}
+
+// workerValueIngressError reports the value a worker's constructor builds,
+// internal and with a teardown of its own, that depends on the ingress
+// component dep along path; built is the value's type, or nil before it
+// exists. When dep is the binding the constructor returns there is no part
+// to split, and the remedy is to bind it in the internal tier.
+func workerValueIngressError(u *Unit, dep, built reflect.Type, path []pathStep) error {
+	if dep == u.t || dep == built {
+		return fmt.Errorf("the constructor of %s returns the ingress component %s, and the value a worker's "+
+			"constructor builds is torn down in the internal tier, after the HTTP drain: %s; bind %s without "+
+			"credo.Ingress()", u.worker, dep, formatPath(path), dep)
+	}
+	return fmt.Errorf("the value the constructor of %s builds is internal and has a teardown of its own, but "+
+		"depends on the ingress component %s: %s; split the worker, so that the part with the teardown does "+
+		"not use %s", u.worker, dep, formatPath(path), dep)
 }

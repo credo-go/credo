@@ -2,19 +2,25 @@ package di
 
 import (
 	"reflect"
+	"slices"
 )
 
-// Manage adds a component that is not a binding: a value, or a constructor
-// over DI parameters that the start walk builds and that never becomes a
-// binding. It is a component only when it has a Shutdown method — the App
-// owns its teardown. A function whose own type has Shutdown is a value, not
-// a constructor. o.Name names it, defaulting to its type; o.Ingress
-// places it in the ingress tier. Every rejection is a [*MisuseError].
-func (c *Container) Manage(v any, o Options) error {
+// Manage adds a unit that is not a binding — a value, or a constructor over
+// DI parameters that the start walk builds and that never becomes a binding
+// — and returns it. It must be a component, a value with a Shutdown method
+// whose teardown the App owns, except the value a worker's constructor
+// builds (o.Worker), whose teardown is a Shutdown found on it, if any. A
+// function whose own type has Shutdown is a value, not a constructor. o.Name
+// names it, defaulting to its type; o.Ingress places it in the ingress tier.
+//
+// Only a value claims what it holds. The value a constructor builds claims
+// nothing: when it holds a resource a registration holds, it defers to that
+// registration. Every rejection is a [*MisuseError].
+func (c *Container) Manage(v any, o Options) (*Unit, error) {
 	if v == nil {
-		return &MisuseError{Call: "Manage", Reason: "the component must not be nil"}
+		return nil, &MisuseError{Call: "Manage", Reason: "the component must not be nil"}
 	}
-	u := &Unit{managed: true}
+	u := &Unit{managed: true, worker: o.Worker, ingressGiven: o.Ingress}
 	var token any
 	var hasToken bool
 	// A function is a constructor unless its own type is a component — a
@@ -23,7 +29,7 @@ func (c *Container) Manage(v any, o Options) error {
 	if vt := reflect.TypeOf(v); vt.Kind() == reflect.Func && !vt.Implements(shutdownerType) {
 		reg, err := inspectConstructor(v)
 		if err != nil {
-			return misuse("Manage", []reflect.Type{reflect.TypeOf(v)}, "%v; want a component value, or "+
+			return nil, misuse("Manage", []reflect.Type{reflect.TypeOf(v)}, "%v; want a component value, or "+
 				"func(dependencies...) C or func(dependencies...) (C, error) for a component type C", err)
 		}
 		u.t = reg.resultType
@@ -33,9 +39,10 @@ func (c *Container) Manage(v any, o Options) error {
 		u.t = reflect.TypeOf(v)
 		u.prov = valueProvider{value: v}
 		u.entry = &singletonEntry{state: entryBuilt, value: v}
+		u.claimant = true
 		var err error
 		if token, hasToken, err = identityToken(v); err != nil {
-			return misuse("Manage", []reflect.Type{u.t}, "%v", err)
+			return nil, misuse("Manage", []reflect.Type{u.t}, "%v", err)
 		}
 	}
 	u.name = o.Name
@@ -48,26 +55,65 @@ func (c *Container) Manage(v any, o Options) error {
 	defer c.mu.Unlock()
 	types := []reflect.Type{u.t}
 	if err := c.closedLocked("Manage", u.t); err != nil {
-		return err
+		return nil, err
 	}
-	u.nameGiven = o.Name != ""
+	u.nameGiven = o.Name != "" && o.Worker == ""
 	if reason := planUnit(u, Options{Ingress: o.Ingress, OptionalReadiness: o.OptionalReadiness}); reason != "" {
-		return misuse("Manage", types, "%s", reason)
+		return nil, misuse("Manage", types, "%s", reason)
 	}
-	if !u.component {
-		return misuse("Manage", types, "%s has no Shutdown(context.Context) error "+
+	if !u.component && u.worker == "" {
+		return nil, misuse("Manage", types, "%s has no Shutdown(context.Context) error "+
 			"method, so there is no teardown for the App to own; a component is a value with Shutdown", u.t)
 	}
+	u.index = len(c.units)
 	if u.entry.state == entryBuilt {
 		if err := c.admitValueLocked(u, v, token, hasToken); err != nil {
-			return misuse("Manage", types, "%v", err)
+			return nil, misuse("Manage", types, "%v", err)
 		}
 	} else if err := c.nameConflictLocked(u, nil); err != nil {
-		return misuse("Manage", types, "%v", err)
+		return nil, misuse("Manage", types, "%v", err)
 	}
-	u.index = len(c.units)
 	c.units = append(c.units, u)
 	c.names[u.name] = append(c.names[u.name], u)
+	return u, nil
+}
+
+// ManageNameFree reports, as the [*MisuseError] Manage would return, whether
+// a constructor handed to Manage under name would be refused for the name: a
+// registration that adds several units checks each name before it adds the
+// first, so that a refusal adds none.
+func (c *Container) ManageNameFree(name string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if err := c.nameConflictLocked(&Unit{managed: true, name: name}, nil); err != nil {
+		return misuse("Manage", nil, "%v", err)
+	}
+	return nil
+}
+
+// AddEdge makes from depend on to, two units that are not bindings, beside
+// what from's constructor parameters give it: the start walk builds and
+// starts to before from, and the drain stops from before to. A worker's
+// loop depends on the value its constructor builds this way. Every
+// rejection is a [*MisuseError].
+func (c *Container) AddEdge(from, to *Unit) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.closedLocked("AddEdge", from.t); err != nil {
+		return err
+	}
+	switch {
+	case !from.managed || !to.managed:
+		return misuse("AddEdge", []reflect.Type{from.t, to.t}, "an edge joins two units that are not bindings; "+
+			"a binding's edges are its constructor's parameters")
+	case from == to:
+		return misuse("AddEdge", []reflect.Type{from.t}, "a unit cannot depend on itself")
+	case !slices.Contains(c.units, from) || !slices.Contains(c.units, to):
+		return misuse("AddEdge", []reflect.Type{from.t, to.t}, "both units must be registered in this container")
+	}
+	if !slices.Contains(from.edges, to) {
+		from.edges = append(from.edges, to)
+	}
 	return nil
 }
 

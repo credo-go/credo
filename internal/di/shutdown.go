@@ -74,8 +74,8 @@ type attempt struct {
 type node struct {
 	key     any
 	members []*Unit
-	// holder runs the teardown: the holder registered first among those that
-	// have one. nil for a pending construction and for a stuck resource.
+	// holder runs the teardown (teardownHolderLocked). nil for a pending
+	// construction, a stuck resource and a borrowed one.
 	holder  *Unit
 	pending bool
 	stuck   bool
@@ -356,12 +356,7 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 			continue
 		}
 		if !borrowed && !n.stuck {
-			for _, m := range n.members {
-				if m.teardownOf(c.teardownValueOf(m)) != teardownNone {
-					n.holder = m
-					break
-				}
-			}
+			n.holder = c.teardownHolderLocked(n.members)
 		}
 		if n.holder == nil && !n.stuck {
 			continue
@@ -463,6 +458,31 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 		}
 	}
 	return nodes
+}
+
+// teardownHolderLocked returns the holder that runs the teardown of the
+// resource members hold, given in registration order, or nil when none has
+// one: among the holders that take part in the resource — its registrations,
+// or the holder of record of a resource no registration holds — the first
+// that is a component by its type and has a teardown, else the first with a
+// teardown. Registrations that are components by their type agree on the
+// tier, so the teardown carries the registrations' tier and the holder's
+// name. A value a constructor that is not a binding builds defers to the
+// registrations and never runs it. c.mu must be held.
+func (c *Container) teardownHolderLocked(members []*Unit) *Unit {
+	var first *Unit
+	for _, m := range members {
+		if !takesPart(m, members) || m.teardownOf(c.teardownValueOf(m)) == teardownNone {
+			continue
+		}
+		if m.component {
+			return m
+		}
+		if first == nil {
+			first = m
+		}
+	}
+	return first
 }
 
 // derivedHoldersLocked returns the holders of one resource that reached it

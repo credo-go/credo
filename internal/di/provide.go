@@ -178,6 +178,12 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 	if o.Override {
 		c.forgetHolderLocked(c.unitOf[targetType])
 	}
+	// The registration order the admission compares holders by: an override
+	// takes the replaced binding's place.
+	u.index = len(c.units)
+	if old, ok := c.unitOf[targetType]; ok {
+		u.index = old.index
+	}
 	if err := c.admitValueLocked(u, any(value), token, hasToken); err != nil {
 		return misuse(op, types, "%v", err)
 	}

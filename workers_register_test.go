@@ -2,10 +2,8 @@ package credo_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,19 +17,29 @@ var registerIdle = workerFunc(func(ctx context.Context) error {
 	return nil
 })
 
-// registerProvidedA and registerProvidedB are the T of provided registrations.
-type registerProvidedA struct{}
+// registerBuiltA and registerBuiltB are workers their constructors build.
+type registerBuiltA struct{}
 
-func (*registerProvidedA) Run(ctx context.Context) error { <-ctx.Done(); return nil }
+func (*registerBuiltA) Run(ctx context.Context) error { <-ctx.Done(); return nil }
 
-type registerProvidedB struct{}
+type registerBuiltB struct{}
 
-func (*registerProvidedB) Run(ctx context.Context) error { <-ctx.Done(); return nil }
+func (*registerBuiltB) Run(ctx context.Context) error { <-ctx.Done(); return nil }
+
+func newRegisterBuiltA() *registerBuiltA { return &registerBuiltA{} }
+
+func newRegisterBuiltB() *registerBuiltB { return &registerBuiltB{} }
 
 // registerShutdowner is a component that is not a worker.
 type registerShutdowner struct{}
 
 func (*registerShutdowner) Shutdown(context.Context) error { return nil }
+
+// registerComponent is a component of its own: unlike a pointer to a
+// zero-size value, each one is a resource of its own.
+type registerComponent struct{ _ byte }
+
+func (*registerComponent) Shutdown(context.Context) error { return nil }
 
 // registerWant fails the test unless msg is exactly want.
 func registerWant(t *testing.T, msg, want string) {
@@ -39,11 +47,6 @@ func registerWant(t *testing.T, msg, want string) {
 	if msg != want {
 		t.Errorf("message = %q\nwant      %q", msg, want)
 	}
-}
-
-// registerProvidedCall is the panic prefix of a provided registration over T.
-func registerProvidedCall[T credo.Worker](method, name string) string {
-	return fmt.Sprintf("credo: Workers.%s[%s](%q)", method, reflect.TypeFor[T](), name)
 }
 
 // registerAfterFinalize is the container's reason for a registration after
@@ -169,9 +172,9 @@ func TestWorkersConfiguration_ContinuousResolution(t *testing.T) {
 				s.Continuous("w", registerIdle, tt.cfg...)
 				check(t, s)
 			})
-			t.Run("ContinuousProvided", func(t *testing.T) {
+			t.Run("constructor", func(t *testing.T) {
 				s := mustNew(t).Workers()
-				s.ContinuousProvided[*registerProvidedA]("w", tt.cfg...)
+				s.Continuous("w", newRegisterBuiltA, tt.cfg...)
 				check(t, s)
 			})
 		})
@@ -237,9 +240,9 @@ func TestWorkersConfiguration_ScheduledResolution(t *testing.T) {
 				s.Scheduled("w", "@every 1m", registerIdle, tt.cfg...)
 				check(t, s)
 			})
-			t.Run("ScheduledProvided", func(t *testing.T) {
+			t.Run("constructor", func(t *testing.T) {
 				s := mustNew(t).Workers()
-				s.ScheduledProvided[*registerProvidedA]("w", "@every 1m", tt.cfg...)
+				s.Scheduled("w", "@every 1m", newRegisterBuiltA, tt.cfg...)
 				check(t, s)
 			})
 		})
@@ -321,18 +324,18 @@ func TestWorkersConfiguration_ContinuousRejected(t *testing.T) {
 				}
 				s.Continuous("order-consumer", registerIdle)
 			})
-			t.Run("ContinuousProvided", func(t *testing.T) {
+			t.Run("constructor", func(t *testing.T) {
 				s := mustNew(t).Workers()
 				msg := mustPanicMessage(t, func() {
-					s.ContinuousProvided[*registerProvidedA]("order-consumer", tt.cfg...)
+					s.Continuous("order-consumer", newRegisterBuiltA, tt.cfg...)
 				})
-				call := registerProvidedCall[*registerProvidedA]("ContinuousProvided", "order-consumer")
+				call := `credo: Workers.Continuous("order-consumer")`
 				registerWant(t, msg, call+": "+tt.want)
 				if len(s.Snapshot()) != 0 {
 					t.Errorf("Snapshot() = %+v after a refused registration, want empty", s.Snapshot())
 				}
-				// The refused registration reserved neither the name nor T.
-				s.ContinuousProvided[*registerProvidedA]("order-consumer")
+				// The refused registration reserved no name.
+				s.Continuous("order-consumer", newRegisterBuiltA)
 			})
 		})
 	}
@@ -383,24 +386,24 @@ func TestWorkersConfiguration_ScheduledRejected(t *testing.T) {
 				}
 				s.Scheduled("report", "@every 1m", registerIdle)
 			})
-			t.Run("ScheduledProvided", func(t *testing.T) {
+			t.Run("constructor", func(t *testing.T) {
 				s := mustNew(t).Workers()
 				msg := mustPanicMessage(t, func() {
-					s.ScheduledProvided[*registerProvidedA]("report", "@every 1m", tt.cfg...)
+					s.Scheduled("report", "@every 1m", newRegisterBuiltA, tt.cfg...)
 				})
-				call := registerProvidedCall[*registerProvidedA]("ScheduledProvided", "report")
+				call := `credo: Workers.Scheduled("report")`
 				registerWant(t, msg, call+": "+tt.want)
 				if len(s.Snapshot()) != 0 {
 					t.Errorf("Snapshot() = %+v after a refused registration, want empty", s.Snapshot())
 				}
-				s.ScheduledProvided[*registerProvidedA]("report", "@every 1m")
+				s.Scheduled("report", "@every 1m", newRegisterBuiltA)
 			})
 		})
 	}
 }
 
 func TestWorkersRegister_Misuse(t *testing.T) {
-	var nilPointer *registerProvidedA
+	var nilPointer *registerBuiltA
 	_, parseErr := credo.ParseSchedule("not a cron")
 	if parseErr == nil {
 		t.Fatal(`ParseSchedule("not a cron") = nil error`)
@@ -471,18 +474,18 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 			name: "trailing whitespace",
 			misuse: func(t *testing.T) func() {
 				s := mustNew(t).Workers()
-				return func() { s.ContinuousProvided[*registerProvidedA]("x\t") }
+				return func() { s.Continuous("x\t", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ContinuousProvided", "x\t") +
+			want: `credo: Workers.Continuous("x\t")` +
 				": the name has leading or trailing whitespace; names are never trimmed, so remove it",
 		},
 		{
 			name: "control character",
 			misuse: func(t *testing.T) func() {
 				s := mustNew(t).Workers()
-				return func() { s.ScheduledProvided[*registerProvidedA]("a\nb", "@every 1m") }
+				return func() { s.Scheduled("a\nb", "@every 1m", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ScheduledProvided", "a\nb") +
+			want: `credo: Workers.Scheduled("a\nb")` +
 				": the name contains control characters; remove them",
 		},
 		{
@@ -514,12 +517,12 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 			want: `credo: Workers.Scheduled("report"): ` + parseText + parseRemedy,
 		},
 		{
-			name: "bad schedule on a provided worker",
+			name: "bad schedule on a constructor",
 			misuse: func(t *testing.T) func() {
 				s := mustNew(t).Workers()
-				return func() { s.ScheduledProvided[*registerProvidedA]("report", "not a cron") }
+				return func() { s.Scheduled("report", "not a cron", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ScheduledProvided", "report") + ": " + parseText + parseRemedy,
+			want: `credo: Workers.Scheduled("report")` + ": " + parseText + parseRemedy,
 		},
 		{
 			name: "the configuration is checked before the schedule",
@@ -560,22 +563,22 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 			want: `credo: Workers.Continuous("dup")` + duplicate,
 		},
 		{
-			name: "duplicate name, value then ContinuousProvided",
+			name: "duplicate name, value then constructor",
 			misuse: func(t *testing.T) func() {
 				s := mustNew(t).Workers()
 				s.Continuous("dup", registerIdle)
-				return func() { s.ContinuousProvided[*registerProvidedA]("dup") }
+				return func() { s.Continuous("dup", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ContinuousProvided", "dup") + duplicate,
+			want: `credo: Workers.Continuous("dup")` + duplicate,
 		},
 		{
-			name: "duplicate name, provided then ScheduledProvided",
+			name: "duplicate name, constructor then Scheduled",
 			misuse: func(t *testing.T) func() {
 				s := mustNew(t).Workers()
-				s.ContinuousProvided[*registerProvidedA]("dup")
-				return func() { s.ScheduledProvided[*registerProvidedB]("dup", "@every 1m") }
+				s.Continuous("dup", newRegisterBuiltA)
+				return func() { s.Scheduled("dup", "@every 1m", newRegisterBuiltB) }
 			},
-			want: registerProvidedCall[*registerProvidedB]("ScheduledProvided", "dup") + duplicate,
+			want: `credo: Workers.Scheduled("dup")` + duplicate,
 		},
 		{
 			name: "duplicate name across two calls of App.Workers",
@@ -585,28 +588,6 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 				return func() { app.Workers().Scheduled("dup", "@every 1m", registerIdle) }
 			},
 			want: `credo: Workers.Scheduled("dup")` + duplicate,
-		},
-		{
-			name: "one T under two names",
-			misuse: func(t *testing.T) func() {
-				s := mustNew(t).Workers()
-				s.ContinuousProvided[*registerProvidedA]("first")
-				return func() { s.ScheduledProvided[*registerProvidedA]("second", "@every 1m") }
-			},
-			want: registerProvidedCall[*registerProvidedA]("ScheduledProvided", "second") +
-				fmt.Sprintf(`: %s is already registered as worker "first"; the container hands every `+
-					"registration the same instance, so register it once", reflect.TypeFor[*registerProvidedA]()),
-		},
-		{
-			name: "one T under two names across two calls of App.Workers",
-			misuse: func(t *testing.T) func() {
-				app := mustNew(t)
-				app.Workers().ContinuousProvided[*registerProvidedA]("first")
-				return func() { app.Workers().ContinuousProvided[*registerProvidedA]("second") }
-			},
-			want: registerProvidedCall[*registerProvidedA]("ContinuousProvided", "second") +
-				fmt.Sprintf(`: %s is already registered as worker "first"; the container hands every `+
-					"registration the same instance, so register it once", reflect.TypeFor[*registerProvidedA]()),
 		},
 		{
 			name: "name taken by a component managed with credo.ComponentName",
@@ -625,9 +606,9 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 				app := mustNew(t)
 				app.Manage(&registerShutdowner{}, credo.ComponentName("worker:x"))
 				s := app.Workers()
-				return func() { s.ContinuousProvided[*registerProvidedA]("x") }
+				return func() { s.Continuous("x", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ContinuousProvided", "x") +
+			want: `credo: Workers.Continuous("x")` +
 				`: a component named "worker:x" is already registered, as Manage(worker:x); ` +
 				"give each component its own name with credo.ComponentName",
 		},
@@ -642,14 +623,14 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 			want: `credo: Workers.Scheduled("report"): ` + registerAfterFinalize,
 		},
 		{
-			name: "provided after Finalize",
+			name: "constructor after Finalize",
 			misuse: func(t *testing.T) func() {
 				app := mustNew(t)
 				s := app.Workers()
 				mustFinalize(t, app)
-				return func() { s.ContinuousProvided[*registerProvidedA]("consumer") }
+				return func() { s.Continuous("consumer", newRegisterBuiltA) }
 			},
-			want: registerProvidedCall[*registerProvidedA]("ContinuousProvided", "consumer") + ": " +
+			want: `credo: Workers.Continuous("consumer")` + ": " +
 				registerAfterFinalize,
 		},
 		{
@@ -684,54 +665,54 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 	}
 }
 
-// TestWorkersRegister_RefusedRegistrationLeavesTheProvidedTypeFree: a
-// registration the App refuses records neither its name nor its T.
-func TestWorkersRegister_RefusedRegistrationLeavesTheProvidedTypeFree(t *testing.T) {
+// TestWorkersRegister_RefusedConstructorAddsNothing: a constructor
+// registration the App refuses adds neither its loop nor its built value.
+func TestWorkersRegister_RefusedConstructorAddsNothing(t *testing.T) {
 	t.Run("refused by the App's component registry", func(t *testing.T) {
 		app := mustNew(t)
 		app.Manage(&registerShutdowner{}, credo.ComponentName("worker:x"))
 		s := app.Workers()
 
-		msg := mustPanicMessage(t, func() { s.ContinuousProvided[*registerProvidedA]("x") })
-		if !strings.Contains(msg, `a component named "worker:x" is already registered`) {
-			t.Fatalf("message = %q, want the App's refusal of worker:x", msg)
-		}
+		msg := mustPanicMessage(t, func() { s.Continuous("x", newRegisterBuiltA) })
+		registerWant(t, msg, `credo: Workers.Continuous("x"): a component named "worker:x" is already `+
+			"registered, as Manage(worker:x); give each component its own name with credo.ComponentName")
 
-		// T was not recorded under the refused name: the same T registers
-		// under a free name.
-		s.ContinuousProvided[*registerProvidedA]("y")
+		// Neither name was taken: the built value's name is free, and the
+		// constructor registers under another name.
+		app.Manage(&registerComponent{}, credo.ComponentName("worker-value:x"))
+		s.Continuous("y", newRegisterBuiltA)
 		infos := s.Snapshot()
 		if len(infos) != 1 || infos[0].Name != "y" {
 			t.Fatalf("Snapshot() = %+v, want only y", infos)
 		}
+	})
+	t.Run("the built value's name taken", func(t *testing.T) {
+		app := mustNew(t)
+		app.Manage(&registerComponent{}, credo.ComponentName("worker-value:x"))
+		s := app.Workers()
+		msg := mustPanicMessage(t, func() { s.Continuous("x", newRegisterBuiltA) })
+		registerWant(t, msg, `credo: Workers.Continuous("x"): a component named "worker-value:x" is already `+
+			"registered, as Manage(worker-value:x); give each component its own name with credo.ComponentName")
+		// The loop was not added either: a worker value registers under x.
+		s.Continuous("x", registerIdle)
 	})
 	t.Run("refused after Finalize", func(t *testing.T) {
 		app := mustNew(t)
 		s := app.Workers()
 		mustFinalize(t, app)
 
-		msg := mustPanicMessage(t, func() { s.ContinuousProvided[*registerProvidedA]("a") })
-		registerWant(t, msg, registerProvidedCall[*registerProvidedA]("ContinuousProvided", "a")+": "+
-			registerAfterFinalize)
-
-		// A recorded refusal would report T as already registered as "a".
-		msg = mustPanicMessage(t, func() { s.ScheduledProvided[*registerProvidedA]("b", "@every 1m") })
-		registerWant(t, msg, registerProvidedCall[*registerProvidedA]("ScheduledProvided", "b")+": "+
-			registerAfterFinalize)
+		msg := mustPanicMessage(t, func() { s.Continuous("a", newRegisterBuiltA) })
+		registerWant(t, msg, `credo: Workers.Continuous("a"): `+registerAfterFinalize)
+		msg = mustPanicMessage(t, func() { s.Scheduled("b", "@every 1m", newRegisterBuiltA) })
+		registerWant(t, msg, `credo: Workers.Scheduled("b"): `+registerAfterFinalize)
 		if len(s.Snapshot()) != 0 {
 			t.Errorf("Snapshot() = %+v, want empty", s.Snapshot())
 		}
 	})
 }
 
-func TestWorkersRegister_ProvidedTypeIsPerApp(t *testing.T) {
-	// The one-T rule is per App: two Apps each register the same T.
-	mustNew(t).Workers().ContinuousProvided[*registerProvidedA]("consumer")
-	mustNew(t).Workers().ContinuousProvided[*registerProvidedA]("consumer")
-}
-
 func TestWorkersRegister_SameValueUnderTwoNames(t *testing.T) {
-	// A value registered twice runs on two independent loops; only a provided T is refused.
+	// A value registered twice runs on two independent loops.
 	s := mustNew(t).Workers()
 	s.Continuous("a", registerIdle)
 	s.Continuous("b", registerIdle)
@@ -803,9 +784,9 @@ func TestWorkers_TwoCallsShareOneSnapshot(t *testing.T) {
 	app := mustNew(t)
 	app.Workers().Continuous("consumer", registerIdle)
 	app.Workers().Scheduled("report", "@every 1h", registerIdle)
-	app.Workers().ContinuousProvided[*registerProvidedA]("provided")
+	app.Workers().Continuous("built", newRegisterBuiltA)
 
-	want := []string{"consumer", "report", "provided"}
+	want := []string{"consumer", "report", "built"}
 	for i, s := range []*credo.Workers{app.Workers(), app.Workers()} {
 		var got []string
 		for _, info := range s.Snapshot() {

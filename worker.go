@@ -8,8 +8,10 @@ import (
 )
 
 // Worker is a background task run by the App. The name that identifies it is
-// given at registration ([Workers.Continuous], [Workers.Scheduled] and their
-// provided forms), not by the worker itself.
+// given at registration ([Workers.Continuous], [Workers.Scheduled]), not by
+// the worker itself. A func(context.Context) error is registered as it is,
+// and a function whose other parameters the container supplies, or a
+// constructor of a worker, is registered in its own form.
 //
 // A continuous worker's Run must stay active until ctx is cancelled; a
 // scheduled worker's Run performs one activation and returns.

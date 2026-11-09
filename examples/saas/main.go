@@ -250,7 +250,8 @@ type UsageReporter struct {
 	store *TenantStore
 }
 
-// NewUsageReporter is a DI constructor.
+// NewUsageReporter is the worker's constructor, whose parameters the
+// container supplies.
 func NewUsageReporter(infra credo.Infra, store *TenantStore) *UsageReporter {
 	return &UsageReporter{infra: infra, store: store}
 }
@@ -465,7 +466,6 @@ func run() error {
 	app.ProvideValue(&dbCfg)
 	app.Provide(NewTenantStore, credo.ComponentName("tenants-db"))
 	app.Provide(NewTenantService)
-	app.Provide(NewUsageReporter)
 
 	// 3. Feature mounts and satellite registrations, in any order.
 	//
@@ -478,8 +478,9 @@ func run() error {
 	app.UseI18n(i18nConfig())
 	app.UseHealth() // /health (liveness) and /ready (readiness)
 
-	// A scheduled worker built from the container: one run per hour.
-	app.Workers().ScheduledProvided[*UsageReporter]("usage-report", "@every 1h")
+	// A scheduled worker its constructor builds over the container's
+	// values: one run per hour.
+	app.Workers().Scheduled("usage-report", "@every 1h", NewUsageReporter)
 
 	// The WebSocket server declares the ingress tier: it starts with the App
 	// and drains beside the HTTP drain, before the services its handlers use.

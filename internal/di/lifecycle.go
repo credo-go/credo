@@ -163,6 +163,11 @@ func (c *Container) validate() error {
 			continue
 		}
 		dep := p[len(p)-1].t
+		if u.worker != "" {
+			findings = append(findings, finding{u.index, fmt.Errorf("di: %w",
+				workerValueIngressError(u, dep, nil, p))})
+			continue
+		}
 		remedy := cmp.Or(u.ingressRemedy, "credo.Ingress()")
 		findings = append(findings, finding{u.index, fmt.Errorf(
 			"di: internal component %s depends on the ingress component %s: %s; declare %s ingress with "+
@@ -196,7 +201,8 @@ func (c *Container) depsOfLocked(u *Unit) []reflect.Type {
 }
 
 // depUnitsLocked returns the units a unit's constructor parameters resolve
-// to, deduplicated, in parameter order. c.mu must be held.
+// to, deduplicated, in parameter order, then the units its edges name
+// (AddEdge). c.mu must be held.
 func (c *Container) depUnitsLocked(u *Unit) []*Unit {
 	var deps []*Unit
 	seen := make(map[*Unit]bool)
@@ -209,6 +215,12 @@ func (c *Container) depUnitsLocked(u *Unit) []*Unit {
 			if d == nil || d == u || seen[d] {
 				continue
 			}
+			seen[d] = true
+			deps = append(deps, d)
+		}
+	}
+	for _, d := range u.edges {
+		if !seen[d] {
 			seen[d] = true
 			deps = append(deps, d)
 		}
@@ -227,7 +239,29 @@ func (c *Container) ingressPathLocked(u *Unit) []pathStep {
 		start.label = u.label()
 	}
 	var walk func(from *Unit, path []pathStep) []pathStep
+	// visit follows the step to d: an ingress component ends the path, a
+	// component of the internal tier ends the branch, anything else is walked
+	// through.
+	visit := func(d *Unit, next []pathStep) []pathStep {
+		if d.component {
+			if d.tier == TierIngress {
+				return next
+			}
+			return nil
+		}
+		return walk(d, next)
+	}
 	walk = func(from *Unit, path []pathStep) []pathStep {
+		for _, d := range from.edges {
+			if visited[d] {
+				continue
+			}
+			visited[d] = true
+			step := pathStep{t: d.t, via: d.t, label: d.label(), at: d.index}
+			if found := visit(d, append(slices.Clone(path), step)); found != nil {
+				return found
+			}
+		}
 		for _, pt := range c.depsOfLocked(from) {
 			if pt == contextType || c.isFrameworkType(pt) {
 				continue
@@ -238,14 +272,7 @@ func (c *Container) ingressPathLocked(u *Unit) []pathStep {
 					continue
 				}
 				visited[d] = true
-				next := append(slices.Clone(path), pathStep{t: dt, via: pt})
-				if d.component {
-					if d.tier == TierIngress {
-						return next
-					}
-					continue
-				}
-				if found := walk(d, next); found != nil {
+				if found := visit(d, append(slices.Clone(path), pathStep{t: dt, via: pt})); found != nil {
 					return found
 				}
 			}

@@ -97,10 +97,9 @@ func TestAcceptance_DrainDeliversLastJob(t *testing.T) {
 	app.ProvideValue(log)
 	app.ProvideValue(db)
 	app.ProvideValue(queue)
-	app.Provide(func(q *jobQueue, d *acceptanceDB, l *acceptanceLog) *jobWriter {
+	app.Workers().Continuous("job-writer", func(q *jobQueue, d *acceptanceDB, l *acceptanceLog) *jobWriter {
 		return &jobWriter{queue: q, db: d, log: l}
 	})
-	app.Workers().ContinuousProvided[*jobWriter]("job-writer")
 
 	entered := make(chan struct{})
 	release := make(chan struct{})

@@ -15,30 +15,41 @@ type ReadinessEntry struct {
 	Value any
 }
 
-// ReadinessEntries returns one entry per resource whose holder plans a
-// readiness entry and has been built: the first such holder in registration
-// order, its holder of record. Holders of one resource agree on the options
-// that shape the entry, so the first one's are the resource's. A unit whose
-// value carries no identity is a resource of its own.
+// ReadinessEntries returns one entry per built resource that a holder taking
+// part in it plans an entry for: the first registration of the resource —
+// a binding, or a value handed to Manage — whose type shows Ready, in
+// registration order. A value a constructor that is not a binding builds
+// defers to such a registration and adds no entry of its own; it gives the
+// entry only of a resource no registration holds, as its holder of record.
+// The holders that take part agree on the options that shape the entry, so
+// the chosen one's are the resource's. A unit whose value carries no
+// identity is a resource of its own.
 func (c *Container) ReadinessEntries() []ReadinessEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	seen := make(map[any]bool)
-	var entries []ReadinessEntry
+	groups := make(map[any][]*Unit)
+	var keys []any
 	for _, u := range c.units {
-		if !u.readies {
-			continue
-		}
-		v := c.valueOf(u)
-		if v == nil || !u.RunsCapabilities(v) {
+		if c.valueOf(u) == nil {
 			continue
 		}
 		key := resourceKey(u)
-		if seen[key] {
-			continue
+		if _, seen := groups[key]; !seen {
+			keys = append(keys, key)
 		}
-		seen[key] = true
-		entries = append(entries, ReadinessEntry{Unit: u, Name: u.name, Optional: u.optional, Value: v})
+		groups[key] = append(groups[key], u)
+	}
+	var entries []ReadinessEntry
+	for _, key := range keys {
+		holders := groups[key]
+		for _, u := range holders {
+			v := c.valueOf(u)
+			if !takesPart(u, holders) || !u.readies || !u.RunsCapabilities(v) {
+				continue
+			}
+			entries = append(entries, ReadinessEntry{Unit: u, Name: u.name, Optional: u.optional, Value: v})
+			break
+		}
 	}
 	return entries
 }

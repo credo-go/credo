@@ -64,7 +64,6 @@ func Example_bootstrapOrder() {
 	app.ProvideValue(&exampleDB{}, credo.ComponentName("orders-db"))
 	app.Provide(func() *examplePayments { return &examplePayments{} })
 	app.Provide(newExampleOrders)
-	app.Provide(newExampleRelay)
 
 	// 3. Feature mounts and satellite registrations, in any order.
 	app.UseI18n(credo.I18nConfig{
@@ -72,7 +71,7 @@ func Example_bootstrapOrder() {
 		Messages: credo.I18nMessages{"orders.empty": "No orders yet"},
 	})
 	app.UseHealth()
-	app.Workers().ContinuousProvided[*exampleRelay]("outbox-relay")
+	app.Workers().Continuous("outbox-relay", newExampleRelay)
 
 	// 4. Finalize reports every missing dependency and cycle at once.
 	if err := app.Finalize(); err != nil {

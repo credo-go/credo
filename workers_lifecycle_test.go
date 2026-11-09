@@ -185,13 +185,11 @@ func TestWorkersLifecycle_TiersAgainstTheHTTPDrain(t *testing.T) {
 	queue := &lifecycleQueue{jobs: make(chan string, 1)}
 	app.ProvideValue(queue)
 	app.Provide(func() *lifecycleDB { return db })
-	app.Provide(func(q *lifecycleQueue, d *lifecycleDB) *lifecycleConsumer {
+	s := app.Workers()
+	s.Continuous("consumer", func(q *lifecycleQueue, d *lifecycleDB) *lifecycleConsumer {
 		consumer.queue, consumer.db = q, d
 		return consumer
 	})
-
-	s := app.Workers()
-	s.ContinuousProvided[*lifecycleConsumer]("consumer")
 	sched, schedStarted, schedStopped := lifecycleBlocking()
 	s.Scheduled("report", "@every 1h", sched, credo.ScheduledConfig{RunOnStart: true})
 	external, externalStarted, externalStopped := lifecycleBlocking()
@@ -414,7 +412,7 @@ func TestWorkersLifecycle_StartContextEndsWithTheCall(t *testing.T) {
 	}
 }
 
-// lifecycleStore is a dependency component of a provided worker.
+// lifecycleStore is a dependency component of a constructed worker.
 type lifecycleStore struct{ shutdowns atomic.Int32 }
 
 func (d *lifecycleStore) Shutdown(context.Context) error {
@@ -432,18 +430,17 @@ type lifecycleStubbornWorker struct {
 func (w *lifecycleStubbornWorker) Run(ctx context.Context) error { return w.run(ctx) }
 
 func TestWorkersLifecycle_RunIgnoringCancellationIsAbandoned(t *testing.T) {
-	t.Run("provided continuous worker keeps its dependency open", func(t *testing.T) {
+	t.Run("constructed continuous worker keeps its dependency open", func(t *testing.T) {
 		capture := newLogCapture()
 		app := mustNew(t, credo.WithLogger(capture.logger()))
 		stopLine := awaitWorkerLog(capture, "worker stopped", "stubborn")
 		store := &lifecycleStore{}
 		run, started, release, returned := lifecycleStubborn()
 		app.Provide(func() *lifecycleStore { return store })
-		app.Provide(func(s *lifecycleStore) *lifecycleStubbornWorker {
+		s := app.Workers()
+		s.Continuous("stubborn", func(s *lifecycleStore) *lifecycleStubbornWorker {
 			return &lifecycleStubbornWorker{store: s, run: run}
 		})
-		s := app.Workers()
-		s.ContinuousProvided[*lifecycleStubbornWorker]("stubborn")
 
 		if err := app.Start(t.Context()); err != nil {
 			t.Fatalf("App.Start() = %v", err)
@@ -526,7 +523,7 @@ type raceGate struct {
 	shutdowns atomic.Int32
 }
 
-// raceGatedWorker is a provided worker that depends on a raceGate.
+// raceGatedWorker is a constructed worker that depends on a raceGate.
 type raceGatedWorker struct{ runs atomic.Int32 }
 
 // TestApp_ShutdownDuringStartWalkStartsNoWorker: a Shutdown that interrupts
@@ -538,9 +535,8 @@ func TestApp_ShutdownDuringStartWalkStartsNoWorker(t *testing.T) {
 	gate := &raceGate{entered: make(chan struct{})}
 	gated := &raceGatedWorker{}
 	app.Provide(func() *raceGate { return gate })
-	app.Provide(func(*raceGate) *raceGatedWorker { return gated })
 	s := app.Workers()
-	s.ContinuousProvided[*raceGatedWorker]("gated")
+	s.Continuous("gated", func(*raceGate) *raceGatedWorker { return gated })
 	var byValueRuns atomic.Int32
 	s.Scheduled("report", "@every 1h", raceCountingWorker(&byValueRuns), credo.ScheduledConfig{RunOnStart: true})
 

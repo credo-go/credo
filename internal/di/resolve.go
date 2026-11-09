@@ -205,6 +205,12 @@ func (c *Container) resolveEntry(
 	if u != nil {
 		name = u.Name()
 	}
+	// The resolution stack holds the bindings being built. A unit that is
+	// not a binding is reached by no resolution, so its constructor may take
+	// the type it returns: a constructor that returns a binding's own value.
+	if u == nil || !u.managed {
+		stack = append(stack, targetType)
+	}
 	value, err := c.build(reg, targetType, stack, name)
 	var token any
 	var hasToken bool
@@ -272,7 +278,8 @@ func (c *Container) deliverLocked(targetType reflect.Type, entry *singletonEntry
 	return entry.value, entry.err
 }
 
-// build runs the provider with panic recovery. A constructor panic becomes a
+// build runs the provider with panic recovery, stack being the resolution
+// stack its parameters extend. A constructor panic becomes a
 // terminal *PanicError carrying the original value and the stack of this
 // goroutine; it is never retried.
 func (c *Container) build(
@@ -289,7 +296,7 @@ func (c *Container) build(
 			}
 		}
 	}()
-	return reg.build(c, append(stack, targetType), name)
+	return reg.build(c, stack, name)
 }
 
 // notifyBuildDone wakes the shutdown pass without blocking the completing

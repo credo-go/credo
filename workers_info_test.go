@@ -25,7 +25,7 @@ func infoBlocking(ctx context.Context) error {
 	return nil
 }
 
-// infoProvided is a worker the container provides.
+// infoProvided is a worker its constructor builds.
 type infoProvided struct{}
 
 func (*infoProvided) Run(ctx context.Context) error { return infoBlocking(ctx) }
@@ -55,8 +55,8 @@ func TestWorkersSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) 
 			UnreadyUntilFirstSuccess: true,
 			UnreadyAfterSuccessAge:   2 * time.Hour,
 		})
-	app.Provide(func() *infoProvided { return &infoProvided{} })
-	workers.ContinuousProvided[*infoProvided]("provided", ContinuousConfig{Tier: TierIngress})
+	workers.Continuous("provided", func() *infoProvided { return &infoProvided{} },
+		ContinuousConfig{Tier: TierIngress})
 	workers.Continuous("plain", infoWorkerFunc(infoBlocking))
 
 	want := []struct {

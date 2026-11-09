@@ -74,16 +74,16 @@ func (s *invoiceSweeper) Run(ctx context.Context) error {
 	return nil
 }
 
-func ExampleWorkers_ScheduledProvided() {
+func ExampleWorkers_Scheduled_constructor() {
 	app, err := credo.New()
 	if err != nil {
 		panic(err)
 	}
 
-	// The worker is built in the start walk, so the provider and the
-	// registration may come in either order, both before Finalize.
-	app.Provide(newInvoiceSweeper)
-	app.Workers().ScheduledProvided[*invoiceSweeper]("invoice-sweeper", "@every 1m", credo.ScheduledConfig{
+	// The constructor is not a binding: the start walk builds the worker
+	// after its parameters' components have started, and nothing else
+	// resolves it.
+	app.Workers().Scheduled("invoice-sweeper", "@every 1m", newInvoiceSweeper, credo.ScheduledConfig{
 		RunOnStart:             true,
 		RunTimeout:             15 * time.Second,
 		MaxConsecutiveFailures: 3,
