@@ -16,7 +16,7 @@ A naive approach (string key-based API like `GetString("db.host")`, `GetInt("ser
 - **Two parallel APIs**: Offering struct decoding beside untyped key getters (`Get(key) any`, `GetString`) increases cognitive load, developers get directed to the wrong path
 - **Runtime key lookup**: Config is loaded at startup. There is almost no need for dynamic key lookup at runtime (plugin/extension system and feature flags are not in current scope)
 
-Loading itself has failure modes of its own: ambient sources (a stray `.env` in the working directory, a `CREDO_*` variable in the process environment) silently change configuration and leak into tests, and a misspelled key silently becomes a default value.
+Loading itself has failure modes of its own: ambient sources (a stray `.env` in the working directory, a `CREDO_*` variable in the process environment) silently change configuration and leak into tests, a misspelled key silently becomes a default value, and coercing a value across kinds masks a type error in a file whose values are already typed. Process environment and `.env` values are strings, though, so a decoder that refused every string for a typed field would refuse every override of one.
 
 ## Decision
 
@@ -101,25 +101,13 @@ Process environment variables are prefix-filtered (default `CREDO_`); `.env` ent
 
 `WithoutProcessEnv()` and `WithoutDotenv()` each remove a configuration source entirely. A deployment that mandates one authoritative config file (reproducible images, security-sensitive services) and a test suite that must not inherit the developer's shell both need to shut out ambient sources. The opt-out kills the whole source, bootstrap keys (`CREDO_ENV`, `CREDO_ENV_FILE`) included, rather than only its merge layer, so "the process environment does not exist for config purposes" holds without exceptions; reload replays the opt-outs, so a disabled source cannot leak in later. Combined with explicit files (or an embedded document), loading is fully hermetic. Mechanics: [config spec](../specs/config.md#source-opt-outs--hermetic-loading).
 
-### Strict Decoding
-
-> **Current until v0.26.0 (R3):** the next paragraph describes strict decoding as the `WithStrictDecoding()` opt-in; [strict decoding by default](#strict-decoding-by-default) replaces it.
-
-`WithStrictDecoding()` makes typed decodes reject unknown keys and drops weak string-to-number/bool coercion. Unknown-key typos are the dominant operational config hazard — a misspelled key silently becomes a default value — and weak coercion masks type errors in file-based configs, whose values are already typed. The policy rides on the `Config` instance, so one option covers every decode path, the framework's own `server` decode and reload validation included. Strict mode is opt-in because weak coercion is what lets string env and `.env` overrides reach typed fields; it targets typed sources and pairs with the source opt-outs. The error guarantee is scoped rather than absolute: unknown-key errors carry key paths only, while type-mismatch errors may quote the value. Whether strict becomes the default at v1 is an open breaking decision in the [v1 Gate](../../TODO.md#v1-gate). Mechanics: [config spec](../specs/config.md#strict-decoding).
-
 ### Strict Decoding by Default
 
-> **Pending v0.26.0 (R3):** not implemented yet; decoding is weak unless `WithStrictDecoding()` is given.
-
-`config.Load` decodes strictly unless told otherwise: an unknown key is an error naming its key path, and a value is not coerced across kinds. The policy rides on the `Config` instance as before, so it covers `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate and the framework's own `server` section in `credo.New`.
+`config.Load` decodes strictly unless told otherwise: an unknown key is an error naming its key path, and a value is not coerced across kinds. The policy rides on the `Config` instance, so it covers `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate and the framework's own `server` section in `credo.New`.
 
 Strings parse into basic types. Process environment and `.env` values are strings, so a strict mode that refused every string for a typed field would refuse every override of one. The default therefore adds mapstructure's `StringToBasicTypeHookFunc` beside the duration and `TextUnmarshaler` hooks that stay on in both modes: `CREDO_SERVER__PORT=9090` decodes into an `int`. Conversions across kinds stay refused — a boolean into a number, a number into a string, a scalar into a slice. The hook does not know a value's source, so a quoted number in a file decodes too; parsing a string by its target type is not a conversion between kinds.
 
-`config.WithWeakDecoding()` is the opt-in, and its contract is one sentence: mapstructure's weak coercion. A refused value's error names the key path, the conversion refused and `config.WithWeakDecoding()` as the remedy. Rejected: a normative coercion rule set with a conformance suite; the opt-in's contract stays that one sentence.
-
-**Problem.** A misspelled key silently becomes a default value, and weak coercion masks type errors in file-based configuration, whose values are already typed; both are what an operator meets in production, and the safe behaviour is an option an application must know to ask for. The opt-in strict mode, in turn, refuses every string override of a typed field, so an application that wants it must also give up environment overrides.
-
-**Removes.** `config.WithStrictDecoding()`, now the default; weak coercion and silently ignored unknown keys without `WithWeakDecoding()`.
+`config.WithWeakDecoding()` is the opt-in, and its contract is one sentence: mapstructure's weak coercion. A refused value's error names the key path, the conversion refused and `config.WithWeakDecoding()` as the remedy. The error guarantee is scoped rather than absolute: an unknown-key error carries key paths only, while a type-mismatch error may quote the value. With the source opt-outs, a deployment pins its configuration to exactly the files it ships, every key of them decoded by a field. Rejected: a normative coercion rule set with a conformance suite; the opt-in's contract stays that one sentence. Mechanics: [config spec](../specs/config.md#decoding).
 
 ### Config Is Not in Infra
 
@@ -163,10 +151,8 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 **Negative:**
 
-> **Current until v0.26.0 (R3):** the last two items describe weak decoding as the default contract and strict decoding refusing string overrides; with R3 strict decoding is the default, strings parse into basic types, and only `WithWeakDecoding()` makes mapstructure's coercion part of the contract.
-
 - DI registration is required for each config section (minimal boilerplate)
 - RawConfig still exists — may appear as two APIs (mitigate: position as "bootstrap only," document accordingly)
 - Module authors must know the Unmarshal + DI registration pattern
-- Decoding relies on mapstructure, so its coercion rules and error texts (a type-mismatch error may quote the value) are part of the contract
-- Under strict decoding, string env/`.env` overrides on typed fields do not decode, and every typed view must cover its whole section
+- Decoding relies on mapstructure: its string-to-basic-type hook and error texts (a type-mismatch error may quote the value) are part of the contract, and its weak coercion is under `WithWeakDecoding()`
+- Every typed view must cover its whole section, since a key no field decodes is an error

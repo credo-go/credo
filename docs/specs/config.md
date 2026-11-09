@@ -122,8 +122,6 @@ Rationale: [ADR-005](../adr/005-configuration-architecture.md#env-entries-are-no
 
 ### config.Load() — Primary Entry Point
 
-> **Current until v0.26.0 (R3):** the options item names `WithStrictDecoding()`, which `WithWeakDecoding()` replaces.
-
 > **Current until v0.26.0 (R5):** the second item's `cfg.Get[T](key)` and the third item's `Unmarshal`/`Get` name the getter that goes; with R5 a section is read with `section.Decode(cfg)`.
 
 ```go
@@ -134,7 +132,7 @@ cfg, err := config.Load(opts...) // returns (*config.Config, error)
 - Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
 - Returns an error for an I/O failure, a parse error, conflicting options, an explicit file list none of whose files exists, a missing explicit `.env` file, or an unsupported file format ([Error Handling Contract](#error-handling-contract)). Never panics. A section's `Validate()` error is returned by `Unmarshal`/`Get`, not by `Load`. There is no `MustLoad`.
 - No package-global instance — each call produces an independent `Config`.
-- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithStrictDecoding()`, `WithLogger(*slog.Logger)` (load-time warnings such as a missing optional explicit `.env`; default `slog.Default()`). `.env` path rules: [.env Resolution Policy](#env-resolution-policy).
+- **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithWeakDecoding()`, `WithLogger(*slog.Logger)` (load-time warnings such as a missing optional explicit `.env`; default `slog.Default()`). `.env` path rules: [.env Resolution Policy](#env-resolution-policy).
 
 ### config.RawConfig Interface
 
@@ -263,7 +261,7 @@ db = app.MustGetConfig[DatabaseConfig]("database")
 | `(*App).MustGetConfig[T]` | `(key string) T` | panics |
 | `(*App).ConfigExists` | `(key string) bool` | — (mirrors `RawConfig.Exists`; a presence check during registration, before `Resolve` is available) |
 
-- `T` may be a struct, map, slice, or primitive — the same decode rules (weak by default, strict under `WithStrictDecoding`) and `Validate()` hook as `Unmarshal`.
+- `T` may be a struct, map, slice, or primitive — the same [decode rules](#decoding) and `Validate()` hook as `Unmarshal`.
 - `App.GetConfig` decodes through the registered `RawConfig.Unmarshal`, so it behaves identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
 - These are **bootstrap/composition-root** helpers: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request ([ADR-005](../adr/005-configuration-architecture.md#typed-snapshot-getter-gett--getconfigt)).
 - `MustGet`/`MustGetConfig` panic with the error `Get`/`GetConfig` would return.
@@ -329,31 +327,7 @@ cfg := app.MustGetConfig(AppSection) // the same descriptor in the composition r
   - Both sources map to the same config keys; only the prefix handling differs.
 - **Dotted Keys**: Internal config tree uses dotted notation for nested lookups.
 
-## Strict Decoding
-
-> **Current until v0.26.0 (R3):** this section describes weak decoding as the default and strict decoding as the `WithStrictDecoding()` opt-in; [Decoding](#decoding) replaces it.
-
-`WithStrictDecoding()` switches every typed decode from the Config to strict mode. Weak mode remains the default.
-
-| Aspect | Default (weak) | Strict |
-| --- | --- | --- |
-| Unknown keys (config keys with no target field, nested included) | Silently ignored | Error naming the key path |
-| `"123"` → int, `"true"` → bool, general weak coercion | Allowed | Error |
-| Duration strings (`"5s"` → `time.Duration`) | Allowed | Allowed (retained hook) |
-| `encoding.TextUnmarshaler` fields | Allowed | Allowed (retained hook) |
-| Numeric kind conversions (JSON `float64` → int field) | Allowed | Allowed (native decoding, not weak coercion) |
-
-The policy rides on the Config instance, so one option covers every decode path: `Unmarshal`, `Get`/`MustGet`, the `Staged` candidate from `Stage` (and therefore `OnConfigChange` reload subscriber validation), and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction under a strict store.
-
-Consequences to design for:
-
-- **Typed sources only**: env vars and `.env` entries are always strings, so string overrides on typed fields fail to decode under strict mode. Pair with `WithoutProcessEnv()`/`WithoutDotenv()`, or stay on weak decoding when env overrides are needed.
-- **Complete typed views**: every struct that decodes a section — including narrow `OnConfigChange[T]` subscribers and full-tree decodes — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
-- **Error hygiene scope**: unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
-
 ## Decoding
-
-> **Pending v0.26.0 (R3):** not implemented yet; [Strict Decoding](#strict-decoding) holds — decoding is weak unless `WithStrictDecoding()` is given.
 
 Every typed decode from a Config is strict unless the Config was loaded with `config.WithWeakDecoding()`:
 
@@ -368,11 +342,11 @@ Every typed decode from a Config is strict unless the Config was loaded with `co
 
 `WithWeakDecoding()`'s contract is one sentence: mapstructure's weak coercion. Strict decoding is the default and has no option of its own.
 
-The policy rides on the Config instance, so it covers every decode path: `Unmarshal`, a section's `Decode` and `Live`, the decoding of a reload's candidate, and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction.
+The policy rides on the Config instance, so it covers every decode path: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction.
 
 - **Environment overrides decode.** Process environment and `.env` values are strings, and the string hook parses each by its target type, so `CREDO_SERVER__PORT=9090` decodes into an `int`. The hook does not know a value's source, so a quoted number in a file decodes too; parsing a string by its target type is not a conversion between kinds.
-- **Complete typed views**: every struct that decodes a section — a live section's `T` and full-tree decodes included — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
-- **The error names the remedy.** A value strict decoding refuses fails with the key path, the conversion refused, and `config.WithWeakDecoding()` as the opt-in. Unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
+- **Complete typed views**: every struct that decodes a section — full-tree decodes included — must cover all keys of that section. A full-tree decode of a config containing `server.*` needs a `Server` field on the target.
+- **The error names the remedy.** A value strict decoding refuses fails with the key path, the conversion refused, and `config.WithWeakDecoding()` as the opt-in; a string that does not parse as its target type names the key path without the remedy, since weak coercion would not parse it either. Every offending key of one decode is reported. Unknown-key errors report key paths and never values; type-mismatch errors may quote the offending value (mapstructure behavior — accepted limitation).
 
 ## Default Values
 
@@ -459,8 +433,6 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Error Handling Contract
 
-> **Current until v0.26.0 (R3):** the "Type Conversion" item describes weak decoding as the default, under which a string env var that fails to map is the conversion error; with R3 a string parses into a basic type, and the [Strict Decoding Refusal](#decoding) item replaces it.
-
 > **Current until v0.26.0 (R5):** the "only `MustGet`/`MustGetConfig` panic" item names `MustGet`, which goes; with R5 only `MustGetConfig` panics.
 
 > **Current until v0.26.0 (R15):** the last item names `Reload()`/`Stage()`; with R15 a reload's load error is returned by `Reload(ctx)` with its result, and `Stage` is gone.
@@ -472,14 +444,11 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 - **Explicit .env Error**: an explicit `.env` path (`WithDotenvPath` or `CREDO_ENV_FILE`) is missing (a Warn instead under `WithDotenvOptional()`) or unreadable, or a `.env` file fails to parse.
 - **Key Not Found**: `Unmarshal`/`Get` on a key that does not exist (`config: key "…" not found`).
 - **Empty Configuration**: a full-tree `Unmarshal("", &dst)` of an empty configuration (`config: configuration is empty`).
-- **Type Conversion**: Failing to map a string env var to a struct's `int` field; under `WithStrictDecoding`, also an unknown key or a weak coercion.
+- **Strict Decoding Refusal**: an unknown key (`config: unknown key "app.porrt": no field of the target decodes it; fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()`) or a conversion across kinds (`config: key "app.port": …; strict decoding converts no value across kinds: …`) names the key path, the conversion refused, and `config.WithWeakDecoding()`.
+- **Type Conversion**: a string that does not parse as its target type (`config: key "server.port": …`), in either mode.
 - **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling (`config: validation: …`).
 - All errors are returned, never panicked; only `MustGet`/`MustGetConfig` panic.
 - **Reload Error**: any load error during `Reload()`/`Stage()` is returned and the previous snapshot stays current.
-
-> **Pending v0.26.0 (R3):** not implemented yet; a refused conversion is reported only under `WithStrictDecoding`, with mapstructure's text.
-
-- **Strict Decoding Refusal**: an unknown key or a conversion across kinds names the key path, the conversion refused, and `config.WithWeakDecoding()`.
 
 > **Pending v0.26.0 (R5):** not implemented yet; there is no section descriptor.
 
