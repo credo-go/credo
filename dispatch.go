@@ -467,6 +467,9 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // A mount is a route: a request it matches carries a [Route] whose pattern
 // is the mount's prefix, with the App's meta and no name or method, so
 // [Context.HasRoute] is true for it and its access record names the prefix.
+// The route carries none of the prefix's parameters: they reach the mounted
+// handler as path values, so a routed middleware on a parametric mount reads
+// none through [Request.RouteParam].
 //
 // Middleware scope: the mounted handler runs inside the routed tier
 // ([App.Middleware]), after [App.PreRouting] and the framework features that

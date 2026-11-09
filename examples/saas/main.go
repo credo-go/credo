@@ -18,7 +18,7 @@
 //     (systemctl reload) or app.Reload swaps the log level in place, while a
 //     change to the static "app" section is reported as needing a restart
 //   - Framework HTTP features (recovery on by default; request ID, access
-//     log and compression enabled explicitly) plus global CORS and secure
+//     log and compression enabled explicitly) plus pre-routing CORS and secure
 //     headers middleware
 //   - Localization from a programmatic catalog (error, validation and
 //     handler messages, field display names)

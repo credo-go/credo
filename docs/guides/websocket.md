@@ -172,7 +172,7 @@ No-context-takeover is the safer general default when compression is required. C
 
 ## Middleware and Protocol Boundaries
 
-Global, group, route, rewrite, authentication and authorization middleware and the request ID and access-log features work normally. Keep these boundaries in mind:
+PreRouting, routed, group, route, rewrite, authentication and authorization middleware and the request ID and access-log features work normally. Keep these boundaries in mind:
 
 - Auto-generated HEAD is rejected with 405 and `Allow: GET`; only GET upgrades.
 - HTTP/2 requests do not upgrade. RFC 8441 extended CONNECT is unsupported.

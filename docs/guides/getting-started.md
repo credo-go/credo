@@ -213,7 +213,7 @@ tenant.GET("/dashboard", tenantDashboard)
 You can also normalize URLs before routing:
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {From: "/v1/{path...}", To: "/api/v1/{path}"},
 }}))
 ```
@@ -224,16 +224,17 @@ For conditional handler-driven forwards, use `ctx.Rewrite("/new-path")`. See the
 
 ## Middleware
 
-Middleware wraps handlers. Three tiers, evaluated in order:
+Middleware wraps handlers. Four tiers, evaluated in order:
 
-1. **Global** — every request (including 404/405)
-2. **Group** — routes under that group
-3. **Route** — single route
+1. **PreRouting** — every request, before the route is matched (including 404/405)
+2. **Routed** — every route, after the match
+3. **Group** — routes under that group
+4. **Route** — single route
 
 ```go
-// Global middleware you add yourself. Panic recovery is on by default;
+// PreRouting middleware you add yourself. Panic recovery is on by default;
 // request IDs and access logs are features you enable (see below).
-app.GlobalMiddleware(
+app.PreRouting(
     middleware.CORS(),
     middleware.Secure(),
 )
@@ -692,7 +693,7 @@ func main() {
 
     // 4. Resolve, middleware and routes. The first Resolve validates the graph.
     svc := app.MustResolve[*ItemService]()
-    app.GlobalMiddleware(
+    app.PreRouting(
         middleware.CORS(),
         middleware.Secure(),
     )
@@ -717,6 +718,6 @@ func main() {
 - [Routing Guide](routing.md) — host groups, rewrite middleware, internal forwarding
 - [Worker Guide](worker.md) — continuous workers, schedules, shutdown, status snapshots
 - [Localization Guide](localization.md) — locale detection, translation
-- [Middleware Guide](middleware.md) — 3-tier model, framework features, custom middleware
+- [Middleware Guide](middleware.md) — middleware tiers, framework features, custom middleware
 - [Validation Spec](../specs/validation.md) — rule catalog, custom rules
 - [Router Spec](../specs/router.md) — regex constraints, named routes, URL generation

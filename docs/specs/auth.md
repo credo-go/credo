@@ -154,12 +154,6 @@ func (a *MyAuthenticator) Authenticate(r *http.Request) (*User, error) {
 api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth, nil))
 ```
 
-> **Current until v0.26.0 (R13):** the next paragraph's placement advice, which predates the routed tier and treats a mount as outside every tier but the global one.
-
-Register authentication on a group or route. Global middleware runs before routing, for requests that match no route too: global authentication answers an unauthenticated request for an unknown path with 401 instead of 404, and `ctx.Route()` is nil there ([middleware guide](../guides/middleware.md#rewrite-ordering-affects-auth-decisions)). A mounted handler bypasses group middleware and needs global authentication or its own.
-
-> **Pending v0.26.0 (R13):** the next paragraph replaces the paragraph above when R13 ships.
-
 Register authentication on the routed tier with `app.Middleware`, on a group or on a route. The routed tier runs after the match on every route registered through the App, mounts included, so authentication there answers 401 for a mounted path, and it never runs for the router's own 404 and 405. Middleware registered with `app.PreRouting` runs before routing, for requests that match no route too: authentication there answers an unauthenticated request for an unknown path with 401 instead of 404, and `c.Route()` is nil there ([middleware spec](middleware.md)).
 
 ### Pattern 2: Custom Middleware (full control)

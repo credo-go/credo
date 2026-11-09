@@ -42,7 +42,7 @@ Host params share one namespace with path params and are read through the same `
 
 ### Pre-Dispatch Rewrite
 
-`middleware.Rewrite` rewrites the request path before routing, so the first lookup already sees the rewritten path. It is middleware rather than router configuration, so it is registered, scoped and composed like other cross-cutting concerns. It runs once in the normal middleware chain: it does not create a loop and does not re-enter global middleware. Rules are evaluated in order and the first match wins, so overlapping rules resolve predictably. `RewriteConfig`, `RewriteRule` and placement: [middleware spec](../specs/middleware.md#rewrite).
+`middleware.Rewrite` rewrites the request path before routing, so the first lookup already sees the rewritten path. It is middleware rather than router configuration, so it is registered, scoped and composed like other cross-cutting concerns. It runs once in the normal middleware chain: it does not create a loop and does not re-enter `PreRouting` middleware. Rules are evaluated in order and the first match wins, so overlapping rules resolve predictably. `RewriteConfig`, `RewriteRule` and placement: [middleware spec](../specs/middleware.md#rewrite).
 
 > **Pending v0.26.0 (R7):** not implemented yet; `middleware.Rewrite` matches its rules against the decoded `URL.Path` and sets the rewritten path with `RawPath` cleared, so an encoded slash in the path is a separator to a rule and a captured `%2F` becomes a separator in the target.
 
@@ -56,7 +56,7 @@ Host params share one namespace with path params and are read through the same `
 
 ### Post-Match Internal Re-Dispatch
 
-`ctx.Rewrite(path)` is a handler-level internal forward for decisions that need handler logic. The handler API stays `return ctx.Rewrite(target)`: the call returns an internal sentinel that the compiled route chain swallows before user middleware sees it, and dispatch owns the loop, re-matching the target within the host scope the request already selected. Framework features and global middleware run once per request, while group and route middleware run again for the newly matched route, since that route may carry different policy. A hard limit of 10 rewrites per request stops loops. The complete rule list (target form, query replacement, committed responses, the limit's error): [context spec](../specs/context.md#rewrite).
+`ctx.Rewrite(path)` is a handler-level internal forward for decisions that need handler logic. The handler API stays `return ctx.Rewrite(target)`: the call returns an internal sentinel that the compiled route chain swallows before user middleware sees it, and dispatch owns the loop, re-matching the target within the host scope the request already selected. Framework features and `PreRouting` middleware run once per request, while routed, group and route middleware run again for the newly matched route, since that route may carry different policy. A hard limit of 10 rewrites per request stops loops. The complete rule list (target form, query replacement, committed responses, the limit's error): [context spec](../specs/context.md#rewrite).
 
 ### No Post-Match Re-Dispatch
 

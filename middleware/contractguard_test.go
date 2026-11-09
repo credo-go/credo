@@ -17,7 +17,7 @@ func contractOK(ctx *credo.Context) error {
 
 // contractGroup builds an app with a "/g" group guarded by ContractGuard.
 // ContractGuard reads matched-route metadata, so it is registered at the group
-// level (group/route middleware run after the route match; app-global
+// level (group/route middleware run after the route match; PreRouting
 // middleware runs before it).
 func contractGroup(t *testing.T, cfg ...middleware.ContractConfig) (*credo.App, *credo.Group) {
 	t.Helper()

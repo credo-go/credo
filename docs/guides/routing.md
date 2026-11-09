@@ -24,7 +24,7 @@ func main() {
         log.Fatal(err)
     }
 
-    app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+    app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
         {From: "/v1/{path...}", To: "/api/v1/{path}"},
     }}))
 
@@ -185,7 +185,7 @@ app.QUERY("/products", func(ctx *credo.Context) error {
 })
 ```
 
-Clients must send a non-blank `Content-Type`, even with an empty body. Missing or blank values return `400 content_type_required` before the application handler; unsupported types handled through `BindBody` return 415. Built-in, global, group, and route middleware still run before this guard.
+Clients must send a non-blank `Content-Type`, even with an empty body. Missing or blank values return `400 content_type_required` before the application handler; unsupported types handled through `BindBody` return 415. Framework features and `PreRouting`, routed, group and route middleware still run before this guard.
 
 `Accept-Query` is optional capability advertisement, not permission to use QUERY. Set it directly when useful:
 
@@ -293,9 +293,9 @@ A managed component's default name is its type name, `*credo.App` here, so a par
 
 `parent.Manage(child)` composes Apps that are independent by design, each with its own configuration, container and lifecycle. The modules of one application share one App and its DI graph: give them [groups](#route-groups) and constructors, not an App each.
 
-Mounted handlers run outside the per-route compiled chain, so only global middleware (and the framework features) apply — group and route middleware do not. Guard a mounted sub-app from within it, or register the check as global middleware (see the [Middleware Guide](middleware.md)).
+A mount is a route: its handler runs inside `PreRouting` and the routed tier (`app.Middleware`), and the framework features apply. Group and route middleware do not, because a mount belongs to no group. Guard a mounted sub-app from within it, or register the check with `app.Middleware` ([Middleware Guide](middleware.md#mounted-handlers-get-the-routed-tier-not-group-or-route-middleware)). The mount's prefix parameters reach the sub-app as path values of its request; the mount's route carries none, so a routed middleware reads none through `c.Request().RouteParam`.
 
-In introspection, a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix, never its internal routes.
+In introspection, a mount surfaces as a single `RouteKindMount` entry with its cleaned prefix and the App's meta, never its internal routes.
 
 ---
 
@@ -381,7 +381,7 @@ tenant.GET("/users/{tenant}", showUser)
 Use `middleware.Rewrite(cfg)` when you want to normalize URLs before routing. The rules live in `RewriteConfig.Rules`; see the [Middleware Guide](middleware.md#rewrite) for the `Skipper` option.
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {From: "/v1/{path...}", To: "/api/v1/{path}"},
     {From: "/blog/{slug}", To: "/articles/{slug}", PreserveQuery: true},
 }}))
@@ -397,7 +397,7 @@ app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middle
 ### Host Filter
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {
         Host: "old.example.com",
         From: "/{path...}",
@@ -409,7 +409,7 @@ app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middle
 ### Regex Rules
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {
         Regexp: regexp.MustCompile(`^/blog/(?P<year>\d{4})/(?P<slug>[^/]+)$`),
         To:     "/posts/{year}/{slug}",
@@ -450,8 +450,8 @@ app.GET("/checkout", func(ctx *credo.Context) error {
 - The target must start with `/`
 - A request can rewrite at most 10 times
 - Re-dispatch stays in the same host scope
-- Group and route middleware run again for the rewritten route
-- Framework features and global middleware do not run again
+- Routed, group and route middleware run again for the rewritten route
+- Framework features and `PreRouting` middleware do not run again
 
 ---
 
@@ -480,7 +480,7 @@ The access log (`app.UseAccessLog`) records both.
 
 ## Middleware Gotchas with `ctx.Rewrite()`
 
-If a handler calls `ctx.Rewrite()`, group and route middleware for the target route execute again.
+If a handler calls `ctx.Rewrite()`, routed, group and route middleware for the target route execute again.
 
 That means `after` logic is per dispatch round, not per whole request:
 
@@ -498,7 +498,7 @@ func Timer(next credo.Handler) credo.Handler {
 }
 ```
 
-Use app/global middleware when you want one measurement for the whole request.
+Use `PreRouting` middleware when you want one measurement for the whole request.
 
 ---
 

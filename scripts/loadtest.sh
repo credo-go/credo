@@ -108,7 +108,7 @@ CREDO_SERVER__HOST="${HOST}" CREDO_SERVER__PORT="${PORT}" "${TMPBIN}/credo-bench
 SERVER_PID=$!
 wait_for_server "${BASE_URL}/health"
 
-header "Load test: GET /health (public, with global middleware)"
+header "Load test: GET /health (public, with pre-routing middleware)"
 hey -n "${REQUESTS}" -c "${CONCURRENCY}" "${BASE_URL}/health"
 
 header "Load test: POST /auth/login (public, JWT generation)"

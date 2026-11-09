@@ -98,7 +98,7 @@ An invalid client token, or a client offer that shares no token with the server 
 
 ## Routing and Middleware
 
-WebSocket routes use normal `app.GET`, group, and route APIs. Execution order is framework features → Global → Group → Route → WebSocket Handler. Auth middleware must run before `Server.Handler`. Global rewrite and trailing-slash behavior remain router concerns and execute before the upgrade.
+WebSocket routes use normal `app.GET`, group, and route APIs. Execution order is framework features → PreRouting → routed → Group → Route → WebSocket Handler. Auth middleware must run before `Server.Handler`. Pre-routing rewrite and trailing-slash behavior remain router concerns and execute before the upgrade.
 
 The GET route's auto-generated HEAD twin executes the same middleware but the adapter rejects HEAD with 405 and `Allow: GET`; it never upgrades. Classic HTTP/1.1 upgrade is supported. HTTP/2 requests never produce 101 and RFC 8441 extended CONNECT is outside this contract.
 

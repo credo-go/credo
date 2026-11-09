@@ -42,10 +42,12 @@
 //   - Handler: func(*credo.Context) error — all handlers return errors
 //   - Context: request-scoped struct with Request/Response accessors
 //   - Middleware: func(credo.Handler) credo.Handler — wraps Handlers.
-//     Three tiers run in order: global → group → route. Group middleware is
-//     collected from the group parent chain when the app compiles, so
-//     registration order affects execution order only — middleware added to a
-//     group after its routes still applies to them. Panic recovery, request
+//     Four tiers run in order: PreRouting (before the match, 404 and 405
+//     included) → routed (App.Middleware, every route and mount) → group →
+//     route. Routed and group middleware are collected from the group parent
+//     chain when the app compiles, so registration order affects execution
+//     order only — middleware added to a group after its routes still applies
+//     to them. Panic recovery, request
 //     IDs, access logging, compression, decompression and locale detection
 //     are framework features that wrap the whole chain, not middleware.
 //   - Route: fluent API with Name(), SetMeta(), Middleware()

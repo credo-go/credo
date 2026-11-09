@@ -6,9 +6,9 @@
 
 Middleware is the primary extension mechanism for a web framework. It intercepts requests before/after handlers for cross-cutting concerns: logging, authentication, rate limiting, CORS, compression, etc.
 
-> **Current until v0.26.0 (R13):** the next paragraph's three scopes; the routed tier adds a fourth ([The routed tier](#the-routed-tier)).
+Credo needs a middleware model that supports a tier before routing, a tier on every matched route, group and route scopes, integrates with route metadata, and interoperates with the Go stdlib ecosystem.
 
-Credo needs a middleware model that supports three scopes (global, group, route), integrates with route metadata, and interoperates with the Go stdlib ecosystem.
+A middleware that runs before the match cannot read route meta, so a meta-driven middleware placed there does nothing and has to be repeated on every group. A middleware that must run on every route, but not for the router's own 404 and 405, needs a tier of its own. A mounted handler dispatched outside the compiled chain would let a path through the authentication every route gets. And a tier's name has to say when it runs, not only where it applies.
 
 Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect.
 
@@ -24,30 +24,14 @@ Pre-dispatch rewrite middleware and its interaction with handler-level re-dispat
 type Middleware func(next Handler) Handler
 ```
 
-One type for all three tiers. No separate types for global vs group vs route middleware. This simplifies the mental model and allows reuse.
-
-### Three-Tier Execution
-
-> **Current until v0.26.0 (R13):** this section's diagram, the paragraph after it and the paragraph on global middleware at 404/405; [The routed tier](#the-routed-tier) replaces them, with `PreRouting` in place of `GlobalMiddleware`.
-
-```
-Request → Global MW → Group MW → Route MW → Handler
-                                                ↓
-Response ← Global MW ← Group MW ← Route MW ← Handler
-```
-
-Global middleware (`app.GlobalMiddleware`) runs on every request, group middleware (`group.Middleware`) on the routes under that group, route middleware (`route.Middleware`) on a single route; the [middleware spec](../specs/middleware.md#3-tier-model-goyave-inspired) defines the tiers and their order.
-
-**Global middleware runs even on 404/405.** This ensures CORS and security headers are always present. Framework features cover 404/405 as well.
-
-**Group middleware membership is resolved at compile time from the group parent chain** — the same model the route's meta snapshot uses. Middleware added to a group after a route or sub-group was registered still applies to it; registration order within a group affects execution order only, never membership.
+One type for every tier. No separate types for pre-routing, routed, group or route middleware. This simplifies the mental model and allows reuse.
 
 ### The routed tier
 
-> **Pending v0.26.0 (R13):** not implemented yet; `app.Middleware` does not exist, the tier before routing is `app.GlobalMiddleware`, a mounted handler is dispatched raw with pre-routing middleware only, and `ContractGuard` without a route lets the request through.
-
 ```
 Request → PreRouting MW → match → Routed MW → Group MW → Route MW → Handler
+                                                                    ↓
+Response ← PreRouting MW ←───────── Routed MW ← Group MW ← Route MW ← Handler
 ```
 
 The user tiers are PreRouting → routed → Group → Route. `app.Middleware(m...)` adds middleware that runs on every route registered through the App — directly, in a group, in a host group, as a static route or as a mount — after the match and before group and route middleware, so it reads the route's meta:
@@ -56,11 +40,13 @@ The user tiers are PreRouting → routed → Group → Route. `app.Middleware(m.
 app.Middleware(middleware.ContractGuard()) // reads every route's meta; never runs for a 404 or a 405
 ```
 
-The method delegates to the root group's `Middleware`: the App's routes, groups and host groups descend from that group, and group middleware is collected when the chain is compiled, so a middleware added after a group was created applies to its routes too. It does not run for the router's own 404 and 405, which reach the pre-routing tier only. After preparation the call panics, as every registration does.
+The method delegates to the root group's `Middleware`: the App's routes, groups and host groups descend from that group, and group middleware is collected when the chain is compiled, so a middleware added after a group was created applies to its routes too. It does not run for the router's own 404 and 405, which reach the pre-routing tier only. After preparation the call panics, as every registration does. The [middleware spec](../specs/middleware.md#tiers-prerouting-routed-group-route) defines the tiers and their order.
+
+**Routed and group middleware membership is resolved at compile time from the group parent chain** — the same model the route's meta snapshot uses. Middleware added to a group after a route or sub-group was registered still applies to it; registration order within a group affects execution order only, never membership.
 
 **`PreRouting` is named for when it runs:** before the match, on every request, the router's own 404 and 405 included. A middleware that acts before the match, or on a request no route matches, stays there: `CORS` answers a preflight, an `OPTIONS` request for which the router has no route, so on the routed tier the router's 405 would answer it instead; `Rewrite` changes the path that routing matches; and `Secure`'s headers and rate limiting's budget cover the router's 404 and 405 too. `CSRF` needs no route and works on either tier; authentication and `ContractGuard` go on the routed tier. The [middleware guide](../guides/middleware.md) shows the tier of each of Credo's middleware in one table.
 
-**A mount is a route.** A request a `Mount` matches carries a `*Route` of kind mount — the mount's pattern, the App's meta, no name — so `HasRoute` is true for it, and its handler runs inside the routed tier, through a chain compiled as a route's is. A mount belongs to no group and has no route value of its own, so group and route middleware still do not apply to it, while authentication on the routed tier covers a mounted path.
+**A mount is a route.** A request a `Mount` matches carries a `*Route` of kind mount — the mount's prefix as its pattern, the App's meta, no name and no method — so `HasRoute` is true for it, and its handler runs inside the routed tier, through a chain compiled as a route's is. A mount belongs to no group and has no route value of its own, so group and route middleware still do not apply to it, while authentication on the routed tier covers a mounted path.
 
 **`ContractGuard` fails closed without a route.** Registered before routing, it sees no route on any request; it answers 500 through the error pipeline and logs one Error naming its registration before routing and the remedy: `app.Middleware`, a group or a route.
 
@@ -69,20 +55,14 @@ Rejected:
 - **An open stage or rank registry:** the tier is ordinary middleware in registration order.
 - **A warning at preparation for a `ContractGuard` before routing:** it lets every request through until someone reads the log, and the framework could emit it only by identifying one middleware among the functions it is given.
 
-**Problem.** A pre-routing middleware cannot read route meta, so a meta-driven middleware such as `ContractGuard` does nothing as global middleware — its godoc calls that a safe no-op — and is repeated on every group. A middleware that must run on every route, but not for the router's own 404 and 405, has no tier. A mounted handler is dispatched raw, outside the compiled chain, and receives pre-routing middleware only, so authentication added to every route would let a mounted path through. The name `GlobalMiddleware` says where a middleware applies, not that it runs before the match.
-
-**Removes.** `app.GlobalMiddleware`, which becomes `app.PreRouting`. `ContractGuard`'s pass-through without a route. The raw dispatch of a mounted handler, for which `HasRoute` is false.
-
 ### Compile-Time Chain Building
 
 Middleware chains are precompiled when the App prepares to serve:
 
-> **Current until v0.26.0 (R13):** the next list; the per-route chain starts with the routed tier, `PreRouting` middleware takes the place of global middleware, and a mount's chain is compiled as a route's.
+1. Per-route: routed middlewares + group middlewares + route middlewares + handler → single compiled `Handler`; a mount's chain is the routed tier around the mounted handler
+2. Pre-routing: `PreRouting` middlewares + dispatch → single compiled `Handler`
 
-1. Per-route: group middlewares + route middlewares + handler → single compiled `Handler`
-2. Global: global middlewares + dispatch → single compiled `Handler`
-
-At runtime, `ServeHTTP` applies the lifecycle admission gate and hands the request to the executor, which runs the installed framework features around the precompiled global chain. Dispatch looks up the matched route and calls its precompiled chain. Zero allocation, no slice iteration on the hot path.
+At runtime, `ServeHTTP` applies the lifecycle admission gate and hands the request to the executor, which runs the installed framework features around the precompiled pre-routing chain. Dispatch looks up the matched route and calls its precompiled chain. Zero allocation, no slice iteration on the hot path.
 
 Because the chains are built once, middleware, route and feature registration closes when the App prepares to serve or admits shutdown, and a later call panics ([registration guards](../specs/lifecycle.md#registration-guards)). DI `Finalize` alone does not close it, so DI-resolved controllers and renderers can still be registered after it.
 
@@ -216,9 +196,7 @@ Activating or parameterizing middleware from configuration files — framework-r
 
 **Negative:**
 
-> **Current until v0.26.0 (R13):** the next item; from R13, it holds for `PreRouting` middleware only, and the routed tier does not run for unmatched routes.
-
-- Global MW on 404/405 runs full chain even for unmatched routes
+- `PreRouting` middleware runs for the router's 404 and 405 too; a middleware that must not belongs on the routed tier
 
 - Precompilation means no dynamic middleware addition at runtime
 - Framework features cannot be scoped per group or route; route-specific policy is expressed through their selection knobs or ordinary middleware
