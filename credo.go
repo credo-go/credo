@@ -7,7 +7,6 @@ package credo
 import (
 	"cmp"
 	"context"
-	"crypto/tls"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
@@ -95,36 +94,6 @@ type App struct {
 	// reload holds the slot serializing Reload (ADR-020).
 	reload reloadState
 
-	// serverCfg holds the server configuration (host, port, timeouts).
-	serverCfg serverConfig
-
-	// tlsConfig is the *tls.Config set via WithTLSConfig; it has the highest
-	// TLS precedence. nil means TLS comes from server.tls.* / WithTLSFiles
-	// (serverCfg.TLS) or, if those are empty too, the server serves plaintext.
-	// Resolved and cloned at preflight (see resolveTLSConfig).
-	tlsConfig *tls.Config
-
-	// tlsConfigSet records that WithTLSConfig was called (even with nil). It lets
-	// preflight reject an explicit WithTLSConfig(nil) as a fail-fast error rather
-	// than silently falling through to the lower-precedence file sources.
-	tlsConfigSet bool
-
-	// tlsFilesSet records that WithTLSFiles was called (even with empty paths).
-	// It lets preflight reject explicit empty paths as a fail-fast error rather
-	// than silently falling through to the server.tls.* config keys or plaintext.
-	tlsFilesSet bool
-
-	// tlsFiles serves the file-based key pair (WithTLSFiles / server.tls.*)
-	// through GetCertificate and rotates it when the files change on disk
-	// (see tls_rotation.go). Inactive when TLS comes from WithTLSConfig or the
-	// server is plaintext.
-	tlsFiles fileCertSource
-
-	// httpRedirectAddr, when non-empty, is the plaintext listen address for the
-	// HTTP→HTTPS redirect listener (set via WithHTTPRedirect). Requires TLS;
-	// applies to Run/RunContext only (not ServeContext).
-	httpRedirectAddr string
-
 	// i18n is the installed internationalization feature: the loaded bundle,
 	// the message-key resolver and the lazy locale detector. nil when i18n is
 	// inactive.
@@ -191,10 +160,6 @@ type App struct {
 	// order; the access log is among them when installed.
 	observers []Observer
 
-	// disableReloadSignals makes Run ignore (and log) reload signals instead
-	// of triggering App.Reload. Set via WithoutReloadSignals option.
-	disableReloadSignals bool
-
 	// debug enables development-mode warnings.
 	// Set via WithDebug option or server.debug config key.
 	debug bool
@@ -218,12 +183,10 @@ type App struct {
 	// profile of every framework error body; joined once at construction.
 	errorJSONOpts jsonv2.Options
 
-	// configureServer is the WithHTTPServer callback, applied at the end of
-	// buildServer. nil when the option was not used.
-	configureServer func(*http.Server)
-
 	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
 	trustedProxies []netip.Prefix
+
+	appServer
 }
 
 // New creates a new App with the given options. When no RawConfig is provided,
@@ -351,18 +314,20 @@ func assembleApp(
 		staticHosts:           make(map[string]*hostEntry),
 		namedRoutes:           make(map[string]*Route),
 		rawConfig:             o.rawConfig,
-		serverCfg:             serverCfg,
-		tlsConfig:             o.tlsConfig.value,
-		tlsConfigSet:          o.tlsConfig.isSet,
-		tlsFilesSet:           o.tlsFiles.isSet,
-		httpRedirectAddr:      o.httpRedirectAddr,
 		redirectTrailingSlash: serverCfg.RedirectTrailingSlash == nil || *serverCfg.RedirectTrailingSlash,
-		disableReloadSignals:  o.disableReloadSignals,
 		debug:                 o.debug || serverCfg.Debug,
 		strictBodies:          o.strictBodies || serverCfg.StrictBodies,
-		configureServer:       o.configureServer,
 		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 		trustedProxies:        trustedProxies,
+		appServer: appServer{
+			serverCfg:            serverCfg,
+			tlsConfig:            o.tlsConfig.value,
+			tlsConfigSet:         o.tlsConfig.isSet,
+			tlsFilesSet:          o.tlsFiles.isSet,
+			httpRedirectAddr:     o.httpRedirectAddr,
+			disableReloadSignals: o.disableReloadSignals,
+			configureServer:      o.configureServer,
+		},
 	}
 	app.errorJSONOpts = jsonv2.JoinOptions(app.jsonOpts, jsonv2.Deterministic(true))
 	if !o.disableRecover {
