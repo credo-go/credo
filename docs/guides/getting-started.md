@@ -599,7 +599,7 @@ The steps share one deadline (`WithShutdownTimeout`, 30 seconds by default) and 
 
 DI singletons that have `Shutdown` take part automatically. Prefer a component for anything with its own teardown, and an `OnStop` hook for a leaf action. See the [Dependency Injection guide](dependency-injection.md#shutdown-and-lifecycle) for components, tiers and the registration options, and the [Deployment guide](deployment.md#shutdown-and-readiness) for sizing the deadline.
 
-If you need managed background tasks, register them with a worker supervisor — `workers := worker.Use(app)`, then `workers.ContinuousProvided[T](name)` or `workers.ScheduledProvided[T](name, expr)` for a worker the container builds — instead of starting goroutines in `main()`. Each worker is a component: the App starts it in the start phase and, at shutdown, cancels its context and waits for its `Run` in its tier's turn — a scheduled worker with the HTTP drain, a continuous worker after it and before the components it uses. See the [Worker Guide](worker.md).
+If you need managed background tasks, register them through the App's worker registry — `app.Workers().ContinuousProvided[T](name)` or `app.Workers().ScheduledProvided[T](name, expr)` for a worker the container builds — instead of starting goroutines in `main()`. Each worker is a component: the App starts it in the start phase and, at shutdown, cancels its context and waits for its `Run` in its tier's turn — a scheduled worker with the HTTP drain, a continuous worker after it and before the components it uses. See the [Worker Guide](worker.md).
 
 ---
 

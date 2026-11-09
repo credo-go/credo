@@ -1,6 +1,6 @@
 # Worker Guide
 
-This guide explains how to run background tasks with Credo's `worker/` package. For the exact contracts — outcome classification, admission order, log attributes, the snapshot's JSON shape — see the [Worker Spec](../specs/worker.md); for the reasoning behind them, [ADR-023](../adr/023-worker-system.md). Workers are lifecycle components, so the [lifecycle spec](../specs/lifecycle.md) and the [dependency-injection guide](dependency-injection.md#shutdown-and-lifecycle) describe the start and the drain they take part in.
+This guide explains how to run background tasks through the App's worker registry, `app.Workers()`. For the exact contracts — outcome classification, admission order, log attributes, the snapshot's JSON shape — see the [Worker Spec](../specs/worker.md); for the reasoning behind them, [ADR-023](../adr/023-worker-system.md). Workers are lifecycle components, so the [lifecycle spec](../specs/lifecycle.md) and the [dependency-injection guide](dependency-injection.md#shutdown-and-lifecycle) describe the start and the drain they take part in.
 
 ---
 
@@ -14,13 +14,13 @@ Credo workers are for application work that runs outside the HTTP request path:
 - cache warmers
 - reconciliation / sync loops
 
-Workers are optional. If your app only serves HTTP requests, you do not need the package.
+Workers are optional. If your app only serves HTTP requests, it never calls `app.Workers()`.
 
 ---
 
 ## Mental Model
 
-A worker is anything with a `Run(ctx context.Context) error` method. You register it with a **supervisor** — `workers := worker.Use(app)` — under a name, and the registration method decides its kind:
+A worker is anything with a `Run(ctx context.Context) error` method. You register it through the App's **worker registry** — `workers := app.Workers()` — under a name, and the registration method decides its kind:
 
 | Method | Kind | The worker comes from |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ A worker is anything with a `Run(ctx context.Context) error` method. You registe
 | `workers.ContinuousProvided[T](name, cfg...)` | continuous | the DI container, as `T` |
 | `workers.ScheduledProvided[T](name, expr, cfg...)` | scheduled | the DI container, as `T` |
 
-Each registration adds one lifecycle component to the App, named `worker:<name>`. The App starts it in the start phase and stops it in the drain like every other component: its `Start` launches the worker's loop, its `Shutdown` cancels the worker's context and waits for `Run` to return. The supervisor itself has no lifecycle — it is the registry you register through and the object you ask for each worker's state.
+Each registration adds one lifecycle component to the App, named `worker:<name>`. The App starts it in the start phase and stops it in the drain like every other component: its `Start` launches the worker's loop, its `Shutdown` cancels the worker's context and waits for `Run` to return. The registry itself has no lifecycle — it is what you register through and what you ask for each worker's state.
 
 ### Continuous worker
 
@@ -62,7 +62,6 @@ import (
     "time"
 
     "github.com/credo-go/credo"
-    "github.com/credo-go/credo/worker"
 )
 
 type EmailConsumer struct {
@@ -96,9 +95,8 @@ func main() {
     app.Provide(NewSender)
     app.Provide(NewEmailConsumer)
 
-    workers := worker.Use(app)
-    workers.ContinuousProvided[*EmailConsumer]("email-consumer", worker.ContinuousConfig{
-        Restart: worker.Restart{MinDelay: 5 * time.Second},
+    app.Workers().ContinuousProvided[*EmailConsumer]("email-consumer", credo.ContinuousConfig{
+        Restart: credo.RestartPolicy{MinDelay: 5 * time.Second},
     })
 
     if err := app.Run(); err != nil {
@@ -140,8 +138,7 @@ func main() {
     app.Provide(NewCleanupRepository)
     app.Provide(NewCleanupWorker)
 
-    workers := worker.Use(app)
-    workers.ScheduledProvided[*CleanupWorker]("cleanup", "0 */6 * * *", worker.ScheduledConfig{
+    app.Workers().ScheduledProvided[*CleanupWorker]("cleanup", "0 */6 * * *", credo.ScheduledConfig{
         RunOnStart:             true,
         RunTimeout:             10 * time.Minute,
         MaxConsecutiveFailures: 5,
@@ -163,13 +160,17 @@ Important points:
 
 ---
 
-## `worker.Func`
+## Small Workers
 
-For small jobs you do not need a struct type. `worker.Func` adapts a function, like `http.HandlerFunc`:
+A small job needs only a small type: anything whose `Run(ctx context.Context) error` method implements `credo.Worker` is a worker.
 
 ```go
-logger := app.Logger()
-workers.Continuous("heartbeat", worker.Func(func(ctx context.Context) error {
+// Heartbeat logs a line every 30 seconds until the worker stops.
+type Heartbeat struct {
+    log *slog.Logger
+}
+
+func (h Heartbeat) Run(ctx context.Context) error {
     ticker := time.NewTicker(30 * time.Second)
     defer ticker.Stop()
     for {
@@ -177,60 +178,61 @@ workers.Continuous("heartbeat", worker.Func(func(ctx context.Context) error {
         case <-ctx.Done():
             return nil
         case <-ticker.C:
-            logger.InfoContext(ctx, "still alive")
+            h.log.InfoContext(ctx, "still alive")
         }
     }
-}))
+}
+
+app.Workers().Continuous("heartbeat", Heartbeat{log: app.Logger()})
 ```
 
-A method value works too: `workers.Scheduled("daily-report", "0 6 * * *", worker.Func(reports.Send))`. A function is registered by value, so read [Registering by value](#registering-by-value) before you give it a database to use.
+A function you already have becomes a worker the same way, through a type whose `Run` calls it. Such a worker is registered by value, so read [Registering by value](#registering-by-value) before you give it a database to use.
 
 ---
 
 ## Registration
 
-### The supervisor
+### The registry
 
-`worker.Use(app)` returns a new `*worker.Supervisor` and registers nothing by itself: it binds nothing into the container, installs no hook and adds no component. It logs through the App's logger with `module=worker`. Create it once in the composition root and hand it to the modules that register workers:
+`app.Workers()` returns the App's one registry, a `*credo.Workers` created on first use; every call returns the same value. It registers nothing by itself: it binds nothing into the container, installs no hook and adds no component. It logs through the App's logger with `module=worker`, and each worker's records carry `component=worker:<name>`. A module that registers workers takes the `*credo.App` it already receives:
 
 ```go
-// RegisterBilling is the billing module's registration: it takes the
-// supervisor the composition root created.
-func RegisterBilling(app *credo.App, workers *worker.Supervisor) {
+// RegisterBilling is the billing module's registration.
+func RegisterBilling(app *credo.App) {
     app.Provide(NewInvoiceWorker)
-    workers.ScheduledProvided[*InvoiceWorker]("invoice-worker", "@every 1m", worker.ScheduledConfig{
+    app.Workers().ScheduledProvided[*InvoiceWorker]("invoice-worker", "@every 1m", credo.ScheduledConfig{
         RunTimeout: 15 * time.Second,
     })
 }
 ```
 
-The supervisor is not in the container. A controller that wants it as a constructor parameter — an admin endpoint, say — gets it from a binding you write: `app.ProvideValue(workers)`. Calling `worker.Use` more than once gives independent supervisors; worker names stay unique across all of them.
+The registry is not in the container. A controller that wants it as a constructor parameter — an admin endpoint, say — gets it from a binding you write: `app.ProvideValue(app.Workers())`. Whichever module registered a worker, `Snapshot` and `Lookup` report it, and its name is unique across the App.
 
 ### Names
 
-The name identifies the registration: it is the `worker` attribute of every log line, `Name` in the snapshot, the component name `worker:<name>` under which `/ready` and the lifecycle's error reports name the worker, and `Worker` in [`CurrentRun`](#run-context). It must be non-empty, unique within the App, and free of surrounding whitespace and control characters; names are never trimmed for you. Keep names stable — dashboards and alerts will key on them.
+The name identifies the registration: it is `Name` in the snapshot, the suffix of the component name `worker:<name>` — the `component` attribute of every log line the worker writes, and the name under which `/ready` and the lifecycle's error reports name the worker — and `Worker` in [`CurrentWorkerRun`](#run-context). It must be non-empty, unique within the App, and free of surrounding whitespace and control characters; names are never trimmed for you. Keep names stable — dashboards and alerts will key on them.
 
 ### Registration window and misuse
 
 Register workers before `app.Finalize()` (or before `Run`, which finalizes implicitly). Registration does no I/O and checks everything it can at the call: a misuse panics there, with a message naming the call, the problem and the remedy:
 
 ```text
-worker: Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay
-worker: Continuous("x"): duplicate worker name "x"; give each worker its own name
-worker: Scheduled("report") after app.Finalize; register workers before Finalize
+credo: Workers.Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay
+credo: Workers.Continuous("x"): a worker named "x" is already registered; give each worker its own name
+credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly
 ```
 
-A nil worker, a malformed name, more than one configuration, a negative value and a cron expression that does not parse panic the same way. A schedule that comes from configuration is checked first with `worker.ParseSchedule`, which returns the error instead of panicking ([Configuration](#configuration)). What only the whole graph reveals — a provided worker whose `T` has no binding — is an error `Finalize` returns, and a constructor that fails in the start phase fails the start.
+A nil worker, a malformed name, more than one configuration, a negative value and a cron expression that does not parse panic the same way. A schedule that comes from configuration is checked first with `credo.ParseSchedule`, which returns the error instead of panicking ([Configuration](#configuration)). What only the whole graph reveals — a provided worker whose `T` has no binding — is an error `Finalize` returns, and a constructor that fails in the start phase fails the start.
 
 ### Provided workers
 
 `ContinuousProvided[T]` and `ScheduledProvided[T]` register a worker that the container builds. They record the type, not an instance: the worker's component is a constructor over `T`, which the start phase builds after `T`'s dependencies have started.
 
 - The `app.Provide` binding of `T` and the registration may come in either order, both before `Finalize`.
-- `T` must have a `Run` method — the constraint is `T worker.Worker`, so anything else does not compile. `T` may be an interface bound with `app.Alias`.
+- `T` must have a `Run` method — the constraint is `T credo.Worker`, so anything else does not compile. `T` may be an interface bound with `app.Alias`.
 - A `T` without a binding fails `Finalize` with the dependency path. A constructor error, a panic or a nil `T` fails the start: what was built is rolled back, and `Run` returns a `*credo.LifecycleError` naming `worker:<name>`.
 - The worker stops **before** the components `T` depends on: the database a consumer writes to is still open while the consumer flushes its last batch. If `T` itself has `Shutdown`, it is a component too and is shut down after the worker.
-- One `T` registered under two names panics, in one supervisor or in two: the container hands every registration the same instance, and two loops would share it.
+- One `T` registered under two names panics: the container hands every registration the same instance, and two loops would share it.
 
 ### Registering by value
 
@@ -252,7 +254,7 @@ The defaults fit the common case. A continuous worker that consumes what your HT
 Choose the ingress tier for a continuous worker when work enters the process through it — a consumer of an external queue or broker, a watcher of an outside source — so it stops taking new work while the listener does:
 
 ```go
-workers.ContinuousProvided[*BrokerConsumer]("payments-events", worker.ContinuousConfig{
+app.Workers().ContinuousProvided[*BrokerConsumer]("payments-events", credo.ContinuousConfig{
     Tier: credo.TierIngress, // work enters the process here: stop taking it with the listener
 })
 ```
@@ -274,8 +276,8 @@ Each registration method takes its kind's configuration — no argument for the 
 | `Tier` | both | the kind's default tier ([Tiers](#tiers)) |
 | `Restart.Disabled` | continuous | restarts enabled; `true` makes the first failed run terminal and cannot be combined with the other `Restart` fields |
 | `Restart.Limit` | continuous | unlimited restarts; N allows the first run plus at most N restarts |
-| `Restart.MinDelay` | continuous | `worker.DefaultMinRestartDelay` (3 s), the first and shortest wait |
-| `Restart.MaxDelay` | continuous | the larger of `worker.DefaultMaxRestartDelay` (1 min) and `MinDelay`; a positive value below `MinDelay` panics |
+| `Restart.MinDelay` | continuous | `credo.DefaultMinRestartDelay` (3 s), the first and shortest wait |
+| `Restart.MaxDelay` | continuous | the larger of `credo.DefaultMaxRestartDelay` (1 min) and `MinDelay`; a positive value below `MinDelay` panics |
 | `RunOnStart` | scheduled | no extra run at start |
 | `RunTimeout` | scheduled | no timeout |
 | `MaxConsecutiveFailures` | scheduled | unlimited failures |
@@ -285,7 +287,7 @@ Each registration method takes its kind's configuration — no argument for the 
 
 A setting of the other kind cannot be written: `ContinuousConfig` has no schedule fields and `ScheduledConfig` no restart policy.
 
-The configuration lives in code. The package reads no configuration section, so a setting that should come from the environment — a schedule that differs per deployment, a restart delay you tune in production — is a typed section of your own, read once in the composition root and passed in:
+The configuration lives in code. The registry reads no configuration section, so a setting that should come from the environment — a schedule that differs per deployment, a restart delay you tune in production — is a typed section of your own, read once in the composition root and passed in:
 
 ```go
 type WorkerSettings struct {
@@ -295,17 +297,18 @@ type WorkerSettings struct {
 }
 
 settings := app.MustGetConfig[WorkerSettings]("workers")
-if _, err := worker.ParseSchedule(settings.CleanupSchedule); err != nil {
+if _, err := credo.ParseSchedule(settings.CleanupSchedule); err != nil {
     log.Fatalf("workers.cleanup_schedule: %v", err)
 }
 
-workers.ContinuousProvided[*OrderConsumer]("order-consumer", worker.ContinuousConfig{
-    Restart: worker.Restart{MinDelay: settings.RestartMinDelay, MaxDelay: settings.RestartMaxDelay},
+workers := app.Workers()
+workers.ContinuousProvided[*OrderConsumer]("order-consumer", credo.ContinuousConfig{
+    Restart: credo.RestartPolicy{MinDelay: settings.RestartMinDelay, MaxDelay: settings.RestartMaxDelay},
 })
 workers.ScheduledProvided[*SessionCleanup]("session-cleanup", settings.CleanupSchedule)
 ```
 
-Zero settings fall through to the package defaults. A changed schedule, limit or timeout takes effect at the next start: a [config reload](#reloadable-settings) does not re-register workers.
+Zero settings fall through to the defaults. A changed schedule, limit or timeout takes effect at the next start: a [config reload](#reloadable-settings) does not re-register workers.
 
 ### Supported schedule formats
 
@@ -341,14 +344,14 @@ A run that lasted at least `MaxDelay` resets the sequence: its failure waits `Mi
 **Fixed delay.** Set both delays to the same value:
 
 ```go
-workers.ContinuousProvided[*Poller]("poller", worker.ContinuousConfig{
-    Restart: worker.Restart{MinDelay: 10 * time.Second, MaxDelay: 10 * time.Second},
+app.Workers().ContinuousProvided[*Poller]("poller", credo.ContinuousConfig{
+    Restart: credo.RestartPolicy{MinDelay: 10 * time.Second, MaxDelay: 10 * time.Second},
 })
 ```
 
 A `MinDelay` of a minute or more alone is fixed as well, since a zero `MaxDelay` resolves to it.
 
-**Limits.** Backoff makes `Limit` take longer to exhaust: with the defaults, `Limit: 5` reaches `failed` after roughly 48–93s of waiting instead of 15s, and an `UnreadyWhenFailed` readiness drop comes correspondingly later. `Restart{Disabled: true}` makes the first failure terminal.
+**Limits.** Backoff makes `Limit` take longer to exhaust: with the defaults, `Limit: 5` reaches `failed` after roughly 48–93s of waiting instead of 15s, and an `UnreadyWhenFailed` readiness drop comes correspondingly later. `RestartPolicy{Disabled: true}` makes the first failure terminal.
 
 ---
 
@@ -360,7 +363,7 @@ A `MinDelay` of a minute or more alone is fixed as well, since a zero `MaxDelay`
 func (w *ReportWorker) Run(ctx context.Context) error {
     for _, tenant := range w.tenants {
         if err := w.buildReport(ctx, tenant); err != nil {
-            if errors.Is(context.Cause(ctx), worker.ErrRunTimeout) {
+            if errors.Is(context.Cause(ctx), credo.ErrWorkerRunTimeout) {
                 return fmt.Errorf("report for %s: budget exhausted: %w", tenant, err)
             }
             return err
@@ -373,7 +376,7 @@ func (w *ReportWorker) Run(ctx context.Context) error {
 What to expect:
 
 - A run cut short by its timeout is a **failure, even if `Run` returns nil**. It is recorded as `worker: run timed out after 15s…`, logged with `timed_out=true`, and counts toward `MaxConsecutiveFailures`. A half-finished run can therefore never stamp `LastSucceededAt` or satisfy a readiness condition.
-- `errors.Is(context.Cause(ctx), worker.ErrRunTimeout)` tells the budget running out from the worker being stopped. Whichever happens first wins, because the context keeps its first cancellation cause: when the stop comes first, a nil return is a graceful stop; when the timeout fires first and the stop follows, the run is a timed-out failure, nil return included.
+- `errors.Is(context.Cause(ctx), credo.ErrWorkerRunTimeout)` tells the budget running out from the worker being stopped. Whichever happens first wins, because the context keeps its first cancellation cause: when the stop comes first, a nil return is a graceful stop; when the timeout fires first and the stop follows, the run is a timed-out failure, nil return included.
 - The timeout is cooperative: it cancels the context and never kills the goroutine. A `Run` that ignores its context keeps the worker busy past the budget, and activations that pass meanwhile are skipped. There is never more than one run of a worker at a time.
 - Continuous workers have no run timeout — their `Run` is meant to last until the worker stops. Put timeouts on the individual operations inside the loop instead.
 
@@ -409,7 +412,7 @@ func (w *OrderWatcher) Run(ctx context.Context) error {
 }
 ```
 
-A subscription opened in the constructor and closed when `Run` returns would leave every restart reading from a closed subscription. Long-lived clients the worker shares with others — a database pool, an HTTP client — stay constructor parameters; it is what `Run` opens for itself that it must close. A worker that cannot be re-entered is registered with `Restart{Disabled: true}`, so its first failure is terminal.
+A subscription opened in the constructor and closed when `Run` returns would leave every restart reading from a closed subscription. Long-lived clients the worker shares with others — a database pool, an HTTP client — stay constructor parameters; it is what `Run` opens for itself that it must close. A worker that cannot be re-entered is registered with `RestartPolicy{Disabled: true}`, so its first failure is terminal.
 
 ### Reporting a cancelled call at shutdown
 
@@ -476,38 +479,39 @@ Recurring finite work is a scheduled worker.
 
 ## Every Replica Runs Every Schedule
 
-The scheduler is per process. Three replicas of an application run a scheduled cleanup three times, at the same activation. Make each scheduled job idempotent — deleting expired rows twice deletes nothing the second time — or guard it with an application-level lock: for SQL, a PostgreSQL advisory lock (`pg_try_advisory_lock`) taken at the start of the run, or a claim row that one replica wins per activation. For a cron expression, `CurrentRun(ctx).ScheduledAt` names the same activation on every replica, which makes it a natural claim key; an `@every` grid starts when each process starts, so its activations differ between replicas. Activations can also be skipped, and a timed-out run may have done part of its work, so idempotence pays off on a single replica too.
+The scheduler is per process. Three replicas of an application run a scheduled cleanup three times, at the same activation. Make each scheduled job idempotent — deleting expired rows twice deletes nothing the second time — or guard it with an application-level lock: for SQL, a PostgreSQL advisory lock (`pg_try_advisory_lock`) taken at the start of the run, or a claim row that one replica wins per activation. For a cron expression, `CurrentWorkerRun(ctx).ScheduledAt` names the same activation on every replica, which makes it a natural claim key; an `@every` grid starts when each process starts, so its activations differ between replicas. Activations can also be skipped, and a timed-out run may have done part of its work, so idempotence pays off on a single replica too.
 
 ---
 
 ## Run Context
 
-The context passed to `Run` carries the run's metadata. `worker.CurrentRun(ctx)` returns it:
+The context passed to `Run` carries the run's metadata. `credo.CurrentWorkerRun(ctx)` returns it:
 
 ```go
 func (w *InvoiceWorker) Run(ctx context.Context) error {
-    run, _ := worker.CurrentRun(ctx)
+    run, _ := credo.CurrentWorkerRun(ctx)
     w.log.InfoContext(ctx, "processing invoices",
         "run_id", run.ID, "scheduled_at", run.ScheduledAt)
     return w.repo.ProcessPending(ctx)
 }
 ```
 
-| `RunInfo` field | Value |
+| `WorkerRun` field | Value |
 | --- | --- |
 | `Worker` | the registration name |
 | `ID` | a fresh identifier per run, equal to the `run_id` of Credo's own log lines for that run |
 | `ScheduledAt` | the intended activation time; zero for continuous workers and for the `RunOnStart` run |
 
-`CurrentRun` returns false for a context that is not a run context — in a unit test that calls `Run` directly, for example — so code that reads it works there too. The context is cancelled when the worker stops and, with `RunTimeout`, when the run's budget runs out; always watch `ctx.Done()` in long-running work. Restart and failure counters are not in the context; read them from the [snapshot](#observing-worker-state).
+`CurrentWorkerRun` returns false for a context that is not a run context — in a unit test that calls `Run` directly, for example — so code that reads it works there too. The context is cancelled when the worker stops and, with `RunTimeout`, when the run's budget runs out; always watch `ctx.Done()` in long-running work. Restart and failure counters are not in the context; read them from the [snapshot](#observing-worker-state).
 
 ---
 
 ## Observing Worker State
 
-`workers.Snapshot()` returns one `worker.Info` per registered worker, in registration order, and `workers.Lookup(name)` returns the worker registered under exactly that name, or false. Both work from the moment of registration — before `Finalize`, before the App starts — and read memory only. An admin endpoint serves them directly:
+`app.Workers().Snapshot()` returns one `credo.WorkerInfo` per worker of the App, in registration order, and `app.Workers().Lookup(name)` returns the worker registered under exactly that name, or false. Both work from the moment of registration — before `Finalize`, before the App starts — and read memory only. An admin endpoint serves them directly:
 
 ```go
+workers := app.Workers()
 admin := app.Group("/admin") // protect it: auth middleware, a separate listener, or both
 admin.GET("/workers", func(ctx *credo.Context) error {
     return ctx.Response().JSON(http.StatusOK, workers.Snapshot())
@@ -521,11 +525,11 @@ admin.GET("/workers/{name}", func(ctx *credo.Context) error {
 })
 ```
 
-A controller built by the container takes `*worker.Supervisor` as a constructor parameter once you bind it with `app.ProvideValue(workers)`.
+A controller built by the container takes `*credo.Workers` as a constructor parameter once you bind it with `app.ProvideValue(app.Workers())`.
 
-Each `Info` carries:
+Each `WorkerInfo` carries:
 
-- `Name`, `Kind` (`worker.KindContinuous` / `worker.KindScheduled`) and, for a scheduled worker, `Schedule` — the expression as registered
+- `Name`, `Kind` (`credo.WorkerKindContinuous` / `credo.WorkerKindScheduled`) and, for a scheduled worker, `Schedule` — the expression as registered
 - `Continuous` or `Scheduled` — exactly one is set, holding the **resolved** configuration the worker runs with: the tier, the restart floor and cap after defaults, the timeout and the limits. Each snapshot holds its own copy
 - `Status`:
 
@@ -541,17 +545,17 @@ Each `Info` carries:
 - `Restarts` (continuous) and `ConsecutiveFailures` (scheduled) — a scheduled worker's signal of trouble between activations is `consecutive_failures > 0`
 - `LastStartedAt` (start of the latest run), `LastSucceededAt` (end of the latest successful scheduled run; always zero for continuous workers) and `LastError` (the latest failure, never with a stack trace; a successful scheduled run clears it)
 
-**JSON.** `Info` is shaped for direct encoding: field names are snake_case, the nested configuration included (`continuous.restart.min_delay`, `scheduled.run_timeout`, `consecutive_failures`, `last_error`, …); `schedule`, `continuous`, `scheduled`, `last_started_at`, `last_succeeded_at` and `last_error` are omitted while empty; every other field is always present. Durations encode as integer nanoseconds under Credo's JSON response profile — `"run_timeout": 15000000000` is 15 seconds — and `tier` as `"ingress"` or `"internal"`. The spec shows a [full example](../specs/worker.md#json-shape).
+**JSON.** `WorkerInfo` is shaped for direct encoding: field names are snake_case, the nested configuration included (`continuous.restart.min_delay`, `scheduled.run_timeout`, `consecutive_failures`, `last_error`, …); `schedule`, `continuous`, `scheduled`, `last_started_at`, `last_succeeded_at` and `last_error` are omitted while empty; every other field is always present. Durations encode as integer nanoseconds under Credo's JSON response profile — `"run_timeout": 15000000000` is 15 seconds — and `tier` as `"ingress"` or `"internal"`. The spec shows a [full example](../specs/worker.md#json-shape).
 
 ---
 
 ## Reading the Logs
 
-Every worker that starts writes exactly one `worker started` line and exactly one `worker stopped` line, both at Info:
+Every worker that starts writes exactly one `worker started` line and exactly one `worker stopped` line, both at Info. Every line of a worker carries `module=worker` and `component=worker:<name>`, the key and value of the lifecycle's records about the worker:
 
 ```text
-level=INFO msg="worker started" module=worker worker=invoice-worker kind=scheduled schedule="@every 1m" next_run=…
-level=INFO msg="worker stopped" module=worker worker=invoice-worker kind=scheduled status=stopped reason=shutdown
+level=INFO msg="worker started" module=worker component=worker:invoice-worker kind=scheduled schedule="@every 1m" next_run=…
+level=INFO msg="worker stopped" module=worker component=worker:invoice-worker kind=scheduled status=stopped reason=shutdown
 ```
 
 | Message | Level | When |
@@ -565,7 +569,7 @@ level=INFO msg="worker stopped" module=worker worker=invoice-worker kind=schedul
 
 - `worker failed` is the line to alert on; the `reason=failed` stop line that follows is bookkeeping.
 - A successful scheduled run logs at **Debug** only; a worker running every minute would otherwise write 1,440 Info lines a day. Use the snapshot or a readiness condition to answer "is it alive", and the logs as the audit trail.
-- To join Credo's lines with your own for one run, log `CurrentRun(ctx).ID` as `run_id`.
+- To join Credo's lines with your own for one run, log `CurrentWorkerRun(ctx).ID` as `run_id`.
 
 ---
 
@@ -576,7 +580,7 @@ A worker can take the instance out of rotation through `/ready` (`app.UseHealth(
 ```go
 app.UseHealth()
 
-workers.ScheduledProvided[*Recovery]("recovery", "@every 5m", worker.ScheduledConfig{
+app.Workers().ScheduledProvided[*Recovery]("recovery", "@every 5m", credo.ScheduledConfig{
     RunOnStart:               true,
     UnreadyUntilFirstSuccess: true,             // unready until the first run succeeds
     UnreadyWhenFailed:        true,             // unready once the worker is failed
@@ -599,8 +603,9 @@ Readiness takes an instance out of rotation and restarts nothing. A worker that 
 ```go
 app.UseHealth()
 
-workers.ContinuousProvided[*OrderConsumer]("order-consumer", worker.ContinuousConfig{
-    Restart: worker.Restart{Limit: 5}, // with unlimited restarts it never fails
+workers := app.Workers()
+workers.ContinuousProvided[*OrderConsumer]("order-consumer", credo.ContinuousConfig{
+    Restart: credo.RestartPolicy{Limit: 5}, // with unlimited restarts it never fails
 })
 
 app.AddLivenessCheck("order-consumer", credo.HealthCheckFunc(func(context.Context) error {
@@ -608,7 +613,7 @@ app.AddLivenessCheck("order-consumer", credo.HealthCheckFunc(func(context.Contex
     switch {
     case !ok:
         return errors.New(`no worker named "order-consumer"`)
-    case info.Status == worker.StatusFailed:
+    case info.Status == credo.WorkerStatusFailed:
         return fmt.Errorf("worker %q failed: %s", info.Name, info.LastError)
     }
     return nil
@@ -656,7 +661,7 @@ A changed cron expression is restart-only; the reload logs it as `restart requir
 
 ## Testing Workers
 
-A worker is a type with a `Run` method, so its logic is tested by calling `Run` directly — no supervisor, no App:
+A worker is a type with a `Run` method, so its logic is tested by calling `Run` directly — no registry, no App:
 
 ```go
 func TestInvoiceWorker(t *testing.T) {
@@ -679,10 +684,9 @@ The registration — names, schedules, tiers, limits, timeouts — is tested thr
 ```go
 func TestBillingRegistration(t *testing.T) {
     app := testutil.NewApp(t)
-    workers := worker.Use(app)
-    RegisterBilling(app, workers)
+    RegisterBilling(app)
 
-    info, ok := workers.Lookup("invoice-worker")
+    info, ok := app.Workers().Lookup("invoice-worker")
     if !ok {
         t.Fatal(`no worker named "invoice-worker"`)
     }
@@ -697,8 +701,7 @@ To run the workers inside the App, start it without a listener. `testutil.Start`
 ```go
 func TestBillingWorkersStop(t *testing.T) {
     app := testutil.NewApp(t, testutil.WithWiring(wire))
-    workers := worker.Use(app)
-    RegisterBilling(app, workers)
+    RegisterBilling(app)
 
     testutil.Start(t, app)
     ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -706,8 +709,8 @@ func TestBillingWorkersStop(t *testing.T) {
     if err := app.Shutdown(ctx); err != nil {
         t.Fatal(err) // names worker:<name> when a Run ignored its cancellation
     }
-    for _, info := range workers.Snapshot() {
-        if info.Status != worker.StatusStopped {
+    for _, info := range app.Workers().Snapshot() {
+        if info.Status != credo.WorkerStatusStopped {
             t.Errorf("%s: status %s, want stopped", info.Name, info.Status)
         }
     }
@@ -718,8 +721,7 @@ An integration test that drives the workers through HTTP uses `testutil.Start`, 
 
 ```go
 app := testutil.NewApp(t, testutil.WithWiring(wire))
-workers := worker.Use(app)
-RegisterBilling(app, workers)
+RegisterBilling(app)
 
 testutil.Start(t, app) // starts the workers; the App shuts down when the test ends
 srv := httptest.NewServer(app)
@@ -739,7 +741,7 @@ Swap a worker's dependencies with `testutil.WithOverride[T]` as for any binding;
 - give scheduled workers a `RunTimeout` budget instead of hand-rolled timeouts inside `Run`
 - make scheduled jobs idempotent or lock-guarded: every replica runs every schedule
 - keep worker names stable and unique; they key logs, snapshots, readiness and liveness checks
-- keep the supervisor from `worker.Use` in the composition root and pass it to modules and admin endpoints; there is nothing to resolve
+- reach the registry through `app.Workers()` wherever the `*credo.App` is at hand; there is nothing to resolve, and an admin controller that takes it as a parameter gets it from `app.ProvideValue(app.Workers())`
 
 ---
 

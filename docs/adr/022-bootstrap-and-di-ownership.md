@@ -84,7 +84,7 @@ Ownership is decided where a value is registered, and the kernel's component reg
 
 - The App owns what it builds and what it is given, unless `credo.Borrowed()` on `ProvideValue` leaves starting and shutting down to the caller; which bindings are components is [ADR-024](024-lifecycle-components.md#registration-and-discovery)'s rule.
 - Within one App the registry keys components by resource identity, so one resource has one teardown, run once, after the consumers of every holder, and holders that disagree on its owner or on its kind of teardown are refused ([container spec](../specs/container.md#resource-identity-and-teardown)).
-- Nothing framework-owned is bound in the container, so nothing is adopted or protected. A bound database is a component like any other, which the start walk builds once, after `Finalize` and every override ([ADR-015](015-data-access.md#a-database-is-a-component)); the worker supervisor is not bound at all ([ADR-023](023-worker-system.md)).
+- Nothing framework-owned is bound in the container, so nothing is adopted or protected. A bound database is a component like any other, which the start walk builds once, after `Finalize` and every override ([ADR-015](015-data-access.md#a-database-is-a-component)); the worker registry is not bound at all ([ADR-023](023-worker-system.md)).
 - `credo.Override()` replaces a binding before `Finalize`, when no constructor has run, so an override never supersedes an instance the App built: the replaced value never becomes the App's, and whoever built it releases it.
 
 Every component is torn down by the rules above ([Dependency-ordered, bounded teardown](#dependency-ordered-bounded-teardown)), once per resource.

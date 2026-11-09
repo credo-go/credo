@@ -183,7 +183,7 @@ The order a resource stops in follows from the graph rather than from which hook
 **Costs.**
 
 - **One drain deadline, spent in order.** Both tiers share the deadline, and a correct order spends it sequentially, so a long HTTP drain leaves less for the internal tier. The cost is documented, not hidden.
-- **The ingress tier is one more concept**, and choosing it wrongly has asymmetric effects ([ADR-023](023-worker-system.md#each-worker-is-a-component-the-supervisor-is-a-registry)).
+- **The ingress tier is one more concept**, and choosing it wrongly has asymmetric effects ([ADR-023](023-worker-system.md#each-worker-is-a-component-the-registry-has-no-lifecycle)).
 - **The documented double start.** Where a binding's type shows `Start` and its value has `Shutdown`, an `OnStart` hook that also starts such a value makes it start twice.
 
 - **A value started by a hook behind an interface is bound differently.** A binding whose type hides its value's `Start` is refused, so such a value is bound as its concrete type with the interface as an `Alias`, and the start walk starts it in place of the hook, or bound with `credo.Borrowed()` when its caller both starts and stops it.

@@ -20,4 +20,4 @@ A specification is the canonical statement of a contract: the public API, its be
 | [Store](store.md) | `store/`, `store/sqldb/` | [ADR-015](../adr/015-data-access.md), [ADR-016](../adr/016-health-checks.md), [ADR-024](../adr/024-lifecycle-components.md) | [Data access guide](../guides/data-access.md) |
 | [Validation](validation.md) | `validation/` | [ADR-011](../adr/011-validation-strategy.md) | [Getting started](../guides/getting-started.md#validation), [Error handling guide](../guides/error-handling.md#validation-and-bind-failures) |
 | [WebSocket](websocket.md) | `websocket/` | [ADR-019](../adr/019-websocket-integration-and-drain.md) | [WebSocket guide](../guides/websocket.md) |
-| [Worker](worker.md) | `worker/` | [ADR-023](../adr/023-worker-system.md) | [Worker guide](../guides/worker.md) |
+| [Worker](worker.md) | root (`workers.go`, `worker.go`), `internal/worker/` | [ADR-023](../adr/023-worker-system.md) | [Worker guide](../guides/worker.md) |

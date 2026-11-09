@@ -313,9 +313,9 @@ if !app.Has[*AuditLog]() {
 
 `Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake panics at the `Provide` call, not at compile time. Credo does not offer a closure factory that resolves its own dependencies, and a constructor that captures `app` and calls `Resolve` inside its body is unsupported: those dependencies are invisible to `Finalize` validation, cycle detection and dependency-ordered shutdown, and constructors run only after `Finalize`, so the call cannot be scheduled against the graph. Declare dependencies as constructor parameters and let the container inject them.
 
-Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
+Some Credo subsystems build on top of DI with helpers instead of asking you to wire every internal singleton manually. Examples:
 
-- `workers.ContinuousProvided[*MyWorker]("name")` and `workers.ScheduledProvided[*MyWorker]("name", expr)` on the supervisor `worker.Use(app)` returns, for a worker the container provides
+- `app.Workers().ContinuousProvided[*MyWorker]("name")` and `app.Workers().ScheduledProvided[*MyWorker]("name", expr)` on the App's worker registry, for a worker the container provides
 
 These helpers build on the DI container and attach framework behavior to it: each worker registration adds a component — a constructor over the worker's type — that the start phase builds after the worker's dependencies and that stops before them, and binds nothing into the container. Use them before `app.Finalize()`; a provided worker whose type has no binding fails `Finalize`. See the [Worker Guide](worker.md) for the user-facing patterns. A database needs no helper: `*sqldb.DB` is a component, so its binding alone pings it at start, reports it in `/ready` and shuts it down after its consumers ([Data Access Guide](data-access.md#what-a-bound-database-does)).
 

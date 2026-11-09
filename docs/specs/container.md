@@ -597,7 +597,7 @@ func main() {
     // 3. Feature mounts and component registrations, in any order
     app.UseI18n(credo.I18nConfig{Dir: "locales"})
     app.UseHealth()
-    worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
+    app.Workers().ContinuousProvided[*OutboxRelay]("outbox-relay")
     app.Manage(NewSearchIndexer, credo.ComponentName("search-indexer"))
 
     // 4. Finalize
