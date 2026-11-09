@@ -492,7 +492,7 @@ func run() error {
 
 	// The WebSocket server is an ingress component: it starts with the App
 	// and drains beside the HTTP drain, before the services its handlers use.
-	ws := websocket.New(app.NewInfra("websocket"))
+	ws := websocket.New()
 	app.Manage(ws, credo.Ingress())
 
 	// Hooks. OnConfigChange makes the "app" section reloadable: flip

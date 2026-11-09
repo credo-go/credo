@@ -17,7 +17,7 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	ws := credows.New(app.NewInfra("websocket"), credows.Config{
+	ws := credows.New(credows.Config{
 		Subprotocols:       []string{"echo.v1"},
 		RequireSubprotocol: true,
 	})

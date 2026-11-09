@@ -6,6 +6,7 @@ package credo
 
 import (
 	"cmp"
+	"context"
 	"crypto/tls"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -301,11 +302,14 @@ func buildContainer(rawConfig RawConfig, baseInfra Infra) *di.Container {
 	c := di.New()
 	c.SetFrameworkProvider(di.FrameworkProvider{
 		Type: reflect.TypeFor[Infra](),
-		Factory: func(serviceName string) any {
-			return Infra{Logger: baseInfra.Logger.With("service", serviceName)}
+		Factory: func(unitName string) any {
+			return Infra{Logger: baseInfra.Logger.With("component", unitName)}
 		},
 	})
 	c.SetLogger(baseInfra.Logger)
+	c.SetCallContext(func(ctx context.Context, unitName string) context.Context {
+		return context.WithValue(ctx, infraKey{}, Infra{Logger: baseInfra.Logger.With("component", unitName)})
+	})
 	c.MustProvideValue[RawConfig](rawConfig)
 	return c
 }

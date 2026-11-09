@@ -51,8 +51,8 @@ func TestInfra_Model1_LoggerScoping(t *testing.T) {
 
 	svc.Infra.Logger.Info("test message")
 	output := buf.String()
-	if !strings.Contains(output, "service=model1Service") {
-		t.Errorf("log output should contain service name, got: %s", output)
+	if !strings.Contains(output, "component=*credo_test.model1Service") || strings.Contains(output, "service=") {
+		t.Errorf("log output should carry component=<binding type> and no service key, got: %s", output)
 	}
 }
 
@@ -135,8 +135,8 @@ func TestApp_NewInfra_ScopedLogger(t *testing.T) {
 	infra.Logger.Info("hello")
 
 	output := buf.String()
-	if !strings.Contains(output, "service=MyMiddleware") {
-		t.Errorf("log output should contain service=MyMiddleware, got: %s", output)
+	if !strings.Contains(output, "component=MyMiddleware") || strings.Contains(output, "service=") {
+		t.Errorf("log output should contain component=MyMiddleware and no service key, got: %s", output)
 	}
 }
 

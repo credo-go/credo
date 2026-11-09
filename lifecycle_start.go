@@ -330,6 +330,7 @@ func (lm *lifecycleManager) startUnit(
 
 // invokeStart runs a start call, recovering a panic as a *DIPanicError.
 func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, fn func(context.Context) error) (err error) {
+	ctx = lm.app.withComponentInfra(ctx, u.Name())
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := &di.PanicError{
@@ -495,6 +496,7 @@ func (lm *lifecycleManager) runLifecycleHook(
 	index int,
 	fn func(ctx context.Context) error,
 ) (err error) {
+	ctx = lm.app.withComponentInfra(ctx, fmt.Sprintf("%s[%d]", kind, index))
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := &lifecycleHookPanicError{
@@ -533,10 +535,11 @@ func (lm *lifecycleManager) componentReadiness() []internalhealth.ReadinessCheck
 		if !built || !ok {
 			continue
 		}
+		infra := lm.app.NewInfra(u.Name())
 		checks = append(checks, internalhealth.ReadinessCheck{
 			Name: u.Name(),
 			Probe: internalhealth.NewProbe(func(ctx context.Context) internalhealth.Result {
-				if err := readier.Ready(ctx); err != nil {
+				if err := readier.Ready(context.WithValue(ctx, infraKey{}, infra)); err != nil {
 					return internalhealth.FailureResult(err)
 				}
 				return internalhealth.SuccessResult()

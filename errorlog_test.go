@@ -48,7 +48,7 @@ func startApp(t *testing.T, app *credo.App) {
 // TestServerErrorLog_TLSHandshakeFailure proves the ErrorLog bridge end to
 // end: a plaintext request to a TLS port makes net/http report a handshake
 // failure, which must reach the application logger (ERROR,
-// component=net/http) instead of the standard log package's stderr output.
+// module=net/http) instead of the standard log package's stderr output.
 func TestServerErrorLog_TLSHandshakeFailure(t *testing.T) {
 	certFile, keyFile := generateSelfSignedCert(t)
 	logs := &syncBuffer{}
@@ -69,7 +69,7 @@ func TestServerErrorLog_TLSHandshakeFailure(t *testing.T) {
 	}
 
 	got := logs.waitFor(t, "TLS handshake error")
-	for _, want := range []string{"level=ERROR", "component=net/http", "http: TLS handshake error from"} {
+	for _, want := range []string{"level=ERROR", "module=net/http", "http: TLS handshake error from"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("captured logs missing %q:\n%s", want, got)
 		}
@@ -92,7 +92,7 @@ func TestServerErrorLog_PanicOutsideRecovery(t *testing.T) {
 	}
 
 	got := logs.waitFor(t, "panic serving")
-	for _, want := range []string{"level=ERROR", "component=net/http"} {
+	for _, want := range []string{"level=ERROR", "module=net/http"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("captured logs missing %q:\n%s", want, got)
 		}

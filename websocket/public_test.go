@@ -27,12 +27,12 @@ type publicServerSurface interface {
 }
 
 var (
-	_ publicConnSurface                                    = (*credows.Conn)(nil)
-	_ publicServerSurface                                  = (*credows.Server)(nil)
-	_ credo.Starter                                        = (*credows.Server)(nil)
-	_ error                                                = credows.CloseError{}
-	_ credows.Handler                                      = func(*credo.Context, *credows.Conn) error { return nil }
-	_ func(credo.Infra, ...credows.Config) *credows.Server = credows.New
+	_ publicConnSurface                       = (*credows.Conn)(nil)
+	_ publicServerSurface                     = (*credows.Server)(nil)
+	_ credo.Starter                           = (*credows.Server)(nil)
+	_ error                                   = credows.CloseError{}
+	_ credows.Handler                         = func(*credo.Context, *credows.Conn) error { return nil }
+	_ func(...credows.Config) *credows.Server = credows.New
 )
 
 func ExampleConfig() {

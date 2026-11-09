@@ -55,6 +55,9 @@ type Container struct {
 	// frameworkProviders produces constructor parameters the framework injects
 	// without a registration (credo.Infra, Model 1). Written at setup only.
 	frameworkProviders map[reflect.Type]FrameworkProvider
+	// callContext derives the context of a teardown call; see
+	// SetCallContext. Written at setup only.
+	callContext func(ctx context.Context, unitName string) context.Context
 
 	// logger receives teardown diagnostics. Never nil; defaults to discard.
 	logger *slog.Logger

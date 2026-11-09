@@ -1,16 +1,20 @@
 package di
 
-import "reflect"
+import (
+	"context"
+	"reflect"
+)
 
 // FrameworkProvider produces a value for constructor parameters of Type that
 // have no registration of their own: the framework injects them. The root
 // package registers credo.Infra this way so the container can produce it
 // without importing the root package (avoiding an import cycle). Factory
-// receives the short service name of the constructor being built (see
-// deriveServiceName) and returns the value to pass.
+// receives the name of the unit being built — its binding's type as the
+// lifecycle prints it, such as "*users.Service", or a managed component's
+// name — and returns the value to pass.
 type FrameworkProvider struct {
 	Type    reflect.Type
-	Factory func(serviceName string) any
+	Factory func(unitName string) any
 }
 
 // SetFrameworkProvider registers (or replaces) the framework provider for
@@ -36,16 +40,19 @@ func (c *Container) isFrameworkType(t reflect.Type) bool {
 	return ok
 }
 
-// deriveServiceName extracts a short service name from a reflect.Type.
-// For "*myapp.OrderService" it returns "OrderService".
-func deriveServiceName(t reflect.Type) string {
-	name := t.Name()
-	if name != "" {
-		return name
+// SetCallContext installs the function that derives the context of every
+// teardown call the container makes on a component — Shutdown or Close —
+// from the drain context and the unit's name. The root puts the component's
+// scoped Infra in it. Must be called before any Shutdown; nil leaves the
+// context as it is.
+func (c *Container) SetCallContext(fn func(ctx context.Context, unitName string) context.Context) {
+	c.callContext = fn
+}
+
+// callCtx returns the context of a call on u.
+func (c *Container) callCtx(ctx context.Context, u *Unit) context.Context {
+	if c.callContext == nil {
+		return ctx
 	}
-	// Pointer types: dereference.
-	if t.Kind() == reflect.Pointer {
-		return deriveServiceName(t.Elem())
-	}
-	return t.String()
+	return c.callContext(ctx, u.Name())
 }
