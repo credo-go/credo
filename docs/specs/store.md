@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `store/`, `store/sqldb/` **ADR:** [ADR-015](../adr/015-data-access.md), [ADR-016](../adr/016-health-checks.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Data access guide](../guides/data-access.md) **Sources:** GoFr (Apache-2.0), Goyave (MIT)
 
+> **Normative:** the sections [Core Package: store/](#core-package-store) and [Bun Wrapper: store/sqldb/](#bun-wrapper-storesqldb). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 This spec owns the data access contracts: semantic errors, `Health`, transactions, and the `sqldb` Bun wrapper with its component lifecycle, query proxies, typed terminals, migrations, and error mapping. Offset pagination — `Page[T]`'s request validation, total semantics, and snapshot consistency — and the cursor/keyset design gate live in the [pagination spec](pagination.md); the general resource-identity rule lives in the [container spec](container.md#resource-identity-and-teardown). The rationale and the rejected alternatives are in [ADR-015](../adr/015-data-access.md).
 
 ## Overview

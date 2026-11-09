@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `websocket/` **ADR:** [ADR-019](../adr/019-websocket-integration-and-drain.md) **Guide:** [WebSocket guide](../guides/websocket.md) **Sources:** wraps coder/websocket v1.8.15 (ISC)
 
+> **Normative:** the sections [Canonical Registration](#canonical-registration), [Public API](#public-api), [Configuration](#configuration), [Origin Authorization](#origin-authorization), [Subprotocol Negotiation](#subprotocol-negotiation), [Routing and Middleware](#routing-and-middleware), [Handshake Failure Contract](#handshake-failure-contract), [Handler and Connection Lifetime](#handler-and-connection-lifetime), [Errors and Close Outcomes](#errors-and-close-outcomes), [Lifecycle](#lifecycle) and [Observability](#observability). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 ## Scope
 
 Package `github.com/credo-go/credo/websocket` is Credo's server-side adapter over exact-pinned `github.com/coder/websocket v1.8.15`. It provides route integration, security policy, Credo-owned message/close types, normalized errors, structured lifecycle logging, and managed or explicit graceful drain. The App's drain sequence is the [lifecycle spec](lifecycle.md#shutdown-in-tiers)'s; this spec states where the server sits in it.

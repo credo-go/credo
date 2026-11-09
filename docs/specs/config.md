@@ -2,7 +2,7 @@
 
 **Status:** Implemented (beta) **Package:** `config/` **ADR:** [ADR-005](../adr/005-configuration-architecture.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md) **Guide:** [Configuration guide](../guides/configuration.md) **Sources:** koanf (MIT)
 
-> **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
+> **Contract.** Every section of this spec is normative — what application code can observe: the sources and their precedence, the decode rules, the descriptors, the reload and its result, and the errors — except [Current Behaviour](#current-behaviour), which describes the loader's mechanisms as they are now: not guaranteed, they may change in any release. The examples run as `Example*` tests in [`config/example_test.go`](../../config/example_test.go), so a drift fails the build.
 
 This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, section descriptors, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-configreloadresult-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
 
@@ -140,13 +140,15 @@ app.Provide(Limits.Live) // decoded and validated when built, replaced whole by 
 
 func NewOrderService(limits *config.Live[LimitsConfig]) *OrderService // the signature says the value is live
 
-l := s.limits.Load() // once per operation: one atomic load, a value no reload changes
+l := s.limits.Load() // once per operation: a value no reload changes
 ```
+
+`ExampleSection_Live` runs a live section through a reload, with its result; `ExampleFixed` a fixed handle.
 
 | API | Contract |
 | --- | --- |
 | `Section[T].Live(src config.RawConfig) (*config.Live[T], error)` | Decodes and validates the section as `Decode` does — a missing section, an invalid one and an empty key fail alike — and registers the handle with the `*config.Config` it read. Over a configuration that cannot reload (`testutil`'s, a custom `RawConfig`, a `Config` not built by `Load` or `LoadBytes`) it fails, naming the configuration's type and `config.Load` |
-| `(*config.Live[T]).Load() T` | The current value, with one atomic load. A consumer calls it once per operation |
+| `(*config.Live[T]).Load() T` | The current value. A consumer calls it once per operation |
 | `(*config.Live[T]).OnChange(fn func(ctx context.Context, prev, next T) error)` | Registers a callback for state derived from the section — a limiter, a compiled pattern, a `slog.LevelVar` — run after a reload that changed the section has published its new value. A nil `fn` panics |
 | `config.Fixed(v T) *config.Live[T]` | A handle whose value is `v` and never changes, and which runs no callback; for a consumer's unit test |
 
@@ -213,6 +215,8 @@ app.Provide(AppSection.Decode)       // a snapshot of the section, bound in DI
 cfg := app.MustGetConfig(AppSection) // the same descriptor in the composition root
 ```
 
+Runnable, over `config.LoadBytes`, as `ExampleSection_Decode`.
+
 | API | Signature | On error |
 | --- | --- | --- |
 | `config.Section[T]` | `type Section[T any] string` | — (a section's key and type, named by conversion) |
@@ -276,7 +280,7 @@ Every typed decode from a Config is strict unless the Config was loaded with `co
 | Numeric kind conversions (JSON `float64` → int field) | Allowed (native decoding, not weak coercion) | Allowed |
 | Conversions across kinds — a boolean into a number, a number into a string, a scalar into a slice | Error | Allowed |
 
-`WithWeakDecoding()`'s contract is one sentence: mapstructure's weak coercion. Strict decoding is the default and has no option of its own.
+`WithWeakDecoding()`'s contract is one sentence: mapstructure's weak coercion. Strict decoding is the default and has no option of its own. Runnable as `ExampleWithWeakDecoding`.
 
 The policy rides on the Config instance, so it covers every decode path: `Unmarshal`, a section's `Decode` and `Live`, the decoding of a reload's candidate, and the framework's own decode of the `server` section in `credo.New` — an unknown `server.*` key fails app construction.
 
@@ -309,7 +313,7 @@ rc.Unmarshal("databases.default", &dbCfg)
 // dbCfg.Port is 5432 unless config file, .env, or env var overrides it
 ```
 
-**How it works**: `mapstructure.Decode()` modifies the target struct in-place, setting only the fields that exist in the input map. Fields not in any source keep their pre-initialized values. An explicit zero value in a source (e.g., `port: 0` in YAML) **does** override the default — this is correct behavior (explicit intent).
+Fields not in any source keep their pre-initialized values. An explicit zero value in a source (e.g., `port: 0` in YAML) **does** override the default — this is correct behavior (explicit intent). With the `Validate()` hook below, the pattern runs as `ExampleConfig_Unmarshal`.
 
 **Recommendation**: Always define a `Default*Config()` factory for production applications. This makes defaults visible, testable, and independent of config file presence — critical for env-var-only deployments (containers, serverless).
 
@@ -345,27 +349,19 @@ if err := rc.Unmarshal("databases.default", &dbCfg); err != nil {
 }
 ```
 
-The `config` package does not import `credo/validation`. The interface is checked via a local inline type assertion, keeping the dependency graph clean.
+The `config` package does not import `credo/validation`.
 
 ## Map[string]T Support (Dynamic Keys)
 
-Fields of type `map[string]T` are fully supported from all sources — config files, `.env`, and process env vars. The `__` delimiter creates nesting in the internal config tree, and map keys are resolved at the unmarshal step via mapstructure.
-
-**How it works**: Env vars like `CREDO_DATABASES__DEFAULT__HOST` are normalized to dotted keys (`databases.default.host`), unflattened into a nested `map[string]any`, and finally unmarshaled into `map[string]T` by mapstructure.
+Fields of type `map[string]T` are fully supported from all sources — config files, `.env`, and process env vars. The `__` delimiter creates nesting, so `CREDO_DATABASES__DEFAULT__HOST` sets the `host` of the map entry `default` under `databases`.
 
 > **Map key constraint**: Map keys must not contain `__`, as it is the nesting delimiter — a key like `my__db` would be read as two nesting levels. Use `_` or `-` instead (e.g., `read_replica`, `read-replica`).
 
 For practical examples (JSON config, env var overrides, Go struct), see [Configuration Guide — Multi-Database Config](../guides/configuration.md#multi-database-config).
 
-## Single-Pass Loader Model
+## One Value per File
 
-There are no provider/parser interfaces: sources are internal functions that each produce a `map[string]any`, merged in precedence order into one nested map held by `Config`.
-
-- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json/v2` / `go.yaml.in/yaml/v3`); the same parser backs `LoadBytes`. A file holds one value: JSON rejects trailing data and duplicate members; YAML rejects duplicate keys and a second document — a `---` after the first document, an empty one included — while a leading `---` and a closing `...` belong to the one document and an empty or comment-only file is an empty config.
-- **`.env` file** — Credo's own line parser (`parseDotenv`), read once per `Load`; entries normalized (lowercase, `__` → `.`) and unflattened.
-- **Process env vars** — prefix-filtered, normalized the same way.
-
-Key lookup walks the nested map directly (`lookup`); there is no flattened key index. Dots in keys always act as path separators.
+A config file, and a `LoadBytes` document, holds one value: JSON rejects trailing data and duplicate members; YAML rejects duplicate keys and a second document — a `---` after the first document, an empty one included — while a leading `---` and a closing `...` belong to the one document and an empty or comment-only file is an empty config. Dots in keys always act as path separators.
 
 ## Error Handling Contract
 
@@ -389,9 +385,31 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Redacted Formatting
 
-`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the reload result's doctrine (key paths only, never values, safe to log). The state lives behind one private pointer and the formatting methods are declared on the value type, so a dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`.
+`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the reload result's doctrine (key paths only, never values, safe to log). A dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`. Runnable as `ExampleConfig_String`.
 
-## Koanf Adaptation Scope
+## Current Behaviour
+
+Not guaranteed: the loader's mechanisms, as they are now. A release may change them without notice, provided the contract holds.
+
+### Single-Pass Loader Model
+
+There are no provider/parser interfaces: sources are internal functions that each produce a `map[string]any`, merged in precedence order into one nested map held by `Config`.
+
+- **Config files** — `os.ReadFile` + format dispatch by extension (`encoding/json/v2` / `go.yaml.in/yaml/v3`); the same parser backs `LoadBytes`.
+- **`.env` file** — Credo's own line parser (`parseDotenv`), read once per `Load`; entries normalized (lowercase, `__` → `.`) and unflattened.
+- **Process env vars** — prefix-filtered, normalized the same way.
+
+Key lookup walks the nested map directly (`lookup`); there is no flattened key index. Env vars like `CREDO_DATABASES__DEFAULT__HOST` are normalized to dotted keys (`databases.default.host`), unflattened into a nested `map[string]any`, and unmarshaled into a `map[string]T` by mapstructure.
+
+### Decoding
+
+`mapstructure.Decode()` modifies the target in place, setting only the fields that exist in the input map, which is how a pre-initialized value keeps its defaults. The `Validate()` hook is checked with a local inline type assertion. A live section's `Load` is one atomic load.
+
+### Redaction
+
+A `Config`'s state lives behind one private pointer, and its formatting methods are declared on the value type, which is how a dereferenced copy stays redacted.
+
+### Koanf Adaptation Scope
 
 `config/maps.go` derives from koanf's `maps/maps.go` (`unflatten`, `mergeMaps`, `copyMap`, `intfaceKeysToStrings`; attribution in [NOTICES](../../NOTICES)). Nothing else is adapted:
 

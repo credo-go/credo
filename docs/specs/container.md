@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `internal/di/`; root `di.go`, `component.go`, `infra.go`, `dierrors.go`, `lifecycle_error.go` **ADR:** [ADR-003](../adr/003-application-architecture.md), [ADR-004](../adr/004-dependency-injection-and-infra.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Dependency injection guide](../guides/dependency-injection.md) **Sources:** samber/do (MIT)
 
+> **Normative:** the sections [credo.Infra --- Explicit Infrastructure Carrier](#credoinfra-----explicit-infrastructure-carrier), [Injection Models](#injection-models), [API Surface](#api-surface) and [Sequential Bootstrap](#sequential-bootstrap). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 This spec states the DI container: its surface, registration and its options, `Finalize` and the three error phases, resolution, resource identity, the container's part in teardown, `credo.Infra`, and the [sequential bootstrap](#sequential-bootstrap) with its documented order. Preparation, the start phase and the drain sequence are the [lifecycle spec](lifecycle.md)'s.
 
 ## Overview

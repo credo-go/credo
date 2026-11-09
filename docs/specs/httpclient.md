@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `httpclient/` **ADR:** [ADR-014](../adr/014-observability.md) **Sources:** Original (stdlib `net/http` composition)
 
+> **Normative:** the section [API](#api). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 ## Overview
 
 The `httpclient/` package provides outbound HTTP for Credo applications: timeout, retry with backoff, structured logging, and W3C trace context propagation — the cross-cutting concerns that every enterprise service re-implements around `http.Client`.

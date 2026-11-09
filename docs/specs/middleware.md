@@ -2,7 +2,7 @@
 
 **Status:** Implemented (beta) **Package:** `middleware/`, `middleware/ratelimit/` **ADR:** [ADR-010](../adr/010-middleware-architecture.md), [ADR-018](../adr/018-host-routing-and-rewrite.md) **Guide:** [Middleware guide](../guides/middleware.md) **Sources:** Echo (MIT), Goyave (MIT), go-limiter (Apache-2.0)
 
-> **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
+> **Contract.** Every section of this spec is normative — what a client sees on the wire or application code can observe — except [Current Behaviour](#current-behaviour), which describes the mechanisms behind that contract as they are now: not guaranteed, they may change in any release; [Planned](#planned-not-yet-implemented) lists what does not exist yet, and [Design Decisions](#design-decisions) link the reasons. The examples run as `Example*` tests in [`middleware/example_test.go`](../../middleware/example_test.go) and, for the tiers and the stdlib adapter, in [`example_lifecycle_test.go`](../../example_lifecycle_test.go), so a drift fails the build.
 
 ## Overview
 
@@ -26,13 +26,15 @@ Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddlewar
 app.PreRouting(credo.WrapStdMiddleware(thirdPartyMiddleware))
 ```
 
+Runnable as `ExampleWrapStdMiddleware`.
+
 The adapter hands the request on through `c.Request().Std()`, whose context is the Context's current head, and takes the context of the request the middleware passes on as the head of the inner chain. A value set before the middleware is read there with `Value` and its key, and a deadline or span the middleware adds is visible to the handler through `c.Context()`; when the middleware returns, the head reverts to the outer one and the values set inside are applied again over it, at the first read of the head after it. The contract excludes a middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. A middleware that passes on a context not derived from the request's — which drops the request's cancellation too — cuts the handlers after it off from the values set before it, through `c.Get` as through `Value`. The user's key stays unexported, so the middleware cannot read the user ([ADR-012](../adr/012-authentication-and-authorization.md)).
 
 Adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`. A response it writes to the `ResponseWriter` by itself bypasses Credo's error pipeline; only responses produced by calling `next` flow back through centralized handling ([why](../adr/010-middleware-architecture.md#stdlib-adapter)).
 
 A response the middleware writes by itself is still observed, because the adapter hands it a recording writer. When the middleware returns, `Response.Status()`, `Size()` and `Committed()` report what it wrote and the access record carries that status and byte count. An error returned further up the chain, or a panic in the middleware after it answered, is logged (`credo: error after response committed`) instead of appending an error body to the response already sent. The record follows `net/http`: a 1xx status other than 101 is informational, a body write or a flush without a status commits 200, and the first status wins. A connection the middleware hijacks is reported by `Response.Hijacked()`; the error pipeline then writes nothing to it and the response compressor is abandoned rather than flushed into it.
 
-What the chain writes through `Response` is counted by `Response` alone, so nothing is counted twice; bytes the middleware adds around a response the chain wrote are not part of `Size()`. The recording writer forwards `Flush`, `Hijack`, `ReadFrom` (a file served behind the middleware keeps sendfile) and `Push`, and exposes the underlying writer through `Unwrap` for `http.ResponseController`.
+What the chain writes through `Response` is counted by `Response` alone, so nothing is counted twice; bytes the middleware adds around a response the chain wrote are not part of `Size()`. The recording writer forwards `Flush`, `Hijack`, `ReadFrom` and `Push`, and exposes the underlying writer through `Unwrap` for `http.ResponseController`.
 
 ## Framework Features Around the Chain
 
@@ -65,6 +67,8 @@ Request
 Response
 ```
 
+Runnable as `ExampleApp_Middleware`, the router's own 404 included.
+
 Panic recovery, request IDs, access logging and compression are framework features around the chain, not a tier; they cover the router's 404 and 405 as well ([request execution](http-features.md#request-execution)).
 
 `app.Middleware` delegates to the root group's `Middleware`: the App's routes, groups and host groups descend from that group, and group middleware is collected when the chain is compiled, so a routed middleware added after a group's routes were registered applies to them too. The routed tier reads the route's meta and never runs for the router's own 404 and 405, which reach `PreRouting` only. After preparation either call panics, as every registration does.
@@ -80,7 +84,7 @@ app.Middleware(middleware.ContractGuard()) // reads every route's meta; never ru
 
 ### Routed and Group Middleware Are Collected at Compile Time
 
-A route's chain is assembled when the App prepares to serve ([preparation](lifecycle.md#preparation)), by walking the route's group parent chain — the same model the route's meta snapshot uses. Middleware added to a group, or to the routed tier, after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
+A route's chain is assembled when the App prepares to serve ([preparation](lifecycle.md#preparation)), so middleware added to a group, or to the routed tier, after routes were registered or sub-groups created still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
 
 ## Meta-Driven Middleware (Goyave-inspired)
 
@@ -107,7 +111,9 @@ api.GET("/users", listUsers)                               // authenticated
 api.GET("/health", healthCheck).SetMeta(RequireAuth, false) // not authenticated
 ```
 
-A meta key is a `credo.Key[T]` made by `credo.NewKey[T]`, the key type of request values too; `SetMeta` with a value of another type does not compile, and `GetMeta` returns `(T, bool)`, the zero value and false when no scope set the key. The key's name is for diagnostics; identity is the key value, so the keys of two packages never collide. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — and a route's `RemoveMeta` lets its group's value show through. `SetMeta` and `RemoveMeta` on a group, a route and a static route return their receiver; the App's return nothing. `c.Route()` is nil until dispatch has matched a route — in `PreRouting` middleware before `next` runs and on the router's own 404/405 — so meta-reading middleware is registered on the routed tier, a group or a route.
+Runnable as `Example_metaDrivenMiddleware`.
+
+A meta key is a `credo.Key[T]` made by `credo.NewKey[T]`, the key type of request values too; `SetMeta` with a value of another type does not compile, and `GetMeta` returns `(T, bool)`, the zero value and false when no scope set the key. The key's name is for diagnostics; identity is the key value, so the keys of two packages never collide. A route's meta resolves the route, then its groups, then the App, and a route's `RemoveMeta` lets its group's value show through. `SetMeta` and `RemoveMeta` on a group, a route and a static route return their receiver; the App's return nothing. `c.Route()` is nil until dispatch has matched a route — in `PreRouting` middleware before `next` runs and on the router's own 404/405 — so meta-reading middleware is registered on the routed tier, a group or a route.
 
 ### Framework Meta Keys
 
@@ -130,7 +136,7 @@ Register `ContractGuard` on the routed tier, `app.Middleware`, or on a group or 
 
 Each rejection renders its code's built-in message, with its value in `Details`: the rejected content type (`content_type`), which is client input, the header (`header`) or query parameter (`query`) the route requires, and the missing scope (`scope`). The API-version and body-size rejections carry no details. No rejection carries a message key of its own ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
 
-A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
+`ExampleContractGuard` runs a content-type and a required-header rejection. A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
 
 ## Config Struct Pattern (Echo-inspired)
 
@@ -146,6 +152,8 @@ app.PreRouting(middleware.CORS(middleware.CORSConfig{
     AllowMethods: []string{"GET", "POST"},
 }))
 ```
+
+Runnable as `ExampleCORS`.
 
 ## Middleware Catalog
 
@@ -212,6 +220,8 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 }}))
 ```
 
+Runnable as `ExampleRewrite`.
+
 At group or route scope it only mutates the request seen by downstream middleware/handler for an already matched route. It does not route the request again.
 
 ### CSRF
@@ -266,7 +276,7 @@ type Config struct {
 }
 ```
 
-Token-bucket rate limiting over go-limiter lives in a package of its own, so that importing `middleware` — for `CORS`, say — does not link go-limiter: the dependency graph of `middleware` contains no go-limiter package. The package stays in the root module. `Middleware` follows the configuration-struct convention (zero arguments for the defaults, one to customize) and the naming of `auth.Middleware`; `Config.Skipper` keeps the type `middleware.Skipper`.
+Token-bucket rate limiting over go-limiter lives in a package of its own, so that importing `middleware` — for `CORS`, say — does not link go-limiter: the dependency graph of `middleware` contains no go-limiter package. The package stays in the root module. Its example, one budget shared by two routes, runs as `ratelimit.ExampleMiddleware`. `Middleware` follows the configuration-struct convention (zero arguments for the defaults, one to customize) and the naming of `auth.Middleware`; `Config.Skipper` keeps the type `middleware.Skipper`.
 
 | `middleware` before | `middleware/ratelimit` |
 | --- | --- |
@@ -283,7 +293,7 @@ app.GET("/search", search).Middleware(limit)
 app.GET("/export", export).Middleware(limit) // spends the /search budget
 ```
 
-**Lifecycle.** The rate limiter is not a component, so nothing is handed to `app.Manage` ([why](../adr/010-middleware-architecture.md#rate-limiting-one-constructor-in-its-own-package)). Without `Config.Store`, `Middleware` creates an in-memory store that the middleware owns for its lifetime; the store runs no goroutine — expired buckets are swept inline during `Take` — so nothing must be stopped at shutdown. The in-memory store keeps `Close`, which `limiter.Store` requires. A store passed in through `Config.Store` stays its owner's: the middleware never closes it, and a store that holds a connection or a goroutine is registered by the application as a component of its own.
+**Lifecycle.** The rate limiter is not a component, so nothing is handed to `app.Manage` ([why](../adr/010-middleware-architecture.md#rate-limiting-one-constructor-in-its-own-package)). Without `Config.Store`, `Middleware` creates an in-memory store that the middleware owns for its lifetime, and nothing must be stopped at shutdown ([why](#the-in-memory-store)). The in-memory store keeps `Close`, which `limiter.Store` requires. A store passed in through `Config.Store` stays its owner's: the middleware never closes it, and a store that holds a connection or a goroutine is registered by the application as a component of its own.
 
 ### Planned (Not Yet Implemented)
 
@@ -299,3 +309,19 @@ Both arrive with the observability release ([ADR-014](../adr/014-observability.m
 - The single middleware type with its stdlib adapter, the PreRouting/routed/Group/Route tiers, meta-driven behavior, the config struct pattern, CSRF through the stdlib detector, and the framework features outside the chain are recorded in [ADR-010](../adr/010-middleware-architecture.md).
 
 - Pre-dispatch rewrite as middleware rather than router configuration is recorded in [ADR-018](../adr/018-host-routing-and-rewrite.md#rejected-alternatives), and why no rewrite runs after the match in [ADR-018](../adr/018-host-routing-and-rewrite.md#no-post-match-re-dispatch).
+
+## Current Behaviour
+
+Not guaranteed: the mechanisms behind the contract above, as they are now. A release may change them without notice, provided the contract holds.
+
+### Chain assembly
+
+A route's chain is assembled at preparation by walking the route's group parent chain — the same walk that resolves the route's meta into a per-route snapshot ([router spec](router.md#meta-resolution)).
+
+### The recording writer
+
+The recording writer that `WrapStdMiddleware` hands a stdlib middleware forwards `ReadFrom`, so a file served behind the middleware keeps net/http's sendfile path.
+
+### The in-memory store
+
+`ratelimit.Middleware`'s in-memory store runs no goroutine: expired buckets are swept inline during `Take`.

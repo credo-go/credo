@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** root package, `internal/static/` **ADR:** [ADR-017](../adr/017-static-file-serving.md) **Guide:** [Static file serving guide](../guides/static-files.md)
 
+> **Normative:** the sections [API Surface](#api-surface), [Path Sanitization](#path-sanitization), [SPA Fallback](#spa-fallback), [Headers](#headers), [Cache-Control](#cache-control) and [Security](#security). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 ## Overview
 
 Credo serves static files through `Static` and `File` on `App` and `Group`. Static routes are full participants in Credo's middleware, route meta, error handling and access log. This spec owns the serving contract: the API, the request flow, the SPA fallback, the headers and the security rules. [ADR-017](../adr/017-static-file-serving.md) holds the rationale and the rejected alternatives; the [static file serving guide](../guides/static-files.md) holds the recipes (embedded assets, disk serving, SPA builds, downloads, listings, single files, groups).

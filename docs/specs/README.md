@@ -1,6 +1,10 @@
 # Specifications
 
-A specification is the canonical statement of a contract: the public API, its behaviour, defaults, error cases and ordering as they are now. ADRs, guides and other specs link to the spec that owns a contract rather than restating it, so each rule is stated in one place. The reasons for a design and the alternatives rejected live in the ADR each spec links ([Architecture Decision Records](../adr/README.md)); the guides teach usage. Every implemented package is beta (see [Maturity by Area](../../README.md#maturity-by-area)).
+A specification is the canonical statement of a contract: the public API, its behaviour, defaults, error cases and ordering as they are now. ADRs, guides and other specs link to the spec that owns a contract rather than restating it, so each rule is stated in one place. The reasons for a design and the alternatives rejected live in the ADR each spec links ([Architecture Decision Records](../adr/README.md)); the guides teach usage.
+
+The specs v1 freezes — [router](router.md), [context](context.md), [middleware](middleware.md) with [HTTP features](http-features.md), [lifecycle](lifecycle.md) and [config](config.md), the context and HTTP features specs carrying the error contract — separate their normative contract from current behaviour. What a client sees on the wire or application code can observe is normative: status and error codes, the shutdown order, pagination totals. The data structures behind it are not, and each of these specs moves them into a closing Current Behaviour section, marked as not guaranteed. Their examples run as `Example*` tests, so a drift fails the build. Every other spec names its normative sections in a header under its status line.
+
+Every implemented package is beta (see [Maturity by Area](../../README.md#maturity-by-area)).
 
 | Spec | Package | ADR | Guide |
 | --- | --- | --- | --- |

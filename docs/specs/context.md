@@ -2,13 +2,13 @@
 
 **Status:** Implemented (beta) **Package:** root (`github.com/credo-go/credo`) **ADR:** [ADR-008](../adr/008-context-design.md), [ADR-009](../adr/009-handler-and-error-handling.md), [ADR-011](../adr/011-validation-strategy.md), [ADR-012](../adr/012-authentication-and-authorization.md), [ADR-013](../adr/013-internationalization.md), [ADR-018](../adr/018-host-routing-and-rewrite.md), [ADR-021](../adr/021-json-output-profile.md) **Guide:** [Getting started](../guides/getting-started.md#request-and-response), [Error handling](../guides/error-handling.md), [Routing](../guides/routing.md), [Proxy trust](../guides/proxy-trust.md) **Sources:** Echo (MIT)
 
-> **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
+> **Contract.** Every section of this spec is normative — what a client sees on the wire or application code can observe, the error contract included — except [Current Behaviour](#current-behaviour), which describes the data structures and mechanisms behind that contract as they are now: not guaranteed, they may change in any release. [Design Decisions](#design-decisions) link the reasons. The examples run as `Example*` tests in [`example_context_test.go`](../../example_context_test.go), so a drift fails the build.
 
 ## Overview
 
 `credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and the request's current `context.Context`, its head, over which typed keys carry the request's values ([Context head and typed keys](#context-head-and-typed-keys)). `Context()` returns the head; the struct deliberately does **not** itself implement `context.Context`, because its head moves as scopes open and return. Documentation and examples name the parameter `c *credo.Context`, since `ctx` conventionally names a `context.Context`.
 
-The Context is not pooled: a request allocates one ([Allocation](#allocation)), and a `*Context` kept past its request reads that request's state, never another request's.
+A `*Context` kept past its request reads that request's state, never another request's ([Allocation](#allocation)).
 
 Lifecycle hooks such as `app.OnStart` and `app.OnStop`, and a component's `Start` and `Shutdown`, receive a standard `context.Context`, not `*credo.Context`. That context lives as long as its call and carries the cancellation and the deadline of the start phase or the drain; `credo.Context` exists only for an HTTP request.
 
@@ -152,7 +152,7 @@ A flush commits the response, as net/http's does: status 200 is written first wh
 
 Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) treats body-forbidding status codes — 1xx, 204 No Content, 304 Not Modified (RFC 9110) — as status-only: the body **and** the Content-Type header are skipped, the call returns nil, and `Stream`'s reader is never read. Without this, writing a body to such a status fails inside net/http after the header is committed, and the returned error can only surface as a spurious "error after response committed" warning; a 204 also must not advertise a `Content-Type` it does not carry. Handler-set headers (ETag, Cache-Control on a 304) are untouched.
 
-`Response` implements `io.ReaderFrom`, so `Stream` and any `io.Copy` into the response copy a Reader-only source without allocating a buffer per call. On an uncommitted response the first 32 KiB of the source always pass through `Response.Write` from a framework-pooled buffer, so the commit is recorded by `Response` before anything else can fail. When the underlying `http.ResponseWriter` implements `io.ReaderFrom` (net/http's HTTP/1.1 writer, which keeps its sendfile/splice path for `*os.File` and socket sources on a plaintext TCP connection) the rest of a larger source — or the whole source of an already committed response — is delegated to the writer's `ReadFrom`; otherwise — a compressing or other wrapping writer, HTTP/2 — the copy runs through the pooled buffer and every chunk passes through `Response.Write`. A source implementing `io.WriterTo` writes itself on the pooled path. The bytes the writer accepted count toward `Size()`, a partial-write error is returned with the accepted count, a hijacked response answers `http.ErrHijacked`, and the commit follows `Write`: nothing is committed before the first byte (a source that fails up front leaves the response uncommitted so the handler's error still renders), and the first byte commits status 200 when none was written. A source that panics after its first bytes leaves the response committed: recovery logs the panic, the access record observes the 200 already on the wire, and no error envelope is appended. The delegated source is wrapped in a Response-owned `io.LimitedReader` (no allocation; the type net's sendfile and splice paths unwrap, so the zero-copy path survives) whose remaining count records what the writer consumed, so `Size()` — and the access record's bytes — stay equal to what the client received even when the source panics during delegation.
+`Response` implements `io.ReaderFrom`, so `Stream` and any `io.Copy` into the response go through it ([how it copies](#response-copying)). The bytes the writer accepted count toward `Size()`, a partial-write error is returned with the accepted count, a hijacked response answers `http.ErrHijacked`, and the commit follows `Write`: nothing is committed before the first byte (a source that fails up front leaves the response uncommitted so the handler's error still renders), and the first byte commits status 200 when none was written. A source that panics after its first bytes leaves the response committed: recovery logs the panic, the access record observes the 200 already on the wire, and no error envelope is appended. `Size()` — and the access record's bytes — stay equal to what the client received, even when the source panics mid-copy.
 
 #### Render and the envelope seam
 
@@ -229,7 +229,7 @@ credo.WithJSONOptions(jsontext.EscapeForHTML(true))       // escape < > &
 credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
 ```
 
-There is no per-call variant: one posture per application. `Context.Render` inherits the profile: with a `SuccessRenderer` installed, its returned body is encoded under the same profile, and only a renderer that commits the response itself writes other bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic`; custom error-renderer bodies use the application profile.
+There is no per-call variant: one posture per application. Runnable as `ExampleWithJSONOptions`; the bodiless-status rule as `ExampleResponse_JSON`, and `Render` with a success renderer as `ExampleContext_Render`. `Context.Render` inherits the profile: with a `SuccessRenderer` installed, its returned body is encoded under the same profile, and only a renderer that commits the response itself writes other bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic`; custom error-renderer bodies use the application profile.
 
 ## Context Head and Typed Keys
 
@@ -246,21 +246,19 @@ route.SetMeta(RequiredScopes, []Scope{"admin"})  // the value type is checked at
 scopes, ok := c.Route().GetMeta(RequiredScopes) // the route, then its groups, then the App
 ```
 
+Runnable as `ExampleContext_Set`.
+
 One key type, `Key[T]`, serves request values and [route meta](router.md#route-meta-system-goyave-inspired). The name passed to `NewKey` is for diagnostics; identity is the key value, so the keys of two packages never collide. Two `NewKey` calls with one name are two keys, while two `MessageKey` values with one text are one catalog key; both godocs say so. A zero `Key[T]`, declared without `NewKey`, panics in every method that takes a key, naming the method, since all zero keys of one type would be one context key.
 
 `Set`, `Get`, `SetMeta` and `RemoveMeta` take a key, as generic methods whose type parameter is inferred from it; `GetMeta` returns `(T, bool)`, as `Get` and `GetUser` do. Credo reads and writes values only through these methods. Code that holds only a `context.Context` reads a value with the standard `Value` and its key, which is the context key; Credo adds no reader of its own. The framework's own keys are typed too: `middleware.MetaAccept`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` are `Key[[]string]`, `middleware.MetaMaxBody` is a `Key[int64]`, and `credo.MetaAccessLog` and `credo.MetaRawResponse` are `Key[bool]`. The request ID's typed key stays unexported: `c.RequestID()` reads it.
 
 ### The head
 
-The Context holds the request's current `context.Context`, its head; `c.Context()` and `c.Request().Context()` return it. `c.Set` replaces the head with a `context.WithValue` node over it: no request is copied for a value, and no custom `Value` implementation exists. A context handed to a goroutine is a fixed node, so successive `Value` calls on it agree, and no later `Set` changes what it holds.
-
-A key set again and again, as a server-sent-events or WebSocket loop may set one, does not lengthen the chain without bound. When the head is the node the Context built for that key, the new node is built over that node's parent. Keys set in turn add a node each, so once the nodes the Context built over the request's context, or over a scope's, number twice the keys set there, it rebuilds them from the record of `Set` calls, which keeps one entry per key. Neither modifies a node, so a context handed out before keeps its values.
+The Context holds the request's current `context.Context`, its head; `c.Context()` and `c.Request().Context()` return it. `c.Set` makes a new head that carries the value; no request is copied for a value. A context handed to a goroutine is fixed, so successive `Value` calls on it agree, and no later `Set` changes what it holds. A key set again and again, as a server-sent-events or WebSocket loop may set one, does not grow the head without bound ([how the head is built](#the-heads-nodes)).
 
 ### Scopes
 
 A layer that derives a context derives it from the head and makes the result the head of the inner chain: `middleware.Timeout`'s deadline and a span a stdlib middleware adds through `WrapStdMiddleware` are visible through `c.Context()`. When the layer returns or panics, the head reverts to the outer one, so a deadline or span ends with its scope, and the values set through `c.Set` inside it are applied again over the outer head: a user or a tenant is a fact about the request, not about one layer. The Context keeps the order of its `Set` calls for that, and the scope's end runs in a deferred call, so when the handler panics, a user set inside the scope is still the request's user for the error rendering, the observers and the access record.
-
-The reapplication is lazy. A scope that ends marks the values set inside it as pending; the first read of the head after it — `c.Context()`, `Request.Context()`, `Std()`, a `Set`, a new scope — builds their nodes over the outer head. Nested scopes that end in turn with no read between them build the nodes once, and `c.Get` and `GetUser` read a pending value from the record of `Set` calls without building any, so an observer that reads only the user builds no node.
 
 `c.Within(ctx, next)` opens a scope: it makes `ctx` the head of the inner chain, keeps the embedded request in step with one copy per scope, runs `next`, and reverts as above when `next` returns or panics. `ctx` is derived from `c.Context()`; one that is not is an unrelated context ([edges](#edges-of-the-head)). A value the scope owns, such as a transaction or a span, goes into the context given to `Within` and ends with it, while `c.Set` records a fact about the request, which outlives the scope: a transaction stored with `c.Set` would still be found after its commit.
 
@@ -275,6 +273,8 @@ func Deadline(d time.Duration) credo.Middleware {
     }
 }
 ```
+
+Runnable as `ExampleContext_Within`; a wrapped stdlib middleware's context as `ExampleWrapStdMiddleware`.
 
 Assigning `c.Request().Request` a request with a new context still compiles and no longer moves the head: the next `Std()` hands stdlib code a copy of the assigned request with the head. In debug mode the Context logs one warning per route for an embedded request it did not install, naming the route and the remedies, `c.Within(ctx, next)` and `c.Request().Std()`.
 
@@ -291,7 +291,7 @@ Assigning `c.Request().Request` a request with a new context still compiles and 
 
 ### User accessors
 
-`SetUser`, `GetUser[T]` and `RequireUser[T]` stay, as shortcuts over a generic key whose type is unexported, so the user has no `context.Context` accessor ([auth spec](auth.md#user-accessors-generic-context-methods)). `SetUser` adds a node and copies no request.
+`SetUser`, `GetUser[T]` and `RequireUser[T]` stay, as shortcuts over a generic key whose type is unexported, so the user has no `context.Context` accessor ([auth spec](auth.md#user-accessors-generic-context-methods)). `SetUser` copies no request.
 
 ## Original Client Path
 
@@ -307,14 +307,14 @@ The value is immutable for the lifetime of the request. When the final served pa
 
 ### Params and Host Params
 
-`Request.RouteParam(name)` returns a single parameter value ("" when absent) and is the preferred accessor — parameters are stored as parallel key/value slices, so the lookup is an allocation-free linear scan (routes carry a handful of params at most). `Request.RouteParams()` returns all params as one `map[string]string` — path params and, for host-scoped routes, host params. The map is a read-only view materialized lazily on first call (writes to it are not seen by `RouteParam`).
+`Request.RouteParam(name)` returns a single parameter value ("" when absent) and is the preferred accessor. `Request.RouteParams()` returns all params as one `map[string]string` — path params and, for host-scoped routes, host params. The map is a read-only view: writes to it are not seen by `RouteParam`.
 
 ```go
 tenant := c.Request().RouteParam("tenant")
 id := c.Request().RouteParam("id")
 ```
 
-The parameters live in the request's own Context, which is not pooled, so the map `RouteParams` returns is never handed to another request; it stays a read-only view.
+The map `RouteParams` returns is never handed to another request.
 
 Host and path params share one namespace, so a host-scoped route whose path params collide with its host params panics at registration ([router spec](router.md#host-based-route-groups)).
 
@@ -391,6 +391,8 @@ app.POST("/users", func(c *credo.Context) error {
 })
 ```
 
+Runnable as `ExampleRequest_BindBody`.
+
 #### Strict JSON bodies
 
 JSON bodies are decoded with `encoding/json/v2` under strict semantics:
@@ -430,7 +432,7 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 }
 ```
 
-Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal`, logged at debug level (`credo: client error`) and never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages use bind scope plus the exact reason: an optional resolver may namespace it, otherwise the bare reason is the key. Field display-name handling matches validation. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
+The decode error above runs as `ExampleBindError`. Handlers can branch on the typed error with `errors.AsType[*credo.BindError](err)`. The underlying decoder error is preserved as `BindError.Internal`, logged at debug level (`credo: client error`) and never exposed to the client; Go type names are likewise not leaked (`Expected` uses JSON terms — `string`, `integer`, `number`, `boolean`, `array`, `object`). Client messages use bind scope plus the exact reason: an optional resolver may namespace it, otherwise the bare reason is the key. Field display-name handling matches validation. Body-size overruns are not `BindError`s — they keep the dedicated `413 Request Entity Too Large` classification.
 
 ### BindQuery
 
@@ -460,6 +462,8 @@ app.GET("/users", func(c *credo.Context) error {
 })
 ```
 
+Runnable as `ExampleRequest_BindQuery`.
+
 **Supported field types**: `string`, `bool`, all integer types (`int`, `int8`–`int64`, `uint`–`uint64`), `float32`, `float64`, any type implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`, custom types — takes precedence over native conversions, matching the config decoder), slices of all of these (`[]string`, `[]int`, `[]float64`, repeated params), and pointer variants of all scalar types (`*string`, `*int`, `*time.Time`, etc.). Pointer fields stay `nil` when the parameter is absent, enabling nil-vs-zero-value distinction (e.g., PATCH partial updates, optional filters). Embedded structs and pointer-to-embedded-structs are supported recursively. The same type support applies to `form:"..."` tags used by `BindBody` for form-urlencoded and multipart content types.
 
 A field of a type outside this list is a developer error: the bind returns a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, as for an invalid bind target, and nothing about it reaches the client.
@@ -476,10 +480,32 @@ A field of a type outside this list is a developer error: the bind returns a 500
 
 ## Allocation
 
+Each request has a Context of its own, which no other request reuses. A `*Context` kept past its request reads that request's values, `GetUser` included, after the next request on the same connection has run. What remains is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. How a request's Context is allocated is [current behaviour](#one-allocation-per-request).
+
+## Current Behaviour
+
+Not guaranteed: the data structures and mechanisms behind the contract above, as they are now. A release may change them without notice, provided the contract holds.
+
+### One allocation per request
+
 The Context is not pooled. Each request:
 
 1. Passes the lifecycle admission gate in `ServeHTTP`, then allocates one Context (a request answered with the [lifecycle 503](lifecycle.md#lifecycle-rejection-503) allocates none)
 2. Runs the feature executor and the handler chain ([HTTP features spec](http-features.md#request-execution))
 3. Finalizes, emits the access record and cleans up multipart files, on every path including a propagating panic
 
-The one allocation folds the Context, its `Request` and `Response`, embedded by value, and the first four route parameters and the first two values, kept in fixed arrays. A `*Context` kept past its request reads that request's values, `GetUser` included, after the next request on the same connection has run. What remains is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The measurement of the change is recorded in [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
+The one allocation folds the Context, its `Request` and `Response`, embedded by value, and the first four route parameters and the first two values, kept in fixed arrays. The measurement is recorded in [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
+
+### Route parameters
+
+Parameters are stored as parallel key/value slices, so `RouteParam` is an allocation-free linear scan (routes carry a handful of params at most). The map `RouteParams` returns is materialized lazily on its first call.
+
+### The head's nodes
+
+`c.Set` replaces the head with a `context.WithValue` node over it; no custom `Value` implementation exists, and `SetUser` adds a node too. When the head is the node the Context built for a key set again, the new node is built over that node's parent. Keys set in turn add a node each, so once the nodes the Context built over the request's context, or over a scope's, number twice the keys set there, it rebuilds them from the record of `Set` calls, which keeps one entry per key. Neither modifies a node, so a context handed out before keeps its values.
+
+The reapplication at a scope's end is lazy. A scope that ends marks the values set inside it as pending; the first read of the head after it — `c.Context()`, `Request.Context()`, `Std()`, a `Set`, a new scope — builds their nodes over the outer head. Nested scopes that end in turn with no read between them build the nodes once, and `c.Get` and `GetUser` read a pending value from the record of `Set` calls without building any, so an observer that reads only the user builds no node.
+
+### Response copying
+
+`Response.ReadFrom` copies a Reader-only source without allocating a buffer per call. On an uncommitted response the first 32 KiB of the source always pass through `Response.Write` from a framework-pooled buffer, so the commit is recorded by `Response` before anything else can fail. When the underlying `http.ResponseWriter` implements `io.ReaderFrom` (net/http's HTTP/1.1 writer, which keeps its sendfile/splice path for `*os.File` and socket sources on a plaintext TCP connection) the rest of a larger source — or the whole source of an already committed response — is delegated to the writer's `ReadFrom`; otherwise — a compressing or other wrapping writer, HTTP/2 — the copy runs through the pooled buffer and every chunk passes through `Response.Write`. A source implementing `io.WriterTo` writes itself on the pooled path. The delegated source is wrapped in a Response-owned `io.LimitedReader` (no allocation; the type net's sendfile and splice paths unwrap, so the zero-copy path survives) whose remaining count records what the writer consumed, which is how `Size()` stays equal to what the client received.
