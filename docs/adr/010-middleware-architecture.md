@@ -10,7 +10,7 @@ Credo needs a middleware model that supports a tier before routing, a tier on ev
 
 A middleware that runs before the match cannot read route meta, so a meta-driven middleware placed there does nothing and has to be repeated on every group. A middleware that must run on every route, but not for the router's own 404 and 405, needs a tier of its own. A mounted handler dispatched outside the compiled chain would let a path through the authentication every route gets. And a tier's name has to say when it runs, not only where it applies.
 
-Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect.
+Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect. A consumer of the final response other than the access log — a metrics or tracing exporter — needs a place to observe it that agrees with the access record on status, bytes and duration, and an application attribute added to the access record must not risk a framework attribute's key.
 
 > **Current until v0.26.0 (R14):** the next paragraph's "and its interaction with handler-level re-dispatch"; `Context.Rewrite` goes, and ADR-018 keeps `middleware.Rewrite` only.
 
@@ -115,9 +115,7 @@ Custom renderer installation is optional even though core error rendering always
 
 Access logging is explicit (`app.UseAccessLog(cfg...)`) and observes the final response outside recovery and centralized error rendering, so it is the one authoritative access record. `AccessLogConfig.Logger` selects a dedicated sink without giving up that boundary; the logger is not derived from `c.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
 
-> **Current until v0.26.0 (R12):** the next paragraph's last sentence, under which `ResultFilter` reads a pooled Context and an `AccessLogEntry`; it takes the `*Exchange` ([Observers of the final response](#observers-of-the-final-response)).
-
-Filtering is split by observation phase, because each phase knows different things. The `Skipper` runs before routing and sees request data only, which suits blanket path/header skips (metrics scrape, static assets). The `MetaAccessLog` route meta is read once the route is known, so a route or a whole group is silenced declaratively, and a route-level value overrides its group's. `MinLevel` and `ResultFilter` run after the final response and see its status, duration and bytes along with route and request metadata.
+Filtering is split by observation phase, because each phase knows different things. The `Skipper` runs before routing and sees request data only, which suits blanket path/header skips (metrics scrape, static assets). The `MetaAccessLog` route meta is read once the route is known, so a route or a whole group is silenced declaratively, and a route-level value overrides its group's. `MinLevel` and `ResultFilter` run after the final response; the filter reads the `*Exchange` ([Observers of the final response](#observers-of-the-final-response)), with its status, duration and bytes, its route and request metadata, and the request's values.
 
 Status drives the record's level (`1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`); `MinLevel` controls admission and never rewrites that level, and `ResultFilter` cannot restore a record the threshold rejected. The default is Info, so an installed access log preserves every status class and keeps the traffic/latency denominator while request metrics remain deferred; high-volume applications opt into Warn or Error. The [observability contract](../specs/http-features.md#observability-contract) defines the exact order, the record and its measurements.
 
@@ -132,8 +130,6 @@ Changing successful requests to **Debug by default** or enabling a built-in fixe
 A **route-scoped access-log middleware** beside the feature was rejected. A middleware observes returned errors before centralized rendering, so its status, bytes and duration would be approximations, and two producers mean two schemas to keep aligned. Route and group selection uses `MetaAccessLog` and `ResultFilter` on the single record; a deliberate second audit sink is application middleware.
 
 ### Observers of the final response
-
-> **Pending v0.26.0 (R12):** not implemented yet; the access log is a step of the executor, `ResultFilter` takes `(*Context, AccessLogEntry)`, the access record carries no application attributes, and no other observer can be added.
 
 An `Observer` sees one immutable record, `*Exchange`, after the response is final: the method, the path and the original path, the route pattern and name, the remote address and the user agent, the final status, the bytes after compression, the duration, the classified error code, whether a panic was recovered, the request ID, and the request's values, which an observer reads as [ADR-014](014-observability.md#observers-read-the-requests-values) states. `app.AddObserver(o)` adds one, and panics on a nil observer and after preparation, as the other registrations do. Observers run where the access log is observed, after finalization, in registration order. An `Exchange` is valid only during `Observe`; an exporter copies what it keeps, apart from the request's context.
 
@@ -152,10 +148,6 @@ Rejected:
 - **Top-level placement of the returned attributes:** an application attribute could shadow a framework attribute, present or future.
 - **A group named `app`.**
 - **A public constant for the access record's message.**
-
-**Problem.** The access log is a step of the executor with a record type of its own, `AccessLogEntry`, and its `ResultFilter` reads a pooled Context after the response. Any other consumer of the final response — a metrics or tracing exporter — has no place to observe it, and an observation at another boundary disagrees with the access record on status, bytes and duration. An application attribute cannot reach the access record without risking a framework attribute's key.
-
-**Removes.** `AccessLogEntry`, and `ResultFilter`'s `(*Context, AccessLogEntry)` parameters.
 
 ### Startup visibility of effective features
 
@@ -193,6 +185,7 @@ Activating or parameterizing middleware from configuration files — framework-r
 - Config struct pattern — readable, discoverable options via `Middleware(cfg ...Config)`
 - Stdlib interop via WrapStdMiddleware
 - One authoritative access record and one recovery layer, observed after error rendering and compression, with one public path per feature
+- One record of the final response, `*Exchange`, for the access log and every other observer
 
 **Negative:**
 
