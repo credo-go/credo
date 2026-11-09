@@ -220,10 +220,9 @@ type App struct {
 // RawConfig in DI. Passing WithRawConfig bypasses auto-load and registers the
 // given RawConfig instead.
 //
-// New returns an error if configuration loading fails, server settings contain
-// invalid values (negative timeouts, invalid port), or an option contains an
-// invalid typed-nil value such as a non-nil [slog.Leveler] interface wrapping a
-// nil pointer.
+// New returns an error if configuration loading fails or the server settings
+// contain invalid values (negative timeouts, an invalid port). An option only
+// records configuration and cannot fail by itself.
 //
 // Usage:
 //
