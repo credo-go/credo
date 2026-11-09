@@ -30,6 +30,13 @@ type App struct {
 	// container is the DI container for service registration and resolution.
 	container *di.Container
 
+	// workers holds the App's one worker registry, created on first use of
+	// App.Workers.
+	workers struct {
+		once     sync.Once
+		registry *Workers
+	}
+
 	// logger is the application-level logger, set via WithLogger.
 	// Used by framework internals (error handler, server lifecycle, i18n setup).
 	// Service-scoped loggers (Infra.Logger) are derived from this.

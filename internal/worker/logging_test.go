@@ -11,15 +11,14 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
-
-	"github.com/credo-go/credo"
 )
 
-// loggingLines returns the records of the named worker with message msg.
+// loggingLines returns the records of the named worker with message msg: the
+// records its component logger writes, which carry component=worker:<name>.
 func loggingLines(logs *logCapture, name, msg string) []capturedLog {
 	var out []capturedLog
 	for _, entry := range logs.withMessage(msg) {
-		if entry.Attrs["worker"] == name {
+		if entry.Attrs["component"] == ComponentName(name) {
 			out = append(out, entry)
 		}
 	}
@@ -84,8 +83,8 @@ func loggingAssertAbsent(t *testing.T, line capturedLog, keys ...string) {
 func TestLogging_OneStartAndOneStopPerExitPath(t *testing.T) {
 	cases := []struct {
 		name       string
-		def        *definition
-		run        Func
+		def        *Definition
+		run        workerFunc
 		advance    time.Duration // virtual time before shutdown
 		wantStatus Status
 		wantReason string
@@ -126,7 +125,7 @@ func TestLogging_OneStartAndOneStopPerExitPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				s := newTestSupervisorWithLogger(logs.logger())
+				s := newTestEngineWithLogger(logs.logger())
 				c := addWorker(s, tc.def, tc.run)
 				startWorker(t, c)
 				time.Sleep(tc.advance)
@@ -159,9 +158,10 @@ func TestLogging_OneStartAndOneStopPerExitPath(t *testing.T) {
 					t.Errorf("last line = %q, want worker stopped", last.Message)
 				}
 				for _, entry := range entries {
-					if entry.Attrs["worker"] != "w" {
-						t.Errorf("%q: worker = %v, want w", entry.Message, entry.Attrs["worker"])
+					if entry.Attrs["component"] != "worker:w" {
+						t.Errorf("%q: component = %v, want worker:w", entry.Message, entry.Attrs["component"])
 					}
+					loggingAssertAbsent(t, entry, "worker")
 				}
 			})
 		})
@@ -173,7 +173,7 @@ func TestLogging_OneStartAndOneStopPerExitPath(t *testing.T) {
 func TestLogging_StartedIsTheFirstLine(t *testing.T) {
 	cases := []struct {
 		name string
-		def  *definition
+		def  *Definition
 	}{
 		{"continuous restart disabled", continuousDef("w", ContinuousConfig{Restart: Restart{Disabled: true}})},
 		{"scheduled failure limit on start", scheduledDef("w", "@every 1h", ScheduledConfig{
@@ -185,8 +185,8 @@ func TestLogging_StartedIsTheFirstLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				s := newTestSupervisorWithLogger(logs.logger())
-				c := addWorker(s, tc.def, Func(loggingFail))
+				s := newTestEngineWithLogger(logs.logger())
+				c := addWorker(s, tc.def, workerFunc(loggingFail))
 				startWorker(t, c)
 				synctest.Wait()
 				stopWorker(t, c)
@@ -206,72 +206,11 @@ func TestLogging_StartedIsTheFirstLine(t *testing.T) {
 
 func TestLogging_NeverStartedComponentWritesNothing(t *testing.T) {
 	logs := newLogCapture()
-	s := newTestSupervisorWithLogger(logs.logger())
-	c := addWorker(s, continuousDef("w"), Func(loggingBlocking))
+	s := newTestEngineWithLogger(logs.logger())
+	c := addWorker(s, continuousDef("w"), workerFunc(loggingBlocking))
 	stopWorker(t, c)
 	if entries := logs.all(); len(entries) != 0 {
 		t.Fatalf("a never-started worker logged %+v, want nothing", entries)
-	}
-}
-
-// loggingFailingStart is a component whose Start fails.
-type loggingFailingStart struct{}
-
-func (*loggingFailingStart) Start(context.Context) error { return errors.New("database unreachable") }
-
-func (*loggingFailingStart) Shutdown(context.Context) error { return nil }
-
-func TestLogging_FailedStartPhaseLogsNothingForUnstartedWorkers(t *testing.T) {
-	logs := newLogCapture()
-	app := newTestApp(t, credo.WithLogger(logs.logger()))
-	app.Manage(&loggingFailingStart{}, credo.ComponentName("database"))
-	workers := Use(app)
-	// Ingress: it would start after the internal tier, which fails first.
-	workers.Scheduled("report", "@every 1h", Func(loggingSucceed), ScheduledConfig{RunOnStart: true})
-
-	if err := app.Start(t.Context()); err == nil {
-		t.Fatal("App.Start() = nil, want the database's start failure")
-	}
-	for _, entry := range logs.all() {
-		if strings.HasPrefix(entry.Message, "worker ") || entry.Attrs["worker"] != nil {
-			t.Errorf("unstarted worker logged %q %v", entry.Message, entry.Attrs)
-		}
-	}
-	if info, _ := workers.Lookup("report"); info.Status != StatusPending {
-		t.Errorf("status = %q, want pending", info.Status)
-	}
-}
-
-func TestLogging_SupervisorLinesCarryModule(t *testing.T) {
-	logs := newLogCapture()
-	stopped := make(chan struct{})
-	logs.setObserve(func(entry capturedLog) {
-		if entry.Message == "worker stopped" && entry.Attrs["worker"] == "consumer" {
-			close(stopped)
-		}
-	})
-	app := newTestApp(t, credo.WithLogger(logs.logger()))
-	Use(app).Continuous("consumer", Func(loggingFail), ContinuousConfig{Restart: Restart{Disabled: true}})
-	startApp(t, app)
-
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no worker stopped line")
-	}
-	want := []string{"worker started", "worker run failed", "worker failed", "worker stopped"}
-	var got []string
-	for _, entry := range logs.all() {
-		if entry.Attrs["worker"] != "consumer" {
-			continue
-		}
-		got = append(got, entry.Message)
-		if entry.Attrs["module"] != "worker" {
-			t.Errorf("%q: module = %v, want worker", entry.Message, entry.Attrs["module"])
-		}
-	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("lines = %q, want %q", got, want)
 	}
 }
 
@@ -279,11 +218,11 @@ func TestLogging_StartLineAttributes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		logs := newLogCapture()
-		s := newTestSupervisorWithLogger(logs.logger())
-		for _, c := range []*component{
-			addWorker(s, continuousDef("consumer"), Func(loggingBlocking)),
-			addWorker(s, scheduledDef("report", "@every 1h"), Func(loggingSucceed)),
-			addWorker(s, scheduledDef("warmup", "@every 1h", ScheduledConfig{RunOnStart: true}), Func(loggingSucceed)),
+		s := newTestEngineWithLogger(logs.logger())
+		for _, c := range []*Component{
+			addWorker(s, continuousDef("consumer"), workerFunc(loggingBlocking)),
+			addWorker(s, scheduledDef("report", "@every 1h"), workerFunc(loggingSucceed)),
+			addWorker(s, scheduledDef("warmup", "@every 1h", ScheduledConfig{RunOnStart: true}), workerFunc(loggingSucceed)),
 		} {
 			startWorker(t, c)
 		}
@@ -317,9 +256,9 @@ func TestLogging_ScheduledRunLines(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			var ids loggingRunIDs
-			c := addWorker(s, scheduledDef("report", "@every 1m"), Func(func(ctx context.Context) error {
+			c := addWorker(s, scheduledDef("report", "@every 1m"), workerFunc(func(ctx context.Context) error {
 				ids.record(ctx)
 				time.Sleep(3 * time.Second)
 				return nil
@@ -349,9 +288,9 @@ func TestLogging_ScheduledRunLines(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			var ids loggingRunIDs
-			c := addWorker(s, scheduledDef("report", "@every 1m"), Func(func(ctx context.Context) error {
+			c := addWorker(s, scheduledDef("report", "@every 1m"), workerFunc(func(ctx context.Context) error {
 				ids.record(ctx)
 				return errors.New("boom")
 			}))
@@ -382,10 +321,10 @@ func TestLogging_ScheduledRunLines(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			var ids loggingRunIDs
 			c := addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{RunTimeout: 10 * time.Second}),
-				Func(func(ctx context.Context) error {
+				workerFunc(func(ctx context.Context) error {
 					ids.record(ctx)
 					<-ctx.Done()
 					return nil
@@ -422,11 +361,11 @@ func TestLogging_ContinuousRunFailedLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				s := newTestSupervisorWithLogger(logs.logger())
+				s := newTestEngineWithLogger(logs.logger())
 				var ids loggingRunIDs
 				c := addWorker(s, continuousDef("consumer", ContinuousConfig{
 					Restart: Restart{MinDelay: time.Minute, MaxDelay: time.Minute},
-				}), Func(func(ctx context.Context) error {
+				}), workerFunc(func(ctx context.Context) error {
 					ids.record(ctx)
 					return tc.run(ctx)
 				}))
@@ -486,8 +425,8 @@ func TestLogging_NextRestartInOmittedWithoutRestart(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				s := newTestSupervisorWithLogger(logs.logger())
-				c := addWorker(s, continuousDef("consumer", tc.cfg), Func(tc.run))
+				s := newTestEngineWithLogger(logs.logger())
+				c := addWorker(s, continuousDef("consumer", tc.cfg), workerFunc(tc.run))
 				startWorker(t, c)
 				time.Sleep(time.Minute)
 				synctest.Wait()
@@ -507,7 +446,7 @@ func TestLogging_NextRestartInOmittedWithoutRestart(t *testing.T) {
 func TestLogging_WorkerFailedLine(t *testing.T) {
 	cases := []struct {
 		name      string
-		def       *definition
+		def       *Definition
 		advance   time.Duration
 		wantAttrs map[string]any
 		absent    []string
@@ -529,8 +468,8 @@ func TestLogging_WorkerFailedLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				logs := newLogCapture()
-				s := newTestSupervisorWithLogger(logs.logger())
-				c := addWorker(s, tc.def, Func(loggingFail))
+				s := newTestEngineWithLogger(logs.logger())
+				c := addWorker(s, tc.def, workerFunc(loggingFail))
 				startWorker(t, c)
 				time.Sleep(tc.advance)
 				synctest.Wait()
@@ -571,9 +510,9 @@ func TestLogging_SkippedActivationsCollapse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		logs := newLogCapture()
-		s := newTestSupervisorWithLogger(logs.logger())
+		s := newTestEngineWithLogger(logs.logger())
 		var runs atomic.Int32
-		c := addWorker(s, scheduledDef("ticker", "@every 1s"), Func(func(context.Context) error {
+		c := addWorker(s, scheduledDef("ticker", "@every 1s"), workerFunc(func(context.Context) error {
 			switch runs.Add(1) {
 			case 1: // +1s → +11.5s: +2s … +11s are skipped, +12s runs next
 				time.Sleep(10*time.Second + 500*time.Millisecond)

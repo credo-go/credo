@@ -29,7 +29,6 @@ var maturityByPackage = map[string]string{
 	"testutil":    "beta",
 	"validation":  "beta",
 	"websocket":   "beta",
-	"worker":      "beta",
 
 	"middleware/ratelimit": "beta",
 }

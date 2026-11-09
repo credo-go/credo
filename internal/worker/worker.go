@@ -7,30 +7,19 @@ import (
 	"time"
 )
 
-// Worker is a background task run by the framework. The name that identifies
-// it is given at registration ([Supervisor.Continuous], [Supervisor.Scheduled]
-// and their provided forms), not by the worker itself.
-//
-// A continuous worker's Run must stay active until ctx is cancelled; a
-// scheduled worker's Run performs one activation and returns.
+// Worker is what the engine runs: the root package's credo.Worker has the
+// same method set, so its values are Workers here without conversion.
 type Worker interface {
 	// Run executes the worker's logic.
 	Run(ctx context.Context) error
 }
 
-// Func adapts a plain function into a Worker, in the style of
-// [net/http.HandlerFunc].
-type Func func(ctx context.Context) error
-
-// Run calls f(ctx).
-func (f Func) Run(ctx context.Context) error { return f(ctx) }
-
 // RunInfo is the execution metadata of one run, carried by the context
-// passed to Run.
+// passed to Run. The root package converts it to credo.WorkerRun.
 type RunInfo struct {
 	// Worker is the registration name.
 	Worker string
-	// ID is the run's identifier, equal to the run_id of the framework's log
+	// ID is the run's identifier, equal to the run_id of the engine's log
 	// lines for that run.
 	ID string
 	// ScheduledAt is the intended activation of a scheduled run; zero for
@@ -58,7 +47,9 @@ func newRunID() string {
 	return rand.Text()
 }
 
-func isNilWorker(w Worker) bool {
+// IsNilWorker reports whether w is nil or an interface holding a nil value of
+// a nilable kind.
+func IsNilWorker(w Worker) bool {
 	if w == nil {
 		return true
 	}

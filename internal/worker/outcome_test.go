@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// outcomeStart adds w under def to a fresh test supervisor and starts its
+// outcomeStart adds w under def to a fresh test engine and starts its
 // component; the component stops when the test ends.
-func outcomeStart(t *testing.T, def *definition, w Worker) (*Supervisor, *component) {
+func outcomeStart(t *testing.T, def *Definition, w Worker) (*testEngine, *Component) {
 	t.Helper()
-	s := newTestSupervisor()
+	s := newTestEngine()
 	c := addWorker(s, def, w)
 	startWorker(t, c)
 	return s, c
@@ -203,7 +203,7 @@ func TestIsContextError(t *testing.T) {
 // ctx.Err() must not turn the run into a graceful stop and lose the error.
 func TestRun_ContextErrorJoinedWithAnotherErrorIsAFailure(t *testing.T) {
 	flushErr := errors.New("final batch write failed")
-	run := Func(func(ctx context.Context) error {
+	run := workerFunc(func(ctx context.Context) error {
 		<-ctx.Done()
 		return errors.Join(ctx.Err(), flushErr)
 	})
@@ -290,19 +290,18 @@ func TestRunLoop_CancellationObservedAtAdmission(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var runs atomic.Int32
-				w := Func(func(context.Context) error {
+				w := workerFunc(func(context.Context) error {
 					runs.Add(1)
 					return errors.New("boom")
 				})
 				r := newRunner(continuousDef("barrier"), w)
 				policy := newBarrierPolicy(r, tc.blockAt, tc.wait)
-				s := newTestSupervisor()
 
 				ctx, cancel := context.WithCancel(t.Context())
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					s.runLoop(ctx, r, policy)
+					runLoop(ctx, r, policy)
 				}()
 
 				if tc.blockAt > 1 {
@@ -343,16 +342,16 @@ func TestRunLoop_CancellationObservedAtAdmission(t *testing.T) {
 func TestRunContinuous_NilWhileAliveIsAnUnexpectedExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		logs := newLogCapture()
-		s := newTestSupervisorWithLogger(logs.logger())
+		s := newTestEngineWithLogger(logs.logger())
 		var runs atomic.Int32
 		c := addWorker(s, continuousDef("consumer", ContinuousConfig{
 			Restart:           Restart{Limit: 1, MinDelay: time.Minute},
 			UnreadyWhenFailed: true,
-		}), Func(func(context.Context) error {
+		}), workerFunc(func(context.Context) error {
 			runs.Add(1)
 			return nil // e.g. a range loop over a channel that was closed
 		}))
-		ready := &readyComponent{c}
+		ready := &ReadyComponent{Component: c}
 		startWorker(t, c)
 
 		synctest.Wait()
@@ -387,7 +386,7 @@ func TestRunContinuous_NilWhileAliveIsAnUnexpectedExit(t *testing.T) {
 func TestRunContinuous_FailuresKeepTheirDiagnostics(t *testing.T) {
 	cases := []struct {
 		name string
-		run  Func
+		run  workerFunc
 		want string
 	}{
 		{"error", func(context.Context) error { return errors.New("broker unreachable") }, "broker unreachable"},
@@ -413,7 +412,7 @@ func TestRunContinuous_NilAfterCancellationIsGraceful(t *testing.T) {
 	for _, ret := range []string{"nil", "context error"} {
 		t.Run(ret, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s, c := outcomeStart(t, continuousDef("consumer"), Func(func(ctx context.Context) error {
+				s, c := outcomeStart(t, continuousDef("consumer"), workerFunc(func(ctx context.Context) error {
 					<-ctx.Done()
 					if ret == "nil" {
 						return nil
@@ -439,7 +438,7 @@ func TestRunScheduled_NilDuringShutdownIsGraceful(t *testing.T) {
 		t.Run(ret, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var runs atomic.Int32
-				s, c := outcomeStart(t, scheduledDef("report", "@every 1m"), Func(func(ctx context.Context) error {
+				s, c := outcomeStart(t, scheduledDef("report", "@every 1m"), workerFunc(func(ctx context.Context) error {
 					if runs.Add(1) == 1 {
 						return errors.New("boom")
 					}
@@ -466,7 +465,7 @@ func TestRunScheduled_NilDuringShutdownIsGraceful(t *testing.T) {
 
 func TestLoopExit_FailureDuringShutdown(t *testing.T) {
 	// flushFails blocks until the worker stops, then fails its final write.
-	flushFails := Func(func(ctx context.Context) error {
+	flushFails := workerFunc(func(ctx context.Context) error {
 		<-ctx.Done()
 		return errors.New("flush failed")
 	})
@@ -488,7 +487,7 @@ func TestLoopExit_FailureDuringShutdown(t *testing.T) {
 			var runs atomic.Int32
 			s, c := outcomeStart(t, continuousDef("consumer", ContinuousConfig{
 				Restart: Restart{Limit: 1, MinDelay: time.Second},
-			}), Func(func(ctx context.Context) error {
+			}), workerFunc(func(ctx context.Context) error {
 				if runs.Add(1) == 1 {
 					return errors.New("boom")
 				}
@@ -539,11 +538,11 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 			t.Run(ret, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					var sawTimeoutCause atomic.Bool
-					s := newTestSupervisor()
+					s := newTestEngine()
 					c := addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{
 						RunTimeout:               10 * time.Second,
 						UnreadyUntilFirstSuccess: true,
-					}), Func(func(ctx context.Context) error {
+					}), workerFunc(func(ctx context.Context) error {
 						<-ctx.Done()
 						sawTimeoutCause.Store(errors.Is(context.Cause(ctx), ErrRunTimeout))
 						if ret == "nil" {
@@ -566,7 +565,7 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 					if !info.LastSucceededAt.IsZero() {
 						t.Fatal("a timed-out run stamped LastSucceededAt")
 					}
-					err := (&readyComponent{c}).Ready(t.Context())
+					err := (&ReadyComponent{Component: c}).Ready(t.Context())
 					if err == nil || !strings.Contains(err.Error(), "no successful run yet") {
 						t.Fatalf("UnreadyUntilFirstSuccess = %v, want still unready", err)
 					}
@@ -580,14 +579,14 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 
 	// blockUntilReleased times out and then holds the run until release is
 	// closed, so a test can stop the worker while the run is in flight.
-	blockUntilReleased := func(release chan struct{}) Func {
+	blockUntilReleased := func(release chan struct{}) workerFunc {
 		return func(ctx context.Context) error {
 			<-ctx.Done()
 			<-release
 			return nil
 		}
 	}
-	shutdownWhileBlocked := func(t *testing.T, c *component, release chan struct{}) {
+	shutdownWhileBlocked := func(t *testing.T, c *Component, release chan struct{}) {
 		t.Helper()
 		result := make(chan error, 1)
 		go func() { result <- c.Shutdown(context.WithoutCancel(t.Context())) }()
@@ -641,7 +640,7 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					s, c := outcomeStart(t, scheduledDef("report", "@every 1m", ScheduledConfig{
 						RunTimeout: 10 * time.Second,
-					}), Func(func(ctx context.Context) error {
+					}), workerFunc(func(ctx context.Context) error {
 						<-ctx.Done()
 						time.Sleep(20 * time.Second) // outlives the deadline
 						switch ret {
@@ -680,10 +679,10 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 	t.Run("a run that ignores its context skips activations without overlap", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			var runs, running atomic.Int32
 			c := addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{RunTimeout: 10 * time.Second}),
-				Func(func(context.Context) error {
+				workerFunc(func(context.Context) error {
 					if running.Add(1) > 1 {
 						t.Error("two runs overlapped")
 					}
@@ -720,7 +719,7 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 			calls := make(chan call, 4)
 			s, _ := outcomeStart(t, scheduledDef("report", "@every 1m", ScheduledConfig{
 				RunOnStart: true, RunTimeout: 5 * time.Second,
-			}), Func(func(ctx context.Context) error {
+			}), workerFunc(func(ctx context.Context) error {
 				run, _ := CurrentRun(ctx)
 				calls <- call{time.Now(), run.ScheduledAt}
 				<-ctx.Done()
@@ -760,10 +759,10 @@ func TestRunScheduled_RunTimeout(t *testing.T) {
 func TestRun_PanicsAreFailures(t *testing.T) {
 	t.Run("no stack in LastError or readiness", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			s := newTestSupervisor()
+			s := newTestEngine()
 			c := addWorker(s, scheduledDef("report", "@every 1m", ScheduledConfig{
 				MaxConsecutiveFailures: 1, UnreadyWhenFailed: true,
-			}), Func(func(context.Context) error { panic("kaboom") }))
+			}), workerFunc(func(context.Context) error { panic("kaboom") }))
 			startWorker(t, c)
 			time.Sleep(time.Minute)
 			synctest.Wait()
@@ -771,7 +770,7 @@ func TestRun_PanicsAreFailures(t *testing.T) {
 			if info.Status != StatusFailed || info.LastError != "worker: run panicked: kaboom" {
 				t.Fatalf("%+v, want failed with the panic value only", info)
 			}
-			err := (&readyComponent{c}).Ready(t.Context())
+			err := (&ReadyComponent{Component: c}).Ready(t.Context())
 			if err == nil || strings.Contains(err.Error(), "goroutine") || !strings.Contains(err.Error(), "kaboom") {
 				t.Fatalf("readiness = %v, want the panic value without a stack", err)
 			}
@@ -781,7 +780,7 @@ func TestRun_PanicsAreFailures(t *testing.T) {
 	t.Run("panic(ctx.Err()) during shutdown is not a graceful stop", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			s, c := outcomeStart(t, continuousDef("consumer", ContinuousConfig{Restart: Restart{Limit: 1}}),
-				Func(func(ctx context.Context) error {
+				workerFunc(func(ctx context.Context) error {
 					<-ctx.Done()
 					panic(ctx.Err())
 				}))

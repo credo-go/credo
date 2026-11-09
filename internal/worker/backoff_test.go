@@ -19,10 +19,10 @@ type window struct{ lo, hi time.Duration }
 
 // windowsFor feeds the continuous policy of def one failed run per entry of
 // runs (its duration) and returns the window each delay was drawn from.
-func windowsFor(def *definition, runs []time.Duration) []window {
+func windowsFor(def *Definition, runs []time.Duration) []window {
 	var got []window
 	c := &continuousPolicy{
-		s: &Supervisor{jitter: func(lo, hi time.Duration) time.Duration {
+		e: &Engine{jitter: func(lo, hi time.Duration) time.Duration {
 			got = append(got, window{lo, hi})
 			return lo
 		}},
@@ -36,7 +36,7 @@ func windowsFor(def *definition, runs []time.Duration) []window {
 
 // windows is windowsFor with an already resolved floor and cap.
 func windows(base, maxDelay time.Duration, runs []time.Duration) []window {
-	return windowsFor(&definition{name: "job", kind: KindContinuous, continuous: ContinuousConfig{
+	return windowsFor(&Definition{name: "job", kind: KindContinuous, continuous: ContinuousConfig{
 		Restart: Restart{MinDelay: base, MaxDelay: maxDelay},
 	}}, runs)
 }
@@ -206,13 +206,13 @@ func TestUniformJitter(t *testing.T) {
 // span of virtual time pass and returns the component and the offset of every
 // run's start. run receives the 1-based run number. It must be called inside a
 // synctest bubble.
-func backoffRunStarts(t *testing.T, s *Supervisor, span time.Duration, run func(ctx context.Context, n int) error,
-	cfg ...ContinuousConfig) (*component, []time.Duration) {
+func backoffRunStarts(t *testing.T, s *testEngine, span time.Duration, run func(ctx context.Context, n int) error,
+	cfg ...ContinuousConfig) (*Component, []time.Duration) {
 	t.Helper()
 	var mu sync.Mutex
 	var starts []time.Duration
 	origin := time.Now()
-	c := addWorker(s, continuousDef("consumer", cfg...), Func(func(ctx context.Context) error {
+	c := addWorker(s, continuousDef("consumer", cfg...), workerFunc(func(ctx context.Context) error {
 		mu.Lock()
 		starts = append(starts, time.Since(origin))
 		n := len(starts)
@@ -252,7 +252,7 @@ func TestRunContinuous_BackoffWithTheDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s := newTestSupervisor()
+				s := newTestEngine()
 				s.jitter = tt.pick
 				c, starts := backoffRunStarts(t, s, tt.span, backoffFail)
 				if !slices.Equal(starts, tt.want) {
@@ -280,7 +280,7 @@ func TestRunContinuous_BackoffWithTheDefaults(t *testing.T) {
 
 func TestRunContinuous_BackoffResetsAfterALongRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestSupervisor()
+		s := newTestEngine()
 		s.jitter = upperBound
 		_, starts := backoffRunStarts(t, s, 80*time.Second, func(ctx context.Context, n int) error {
 			if n == 3 {
@@ -312,7 +312,7 @@ func TestRunContinuous_BackoffAppliesToEveryFailure(t *testing.T) {
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s := newTestSupervisor()
+				s := newTestEngine()
 				s.jitter = upperBound
 				_, starts := backoffRunStarts(t, s, 22*time.Second, run)
 				if want := seconds(0, 3, 9, 21); !slices.Equal(starts, want) {
@@ -325,7 +325,7 @@ func TestRunContinuous_BackoffAppliesToEveryFailure(t *testing.T) {
 
 func TestRunContinuous_BackoffFixedDelay(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestSupervisor()
+		s := newTestEngine()
 		s.jitter = upperBound
 		// A floor of ten minutes alone raises the cap to it: a fixed delay.
 		_, starts := backoffRunStarts(t, s, 31*time.Minute, backoffFail,
@@ -349,7 +349,7 @@ func TestRunContinuous_BackoffReachesFailedLater(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s := newTestSupervisor()
+				s := newTestEngine()
 				s.jitter = tt.pick
 				backoffRunStarts(t, s, tt.failedAt-time.Second, backoffFail,
 					ContinuousConfig{Restart: Restart{Limit: 5}})
@@ -370,7 +370,7 @@ func TestRunContinuous_NextRestartIn(t *testing.T) {
 	t.Run("planned restarts carry the delay; the last failure does not", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			s.jitter = upperBound
 			backoffRunStarts(t, s, 20*time.Second, backoffFail, ContinuousConfig{Restart: Restart{Limit: 2}})
 
@@ -400,8 +400,8 @@ func TestRunContinuous_NextRestartIn(t *testing.T) {
 	t.Run("a failure during shutdown plans nothing", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
-			c := addWorker(s, continuousDef("consumer"), Func(func(ctx context.Context) error {
+			s := newTestEngineWithLogger(logs.logger())
+			c := addWorker(s, continuousDef("consumer"), workerFunc(func(ctx context.Context) error {
 				<-ctx.Done()
 				return errors.New("flush failed")
 			}))
@@ -421,7 +421,7 @@ func TestRunContinuous_NextRestartIn(t *testing.T) {
 	t.Run("restarts disabled plans nothing", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			logs := newLogCapture()
-			s := newTestSupervisorWithLogger(logs.logger())
+			s := newTestEngineWithLogger(logs.logger())
 			backoffRunStarts(t, s, time.Minute, backoffFail, ContinuousConfig{Restart: Restart{Disabled: true}})
 			lines := logs.withMessage("worker run failed")
 			if len(lines) != 1 {

@@ -37,38 +37,34 @@ const (
 )
 
 // Info is a point-in-time snapshot of a worker: its identity, its resolved
-// configuration and its live state.
-//
-// Info is shaped for direct JSON encoding, for example from an admin
-// endpoint: field names are snake_case, durations encode as integer
-// nanoseconds under Credo's response profile, and schedule, continuous,
-// scheduled, last_started_at, last_succeeded_at and last_error are omitted
-// while zero.
+// configuration and its live state. The root package converts it to
+// credo.WorkerInfo, whose fields document these and which owns the JSON
+// shape.
 type Info struct {
-	Name string `json:"name"`
-	Kind Kind   `json:"kind"`
+	Name string
+	Kind Kind
 	// Schedule is the expression of a scheduled worker, as registered; empty
 	// for a continuous worker.
-	Schedule string `json:"schedule,omitzero"`
+	Schedule string
 	// Continuous is the resolved configuration of a continuous worker; nil
 	// for a scheduled one. Each snapshot holds its own copy.
-	Continuous *ContinuousConfig `json:"continuous,omitzero"`
+	Continuous *ContinuousConfig
 	// Scheduled is the resolved configuration of a scheduled worker; nil for
 	// a continuous one. Each snapshot holds its own copy.
-	Scheduled *ScheduledConfig `json:"scheduled,omitzero"`
+	Scheduled *ScheduledConfig
 
-	Status Status `json:"status"`
+	Status Status
 	// Restarts counts the restarts of a continuous worker that started.
-	Restarts int64 `json:"restarts"`
+	Restarts int64
 	// ConsecutiveFailures counts the failed runs of a scheduled worker since
 	// its last success.
-	ConsecutiveFailures int64 `json:"consecutive_failures"`
+	ConsecutiveFailures int64
 	// LastStartedAt is the start time of the most recently admitted run.
-	LastStartedAt time.Time `json:"last_started_at,omitzero"`
+	LastStartedAt time.Time
 	// LastSucceededAt is the completion time of the last successful run of a
 	// scheduled worker; always zero for a continuous worker.
-	LastSucceededAt time.Time `json:"last_succeeded_at,omitzero"`
+	LastSucceededAt time.Time
 	// LastError is the error of the most recent failed run, without any stack
 	// trace; a successful scheduled run clears it, a graceful stop does not.
-	LastError string `json:"last_error,omitzero"`
+	LastError string
 }

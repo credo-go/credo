@@ -218,7 +218,7 @@ Copyright (C) 2012 Rob Figueiredo
 License: MIT (https://github.com/robfig/cron/blob/master/LICENSE)
 
 Adapted in:
-  - worker/           — cron expression parser and next-fire calculation
+  - internal/worker/  — cron expression parser and next-fire calculation
     Files adapted from robfig/cron v3:
       schedule.go     — cron parser, descriptor parsing, next-fire calculation
 

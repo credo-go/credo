@@ -62,7 +62,6 @@ var modulePolicies = map[string]importPolicy{
 	"testutil":   {credo: []string{"", "config"}},
 	"validation": {},
 	"websocket":  {credo: []string{"", "internal/httpwriter", "internal/origin"}, external: []string{"github.com/coder/websocket"}},
-	"worker":     {credo: []string{"", "internal/kernel"}},
 
 	"internal/di":          {credo: []string{"internal/observe", "internal/resourceid"}},
 	"internal/faultstatus": {credo: []string{"fault"}},
@@ -71,7 +70,6 @@ var modulePolicies = map[string]importPolicy{
 	"internal/httpheader":  {},
 	"internal/httpwriter":  {},
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
-	"internal/kernel":      {credo: []string{"internal/health"}},
 	"internal/observe":     {credo: []string{"fault", "internal/faultstatus"}},
 	"internal/origin":      {},
 	"internal/pattern":     {},
@@ -81,6 +79,7 @@ var modulePolicies = map[string]importPolicy{
 	"internal/resourceid":  {},
 	"internal/static":      {},
 	"internal/wirepath":    {},
+	"internal/worker":      {},
 
 	"scripts/releasegate": {}, // release tooling, stdlib-only
 }

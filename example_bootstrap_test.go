@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/worker"
 )
 
 // exampleDB stands in for a database handle such as *sqldb.DB: Start pings
@@ -73,7 +72,7 @@ func Example_bootstrapOrder() {
 		Messages: credo.I18nMessages{"orders.empty": "No orders yet"},
 	})
 	app.UseHealth()
-	worker.Use(app).ContinuousProvided[*exampleRelay]("outbox-relay")
+	app.Workers().ContinuousProvided[*exampleRelay]("outbox-relay")
 
 	// 4. Finalize reports every missing dependency and cycle at once.
 	if err := app.Finalize(); err != nil {

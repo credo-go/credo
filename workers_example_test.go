@@ -1,4 +1,4 @@
-package worker_test
+package credo_test
 
 import (
 	"context"
@@ -7,35 +7,42 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/worker"
 )
 
-func ExampleUse() {
+// heartbeat is a continuous worker: Run stays active until the application
+// shuts down.
+type heartbeat struct{}
+
+func (heartbeat) Run(ctx context.Context) error {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			run, _ := credo.CurrentWorkerRun(ctx)
+			slog.InfoContext(ctx, "heartbeat", "worker", run.Worker)
+		}
+	}
+}
+
+// metricsReport is a scheduled worker: one run per activation, never
+// overlapping.
+type metricsReport struct{}
+
+func (metricsReport) Run(context.Context) error { return nil }
+
+func ExampleApp_Workers() {
 	app, err := credo.New()
 	if err != nil {
 		panic(err)
 	}
-	workers := worker.Use(app)
+	workers := app.Workers()
 
-	// A continuous worker: Run stays active until the application shuts down.
-	workers.Continuous("heartbeat", worker.Func(func(ctx context.Context) error {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				run, _ := worker.CurrentRun(ctx)
-				slog.InfoContext(ctx, "heartbeat", "worker", run.Worker)
-			}
-		}
-	}), worker.ContinuousConfig{Restart: worker.Restart{MinDelay: 5 * time.Second}})
-
-	// A scheduled worker: one run per activation, never overlapping.
-	workers.Scheduled("metrics-report", "@every 1m", worker.Func(func(context.Context) error {
-		return nil
-	}))
+	workers.Continuous("heartbeat", heartbeat{},
+		credo.ContinuousConfig{Restart: credo.RestartPolicy{MinDelay: 5 * time.Second}})
+	workers.Scheduled("metrics-report", "@every 1m", metricsReport{})
 
 	for _, info := range workers.Snapshot() {
 		var tier credo.Tier
@@ -62,28 +69,27 @@ func newInvoiceSweeper(infra credo.Infra) *invoiceSweeper {
 
 // Run performs one activation.
 func (s *invoiceSweeper) Run(ctx context.Context) error {
-	run, _ := worker.CurrentRun(ctx)
+	run, _ := credo.CurrentWorkerRun(ctx)
 	s.log.InfoContext(ctx, "sweeping invoices", "run_id", run.ID)
 	return nil
 }
 
-func ExampleSupervisor_ScheduledProvided() {
+func ExampleWorkers_ScheduledProvided() {
 	app, err := credo.New()
 	if err != nil {
 		panic(err)
 	}
-	workers := worker.Use(app)
 
 	// The worker is built in the start walk, so the provider and the
 	// registration may come in either order, both before Finalize.
 	app.Provide(newInvoiceSweeper)
-	workers.ScheduledProvided[*invoiceSweeper]("invoice-sweeper", "@every 1m", worker.ScheduledConfig{
+	app.Workers().ScheduledProvided[*invoiceSweeper]("invoice-sweeper", "@every 1m", credo.ScheduledConfig{
 		RunOnStart:             true,
 		RunTimeout:             15 * time.Second,
 		MaxConsecutiveFailures: 3,
 	})
 
-	info, ok := workers.Lookup("invoice-sweeper")
+	info, ok := app.Workers().Lookup("invoice-sweeper")
 	fmt.Println(ok, info.Kind, info.Schedule)
 	fmt.Println(info.Scheduled.Tier, info.Scheduled.RunOnStart, info.Scheduled.RunTimeout,
 		info.Scheduled.MaxConsecutiveFailures)
@@ -92,25 +98,30 @@ func ExampleSupervisor_ScheduledProvided() {
 	// ingress true 15s 3
 }
 
-func ExampleCurrentRun() {
+// reportOnce is a scheduled worker that prints its run metadata and closes
+// done.
+type reportOnce struct{ done chan struct{} }
+
+func (w reportOnce) Run(ctx context.Context) error {
+	defer close(w.done)
+	run, ok := credo.CurrentWorkerRun(ctx)
+	fmt.Println("run context:", ok)
+	fmt.Println("worker:", run.Worker)
+	fmt.Println("run id set:", run.ID != "")
+	fmt.Println("run on start, so no activation time:", run.ScheduledAt.IsZero())
+	return nil
+}
+
+func ExampleCurrentWorkerRun() {
 	app, err := credo.New(credo.WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		panic(err)
 	}
-	workers := worker.Use(app)
 
 	done := make(chan struct{})
-	workers.Scheduled("report", "@every 1h", worker.Func(func(ctx context.Context) error {
-		defer close(done)
-		run, ok := worker.CurrentRun(ctx)
-		fmt.Println("run context:", ok)
-		fmt.Println("worker:", run.Worker)
-		fmt.Println("run id set:", run.ID != "")
-		fmt.Println("run on start, so no activation time:", run.ScheduledAt.IsZero())
-		return nil
-	}), worker.ScheduledConfig{RunOnStart: true})
+	app.Workers().Scheduled("report", "@every 1h", reportOnce{done: done}, credo.ScheduledConfig{RunOnStart: true})
 
-	_, ok := worker.CurrentRun(context.Background())
+	_, ok := credo.CurrentWorkerRun(context.Background())
 	fmt.Println("outside a run:", ok)
 
 	if err = app.Start(context.Background()); err != nil {
