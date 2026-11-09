@@ -1,6 +1,7 @@
 // Package testutil provides helpers for testing Credo applications: building a
 // hermetic test App, overriding dependencies with fakes, starting an App served
-// through ServeHTTP, injecting config, and asserting on structured log output.
+// through ServeHTTP, injecting config, asserting on structured log output, and
+// checking that every message key is in the catalogs.
 //
 // # Building a test App
 //
@@ -83,6 +84,18 @@
 //		Message: "request completed",
 //		Attrs:   map[string]any{"method": "GET", "status": 200},
 //	})
+//
+// # Checking message keys
+//
+// A message key is a catalog key, never rendered as text: a key the catalogs
+// do not define renders the code's built-in message. [CheckMessageKeys] parses
+// the application's sources and fails the test for each key written as a
+// literal that the catalogs do not define, and for each key that is not a
+// literal:
+//
+//	func TestMessageKeys(t *testing.T) {
+//		testutil.CheckMessageKeys(t, "locales", ".")
+//	}
 //
 // Maturity: beta
 package testutil
