@@ -8,7 +8,7 @@
 
 ## Bootstrap Simplification
 
-Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
+The delivery plan for this work was folded into [ADR-002](docs/adr/002-code-acquisition-strategy.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-010](docs/adr/010-middleware-architecture.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-023](docs/adr/023-worker-system.md) and [ADR-024](docs/adr/024-lifecycle-components.md), their specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-11-09; shipped in v0.25.0. These boxes are the only progress tracker.
 
 - [x] W1: promotion and the decisions that change no code — the decisions written into the ADRs and specs, each marked pending until its work item ships; the root package's module allowlist and the rule that places a package (ADR-002); no automatic bindings and DI in the core (ADR-004) (2026-11-09)
 - [x] W2: the logger of a framework module — `credo.InfraFrom(ctx)`, `websocket.New(cfg...)` with `Config.Logger`, the `component` and `module` log keys (2026-11-09)
@@ -18,7 +18,7 @@ Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) de
 - [x] W6: the first `Resolve` finalizes — and a late registration's panic names what finalized the container, where, and the calls that led there (2026-11-09)
 - [x] W7: a type declares its ingress tier — `credo.IngressComponent`, implemented by `websocket.Server` (2026-11-09)
 - [x] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted (2026-11-09)
-- [ ] W9: examples, guides and the release
+- [x] W9: examples, guides and the release (2026-11-09)
 - [x] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field (2026-11-09)
 - [x] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached (2026-11-09)
 - [x] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer` (2026-11-09)
@@ -50,7 +50,7 @@ Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](do
 
 ## Pre-v1 Contract Migration
 
-The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors; do not add them to the existing v1.0.0 breaking batch or require one-minor-ahead announcements.
+The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors, without one-minor-ahead announcements.
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
 - [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
@@ -551,7 +551,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 **Source**: coder/websocket v1.8.15 (ISC), wrapped and exact-pinned
 
-WebSocket server support is implemented as an adapter rather than copied protocol code. The canonical API stays on the existing router: `ws := websocket.New(app.NewInfra("websocket"), cfg)`, `app.Manage(ws, credo.Ingress())` and `app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect, heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain demand-gated follow-ups rather than MVP promises.
+WebSocket server support is implemented as an adapter rather than copied protocol code. The canonical API stays on the existing router: `ws := websocket.New(cfg)`, `app.Manage(ws)` (the server declares the ingress tier) and `app.GET(path, ws.Handler(handler))`. Hub/room, outbound client, reconnect, heartbeat scheduler, quota, distributed fan-out, and RFC 8441 remain demand-gated follow-ups rather than MVP promises.
 
 - [x] Credo-owned message/close/config/connection façade over coder/websocket
 - [x] Secure same-origin default, subprotocol policy, 32 KiB read limit, compression off
@@ -735,6 +735,9 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [x] `Has[T]()` probe API — registration check without singleton construction (2026-09-05, DI minor)
 - [ ] `cache/` contracts (in-memory + Redis) — consider together with Redis store contracts (Phase 3.3c); demand-driven, no commitment yet
 - [ ] Fluent validation builder — the language prerequisite is met (generic methods, [golang/go#77273](https://github.com/golang/go/issues/77273), landed with the repo's Go 1.27 floor, 2026-06); still deferred by choice; the programmatic `Rule[T]` API remains the substrate
+- [ ] A `WithDebug` hint naming a binding whose type shows a `Close` shape and is not a component (it is closed only with `credo.CloseOnShutdown()`) — [Container Spec](docs/specs/container.md)
+- [ ] A per-module tracer or meter override, should the observability release add such fields to `credo.Infra` — [ADR-004](docs/adr/004-dependency-injection-and-infra.md)
+- [ ] `connection_id` in an access record written to a dedicated access logger, which waits for an `Attrs` option of the access log; `request_id` links the access record and the WebSocket connection logs meanwhile — [ADR-019](docs/adr/019-websocket-integration-and-drain.md)
 
 ### Documentation
 
