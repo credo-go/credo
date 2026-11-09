@@ -22,6 +22,7 @@ type Option func(*options)
 
 type options struct {
 	wiring      []func(*credo.App)
+	modules     []credo.Module
 	overrides   []func(*credo.App)
 	configPairs []configPair
 	logBuffer   *LogBuffer
@@ -40,9 +41,28 @@ func WithWiring(fns ...func(*credo.App)) Option {
 	return func(o *options) { o.wiring = append(o.wiring, fns...) }
 }
 
+// WithModules hands mods to [credo.App.UseModules] after the [WithWiring]
+// functions, with one more module last whose Services applies the
+// [WithOverride] values. The overrides therefore land after every module's
+// services and before any module's handlers resolve, so a module's handlers
+// resolve the replacement:
+//
+//	app := testutil.NewApp(t,
+//		testutil.WithModules(users.Module{}, billing.Module{}),
+//		testutil.WithOverride[billing.Gateway](fakeGateway),
+//	)
+//
+// Repeated calls append to one list, which is passed to a single UseModules
+// call. A UseModules call in a [WithWiring] function beside WithModules is a
+// second call and panics.
+func WithModules(mods ...credo.Module) Option {
+	return func(o *options) { o.modules = append(o.modules, mods...) }
+}
+
 // WithOverride replaces the binding for type T with value v, through
 // [credo.App.ProvideValue] with [credo.Override]. Overrides run after
-// [WithWiring], making them the right tool for swapping a real dependency for
+// [WithWiring], and under [WithModules] after every module's services and
+// before any module's handlers, making them the right tool for swapping a real dependency for
 // a stub or fake. An override needs an earlier binding of T and panics without
 // one, so an override that no longer matches the wiring fails instead of
 // adding a binding nothing resolves; adding a binding is [WithWiring]'s job.
@@ -81,8 +101,9 @@ func WithLogBuffer(buf *LogBuffer) Option {
 // configuration from disk or from the environment: by default it injects an
 // empty RawConfig, and the values given with [WithConfig] are the only ones
 // loaded, so tests are hermetic. Provide values with [WithConfig], wire
-// dependencies with [WithWiring], swap them with [WithOverride], and capture
-// logs with [WithLogBuffer].
+// dependencies with [WithWiring] or the application's modules with
+// [WithModules], swap them with [WithOverride], and capture logs with
+// [WithLogBuffer].
 //
 // NewApp registers a graceful shutdown via tb.Cleanup: it tears down every
 // singleton the test created whether or not the App was run. The App is not
@@ -121,8 +142,12 @@ func NewApp(tb testing.TB, opts ...Option) *credo.App {
 	for _, fn := range o.wiring {
 		fn(app)
 	}
-	for _, fn := range o.overrides {
-		fn(app)
+	if len(o.modules) > 0 {
+		// The overrides module comes last, so its Services runs after every
+		// module's services and before any module's handlers resolve.
+		app.UseModules(append(o.modules, overridesModule(o.overrides))...)
+	} else {
+		overridesModule(o.overrides).Services(app)
 	}
 
 	// Registered first, this cleanup runs after every cleanup the test adds
@@ -136,6 +161,18 @@ func NewApp(tb testing.TB, opts ...Option) *credo.App {
 
 	return app
 }
+
+// overridesModule is the module WithModules appends last: its Services
+// applies the test's overrides, and it has no handlers.
+type overridesModule []func(*credo.App)
+
+func (m overridesModule) Services(app *credo.App) {
+	for _, fn := range m {
+		fn(app)
+	}
+}
+
+func (overridesModule) Handlers(*credo.App) {}
 
 // builtApps holds the Apps NewApp built whose shutdown cleanup is registered.
 var builtApps sync.Map

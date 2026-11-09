@@ -455,7 +455,43 @@ The first resolving call ends registration: it freezes the container and validat
 
 A misused registration — a constructor of the wrong shape, a duplicate binding, a dependency registration after the first `Resolve` — panics at its line; a late registration's message names what finalized the container, where, and the calls that led there. Validation reports every missing dependency, each with its whole path, and every cycle at once: `MustResolve` panics with the report, and `Resolve` and `Finalize` return it.
 
-See [Dependency Injection Guide](dependency-injection.md) for `Alias`, `BindMany`/`ResolveAll`, `ProvideValue`, testing patterns, and the full mental model.
+### Modules
+
+An application split into parts gives each part a `credo.Module` — its `Services`, then its `Handlers` — and passes every module to one `UseModules` call, which runs every module's `Services` before any module's `Handlers`. A module's handlers can then resolve a service any module provides, and the first `Resolve` comes after every registration:
+
+```go
+// users/module.go
+type Module struct{}
+
+func (Module) Services(app *credo.App) {
+    app.Provide(NewUserRepository)
+    app.Provide(NewUserService)
+}
+
+func (Module) Handlers(app *credo.App) {
+    svc := app.MustResolve[*UserService]()
+    app.GET("/users/{id}", svc.GetUser)
+}
+```
+
+```go
+// main.go
+app, err := credo.New() // 1. configuration
+if err != nil {
+    log.Fatal(err)
+}
+
+app.UseHealth()
+app.UseModules(users.Module{}, billing.Module{}) // 2–4, every module's services, then every module's handlers
+
+if err := app.Run(); err != nil { // 5. Run
+    log.Fatal(err)
+}
+```
+
+Both methods are required, so a module with no routes leaves `Handlers` empty. `UseModules` is called once; a second call panics, naming the remedy of passing every module to one call.
+
+See [Dependency Injection Guide](dependency-injection.md) for `Alias`, `BindMany`/`ResolveAll`, `ProvideValue`, modules, testing patterns — `testutil.WithModules` among them — and the full mental model.
 
 ---
 
