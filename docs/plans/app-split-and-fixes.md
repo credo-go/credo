@@ -39,7 +39,7 @@ A5–A8 came after Part A merged: one more branch, one commit per item, one PR, 
   - **Fix:** the Quick Start reads its sections through `config.Section[T]`, and the README and guides are checked for other whole-tree examples. The config spec (strict decoding, next to the `.env` prefix policy) and the configuration guide state that a whole-tree decode sees every `.env` entry and the framework's `server` keys, with the remedies: decode sections, cover those keys, or load with `config.WithoutDotenv()`. The `.env` prefix policy stays.
   - **Error:** an unknown-key error names the source of a key that `.env` or the process environment set, from the record behind `ReloadResult.Overridden`: `config: unknown key "x_y" (from .env entry X_Y): …`.
   - **Docs:** CHANGELOG under Changed (the error text).
-- [ ] **A6. Migration rows for the whole-tree reads.**
+- [x] **A6. Migration rows for the whole-tree reads.**
   - **Problem:** the v0.26.0 migration rows map `cfg.Get[T]("app")` to a section, but not the whole-tree form with an empty key, which a section rejects.
   - **Fix:** rows map `cfg.Get[T]("")` and `cfg.MustGet[T]("")` to `cfg.Unmarshal("", &v)`, and `app.GetConfig[T]("")` and `app.MustGetConfig[T]("")` to `Unmarshal("", &v)` on the `RawConfig`, pointing to A5's caveat. The published v0.26.0 release notes stay as they are.
 - [ ] **A7. A reload signal over a configuration that cannot reload is ignored silently.**
