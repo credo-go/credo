@@ -30,6 +30,8 @@ var maturityByPackage = map[string]string{
 	"validation":  "beta",
 	"websocket":   "beta",
 	"worker":      "beta",
+
+	"middleware/ratelimit": "beta",
 }
 
 // readmeAreas maps README table rows whose area text does not name the

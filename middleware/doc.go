@@ -51,16 +51,10 @@
 //   - CSRF(cfg ...CSRFConfig) — Sec-Fetch-Site based, no tokens
 //   - Secure(cfg ...SecureConfig)
 //   - Timeout(cfg ...TimeoutConfig)
-//   - RateLimit(cfg ...RateLimitConfig)
 //
-// # RateLimit Lifecycle
-//
-// For explicit lifecycle control, use [NewRateLimiter] and hand the limiter
-// to app.Manage, which shuts it down after the HTTP drain:
-//
-//	ratelimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{Tokens: 120})
-//	app.GlobalMiddleware(ratelimiter.Middleware())
-//	app.Manage(ratelimiter, credo.Named("ratelimiter"))
+// Rate limiting is the package github.com/credo-go/credo/middleware/ratelimit
+// (ratelimit.Middleware(cfg ...ratelimit.Config)), so that importing this
+// package does not link go-limiter.
 //
 // Maturity: beta
 package middleware
