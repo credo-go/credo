@@ -333,18 +333,17 @@ func setupDatabases(app *credo.App) error {
         return err
     }
 
-    // Each database is bound under its own wrapper type and registered by it.
+    // Each database is bound under its own wrapper type and named for /ready
+    // and the lifecycle; the binding alone pings it at start and reports it.
     app.Provide(func() (PrimaryDB, error) {
         db, err := sqldb.Open(&primaryCfg)
         return PrimaryDB{db}, err
-    })
-    store.Register[PrimaryDB](app, store.WithName("primary"))
+    }, credo.ComponentName("primary"))
 
     app.Provide(func() (AnalyticsDB, error) {
         db, err := sqldb.Open(&analyticsCfg)
         return AnalyticsDB{db}, err
-    })
-    store.Register[AnalyticsDB](app, store.WithName("analytics"))
+    }, credo.ComponentName("analytics"))
     return nil
 }
 ```
@@ -533,6 +532,7 @@ User-read during registration via `app.GetConfig[sqldb.Config]("databases.<name>
 | `user` | string | `""` | Auth username |
 | `password` | string | `""` | Auth password |
 | `connect_timeout` | duration | `0` | Connection establishment timeout |
+| `ping_timeout` | duration | `0` (= `sqldb.DefaultPingTimeout`, 5s) | Deadline of the ping `(*sqldb.DB).Start` sends; unlike `connect_timeout`, zero is not "no deadline", and a negative value fails `Open` |
 | `max_open` | int | `0` (unlimited) | Max open connections |
 | `max_idle` | int or null | unset | Max idle connections; omitted uses the stdlib policy (subject to `max_open`), explicit `0` retains none |
 | `max_idle_time` | duration | `0` (disabled) | Max idle age before a connection is closed |
@@ -540,7 +540,7 @@ User-read during registration via `app.GetConfig[sqldb.Config]("databases.<name>
 | `ssl_mode` | string | `""` | `"disable"`, `"require"`, `"verify-full"` |
 | `options` | map | `{}` | Driver-specific params |
 
-`max_open: 0` is not a conservative production limit: it preserves `database/sql`'s unlimited-open behavior. A store registered with `store.Register` logs `sqldb.pool.max_open_unlimited` after its start-phase ping succeeds when the effective pool maximum is still unlimited; choose a finite value from the database connection budget divided across service replicas. When both are explicit and `max_open > 0`, `max_idle` must not exceed `max_open`.
+`max_open: 0` is not a conservative production limit: it preserves `database/sql`'s unlimited-open behavior. A database's `Start` logs `sqldb.pool.max_open_unlimited` once its ping succeeds when the effective pool maximum is still unlimited; choose a finite value from the database connection budget divided across service replicas. When both are explicit and `max_open > 0`, `max_idle` must not exceed `max_open`.
 
 ### i18n — `i18n`
 

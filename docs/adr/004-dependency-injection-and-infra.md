@@ -46,15 +46,11 @@ Some application components need an ordered set of implementations rather than o
 
 A container that also holds framework infrastructure must defend that infrastructure against the application that owns the container — protection against overrides, adoption against registration races, preflights against a closing phase — and the framework ends up resolving its own seams from it per request, the service-locator pattern this ADR rejects for applications. Each such defence is a method that exists for a framework integration, not for the application.
 
-**Decision.** Framework infrastructure lives in kernel-owned registries — the component registry ([ADR-024](024-lifecycle-components.md)), the readiness aggregate and the store registry ([ADR-015](015-data-access.md#registration)) — and the container holds only the application's bindings. Its public surface is seven methods — `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve` and `ResolveAll` — and the phase verb `Finalize`; the [container spec](../specs/container.md#the-surface) gives the signatures.
+**Decision.** Framework infrastructure lives in kernel-owned registries — the component registry ([ADR-024](024-lifecycle-components.md)) and the readiness aggregate ([ADR-016](016-health-checks.md)) — and the container holds only the application's bindings. Its public surface is seven methods — `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve` and `ResolveAll` — and the phase verb `Finalize`; the [container spec](../specs/container.md#the-surface) gives the signatures.
 
 Registration calls return nothing and panic on misuse ([ADR-022](022-bootstrap-and-di-ownership.md#sequential-bootstrap-and-three-error-phases)), so one form suffices and there are no `Must*` registration twins. `Has` is the one non-resolving presence probe: it never runs a constructor, reserves nothing and reports a snapshot of the registrations made so far, because "is the optional module present?" is a composition-root question with no other answer. `MustResolve` and `MustResolveAll` sit beside the surface as resolve conveniences for the composition root, not registration twins: they panic with the error `Resolve` or `ResolveAll` would return.
 
 Nothing framework-owned is bound in the container, so nothing needs protecting: no integration monitors or shuts down one value while DI resolves another, because the framework's registrations name bindings, not values. A component is its binding ([ADR-024](024-lifecycle-components.md)): an override of the binding is the value that is started, asked for readiness and shut down.
-
-> **Current until v0.25.0 (W3):** the next sentence describes `store.Register`, which W3 deletes; a bound store is then an ordinary component, planned from its binding's type like every other.
-
-A store registration names the store's binding by type, and the start phase resolves it once, after `Finalize` and therefore after every override, so the value that is pinged, reported by `/ready` and shut down is the value DI hands the store's consumers, in tests too ([ADR-015](015-data-access.md#registration)).
 
 ### No Automatic Bindings
 
@@ -66,8 +62,6 @@ Handing a value to DI and handing over its teardown are separate decisions: a re
 
 **Decision.** A binding the App owns is a component when it has `Shutdown`; what is started and asked for readiness, and the tier, are planned from the binding's type ([ADR-024](024-lifecycle-components.md#registration-and-discovery)). The tier, the owner, a `Close` teardown and an override are registration options of the type `credo.RegistrationOption` on `Provide` and `ProvideValue` — `credo.Ingress()`, `credo.Borrowed()`, `credo.CloseOnShutdown()` and `credo.Override()` — rather than methods, so the surface does not grow per concern and misuse panics at the call that wrote it. `credo.Ingress()` also places a component handed to `app.Manage`, or a hook, in the ingress tier, and `credo.ComponentName(name)` names a managed component. The names say what the App does with the registration: `CloseOnShutdown` where `Closer` read as `io.Closer`, an interface the value would implement, and `ComponentName` where `Named` read as a DI key — the name labels a component in logs, `/ready` and a `LifecycleError`, and a second value of one type under another name is still a duplicate binding (Several Instances of One Type), which the duplicate-binding panic says when either registration carries the option. The [container spec](../specs/container.md#registration-options) states what each option accepts and when it panics; [ADR-024](024-lifecycle-components.md#ownership-and-registration-options) gives the ownership reasons — why `Borrowed` exists beside resource identity, and why `Close` is never discovered without the option — and the reasons for each name.
 
-> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships, `credo.ComponentName` is accepted on `app.Manage` only and there is no `credo.OptionalReadiness()`.
-
 `credo.ComponentName(name)` is accepted on `Provide` and `ProvideValue` as well, naming the binding's component, and `credo.OptionalReadiness()` reports a component in `/ready` without letting it gate readiness ([ADR-024](024-lifecycle-components.md#ownership-and-registration-options), [ADR-016](016-health-checks.md)). Both shape what is planned before the value exists, so both panic on a registration that plans nothing for them.
 
 `credo.Override()` is strict rather than an upsert, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves while the test runs against the real dependency, and an accidental double registration still panics ([container spec](../specs/container.md#registration-options)).
@@ -76,7 +70,7 @@ A teardown that is not a `Close` — a client's `Disconnect(ctx)`, a `Drain` tha
 
 ### Several Instances of One Type
 
-The container keys bindings by type, so several instances of one type are several wrapper types — `type PrimaryDB struct{ *sqldb.DB }` and `type AnalyticsDB struct{ *sqldb.DB }` — each bound once. The type is the qualifier: the constructor's signature names the instance (`NewReportRepo(db AnalyticsDB)`), the compiler and `Finalize` check the choice, and the graph sees the edge, so each instance starts and stops in order. Embedding carries every capability of the handle. The rule composes with generics: `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings with no name between them. Google Wire answers the same question the same way, and the [httpclient spec](../specs/httpclient.md) applies it to several `*http.Client`s. A wrapper and the handle it embeds share one resource identity, so the wrapper, its interface view and its raw handle share one teardown ([container spec](../specs/container.md#resource-identity-and-teardown), [ADR-024](024-lifecycle-components.md#resource-identity-one-resource-one-teardown)); the [store spec](../specs/store.md#several-databases) shows the wiring for databases.
+The container keys bindings by type, so several instances of one type are several wrapper types — `type PrimaryDB struct{ *sqldb.DB }` and `type AnalyticsDB struct{ *sqldb.DB }` — each bound once. The type is the qualifier: the constructor's signature names the instance (`NewReportRepo(db AnalyticsDB)`), the compiler and `Finalize` check the choice, and the graph sees the edge, so each instance starts and stops in order. Embedding carries every capability of the handle. The rule composes with generics: `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings with no name between them. Google Wire answers the same question the same way, and the [httpclient spec](../specs/httpclient.md) applies it to several `*http.Client`s. A wrapper and the handle it embeds share one resource identity, so the wrapper, its interface view and its raw handle share one teardown ([container spec](../specs/container.md#resource-identity-and-teardown), [ADR-024](024-lifecycle-components.md#resource-identity-one-resource-one-teardown)); the [store spec](../specs/store.md#naming-and-several-databases) shows the wiring for databases.
 
 Two cases sit outside the rule. Instances whose number comes from configuration — shards, tenants — are one binding of a collection type that owns and closes them all, since a type per instance cannot be written. A read replica of one database is routing, not a second instance.
 
@@ -201,8 +195,6 @@ Rejected:
 
 > **Current until v0.25.0 (W6):** the item below on an explicit `Finalize` holds until W6; with it, the first `Resolve` finalizes and `Finalize` is an optional early check.
 
-> **Current until v0.25.0 (W3):** the item below on a store's registration by type holds until W3; with it, a store takes its binding alone.
-
 **Negative:**
 
 - A constructor that needs infrastructure takes an `Infra` parameter (minimal boilerplate)
@@ -211,4 +203,4 @@ Rejected:
 - `BindMany` adds ordering and empty-collection semantics that must be documented clearly
 - Container is in `internal/di` — cannot be used as a standalone DI library
 - The composition root needs an explicit, error-checked `Finalize` between registration and the first `Resolve`
-- A store takes its binding and a registration by type, and several instances of one type take a wrapper type each — more types in exchange for signatures that say which instance they receive
+- Several instances of one type take a wrapper type each — more types in exchange for signatures that say which instance they receive

@@ -7,15 +7,15 @@ Run `go run .` from this directory to use its bundled configuration. The example
 `run()` in main.go follows the [documented bootstrap order](../../docs/specs/container.md#documented-order), one numbered comment per step:
 
 1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, the logger, `credo.New(credo.WithRawConfig(rawCfg), …)`.
-2. **`Provide`** — the typed config values and the constructors of `TenantStore`, `TenantService` and `UsageReporter`, each taking `credo.Infra` first.
-3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, `store.Register[*TenantStore]`, a provided scheduled worker, the WebSocket server handed to `app.Manage(ws)`, and the `OnConfigChange`, `OnStart` and `OnStop` hooks.
+2. **`Provide`** — the typed config values and the constructors of `TenantStore`, named `tenants-db` with `credo.ComponentName`, `TenantService` and `UsageReporter`, each taking `credo.Infra` first.
+3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, a provided scheduled worker, the WebSocket server handed to `app.Manage(ws)`, and the `OnConfigChange`, `OnStart` and `OnStop` hooks.
 4. **`Finalize`** — the graph is validated and its error handled before anything is built.
 5. **`Resolve`, middleware and routes** — `TenantService` is resolved and its handlers bound; Secure and CORS are global middleware, authentication and the admin role check stay on their groups, and a `StatusHandler` answers the router's 404.
 6. **`Run`** — the start phase pings the store, starts the worker and the WebSocket server and runs the start hooks before the App accepts requests; SIGINT/SIGTERM drains the listener, the WebSocket server and the worker first, then `TenantService`, then the store.
 
 ## What each part shows
 
-- **Store.** `TenantStore` stands in for a `*sqldb.DB`: it implements `store.Lifecycle`, is bound with `app.Provide` and named `tenants-db` with `store.Register`. `/ready` reports its health; the App shuts it down after the services that use it. An application with `store/sqldb` binds the opened handle the same way.
+- **Store.** `TenantStore` stands in for a `*sqldb.DB`: like it, it is a component whose type shows `Start`, `Ready` and `Shutdown`, and one call, `app.Provide(NewTenantStore, credo.ComponentName("tenants-db"))`, is all it takes. The start phase calls its `Start` before the services that use it start, `/ready` reports it as `tenants-db`, and the App shuts it down after those services. An application with `store/sqldb` binds the opened handle the same way.
 - **Worker.** `UsageReporter` is built from the container and registered with `worker.Use(app).ScheduledProvided`, one run per hour; it stops with the HTTP drain.
 - **WebSocket.** `websocket.New()` is an ingress component by its type; `GET /ws/echo` echoes every message.
 - **Localization.** `UseI18n` takes a programmatic English catalog: error codes, validation codes and field display names are exact keys, and `ctx.T` translates the admin greeting.
@@ -28,6 +28,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 1. DI minor (done): value/constructor registration finishes before an error-checked Finalize, then TenantService is resolved. Routes and DI-backed extension/hook registration stay before HTTP preparation. Building-state Shutdown is available to clean up registered resources after a later bootstrap failure. Hooks capture resolved dependencies instead of resolving during drain.
 2. HTTP minor (done): explicit `UseRequestID` and `UseAccessLog` preserve this example's request correlation and records, and compression is installed with `UseCompress` instead of global middleware. Secure and CORS remain global middleware; authentication/authorization keep their group scope.
-3. v0.24.0 (done): the bootstrap follows the six documented steps, with every feature mount and satellite registration before `Finalize`. A store is two calls — the binding and `store.Register`; the WebSocket server is one `Manage` registration with `Ingress`; workers are registered through `worker.Use(app)`; `UseI18n` returns nothing and panics on misuse, and locale files are read in the start phase; hooks are `OnStart` and `OnStop`. A custom validation rule's client-visible failure is `validation.NewError`; `StatusHandler` accepts only 404 and 405.
+3. v0.24.0 (done): the bootstrap follows the six documented steps, with every feature mount and satellite registration before `Finalize`. A store took two calls, the binding and a store registration; the WebSocket server is one `Manage` registration with `Ingress`; workers are registered through `worker.Use(app)`; `UseI18n` returns nothing and panics on misuse, and locale files are read in the start phase; hooks are `OnStart` and `OnStop`. A custom validation rule's client-visible failure is `validation.NewError`; `StatusHandler` accepts only 404 and 405.
+4. v0.25.0 store (done): `TenantStore` implements `Start`, `Ready` and `Shutdown` and is bound with `app.Provide` and `credo.ComponentName("tenants-db")` alone; there is no store registration.
 
 The [migration guide](../../docs/guides/pre-v1-migration.md) maps removed APIs and links the ADRs that define the shipped contracts.

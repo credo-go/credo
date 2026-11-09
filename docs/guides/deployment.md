@@ -111,13 +111,49 @@ A component or hook that has not returned at the deadline is abandoned: the comp
 
 The listener is bound before the start phase — each component's `Start` in dependency order, then the start hooks — but serves no request until it has completed, so a probe sent during a long start waits for it; give it a `startupProbe` (or an initial delay) that covers the start. A signal during the start phase interrupts it: the running `Start` sees its context cancelled, nothing further starts, what was built is rolled back under the same shutdown timeout counted from the signal, and `Run` returns nil after a clean rollback. "server started" is never logged and the listener never accepts. A `Start` that ignores the cancellation is abandoned at the deadline and reported, and a second signal still kills the process. A start that fails on its own rolls back the same way and makes `Run` return a `*credo.LifecycleError`, so the process exits non-zero and the supervisor restarts it.
 
+### What `/ready` reports
+
+`/ready` reports every readiness entry — each component whose type shows `Ready`, a bound `*sqldb.DB` among them, and each check added with `app.AddReadinessCheck` — with its status and the time its check took:
+
+```json
+{
+  "status": "degraded",
+  "checks": {
+    "*sqldb.DB": {"status": "up", "latency": "1.234ms"},
+    "search": {"status": "down", "latency": "5s"},
+    "worker:reindex": {"status": "up", "latency": "12µs"}
+  }
+}
+```
+
+An entry is `up` or `down`, and carries `error`, its cause text, only with `HealthConfig.ExposeErrors`; the cause always goes to the log, as `credo: health check failed` with `kind`, `check`, `error` and `latency`, whenever a `/ready` request finds the entry failing. A check that outlives `CheckTimeout` reports the time until the deadline. The top-level status is `up` (200) when every entry is up, `down` (503) when an entry that gates readiness is down, and `degraded` (200) when every gating entry is up and an optional one is not; during the drain `/ready` answers 503 `shutting_down`, whatever its entries show.
+
+Every entry gates readiness unless its registration says otherwise. A dependency the instance can serve without — a cache, a search index, a third-party API — is reported with `credo.OptionalReadiness()`, on its binding or on the check:
+
+```go
+app.ProvideValue(searchClient, credo.OptionalReadiness())                    // a component whose type shows Ready
+app.AddReadinessCheck("billing-api", billingPing, credo.OptionalReadiness()) // an application check
+```
+
+`credo.OptionalReadiness()` changes readiness only: an unreachable database whose readiness is optional still fails the start, because its `Start` pings it. A database whose outage must not stop the start is opened with `sqldb.WithOptionalStart()` as well; its `Start` then logs the failed ping at Warn and returns nil, and the pool connects once the server is back:
+
+```go
+db, err := sqldb.Open(&cfg, sqldb.WithOptionalStart())
+if err != nil {
+    return err
+}
+app.ProvideValue(db, credo.OptionalReadiness())
+```
+
+**Why a database gates by default, and what it costs.** A process that has lost its database while the other replicas have not should leave rotation, so its traffic goes where it can be served; that is the default. A database's `Ready` is a ping through its own pool, though. With `max_open` set, as the pool warning asks, a pool whose connections are all busy holds the ping in its queue until `CheckTimeout`, and an instance that is merely busy leaves rotation and moves its load to the replicas that remain — which are as busy. Size the pool for the load plus the probe, and keep the readiness deadline above the pool's normal wait; a database the instance can serve without, partially, is bound with `credo.OptionalReadiness()` instead.
+
 ### The limit of readiness
 
 A component reports a failure that happens after its `Start` has returned through its `Ready` method, which `/ready` aggregates under the component's name. No component ends the App — only the App's own listeners do. That is a deliberate policy, not a recovery guarantee: a failing readiness probe takes the instance out of rotation and restarts nothing, so a component that has stopped for good leaves the process alive, unready and never restarted. To have the supervisor restart the process, tie a liveness check (`app.AddLivenessCheck`) to the component itself — knowing that a check that fails because of a dependency every replica shares, such as the database, makes the orchestrator restart every replica at once, which cannot fix the database and adds a restart storm to its outage. Tie liveness only to state that a restart repairs. The [worker guide](worker.md#escalating-a-terminal-failure) shows the check for a worker that has failed for good.
 
 ### An `http.Server` you own
 
-An App served through `ServeHTTP` by a server you build yourself does not run Credo's serving lifecycle: start it with `app.Start(ctx)`, which runs the start phase without a listener, and stop it with `app.Shutdown(ctx)`. An App that has anything to start — a component with `Start` or `Ready`, a start hook, a WebSocket server, a store registered with `store.Register`, `UseI18n`, workers — panics in `ServeHTTP` until `app.Start` has succeeded; after a failed start it answers 503. The server's owner owns its admission and drain and completes them **before** `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened:
+An App served through `ServeHTTP` by a server you build yourself does not run Credo's serving lifecycle: start it with `app.Start(ctx)`, which runs the start phase without a listener, and stop it with `app.Shutdown(ctx)`. An App that has anything to start — a component with `Start` or `Ready`, a start hook, a WebSocket server, a bound database, `UseI18n`, workers — panics in `ServeHTTP` until `app.Start` has succeeded; after a failed start it answers 503. The server's owner owns its admission and drain and completes them **before** `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened:
 
 ```go
 if err := app.Start(ctx); err != nil { // the start phase, without a listener

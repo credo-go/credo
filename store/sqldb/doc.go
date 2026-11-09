@@ -1,6 +1,15 @@
 // Package sqldb wraps *bun.DB with lifecycle management, query builder
 // proxies, error mapping, and transaction support.
 //
+// A *DB is a component: bound with app.ProvideValue(db), its Start pings the
+// database under Config.PingTimeout (zero means DefaultPingTimeout) before
+// the components that depend on it start, its Ready reports it in /ready
+// (named *sqldb.DB, or by credo.ComponentName), and the App shuts it down
+// after its consumers. A failed ping fails the start and closes the
+// database; with WithOptionalStart it is logged at Warn instead and the
+// start goes on, while Ready keeps pinging, so the database gates readiness
+// until it answers unless it is bound with credo.OptionalReadiness().
+//
 // This is a separate Go submodule (github.com/credo-go/credo/store/sqldb)
 // so that applications not using SQL databases do not pull in the Bun
 // dependency.
@@ -42,10 +51,11 @@
 //
 // Credo does not choose a workload-independent finite pool size. MaxOpen=0
 // preserves database/sql's unlimited-open behavior. If the pool is still
-// unlimited when the start phase pings a store.Register-ed DB, the app
-// logger emits one structured warning with code sqldb.pool.max_open_unlimited.
-// Standalone users can inspect DB.StoreRegistrationWarningCodes during
-// bootstrap and route the same secret-free codes through their own logger.
+// unlimited when Start's ping succeeds, Start logs one structured warning,
+// credo: store configuration warning with code sqldb.pool.max_open_unlimited
+// and module=sqldb, to WithLogger's logger or the App's. A program that runs
+// the database without an App calls Start itself or reads
+// Stats().MaxOpenConnections.
 //
 // MaxIdle uses a pointer to distinguish absence from an explicit zero: nil
 // makes Credo leave the idle limit unset (the effective database/sql default
@@ -60,8 +70,9 @@
 // readiness does not serialize adapter details. Credo does not derive
 // StatusDegraded from pool saturation: that policy remains gated on production
 // metrics, an explicit SLO, windowed deltas, hysteresis, and opt-in thresholds.
-// Because all stores are currently critical, DEGRADED removes readiness and a
-// noisy universal threshold could cascade across replicas.
+// A database gates readiness unless it is bound with
+// credo.OptionalReadiness(), so a DEGRADED that removed readiness on a noisy
+// universal threshold could cascade across replicas.
 //
 // # Resource Identity
 //

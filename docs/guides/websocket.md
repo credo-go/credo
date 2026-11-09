@@ -221,7 +221,7 @@ On an incomplete drain, Credo makes a best-effort force close and, its deadline 
 
 ## External `http.Server`
 
-Using `app` as the `http.Handler` of a server you own leaves that server's admission and drain to you. Start the App with `app.Start(ctx)` before serving it when it has anything to start — the WebSocket server itself, other components with `Start` or `Ready`, registered stores, `UseI18n`, start hooks, workers — and, at shutdown, drain HTTP and WebSocket in parallel before `app.Shutdown` stops the components:
+Using `app` as the `http.Handler` of a server you own leaves that server's admission and drain to you. Start the App with `app.Start(ctx)` before serving it when it has anything to start — the WebSocket server itself, other components with `Start` or `Ready`, a bound database among them, `UseI18n`, start hooks, workers — and, at shutdown, drain HTTP and WebSocket in parallel before `app.Shutdown` stops the components:
 
 ```go
 if err := app.Start(ctx); err != nil {

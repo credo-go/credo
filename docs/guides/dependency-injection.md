@@ -59,7 +59,7 @@ Bootstrap is sequential: registration calls come from the goroutine that builds 
 
 1. configuration — `credo.New()`, or `credo.New(credo.WithRawConfig(raw))`;
 2. `Provide` and `ProvideValue`, with `Alias` and `BindMany`;
-3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers, `Manage`;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, `Manage`;
 4. `Finalize`, handling its error;
 5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
 6. `Run`.
@@ -176,7 +176,7 @@ func main() {
     app.Provide(NewUserService)
     app.Provide(NewUserController)
 
-    // 3. Feature mounts and satellites would go here (UseHealth, stores, workers).
+    // 3. Feature mounts and satellites would go here (UseHealth, workers).
 
     // 4. Finalize validates the whole graph.
     if err := app.Finalize(); err != nil {
@@ -281,9 +281,10 @@ app.ProvideValue[UserRepository](fakeRepo, credo.Override())            // repla
 | `credo.Borrowed()` | `ProvideValue` | Keeps the binding and the value's `Ready`, and leaves starting and shutting the value down to the caller — a pool two Apps in one process share, a fixture a test suite reuses |
 | `credo.CloseOnShutdown()` | `Provide`, `ProvideValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
 | `credo.Override()` | `Provide`, `ProvideValue`, `Alias` | Replaces an earlier binding of the same type, or an alias of it, before `Finalize`; on `Alias`, points the interface at another type |
-| `credo.ComponentName(name)` | `Manage` | Names a managed component in logs, reports and readiness; it is not a DI key |
+| `credo.ComponentName(name)` | `Provide`, `ProvideValue`, `Manage` | Names the component in logs, `/ready` and lifecycle errors (default: its type, such as `*sqldb.DB`); it is not a DI key |
+| `credo.OptionalReadiness()` | `Provide`, `ProvideValue`, `Manage` | Reports the component in `/ready` without letting it gate readiness: a failing entry shows `down`, and `/ready` answers 200 `degraded` while every gating entry is up. `Start` and `Shutdown` are unchanged |
 
-Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, an empty name, `credo.Ingress()` on a binding that is not a component, `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
+Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, a `credo.ComponentName` name the health-name rules refuse or that another component has, `credo.Ingress()` or `credo.ComponentName` on a binding that is not a component, `credo.OptionalReadiness()` on a registration that plans no readiness entry (a type without `Ready`, or one that is neither a component nor borrowed), `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
 
 ### Replacing a binding
 
@@ -314,10 +315,9 @@ if !app.Has[*AuditLog]() {
 
 Some Credo feature packages build on top of DI with package-level helpers instead of asking you to wire every internal singleton manually. Examples:
 
-- `store.Register[*sqldb.DB](app)`, which names a binding you made with `ProvideValue` or `Provide` as a data store
 - `workers.ContinuousProvided[*MyWorker]("name")` and `workers.ScheduledProvided[*MyWorker]("name", expr)` on the supervisor `worker.Use(app)` returns, for a worker the container provides
 
-These helpers build on the DI container and attach framework behavior to it: `store.Register` adds a start-phase ping and a readiness probe to the store's binding and leaves its ownership and teardown to that binding, and each worker registration adds a component — a constructor over the worker's type — that the start phase builds after the worker's dependencies and that stops before them. Neither binds anything into the container. Use them before `app.Finalize()`; a `store.Register` or a provided worker whose type has no binding fails `Finalize`. See the [Data Access Guide](data-access.md) and [Worker Guide](worker.md) for the user-facing patterns.
+These helpers build on the DI container and attach framework behavior to it: each worker registration adds a component — a constructor over the worker's type — that the start phase builds after the worker's dependencies and that stops before them, and binds nothing into the container. Use them before `app.Finalize()`; a provided worker whose type has no binding fails `Finalize`. See the [Worker Guide](worker.md) for the user-facing patterns. A database needs no helper: `*sqldb.DB` is a component, so its binding alone pings it at start, reports it in `/ready` and shuts it down after its consumers ([Data Access Guide](data-access.md#what-a-bound-database-does)).
 
 ---
 
@@ -428,7 +428,7 @@ type PrimaryDB struct{ *sqldb.DB }
 type AnalyticsDB struct{ *sqldb.DB }
 ```
 
-Bind each wrapper once and register it by its type with `store.Register[PrimaryDB](app, store.WithName("primary"))`, then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed; an interface view is an `Alias`, never a second binding ([Data Access Guide](data-access.md#multiple-databases)). If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
+Bind each wrapper once, named with `app.ProvideValue(PrimaryDB{primary}, credo.ComponentName("primary"))`, then inject `PrimaryDB` or `AnalyticsDB` explicitly where needed; an interface view is an `Alias`, never a second binding ([Data Access Guide](data-access.md#multiple-databases)). If those wrappers embed `*sqldb.DB`, `store/sqldb` keeps transaction context scoped per database instance, so same-type Bun connections do not collide implicitly.
 
 ### Wrappers and resource identity
 
@@ -682,7 +682,7 @@ A value that a constructor builds over a borrowed resource stays the caller's as
 | `app.OnStart(fn, opts...)` | A leaf action at startup, such as warming a cache | FIFO after its tier's components have started |
 | `app.OnStop(fn, opts...)` | A leaf action at shutdown that may still use its tier's components | LIFO before its tier's components stop |
 
-`Manage` names a component with `credo.ComponentName` (default: its type name; a duplicate name panics). A hook is an anonymous component of a tier, internal unless `credo.Ingress()` says otherwise; anything with a teardown of its own is a component, not a hook, and process-level cleanup that must outlive every component belongs after `Run` returns.
+`Manage`, like `Provide` and `ProvideValue`, names a component with `credo.ComponentName` (default: its type name; a duplicate name panics). A hook is an anonymous component of a tier, internal unless `credo.Ingress()` says otherwise; anything with a teardown of its own is a component, not a hook, and process-level cleanup that must outlive every component belongs after `Run` returns.
 
 During graceful shutdown the full sequence is:
 
@@ -693,7 +693,7 @@ During graceful shutdown the full sequence is:
 
 All steps share one deadline — `WithShutdownTimeout` for a signal or a cancelled `RunContext` context, the caller's for `app.Shutdown(ctx)` — and spend it in order. A `Shutdown`, `Close` or hook that has not returned at the deadline is abandoned: the components it depends on are not stopped, since it may still use them, and it is reported with every component it kept open. A `Shutdown` that returns an error promptly is reported, and its dependencies are still stopped. Every `Start`, `Shutdown` and hook is panic-isolated. A construction still running when the drain reaches it blocks its dependencies and is shut down in order when it completes; one that completes after the deadline gets one bounded late cleanup, logged and not reported. Failures are inspectable with `errors.AsType[*credo.LifecycleError]` through the joined `Shutdown` error: each entry names the component, its tier, its phase (`start` or `shutdown`) and its outcome (`failed`, `panicked`, `abandoned`, `kept_open`).
 
-`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure. An App served through `ServeHTTP` by a server you own — an external `http.Server`, or `httptest` in a test — is started with `app.Start(ctx)` (`testutil.Start(t, app)` in tests) when it has anything to start: a component with `Start` or `Ready` (a WebSocket server among them), a constructor handed to `Manage`, a store registered with `store.Register`, `UseI18n`, a worker, or a start hook; until then `ServeHTTP` panics. The server's owner drains it before calling `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened.
+`app.Shutdown` also works on an App that was never run: in the `building` state it freezes registrations and runs the same teardown without an HTTP drain, so a composition root can clean up registered resources after a later bootstrap failure. An App served through `ServeHTTP` by a server you own — an external `http.Server`, or `httptest` in a test — is started with `app.Start(ctx)` (`testutil.Start(t, app)` in tests) when it has anything to start: a component with `Start` or `Ready` (a WebSocket server among them), a constructor handed to `Manage`, a bound database, `UseI18n`, a worker, or a start hook; until then `ServeHTTP` panics. The server's owner drains it before calling `app.Shutdown`, because the internal tier stops after the HTTP drain only if that drain has happened.
 
 ---
 
@@ -808,7 +808,7 @@ For medium and large Credo applications, the default shape should be:
 3. register config with `ProvideValue`
 4. register concrete constructors with `Provide`
 5. connect single implementations with `Alias` and collections with `BindMany` when needed
-6. mount features and register satellites — `UseI18n`, `UseHealth`, stores, workers, `Manage`
+6. mount features and register satellites — `UseI18n`, `UseHealth`, workers, `Manage`
 7. call `app.Finalize()` and handle its error
 8. resolve top-level controllers/services and register the routes built from them
 9. `app.Run()`

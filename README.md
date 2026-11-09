@@ -159,7 +159,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-app.ProvideValue(db)                          // 2. Provide (db is a *sqldb.DB)
+app.ProvideValue(db)                          // 2. Provide (db is a *sqldb.DB: pinged at start,
+                                              //    reported by /ready, shut down after its consumers)
 app.Provide(NewPgOrderRepo)
 app.Alias[OrderRepo, *PgOrderRepo]()
 app.Provide(NewOrderService)
@@ -167,7 +168,6 @@ app.Provide(NewOrderController)
 app.Provide(NewOutboxRelay)
 
 app.UseHealth()                               // 3. feature mounts and satellites
-store.Register[*sqldb.DB](app)                //    pinged at start, reported by /ready
 worker.Use(app).ContinuousProvided[*OutboxRelay]("outbox-relay")
 
 if err := app.Finalize(); err != nil {        // 4. every missing dependency and cycle

@@ -63,13 +63,11 @@ Every serve path reaches the same validated runtime model through one shared pre
 
 ### The start gate on `ServeHTTP`
 
-An App **has something to start** when it has a component with `Start` or `Ready` (planned from its binding's type, or handed to `app.Manage`), a constructor handed to `app.Manage`, a start hook, a store registration ([store spec](store.md)) or `UseI18n`, whose catalogs the start phase reads ([i18n spec](i18n.md)). A WebSocket server is a component with `Start`, so an App that registers one has something to start as well ([WebSocket spec](websocket.md)). Such an App refuses to serve until the start phase has completed successfully:
-
-> **Pending v0.25.0 (W3):** until W3 ships, a store registration is start work of its own. Afterwards there is none: a bound database is a component whose binding's type shows `Start` and `Ready`, so an App that binds one has something to start through the first clause above.
+An App **has something to start** when it has a component with `Start` or `Ready` (planned from its binding's type, or handed to `app.Manage`), a constructor handed to `app.Manage`, a start hook, or `UseI18n`, whose catalogs the start phase reads ([i18n spec](i18n.md)). A WebSocket server is a component with `Start`, so an App that registers one has something to start as well ([WebSocket spec](websocket.md)), and so is a bound database, whose binding's type shows `Start` and `Ready` ([store spec](store.md#lifecycle-of-a-bound-database)). Such an App refuses to serve until the start phase has completed successfully:
 
 | When `ServeHTTP` is called | App with something to start | App with nothing to start |
 | --- | --- | --- |
-| Before `App.Start`, or while it runs | panics with `credo: ServeHTTP: the App has start work (components, start hooks, store registrations or UseI18n) and has not been started; …`, naming `App.Start`, `testutil.Start`, `Run`/`RunContext`/`ServeContext` and `parent.Manage(child)` | prepares and serves, as above |
+| Before `App.Start`, or while it runs | panics with `credo: ServeHTTP: the App has start work (components, start hooks or UseI18n) and has not been started; …`, naming `App.Start`, `testutil.Start`, `Run`/`RunContext`/`ServeContext` and `parent.Manage(child)` | prepares and serves, as above |
 | After `App.Start` succeeded (`running`, `stopping` with a prepared handler) | serves | serves |
 | `stopped` — after a failed or interrupted `App.Start`, or after shutdown — or `stopping` without a successful start | the callback-free 503 envelope, without touching DI | the 503 envelope in `stopped`, and in `stopping` without a prepared handler ([Lifecycle rejection](#lifecycle-rejection-503)) |
 | Preparation failed | panics with the stored preparation error on every request | panics with the stored preparation error on every request |
@@ -335,26 +333,21 @@ A framework module whose value is built outside the App and started by it takes 
 ```
 0. Framework start steps: UseI18n reads its catalogs (reported in the internal tier)
 1. Internal tier, in dependency order: build each component with Start or Ready that is
-   still unbuilt, every constructor handed to app.Manage, and every binding a store
-   registration names; run the binding's start steps (a store registration's ping),
-   then call its Start (when its binding's type shows one)
+   still unbuilt and every constructor handed to app.Manage, then call its Start (when
+   its binding's type shows one)
 2. Internal OnStart hooks, FIFO
 3. Ingress tier, in dependency order: the same
 4. Ingress OnStart hooks, FIFO
 5. state = running; managed serving logs "credo: server started" and accepts
 ```
 
-> **Current until v0.25.0 (W3):** the store registration and its start steps in step 1 above, and the binding start steps of the fourth item below (a failed start step and the value it leaves to the rollback), which W3 deletes with the start-step mechanism; `UseI18n`'s framework start step stays.
-
 - A component's `Start` runs after the `Start` of every component it depends on. No dependency crosses the tiers backwards: an internal component that depends on an ingress one fails `Finalize` (or, for a component found only on its built value, its construction) with the path and both remedies, so the order holds across the tiers. An ingress component that depends on an internal one starts after it.
 - `Start`, `Ready` and the tier are planned from the binding's type; a binding whose type hides its value's `Start` is refused ([Component types](#component-types)), and a type with only `Start` is not a component and is never started. A component whose binding's type shows `Start` is started exactly once, by the walk — an `OnStart` hook that also starts it starts it a second time. Holders that share a resource identity start it once, through the first holder the walk reaches whose binding plans a `Start`; a resource that any holder borrows is not started.
 - A component with neither `Start` nor `Ready` stays lazy: it is built when first resolved — during a request included — and shut down by the drain only if built.
-- A framework start step that fails, a constructor error in step 1 or 3, and a failed start step are start failures. A failed start step leaves the value it was given to the rollback, which shuts it down unless it is borrowed: the step opened nothing the value had not. `Start` returns once the component is usable; it never blocks for the component's lifetime.
+- A framework start step that fails and a constructor error in step 1 or 3 are start failures. `Start` returns once the component is usable; it never blocks for the component's lifetime.
 - Under managed serving the listener is bound before the walk, so `app.Addr()` is available in `Start` and in start hooks; it is nil under `App.Start`.
 
-> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships, a database is pinged only when `store.Register` names its binding, as a start step before its dependants.
-
-**A bound store is an ordinary component.** Step 1 builds and starts a database like any component with `Start`: `app.ProvideValue(db)` alone pings it in `(*sqldb.DB).Start` before its dependants start, reports it through its `Ready` and shuts it down after its consumers. There is no store registration and no start step. Holders that share the database — a raw handle and a wrapper that embeds it — give it one ping (`Container.ClaimStart`, start once per resource) and one readiness entry ([Readiness](#readiness)). A borrowed database is not pinged, since its owner starts it. A failed ping is a failed `Start`: `sqldb` closes the database before `Start` returns the error, since the pool was opened by `Open`, not by `Start`, and [the failed-start rule](#a-failed-start) does not shut down a component whose `Start` failed. A database opened with `sqldb.WithOptionalStart()` logs a failed ping at Warn, with the component's name, the deadline and the error, and its `Start` returns nil with the pool open, since `database/sql` opens connections on demand once the server is back; the failed-start rule is unchanged, and the database still gates readiness unless it is bound with `credo.OptionalReadiness()` ([store spec](store.md)).
+**A bound store is an ordinary component.** Step 1 builds and starts a database like any component with `Start`: `app.ProvideValue(db)` alone pings it in `(*sqldb.DB).Start` before its dependants start, reports it through its `Ready` and shuts it down after its consumers. There is no store registration and no start step of its own. Holders that share the database — a raw handle and a wrapper that embeds it — give it one ping (`Container.ClaimStart`, start once per resource) and one readiness entry ([Readiness](#readiness)). A borrowed database is not pinged, since its owner starts it. A failed ping is a failed `Start`: `sqldb` closes the database before `Start` returns the error, since the pool was opened by `Open`, not by `Start`, and [the failed-start rule](#a-failed-start) does not shut down a component whose `Start` failed. A database opened with `sqldb.WithOptionalStart()` logs a failed ping at Warn, with the component's name, the deadline and the error, and its `Start` returns nil with the pool open, since `database/sql` opens connections on demand once the server is back; the failed-start rule is unchanged, and the database still gates readiness unless it is bound with `credo.OptionalReadiness()` ([store spec](store.md)).
 
 ### A failed start
 
@@ -429,8 +422,6 @@ A start or shutdown failure is one `*credo.LifecycleError{Entries []LifecycleEnt
 
 The lifecycle contributes to `/ready` the `Ready` of every component whose binding's type shows it (or that was handed to `app.Manage` with it), asked of the value the start walk built and never resolved per request; a worker contributes through its component's `Ready` when its registration sets a readiness condition ([worker spec](worker.md#health-integration)). The [health spec](health.md#readiness-aggregation) states the entry names, when the probes are built and how the sources combine; once the drain begins, `/ready` answers 503 `shutting_down` without asking ([health spec](health.md#shutdown)).
 
-> **Pending v0.25.0 (W3):** not implemented yet. Until W3 ships, every unit whose type plans `Ready` adds an entry of its own, every entry gates readiness, and a store enters `/ready` through `store.Register`'s own branch instead.
-
 **One resource, one readiness entry.** `componentReadiness` builds one check per resource instead of one per unit that answers `Ready`: the entry of its holder of record ([One teardown per resource](#shutdown-in-tiers)), whose `Ready` it asks, named by the `credo.ComponentName` name its registrations give it, else by the holder of record's type (`*sqldb.DB`). A unit plans an entry when its type shows `Ready` and it is a component or borrowed. The registrations that plan an entry for one resource agree on its options: `credo.OptionalReadiness()` on every one of them or on none, and one `credo.ComponentName` name; a disagreement is refused when the second value becomes known, naming both registrations, the option and the remedies — the same options on both, or a named field — as a panic at registration for a value handed in and a failed start for a value a binding's constructor builds, a borrowed resource included. A wrapper with readiness of its own, one that overrides the `Ready` it embeds, holds the handle in a named field.
 
 **Optional entries.** `credo.OptionalReadiness()` on `Provide`, `ProvideValue` or `Manage` reports the entry without letting it gate. `planUnit` records the option on the unit and `componentReadiness` carries it on the resource's check; `Ready` is still asked under the same deadline, the entry shows its own status — `down` when its check fails — and its latency, and a failure is logged like any failing check. The aggregation computes the top-level status from the gating checks, then reports `degraded`, answered with 200, in place of `up` when an optional check fails; `shutting_down` and a down gating entry still answer 503 ([health spec](health.md#readiness-aggregation)). The option panics at registration where the registration plans no readiness entry — a type without `Ready`, or one that is neither a component nor borrowed — and `Start` and `Shutdown` are unchanged by it.
@@ -484,13 +475,11 @@ The following methods panic with `credo: <what> called after app was compiled or
 | `group.SetMeta()` / `group.RemoveMeta()` | `checkFrozen("Group.SetMeta")` / `checkFrozen("Group.RemoveMeta")` |
 | `route.Name()` / `route.SetMeta()` / `route.Middleware()` | `checkFrozen("Route.Name")` / `checkFrozen("Route.SetMeta")` / `checkFrozen("Route.Middleware")` |
 
-> **Current until v0.25.0 (W3):** the next paragraph's second sentence, which goes with `store.Register`.
-
-`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). `store.Register` checks both — the `frozen` flag (`checkFrozen("store.Register[T]")`) and the container's phase — so it panics after `Finalize`, after preparation and once shutdown began ([store spec](store.md#registration)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
+`app.Manage()` and the DI registrations are guarded by the container's phase instead: after `Finalize`, or once shutdown began, they panic at the call ([container spec](container.md#registration-misuse)). The worker registrations add their components as `app.Manage` does and panic in the same phases, with the worker's own message ([worker spec](worker.md#validation)).
 
 Registration is sequential and unsynchronized ([container spec](container.md#sequential-bootstrap)): each method checks `frozen` once and then publishes, from the goroutine that builds the App. The guard catches a call made after preparation or shutdown admission, not one that races them, so registering while the App may already be served is unsupported.
 
-The same fail-fast policy governs all registration APIs: misconfiguration panics at the call, while a registration that needs I/O — `UseI18n`'s catalogs, a store's ping — defers it to the start phase, where a failure is a start failure ([container spec](container.md#three-error-phases); the package documentation's "Panics and Errors" section).
+The same fail-fast policy governs all registration APIs: misconfiguration panics at the call, while a registration that needs I/O — `UseI18n`'s catalogs, a database's ping — defers it to the start phase, where a failure is a start failure ([container spec](container.md#three-error-phases); the package documentation's "Panics and Errors" section).
 
 ## Thread Safety
 
