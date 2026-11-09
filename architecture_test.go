@@ -51,7 +51,7 @@ var modulePolicies = map[string]importPolicy{
 		credo: []string{
 			"", "validation",
 			"internal/host", "internal/httpheader", "internal/httpwriter", "internal/origin",
-			"internal/observe", "internal/pattern", "internal/requestid",
+			"internal/observe", "internal/pattern", "internal/requestid", "internal/wirepath",
 		},
 	},
 
@@ -73,7 +73,7 @@ var modulePolicies = map[string]importPolicy{
 	"internal/i18n":        {external: []string{"golang.org/x/text"}},
 	"internal/observe":     {},
 	"internal/origin":      {},
-	"internal/pattern":     {},
+	"internal/pattern":     {credo: []string{"internal/wirepath"}},
 	"internal/proxy":       {},
 	"internal/radix":       {credo: []string{"internal/pattern", "internal/wirepath"}},
 	"internal/requestid":   {},

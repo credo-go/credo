@@ -16,7 +16,10 @@
 // the value ";".
 package wirepath
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const upperhex = "0123456789ABCDEF"
 
@@ -153,6 +156,44 @@ func Escape(canonical string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// SetPath stores a wire-form (percent-encoded) path on u the way net/url does
+// when it parses a request target: Path holds the decoded form and RawPath
+// the original spelling only when the two differ, so
+// [net/url.URL.EscapedPath] returns the spelling again. wire may be canonical
+// (see [Canonical]): bytes that cannot appear literally in a request path are
+// escaped first, so the spelling survives net/url's validation. A malformed
+// escape is an error and leaves u unchanged.
+func SetPath(u *url.URL, wire string) error {
+	wire = Escape(wire)
+	decoded, err := url.PathUnescape(wire)
+	if err != nil {
+		return err
+	}
+	u.Path = decoded
+	u.RawPath = ""
+	if u.EscapedPath() != wire {
+		u.RawPath = wire
+	}
+	return nil
+}
+
+// MalformedEscape returns the index of the first percent sign in s that does
+// not start a "%XX" escape of two hexadecimal digits, or -1 when every
+// percent sign does.
+func MalformedEscape(s string) int {
+	for i := strings.IndexByte(s, '%'); i >= 0; {
+		if i+2 >= len(s) || unhex(s[i+1]) < 0 || unhex(s[i+2]) < 0 {
+			return i
+		}
+		next := strings.IndexByte(s[i+3:], '%')
+		if next < 0 {
+			return -1
+		}
+		i += 3 + next
+	}
+	return -1
 }
 
 // shouldEscape reports whether c may not appear literally in a request path

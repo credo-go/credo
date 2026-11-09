@@ -10,9 +10,13 @@ package pattern
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/credo-go/credo/internal/wirepath"
 )
 
 // Kind classifies a parsed pattern segment. The numeric order is the routing
@@ -198,43 +202,110 @@ func CheckNames(pattern string) error {
 	return nil
 }
 
-// ToRegexp converts a whole pattern into an anchored regexp with one capture
-// group per parameter: {name} → ([^/]+), {name...} → (.*), {name:re} → (re).
-// names[0] is "" so the slice aligns with regexp.FindStringSubmatch. A
-// pattern that repeats a parameter name is rejected (see [CheckNames]).
-func ToRegexp(pattern string) (*regexp.Regexp, []string, error) {
-	if err := CheckNames(pattern); err != nil {
-		return nil, nil, err
-	}
-	var b strings.Builder
-	names := []string{""}
-	b.WriteString("^")
+// Matcher matches a canonical wire path (see [wirepath.Canonical]) against
+// one pattern the way the router matches a route: literal text in canonical
+// form (see [wirepath.Static]); a {name} or {name:regex} candidate that ends
+// at the parameter's tail byte or the next slash, whichever comes first, with
+// every escape one unit (see [wirepath.CandidateEnd]), so it never spans a
+// raw slash and an escaped slash ("%2F") is data; a constraint checked on the
+// whole decoded value; and a {name...} catch-all that takes the rest of the
+// path, an empty rest included. A capture that decodes to invalid UTF-8 is
+// no match. Each capture is reported in canonical wire form, which decodes
+// once to the value a route parameter would have.
+type Matcher struct {
+	params []matcherParam
+	tail   string // canonical literal text after the last parameter
+	names  []string
+}
 
+type matcherParam struct {
+	prefix string         // canonical literal text before the parameter
+	kind   Kind           // Param, Regexp or CatchAll
+	re     *regexp.Regexp // the constraint, anchored, for Regexp
+	tail   byte           // the pattern byte after the closing brace
+}
+
+// NewMatcher parses pattern into a [Matcher]. A malformed parameter, a
+// repeated parameter name (see [CheckNames]) and literal text after a
+// catch-all, which takes the rest of the path, are errors.
+func NewMatcher(pattern string) (*Matcher, error) {
+	if err := CheckNames(pattern); err != nil {
+		return nil, err
+	}
+	m := &Matcher{}
 	rest := pattern
 	for {
 		seg, err := NextSegment(rest)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		b.WriteString(regexp.QuoteMeta(seg.Prefix))
-		switch seg.Kind {
-		case Static:
-			b.WriteString("$")
-			re, err := regexp.Compile(b.String())
-			if err != nil {
-				return nil, nil, fmt.Errorf("pattern: compile %q: %w", pattern, err)
-			}
-			return re, names, nil
-		case Param:
-			b.WriteString("([^/]+)")
-		case CatchAll:
-			b.WriteString("(.*)")
-		case Regexp:
-			b.WriteString("(")
-			b.WriteString(seg.RegexpSource)
-			b.WriteString(")")
+		if seg.Kind == Static {
+			m.tail = wirepath.Static(seg.Prefix)
+			return m, nil
 		}
-		names = append(names, seg.Name)
+		if seg.Kind == CatchAll && seg.Suffix != "" {
+			return nil, fmt.Errorf("pattern: text %q after the catch-all {%s...} in %q: a catch-all takes the rest of the path, so end the pattern with it", seg.Suffix, seg.Name, pattern)
+		}
+		m.params = append(m.params, matcherParam{
+			prefix: wirepath.Static(seg.Prefix),
+			kind:   seg.Kind,
+			re:     seg.Regexp,
+			tail:   seg.TailByte,
+		})
+		m.names = append(m.names, seg.Name)
 		rest = seg.Suffix
 	}
+}
+
+// Names returns the parameter names in pattern order, aligned with the
+// captures [Matcher.Match] returns.
+func (m *Matcher) Names() []string { return m.names }
+
+// Match reports whether the canonical wire path matches the pattern and
+// returns one canonical capture per parameter.
+func (m *Matcher) Match(path string) ([]string, bool) {
+	captures := make([]string, 0, len(m.params))
+	rest := path
+	for _, p := range m.params {
+		after, ok := strings.CutPrefix(rest, p.prefix)
+		if !ok {
+			return nil, false
+		}
+		rest = after
+		if p.kind == CatchAll {
+			if _, valid := decode(rest); !valid {
+				return nil, false
+			}
+			captures = append(captures, rest)
+			rest = ""
+			continue
+		}
+		end := wirepath.CandidateEnd(rest, p.tail)
+		if end == 0 {
+			return nil, false // a parameter never matches an empty segment
+		}
+		value, valid := decode(rest[:end])
+		if !valid || (p.re != nil && !p.re.MatchString(value)) {
+			return nil, false
+		}
+		captures = append(captures, rest[:end])
+		rest = rest[end:]
+	}
+	if rest != m.tail {
+		return nil, false
+	}
+	return captures, true
+}
+
+// decode returns the value of a canonical capture, decoded once, and whether
+// it is valid UTF-8.
+func decode(raw string) (string, bool) {
+	value := raw
+	if strings.IndexByte(raw, '%') >= 0 {
+		var err error
+		if value, err = url.PathUnescape(raw); err != nil {
+			return "", false
+		}
+	}
+	return value, utf8.ValidString(value)
 }
