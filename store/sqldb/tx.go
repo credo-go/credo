@@ -11,11 +11,18 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// RunInTx starts a transaction, stores it in this DB's typed context scope,
-// executes fn, and commits on nil / rolls back on error. Nested calls use a
-// Bun savepoint. If fn panics, rollback is attempted and the original panic
-// value is re-raised. A nil fn returns [ErrNilTxCallback] without starting a
-// transaction.
+// InTx starts a transaction, stores it in this DB's typed context scope,
+// executes fn with that context, and commits on nil / rolls back on error.
+// Nested calls use a Bun savepoint. If fn panics, rollback is attempted and the
+// original panic value is re-raised. A nil fn returns [ErrNilTxCallback]
+// without starting a transaction.
+//
+// In a handler, call it with the request context:
+//
+//	err := db.InTx(c.Context(), func(ctx context.Context) error {
+//	    // repos called with this ctx pick up the TX automatically
+//	    return svc.Transfer(ctx, from, to, amount)
+//	})
 //
 // A callback error is an application value: after a successful rollback it is
 // returned unchanged and is never passed through the SQL driver error mapper.
@@ -33,49 +40,26 @@ import (
 // The callback is the transaction lifetime boundary. It must not retain txCtx
 // or start transaction work (including nested InTx calls) that outlives its
 // return.
-//
-// [DB.InTx] is the method form of this function.
-func RunInTx(ctx context.Context, db *DB, fn func(ctx context.Context) error) error {
-	return RunInTxWith(ctx, db, nil, fn)
-}
-
-// InTx is the method form of [RunInTx]: it starts a transaction, stores it
-// in the context passed to fn, and commits on nil / rolls back on error.
-// Nested calls use Bun's SAVEPOINT automatically. If fn panics, the
-// transaction is rolled back and the original panic value is re-raised.
-//
-// In a handler, call it with the request context:
-//
-//	err := db.InTx(c.Context(), func(ctx context.Context) error {
-//	    // repos called with this ctx pick up the TX automatically
-//	    return svc.Transfer(ctx, from, to, amount)
-//	})
 func (db *DB) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return RunInTxWith(ctx, db, nil, fn)
+	return runInTx(ctx, db, nil, fn)
 }
 
 // InTxWith is like [DB.InTx] but accepts sql.TxOptions for configuring the
-// outer transaction's isolation level and read-only mode. A nested call uses a
-// savepoint; non-default options there return [ErrNestedTxOptions] instead of
-// being silently ignored. Option support and enforcement remain driver-
-// specific; Credo does not emulate an unsupported isolation level. The pinned
-// modernc SQLite driver does not reliably enforce Isolation or ReadOnly, so use
-// ordinary InTx for SQLite snapshot reads. It is the method form of
-// [RunInTxWith].
-func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
-	return RunInTxWith(ctx, db, opts, fn)
-}
-
-// RunInTxWith is like RunInTx but accepts sql.TxOptions for configuring the
 // outer transaction's isolation level and read-only mode. Bun implements a
 // nested transaction as a savepoint, which cannot apply new transaction
 // options; a nested call with non-default options returns
-// [ErrNestedTxOptions] before creating the savepoint or invoking fn.
-// Outer option support remains driver-specific; unsupported levels must not be
-// assumed to have taken effect merely because Begin succeeded.
-//
-// [DB.InTxWith] is the method form of this function.
-func RunInTxWith(ctx context.Context, db *DB, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
+// [ErrNestedTxOptions] before creating the savepoint or invoking fn, instead
+// of silently ignoring them. Option support and enforcement remain driver-
+// specific: Credo does not emulate an unsupported isolation level, and an
+// unsupported level must not be assumed to have taken effect merely because
+// Begin succeeded. The pinned modernc SQLite driver does not reliably enforce
+// Isolation or ReadOnly, so use ordinary InTx for SQLite snapshot reads.
+func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
+	return runInTx(ctx, db, opts, fn)
+}
+
+// runInTx is InTx and InTxWith.
+func runInTx(ctx context.Context, db *DB, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
 	if db == nil {
 		return fmt.Errorf("sqldb: db must not be nil")
 	}

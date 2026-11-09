@@ -18,7 +18,7 @@ Use `store/sqldb` when:
 - you want Credo's first-class SQL integration
 - you want a start-phase ping, App-owned deadline-aware shutdown, and readiness reporting
 - you want Bun query builders with Credo error mapping
-- you want Credo's `InTx` / `RunInTx` convenience
+- you want Credo's `InTx` convenience
 - you want migrations to run on app start (`bun/migrate` wrapper)
 
 Use raw DI instead when:
@@ -239,7 +239,7 @@ Mapped values are `*store.Error`: the original driver cause and code remain in t
 
 Classification is family-scoped and depends on the driver being recognized. PostgreSQL mapping is SQLSTATE-based and works with any driver exposing it (pgx, lib/pq); MySQL parses the strict server error envelope; SQLite code extraction recognizes the modernc, mattn, and ncruces drivers (matched structurally, so none becomes a Credo dependency). Errors from an unrecognized driver pass through unmapped — `errors.Is` branches against `store.Err*` silently stop matching — so verify mapping coverage before adopting a different driver.
 
-`store.ErrDuplicate` remains an alias of `ErrAlreadyExists`. The deprecated `ErrConflict` remains an umbrella match for constraint, serialization, deadlock, and contention during migration, but new code should branch on the exact sentinel or kind.
+Each sentinel matches its own kind only: no alias names one twice, and no umbrella matches several. Code that needs a coarse conflict checks the conditions it means — `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention` — since they differ in whether a retry may help. `store.KindConflict` is a kind a custom adapter may return; `store.KindOf` reports it and it renders as 409.
 
 ### NUL bytes in strings
 
@@ -711,7 +711,7 @@ func (s *OrderService) Place(ctx context.Context, order *Order) error {
 }
 ```
 
-From a handler, pass the request context: `db.InTx(c.Context(), fn)`. The package-level `sqldb.RunInTx(ctx, db, fn)` is equivalent; `InTxWith` / `RunInTxWith` accept `sql.TxOptions` for isolation level and read-only mode.
+From a handler, pass the request context: `db.InTx(c.Context(), fn)`. `db.InTxWith(ctx, opts, fn)` accepts `sql.TxOptions` for isolation level and read-only mode.
 
 The callback error is a domain value. When rollback succeeds, Credo returns the exact error unchanged; it is not reclassified from its text or passed through driver mapping. A panic triggers a rollback attempt and re-raises the same panic value. Passing a nil callback returns `sqldb.ErrNilTxCallback` before the transaction begins.
 
@@ -731,7 +731,7 @@ For multi-database applications, be careful:
 
 Practical rule:
 
-- use `InTx` / `RunInTx` freely for one database per unit of work
+- use `InTx` freely for one database per unit of work
 - if a use case spans multiple Bun databases, keep transactions explicit and local
 - do not assume Credo will coordinate cross-database commit/rollback
 
@@ -915,7 +915,7 @@ Use `Client()` for:
 
 **What you lose when you bypass the proxy layer**: queries executed via `db.Client()` skip both interceptors that the proxy layer provides:
 
-- **No automatic TX injection** — an `InTx` / `RunInTx` block does not affect calls built directly from `db.Client()`. Unless the caller explicitly binds another connection with Bun's `.Conn(...)`, the query uses the base pool outside the ambient transaction.
+- **No automatic TX injection** — an `InTx` block does not affect calls built directly from `db.Client()`. Unless the caller explicitly binds another connection with Bun's `.Conn(...)`, the query uses the base pool outside the ambient transaction.
 - **No error mapping** — `sql.ErrNoRows` is returned as-is, not as `store.ErrNotFound`. Driver-specific constraint codes leak through unchanged. Calling code must import `database/sql` (or the driver package) to interpret them.
 
 Reserve `Client()` for model registration, advanced migration operations, and raw SQL the proxy layer cannot express. Use the proxy layer (`db.Select` / `db.Insert` / `db.Update` / `db.Delete`) for normal repository code, even when the query is non-trivial.

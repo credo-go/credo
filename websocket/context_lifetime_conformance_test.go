@@ -23,7 +23,8 @@ type conformancePrincipal struct {
 
 func TestConnectionContextContractDetachesCancellationAndPreservesValues(t *testing.T) {
 	root := context.WithValue(t.Context(), conformanceContextKey{}, "custom-value")
-	root = store.WithTx[string](root, "tx-42")
+	txScope := store.NewTxScope[string]()
+	root = txScope.WithTx(root, "tx-42")
 	requestCtx, cancelRequest := context.WithDeadline(root, time.Now().Add(time.Hour))
 	defer cancelRequest()
 
@@ -41,7 +42,7 @@ func TestConnectionContextContractDetachesCancellationAndPreservesValues(t *test
 	if got := connectionCtx.Value(conformanceContextKey{}); got != "custom-value" {
 		t.Fatalf("custom value = %v, want custom-value", got)
 	}
-	if got, ok := store.GetTx[string](connectionCtx); !ok || got != "tx-42" {
+	if got, ok := txScope.GetTx(connectionCtx); !ok || got != "tx-42" {
 		t.Fatalf("store transaction = %q, %v; want tx-42, true", got, ok)
 	}
 

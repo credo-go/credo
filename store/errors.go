@@ -77,14 +77,14 @@ func (e *Error) storeKind() Kind {
 	return e.Kind
 }
 
-// Is matches the exact semantic sentinel and the deprecated ErrConflict
-// umbrella where applicable. Cause matching is handled by Unwrap.
+// Is matches the sentinel of the error's exact kind. Cause matching is handled
+// by Unwrap.
 func (e *Error) Is(target error) bool {
 	if e == nil {
 		return false
 	}
 	targetKind, ok := directStoreKind(target)
-	return ok && kindsMatch(e.Kind, targetKind)
+	return ok && e.Kind == targetKind
 }
 
 type kindError struct {
@@ -97,7 +97,7 @@ func (e *kindError) FaultKind() fault.Kind { return e.kind }
 func (e *kindError) storeKind() Kind       { return e.kind }
 func (e *kindError) Is(target error) bool {
 	targetKind, ok := directStoreKind(target)
-	return ok && kindsMatch(e.kind, targetKind)
+	return ok && e.kind == targetKind
 }
 
 // Sentinel errors for data access operations.
@@ -107,11 +107,6 @@ var (
 
 	// ErrAlreadyExists indicates a unique or primary-key violation.
 	ErrAlreadyExists error = newKindError(KindAlreadyExists, "store: duplicate record")
-
-	// ErrDuplicate is the compatibility name for [ErrAlreadyExists].
-	//
-	// Deprecated: use ErrAlreadyExists or inspect [KindAlreadyExists].
-	ErrDuplicate = ErrAlreadyExists
 
 	// ErrConstraint indicates a persistent integrity constraint violation other
 	// than a duplicate, such as foreign-key, not-null, or check failure.
@@ -126,14 +121,6 @@ var (
 	// ErrContention indicates a transient lock/busy conflict whose safe retry
 	// scope is not implied by this sentinel.
 	ErrContention error = newKindError(KindContention, "store: contention")
-
-	// ErrConflict is the legacy umbrella for constraint and concurrency errors.
-	// New classifiers return a more specific sentinel whose errors.Is method
-	// still matches ErrConflict.
-	//
-	// Deprecated: inspect ErrConstraint, ErrSerialization, ErrDeadlock, or
-	// ErrContention instead.
-	ErrConflict error = newKindError(KindConflict, "store: conflict")
 
 	// ErrTimeout indicates that a database operation exceeded a verified
 	// deadline or statement timeout.
@@ -256,22 +243,6 @@ func isStoreKind(kind Kind) bool {
 		KindTimeout,
 		KindUnavailable,
 		KindReadOnly:
-		return true
-	default:
-		return false
-	}
-}
-
-func kindsMatch(kind Kind, target Kind) bool {
-	if kind == target {
-		return true
-	}
-	return target == KindConflict && isLegacyConflictKind(kind)
-}
-
-func isLegacyConflictKind(kind Kind) bool {
-	switch kind {
-	case KindConstraint, KindSerialization, KindDeadlock, KindContention:
 		return true
 	default:
 		return false

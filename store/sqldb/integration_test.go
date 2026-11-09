@@ -528,7 +528,7 @@ func TestSelectQuery_Join_PreservesInterceptors(t *testing.T) {
 	ctx := t.Context()
 
 	// Outside TX: nothing inserted yet.
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+	err := db.InTx(ctx, func(txCtx context.Context) error {
 		u := &User{Name: "tx-join", Email: "t@b"}
 		if _, err := db.Insert(u).Exec(txCtx); err != nil {
 			return err
@@ -552,7 +552,7 @@ func TestSelectQuery_Join_PreservesInterceptors(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("RunInTx() = %v", err)
+		t.Fatalf("InTx() = %v", err)
 	}
 }
 
@@ -594,8 +594,8 @@ func TestInsertQuery_Exec_Duplicate(t *testing.T) {
 	db.Insert(&User{Name: "dup", Email: "a@b"}).Exec(ctx)
 
 	_, err := db.Insert(&User{Name: "dup", Email: "b@b"}).Exec(ctx)
-	if !errors.Is(err, store.ErrAlreadyExists) || !errors.Is(err, store.ErrDuplicate) {
-		t.Errorf("duplicate insert: err = %v, want AlreadyExists/ErrDuplicate", err)
+	if !errors.Is(err, store.ErrAlreadyExists) {
+		t.Errorf("duplicate insert: err = %v, want ErrAlreadyExists", err)
 	}
 	if kind, ok := store.KindOf(err); !ok || kind != store.KindAlreadyExists {
 		t.Errorf("duplicate KindOf = (%q, %v), want (%q, true)", kind, ok, store.KindAlreadyExists)
@@ -629,8 +629,8 @@ func TestRaw_ErrorMapping_SQLiteConstraint(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := db.Exec(ctx, tt.sql)
-			if !errors.Is(err, store.ErrConstraint) || !errors.Is(err, store.ErrConflict) {
-				t.Fatalf("Exec = %v, want exact constraint + legacy conflict", err)
+			if !errors.Is(err, store.ErrConstraint) {
+				t.Fatalf("Exec = %v, want ErrConstraint", err)
 			}
 			if kind, ok := store.KindOf(err); !ok || kind != store.KindConstraint {
 				t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, store.KindConstraint)
@@ -671,9 +671,8 @@ func TestRaw_ErrorMapping_SQLiteContention(t *testing.T) {
 		}
 
 		_, contentionErr := contender.Exec(ctx, `INSERT INTO locks (id, value) VALUES (2, 'blocked')`)
-		if !errors.Is(contentionErr, store.ErrContention) ||
-			!errors.Is(contentionErr, store.ErrConflict) {
-			t.Fatalf("contender insert = %v, want contention + legacy conflict", contentionErr)
+		if !errors.Is(contentionErr, store.ErrContention) {
+			t.Fatalf("contender insert = %v, want ErrContention", contentionErr)
 		}
 		if errors.Is(contentionErr, store.ErrTimeout) {
 			t.Fatal("SQLite busy/locked must not become a request timeout")
@@ -730,46 +729,6 @@ func TestDeleteQuery_Exec(t *testing.T) {
 
 // --- TX injection tests ---
 
-func TestRunInTx_CommitOnNil(t *testing.T) {
-	db := openTestDB(t)
-	createUsersTable(t, db)
-	ctx := t.Context()
-
-	err := sqldb.RunInTx(ctx, db, func(ctx context.Context) error {
-		_, err := db.Insert(&User{Name: "tx-user", Email: "tx@b"}).Exec(ctx)
-		return err
-	})
-	if err != nil {
-		t.Fatalf("RunInTx() = %v", err)
-	}
-
-	// Verify committed.
-	var user User
-	err = db.Select(&user).Where("name = ?", "tx-user").Scan(ctx)
-	if err != nil {
-		t.Fatalf("after commit: Scan() = %v", err)
-	}
-}
-
-func TestRunInTxWith_CommitOnNil(t *testing.T) {
-	db := openTestDB(t)
-	createUsersTable(t, db)
-	ctx := t.Context()
-
-	err := sqldb.RunInTxWith(ctx, db, &sql.TxOptions{}, func(ctx context.Context) error {
-		_, err := db.Insert(&User{Name: "tx-with-user", Email: "with@b"}).Exec(ctx)
-		return err
-	})
-	if err != nil {
-		t.Fatalf("RunInTxWith() = %v", err)
-	}
-
-	var user User
-	if err := db.Select(&user).Where("name = ?", "tx-with-user").Scan(ctx); err != nil {
-		t.Fatalf("after RunInTxWith commit: Scan() = %v", err)
-	}
-}
-
 func TestInTx_CommitOnNil(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
@@ -786,26 +745,6 @@ func TestInTx_CommitOnNil(t *testing.T) {
 	var user User
 	if err := db.Select(&user).Where("name = ?", "intx-user").Scan(ctx); err != nil {
 		t.Fatalf("after InTx commit: Scan() = %v", err)
-	}
-}
-
-func TestInTx_RollbackOnError(t *testing.T) {
-	db := openTestDB(t)
-	createUsersTable(t, db)
-	ctx := t.Context()
-
-	err := db.InTx(ctx, func(ctx context.Context) error {
-		db.Insert(&User{Name: "intx-rollback", Email: "rb@b"}).Exec(ctx)
-		return errors.New("forced error")
-	})
-	if err == nil {
-		t.Fatal("InTx should return error")
-	}
-
-	var user User
-	scanErr := db.Select(&user).Where("name = ?", "intx-rollback").Scan(ctx)
-	if !errors.Is(scanErr, store.ErrNotFound) {
-		t.Errorf("after InTx rollback: Scan() = %v, want ErrNotFound", scanErr)
 	}
 }
 
@@ -828,21 +767,21 @@ func TestInTxWith_CommitOnNil(t *testing.T) {
 	}
 }
 
-func TestRunInTx_RollbackOnError(t *testing.T) {
+func TestInTx_RollbackOnError(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
 	callbackErr := errors.New("domain duplicate key validation")
 
-	err := sqldb.RunInTx(ctx, db, func(ctx context.Context) error {
+	err := db.InTx(ctx, func(ctx context.Context) error {
 		db.Insert(&User{Name: "rollback-user", Email: "rb@b"}).Exec(ctx)
 		return callbackErr
 	})
 	if err != callbackErr { //nolint:errorlint // Exact callback identity is the contract under test.
-		t.Fatalf("RunInTx = %v (%T), want exact callback error %p", err, err, callbackErr)
+		t.Fatalf("InTx = %v (%T), want exact callback error %p", err, err, callbackErr)
 	}
-	if errors.Is(err, store.ErrDuplicate) {
-		t.Fatal("domain callback error was incorrectly classified as ErrDuplicate")
+	if errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatal("domain callback error was incorrectly classified as ErrAlreadyExists")
 	}
 
 	// Verify rolled back.
@@ -853,7 +792,7 @@ func TestRunInTx_RollbackOnError(t *testing.T) {
 	}
 }
 
-func TestRunInTx_RollbackOnPanic(t *testing.T) {
+func TestInTx_RollbackOnPanic(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -873,13 +812,13 @@ func TestRunInTx_RollbackOnPanic(t *testing.T) {
 		}
 	}()
 
-	sqldb.RunInTx(ctx, db, func(ctx context.Context) error {
+	db.InTx(ctx, func(ctx context.Context) error {
 		db.Insert(&User{Name: "panic-user", Email: "p@b"}).Exec(ctx)
 		panic(panicValue)
 	})
 }
 
-func TestRunInTx_NilCallbackFailsBeforeBegin(t *testing.T) {
+func TestInTx_NilCallbackFailsBeforeBegin(t *testing.T) {
 	db := openTestDB(t)
 	hook := &selectQueryCounter{}
 	db.Client().AddQueryHook(hook)
@@ -893,7 +832,7 @@ func TestRunInTx_NilCallbackFailsBeforeBegin(t *testing.T) {
 	}
 }
 
-func TestRunInTx_TXInjection_ViaProxy(t *testing.T) {
+func TestInTx_TXInjection_ViaProxy(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -901,7 +840,7 @@ func TestRunInTx_TXInjection_ViaProxy(t *testing.T) {
 	// Insert outside TX.
 	db.Insert(&User{Name: "pre-tx", Email: "pre@b"}).Exec(ctx)
 
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+	err := db.InTx(ctx, func(txCtx context.Context) error {
 		// Insert via proxy — should use the TX from context.
 		_, err := db.Insert(&User{Name: "in-tx", Email: "in@b"}).Exec(txCtx)
 		if err != nil {
@@ -917,28 +856,28 @@ func TestRunInTx_TXInjection_ViaProxy(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("RunInTx() = %v", err)
+		t.Fatalf("InTx() = %v", err)
 	}
 }
 
-func TestRunInTx_Nested_Savepoint(t *testing.T) {
+func TestInTx_Nested_Savepoint(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
 
-	err := sqldb.RunInTx(ctx, db, func(outerCtx context.Context) error {
+	err := db.InTx(ctx, func(outerCtx context.Context) error {
 		_, err := db.Insert(&User{Name: "outer", Email: "o@b"}).Exec(outerCtx)
 		if err != nil {
 			return err
 		}
 
 		// Nested TX — inner error should rollback only the inner savepoint.
-		innerErr := sqldb.RunInTx(outerCtx, db, func(innerCtx context.Context) error {
+		innerErr := db.InTx(outerCtx, func(innerCtx context.Context) error {
 			db.Insert(&User{Name: "inner", Email: "i@b"}).Exec(innerCtx)
 			return errors.New("inner rollback")
 		})
 		if innerErr == nil {
-			t.Error("inner RunInTx should return error")
+			t.Error("inner InTx should return error")
 		}
 
 		// "outer" should still be visible, "inner" should be rolled back.
@@ -954,7 +893,7 @@ func TestRunInTx_Nested_Savepoint(t *testing.T) {
 		return nil // commit outer
 	})
 	if err != nil {
-		t.Fatalf("outer RunInTx() = %v", err)
+		t.Fatalf("outer InTx() = %v", err)
 	}
 
 	// After outer commit, "outer" is visible, "inner" is not.
@@ -968,7 +907,7 @@ func TestRunInTx_Nested_Savepoint(t *testing.T) {
 	}
 }
 
-func TestRunInTx_NestedNonDefaultOptionsFailBeforeSavepoint(t *testing.T) {
+func TestInTx_NestedNonDefaultOptionsFailBeforeSavepoint(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	hook := &selectQueryCounter{}
@@ -1006,7 +945,7 @@ func TestRunInTx_NestedNonDefaultOptionsFailBeforeSavepoint(t *testing.T) {
 	}
 }
 
-func TestRunInTx_NestedSavepointCreationTimeoutFailsClosed(t *testing.T) {
+func TestInTx_NestedSavepointCreationTimeoutFailsClosed(t *testing.T) {
 	const cleanupTimeout = 25 * time.Millisecond
 	db, err := sqldb.Open(
 		&sqldb.Config{Driver: "sqlite", DSN: ":memory:"},
@@ -1065,7 +1004,7 @@ func TestRunInTx_NestedSavepointCreationTimeoutFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRunInTx_NestedSavepointCreationHonorsCallbackCancellation(t *testing.T) {
+func TestInTx_NestedSavepointCreationHonorsCallbackCancellation(t *testing.T) {
 	db := openTestDB(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -1103,7 +1042,7 @@ func TestRunInTx_NestedSavepointCreationHonorsCallbackCancellation(t *testing.T)
 	}
 }
 
-func TestRunInTx_TxCleanupTimeoutExcludesCallbackDuration(t *testing.T) {
+func TestInTx_TxCleanupTimeoutExcludesCallbackDuration(t *testing.T) {
 	const cleanupTimeout = 100 * time.Millisecond
 	db, err := sqldb.Open(
 		&sqldb.Config{Driver: "sqlite", DSN: ":memory:"},
@@ -1125,7 +1064,7 @@ func TestRunInTx_TxCleanupTimeoutExcludesCallbackDuration(t *testing.T) {
 	}
 }
 
-func TestRunInTx_NestedCancellationRollsBackSavepoint(t *testing.T) {
+func TestInTx_NestedCancellationRollsBackSavepoint(t *testing.T) {
 	tests := []struct {
 		name string
 		mode string
@@ -1209,7 +1148,7 @@ func TestRunInTx_NestedCancellationRollsBackSavepoint(t *testing.T) {
 	}
 }
 
-func TestRunInTx_SameTypeMultiDBIsolation(t *testing.T) {
+func TestInTx_SameTypeMultiDBIsolation(t *testing.T) {
 	primary := openTestDB(t)
 	analytics := openTestDB(t)
 	createUsersTable(t, primary)
@@ -1223,7 +1162,7 @@ func TestRunInTx_SameTypeMultiDBIsolation(t *testing.T) {
 		t.Fatalf("analytics insert: %v", err)
 	}
 
-	err := sqldb.RunInTx(ctx, primary, func(txCtx context.Context) error {
+	err := primary.InTx(ctx, func(txCtx context.Context) error {
 		var user User
 		if err := analytics.Select(&user).Where("name = ?", "analytics-only").Scan(txCtx); err != nil {
 			return err
@@ -1234,11 +1173,11 @@ func TestRunInTx_SameTypeMultiDBIsolation(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("RunInTx multi-db isolation = %v", err)
+		t.Fatalf("InTx multi-db isolation = %v", err)
 	}
 }
 
-func TestRunInTx_SameTypeMultiDBNestedScopesRemainIndependent(t *testing.T) {
+func TestInTx_SameTypeMultiDBNestedScopesRemainIndependent(t *testing.T) {
 	primary := openTestDB(t)
 	analytics := openTestDB(t)
 	createUsersTable(t, primary)
@@ -1415,12 +1354,12 @@ func TestDB_Exec_Raw_WithTX(t *testing.T) {
 	createUsersTable(t, db)
 	ctx := t.Context()
 
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+	err := db.InTx(ctx, func(txCtx context.Context) error {
 		_, err := db.Exec(txCtx, "INSERT INTO users (name, email) VALUES (?, ?)", "raw-tx", "rt@b")
 		return err
 	})
 	if err != nil {
-		t.Fatalf("RunInTx() = %v", err)
+		t.Fatalf("InTx() = %v", err)
 	}
 
 	var user User
@@ -1575,7 +1514,7 @@ func TestSelectQuery_TypedTerminals_AmbientTx(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+	err := db.InTx(ctx, func(txCtx context.Context) error {
 		if _, err := db.Insert(&User{Name: "inside", Email: "i@b"}).Exec(txCtx); err != nil {
 			return err
 		}
@@ -1599,7 +1538,7 @@ func TestSelectQuery_TypedTerminals_AmbientTx(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("RunInTx() = %v", err)
+		t.Fatalf("InTx() = %v", err)
 	}
 }
 
@@ -1768,7 +1707,7 @@ func TestSelectQuery_Page_InsideTx(t *testing.T) {
 	// uncommitted insert inside the TX is visible to Page there, and
 	// invisible after rollback.
 	sentinelErr := errors.New("force rollback")
-	err := sqldb.RunInTx(ctx, db, func(txCtx context.Context) error {
+	err := db.InTx(ctx, func(txCtx context.Context) error {
 		if _, err := db.Insert(&User{Name: "dora", Email: "dora@b"}).Exec(txCtx); err != nil {
 			return err
 		}
@@ -1788,7 +1727,7 @@ func TestSelectQuery_Page_InsideTx(t *testing.T) {
 		return sentinelErr
 	})
 	if !errors.Is(err, sentinelErr) {
-		t.Fatalf("RunInTx() = %v, want sentinel rollback error", err)
+		t.Fatalf("InTx() = %v, want sentinel rollback error", err)
 	}
 
 	req := &pagination.PageRequest{Page: 1, PerPage: 10}
@@ -2028,14 +1967,15 @@ func TestSelectQuery_ExplicitConn(t *testing.T) {
 	}
 }
 
-// --- RunInTx nil db ---
+// --- InTx on a nil *DB ---
 
-func TestRunInTx_NilDB(t *testing.T) {
-	err := sqldb.RunInTx(t.Context(), nil, func(ctx context.Context) error {
+func TestInTx_NilDB(t *testing.T) {
+	var db *sqldb.DB
+	err := db.InTx(t.Context(), func(ctx context.Context) error {
 		return nil
 	})
 	if err == nil {
-		t.Fatal("RunInTx(nil) should return error")
+		t.Fatal("InTx on a nil *DB should return error")
 	}
 }
 
@@ -2110,10 +2050,9 @@ func TestInsertQuery_ErrorMapping_DuplicateKey(t *testing.T) {
 
 	db.Insert(&User{Name: "unique", Email: "u@b"}).Exec(ctx)
 
-	// Second insert with the same unique name returns the semantic kind while
-	// retaining the deprecated ErrDuplicate compatibility match.
+	// Second insert with the same unique name returns the semantic kind.
 	_, err := db.Insert(&User{Name: "unique", Email: "u2@b"}).Exec(ctx)
-	if !errors.Is(err, store.ErrAlreadyExists) || !errors.Is(err, store.ErrDuplicate) {
-		t.Errorf("duplicate insert via proxy: err = %v, want AlreadyExists/ErrDuplicate", err)
+	if !errors.Is(err, store.ErrAlreadyExists) {
+		t.Errorf("duplicate insert via proxy: err = %v, want ErrAlreadyExists", err)
 	}
 }

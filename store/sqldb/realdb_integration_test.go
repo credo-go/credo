@@ -214,7 +214,6 @@ func testRealDBErrorMapping(
 		t,
 		duplicateErr,
 		store.ErrAlreadyExists,
-		store.ErrDuplicate,
 		store.KindAlreadyExists,
 		driver,
 		duplicateCode,
@@ -228,7 +227,6 @@ func testRealDBErrorMapping(
 		t,
 		constraintErr,
 		store.ErrConstraint,
-		store.ErrConflict,
 		store.KindConstraint,
 		driver,
 		constraintCode,
@@ -252,7 +250,6 @@ func assertRealDBMappedError(
 	t *testing.T,
 	got error,
 	exact error,
-	legacy error,
 	wantKind store.Kind,
 	driver string,
 	wantCode string,
@@ -261,8 +258,8 @@ func assertRealDBMappedError(
 	if got == nil {
 		t.Fatalf("database operation error = nil, want %s", wantKind)
 	}
-	if !errors.Is(got, exact) || !errors.Is(got, legacy) {
-		t.Fatalf("database operation error = %v, want %v and %v", got, exact, legacy)
+	if !errors.Is(got, exact) {
+		t.Fatalf("database operation error = %v, want %v", got, exact)
 	}
 	if kind, ok := store.KindOf(got); !ok || kind != wantKind {
 		t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, wantKind)

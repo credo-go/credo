@@ -116,7 +116,7 @@
 //
 //   - Transaction injection: terminal methods (Scan, Count, Exists, Exec)
 //     resolve the connection from the context at execution time, so code
-//     inside InTx/RunInTx transparently runs on the transaction. Only a
+//     inside InTx transparently runs on the transaction. Only a
 //     connection set with the wrapper's Conn is kept; one set inside an Apply
 //     callback is overridden by the injection. Select terminals run on an
 //     execution snapshot taken with Bun's own Clone, so the builder may be
@@ -149,17 +149,16 @@
 //
 // # Transactions
 //
-// Use InTx (or the package-level RunInTx) to execute a function within a
-// transaction. The adapter stores the TX in a private per-DB scope so
-// repositories using sqldb proxies pick it up automatically without
-// cross-DB collisions:
+// Use InTx to execute a function within a transaction. The adapter stores
+// the TX in a private per-DB scope so repositories using sqldb proxies pick
+// it up automatically without cross-DB collisions:
 //
 //	err := db.InTx(ctx, func(ctx context.Context) error {
 //	    // repos pick up the scoped TX automatically
 //	    return nil
 //	})
 //
-// InTxWith / RunInTxWith accept sql.TxOptions for configuring isolation
+// InTxWith accepts sql.TxOptions for configuring isolation
 // level and read-only mode on the outer transaction. Nested calls use a Bun
 // savepoint; because a savepoint cannot apply new transaction options, a
 // nested call with non-default options returns ErrNestedTxOptions instead of
@@ -324,8 +323,8 @@
 // driver errors through mapError before returning. Common mappings:
 //
 //   - sql.ErrNoRows         → store.ErrNotFound
-//   - unique violation      → store.ErrAlreadyExists (ErrDuplicate compatible)
-//   - foreign-key violation → store.ErrConstraint (ErrConflict compatible)
+//   - unique violation      → store.ErrAlreadyExists
+//   - foreign-key violation → store.ErrConstraint
 //   - serialization failure → store.ErrSerialization
 //   - deadlock              → store.ErrDeadlock
 //   - lock/busy contention  → store.ErrContention

@@ -14,6 +14,7 @@ Credo needs a data access layer that lets applications work with SQL databases w
 - Keep a page's total exact: a count that has to describe a query whose shape it cannot see — an escape hatch, a raw projection, a model hook that rewrites the query — can only guess, and a guessed total is a wrong count; such a query fails, and a repository whose query needs a count of its own hands it to the page instead of reassembling the page by hand
 - Integrate with lifecycle management, health checks, and DI registration
 - Support multi-database setups via DI wrapper types
+- Give each operation one exported spelling before v1 freezes the surface: an API exported beside its replacement freezes with it, and an umbrella sentinel over kinds whose handling differs — a serialization failure or a deadlock may clear, a constraint violation does not — lets code branch on the coarse condition the exact sentinels exist to replace
 - Fail loud wherever a silent fallback would change behavior: a transaction read back under a different type must not fall back to the pool, transaction options a savepoint cannot honour must not be dropped, a query whose total the wrapper cannot prove must not produce a count, and a driver message that merely contains "duplicate key" must not be classified as a duplicate
 
 ### Why Single-ORM (Bun)?
@@ -39,10 +40,6 @@ The stdlib-only `fault` leaf package defines transport-neutral `Kind` values and
 
 `store.Error` carries the kind together with structured diagnostics — operation, resource, constraint, driver code, a transient flag and the cause — that never reach the wire: the default error renderer serializes none of them. Exact sentinels distinguish not-found, already-exists, persistent constraint, serialization, deadlock, lock/busy contention, timeout, unavailable, and read-only conditions, so callers branch on the condition rather than on a coarse conflict. The [store spec](../specs/store.md#semantic-errors) lists the struct, the sentinels and their default statuses.
 
-> **Current until v0.26.0 (R14):** the next paragraph describes `ErrDuplicate` and `ErrConflict`, which [One API per operation](#one-api-per-operation) removes.
-
-`ErrDuplicate` (an alias of `ErrAlreadyExists`) and the `ErrConflict` umbrella, which the constraint and concurrency sentinels match through `errors.Is`, are deprecated compatibility names; the exact `Kind` is the primary contract.
-
 `Transient` means only that the condition may clear. It never promises that replaying a statement, transaction callback, or externally visible operation is safe. Commit outcome is deliberately not inferred from a driver cause kind; an `OutcomeUnknown` model is deferred until operation-phase evidence can make it reliable.
 
 A store error reaches the client through its kind alone. Root HTTP policy reads `FaultKind` and maps the kind to its status ([ADR-009](009-handler-and-error-handling.md)); no store type has an `HTTPStatus` method. The classification order is `*HTTPError`, `*fault.Error`, the validation errors, `*BindError`, any other `fault.Provider`, then 500, so a service overrides a store error by returning an `HTTPError`, or a `fault.Error` that names a code of its own, with the store error as its internal cause, which is logged and never rendered; future gRPC policy reads the same kind. Unknown kinds fail closed as 500.
@@ -55,18 +52,16 @@ A fault without an explicit code renders its kind as its code — `not_found`, `
 
 - `store.NewTxScope[T]()` fixes the transaction contract at scope construction. Its `WithTx`, `GetTx`, `RequireTx`, and `Conn` methods all use that same `T`: a per-method `T` would let a concrete transaction be stored and read back through an interface type under a different context key, silently selecting the fallback connection.
 - Each `sqldb.DB` owns a distinct `TxScope[bun.IDB]`, isolating multiple logical databases that share Bun's interface type.
-- `sqldb.RunInTx(ctx, db, fn)` starts a transaction, stores it in that DB's private scope, executes the callback, and commits/rolls back. Nested calls use savepoints.
+- `db.InTx(ctx, fn)` starts a transaction, stores it in that DB's private scope, executes the callback, and commits/rolls back; `db.InTxWith(ctx, opts, fn)` also takes `sql.TxOptions`. Nested calls use savepoints.
 - `sqldb.DB.Conn(ctx)` exposes the active `bun.IDB` for transaction-aware native Bun operations; `RequireTx(ctx)` returns `store.ErrTxMissing` instead of falling back.
 
-> **Current until v0.26.0 (R14):** the third bullet above names `sqldb.RunInTx`, the next paragraph's last sentence names the deprecated unscoped `store.WithTx` / `GetTx` / `Conn` helpers, and the paragraph after it calls `InTx` and `InTxWith` method forms of the free functions; [One API per operation](#one-api-per-operation) removes the free functions, and `db.InTx(ctx, fn)` is the one way to run a transaction.
+This is an **opt-in convenience**. Proxy users participate automatically when they pass the callback context. Custom adapters use their own typed scope; its methods are the one transaction API ([One API per operation](#one-api-per-operation)).
 
-This is an **opt-in convenience**. Proxy users participate automatically when they pass the callback context. Custom adapters use their own typed scope. The unscoped `store.WithTx` / `GetTx` / `Conn` helpers are deprecated: type-only context keys cannot protect a producer/consumer concrete-interface mismatch or isolate same-type logical connections.
-
-The method forms `db.InTx(ctx, fn)` and `db.InTxWith(ctx, opts, fn)` put the operation on the value the caller already holds; their distinct name avoids confusion with Bun's native `(*bun.DB).RunInTx(ctx, opts, fn(ctx, tx))`, reachable through `Client()`.
+`InTx` and `InTxWith` are methods, so the operation is on the value the caller already holds; their name avoids confusion with Bun's native `(*bun.DB).RunInTx(ctx, opts, fn(ctx, tx))`, reachable through `Client()`.
 
 The transaction boundary fails loud and closed rather than guessing ([store spec](../specs/store.md#tx-management) for the mechanics and budgets):
 
-- **Callback errors stay application values.** After a successful rollback `RunInTx` returns the callback's exact error without SQL error mapping: domain text such as "duplicate key validation" must not acquire `store.ErrAlreadyExists`.
+- **Callback errors stay application values.** After a successful rollback `InTx` returns the callback's exact error without SQL error mapping: domain text such as "duplicate key validation" must not acquire `store.ErrAlreadyExists`.
 - **No silent option loss.** Bun implements a nested transaction as a savepoint and ignores `sql.TxOptions` there, so non-default options on a nested call return `ErrNestedTxOptions`; the owner of the outer transaction chooses isolation and read-only mode.
 - **Rollback-only instead of a commit race.** An uncertain savepoint operation synchronously marks the shared transaction state rollback-only before its bounded asynchronous abort, and every outer level checks that state before commit. Whether the transaction commits never depends on how the abort goroutine is scheduled, even when a nested error is swallowed.
 - **Commit errors are outcome-ambiguous.** A commit failure does not prove that the transaction was not applied; its classification describes the driver cause, and callers must not turn it into a blind retry.
@@ -78,19 +73,13 @@ Rejected:
 
 ### One API per operation
 
-> **Pending v0.26.0 (R14):** not implemented yet; the deprecated and parallel APIs this section names are exported beside their replacements.
-
 Each data-access operation has one exported spelling before v1 freezes the surface:
 
-- **One transaction scope API.** The `TxScope` methods — `WithTx`, `GetTx`, `RequireTx` and `Conn`, whose `T` the scope fixes — are the one transaction API, and `sqldb` uses it. The deprecated free functions `store.WithTx`, `GetTx` and `Conn` and the `…InScope` functions `WithTxInScope`, `GetTxInScope`, `RequireTxInScope` and `ConnInScope` go.
-- **One way to run a transaction.** `db.InTx(ctx, fn)` and `db.InTxWith(ctx, opts, fn)` put the operation on the database the caller holds; their free-function twins `sqldb.RunInTx` and `RunInTxWith` go.
-- **The exact sentinels are the error contract.** `store.ErrDuplicate`, an alias of `ErrAlreadyExists`, goes, and so does `store.ErrConflict`, the legacy umbrella over the constraint and concurrency kinds, with the matching that makes it one. `KindConflict` stays: it is a kind an adapter may return, and `store.KindOf` reports it.
+- **One transaction scope API.** The `TxScope` methods — `WithTx`, `GetTx`, `RequireTx` and `Conn`, whose `T` the scope fixes — are the one transaction API, and `sqldb` uses it. No free function keyed by the type alone exists beside them: separate call sites could choose different concrete or interface forms of one transaction, and a type-only key cannot isolate two logical connections that share `T`.
+- **One way to run a transaction.** `db.InTx(ctx, fn)` and `db.InTxWith(ctx, opts, fn)` put the operation on the database the caller holds, and no free function runs a transaction beside them.
+- **The exact sentinels are the error contract.** No alias names a sentinel twice, and no umbrella sentinel matches several kinds: each sentinel matches its own kind only. `KindConflict` is a kind an adapter may return, which `store.KindOf` reports and the root maps to 409; no sentinel stands for it, and none of the constraint and concurrency sentinels matches it.
 
 Kept: `store.Health`, the type `sqldb`'s `Health` returns and its `Ready` reads ([A Database Is a Component](#a-database-is-a-component)).
-
-**Problem.** An API exported beside its replacement freezes at v1 with it: two names for one transaction operation, two spellings of one sentinel, and an umbrella sentinel that matches four kinds whose handling differs — a serialization failure or a deadlock may clear, a constraint violation does not — so code that checks it branches on the coarse condition the exact sentinels exist to replace.
-
-**Removes.** `store.WithTx`, `GetTx` and `Conn`; `WithTxInScope`, `GetTxInScope`, `RequireTxInScope` and `ConnInScope`; `store.ErrDuplicate`; `store.ErrConflict` and the `errors.Is` match of `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` and `ErrContention` against it; `sqldb.RunInTx` and `RunInTxWith`.
 
 ### 3-Tier Bun Wrapping
 

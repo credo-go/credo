@@ -7,97 +7,6 @@ import (
 	"github.com/credo-go/credo/store"
 )
 
-func TestWithTx_GetTx_RoundTrip(t *testing.T) {
-	ctx := t.Context()
-	tx := "mock-tx-handle"
-
-	ctx = store.WithTx[string](ctx, tx)
-	got, ok := store.GetTx[string](ctx)
-	if !ok {
-		t.Fatal("GetTx returned false, want true")
-	}
-	if got != tx {
-		t.Errorf("GetTx = %q, want %q", got, tx)
-	}
-}
-
-func TestGetTx_NotPresent(t *testing.T) {
-	ctx := t.Context()
-	got, ok := store.GetTx[string](ctx)
-	if ok {
-		t.Fatal("GetTx returned true for empty context, want false")
-	}
-	if got != "" {
-		t.Errorf("GetTx = %q, want zero value", got)
-	}
-}
-
-func TestConn_WithTx(t *testing.T) {
-	ctx := t.Context()
-	tx := "active-tx"
-	fallback := "fallback-conn"
-
-	ctx = store.WithTx[string](ctx, tx)
-	got := store.Conn[string](ctx, fallback)
-	if got != tx {
-		t.Errorf("Conn = %q, want TX %q", got, tx)
-	}
-}
-
-func TestConn_WithoutTx(t *testing.T) {
-	ctx := t.Context()
-	fallback := "fallback-conn"
-
-	got := store.Conn[string](ctx, fallback)
-	if got != fallback {
-		t.Errorf("Conn = %q, want fallback %q", got, fallback)
-	}
-}
-
-// testTxA and testTxB are distinct types to verify type-keyed isolation.
-type testTxA struct{ id string }
-type testTxB struct{ id string }
-
-func TestWithTx_DifferentTypes_NoCollision(t *testing.T) {
-	ctx := t.Context()
-	a := testTxA{id: "tx-a"}
-	b := testTxB{id: "tx-b"}
-
-	ctx = store.WithTx[testTxA](ctx, a)
-	ctx = store.WithTx[testTxB](ctx, b)
-
-	gotA, okA := store.GetTx[testTxA](ctx)
-	gotB, okB := store.GetTx[testTxB](ctx)
-
-	if !okA || gotA.id != "tx-a" {
-		t.Errorf("GetTx[testTxA] = %v, %v; want {tx-a}, true", gotA, okA)
-	}
-	if !okB || gotB.id != "tx-b" {
-		t.Errorf("GetTx[testTxB] = %v, %v; want {tx-b}, true", gotB, okB)
-	}
-}
-
-func TestWithTxInScope_SameType_NoCollision(t *testing.T) {
-	ctx := t.Context()
-	scopeA := store.NewTxScope[string]()
-	scopeB := store.NewTxScope[string]()
-
-	ctx = store.WithTxInScope(ctx, scopeA, "tx-a")
-
-	gotA, okA := store.GetTxInScope(ctx, scopeA)
-	if !okA || gotA != "tx-a" {
-		t.Fatalf("GetTxInScope(scopeA) = %q, %v", gotA, okA)
-	}
-
-	gotB, okB := store.GetTxInScope(ctx, scopeB)
-	if okB {
-		t.Fatalf("GetTxInScope(scopeB) unexpectedly found tx %q", gotB)
-	}
-	if got := store.ConnInScope(ctx, scopeB, "fallback"); got != "fallback" {
-		t.Fatalf("ConnInScope(scopeB) = %q, want fallback", got)
-	}
-}
-
 func TestTxScope_Methods_RoundTrip(t *testing.T) {
 	ctx := t.Context()
 	scope := store.NewTxScope[string]()
@@ -122,24 +31,6 @@ func TestTxScope_Conn_Fallback(t *testing.T) {
 	}
 	if _, ok := scope.GetTx(ctx); ok {
 		t.Error("scope.GetTx returned true for empty context, want false")
-	}
-}
-
-// The methods are sugar over the WithTxInScope/GetTxInScope/ConnInScope free
-// functions, so a value stored through a method must be readable through the
-// matching free function and vice versa — same scope, same key.
-func TestTxScope_Methods_MatchFreeFunctions(t *testing.T) {
-	ctx := t.Context()
-	scope := store.NewTxScope[string]()
-
-	ctx = scope.WithTx(ctx, "via-method")
-	if got, ok := store.GetTxInScope(ctx, scope); !ok || got != "via-method" {
-		t.Errorf("GetTxInScope after scope.WithTx = %q, %v; want %q, true", got, ok, "via-method")
-	}
-
-	ctx = store.WithTxInScope(ctx, scope, "via-free-fn")
-	if got, ok := scope.GetTx(ctx); !ok || got != "via-free-fn" {
-		t.Errorf("scope.GetTx after WithTxInScope = %q, %v; want %q, true", got, ok, "via-free-fn")
 	}
 }
 
@@ -186,12 +77,6 @@ func TestTxScope_ConcreteValueRoundTripsThroughInterfaceScope(t *testing.T) {
 	if got.connectionID() != "tx-interface" {
 		t.Errorf("connectionID = %q, want tx-interface", got.connectionID())
 	}
-
-	freeCtx := store.WithTxInScope[testConnection](t.Context(), scope, tx)
-	freeGot, ok := store.GetTxInScope(freeCtx, scope)
-	if !ok || freeGot != tx {
-		t.Fatalf("free scoped round-trip = %T %v, %v; want original pointer", freeGot, freeGot, ok)
-	}
 }
 
 func TestTxScope_RequireTx(t *testing.T) {
@@ -206,11 +91,6 @@ func TestTxScope_RequireTx(t *testing.T) {
 	got, err = scope.RequireTx(ctx)
 	if err != nil || got != "required-tx" {
 		t.Fatalf("RequireTx with transaction = %q, %v; want required-tx, nil", got, err)
-	}
-
-	freeGot, err := store.RequireTxInScope(ctx, scope)
-	if err != nil || freeGot != got {
-		t.Fatalf("RequireTxInScope = %q, %v; want %q, nil", freeGot, err, got)
 	}
 }
 
@@ -248,12 +128,17 @@ func TestTxScope_DifferentTypesAndScopesStayIsolated(t *testing.T) {
 
 func TestTxScope_NilPanics(t *testing.T) {
 	var scope *store.TxScope[string]
-	defer func() {
-		if got := recover(); got != "store: tx scope must not be nil" {
-			t.Fatalf("panic = %v, want nil-scope message", got)
-		}
-	}()
-	scope.WithTx(t.Context(), "tx")
+	ctx := t.Context()
+	for name, call := range map[string]func(){
+		"WithTx":    func() { scope.WithTx(ctx, "tx") },
+		"GetTx":     func() { scope.GetTx(ctx) },
+		"RequireTx": func() { _, _ = scope.RequireTx(ctx) },
+		"Conn":      func() { scope.Conn(ctx, "fallback") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertPanicValue(t, "store: tx scope must not be nil", call)
+		})
+	}
 }
 
 func TestTxScope_WithTxNilPointerPanics(t *testing.T) {
@@ -270,15 +155,6 @@ func TestTxScope_WithTxTypedNilInterfacePanics(t *testing.T) {
 
 	assertPanicValue(t, "store: transaction must not be nil", func() {
 		scope.WithTx(t.Context(), tx)
-	})
-}
-
-func TestWithTx_UnscopedTypedNilPanics(t *testing.T) {
-	var concrete *concreteTestTx
-	var tx testConnection = concrete
-
-	assertPanicValue(t, "store: transaction must not be nil", func() {
-		store.WithTx(t.Context(), tx)
 	})
 }
 
