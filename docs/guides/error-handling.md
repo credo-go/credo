@@ -42,18 +42,65 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
 
 - `Status` is the HTTP status.
 - `Code` is stable machine identity.
-- `MessageKey` is optional presentation identity and is never used to derive Code.
-- `Details` is client-safe structured data.
+- `MessageKey` is an optional catalog key for the message and is never used to derive Code. Its type is `credo.MessageKey`, so a key computed as a `string` needs a conversion.
+- `Message`, set with `WithMessage`, is optional literal client text, never looked up; it wins over a key.
+- `Details` is client-safe structured data. Client input belongs here, never in a key or a message.
 - `Internal` is never exposed. It is logged: at Error for a 5xx (`credo: server error`), at debug level for a 4xx (`credo: client error`), so a client error adds no line at the default log level.
 
 Builders are copy-on-write, so shared sentinels such as `ErrNotFound` remain safe. `NewHTTPError` accepts zero or one code. A missing code comes from the frozen HTTP-status table. Codes use lowercase snake case. Invalid constructor input is programmer misuse and panics; request recovery converts it to a safe generic 500.
 
-Hard-coded text works without enabling i18n because an explicit missing key is also its literal fallback:
+Hard-coded text is a message, not a key:
 
 ```go
 return credo.NewHTTPError(http.StatusNotFound, "record_not_found").
-    WithMessageKey("Kayıt bulunamadı")
+    WithMessage("Kayıt bulunamadı")
 ```
+
+A key is never rendered as text. A key your catalogs do not define falls back to the built-in message for the code, then to the status text, and with `WithDebug` the pipeline logs a warning naming the key, the code and the route. `testutil.CheckMessageKeys` fails a test for each key in your sources that the catalogs do not define:
+
+```go
+func TestMessageKeys(t *testing.T) {
+    testutil.CheckMessageKeys(t, "locales", ".")
+}
+```
+
+Declare key constants with their type, `const KeyEmailTaken credo.MessageKey = "user.email_exists"`, so the check finds them.
+
+## Domain errors
+
+A service reports what went wrong in its own terms, without naming an HTTP status: it returns a `fault.Error`, a kind and a code of its own.
+
+```go
+var ErrDomainTaken = fault.New(fault.KindAlreadyExists, "tenant_domain_taken")
+
+func (s *TenantService) Create(ctx context.Context, in CreateTenant) (*Tenant, error) {
+    t, err := s.repo.Insert(ctx, in)
+    if errors.Is(err, store.ErrAlreadyExists) {
+        return nil, ErrDomainTaken.WithDetails(map[string]any{"domain": in.Domain}).WithInternal(err)
+    }
+    return t, err
+}
+```
+
+The handler returns it unchanged:
+
+```go
+func (h *TenantHandler) Create(c *credo.Context) error {
+    var in CreateTenant
+    if err := c.Request().BindBody(&in); err != nil {
+        return err
+    }
+    t, err := h.svc.Create(c.Context(), in)
+    if err != nil {
+        return err
+    }
+    return c.Response().JSON(http.StatusCreated, t)
+}
+```
+
+The response is 409, the status of `KindAlreadyExists`, with the code `tenant_domain_taken` and the details; the store error is the internal cause, logged and never rendered. `fault.New(kind)` without a code takes the kind as the code, and a store error the service returns unwrapped does the same: `already_exists`, `serialization` or `deadlock` rather than one `conflict` for every 409, so a client tells a duplicate from a failure a retry may clear. `WithDetails` and `WithInternal` return copies, so `errors.Is(err, ErrDomainTaken)` still matches.
+
+Keep `HTTPError` for what only the HTTP boundary knows: a status the handler chooses, a message, a header-driven rejection.
 
 ## Validation and bind failures
 
@@ -105,7 +152,7 @@ renders 409 `tenant_conflict`, not 422. The wrapped errors stay in `ErrorInfo.Er
 
 Credo does not invent `errors.`, `v.`, or `bind.` prefixes. An exact message key is selected in this order:
 
-1. explicit `HTTPError.MessageKey` or `ValidationError.MessageKey`;
+1. explicit `HTTPError.MessageKey` or `ValidationError.MessageKey` (an `HTTPError` with a `Message` is not looked up);
 2. `I18nConfig.ResolveMessageKey`;
 3. bare code/reason.
 
@@ -124,7 +171,7 @@ ResolveMessageKey: func(ref credo.MessageRef) string {
 },
 ```
 
-The resolver-produced key is never leaked after a miss. HTTP errors fall back to built-in/HTTP status text, validation to the rule message, and bind errors to their safe decode message. See the [localization guide](localization.md).
+No key is ever rendered after a miss, explicit or resolved. HTTP errors fall back to built-in/HTTP status text, validation to the rule message, and bind errors to their safe decode message. See the [localization guide](localization.md).
 
 ## Custom ErrorRenderer
 

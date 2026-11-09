@@ -202,15 +202,13 @@ func (s *OrderService) Create(ctx context.Context, input Order) error {
         return fmt.Errorf("check email: %w", err)
     }
     if exists {
-        return credo.NewHTTPError(http.StatusConflict, "email_exists")
+        return fault.New(fault.KindAlreadyExists, "email_exists") // 409, code email_exists
     }
     // ...
 }
 ```
 
-> **Pending v0.26.0 (R2):** until R2 ships, `fault.Error` does not exist, and a service that needs a code of its own returns an `HTTPError`, as the example above does.
-
-A service names a code of its own without naming a transport status: it returns a `fault.Error`, such as `fault.New(fault.KindAlreadyExists, "email_exists")`, whose kind gives the status ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)). `HTTPError` stays for what only the HTTP boundary knows.
+A service names a code of its own without naming a transport status: it returns a `fault.Error`, as the example does, whose kind gives the status ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)). `HTTPError` stays for what only the HTTP boundary knows.
 
 ### Conditional Validation
 
@@ -334,12 +332,16 @@ An explicitly constructed `HTTPError` wins over validation errors wrapped inside
 ```go
 // validation/errors.go
 
+// MessageKey is a catalog key, never rendered as text; the root aliases it
+// as credo.MessageKey.
+type MessageKey string
+
 // ValidationError represents a single field validation failure.
 type ValidationError struct {
     Field      string         `json:"field"`
     Code       string         `json:"code"`
     Message    string         `json:"message"`
-    MessageKey string         `json:"-"`              // optional exact presentation key
+    MessageKey MessageKey     `json:"-"`              // optional catalog key
     Params     map[string]any `json:"params,omitempty"` // sent to clients
 }
 
@@ -357,11 +359,9 @@ func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error
 func (e Errors) Unwrap() []error
 ```
 
-> **Pending v0.26.0 (R2):** until R2 ships, `MessageKey` is a plain `string`, as the block above shows, and a key the catalog lacks renders as the message.
-
 `ValidationError.MessageKey` has the type `MessageKey`, declared in this package, `type MessageKey string`, and aliased by the root as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type and a key computed as a `string` converts. A key is a catalog key, never text: a key the catalog lacks falls back to the rule's message, never to the key ([i18n spec](i18n.md#message-key-resolution)).
 
-`Code` is the stable rule identity. `MessageKey`, when present, is an exact presentation key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Errors.Unwrap` returns the individual failures, which lets `errors.As` find a single `*ValidationError` through any wrapping.
+`Code` is the stable rule identity. `MessageKey`, when present, is an exact catalog key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Errors.Unwrap` returns the individual failures, which lets `errors.As` find a single `*ValidationError` through any wrapping.
 
 > **Current until v0.26.0 (R6):** the next paragraph, under which the `json` tag names the field whatever the binding source.
 

@@ -128,9 +128,7 @@ A value of another type does not compile, so the guard never meets a contract it
 
 Register `ContractGuard` on the routed tier, `app.Middleware`, or on a group or a route: it reads the matched route's meta. Registered with `PreRouting`, it sees no route on any request; it answers 500 through the error pipeline and logs one Error naming its registration before routing and the remedy, `app.Middleware`, a group or a route.
 
-> **Pending v0.26.0 (R2):** until R2 ships, the guard's rejections pass literal text as a message key, and a missing scope is named in the key.
-
-Each rejection renders its code's built-in message, with its value in `Details`: the rejected content type, which is client input, the header or query parameter the route requires, and the missing scope. No rejection carries a message key of its own ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
+Each rejection renders its code's built-in message, with its value in `Details`: the rejected content type (`content_type`), which is client input, the header (`header`) or query parameter (`query`) the route requires, and the missing scope (`scope`). The API-version and body-size rejections carry no details. No rejection carries a message key of its own ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
 
 A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
 
@@ -161,8 +159,6 @@ app.PreRouting(middleware.CORS(middleware.CORSConfig{
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
 **`Timeout` opens a scope.** `Timeout` sets its deadline with one call, `c.Within(ctx, next)`, on the request's own goroutine: the inner chain reads the deadline through `c.Context()` and `c.Request().Context()`, the head reverts to the outer one when `next` returns or panics, and a value set inside — a user, a tenant — is applied again over the outer head, so it reaches the outer layers, the error rendering and the observers. A middleware that assigns `c.Request().Request` a request with a new context no longer moves the head; in debug mode the Context logs one warning per route for it.
-
-> **Pending v0.26.0 (R2):** until R2 ships, `Timeout` sets a message key of its own on its 503.
 
 `Timeout`'s 503 carries the code `request_timeout` and no message key, so `I18nConfig.ResolveMessageKey` maps it as every other code ([i18n spec](i18n.md#message-key-resolution)).
 

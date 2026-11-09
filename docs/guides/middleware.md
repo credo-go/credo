@@ -823,7 +823,7 @@ api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
         func(c *credo.Context) error {
             if c.Request().Header.Get("X-Tenant-Id") == "" {
                 return credo.NewHTTPError(http.StatusBadRequest, "tenant_required").
-                    WithMessageKey("tenant required")
+                    WithMessage("tenant required")
             }
             return nil
         },

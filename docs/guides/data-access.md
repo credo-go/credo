@@ -219,7 +219,7 @@ Terminal methods (`Scan`, `Count`, `Exists`, `Exec`) translate driver errors int
 var user User
 err := db.Select(&user).Where("id = ?", id).Scan(ctx)
 if errors.Is(err, store.ErrNotFound) {
-    return nil, credo.NewHTTPError(http.StatusNotFound, credo.MsgKeyNotFound)
+    return nil, credo.NewHTTPError(http.StatusNotFound)
 }
 ```
 
@@ -321,7 +321,7 @@ func (r *UserRepo) FindByID(ctx context.Context, id int64) (User, error) {
 ```go
 user, err := r.db.Select().Where("email = ?", email).One[User](ctx)
 if errors.Is(err, store.ErrNotFound) {
-    return credo.NewHTTPError(http.StatusNotFound, credo.MsgKeyNotFound)
+    return credo.NewHTTPError(http.StatusNotFound)
 }
 ```
 
