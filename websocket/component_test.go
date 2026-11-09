@@ -17,7 +17,7 @@ func TestServerBoundWithIngressIsOneComponent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(app.NewInfra("websocket"))
+	server := New()
 	app.ProvideValue(server, credo.Ingress())
 	defer func() {
 		r := recover()
@@ -95,7 +95,7 @@ func TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry(t *testing.
 		b = &broadcaster{registry: r}
 		return b
 	})
-	server := New(app.NewInfra("websocket"))
+	server := New()
 	app.Manage(server, credo.Ingress())
 	connected := make(chan struct{})
 	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {

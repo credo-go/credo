@@ -21,7 +21,7 @@ func TestNewServerErrorLog(t *testing.T) {
 	got := buf.String()
 	for _, want := range []string{
 		"level=ERROR",
-		"component=net/http",
+		"module=net/http",
 		`msg="http: TLS handshake error from 127.0.0.1:5555: bad record"`,
 	} {
 		if !strings.Contains(got, want) {

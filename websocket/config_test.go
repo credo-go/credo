@@ -108,7 +108,7 @@ func TestResolveConfigValidationAndDefensiveOwnership(t *testing.T) {
 
 	origins := []string{"https://APP.example.com"}
 	protocols := []string{"events.v1", "events.v2"}
-	server := New(credo.Infra{}, Config{AllowedOrigins: origins, Subprotocols: protocols})
+	server := New(Config{AllowedOrigins: origins, Subprotocols: protocols})
 	origins[0] = "https://evil.example"
 	protocols[0] = "mutated"
 	if server.config.origins.allowed[0].Origin.Host != "app.example.com" {
@@ -129,8 +129,8 @@ func TestNewPanicsForStartupMisuse(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{name: "multiple configs", fn: func() { New(credo.Infra{}, Config{}, Config{}) }},
-		{name: "invalid config", fn: func() { New(credo.Infra{}, Config{ReadLimit: -1}) }},
+		{name: "multiple configs", fn: func() { New(Config{}, Config{}) }},
+		{name: "invalid config", fn: func() { New(Config{ReadLimit: -1}) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,7 +146,7 @@ func TestNewPanicsForStartupMisuse(t *testing.T) {
 
 func TestNewRegistersNothing(t *testing.T) {
 	app := mustNewWebSocketApp(t)
-	server := New(app.NewInfra("websocket"))
+	server := New()
 	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
 	// Without a registration the App has no start work: it serves at once,
 	// and the server refuses the upgrade with the named error.
@@ -163,7 +163,7 @@ func TestNewRegistersNothing(t *testing.T) {
 }
 
 func TestServerStartOpensAdmissionOnce(t *testing.T) {
-	server := New(credo.Infra{})
+	server := New()
 	if err := server.acquireToken(); !errors.Is(err, errNotStarted) {
 		t.Fatalf("acquireToken() before Start = %v, want errNotStarted", err)
 	}
@@ -195,7 +195,7 @@ func TestNotStartedErrorNamesTheRegistration(t *testing.T) {
 
 func TestServerStartedThroughTheAppDrainsInTheIngressTier(t *testing.T) {
 	app := mustNewWebSocketApp(t)
-	server := New(app.NewInfra("websocket"))
+	server := New()
 	app.Manage(server, credo.Ingress())
 	var drainRan bool
 	app.OnStop(func(context.Context) error {
@@ -241,7 +241,7 @@ func TestConfigPanicMentionsInvalidField(t *testing.T) {
 			t.Fatalf("panic = %v, want ReadLimit diagnostic", recovered)
 		}
 	}()
-	New(credo.Infra{}, Config{ReadLimit: -1})
+	New(Config{ReadLimit: -1})
 }
 
 func FuzzResolveConfig(f *testing.F) {

@@ -220,7 +220,7 @@ func (c *Container) launch(
 	td.attempts[a.key] = a
 	c.mu.Unlock()
 	go func() {
-		err := invokeTeardown(ctx, a.holder, a.kind, value, PhaseShutdown)
+		err := invokeTeardown(c.callCtx(ctx, a.holder), a.holder, a.kind, value, PhaseShutdown)
 		duration := time.Since(a.started)
 		a.handoff.mu.Lock()
 		defer a.handoff.mu.Unlock()
@@ -702,7 +702,7 @@ func (c *Container) lateCleanup(u *Unit, t reflect.Type, state entryState, value
 
 	ctx, cancel := context.WithTimeout(context.Background(), lateCleanupBudget)
 	defer cancel()
-	out, completed := boundedTeardown(ctx, u, kind, value, logger)
+	out, completed := boundedTeardown(c.callCtx(ctx, u), u, kind, value, logger)
 	switch {
 	case !completed:
 		logger.LogAttrs(context.Background(), slog.LevelError,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ type connectionRecord struct {
 // with [New] and registered as an ingress component of the App.
 type Server struct {
 	config resolvedConfig
+	// logger is the server's own logger, settled by Start: Config.Logger,
+	// else the App's logger scoped to the server's component, else the
+	// framework default; always with module=websocket. Written under mu
+	// before admission opens.
 	logger *slog.Logger
 
 	mu           sync.Mutex
@@ -67,19 +72,20 @@ type Server struct {
 
 // New validates and freezes a WebSocket configuration and returns the server.
 // It accepts zero or one Config value, copies its slices defensively, and
-// performs no I/O; it registers nothing. The server's logger is infra's
-// logger with module=websocket added.
+// performs no I/O; it registers nothing.
 //
 // The application registers the server as an ingress component, so it
 // starts with the App and drains beside the HTTP drain, before the internal
 // components its handlers use:
 //
-//	ws := websocket.New(app.NewInfra("websocket"), cfg)
+//	ws := websocket.New(cfg)
 //	app.Manage(ws, credo.Ingress())
 //
 // or binds it with credo.Ingress() when controllers take it as a dependency.
-// Invalid configuration or more than one Config panics as startup misuse.
-func New(infra credo.Infra, cfg ...Config) *Server {
+// The server logs to [Config.Logger] when it is set and otherwise to the
+// App's logger, which Start receives. Invalid configuration or more than
+// one Config panics as startup misuse.
+func New(cfg ...Config) *Server {
 	if len(cfg) > 1 {
 		panic("credo/websocket: New accepts at most one Config")
 	}
@@ -91,13 +97,8 @@ func New(infra credo.Infra, cfg ...Config) *Server {
 	if err != nil {
 		panic(fmt.Sprintf("credo/websocket: invalid Config: %v", err))
 	}
-	logger := infra.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return &Server{
 		config:      resolved,
-		logger:      logger.With("module", "websocket"),
 		connections: make(map[*connectionRecord]struct{}),
 		changed:     make(chan struct{}),
 		drainDone:   make(chan struct{}),
@@ -106,13 +107,16 @@ func New(infra credo.Infra, cfg ...Config) *Server {
 
 // Start opens admission. The App calls it in the start phase; until it has
 // run, the handler refuses every upgrade with an error naming the missing
-// registration. Start does no I/O and starts no goroutine; it fails once
-// the server has been started or shut down.
-func (s *Server) Start(context.Context) error {
+// registration. Start settles the server's logger — [Config.Logger], else
+// the App's logger that ctx carries ([credo.InfraFrom]), else the framework
+// default — does no I/O and starts no goroutine; it fails once the server
+// has been started or shut down.
+func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch s.state {
 	case serverNew:
+		s.logger = moduleLogger(s.config.logger, credo.InfraFrom(ctx).Logger)
 		s.state = serverOpen
 		return nil
 	case serverOpen:
@@ -120,6 +124,19 @@ func (s *Server) Start(context.Context) error {
 	default:
 		return errors.New("credo/websocket: Server.Start: the server is shut down")
 	}
+}
+
+// moduleLogger applies the framework module rule: the module's own logger,
+// else the App's, else the framework default, each with module=websocket.
+func moduleLogger(own, app *slog.Logger) *slog.Logger {
+	logger := own
+	if logger == nil {
+		logger = app
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	return logger.With("module", "websocket")
 }
 
 // Shutdown stops admitting connections, sends active peers a Going Away close,

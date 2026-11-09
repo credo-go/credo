@@ -236,8 +236,8 @@ func (app *App) MustGetConfig[T any](key string) T {
 	return v
 }
 
-// WithLogger sets the application-level logger. Each service receives a
-// scoped copy with a "service" attribute. If not set, the framework default
+// WithLogger sets the application-level logger. Each component receives a
+// scoped copy with a "component" attribute. If not set, the framework default
 // logger (a text handler writing to stderr) is used, so access and request
 // logging are on by default without any configuration.
 func WithLogger(l *slog.Logger) Option {
@@ -489,7 +489,7 @@ func buildServer(cfg serverConfig, handler http.Handler, logger *slog.Logger, co
 }
 
 // newServerErrorLog bridges net/http's own diagnostics into the application
-// logger at Error level, tagged component=net/http. Without it the standard
+// logger at Error level, tagged module=net/http. Without it the standard
 // library writes them to the log package's default output (stderr,
 // unstructured), where structured-logging consumers never see them.
 //
@@ -510,7 +510,7 @@ func newServerErrorLog(logger *slog.Logger) *log.Logger {
 	if logger == nil {
 		logger = defaultLogger
 	}
-	return slog.NewLogLogger(logger.With("component", "net/http").Handler(), slog.LevelError)
+	return slog.NewLogLogger(logger.With("module", "net/http").Handler(), slog.LevelError)
 }
 
 // defaultReadHeaderTimeout is applied when the server config does not specify

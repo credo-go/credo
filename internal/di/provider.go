@@ -18,8 +18,9 @@ type provider interface {
 	deps() []reflect.Type
 
 	// build produces the instance. stack is the resolution stack that
-	// parameter resolution extends for cycle detection.
-	build(c *Container, stack []reflect.Type) (any, error)
+	// parameter resolution extends for cycle detection; name is the unit's
+	// name, which the framework parameters it produces are scoped to.
+	build(c *Container, stack []reflect.Type, name string) (any, error)
 }
 
 // constructorProvider calls a reflected constructor (Provide) with parameters
@@ -35,12 +36,10 @@ func (p *constructorProvider) deps() []reflect.Type { return p.paramTypes }
 
 // build resolves every parameter before invoking the constructor, so a
 // closing container rejects the dependent constructor without running it.
-func (p *constructorProvider) build(c *Container, stack []reflect.Type) (any, error) {
-	serviceName := deriveServiceName(p.resultType)
-
+func (p *constructorProvider) build(c *Container, stack []reflect.Type, name string) (any, error) {
 	params := make([]reflect.Value, len(p.paramTypes))
 	for i, pt := range p.paramTypes {
-		param, err := c.resolveParamValue(pt, serviceName, stack)
+		param, err := c.resolveParamValue(pt, name, stack)
 		if err != nil {
 			return nil, fmt.Errorf("di: constructing %s: param %d (%s): %w", p.resultType, i, pt, err)
 		}
@@ -65,4 +64,4 @@ type valueProvider struct {
 
 func (valueProvider) deps() []reflect.Type { return nil }
 
-func (p valueProvider) build(*Container, []reflect.Type) (any, error) { return p.value, nil }
+func (p valueProvider) build(*Container, []reflect.Type, string) (any, error) { return p.value, nil }

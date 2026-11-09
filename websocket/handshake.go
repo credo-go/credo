@@ -121,7 +121,7 @@ func (s *Server) acceptConn(ctx *credo.Context, selectedProtocol string) (*conne
 			route = matched.GetPattern()
 		}
 	}
-	logger := ctx.Logger().With("connection_id", connectionID)
+	logger := s.connectionLogger(ctx, connectionID)
 
 	request := ctx.Request().Request.Clone(ctx.Context())
 	request.Header = ctx.Request().Header.Clone()
@@ -305,4 +305,19 @@ func (w *handshakeWriter) publishErrorHeaders() {
 			destination[http.CanonicalHeaderKey(key)] = slices.Clone(values)
 		}
 	}
+}
+
+// connectionLogger returns the logger of one connection. With Config.Logger
+// it is the server's logger with connection_id and, when the request ID
+// feature is active, request_id; otherwise it is the request's logger, with
+// its own attributes, plus module=websocket and connection_id.
+func (s *Server) connectionLogger(ctx *credo.Context, connectionID string) *slog.Logger {
+	if s.config.logger == nil {
+		return ctx.Logger().With("module", "websocket", "connection_id", connectionID)
+	}
+	logger := s.logger.With("connection_id", connectionID)
+	if id := ctx.RequestID(); id != "" {
+		logger = logger.With("request_id", id)
+	}
+	return logger
 }

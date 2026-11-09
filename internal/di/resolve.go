@@ -201,7 +201,11 @@ func (c *Container) resolveEntry(
 	entry.buildStart = time.Now()
 	c.mu.Unlock()
 
-	value, err := c.build(reg, targetType, stack)
+	name := targetType.String()
+	if u != nil {
+		name = u.Name()
+	}
+	value, err := c.build(reg, targetType, stack, name)
 	var token any
 	var hasToken bool
 	// refused marks a built value the container refuses: the constructor
@@ -271,7 +275,9 @@ func (c *Container) deliverLocked(targetType reflect.Type, entry *singletonEntry
 // build runs the provider with panic recovery. A constructor panic becomes a
 // terminal *PanicError carrying the original value and the stack of this
 // goroutine; it is never retried.
-func (c *Container) build(reg provider, targetType reflect.Type, stack []reflect.Type) (value any, err error) {
+func (c *Container) build(
+	reg provider, targetType reflect.Type, stack []reflect.Type, name string,
+) (value any, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			value = nil
@@ -283,7 +289,7 @@ func (c *Container) build(reg provider, targetType reflect.Type, stack []reflect
 			}
 		}
 	}()
-	return reg.build(c, append(stack, targetType))
+	return reg.build(c, append(stack, targetType), name)
 }
 
 // notifyBuildDone wakes the shutdown pass without blocking the completing
@@ -295,9 +301,9 @@ func (c *Container) notifyBuildDone() {
 	}
 }
 
-func (c *Container) resolveParamValue(paramType reflect.Type, serviceName string, stack []reflect.Type) (reflect.Value, error) {
+func (c *Container) resolveParamValue(paramType reflect.Type, name string, stack []reflect.Type) (reflect.Value, error) {
 	if fp, ok := c.frameworkProvider(paramType); ok {
-		return reflect.ValueOf(fp.Factory(serviceName)), nil
+		return reflect.ValueOf(fp.Factory(name)), nil
 	}
 
 	if isInterfaceSlice(paramType) && !c.hasDirectRegistration(paramType) {

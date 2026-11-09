@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 
 	coderwebsocket "github.com/coder/websocket"
@@ -36,6 +37,14 @@ type Config struct {
 	// InsecureSkipOriginCheck disables browser origin authorization. It is a
 	// CSRF footgun and cannot be combined with AllowedOrigins.
 	InsecureSkipOriginCheck bool
+	// Logger is the server's own logger. When set, every log the server
+	// writes goes to it, with module=websocket; each connection log carries
+	// connection_id, and request_id when the request ID feature is active.
+	// When nil, connection logs go to the request's logger, with
+	// module=websocket and connection_id beside the request's attributes,
+	// and the server's own records go to the App's logger, scoped to the
+	// server's component.
+	Logger *slog.Logger
 }
 
 type resolvedConfig struct {
@@ -45,6 +54,7 @@ type resolvedConfig struct {
 	readLimit            int64
 	compressionMode      coderwebsocket.CompressionMode
 	compressionThreshold int
+	logger               *slog.Logger
 }
 
 // resolveServerConfig validates a Config and fills in defaults. It is the
@@ -99,6 +109,7 @@ func resolveServerConfig(cfg Config) (resolvedConfig, error) {
 		readLimit:            readLimit,
 		compressionMode:      compressionMode,
 		compressionThreshold: compressionThreshold,
+		logger:               cfg.Logger,
 	}, nil
 }
 
