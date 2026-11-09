@@ -603,7 +603,7 @@ An `i18n.dir` value is explicit configuration: a missing or message-empty direct
 
 User-read via `rc.Unmarshal("auth.<strategy>", &cfg)`.
 
-**JWT** — `auth.jwt`:
+**JWT** — `auth.jwt`, for `jwtauth.Config` (`auth/jwtauth`):
 
 | Key              | Type   | Default           | Description          |
 | ---------------- | ------ | ----------------- | -------------------- |
