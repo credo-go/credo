@@ -40,7 +40,7 @@ Global middleware (`app.GlobalMiddleware`) runs on every request, group middlewa
 
 **Global middleware runs even on 404/405.** This ensures CORS and security headers are always present. Framework features cover 404/405 as well.
 
-**Group middleware membership is resolved at compile time from the group parent chain** — the same model `LookupMeta` uses for metadata. Middleware added to a group after a route or sub-group was registered still applies to it; registration order within a group affects execution order only, never membership.
+**Group middleware membership is resolved at compile time from the group parent chain** — the same model the route's meta snapshot uses. Middleware added to a group after a route or sub-group was registered still applies to it; registration order within a group affects execution order only, never membership.
 
 ### The routed tier
 
@@ -88,13 +88,7 @@ Because the chains are built once, middleware, route and feature registration cl
 
 ### Meta-Driven Behavior
 
-> **Current until v0.26.0 (R4):** the next paragraph's string-keyed `SetMeta` and `LookupMeta`'s walk at request time.
-
-Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta`, and the middleware reads it with `LookupMeta`, which walks the parent chain (route → group → app) for inherited values. The [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) shows the pattern and lists the framework's own meta keys.
-
-> **Pending v0.26.0 (R4):** until R4 ships, meta is keyed by string, read with `LookupMeta`, and walked at request time.
-
-Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta` and a typed key made by `credo.NewKey[T]`, and the middleware reads the typed value with `GetMeta`. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — so a request-time lookup walks nothing, and registration order never decides membership. The framework's middleware meta keys and `MetaAccessLog` are typed keys; the [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) lists them.
+Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta` and a typed key made by `credo.NewKey[T]`, and the middleware reads the typed value with `GetMeta`. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — so a request-time lookup walks nothing, and registration order never decides membership. The framework's meta keys are typed keys — the middleware's `Key[[]string]` and `Key[int64]` keys, `MetaAccessLog` and `MetaRawResponse` as `Key[bool]` — so a value of the wrong type does not compile; the [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) lists them.
 
 ### Config Struct Pattern
 
@@ -102,9 +96,7 @@ Configurable middleware takes `cfg ...Config`: no argument selects the defaults,
 
 ### Stdlib Adapter
 
-`WrapStdMiddleware` adapts `func(http.Handler) http.Handler` middleware to the Credo chain. It is kept as a deliberate ecosystem escape hatch — the large stdlib-middleware corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the override-friendly boundaries of [ADR-001 goal 3](001-framework-identity-and-goals.md#3-integrated-first-explicit-boundaries) and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), the renderer, or the error pipeline. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`. The [middleware spec](../specs/middleware.md#stdlib-adapter) defines how the adapter records a response the middleware writes itself.
-
-> **Pending v0.26.0 (R4):** until R4 ships, the adapter hands the stdlib middleware the embedded request, a value set through `ctx.Set` is not visible through `r.Context()`, and a context the middleware derives does not reach `ctx.Context()`.
+`WrapStdMiddleware` adapts `func(http.Handler) http.Handler` middleware to the Credo chain. It is kept as a deliberate ecosystem escape hatch — the large stdlib-middleware corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the override-friendly boundaries of [ADR-001 goal 3](001-framework-identity-and-goals.md#3-integrated-first-explicit-boundaries) and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`c.GetUser[T]`), the renderer, or the error pipeline. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`. The [middleware spec](../specs/middleware.md#stdlib-adapter) defines how the adapter records a response the middleware writes itself.
 
 The adapter hands the request on through `Request.Std()`, whose context is the Context's current head, and takes the context of the request the stdlib middleware passes on as the head of the inner chain: the middleware reads a value set before it with `Value` and its key, and a deadline or span it adds is visible to the handler through `c.Context()`. Its contract excludes a middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. The user's key stays unexported, so the principal stays out of the adapter's reach.
 
@@ -141,7 +133,7 @@ Custom renderer installation is optional even though core error rendering always
 
 ### Access-Log Filtering
 
-Access logging is explicit (`app.UseAccessLog(cfg...)`) and observes the final response outside recovery and centralized error rendering, so it is the one authoritative access record. `AccessLogConfig.Logger` selects a dedicated sink without giving up that boundary; the logger is not derived from `ctx.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
+Access logging is explicit (`app.UseAccessLog(cfg...)`) and observes the final response outside recovery and centralized error rendering, so it is the one authoritative access record. `AccessLogConfig.Logger` selects a dedicated sink without giving up that boundary; the logger is not derived from `c.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
 
 > **Current until v0.26.0 (R12):** the next paragraph's last sentence, under which `ResultFilter` reads a pooled Context and an `AccessLogEntry`; it takes the `*Exchange` ([Observers of the final response](#observers-of-the-final-response)).
 
@@ -228,8 +220,5 @@ Activating or parameterizing middleware from configuration files — framework-r
 
 - Global MW on 404/405 runs full chain even for unmatched routes
 
-> **Current until v0.26.0 (R4):** the next item; meta keys are typed.
-
-- Meta values are `any` — no compile-time type safety
 - Precompilation means no dynamic middleware addition at runtime
 - Framework features cannot be scoped per group or route; route-specific policy is expressed through their selection knobs or ordinary middleware

@@ -26,8 +26,8 @@ func main() {
     app.UseRequestID()
     app.UseAccessLog()
 
-    app.GET("/", func(ctx *credo.Context) error {
-        return ctx.Response().Text(200, "ok")
+    app.GET("/", func(c *credo.Context) error {
+        return c.Response().Text(200, "ok")
     })
 
     if err := app.Run(); err != nil {
@@ -50,11 +50,11 @@ A middleware receives the next handler in the chain, wraps it, and returns a new
 
 ```go
 func Timer(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
+    return func(c *credo.Context) error {
         start := time.Now()
-        err := next(ctx)
+        err := next(c)
         duration := time.Since(start)
-        ctx.Response().Header().Set("X-Duration", duration.String())
+        c.Response().Header().Set("X-Duration", duration.String())
         return err
     }
 }
@@ -150,14 +150,14 @@ A middleware is any function matching `func(credo.Handler) credo.Handler`:
 
 ```go
 func RequestTimer(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
+    return func(c *credo.Context) error {
         start := time.Now()
 
-        err := next(ctx)
+        err := next(c)
 
         duration := time.Since(start)
         slog.Info("request duration",
-            "path", ctx.Request().URL.Path,
+            "path", c.Request().URL.Path,
             "duration", duration,
         )
 
@@ -174,12 +174,12 @@ Run code before the handler executes:
 
 ```go
 func RequireJSON(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        ct := ctx.Request().Header.Get("Content-Type")
+    return func(c *credo.Context) error {
+        ct := c.Request().Header.Get("Content-Type")
         if ct != "" && !strings.HasPrefix(ct, "application/json") {
             return credo.NewHTTPError(415)
         }
-        return next(ctx)
+        return next(c)
     }
 }
 ```
@@ -190,15 +190,15 @@ Run code after the handler executes:
 
 ```go
 func AddServerHeader(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        err := next(ctx)
-        ctx.Response().Header().Set("X-Powered-By", "Credo")
+    return func(c *credo.Context) error {
+        err := next(c)
+        c.Response().Header().Set("X-Powered-By", "Credo")
         return err
     }
 }
 ```
 
-If handlers can call `ctx.Rewrite()`, remember that group and route middleware may run again for the rewritten route. Use `ctx.IsRewriting()` when your post-handler logic should skip side effects during an internal forward.
+If handlers can call `c.Rewrite()`, remember that group and route middleware may run again for the rewritten route. Use `c.IsRewriting()` when your post-handler logic should skip side effects during an internal forward.
 
 ### Short-Circuiting
 
@@ -206,11 +206,11 @@ Return an error or write a response without calling `next` to stop the chain:
 
 ```go
 func MaintenanceMode(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
+    return func(c *credo.Context) error {
         if isUnderMaintenance() {
             return credo.NewHTTPError(503)
         }
-        return next(ctx)
+        return next(c)
     }
 }
 ```
@@ -221,11 +221,11 @@ Middleware can inspect and transform errors returned by downstream handlers:
 
 ```go
 func ErrorEnricher(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        err := next(ctx)
+    return func(c *credo.Context) error {
+        err := next(c)
         if err != nil {
             slog.Error("handler failed",
-                "path", ctx.Request().URL.Path,
+                "path", c.Request().URL.Path,
                 "error", err,
             )
         }
@@ -299,7 +299,7 @@ app, _ := credo.New(credo.WithRecoverConfig(credo.RecoverConfig{
 
 ### RequestID
 
-`app.UseRequestID()` gives every request an ID: the incoming `X-Request-Id` value when it is present, within the length limit and made of safe characters, otherwise a freshly generated 128-bit cryptographic ID. The ID is echoed on the response header, readable through `ctx.RequestID()` and attached as `request_id` to the request-scoped logger the first time `ctx.Logger()` is used, so handler logs, the access log and panic records carry it automatically.
+`app.UseRequestID()` gives every request an ID: the incoming `X-Request-Id` value when it is present, within the length limit and made of safe characters, otherwise a freshly generated 128-bit cryptographic ID. The ID is echoed on the response header, readable through `c.RequestID()` and attached as `request_id` to the request-scoped logger the first time `c.Logger()` is used, so handler logs, the access log and panic records carry it automatically.
 
 ```go
 app.UseRequestID(credo.RequestIDConfig{
@@ -308,10 +308,10 @@ app.UseRequestID(credo.RequestIDConfig{
     Generator: func() string { return uuid.NewString() },
 })
 
-func myHandler(ctx *credo.Context) error {
-    reqID := ctx.RequestID() // "" when UseRequestID is not installed
-    ctx.Logger().Info("processing")
-    return ctx.Response().JSON(200, map[string]string{"id": reqID})
+func myHandler(c *credo.Context) error {
+    reqID := c.RequestID() // "" when UseRequestID is not installed
+    c.Logger().Info("processing")
+    return c.Response().JSON(200, map[string]string{"id": reqID})
 }
 ```
 
@@ -325,15 +325,15 @@ RequestID and AccessLog are independent: access records carry an empty `request_
 app.UseAccessLog(credo.AccessLogConfig{
     Logger:   accessLogger,    // nil: the request-scoped logger
     MinLevel: slog.LevelInfo,  // nil: Info
-    Skipper:  func(ctx *credo.Context) bool { return ctx.Request().URL.Path == "/metrics" },
-    ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
+    Skipper:  func(c *credo.Context) bool { return c.Request().URL.Path == "/metrics" },
+    ResultFilter: func(c *credo.Context, entry credo.AccessLogEntry) bool {
         return entry.Status >= 400 || entry.Duration >= time.Second
     },
 })
 ```
 
 - **Skipper** runs before routing, so decide from request-level data (path, headers). Return `true` to skip.
-- **Route or group meta.** Set `credo.MetaAccessLog` to `false` on a route, or on a whole group through inheritance; a route-level value overrides its group's, so you can silence a group and keep one route loud. Only a bool `false` silences; any other value is ignored. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
+- **Route or group meta.** Set `credo.MetaAccessLog`, a `credo.Key[bool]`, to `false` on a route, or on a whole group through inheritance; a route-level value overrides its group's, so you can silence a group and keep one route loud. Health probes (`/health`, `/ready`) are silent by default — re-enable them with `HealthConfig{LogRequests: true}`.
 
 ```go
 app.GET("/metrics", metricsHandler).SetMeta(credo.MetaAccessLog, false)
@@ -344,18 +344,18 @@ internal.GET("/audit", auditHandler).SetMeta(credo.MetaAccessLog, true) // ...ex
 ```
 
 - **MinLevel** admits records at or above a level without changing their actual level: `slog.LevelWarn` keeps 4xx and 5xx, `slog.LevelError` keeps 5xx only. Pass a concurrency-safe `*slog.LevelVar` to change the threshold at runtime; it is read once per eligible request.
-- **ResultFilter** runs after the final response, after meta silencing and the MinLevel check. Return `true` to emit. MinLevel and ResultFilter intersect: `Warn` would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `ctx.Response()`, for status, bytes and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state. A filter that panics is logged as a framework error and the record is skipped; the response is unaffected. Request/result combinations work as expected:
+- **ResultFilter** runs after the final response, after meta silencing and the MinLevel check. Return `true` to emit. MinLevel and ResultFilter intersect: `Warn` would reject successful requests before the filter, so the filter cannot restore slow `2xx` entries. Use `entry`, not `c.Response()`, for status, bytes and duration. The Context is pooled and the callback may run concurrently; do not retain it and synchronize mutable state. A filter that panics is logged as a framework error and the record is skipped; the response is unaffected. Request/result combinations work as expected:
 
 ```go
-ResultFilter: func(ctx *credo.Context, entry credo.AccessLogEntry) bool {
-    user, ok := ctx.GetUser[User]()
+ResultFilter: func(c *credo.Context, entry credo.AccessLogEntry) bool {
+    user, ok := c.GetUser[User]()
     return (ok && user.TenantID == "audit-all") || entry.Status >= 400
 },
 ```
 
-- **Logger** routes access records to a dedicated sink, for example a JSON logger on its own file. It receives the standard fields and an explicit request ID, but it is not derived from `ctx.Logger()` and therefore does not inherit attributes added with `ctx.AddLogAttrs` or `ctx.SetLogger`.
+- **Logger** routes access records to a dedicated sink, for example a JSON logger on its own file. It receives the standard fields and an explicit request ID, but it is not derived from `c.Logger()` and therefore does not inherit attributes added with `c.AddLogAttrs` or `c.SetLogger`.
 
-When the final served path differs from the client path because of `middleware.Rewrite()` or `ctx.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
+When the final served path differs from the client path because of `middleware.Rewrite()` or `c.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
 
 Turning access logging off does not silence anything else: panic records, server errors, lifecycle, health and application logs keep flowing through their normal loggers and levels.
 
@@ -370,8 +370,8 @@ app.UseCompress(credo.CompressConfig{
         "application/json",
         "text/*", // wildcard supported
     },
-    Skipper: func(ctx *credo.Context) bool { // evaluated once on the original request
-        return strings.HasPrefix(ctx.Request().URL.Path, "/stream/")
+    Skipper: func(c *credo.Context) bool { // evaluated once on the original request
+        return strings.HasPrefix(c.Request().URL.Path, "/stream/")
     },
 })
 ```
@@ -383,8 +383,8 @@ Credo never decompresses request bodies on its own: a body sent with `Content-En
 ```go
 app.UseDecompress(credo.DecompressConfig{
     MaxBytes: 16 << 20, // bound on the *decompressed* body; default 4 MiB
-    Skipper: func(ctx *credo.Context) bool { // keep raw bodies for signed webhooks
-        return strings.HasPrefix(ctx.Request().URL.Path, "/webhooks/")
+    Skipper: func(c *credo.Context) bool { // keep raw bodies for signed webhooks
+        return strings.HasPrefix(c.Request().URL.Path, "/webhooks/")
     },
 })
 ```
@@ -407,12 +407,12 @@ app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middle
 
 // Skip rewriting for a health probe path:
 app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{
-    Skipper: func(ctx *credo.Context) bool { return ctx.Request().URL.Path == "/healthz" },
+    Skipper: func(c *credo.Context) bool { return c.Request().URL.Path == "/healthz" },
     Rules:   []middleware.RewriteRule{{From: "/v1/{path...}", To: "/api/v1/{path}"}},
 }))
 ```
 
-`Rules` must not be empty and every `From` pattern must parse; both are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `ctx.Rewrite()` instead.
+`Rules` must not be empty and every `From` pattern must parse; both are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `c.Rewrite()` instead.
 
 See the [Routing Guide](routing.md) for host routing, rewrite patterns, `OriginalPath()`, and rewrite-specific middleware caveats.
 
@@ -451,7 +451,7 @@ For dynamic origin validation:
 
 ```go
 middleware.CORS(middleware.CORSConfig{
-    AllowOriginFunc: func(ctx *credo.Context, origin string) (string, bool, error) {
+    AllowOriginFunc: func(c *credo.Context, origin string) (string, bool, error) {
         allowed, err := db.IsAllowedOrigin(origin)
         if err != nil {
             return "", false, err
@@ -488,8 +488,8 @@ Rejections return a centralized 403 error envelope; the detector's reason is log
 
 ```go
 middleware.CSRF(middleware.CSRFConfig{
-    ErrorHandler: func(ctx *credo.Context, err error) error {
-        ctx.Logger().Warn("csrf rejected", "origin", ctx.Request().Header.Get("Origin"))
+    ErrorHandler: func(c *credo.Context, err error) error {
+        c.Logger().Warn("csrf rejected", "origin", c.Request().Header.Get("Origin"))
         return credo.NewHTTPError(http.StatusForbidden)
     },
 })
@@ -525,7 +525,7 @@ app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
 
 #### HSTS (Strict-Transport-Security)
 
-HSTS tells browsers to use HTTPS for all future requests to your domain. It is **opt-in and never enabled automatically** — the framework sets the header only when you give `HSTSMaxAge` a non-zero value. The header is also sent **only over HTTPS** (guarded by `ctx.Request().Scheme()`), per RFC 6797; it is never emitted on a plaintext response.
+HSTS tells browsers to use HTTPS for all future requests to your domain. It is **opt-in and never enabled automatically** — the framework sets the header only when you give `HSTSMaxAge` a non-zero value. The header is also sent **only over HTTPS** (guarded by `c.Request().Scheme()`), per RFC 6797; it is never emitted on a plaintext response.
 
 ```go
 // Enable HSTS only — set HSTSMaxAge; the other Secure headers stay off because
@@ -540,7 +540,7 @@ To actually serve HTTPS, configure TLS at construction (`credo.WithTLSFiles` / `
 
 > **`HSTSPreloadEnabled` is a near-permanent commitment.** Submitting your domain to the browser preload list (which requires `max-age` ≥ 1 year, `includeSubDomains`, and the `preload` token) is slow and painful to undo — every subdomain becomes HTTPS-only in shipped browsers. Only enable it once every subdomain can serve HTTPS and you understand the rollback cost.
 
-When running behind a reverse proxy, configure trusted proxy CIDRs on the app so `Secure` can use `ctx.Request().Scheme()` safely:
+When running behind a reverse proxy, configure trusted proxy CIDRs on the app so `Secure` can use `c.Request().Scheme()` safely:
 
 ```go
 app, err := credo.New(credo.WithTrustedProxies("10.0.0.0/8"))
@@ -548,7 +548,7 @@ app, err := credo.New(credo.WithTrustedProxies("10.0.0.0/8"))
 
 ### Timeout
 
-Sets a deadline on the request context. If the handler does not complete in time, `context.DeadlineExceeded` is returned and converted to a 503 response.
+Sets a deadline on the request's context for the rest of the chain, through `c.Within`: the handler observes it through `c.Context()`, and a value set inside — the user, for one — stays the request's value after the timeout scope returns. If the handler does not complete in time, `context.DeadlineExceeded` is returned and converted to a 503 response.
 
 ```go
 api := app.Group("/api")
@@ -560,7 +560,7 @@ Custom error handling:
 ```go
 api.Middleware(middleware.Timeout(middleware.TimeoutConfig{
     Timeout: 10 * time.Second,
-    ErrorHandler: func(ctx *credo.Context, err error) error {
+    ErrorHandler: func(c *credo.Context, err error) error {
         if errors.Is(err, context.DeadlineExceeded) {
             return credo.NewHTTPError(504)
         }
@@ -586,7 +586,7 @@ app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
 }))
 ```
 
-Behind a reverse proxy, configure trusted proxy CIDRs on the app. The default rate-limit key uses `ctx.Request().RealIP()`:
+Behind a reverse proxy, configure trusted proxy CIDRs on the app. The default rate-limit key uses `c.Request().RealIP()`:
 
 ```go
 app, err := credo.New(credo.WithTrustedProxies("10.0.0.0/8"))
@@ -603,8 +603,8 @@ Custom key function (e.g., rate limit by API key):
 app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
     Tokens:   1000,
     Interval: time.Hour,
-    KeyFunc: func(ctx *credo.Context) (string, error) {
-        key := ctx.Request().Header.Get("X-API-Key")
+    KeyFunc: func(c *credo.Context) (string, error) {
+        key := c.Request().Header.Get("X-API-Key")
         if key == "" {
             return "", errors.New("missing API key")
         }
@@ -640,16 +640,16 @@ Common patterns:
 ```go
 // Skip middleware for health checks
 middleware.Timeout(middleware.TimeoutConfig{
-    Skipper: func(ctx *credo.Context) bool {
-        return ctx.Request().URL.Path == "/health"
+    Skipper: func(c *credo.Context) bool {
+        return c.Request().URL.Path == "/health"
     },
     Timeout: 5 * time.Second,
 })
 
 // Skip middleware for internal IPs
 ratelimit.Middleware(ratelimit.Config{
-    Skipper: func(ctx *credo.Context) bool {
-        return strings.HasPrefix(ctx.Request().RealIP(), "10.")
+    Skipper: func(c *credo.Context) bool {
+        return strings.HasPrefix(c.Request().RealIP(), "10.")
     },
     Tokens: 60,
 })
@@ -686,24 +686,27 @@ func MyMiddleware(cfg ...MyConfig) credo.Middleware {
 
 ## Meta-Driven Middleware
 
-Middleware can read Route Meta to change behavior per-route declaratively, eliminating hardcoded path checks.
+Middleware can read Route Meta to change behavior per-route declaratively, eliminating hardcoded path checks. A meta key is a typed key made with `credo.NewKey[T]`, the key type of request values too: `SetMeta` with a value of another type does not compile, and `GetMeta` returns the typed value with no assertion.
 
 ```go
+// Permission is the route meta key RequirePermission reads.
+var Permission = credo.NewKey[string]("permission")
+
 // Middleware reads Meta instead of maintaining a path list
 func RequirePermission(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        perm, ok := ctx.Route().LookupMeta("permission")
+    return func(c *credo.Context) error {
+        perm, ok := c.Route().GetMeta(Permission)
         if !ok {
             // No permission required for this route.
-            return next(ctx)
+            return next(c)
         }
 
-        user, ok := ctx.GetUser[*User]()
-        if !ok || user == nil || !user.HasPermission(perm.(string)) {
+        user, ok := c.GetUser[*User]()
+        if !ok || user == nil || !user.HasPermission(perm) {
             return credo.ErrForbidden
         }
 
-        return next(ctx)
+        return next(c)
     }
 }
 
@@ -712,49 +715,50 @@ api := app.Group("/api")
 api.Middleware(RequirePermission)
 
 // Declare permissions on individual routes
-api.GET("/users", listUsers).SetMeta("permission", "users.read")
-api.POST("/users", createUser).SetMeta("permission", "users.write")
-api.GET("/public/status", statusCheck)  // no "permission" Meta -> skipped
+api.GET("/users", listUsers).SetMeta(Permission, "users.read")
+api.POST("/users", createUser).SetMeta(Permission, "users.write")
+api.GET("/public/status", statusCheck) // no Permission meta -> skipped
 ```
 
 Group-level Meta is inherited by child routes and can be overridden:
 
 ```go
-api := app.Group("/api")
-api.SetMeta("auth", true)
+var RequireAuth = credo.NewKey[bool]("auth")
 
-api.GET("/users", listUsers)                           // auth = true (inherited)
-api.GET("/health", healthCheck).SetMeta("auth", false) // auth = false (override)
+api := app.Group("/api").SetMeta(RequireAuth, true)
+
+api.GET("/users", listUsers)                               // auth = true (inherited)
+api.GET("/health", healthCheck).SetMeta(RequireAuth, false) // auth = false (override)
 ```
 
-`LookupMeta` traverses the parent chain: route -> group -> parent group -> root. The first match wins.
+`GetMeta` returns the route's own value, then its groups' from the innermost out, then the App's; the first match wins. It reads a snapshot taken when the route's chain is compiled, so a request walks nothing, and a value set on a group after its routes were registered still reaches them. A route's `RemoveMeta` drops its own value so that its group's shows through. The key's name is for diagnostics: two `NewKey` calls with one name are two keys, so the keys of two packages never collide.
 
 ### ContractGuard — Built-in Contract Enforcement
 
 `middleware.ContractGuard` is a ready-made meta-driven middleware: instead of writing per-route checks by hand, you declare request contracts as Route Meta and one middleware enforces them. It covers the most common gates:
 
-| Meta key | Value type | Enforced as |
+| Meta key | Key type | Enforced as |
 | --- | --- | --- |
-| `middleware.MetaAccept` | `string` / `[]string` | Content-Type allow-list -> 415 (missing header passes unless `RequireContentType`) |
-| `middleware.MetaMaxBody` | `int` / `int32` / `int64` | body byte cap (`MaxBytesReader`) -> 413 |
-| `middleware.MetaRequireHeaders` | `string` / `[]string` | required headers -> 400 |
-| `middleware.MetaRequireQuery` | `string` / `[]string` | required query params -> 400 |
-| `middleware.MetaAPIVersion` | `string` / `[]string` | API version (header or `version` param) -> 400 |
-| `middleware.MetaScope` | `string` / `[]string` | scope check -> 403 (needs `ScopeChecker`) |
+| `middleware.MetaAccept` | `credo.Key[[]string]` | Content-Type allow-list -> 415 (missing header passes unless `RequireContentType`) |
+| `middleware.MetaMaxBody` | `credo.Key[int64]` | body byte cap (`MaxBytesReader`) -> 413 |
+| `middleware.MetaRequireHeaders` | `credo.Key[[]string]` | required headers -> 400 |
+| `middleware.MetaRequireQuery` | `credo.Key[[]string]` | required query params -> 400 |
+| `middleware.MetaAPIVersion` | `credo.Key[[]string]` | API version (header or `version` param) -> 400 |
+| `middleware.MetaScope` | `credo.Key[[]string]` | scope check -> 403 (needs `ScopeChecker`) |
 
 ```go
 api := app.Group("/api")
 api.Middleware(middleware.ContractGuard())
 
 api.POST("/users", createUser).
-    SetMeta(middleware.MetaAccept, "application/json").
-    SetMeta(middleware.MetaMaxBody, int64(1<<20)).            // 1 MiB, on top of the global limit
+    SetMeta(middleware.MetaAccept, []string{"application/json"}).
+    SetMeta(middleware.MetaMaxBody, 1<<20). // 1 MiB, on top of the global limit
     SetMeta(middleware.MetaRequireHeaders, []string{"X-Request-Id"})
 ```
 
 Register ContractGuard at the **group or route level**, not via `app.GlobalMiddleware`. It reads matched-route metadata, and a route is only matched _after_ app-global middleware runs — group and route middleware run after the match, so the route (and its inherited group meta) is available there. Applied globally it degrades to a safe no-op rather than an error.
 
-The value types in the table are matched exactly (a `[]any` whose elements are all strings is read like a `[]string`). If you model scopes or header names as a named type, convert where you declare the contract:
+The keys are typed, so a value of another type does not compile and the guard never meets a contract it cannot read. If you model scopes or header names as a named type, convert where you declare the contract:
 
 ```go
 type Scope string
@@ -762,16 +766,10 @@ type Scope string
 const ScopeReports Scope = "reports:read"
 
 api.GET("/reports", listReports).
-    SetMeta(middleware.MetaScope, string(ScopeReports)) // not ScopeReports itself
+    SetMeta(middleware.MetaScope, []string{string(ScopeReports)}) // a []Scope does not compile
 ```
 
-A declared contract is never skipped. When the guard meets a value it cannot read — a named string type, `nil`, a `[]any` holding a non-string element, a `uint` or a `"1MB"` string as `MetaMaxBody` — it answers the request with a generic 500 instead of calling the handler. The response says nothing about the contract; the `credo: server error` log record (`status=500`) names the route, the key, the value's Go type and the fix in its `error` attribute:
-
-```text
-contractguard: route GET /api/reports: meta "scope" has unsupported type main.Scope; use string or []string (convert a named type, e.g. string(v); a []any must hold only strings); request denied
-```
-
-A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `"*/*"` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted — and `nil` lifts nothing: it is rejected like any other unreadable value.
+A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` (or a `nil` list) for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `RemoveMeta` on the route drops its own value and lets the group's contract apply again.
 
 By default a request with **no** `Content-Type` header passes the `MetaAccept` contract — there may be nothing to police. For a JSON API where every body must be labelled, set `ContractConfig.RequireContentType: true`: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected, so the switch arms a declared contract rather than adding a new one:
 
@@ -783,17 +781,17 @@ api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
 
 `MetaMaxBody` complements the global body limit (`WithMaxBodyBytes`) as defense in depth: the global cap protects every route, while the per-route contract can tighten (or, with a negative value, lift) it for a specific endpoint.
 
-Because authenticated users are stored generically (`ctx.GetUser[T]`), ContractGuard cannot inspect scopes on its own. Supply a `ScopeChecker` to bridge to your auth model; a route that declares `MetaScope` without a configured checker is denied (a declared scope is never silently bypassed). Use `CustomChecks` for contracts beyond the built-ins:
+Because authenticated users are stored generically (`c.GetUser[T]`), ContractGuard cannot inspect scopes on its own. Supply a `ScopeChecker` to bridge to your auth model; a route that declares `MetaScope` without a configured checker is denied (a declared scope is never silently bypassed). Use `CustomChecks` for contracts beyond the built-ins:
 
 ```go
 api.Middleware(middleware.ContractGuard(middleware.ContractConfig{
-    ScopeChecker: func(ctx *credo.Context, scope string) bool {
-        u, ok := ctx.GetUser[*User]()
+    ScopeChecker: func(c *credo.Context, scope string) bool {
+        u, ok := c.GetUser[*User]()
         return ok && u.HasScope(scope)
     },
     CustomChecks: []func(*credo.Context) error{
-        func(ctx *credo.Context) error {
-            if ctx.Request().Header.Get("X-Tenant-Id") == "" {
+        func(c *credo.Context) error {
+            if c.Request().Header.Get("X-Tenant-Id") == "" {
                 return credo.NewHTTPError(http.StatusBadRequest, "tenant_required").
                     WithMessageKey("tenant required")
             }
@@ -829,11 +827,11 @@ import "github.com/some/middleware/pkg"
 app.GlobalMiddleware(credo.WrapStdMiddleware(pkg.SomeMiddleware))
 ```
 
-The adapter handles request and response writer synchronization between the stdlib and Credo worlds.
+The adapter hands the middleware the standard request through `c.Request().Std()`, whose context carries the values set before it, and takes the context of the request the middleware passes on as the request's context for the rest of the chain: a span or deadline the middleware adds is visible to the handler through `c.Context()`, and a value set inside — a user, a tenant — is still there for the layers outside it once the middleware returns. A middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does, is outside the adapter's contract: the Context is not safe for concurrent use.
 
-Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`ctx.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's centralized error envelope (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
+Adapted middleware is second-class by design: it receives only `*http.Request` and `r.Context()`, never `*credo.Context`. It cannot read route Meta or the typed principal (`c.GetUser[T]`), and if it short-circuits by writing to the `ResponseWriter` directly, that response bypasses Credo's centralized error envelope (responses produced by calling `next` still flow back through it). When a middleware needs the authenticated principal or the error pipeline, write it as a native `func(Handler) Handler` instead — that is the first-class path.
 
-A response the adapted middleware writes by itself is still observed. Once the middleware returns, `ctx.Response().Status()`, `Size()` and `Committed()` report it, and the access log records its status and size. An error that a middleware further out returns afterwards is logged, not written on top of the response that was already sent. The same holds for a connection the middleware hijacks: `ctx.Response().Hijacked()` reports it and nothing more is written to it.
+A response the adapted middleware writes by itself is still observed. Once the middleware returns, `c.Response().Status()`, `Size()` and `Committed()` report it, and the access log records its status and size. An error that a middleware further out returns afterwards is logged, not written on top of the response that was already sent. The same holds for a connection the middleware hijacks: `c.Response().Hijacked()` reports it and nothing more is written to it.
 
 ---
 
@@ -899,25 +897,25 @@ app.Mount("/legacy", legacyApp)
 
 Custom status handlers registered via `app.StatusHandler()` execute when no route matches (404) or no route serves the method (405); those are the only two codes it accepts, and any other code panics at registration. In this context:
 
-- `ctx.Route()` is **nil** — there is no matched route.
+- `c.Route()` is **nil** — there is no matched route.
 - Group and route middleware have not run (no route to attach them to).
 - Only framework features and global middleware are active.
 
-Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers. Use `ctx.HasRoute()` to guard against nil before calling `ctx.Route()` methods — this prevents nil pointer panics in middleware that may run on both matched and unmatched request paths:
+Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers. Use `c.HasRoute()` to guard against nil before calling `c.Route()` methods — this prevents nil pointer panics in middleware that may run on both matched and unmatched request paths:
 
 ```go
 // Safe: guard with HasRoute before accessing Route methods.
 func RequirePermission(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        if !ctx.HasRoute() {
-            return next(ctx) // no route matched (404/405 path)
+    return func(c *credo.Context) error {
+        if !c.HasRoute() {
+            return next(c) // no route matched (404/405 path)
         }
-        perm, ok := ctx.Route().LookupMeta("permission")
+        perm, ok := c.Route().GetMeta(Permission)
         if !ok {
-            return next(ctx)
+            return next(c)
         }
-        // ... check permission ...
-        return next(ctx)
+        // ... check perm ...
+        return next(c)
     }
 }
 ```
@@ -978,20 +976,23 @@ import (
     "github.com/credo-go/credo/middleware/ratelimit"
 )
 
+// Public marks a route that needs no API key.
+var Public = credo.NewKey[bool]("public")
+
 // Custom middleware: require a valid API key.
 func APIKeyAuth(apiKey string) credo.Middleware {
     return func(next credo.Handler) credo.Handler {
-        return func(ctx *credo.Context) error {
+        return func(c *credo.Context) error {
             // Skip if route opts out via Meta.
-            if val, ok := ctx.Route().LookupMeta("public"); ok && val.(bool) {
-                return next(ctx)
+            if public, _ := c.Route().GetMeta(Public); public {
+                return next(c)
             }
 
-            key := ctx.Request().Header.Get("X-API-Key")
+            key := c.Request().Header.Get("X-API-Key")
             if key != apiKey {
                 return credo.ErrUnauthorized
             }
-            return next(ctx)
+            return next(c)
         }
     }
 }
@@ -1034,19 +1035,19 @@ func main() {
     )
 
     // Public route: no API key required (Meta override)
-    api.GET("/status", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(http.StatusOK, map[string]string{
+    api.GET("/status", func(c *credo.Context) error {
+        return c.Response().JSON(http.StatusOK, map[string]string{
             "status": "ok",
         })
-    }).SetMeta("public", true)
+    }).SetMeta(Public, true)
 
     // Protected routes
-    api.GET("/users", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(http.StatusOK, []string{"alice", "bob"})
+    api.GET("/users", func(c *credo.Context) error {
+        return c.Response().JSON(http.StatusOK, []string{"alice", "bob"})
     })
 
-    api.POST("/users", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(http.StatusCreated, map[string]string{
+    api.POST("/users", func(c *credo.Context) error {
+        return c.Response().JSON(http.StatusCreated, map[string]string{
             "message": "created",
         })
     })

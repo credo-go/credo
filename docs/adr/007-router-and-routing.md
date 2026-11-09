@@ -8,6 +8,8 @@ An all-in-one framework (ADR-001) needs a fast, feature-rich router. Go's stdlib
 
 Credo adapts (ADR-002) Chi's radix tree for fast path matching, and Goyave's routing features (route meta, named routes, status handlers, fluent API) for developer experience.
 
+Route meta carries policy that middleware reads, so a reading that fails must not fail open. A key that binds no type makes every reader assert the value's type, and a wrong assertion skips the check it guards; two packages that choose one key name would share one value; and a lookup that walks route, group and App costs every request what a snapshot taken once does not. A group's meta should chain as a route's does, and a route should be able to drop its own value so that its group's shows through.
+
 A router also decides which spellings of a URL are one route. The path a client sends is percent-encoded: routing must not invent a segment the client never sent, must not let two spellings of one URI reach different routes, and must hand a captured value to the handler, to a nested app and to URL generation without decoding it twice or losing it.
 
 Host routing and URL rewrite: [ADR-018](018-host-routing-and-rewrite.md).
@@ -54,25 +56,15 @@ The router is not a separate package — it lives in the root `credo` package. T
 
 ### Route Registration
 
-HTTP method shortcuts on `App` and `Group` (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `QUERY`, `HEAD`, `OPTIONS`) return a `*Route`, so a name, metadata and route middleware chain onto the registration: `app.GET("/users/{id}", h).Name("user.show").SetMeta("auth", true)`. Signatures: [router spec](../specs/router.md#api-surface).
+HTTP method shortcuts on `App` and `Group` (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `QUERY`, `HEAD`, `OPTIONS`) return a `*Route`, so a name, metadata and route middleware chain onto the registration: `app.GET("/users/{id}", h).Name("user.show").SetMeta(requireAuth, true)`, where `requireAuth` is a `credo.Key[bool]`. Signatures: [router spec](../specs/router.md#api-surface).
 
 ### Route Meta
 
-> **Current until v0.26.0 (R4):** the next paragraph describes string-keyed, untyped meta read with `LookupMeta`.
+Routes, groups and the App carry metadata under typed keys, the same `credo.NewKey[T]` keys that carry request values ([ADR-008](008-context-design.md)): `route.SetMeta(key, v)` checks the value's type at compile time, and `c.Route().GetMeta(key)` returns `(T, bool)` — the route's value, then its groups', then the App's — as `GetUser` does. The name of a key is for diagnostics; identity is the key value, so the meta keys of two packages never collide. A route inherits its group's policy and overrides it locally, and middleware reads policy declaratively from the matched route instead of keeping path allow-lists ([router spec](../specs/router.md#route-meta-system-goyave-inspired), [ADR-010](010-middleware-architecture.md#meta-driven-behavior)). The framework's meta keys are typed: `MetaAccept`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` are `credo.Key[[]string]`, `MetaMaxBody` is a `credo.Key[int64]`, and `credo.MetaAccessLog` and `credo.MetaRawResponse` are `credo.Key[bool]`, so a value of the wrong type does not compile.
 
-Routes, groups and the App carry key-value metadata (`SetMeta`). `Route.LookupMeta(key)` returns `(any, bool)` and walks the parent chain (route → group → app), so a route inherits its group's policy and overrides it locally. Middleware reads policy declaratively from the matched route instead of keeping path allow-lists ([router spec](../specs/router.md#route-meta-system-goyave-inspired), [ADR-010](010-middleware-architecture.md#meta-driven-behavior)).
+A route's meta is resolved into a per-route snapshot when its chain is compiled, so a request-time lookup does not walk route, group and App. Registration order never decides membership: a value set on a group after its routes were registered reaches them. Introspection reads the same resolution: `RouteInfo.GetMeta(key)` returns a route's resolved value, and a `RouteInfo` enumerates no meta, since a key is reachable only through the value that declares it.
 
-> **Pending v0.26.0 (R4):** not implemented yet; meta takes a string key and an `any` value, `LookupMeta` walks route → group → App on each request, `Group.SetMeta` returns nothing, and `Route` and `StaticRoute` have no `RemoveMeta`. The next four paragraphs state the typed meta.
-
-Routes, groups and the App carry metadata under typed keys, the same `credo.NewKey[T]` keys that carry request values ([ADR-008](008-context-design.md)): `route.SetMeta(key, v)` checks the value's type at compile time, and `c.Route().GetMeta(key)` returns `(T, bool)` — the route's value, then its groups', then the App's — as `GetUser` does. The name of a key is for diagnostics; identity is the key value, so the meta keys of two packages never collide. A route inherits its group's policy and overrides it locally, and middleware reads policy declaratively from the matched route instead of keeping path allow-lists ([router spec](../specs/router.md#route-meta-system-goyave-inspired), [ADR-010](010-middleware-architecture.md#meta-driven-behavior)). The middleware meta constants (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`) and `credo.MetaAccessLog` are typed meta keys.
-
-A route's meta is resolved into a per-route snapshot when its chain is compiled, so a request-time lookup does not walk route, group and App. Registration order never decides membership: a value set on a group after its routes were registered reaches them.
-
-The meta methods share one shape. `Route.SetMeta`, `StaticRoute.SetMeta` and `Group.SetMeta` return their receiver, so a group's meta chains as a route's does, and `Route` and `StaticRoute` have the `RemoveMeta` that `App` and `Group` have, which removes the route's own value so that its group's shows through. The key rejections — string keys with a type argument at each call, methods on the key beside the Context's — are [ADR-008](008-context-design.md)'s.
-
-**Problem.** Meta is a `map[string]any`. A key binds no type, so every reader asserts the value's type, and a wrong assertion fails open: a named string type in a meta value makes `ContractGuard` skip its check. Two packages that choose one name share one value. Every request-time lookup walks route, group and App. `Group.SetMeta` returns nothing, so a group's meta does not chain, and a route cannot remove its own value to let its group's show through.
-
-**Removes.** `SetMeta(name, v)` and `RemoveMeta(name)` with a string key, `LookupMeta(name)` and its `(any, bool)` result, and the `map[string]any` meta; the middleware meta constants and `credo.MetaAccessLog` keep their names and change type.
+The meta methods share one shape. `SetMeta` and `RemoveMeta` on `Route`, `StaticRoute` and `Group` return their receiver, so a group's meta chains as a route's does; `App.SetMeta` and `App.RemoveMeta` return nothing. `Route` and `StaticRoute` have the `RemoveMeta` that `App` and `Group` have, which removes the route's own value so that its group's shows through. The key rejections — string keys with a type argument at each call, methods on the key beside the Context's — are [ADR-008](008-context-design.md)'s.
 
 ### Named Routes & URL Generation
 
@@ -118,17 +110,18 @@ The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix
 
 > **Current until v0.26.0 (R14):** the next paragraph names `Walk` and `WalkRoutes` beside `app.Routes()`.
 
-`app.Routes()`, `Walk` and `WalkRoutes` report the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)). `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and carries the resolved `Meta` (route ← group ← app) as a shallow copy whose values are read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out, and `Walk` skips mounts because its method+pattern callback cannot represent them. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
+`app.Routes()`, `Walk` and `WalkRoutes` report the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)). `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and reads the resolved meta (route ← group ← app) through `RouteInfo.GetMeta(key)`, whose values are shared with the route and read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out, and `Walk` skips mounts because its method+pattern callback cannot represent them. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
 
 > **Pending v0.26.0 (R14):** the next paragraph replaces the paragraph above when the `Walk` family goes; until then `Walk` and `WalkRoutes` report the same surface through a callback.
 
-`app.Routes()` reports the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)), every route and every mount. `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and carries the resolved meta (route ← group ← app) as a shallow copy whose values are read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out; a caller that wants routes only skips the mounts in its loop. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
+`app.Routes()` reports the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)), every route and every mount. `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and reads the resolved meta (route ← group ← app) through `RouteInfo.GetMeta(key)`, whose values are shared with the route and read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out; a caller that wants routes only skips the mounts in its loop. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
 
 **Alternatives considered:**
 
 - _Snapshot meta at registration_: rejected — `Name`/`SetMeta` are chained after the registration call returns, so a registration-time snapshot would miss them; deriving `RouteInfo` live from the store is the only correct option.
 - _A separate `LocalMeta` field (route-only, unresolved)_: deferred (YAGNI) — consumers need the resolved view (route ← group ← app); a local-only view can be added later if a use case appears.
-- _Deep-cloning `Meta` values_: rejected — selectively cloning `[]string`/map values gives false confidence for custom types (`[]Permission`, `*T`) that cannot be cloned generically, so `Meta` is a shallow copy with a documented read-only-by-convention contract.
+- _Deep-cloning meta values_: rejected — selectively cloning `[]string`/map values gives false confidence for custom types (`[]Permission`, `*T`) that cannot be cloned generically, so a value `GetMeta` returns is shared, with a documented read-only-by-convention contract.
+- _Enumerating a route's meta_: rejected — a typed key is reachable only through the value that declares it, so an enumeration would hand out values without their types; a catalog reads the keys it knows with `GetMeta`.
 - _Registration-order output_: rejected — `compile()` sorts host entries in place, so registration order is not stable across the first request; a total-order sort guarantees deterministic output regardless of compile state.
 
 ### One Introspection Call, No Exposed Routing State
@@ -159,14 +152,13 @@ When no route matches but the path with its trailing slash toggled does, the rou
 **Positive:**
 
 - Fast radix tree matching (adapted from battle-tested Chi)
-- Route Meta enables declarative middleware configuration
+- Route Meta enables declarative middleware configuration, under typed keys the compiler checks
 - Named routes + URL generation prevent hardcoded paths
 - Fluent API is readable and chainable
 - HEAD auto-handling follows HTTP spec
-- Live route introspection (`Routes`/`WalkRoutes`) exposes `Name`, resolved `Meta`, and mounts — enabling drift-free route/permission catalogs
+- Live route introspection (`Routes`/`WalkRoutes`) exposes `Name`, the resolved meta through `GetMeta`, and mounts — enabling drift-free route/permission catalogs
 
 **Negative:**
 
 - Adapted radix tree requires maintenance when upstream Chi evolves
-- Route Meta is `map[string]any` — no compile-time key/type safety
 - Compile-once means no dynamic route addition at runtime

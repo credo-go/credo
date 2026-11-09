@@ -30,65 +30,14 @@ All registration methods return `*Route` for chaining.
 
 ### Route Fluent Methods
 
-> **Current until v0.26.0 (R4):** the next block's `SetMeta` takes a string key and an `any` value.
-
-```go
-route.Name(name string) *Route           // Named route for URL generation
-route.SetMeta(key string, val any) *Route // Attach metadata
-route.Middleware(m ...Middleware) *Route   // Per-route middleware
-```
-
-> **Pending v0.26.0 (R4):** the next block replaces the block above when typed meta ships.
-
 ```go
 route.Name(name string) *Route        // Named route for URL generation
 route.SetMeta(key Key[T], val T) *Route // Attach metadata under a typed key
+route.RemoveMeta(key Key[T]) *Route     // Remove the route's own value
 route.Middleware(m ...Middleware) *Route // Per-route middleware
 ```
 
 ### Route Meta System (Goyave-inspired)
-
-> **Current until v0.26.0 (R4):** from here to the API block below, this section describes string-keyed meta read with `LookupMeta`.
-
-Key/value metadata attached to routes, groups and the App. `LookupMeta` searches the parent chain recursively until a value is found.
-
-```go
-// Group-level — inherited by all child routes
-api := app.Group("/api")
-api.SetMeta("auth", true)
-api.Middleware(authMiddleware)
-
-// Route-level — overrides parent
-api.GET("/public", handler).SetMeta("auth", false)
-
-// Middleware reads meta declaratively
-func authMiddleware(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        if val, ok := ctx.Route().LookupMeta("auth"); ok && val == true {
-            // authenticate
-        }
-        return next(ctx)
-    }
-}
-```
-
-`ctx.Route()` is set once dispatch has matched a route, so it is nil in global middleware before `next` runs, on the router's own 404/405 and in status handlers. Register meta-reading middleware on a group or route, as above, or guard the call with `ctx.HasRoute()`.
-
-**API:**
-
-```go
-// On App / Group — set at registration time
-app.SetMeta(key string, val any)
-app.RemoveMeta(key string)
-group.SetMeta(key string, val any)
-group.RemoveMeta(key string)
-
-// On Route — set at registration time, read at request time
-route.SetMeta(key string, val any) *Route
-route.LookupMeta(key string) (any, bool) // traverses route → group → parent chain
-```
-
-> **Pending v0.26.0 (R4):** not implemented yet; until typed meta ships, meta is string-keyed as above. The next paragraphs, their example and the API block state the typed meta.
 
 Metadata attached to routes, groups and the App under typed keys. One key type, `credo.Key[T]`, built with `credo.NewKey[T](name)`, serves request values ([context spec](context.md)) and route meta. The name is for diagnostics; identity is the key value, so two `NewKey` calls with one name are two keys, and the meta keys of two packages never collide. A zero `Key[T]`, declared without `NewKey`, panics in every method that takes a key, naming the method. `GetMeta` returns the route's own value, then its groups' from the innermost out, then the App's.
 
@@ -113,7 +62,7 @@ func authMiddleware(next credo.Handler) credo.Handler {
 }
 ```
 
-`SetMeta` with a value of another type than the key's does not compile. A route's meta is resolved into a per-route snapshot when its chain is compiled at preparation, so a request-time `GetMeta` does not walk route, group and App; the snapshot matches that walk, and registration order never decides membership — a value set on a group after its routes were registered reaches them. `RemoveMeta` on a route removes the route's own value, so its group's shows through. The middleware meta constants (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`) and `credo.MetaAccessLog` are typed meta keys ([middleware spec](middleware.md)).
+`SetMeta` with a value of another type than the key's does not compile. A route's meta is resolved into a per-route snapshot when its chain is compiled at preparation, so a request-time `GetMeta` does not walk route, group and App; the snapshot matches that walk, and registration order never decides membership — a value set on a group after its routes were registered reaches them. `RemoveMeta` on a route removes the route's own value, so its group's shows through. The framework's meta keys are typed: `MetaAccept`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` are `credo.Key[[]string]`, `MetaMaxBody` is a `credo.Key[int64]`, and `credo.MetaAccessLog` and `credo.MetaRawResponse` are `credo.Key[bool]` ([middleware spec](middleware.md#framework-meta-keys)).
 
 **API:** the methods are generic, and `T` is inferred from the key.
 
@@ -125,16 +74,19 @@ func NewKey[T any](name string) Key[T]
 app.SetMeta(key Key[T], val T)
 app.RemoveMeta(key Key[T])
 group.SetMeta(key Key[T], val T) *Group
-group.RemoveMeta(key Key[T])
+group.RemoveMeta(key Key[T]) *Group
 
 // On Route and StaticRoute — set at registration time
 route.SetMeta(key Key[T], val T) *Route
-route.RemoveMeta(key Key[T])     // removes the route's own value
+route.RemoveMeta(key Key[T]) *Route // removes the route's own value
 static.SetMeta(key Key[T], val T) *StaticRoute
-static.RemoveMeta(key Key[T])
+static.RemoveMeta(key Key[T]) *StaticRoute
 
 // On Route — read at request time, from the route's snapshot
 route.GetMeta(key Key[T]) (T, bool) // route, then its groups, then the App
+
+// On RouteInfo — read from introspection, the same resolution; a mount reports none
+info.GetMeta(key Key[T]) (T, bool)
 ```
 
 > **Pending v0.26.0 (R13):** not implemented yet; the App has no routed tier, so meta-reading middleware is registered on a group or a route, as the paragraph after the first example says, and a mounted request has no route.
@@ -165,8 +117,8 @@ App-level customizable handlers for the router's own 404 and 405 answers.
 
 ```go
 // Custom 404 handler
-app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
-    return ctx.Response().JSON(404, map[string]string{"error": "not found"})
+app.StatusHandler(http.StatusNotFound, func(c *credo.Context) error {
+    return c.Response().JSON(404, map[string]string{"error": "not found"})
 })
 ```
 
@@ -218,7 +170,7 @@ wildcard := app.Host("*.acme.io")
 **Semantics:**
 
 - Host matching runs before path lookup. A matched host selects its dedicated mux; otherwise the default mux handles the request.
-- Host params are exposed alongside path params: `ctx.Request().RouteParam(name)` for single values, `ctx.Request().RouteParams()` for the full map.
+- Host params are exposed alongside path params: `c.Request().RouteParam(name)` for single values, `c.Request().RouteParams()` for the full map.
 - Host and path params share one namespace. Registering a route whose path params collide with host param names panics at registration time.
 - A host parameter has a name, used once in the pattern, and a regex-constrained one has a constraint: `{}.example.com`, `{:[a-z]+}.example.com`, `{a}.{a}.example.com` and `{org:}.example.com` panic at registration time.
 - Host patterns are normalized to lowercase and may not include a port. Incoming request hosts are normalized by lowercasing, stripping any port, and trimming a trailing dot.
@@ -257,7 +209,7 @@ app.Mount("/admin", adminMux)
 
 **Path handoff:** the child receives the remainder below the prefix spelled for the wire — `URL.Path` decoded and `URL.RawPath` set when the two spellings differ — so `/admin/a%2Fb` reaches the child as `/a%2Fb` (`EscapedPath`), never as `/a/b`, `/admin/a%3Bb` as `/a%3Bb` (a reserved escape is handed on as spelled), a prefix such as `/été` is matched in its canonical form, and a nested Credo app decodes its own captures once. The prefix followed by a slash is the child's root, like the bare prefix: `/admin/` and `/admin` both reach the child as `/`. A root mount (`Mount("/", h)`) forwards the whole path space, the bare `/` included.
 
-**Parametric prefix:** the prefix may carry parameters — `Mount("/t/{tenant}", h)`, several of them, also within one segment (`/v/{major}.{minor}`), and regex-constrained ones. The child receives the path below the matched prefix, handed over as under a static prefix (`/t/acme/x/y` → `/x/y`, `/t/acme/a%2Fb` → `/a%2Fb`, the exact prefix `/t/acme` and `/t/acme/` → `/`), and each parameter of the prefix as a stdlib path value, decoded once like every capture (`/t/ac%2Fme/x` → `tenant` = `ac/me`, path `/x`). A stdlib handler reads it with `r.PathValue("tenant")` or `credo.URLParam(r, "tenant")`; a mounted Credo app with `ctx.Request().PathValue("tenant")`, while its `RouteParam`/`RouteParams` hold its own route parameters only. The values are set on a clone of the request (`http.Request.Clone`), so a request the caller still holds — the one an `http.ServeMux` in front of the app matched, or the child of an outer parametric mount — keeps its path values; the child inherits them, nested parametric mounts add up, and a name used again holds the value of the prefix closest to the handler. The child still gets no parent route context, and the internal `_mount` capture is not a path value. The name `_mount` is reserved for that capture: a prefix parameter of that name, or a name the prefix uses twice, panics before anything is registered (`credo: Mount "/t/{_mount}": the parameter name "_mount" is reserved`). A static prefix pays for none of this: its child stays a shallow copy. A catch-all parameter is not a prefix — it consumes the rest of the path, so the handler would always be handed `/`.
+**Parametric prefix:** the prefix may carry parameters — `Mount("/t/{tenant}", h)`, several of them, also within one segment (`/v/{major}.{minor}`), and regex-constrained ones. The child receives the path below the matched prefix, handed over as under a static prefix (`/t/acme/x/y` → `/x/y`, `/t/acme/a%2Fb` → `/a%2Fb`, the exact prefix `/t/acme` and `/t/acme/` → `/`), and each parameter of the prefix as a stdlib path value, decoded once like every capture (`/t/ac%2Fme/x` → `tenant` = `ac/me`, path `/x`). A stdlib handler reads it with `r.PathValue("tenant")` or `credo.URLParam(r, "tenant")`; a mounted Credo app with `c.Request().PathValue("tenant")`, while its `RouteParam`/`RouteParams` hold its own route parameters only. The values are set on a clone of the request (`http.Request.Clone`), so a request the caller still holds — the one an `http.ServeMux` in front of the app matched, or the child of an outer parametric mount — keeps its path values; the child inherits them, nested parametric mounts add up, and a name used again holds the value of the prefix closest to the handler. The child still gets no parent route context, and the internal `_mount` capture is not a path value. The name `_mount` is reserved for that capture: a prefix parameter of that name, or a name the prefix uses twice, panics before anything is registered (`credo: Mount "/t/{_mount}": the parameter name "_mount" is reserved`). A static prefix pays for none of this: its child stays a shallow copy. A catch-all parameter is not a prefix — it consumes the rest of the path, so the handler would always be handed `/`.
 
 **Method scope:** the mounted handler is registered for all standard HTTP methods except CONNECT and TRACE, which are excluded deliberately (CONNECT is a proxy mechanism; TRACE enables cross-site tracing). Requests using them receive 405.
 
@@ -269,7 +221,7 @@ Every GET registration (`GET`, `Static`, `File`, on `App` or `Group`) also regis
 
 ### QUERY (RFC 10008)
 
-`App.QUERY` and `Group.QUERY` register explicit safe, idempotent QUERY routes. The query representation travels in request content and is normally decoded and validated with `ctx.Request().BindBody(&input)`. Credo does not generate a GET twin or a HEAD twin: GET query parameters and a QUERY body are different input contracts.
+`App.QUERY` and `Group.QUERY` register explicit safe, idempotent QUERY routes. The query representation travels in request content and is normally decoded and validated with `c.Request().BindBody(&input)`. Credo does not generate a GET twin or a HEAD twin: GET query parameters and a QUERY body are different input contracts.
 
 Every matched QUERY request, including one dispatched to a mounted `http.Handler`, must carry a non-blank `Content-Type`. Missing or blank values fail before the application handler with `400 content_type_required`, even when the body is empty. A present but unsupported media type follows the normal binder contract and returns 415; malformed supported content follows the bind-error contract. The guard is innermost, so the framework features and ordinary global/group/route middleware still run first.
 
@@ -381,12 +333,12 @@ credo.Walk(app, func(method, pattern string) error {
 })
 
 credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
-    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, ri.Meta)
+    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name)
     return nil
 })
 ```
 
-`*App` satisfies the `Routes` introspection interface directly (`credo.Walk(app, …)` / `credo.WalkRoutes(app, …)`), covering the default mux and all host-scoped muxes. `Walk` keeps the simple `(method, pattern)` callback and visits real routes only; `WalkRoutes` (like `app.Routes()`) exposes the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved `Meta` (route ← group ← app) as a fresh shallow map (nil if none, values read-only by convention); `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden, and `Walk` skips mounts entirely. `Routes()` output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration.
+`*App` satisfies the `Routes` introspection interface directly (`credo.Walk(app, …)` / `credo.WalkRoutes(app, …)`), covering the default mux and all host-scoped muxes. `Walk` keeps the simple `(method, pattern)` callback and visits real routes only; `WalkRoutes` (like `app.Routes()`) exposes the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), read with `GetMeta(key)` — a mount reports none, and values are read-only by convention; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden, and `Walk` skips mounts entirely. `Routes()` output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration.
 
 > **Pending v0.26.0 (R14):** the next block and paragraph replace the two above when the `Walk` family goes; until then `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface are exported.
 
@@ -406,7 +358,7 @@ for _, ri := range app.Routes() {
 }
 ```
 
-`app.Routes()` is the one introspection call. It covers the default mux and all host-scoped muxes and returns the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), values read-only by convention; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden; a caller that wants routes only skips them in its loop, as above. The output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration. No routing type of `internal/radix` is exported.
+`app.Routes()` is the one introspection call. It covers the default mux and all host-scoped muxes and returns the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), read with `GetMeta(key)` — a mount reports none, and values are read-only by convention; no call enumerates a route's meta, since a typed key is reachable only through the value that declares it; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden; a caller that wants routes only skips them in its loop, as above. The output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration. No routing type of `internal/radix` is exported.
 
 ## Design Decisions
 
@@ -424,8 +376,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-app.GET("/", func(ctx *credo.Context) error {
-    return ctx.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
+app.GET("/", func(c *credo.Context) error {
+    return c.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
 })
 
 if err := app.Run(); err != nil {
@@ -434,26 +386,6 @@ if err := app.Run(); err != nil {
 ```
 
 ### Named Routes + Meta
-
-> **Current until v0.26.0 (R4):** the next example sets meta under string keys.
-
-```go
-app, err := credo.New()
-if err != nil {
-    panic(err)
-}
-
-app.GET("/products/{id:[0-9]+}", showProduct).
-    Name("product.show").
-    SetMeta("cache", 300)
-
-api := app.Group("/api")
-api.SetMeta("auth", true)
-api.GET("/users", listUsers)
-api.GET("/health", healthCheck).SetMeta("auth", false)
-```
-
-> **Pending v0.26.0 (R4):** the next example replaces the example above when typed meta ships.
 
 ```go
 var (
@@ -489,8 +421,8 @@ api := app.Host("api.example.com")
 api.GET("/users", listUsers)
 
 tenant := app.Host("{tenant}.example.com")
-tenant.GET("/dashboard", func(ctx *credo.Context) error {
-    return ctx.Response().Text(200, ctx.Request().RouteParam("tenant"))
+tenant.GET("/dashboard", func(c *credo.Context) error {
+    return c.Response().Text(200, c.Request().RouteParam("tenant"))
 })
 ```
 
@@ -503,8 +435,8 @@ if err != nil {
 }
 
 // HTML site — 404 renders a page
-app.StatusHandler(404, func(ctx *credo.Context) error {
-    return ctx.Response().HTML(404, "<h1>Page Not Found</h1>")
+app.StatusHandler(404, func(c *credo.Context) error {
+    return c.Response().HTML(404, "<h1>Page Not Found</h1>")
 })
 
 // StatusHandler is app-level only and accepts 404 and 405 (any other code

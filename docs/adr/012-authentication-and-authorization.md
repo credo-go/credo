@@ -8,6 +8,8 @@ Enterprise applications (ADR-001) require authentication (who is the user?) and 
 
 Embedding a `User` field into Context forces all applications to use the same user representation. Generic accessors allow each application to define its own user type while providing framework-level middleware integration.
 
+The principal is a fact about the request: a user an authentication middleware sets inside a timeout or a wrapped stdlib middleware must still be the request's user for the layers outside it, the error rendering and the access record, and storing it should not copy the request. Authorization policy read from route meta must not fail open on a value of an unexpected type, and two packages must not share one policy value by choosing one name.
+
 ## Decision
 
 ### Generic User Accessors on Context
@@ -21,7 +23,7 @@ The `auth` package holds the authentication _strategy_ (`Authenticator[T]`, `Mid
 Context has no concrete `User` field or `User()` method — only the generic `SetUser`/`GetUser`/`RequireUser` methods. This avoids:
 
 - Forcing a specific user model on all applications
-- `any` type assertions (`ctx.User().(MyUser)`)
+- `any` type assertions (`c.User().(MyUser)`)
 - Coupling the root package to any concrete auth implementation
 
 ### Backing Store
@@ -30,13 +32,7 @@ Context has no concrete `User` field or `User()` method — only the generic `Se
 
 The backing store is an implementation detail: the only public access path is the Context methods. There is deliberately no `context.Context`-based accessor (no `UserFrom(ctx)`-style helper in the root or the `auth` package) — the principal is an HTTP-boundary feature reached through `*credo.Context`, not a value read from the `context.Context` chain (contrast store's typed transaction scopes, which are; [ADR-015](015-data-access.md)).
 
-> **Pending v0.26.0 (R4):** not implemented yet; `SetUser` adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`).
-
 `SetUser`, `GetUser[T]` and `RequireUser[T]` are shortcuts over a generic typed key of the root package's own, one per user type, so the user is a value on the Context's head like any other ([ADR-008](008-context-design.md#one-context-head-and-typed-keys)): `SetUser` adds one node and copies no request, a user set inside a scope outlives it, and the request a wrapped stdlib middleware passes on still carries the user. The key stays unexported, so the user keeps no `context.Context` accessor: stdlib code can neither read nor set the principal, and the typed keys add no reader of their own.
-
-**Problem.** `SetUser` copies the request for every user it stores, and the copy is the request's context only until a scope that swapped the request reverts it, so a user set inside `middleware.Timeout` or a wrapped stdlib middleware is lost to the layers outside it.
-
-**Removes.** The request copy behind `SetUser`, and the allocation it costs.
 
 > **Pending v0.26.0 (R12):** not implemented yet; observers do not exist, and the access log's `ResultFilter` receives the `*Context`.
 
@@ -48,7 +44,7 @@ Authentication strategies implement `Authenticator[T]`, a single-method interfac
 
 ### Middleware Factory
 
-`auth.Middleware[T](authenticator, onError)` turns an authenticator into a `credo.Middleware`: on success it stores the user with `ctx.SetUser`, on failure it returns the error to render. Applications need different failure responses (another status or code, a `WWW-Authenticate` challenge), so the choice is an `ErrorFunc` callback rather than a subtype; without one, or when it returns nil, the failure is a 401 whose cause is logged, never rendered. The authenticator is a convenience, not a requirement: custom middleware can call `ctx.SetUser` directly. The [auth spec](../specs/auth.md#errorfunc-authentication-failure-callback) states the failure contract.
+`auth.Middleware[T](authenticator, onError)` turns an authenticator into a `credo.Middleware`: on success it stores the user with `c.SetUser`, on failure it returns the error to render. Applications need different failure responses (another status or code, a `WWW-Authenticate` challenge), so the choice is an `ErrorFunc` callback rather than a subtype; without one, or when it returns nil, the failure is a 401 whose cause is logged, never rendered. The authenticator is a convenience, not a requirement: custom middleware can call `c.SetUser` directly. The [auth spec](../specs/auth.md#errorfunc-authentication-failure-callback) states the failure contract.
 
 ### Built-in Authenticators
 
@@ -69,18 +65,6 @@ The JWT authenticator lives in `auth/jwtauth`, so that only an application that 
 
 ### RBAC via Route Meta
 
-> **Current until v0.26.0 (R4):** the next example and paragraph use a string meta key read with `LookupMeta`.
-
-Authorization uses route metadata ([ADR-007](007-router-and-routing.md#route-meta)) — no separate RBAC system:
-
-```go
-app.GET("/admin/users", listUsers).SetMeta("permission", "admin.users.read")
-```
-
-An authorization middleware registered on the group or route reads the value with `ctx.Route().LookupMeta("permission")`, which inherits through the group chain, and checks it against the user; the [auth spec](../specs/auth.md#pattern-4-rbac-with-route-meta) shows one.
-
-> **Pending v0.26.0 (R4):** the next example and paragraph replace the two above when R4 ships.
-
 Authorization uses route metadata ([ADR-007](007-router-and-routing.md#route-meta)) — no separate RBAC system. The permission's key is a typed key, so its value type is checked at compile time:
 
 ```go
@@ -91,10 +75,6 @@ app.GET("/admin/users", listUsers).SetMeta(Permission, "admin.users.read")
 
 An authorization middleware registered on the group or route reads the value with `c.Route().GetMeta(Permission)`, which returns the typed value and inherits through the route, its groups and the App, and checks it against the user; the [auth spec](../specs/auth.md#pattern-4-rbac-with-route-meta) shows one.
 
-**Problem.** A string meta key binds no type to its name: every read is a type assertion that each middleware must fail closed on by hand, and two packages that choose one name share one value.
-
-**Removes.** String-meta RBAC: `SetMeta("permission", v)` and `LookupMeta("permission")`, which become `SetMeta(key, v)` and `GetMeta(key)` with a `credo.NewKey[T]`.
-
 ## Consequences
 
 **Positive:**
@@ -102,12 +82,10 @@ An authorization middleware registered on the group or route reads the value wit
 - Type-safe via generics — no `any` assertions
 - Middleware factory is reusable across auth strategies (JWT, API key, etc.)
 
-> **Current until v0.26.0 (R4):** the negative bullets on `SetUser`'s allocation, which R4 reduces to one node and no request copy, and on string-based RBAC, which becomes typed keys whose permission values stay application strings, unchecked at compile time.
-
 **Negative:**
 
 - Callers must handle `ErrUserMissing` when auth middleware did not run or the user type mismatches
 - The principal is reachable only where a `*credo.Context` exists (handlers, Credo middleware); stdlib middleware adapted via `WrapStdMiddleware` cannot read or set it ([ADR-010](010-middleware-architecture.md#stdlib-adapter))
-- `SetUser` is not allocation-free: it adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`)
+- `SetUser` is not allocation-free: it adds one `context.WithValue` node over the request's context
 - By default every authentication failure is a 401, including an infrastructure failure an authenticator reports (a validator's database error, a JWKS outage from `Advanced.KeyFunc`); an application that wants a 5xx maps it in its `ErrorFunc`
-- RBAC is string-based (`"permission"` key) — no compile-time permission checking
+- Permission values are application strings under a typed key: the compiler checks the key's type, not the permission names
