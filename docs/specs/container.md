@@ -1,6 +1,6 @@
 # DI Container & credo.Infra Spec
 
-**Status:** Implemented (beta) **Package:** `internal/di/`; root `di.go`, `component.go`, `infra.go`, `dierrors.go`, `lifecycle_error.go` **ADR:** [ADR-004](../adr/004-dependency-injection-and-infra.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Dependency injection guide](../guides/dependency-injection.md) **Sources:** samber/do (MIT)
+**Status:** Implemented (beta) **Package:** `internal/di/`; root `di.go`, `component.go`, `infra.go`, `dierrors.go`, `lifecycle_error.go` **ADR:** [ADR-003](../adr/003-application-architecture.md), [ADR-004](../adr/004-dependency-injection-and-infra.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-024](../adr/024-lifecycle-components.md) **Guide:** [Dependency injection guide](../guides/dependency-injection.md) **Sources:** samber/do (MIT)
 
 This spec states the DI container: its surface, registration and its options, `Finalize` and the three error phases, resolution, resource identity, the container's part in teardown, `credo.Infra`, and the [sequential bootstrap](#sequential-bootstrap) with its documented order. Preparation, the start phase and the drain sequence are the [lifecycle spec](lifecycle.md)'s.
 
@@ -588,6 +588,46 @@ func main() {
 ```
 
 There is no resolve-then-provide step: a DI or component registration after the first resolving call panics naming that call, its site and the calls that led there. A value that needs a resolved dependency and I/O to exist — a provider whose settings are read from a database table, for example — is a component whose constructor takes its dependencies and whose `Start` reads the settings and opens its backend ([lifecycle spec](lifecycle.md#the-start-walk)), not a late registration. HTTP setup that uses no resolved value — global middleware, the [built-in HTTP features](http-features.md), a route that calls no service — may come at any point before preparation. `credo.New()`, routes and `Run()` stay the minimal shape: an App that resolves nothing before serving is finalized when it is prepared.
+
+### Modules
+
+> **Pending v0.26.0 (R8):** not implemented yet; an application split into parts keeps the documented order across its parts by hand, and there is no `Module`, `UseModules` or `testutil.WithModules`.
+
+An application split into parts follows the documented order through modules ([ADR-003](../adr/003-application-architecture.md#application-modules)). A module is a part of an application, its services, then its handlers:
+
+```go
+// Module is a part of an application: its services, then its handlers.
+type Module interface {
+	Services(app *App) // Provide, ProvideValue, Manage, workers
+	Handlers(app *App) // routes and other entry points; may Resolve
+}
+
+func (app *App) UseModules(mods ...Module)
+```
+
+`UseModules` runs every module's `Services` in order, then every module's `Handlers`. `Services` holds steps 2 and 3 of the documented order — bindings, feature mounts and component registrations — and `Handlers` step 4: resolving, routes, and the application's other entry points, which register through the App as routes do. Running every `Services` before any `Handlers` makes the first `Resolve` inside a `Handlers` method come after every registration, so the services of a later module are registered before the handlers of an earlier one resolve, and the implicit `Finalize` is safe. Both methods are required; a module with nothing for one phase leaves that method empty. A module composed of others calls their methods from its own.
+
+```go
+func main() {
+    app, err := credo.New() // 1. configuration
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    app.UseModules(users.Module{}, billing.Module{}) // 2–4, module by module and phase by phase
+
+    if err := app.Run(); err != nil { // 5. Run
+        log.Fatal(err)
+    }
+}
+```
+
+Misuse panics at the call that caused it:
+
+- A registration from a `Handlers` method after the first `Resolve` panics as every late registration does, naming the call that finalized the container ([The First Resolve Finalizes](#the-first-resolve-finalizes)).
+- A second `UseModules` call panics, naming the remedy: pass every module to one call. A second call would register services after the first call's handlers had finalized the container.
+
+A test passes the modules it needs to `testutil.WithModules(mods...)`, which hands them to `UseModules` with one more module last, whose `Services` applies the test's `WithOverride` values: they land after every module's services and before any module's handlers resolve, so a module's handlers resolve the replacement. An override given beside a `UseModules` call in `WithWiring` would come after the handlers had finalized the container and panic, and a `UseModules` in the wiring beside `WithModules` is a second call.
 
 ### Three Error Phases
 

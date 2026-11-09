@@ -53,7 +53,23 @@ func Wrap(kind error, cause error) error
 | `ErrUnavailable` | `KindUnavailable` | yes | 503 |
 | `ErrReadOnly` | `KindReadOnly` | no | 503 |
 
-`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` match it through `errors.Is` without losing their exact kind. The store errors' `HTTPStatus()` is a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` is the service/domain override and preserves the internal store cause.
+> **Current until v0.26.0 (R14):** the next paragraph describes `ErrDuplicate` and `ErrConflict`, which go.
+
+`ErrDuplicate` is a deprecated alias of `ErrAlreadyExists`. `ErrConflict` is a deprecated umbrella: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock`, and `ErrContention` match it through `errors.Is` without losing their exact kind.
+
+> **Pending v0.26.0 (R14):** the next paragraph states the sentinels without the deprecated names; until R14 ships, `ErrDuplicate` and `ErrConflict` are exported as the paragraph above says.
+
+The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that checked a coarse conflict checks the sentinel of the condition it meant: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
+
+> **Current until v0.26.0 (R2):** the next paragraph describes the store errors' `HTTPStatus()` bridge.
+
+The store errors' `HTTPStatus()` is a deprecated compatibility bridge; root classifies `fault.Provider` first. An outer `*credo.HTTPError` is the service/domain override and preserves the internal store cause.
+
+> **Pending v0.26.0 (R2):** the next two paragraphs state the one status channel and the kind as the code; until R2 ships, `*Error` and the sentinels also implement `HTTPStatus()`, and a store error renders the code its status gives: `not_found`, `conflict` for every 409 kind, `gateway_timeout` and `service_unavailable`.
+
+A store error reaches the client through its kind alone: the root reads `FaultKind` and maps the kind to the table's status, and no store type has an `HTTPStatus` method. A fault without an explicit code renders its kind as its code — `not_found`, `already_exists`, `constraint`, `serialization`, `deadlock`, `contention`, `conflict`, `timeout`, `unavailable`, `read_only` — so a client tells a duplicate from a serialization or deadlock failure; the statuses do not change. `Error.Code` is the driver's code, a diagnostic that is never rendered.
+
+The root classifies `*credo.HTTPError` first and `*fault.Error` second, both before any other `fault.Provider`, so a service overrides a store error by wrapping it: an `HTTPError` with `WithInternal(err)`, or a domain `fault.Error` with `WithInternal(err)`, which renders its own kind's status and its own code ([HTTP features spec](http-features.md)). The store error stays the logged internal cause and never reaches the client.
 
 ### Health
 
@@ -81,6 +97,8 @@ Status, latency, details, and the typed cause travel as one snapshot, so a calle
 `Health` is what an adapter's `Health` returns — `sqldb`'s among them — and what its `Ready` reads. `/ready` never sees a `Health`: it asks the component's `Ready`, whose error names the status, and logs that error, including its text only under `HealthConfig.ExposeErrors` ([health spec](health.md#readiness-aggregation)). `Details` never reaches the probe response, so pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
 
 ### TX Context
+
+> **Current until v0.26.0 (R14):** the next code block lists the `…InScope` functions beside the methods, and the second paragraph after it describes the deprecated unscoped `WithTx[T]`, `GetTx[T]` and `Conn[T]` functions; both sets go, and the methods of `TxScope[T]` are the one transaction API.
 
 ```go
 var ErrTxMissing = errors.New("store: transaction missing from context")
@@ -112,6 +130,23 @@ func (s *TxScope[T]) Conn(ctx context.Context, fallback T) T
 `TxScope[T]` deliberately binds the type at construction. For example, `NewTxScope[bun.IDB]()` accepts a concrete `bun.Tx` through the `bun.IDB` contract and reads it back with the same context key; a later call cannot accidentally select `bun.Tx` as a different `T`. Distinct scopes still isolate two databases that share `bun.IDB`. `WithTx` rejects nil values — including a typed-nil pointer held by an interface `T` — as a programming error, so `RequireTx` cannot report a nil handle as present. `RequireTx` is for operations where fallback would violate correctness.
 
 The unscoped `WithTx[T]`, `GetTx[T]` and `Conn[T]` functions are deprecated: separate call sites can choose different concrete/interface forms, and the type-only context key cannot isolate two logical connections that share `T`. New adapters must use a typed scope.
+
+> **Pending v0.26.0 (R14):** the next code block and paragraph state the transaction scope without the free functions; until R14 ships, they are exported as above.
+
+```go
+var ErrTxMissing = errors.New("store: transaction missing from context")
+
+// NewTxScope creates a unique logical transaction scope and fixes its
+// transaction type T for every subsequent operation.
+func NewTxScope[T any]() *TxScope[T]
+
+func (s *TxScope[T]) WithTx(ctx context.Context, tx T) context.Context
+func (s *TxScope[T]) GetTx(ctx context.Context) (T, bool)
+func (s *TxScope[T]) RequireTx(ctx context.Context) (T, error) // ErrTxMissing instead of a fallback
+func (s *TxScope[T]) Conn(ctx context.Context, fallback T) T  // the scoped transaction, else fallback
+```
+
+The methods of `TxScope[T]` are the one transaction API, which `sqldb` uses: every operation goes through the scope that fixed `T`, so no call site can store a transaction under one type and read it back under another, and two logical connections that share `T` stay apart.
 
 ## Bun Wrapper: store/sqldb/
 
@@ -325,13 +360,25 @@ Curated builder methods:
 - **`UpdateQuery`**: `Model`, `Column`, `Set`, `Where`, `WherePK`, `Returning`, `OmitZero`, `Conn`.
 - **`DeleteQuery`**: `Model`, `Where`, `WherePK`, `Returning`, `Conn`.
 
+> **Current until v0.26.0 (R9):** the next paragraph names `ApplyQueryBuilder`.
+
 Every proxy also has `Apply` and `Unwrap`, and `SelectQuery`, `UpdateQuery`, and `DeleteQuery` have `ApplyQueryBuilder` ([escape hatches](#escape-hatches)). Any other builder method — `WhereOr` on an update or a delete, for example — goes through `Apply` or `ApplyQueryBuilder`.
+
+> **Pending v0.26.0 (R9):** the next paragraph replaces the paragraph above when R9 ships.
+
+Every proxy also has `Apply` and `Unwrap`, and `SelectQuery`, `UpdateQuery`, and `DeleteQuery` have `ApplyFilter` ([escape hatches](#escape-hatches)). A predicate the curated set lacks on a query type — `WhereOr` on an update or a delete, for example — goes through `ApplyFilter`, and any other builder method through `Apply`, whose query `Count` and `Page` cannot prove ([pagination spec](pagination.md#logical-total-and-supported-count-shapes)).
 
 The curated `Limit(int)` and `Offset(int)` methods forward every value to Bun, which takes and stores both as `int64`. Zero and negative values keep Bun's semantics: the clause is omitted. Calling raw Bun through `Apply` or `Unwrap` is an explicit escape hatch whose `Limit` and `Offset` take `int64`.
 
 **Terminal methods** — `Scan`, `Count`, `Exists` and the generic `One[T]`/`All[T]`/`Page[T]` on `SelectQuery`, `Exec` on the write proxies — execute the query and return mapped errors. Driver errors become `store.Err*` sentinels as listed in [Error Mapping](#error-mapping), so callers branch with `errors.Is` without importing `database/sql` or driver-specific packages. `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
 
+> **Current until v0.26.0 (R9):** the next paragraph describes the logical count Credo's own count source computes.
+
 `SelectQuery.Count` returns the number of complete logical projection rows, the count `Page.Total` reports; the [pagination spec](pagination.md#logical-total-and-supported-count-shapes) is its contract, including the shapes that return `sqldb.ErrUnsupportedCountQuery`, the MySQL output-name rule, relation callbacks, and model SELECT hooks.
+
+> **Pending v0.26.0 (R9):** the next paragraph replaces the paragraph above when R9 ships.
+
+`SelectQuery.Count` returns the number of rows the query returns without its `LIMIT` and `OFFSET`, the count `Page.Total` reports, through Bun's native `Count` on a query the wrapper can prove, and fails before I/O with `sqldb.ErrUnsupportedCountQuery` on any other; the [pagination spec](pagination.md#logical-total-and-supported-count-shapes) is its contract, including the rules that make a query unknown and `PageWithCount`, which pages it with the caller's count.
 
 **Typed terminals: `One[T]` / `All[T]`.** Two generic terminals (Go 1.27 concrete-type generic methods) return the queried type directly instead of scanning into a caller-provided destination. `T` drives both the table and the scan destination, so the query is built model-less and the terminal owns the destination:
 
@@ -359,6 +406,8 @@ It is model-less like `One` and `All`; the [pagination spec](pagination.md#adapt
 
 #### Escape hatches
 
+> **Current until v0.26.0 (R9):** the next code block declares `ApplyQueryBuilder`, which `ApplyFilter` replaces.
+
 ```go
 // Apply delegates to Bun's native Apply for advanced builder methods.
 // Nil functions are filtered out. Typed per query type.
@@ -376,7 +425,25 @@ func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuild
 func (q *SelectQuery) Unwrap() *bun.SelectQuery
 ```
 
+> **Pending v0.26.0 (R9):** the next code block and paragraph state `ApplyFilter` and `Filter`; until R9 ships, a shared predicate goes through `ApplyQueryBuilder` as above.
+
+```go
+// ApplyFilter applies fn to the query's WHERE clause through a *Filter, so
+// one predicate scopes a select, an update and a delete. Interceptors and
+// the automatic total are preserved; nil is a no-op. Available on
+// SelectQuery, UpdateQuery, DeleteQuery.
+func (q *SelectQuery) ApplyFilter(fn func(*Filter)) *SelectQuery
+
+// Filter is the predicate builder ApplyFilter hands its callback. It has
+// the predicate methods and nothing else.
+type Filter struct { /* unexported */ }
+```
+
+`Filter`'s methods are `Where`, `WhereOr`, `WhereGroup`, whose callback takes a `*Filter`, `WherePK`, `WhereDeleted` and `WhereAllWithDeleted`, each forwarding to the Bun method of its name on the proxied query. `Filter` is Credo's type, so the callback has no Bun type to assert and no builder to return, and a query built with `ApplyFilter` keeps its automatic total whatever the callback does. `Filter` forwards only the methods it names: a method a later Bun adds to its builder changes nothing here. A callback that needs more than predicates uses `Apply`, whose query `Count` and `Page` cannot prove. The rationale and the rejected builder forms are in [ADR-015](../adr/015-data-access.md#query-proxies).
+
 ### Proxy Guardrails
+
+> **Current until v0.26.0 (R9):** guardrails 1, 2, 6 and 7 below describe the private execution snapshot, the restored `Clone` state, `ApplyQueryBuilder`, and a count-shape guard that sees through `Apply`.
 
 1. **TX inject: snapshot, don't mutate** — terminal methods copy the underlying query before applying the TX connection. `SelectQuery` uses an internal execution snapshot that preserves the explicit connection, builder error, `WherePK` fields, soft-delete flags, and model/relation state. `InsertQuery`, `UpdateQuery`, and `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`) since Bun does not provide `Clone()` on these types — this isolates the `conn` field without affecting shared slices; it suffices because Bun reads, never mutates, the builder while generating SQL. The original `q.raw` is never modified, so query builders can be reused safely — including executing the same builder inside a transaction and again after that transaction finished. Write-query wrappers track `.Conn()` explicitly. Select reads the actual raw connection after `Conn`/`Apply`: a non-nil explicit connection wins, while clearing or replacing it with a connection-less query re-enables ambient TX injection.
 
@@ -399,9 +466,18 @@ func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) er
 
 7. **The count-shape guard sees `Apply`** — `Count` and `Page` inspect the builder that `Apply` produced, so `Apply` stays inside the [count-shape guard](pagination.md#logical-total-and-supported-count-shapes); executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
 
+> **Pending v0.26.0 (R9):** the next four items replace guardrails 1, 2, 6 and 7 when R9 ships; guardrails 3, 4 and 5 stay.
+
+- **TX inject: snapshot, don't mutate** — a terminal executes a copy of the query and sets the connection on the copy: Bun's `Clone()` for a `SelectQuery`, complete from Bun v1.3.0, and a shallow copy for the three write queries, which suffices because Bun reads, never mutates, the builder while generating SQL. The original is never modified, so a builder can be reused, inside a transaction and again after it. Whether a connection was set explicitly comes from the wrapper's `Conn` on all four query types: an explicit `Conn` wins over the ambient transaction, and a `Conn` set inside an `Apply` closure is overridden by transaction injection. `sqldb` writes no private field of Bun.
+- **Public `Clone` forwards to Bun's** — `SelectQuery.Clone` returns a proxy over Bun's `Clone()` with the wrapper's own state; it is a top-level builder fork, not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared, and source and clone must not mutate or scan shared values concurrently.
+- **ApplyFilter: predicates land on the proxied query** — the `Filter` forwards each predicate to the proxied query, so terminals keep TX injection and error mapping exactly as with `Apply`, and the query keeps its automatic total. A nil fn is a no-op.
+- **`Apply` and `Unwrap` make the total the caller's** — `Count` and `Page` fail before I/O with `ErrUnsupportedCountQuery` for a query built with `Apply` or `Unwrap`, whose builder the wrapper cannot prove; the caller pages it with `PageWithCount` ([pagination spec](pagination.md#logical-total-and-supported-count-shapes)). Executing a terminal through `Unwrap` bypasses every proxy guarantee.
+
 **Planned observability:** automatic tracing via a DB-level `bun.QueryHook` belongs to the observability release ([ADR-014](../adr/014-observability.md)) and is not installed by `Open()` today. Attaching it at the Bun DB boundary will cover proxy queries, native `Client()`/`Conn()` builders, raw SQL, and migrations without duplicating instrumentation in terminal wrappers.
 
 ### TX Management
+
+> **Current until v0.26.0 (R14):** the next code block declares the free functions `RunInTx` and `RunInTxWith` beside the methods `InTx` and `InTxWith`; the free functions go, and the paragraphs below that name `RunInTx` apply to `InTx` and `InTxWith`.
 
 ```go
 var (
@@ -422,6 +498,25 @@ func RunInTxWith(ctx context.Context, db *DB, opts *sql.TxOptions, fn func(ctx c
 // InTx / InTxWith are the method forms of RunInTx / RunInTxWith —
 // handler-side ergonomics: db.InTx(ctx.Context(), fn).
 func (db *DB) InTx(ctx context.Context, fn func(ctx context.Context) error) error
+func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error
+```
+
+> **Pending v0.26.0 (R14):** the next code block states the transaction methods without the free functions; until R14 ships, `RunInTx` and `RunInTxWith` are exported as above.
+
+```go
+var (
+    ErrNilTxCallback  = errors.New("sqldb: transaction callback must not be nil")
+    ErrNestedTxOptions = errors.New("sqldb: nested transaction options are not supported")
+    ErrTxRollbackOnly = errors.New("sqldb: transaction is rollback-only")
+)
+
+// InTx starts a transaction, stores it in this DB's typed scope,
+// executes fn, and commits on nil / rolls back on error.
+// Nested calls use savepoints. A nil fn fails before BEGIN.
+func (db *DB) InTx(ctx context.Context, fn func(ctx context.Context) error) error
+
+// InTxWith applies sql.TxOptions to an outer transaction. Non-default
+// options on a nested savepoint return ErrNestedTxOptions.
 func (db *DB) InTxWith(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error
 ```
 
@@ -568,6 +663,8 @@ func (r *UserRepo) Create(ctx context.Context, user *User) error {
 
 ### Service with TX
 
+> **Current until v0.26.0 (R14):** the example calls `sqldb.RunInTx(ctx, s.db, fn)`, which becomes `s.db.InTx(ctx, fn)`.
+
 ```go
 import (
     "context"
@@ -610,3 +707,11 @@ The rationale and the rejected alternatives are in ADR-015:
 - No finite pool default and no automatic `DEGRADED` — [Connection-Pool Policy](../adr/015-data-access.md#connection-pool-policy)
 - A thin `bun/migrate` wrapper run as a pre-deploy job — [Migrations](../adr/015-data-access.md#migrations)
 - A bound database is an ordinary component, pinged in `Start` and reported through `Ready`, with an optional start that is the module's — [A Database Is a Component](../adr/015-data-access.md#a-database-is-a-component)
+
+> **Pending v0.26.0 (R9):** the next decision is not implemented yet.
+
+- Bun through its exported API only, with conformance tests in place of a layout check — [Bun Through Its Exported API](../adr/015-data-access.md#bun-through-its-exported-api)
+
+> **Pending v0.26.0 (R14):** the next decision is not implemented yet.
+
+- One exported spelling per operation: the `TxScope` methods, `InTx`, the exact sentinels — [One API per operation](../adr/015-data-access.md#one-api-per-operation)

@@ -19,6 +19,8 @@ type Validatable interface {
 }
 ```
 
+`Validate` takes no `context.Context`: it checks a decoded value, and a context would invite I/O into it — a uniqueness check belongs to the service ([stateless boundary](#validation-boundary--stateless-only)). A context-taking interface could be added beside `Validatable` later without a break, as ozzo-validation v4 added `ValidatableWithContext`; nothing is reserved for it ([ADR-011](../adr/011-validation-strategy.md#validatable-interface)).
+
 ## API Surface
 
 ### Rule Interface (generic foundation)
@@ -206,6 +208,10 @@ func (s *OrderService) Create(ctx context.Context, input Order) error {
 }
 ```
 
+> **Pending v0.26.0 (R2):** until R2 ships, `fault.Error` does not exist, and a service that needs a code of its own returns an `HTTPError`, as the example above does.
+
+A service names a code of its own without naming a transport status: it returns a `fault.Error`, such as `fault.New(fault.KindAlreadyExists, "email_exists")`, whose kind gives the status ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)). `HTTPError` stays for what only the HTTP boundary knows.
+
 ### Conditional Validation
 
 ```go
@@ -279,9 +285,28 @@ func (c *CreateUserInput) Validate() error {
 
 When a field has no rules but implements `Validatable`, `ValidateStruct` auto-calls `Validate()` on it, enabling recursive nested validation; its violations carry the field's name as their prefix (`address.city`, `billing.street`).
 
+> **Current until v0.26.0 (R6):** the next bullet's last sentence, from "A field with rules runs its rules only", and the third bullet; from R6 a field with rules runs its value's `Validate` once the rules pass.
+
 - **A nil pointer or nil interface is valid**, and its `Validate` is not called: a request that omits an optional object passes, as in ozzo-validation, the engine's source. Presence is what `NotNil` and `Required` check. A field with rules runs its rules only, so a mandatory nested pointer takes `NotNil` in a `Field` of its own beside the rule-less one: `validation.Field(&c.Billing, validation.NotNil[Address]())`, then `validation.Field(&c.Billing)`.
 - **A struct field's `Validate` runs on the field itself**, through the field's own pointer, so what a pointer-receiver `Validate` normalizes (trimming, lower-casing) is kept in the bound value, as the bind target's own `Validate` does; no copy is made. A value-receiver `Validate` sees the field's value.
 - **A field with rules runs its rules only**; its `Validate`, if any, is not called after them.
+
+> **Pending v0.26.0 (R6):** the next bullet replaces the last sentence of the first bullet above and the third bullet; until R6 ships, a field with rules runs its rules only.
+
+- **A nested value's `Validate` runs after its field's rules.** A field with rules runs its value's `Validate` once the rules pass, as ozzo-validation does, so `validation.Field(&c.Billing, validation.NotNil[Address]())` checks that the billing address is present and then validates it. A field whose rules fail reports their violations only and does not run `Validate`; a nil value reports only `NotNil`'s violation.
+
+### Slices and Arrays of Structs
+
+> **Pending v0.26.0 (R6):** not implemented yet; an element of a slice or array of structs is validated only when the field's rules say `Each`.
+
+A slice or array of structs is validated like a nested struct: an element that is `Validatable`, or a struct reachable by pointer, is validated, and its violations carry the index in `Each`'s form, `items[0].name`. An `Each` rule on the same field still runs, and the two never report one violation twice.
+
+```go
+type CreateOrderInput struct {
+    Items []LineItem `json:"items"` // each LineItem's Validate runs; violations name items[i].field
+}
+```
+
 
 ## Error Format
 
@@ -332,9 +357,21 @@ func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error
 func (e Errors) Unwrap() []error
 ```
 
+> **Pending v0.26.0 (R2):** until R2 ships, `MessageKey` is a plain `string`, as the block above shows, and a key the catalog lacks renders as the message.
+
+`ValidationError.MessageKey` has the type `MessageKey`, declared in this package, `type MessageKey string`, and aliased by the root as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type and a key computed as a `string` converts. A key is a catalog key, never text: a key the catalog lacks falls back to the rule's message, never to the key ([i18n spec](i18n.md#message-key-resolution)).
+
 `Code` is the stable rule identity. `MessageKey`, when present, is an exact presentation key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Errors.Unwrap` returns the individual failures, which lets `errors.As` find a single `*ValidationError` through any wrapping.
 
-`Field` is the stable technical path on the wire, for frontend form-input matching: the field's `json` tag name, or the Go field name when the tag gives none; nested fields join with `.` and `Each` adds `[i]` (`address.city`, `items[0]`). Translation happens in the error pipeline, never in the validation engine, and never changes the wire `field`; see the i18n spec's [message-key resolution](i18n.md#message-key-resolution) and [field display names](i18n.md#validation-bind-and-fields).
+> **Current until v0.26.0 (R6):** the next paragraph, under which the `json` tag names the field whatever the binding source.
+
+`Field` is the stable technical path on the wire, for frontend form-input matching: the field's `json` tag name, or the Go field name when the tag gives none; nested fields join with `.` and `Each` adds `[i]` (`address.city`, `items[0]`).
+
+> **Pending v0.26.0 (R6):** the next paragraph replaces the one above; until R6 ships, the `json` tag names every field.
+
+`Field` names the field as the client sent it: the `json` name for a JSON body, the `form` name for a form or multipart body, and the `query` name for `BindQuery`, or the Go field name when the tag gives none; a nested field joins the names of its source with `.`, and a slice element adds `[i]` (`address.city`, `items[0].name`). Field-name reflection stays on the cold path, cached.
+
+Translation happens in the error pipeline, never in the validation engine, and never changes the wire `field`; see the i18n spec's [message-key resolution](i18n.md#message-key-resolution) and [field display names](i18n.md#validation-bind-and-fields).
 
 ## Design Decisions
 

@@ -173,7 +173,27 @@ func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageReque
 
 `ErrInvalidPageRequest` has no HTTP classification: returned unchanged from a handler, it renders as 500 and is logged as a server error. `BindQuery` does not rule it out, because `Normalize` does not cap `Page`: a client-supplied `page` large enough that the offset overflows `int` passes binding and fails in `Page`. A handler that serves client input maps it to 400 itself, as the [Controller](#controller) example does.
 
+> **Pending v0.26.0 (R9):** not implemented yet; `Page` computes a total for every query shape it accepts, and a repository that needs a count of its own composes the count, the data query and `NewPage` by hand.
+
+```go
+// PageWithCount pages the query with the caller's count: it validates req as
+// Page does, runs count, then the data query with the page's window, and
+// builds the page with pagination.NewPage. The count's sort and lock
+// clauses are the caller's.
+func (q *SelectQuery) PageWithCount[T any](ctx context.Context, req *pagination.PageRequest, count func(context.Context) (int, error)) (*pagination.Page[T], error)
+```
+
+`PageWithCount` is the path for a query whose total the wrapper cannot prove ([below](#logical-total-and-supported-count-shapes)). Another query's `Count` passes as `count` as it is, so a repository counts with a cheaper, deliberately equivalent query and pages the expensive one:
+
+```go
+page, err := listQuery.PageWithCount[Report](ctx, req, countQuery.Count)
+```
+
+`count` receives the context `PageWithCount` was given, so it runs in the caller's transaction as the data query does, and the [snapshot rule](#count--select-snapshot-consistency) is the same as `Page`'s.
+
 ### Logical total and supported count shapes
+
+> **Current until v0.26.0 (R9):** the rest of this section — to the paragraph that says Credo has no custom-count callback, inclusive — describes the count source Credo renders around a query (`_credo_count_source`), its MySQL output-name handling, relation callbacks rendered on it, and the model SELECT hooks replayed on it.
 
 `SelectQuery.Count` and `Page.Total` count complete projection rows in the logical query result before `ORDER BY` and the LIMIT/OFFSET window. Credo clones the query, removes root ORDER/LIMIT/OFFSET/FOR state, and counts the universal outer `_credo_count_source` derived table:
 
@@ -203,6 +223,31 @@ The count source also runs the model SELECT hook lifecycle on its private snapsh
 Hooks must be deterministic. Repeatable Read can stabilize database rows, but it cannot make a volatile projection or application-side hook decision return the same value in two executions. Those cases can still make `Total` and `Records` differ and should use an explicit, deliberately equivalent count/data composition.
 
 Credo deliberately has no custom-count callback or strategy. Shared predicates can be applied to separate count and data builders with `ApplyQueryBuilder`, and advanced builders remain available through `Apply`; combine their results with `NewPage`. A first-class abstraction is reconsidered only after two real consumers repeat the same pattern. An API cannot itself prove that divergent count and data queries describe the same logical set.
+
+> **Pending v0.26.0 (R9):** the rest of this section replaces the part above when R9 ships.
+
+`SelectQuery.Count` and `Page.Total` are the number of rows the data query returns without its `LIMIT` and `OFFSET`, or an error, never another number. `Count` and `Page` run Bun's native `Count` on a query the wrapper can prove, and fail before I/O with `sqldb.ErrUnsupportedCountQuery` on every other query. A query is provable when all of these hold:
+
+- it was built without `Apply`, `Unwrap` or a `Relation` callback — `ApplyFilter` keeps a query provable ([store spec](store.md#escape-hatches));
+- its root model's type does not implement Bun's `BeforeSelectHook`;
+- it carries `GroupExpr` or `Distinct`, or it has no raw `ColumnExpr` and no `Having`.
+
+| Query shape | `Total` |
+| --- | --- |
+| Filtered model or column projection | Rows |
+| `Distinct` projection | Distinct rows |
+| `GroupExpr`, with or without `Having` | Groups, after `Having` |
+| Raw `ColumnExpr` without `GroupExpr` or `Distinct` (an ungrouped aggregate included), `Having` without `GroupExpr` | `ErrUnsupportedCountQuery` |
+| Built with `Apply`, `Unwrap` or a `Relation` callback | `ErrUnsupportedCountQuery` |
+| Root model implements `BeforeSelectHook` | `ErrUnsupportedCountQuery` |
+
+The caller pages an unknown query with [`PageWithCount`](#adapter-selectquerypaget). No count Credo runs sorts or locks: every count drops `ORDER BY`, `LIMIT`, `OFFSET` and `FOR`, and it runs on the query's own connection.
+
+`ErrUnsupportedCountQuery`'s message names the rule that made the query unknown, its culprit — the escape hatch, the raw `ColumnExpr`, the model type and its `BeforeSelect` hook — and the remedy, `PageWithCount`. `errors.Is` keeps matching the sentinel, and no exported reason type is added.
+
+`BeforeAppendModelHook` keeps the total. On a SELECT, Bun calls it only for values already in the destination, `Page` scans into an empty slice of its own, and `Count` runs no hook, so the hook never sees a query whose total Credo computes, and a model that sets timestamps in it keeps its automatic total. A conformance test pins both facts against the pinned Bun, so a release that changes either fails `sqldb`'s tests, not an application's count.
+
+On MySQL, a count's `ER_DUP_FIELDNAME` (1060 / SQLSTATE `42S21`) is wrapped with `sqldb.ErrUnsupportedCountQuery` and keeps its driver cause, while every other 1060 passes through; add explicit unique aliases to fix the collision.
 
 ### COUNT + SELECT snapshot consistency
 
@@ -384,6 +429,8 @@ The planned core names are `CursorRequest`, `CursorPage[T]`, and `CursorMeta`; t
 `CursorRequest.Validate` will mirror `PageRequest`'s input-policy role by defaulting/clamping `per_page`; the terminal will snapshot the request and strictly reject nil, non-positive, overflowed, or adapter-unrepresentable execution values without mutating it. Because the terminal adds one to `per_page`, strict execution checks native-int addition before building SQL.
 
 ### Terminal-owned keyset
+
+> **Current until v0.26.0 (R9):** the next paragraph names `ApplyQueryBuilder` and Bun's `WhereGroup`; when R9 ships, the predicates come from `ApplyFilter`, and an OR filter is enclosed in one `Filter.WhereGroup`.
 
 The terminal owns ordering through an immutable adapter-level keyset spec. The first delivery accepts only a model-less default full-model SELECT plus curated `Where` or `ApplyQueryBuilder` predicates whose top-level separator is AND. `WherePK` is excluded because Bun resolves it when the model-less builder is composed, before the typed terminal supplies `T`, and records an unrecoverable builder error. A top-level `WhereOr` is also rejected: appending the cursor ladder could otherwise produce `A OR (B AND cursor)` instead of `(A OR B) AND cursor`. An OR filter must first be enclosed in one Bun `WhereGroup` through `ApplyQueryBuilder`; the resulting group itself joins the root with AND. The terminal validates this final WHERE tree before I/O. It also rejects custom `Column`/`ColumnExpr`/`ExcludeColumn`/`TableExpr`/`Apply`, joins, root ORDER/LIMIT/OFFSET/lock, and distinct, aggregate, grouped, compound, or otherwise non-row-shaped sources. Full-model projection ensures every cursor key was actually scanned into `T`. A join can multiply one model row, so a root-table unique id is not necessarily unique in the SQL result. Supporting joins or projections requires a later logical-row uniqueness/projection proof. This fail-loud boundary prevents the token's order and the executed SQL order from diverging.
 

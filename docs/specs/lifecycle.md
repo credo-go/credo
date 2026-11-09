@@ -2,7 +2,11 @@
 
 **Status:** Implemented (beta) **Package:** root (`lifecycle*.go`, `component.go`, `prepare.go`, `server.go`, `reload.go`, `tls_rotation.go`), `internal/di/` **ADR:** [ADR-006](../adr/006-application-lifecycle.md), [ADR-024](../adr/024-lifecycle-components.md), [ADR-022](../adr/022-bootstrap-and-di-ownership.md), [ADR-020](../adr/020-reload-and-partial-config-reload.md), [ADR-016](../adr/016-health-checks.md) **Guide:** [Deployment guide](../guides/deployment.md), [Dependency injection guide](../guides/dependency-injection.md#shutdown-and-lifecycle)
 
+> **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
+
 ## Overview
+
+> **Current until v0.26.0 (R15):** the next paragraph's last clause names the `Stager`/`Reloader` configuration side of reload; with R15 the config spec states live sections and the reload's result.
 
 Credo uses a state machine to govern the application lifecycle. This prevents undefined behavior from late route/middleware registration and enables graceful shutdown with in-flight request draining. This spec owns the states, preparation, the serve entry points, TLS and server construction, the start phase, the drain, the lifecycle hooks, reload's mechanics and the registration guards. The DI surface, the registration options and resource identity are in the [container spec](container.md), what `/ready` aggregates is in the [health spec](health.md#readiness-aggregation), and the `Stager`/`Reloader` configuration side of reload is in the [config spec](config.md).
 
@@ -104,6 +108,8 @@ Serves on a caller-provided listener, sharing `RunContext`'s lifecycle. The esca
 
 ### TLS
 
+> **Current until v0.26.0 (R15):** the table's "Rotated on every reload" notes and the last two sentences of the paragraph after it describe certificate rotation on reload and an `OnReload` hook driving a `WithTLSConfig` rotation; the [certificate file check](#certificate-files-rotate-when-they-change) replaces them.
+
 TLS is server configuration, not a serve method. When a certificate source is configured, `Run` and `RunContext` serve HTTPS; otherwise they serve plaintext. `ServeContext` is exempt (see above). Three sources resolve by precedence — highest wins, whole-source override, never a conflict error:
 
 | Source | Precedence | Notes |
@@ -114,6 +120,20 @@ TLS is server configuration, not a serve method. When a certificate source is co
 | _(none)_ | — | Plaintext |
 
 All TLS validation runs once at **preflight**: a missing or mismatched key pair, a partial cert-without-key, a `WithTLSConfig` with no certificate source (the check mirrors `net/http`: `Certificates`, `GetCertificate`, or `GetConfigForClient`), or an explicitly-set-but-empty source — `WithTLSConfig(nil)` or `WithTLSFiles` with an empty path — is a pre-session failure that rolls the state back to `building`. An explicit option that is empty or nil fails loud rather than silently falling through to a lower-precedence source or to plaintext. The resolved `*tls.Config` is built once and reused by the serve goroutine — no double load; a `WithTLSConfig` value is cloned, so later mutations of the caller's config do not affect serving. For the two file-based sources the key pair is served through `GetCertificate` backed by an atomic pointer: every [reload](#appreloadctx-contextcontext-error) re-reads the files and swaps the pair on success (new handshakes see the new certificate, open connections are untouched), while a failed re-read keeps the previous certificate and surfaces through the reload error. `WithTLSConfig` is never touched by reload; its owner drives rotation through their own `GetCertificate` (optionally from an `OnReload` hook).
+
+#### Certificate files rotate when they change
+
+> **Pending v0.26.0 (R15):** not implemented yet; file-based certificates rotate on every reload, as the paragraph above states.
+
+For the two file-based sources the key pair is served through `GetCertificate` backed by an atomic pointer, and the files are checked at the handshake, not at a reload:
+
+- `GetCertificate` checks the two files at most once a second, on the handshake that finds the last check older than that; concurrent handshakes serve the current pair without waiting, so one check runs per interval.
+- A check is `os.Stat` on each file, compared with the last load by `os.SameFile`, modification time and size. `os.Stat` follows symbolic links, so the link a Kubernetes Secret volume swaps on an update is a change, and no signal is needed.
+- A change loads the pair with `tls.LoadX509KeyPair` and swaps it atomically: new handshakes see the new certificate, open connections are untouched.
+- A pair that fails to load — a half-written pair, a key that does not match its certificate — keeps the old pair and is logged once per change, with both files and the error; it is retried when its other file changes.
+- The paths are read at start, so a reload that changes `server.tls.*` does not move the pair: it reports the keys as needing a restart ([config spec](config.md#reload-and-its-result)).
+
+`WithTLSConfig` stays the caller's, untouched: its owner rotates through their own `GetCertificate`.
 
 `WithHTTPRedirect(addr)` adds a second, plaintext listener that permanently redirects every request to HTTPS (301 for GET/HEAD, 308 otherwise). The target reuses the request host and request URI with the TLS server's port, omitted when it is 443. It requires TLS — without it, preflight fails fast — and binds, serves, and drains alongside the main server: a bind failure rolls back to `building` like the main listener, and a runtime failure of the redirect listener tears the app down, just like the main listener, so a requested redirect never silently dies while the app reports healthy. `ServeContext` ignores it. To make clients _prefer_ HTTPS without a redirect, enable HSTS via `middleware.Secure` (opt-in, sent only over HTTPS).
 
@@ -193,17 +213,36 @@ A request that `ServeHTTP` rejects for lifecycle reasons — the App is `stopped
 
 ### `app.Reload(ctx context.Context) error`
 
+> **Current until v0.26.0 (R15):** the second and third paragraphs describe the reload's steps through `Stager`/`Reloader`, `OnConfigChange` subscribers, reload participants and `OnReload` hooks; the [live-section steps](#reload-with-live-sections) replace them. The first paragraph's slot, states and drain coordination stay, with "participant, subscriber, and hook" read as the `OnChange` callbacks.
+
 Triggers a partial reload. Succeeds only in the `running` state: before `running` it returns an error (there is nothing to reload), and in `stopping`/`stopped` it returns an error that the signal path treats as a no-op. Concurrent calls are serialized through a context-aware slot: a caller that waits then performs its own full reload, so after `Reload` returns the snapshot is at least as new as when it was called; a waiting caller returns its own `ctx.Err()` if its context ends first, and returns the not-running error without reloading if shutdown begins while it waits. Every participant, subscriber, and hook receives a context cancelled by either the caller's context or the application lifecycle, and `Shutdown` waits for an in-flight reload before the internal tier stops (see [Shutdown in tiers](#shutdown-in-tiers)).
 
 The sequence is: (1) if the registered `RawConfig` implements `config.Stager`, stage a candidate snapshot (`Stage()`) and take its `config.Changes` — a load error aborts with the old snapshot untouched; (2) for every `OnConfigChange[T]` subscription affected by the diff, decode `T` from the candidate and, when `T` has a `Validate() error` method, validate it — any failure aborts before anything is published (logged as `reload aborted before publish`); (3) `Commit()` the snapshot atomically, run framework reload participants (file-based TLS rotation), then affected `OnConfigChange` subscribers in registration order with the values decoded in step 2, then all `OnReload` hooks FIFO — errors and recovered panics are collected and the sequence continues (no rollback); (4) return `errors.Join` of the step-3 errors, log one Info summary (duration, whether config was reloaded, changed-key count, subscribers notified, error count) and one Warn naming every changed key that no subscription or participant covers (`restart required`; key paths only, never values). A reload never stops the process.
 
 A `RawConfig` that implements only `config.Reloader` has no candidate stage: its `Reload()` publishes first and affected subscribers are decoded from the live snapshot, so a decode failure is a step-3 error rather than an abort. A `RawConfig` that implements neither leaves the configuration untouched; only participants and `OnReload` hooks run, and `OnConfigChange` is a registration-time panic. A nil `ctx` is an error.
 
+#### Reload with live sections
+
+> **Pending v0.26.0 (R15):** not implemented yet; `app.Reload` returns only an error and runs the steps above.
+
+`app.Reload(ctx)` returns the reload's result beside its error — the result `(*config.Config).Reload(ctx)` returns ([config spec](config.md#reload-and-its-result)) — and keeps the trigger, the slot and the drain's step. In the `running` state the steps are:
+
+1. `(*config.Config).Reload(ctx)` re-reads the sources and decodes and validates every [live section](config.md#live-sections) the reload changes against the candidate. One failure aborts the reload with every old value current; the result says nothing was applied and why, and the error names the section's key.
+2. It publishes the snapshot and the changed sections as one generation.
+3. It runs the changed sections' `OnChange` callbacks in registration order with the reload's context, which the caller's context or the drain cancels; an error or a recovered panic is joined into the result, the later callbacks still run, no callback is skipped when the context has ended, and nothing rolls back.
+4. `app.Reload` logs the result — one Info summary, and one Warn naming the keys that need a restart, computed against the snapshot the start read, and the keys a later source keeps, with that source (key paths only, never values) — and returns it with the joined errors.
+
+No other binding changes, a reload runs no hook of its own, and certificate files [rotate on their own](#certificate-files-rotate-when-they-change). Over a configuration that cannot reload — `testutil`'s, a custom `RawConfig` — `app.Reload` returns an error naming the configuration's type and `config.Load`. The triggers are unchanged: `app.Reload(ctx)`, SIGHUP under `Run` bounded by `WithReloadTimeout` or `server.reload_timeout`, and `WithoutReloadSignals`; `RunContext` and `ServeContext` stay signal-free. The drain waits for a reload in flight, its callbacks included, before the internal tier ([Shutdown in tiers](#shutdown-in-tiers)).
+
 ### `app.OnReload(fn func(ctx context.Context) error)`
+
+> **Current until v0.26.0 (R15):** this section describes `app.OnReload`, which goes; derived state follows its live section's `OnChange`, and a refresh unrelated to configuration installs its own SIGHUP handler.
 
 Registers a reload hook. Hooks run in **FIFO** order at the end of every reload, after the new snapshot is visible and typed subscribers have applied their sections, with the reload context (`WithReloadTimeout` for the signal path, the caller's for `Reload`). An error or recovered panic is joined into the `Reload` result and does not skip later hooks. Typical uses: re-open a log file after rotation, refresh an allowlist, drive rotation for a `WithTLSConfig` certificate. Must be called before preparation (panics once frozen); a nil hook panics.
 
 ### `app.OnConfigChange[T](key string, fn func(ctx context.Context, next T) error)`
+
+> **Current until v0.26.0 (R15):** this section describes `app.OnConfigChange[T]`, which goes; a [live section](config.md#live-sections), `app.Provide(section.Live)`, replaces it.
 
 Generic method (Go 1.27 concrete-type generic methods, as `ProvideValue[T]`/`GetConfig[T]`) registering a typed subscriber for one config section. When a reload changes any leaf under `key` (or `key` itself), `T` is decoded from the new snapshot — validated first if it implements `Validatable` — and `fn` receives it. Subscribers for unaffected sections are not invoked. Several subscriptions may share a key, and nested keys are independent (`"databases"` and `"databases.primary"` both fire when `databases.primary.dsn` changes). The subscriber owns atomic application in its domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a limiter); the framework never rebuilds DI singletons. Must be called before preparation; a nil hook panics; registering one when the app's `RawConfig` implements neither `config.Stager` nor `config.Reloader` panics at registration (a subscription that can never fire is startup misuse).
 
@@ -444,6 +483,8 @@ Typical start-hook uses include cache warm-up. The `store/sqldb` migration wrapp
 `*App` has `Start(ctx) error` and `Shutdown(ctx) error`, so it is a startable component. A child App mounted with `app.Mount` is handed to `parent.Manage(child)`: its start phase runs in the parent's internal tier, before the parent's listener accepts, and it stops after the parent's HTTP drain, its own components in their own order. The parent's server is the child's owner, so the parent's HTTP drain is the drain the child's `Shutdown` relies on. Without the `Manage`, a child with anything to start panics on its first request with the gate's message, which the parent's recovery turns into a logged 500; a child with nothing to start serves without it. `parent.Manage(child)` composes independent Apps; an application's own modules share one App and its DI graph.
 
 ## Registration Guards
+
+> **Current until v0.26.0 (R15):** the table's `app.OnReload()` and `app.OnConfigChange[T]()` rows name methods that go.
 
 The following methods panic with `credo: <what> called after app was compiled or shut down` once `frozen` is set — at preparation admission (first `ServeHTTP` request or managed serve) or at bootstrap-shutdown admission. An explicit `Finalize` does not set it, so DI-backed controllers can still be resolved and bound afterwards:
 

@@ -6,6 +6,10 @@
 
 The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface, a middleware factory that populates them, and three built-in authenticators (JWT, API key, HTTP Basic). The JWT authenticator wraps `github.com/golang-jwt/jwt/v5` (pinned v5.3.1 in `go.mod`) and exposes it on purpose in its advanced tier. The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md).
 
+> **Pending v0.26.0 (R11):** not implemented yet; the JWT authenticator is part of `auth`, and every application that imports `auth` compiles golang-jwt.
+
+The JWT authenticator lives in `auth/jwtauth`, in the root module, so that only an application that verifies JWTs compiles golang-jwt; the middleware factory, the `Authenticator[T]` interface and the API-key and Basic authenticators stay in `auth` ([JWT in `auth/jwtauth`](#jwt-in-authjwtauth)).
+
 ## API Surface
 
 ### User Accessors (generic Context methods)
@@ -31,7 +35,17 @@ func (c *Context) RequireUser[T any]() (T, error)
 var ErrUserMissing error
 ```
 
+> **Current until v0.26.0 (R4):** the next paragraph's storage on the request, with its request copy per call.
+
 **Internal implementation**: `SetUser` stores the user on the request's `context.Context` via `context.WithValue` with an unexported generic `userKey[T] struct{}` key (defined in the root package). The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`). The backing store is private; the only public access path is these methods (there is no `context.Context`-based accessor).
+
+> **Pending v0.26.0 (R4):** the next paragraph replaces the paragraph above when R4 ships.
+
+**Internal implementation**: the accessors are shortcuts over a typed key of the root package's own, generic in the user type and unexported, set and read on the Context's head as every [typed key](context.md#context-head-and-typed-keys) is. Because the key is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds one node to the head and copies no request. A user set inside a scope — `middleware.Timeout`, a wrapped stdlib middleware, `c.Within` — is still the request's user after the scope returns, panics included. The key is private, so the only public access path is these methods; there is no `context.Context`-based accessor, and stdlib code cannot read or set the user, while the request a wrapped stdlib middleware passes on still carries it.
+
+> **Pending v0.26.0 (R12):** not implemented yet; no observer record exists.
+
+An observer of the final response reads the user with `Exchange.GetUser[T]`, which reads the same private key as `GetUser` ([HTTP features spec](http-features.md)).
 
 ### Authenticator Interface (generic)
 
@@ -91,6 +105,23 @@ Each constructor returns an error when its required input is missing; each `Auth
 - `NewBasicAuthenticator` sends no challenge by itself: pass `BasicErrorHandler(a.Realm())` as the middleware's `ErrorFunc` to set `WWW-Authenticate: Basic realm="…"` (`BasicChallenge(realm)` builds the value; an empty realm is `Restricted`).
 - `SecureCompare(x, y string) bool` compares a received credential with a known plaintext secret in constant time, hiding both content and length. Stored passwords are verified with a password hash (bcrypt, argon2id) instead.
 
+### JWT in `auth/jwtauth`
+
+> **Pending v0.26.0 (R11):** not implemented yet; the JWT types and errors are in `auth` under the names of the left column, and the table above and the section below use them.
+
+The JWT authenticator, its configuration and its errors move into `auth/jwtauth`. The types drop the `JWT` prefix the package names, and the errors take golang-jwt's `ErrToken` stem, with `jwtauth:` as the prefix of their text:
+
+| `auth` today | `auth/jwtauth` |
+| --- | --- |
+| `JWTConfig[T]` | `Config[T]` |
+| `JWTAdvanced[T]` | `Advanced[T]` |
+| `JWTClaims` | `Claims` |
+| `JWTAuthenticator[T]` | `Authenticator[T]` |
+| `NewJWTAuthenticator[T](cfg)` | `NewAuthenticator[T](cfg)` |
+| `ErrJWTMissing`, `ErrJWTInvalid` | `ErrTokenMissing`, `ErrTokenInvalid` |
+
+The package is not named `jwt`, golang-jwt's package name, which code that configures `Advanced` imports beside it. Its behaviour — extraction, key selection, the two configuration tiers and the validation semantics below — does not change.
+
 ### JWT Configuration (two tiers)
 
 `JWTConfig[T]` separates a Credo-typed simple tier from a golang-jwt escape hatch:
@@ -128,7 +159,13 @@ func (a *MyAuthenticator) Authenticate(r *http.Request) (*User, error) {
 api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth, nil))
 ```
 
+> **Current until v0.26.0 (R13):** the next paragraph's placement advice, which predates the routed tier and treats a mount as outside every tier but the global one.
+
 Register authentication on a group or route. Global middleware runs before routing, for requests that match no route too: global authentication answers an unauthenticated request for an unknown path with 401 instead of 404, and `ctx.Route()` is nil there ([middleware guide](../guides/middleware.md#rewrite-ordering-affects-auth-decisions)). A mounted handler bypasses group middleware and needs global authentication or its own.
+
+> **Pending v0.26.0 (R13):** the next paragraph replaces the paragraph above when R13 ships.
+
+Register authentication on the routed tier with `app.Middleware`, on a group or on a route. The routed tier runs after the match on every route registered through the App, mounts included, so authentication there answers 401 for a mounted path, and it never runs for the router's own 404 and 405. Middleware registered with `app.PreRouting` runs before routing, for requests that match no route too: authentication there answers an unauthenticated request for an unknown path with 401 instead of 404, and `c.Route()` is nil there ([middleware spec](middleware.md)).
 
 ### Pattern 2: Custom Middleware (full control)
 
@@ -171,7 +208,9 @@ func CreateOrder(ctx *credo.Context) error {
 
 ### Pattern 4: RBAC with Route Meta
 
-Auth middleware sets the user, RBAC middleware reads meta and checks permissions:
+Auth middleware sets the user, RBAC middleware reads meta and checks permissions.
+
+> **Current until v0.26.0 (R4):** the next example, with its string meta key, `LookupMeta` and the type assertion on the value.
 
 ```go
 // Route registration: authentication first, then authorization
@@ -204,6 +243,41 @@ func RequirePermission(next credo.Handler) credo.Handler {
 }
 ```
 
+> **Pending v0.26.0 (R4):** the next example replaces the example above when R4 ships.
+
+```go
+// Permission is the route meta key RequirePermission reads; its value type is checked at compile time.
+var Permission = credo.NewKey[string]("permission")
+
+// Route registration: authentication first, then authorization
+admin := app.Group("/v1/admin").
+    Middleware(auth.Middleware[*User](myAuth, nil), RequirePermission)
+
+admin.GET("/users", listUsers).SetMeta(Permission, "admin.users.view")
+
+// RequirePermission authorizes against the route's Permission meta.
+func RequirePermission(next credo.Handler) credo.Handler {
+    return func(c *credo.Context) error {
+        perm, ok := c.Route().GetMeta(Permission) // the route, then its groups, then the App
+        if !ok {
+            return next(c) // no permission required
+        }
+        if perm == "" {
+            return credo.ErrForbidden // an empty permission fails closed
+        }
+
+        user, err := c.RequireUser[*User]()
+        if err != nil {
+            return err // 401
+        }
+        if !user.HasPermission(perm) {
+            return credo.ErrForbidden
+        }
+        return next(c)
+    }
+}
+```
+
 ### Pattern 5: Optional Authentication
 
 Some routes need the user if present but don't require it:
@@ -224,3 +298,7 @@ func ViewProduct(ctx *credo.Context) error {
 ## Design Decisions
 
 The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorFunc` callback, RBAC via route meta, the separate `auth` package, the two-tier `JWTConfig` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
+
+> **Pending v0.26.0 (R11):** not implemented yet; the JWT authenticator is part of `auth`.
+
+The JWT authenticator's own package, `auth/jwtauth`, and its name: [ADR-012](../adr/012-authentication-and-authorization.md#jwt-in-its-own-package).

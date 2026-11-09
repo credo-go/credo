@@ -93,6 +93,10 @@ Registers a single GET route, with the router's HEAD twin, that serves the file 
 
 ### StaticRoute
 
+> **Current until v0.26.0 (R4):** the next block's `SetMeta` takes a string key and an `any` value, and `StaticRoute` has no `RemoveMeta`; with typed meta, `SetMeta` takes a `credo.Key[T]` and a `T`, and `RemoveMeta(key)` removes the static route's own value so that its group's shows through ([router spec](router.md#route-meta-system-goyave-inspired)).
+
+> **Current until v0.26.0 (R14):** the next block's `BuildURI` returns a `string`; it becomes `BuildURI(filePath ...string) (string, error)` ([below](#staticroute)).
+
 ```go
 func (sr *StaticRoute) Name(name string) *StaticRoute
 func (sr *StaticRoute) SetMeta(key string, val any) *StaticRoute
@@ -118,12 +122,18 @@ sr.BuildURI("")            // "/static/"
 sr.BuildURI()              // "/static/"
 ```
 
+> **Current until v0.26.0 (R14):** the next paragraph and the example above it describe a `BuildURI` that percent-encodes nothing and returns no error.
+
 Leading slashes of the file path are dropped; under the root prefix `"/"` the results are `/css/app.css` and `/`. `BuildURI` joins the prefix as registered and the file path verbatim: it percent-encodes nothing and substitutes no parameters. Under a parametric group prefix it therefore returns pattern text (`/t/{tenant}/files/css/app.css`), not a routable URL. Name the static route and build from the catch-all instead, which fills the parameters in order and escapes each segment:
 
 ```go
 app.Group("/t/{tenant}").Static("/files", fsys).Name("files")
 uri, err := app.GetRoute("files").BuildURI("acme", "css/app.css") // "/t/acme/files/css/app.css"
 ```
+
+> **Pending v0.26.0 (R14):** not implemented yet; `BuildURI` returns a `string` built without escaping, as the paragraph above states.
+
+`BuildURI(filePath ...string) (string, error)` escapes each segment of the file path for the URL and returns an error, naming the path and the reason, for a path it cannot represent: invalid UTF-8, or a dot-segment that a client would resolve out of the prefix. It is the static counterpart of `Route.BuildURI`, which returns an error for a value it cannot route back.
 
 ## Internal Behavior
 
