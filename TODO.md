@@ -265,7 +265,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `MaxFileSize(bytes)` — reject files exceeding size limit
   - [x] `AllowedMimeTypes(types...)` — restrict to specific MIME types (case-insensitive, ignores media-type params)
   - [x] `AllowedExtensions(exts...)` — restrict to specific file extensions (case-insensitive, optional leading dot)
-- [ ] **Fields promoted from an unexported embedded struct**: such a field gets an empty field name in its violation, because the engine's name table (`buildFieldMappingList`) skips unexported fields, unexported embedded structs included; `decodeValues` skips them too, so they are never bound from a query or form either (found during R6)
+- [x] **Fields promoted from an unexported embedded struct**: the engine's name table and the query/form bind walk an embedded struct as `encoding/json` does, unexported type included, and name a field promoted through an embedded pointer by its offset in the pointee; an embedded pointer to an unexported struct type is skipped. See the [validation spec](docs/specs/validation.md)
 
 ### 2.4 Error Handling
 

@@ -18,6 +18,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 - **BREAKING (behavior): text after a catch-all panics at registration.** A pattern such as `/a/{p...}/x` can never match; it now panics with the message `middleware.Rewrite` gives such a pattern, and so does a catch-all in a `Mount` or `Static` prefix.
 
+### Fixed
+
+- A field promoted from an unexported embedded struct is bound from a query or form and named in its violation, as `encoding/json` promotes it; a field promoted through an embedded pointer is named as well, where its violation had an empty field.
+
 ## [0.26.0] - 2026-11-09
 
 **Pre-v1 reshaping.** This release reshapes the contracts v1 will freeze so that each has one way to do each thing:

@@ -43,7 +43,8 @@ type tagCacheKey struct {
 var tagTypeCache sync.Map
 
 // buildTagFields walks struct fields and reads tags with the given name.
-// Fields without the tag or tagged with "-" are skipped.
+// Fields without the tag or tagged with "-" are skipped. Embedded structs are
+// walked as encoding/json walks them (see [embeddedStruct]).
 func buildTagFields(t reflect.Type, tagName string) []tagField {
 	var fields []tagField
 	buildTagFieldsRecursive(t, tagName, nil, &fields)
@@ -53,24 +54,16 @@ func buildTagFields(t reflect.Type, tagName string) []tagField {
 func buildTagFieldsRecursive(t reflect.Type, tagName string, parentIndex []int, fields *[]tagField) {
 	for i := range t.NumField() {
 		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-
 		idx := make([]int, len(parentIndex)+1)
 		copy(idx, parentIndex)
 		idx[len(parentIndex)] = i
 
-		// Handle embedded structs recursively (including pointer-to-struct)
-		if f.Anonymous {
-			ft := f.Type
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-			if ft.Kind() == reflect.Struct {
-				buildTagFieldsRecursive(ft, tagName, idx, fields)
-				continue
-			}
+		if st, ok := embeddedStruct(f); ok {
+			buildTagFieldsRecursive(st, tagName, idx, fields)
+			continue
+		}
+		if !f.IsExported() {
+			continue
 		}
 
 		tag := f.Tag.Get(tagName)
@@ -98,6 +91,25 @@ func buildTagFieldsRecursive(t reflect.Type, tagName string, parentIndex []int, 
 			isPtr: isPtr,
 		})
 	}
+}
+
+// embeddedStruct reports whether f is an embedded struct whose exported
+// fields are promoted, and returns its struct type. As in encoding/json, an
+// embedded struct is walked even when its type is unexported, and so is an
+// embedded pointer to an exported struct type, which the binder allocates; an
+// embedded pointer to an unexported struct type is skipped, since the binder
+// cannot set an unexported field.
+func embeddedStruct(f reflect.StructField) (reflect.Type, bool) {
+	if !f.Anonymous {
+		return nil, false
+	}
+	switch {
+	case f.Type.Kind() == reflect.Struct:
+		return f.Type, true
+	case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct && f.IsExported():
+		return f.Type.Elem(), true
+	}
+	return nil, false
 }
 
 func cachedTagFields(t reflect.Type, tagName string) []tagField {

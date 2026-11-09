@@ -9,6 +9,7 @@ package validation
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -308,33 +309,56 @@ type offsetTypeKey struct {
 type fieldMappings struct {
 	byOffsetType map[offsetTypeKey]string // precise offset+type match
 	byOffset     map[uintptr]string       // offset-only fallback
+
+	// pointers holds the field index of each embedded pointer to a struct
+	// whose fields are promoted. Those fields live in the pointee, not in the
+	// struct, so they are named by their offset in the pointee.
+	pointers [][]int
 }
 
 // fieldNameCache caches *fieldMappings per struct type.
 // Key: reflect.Type, Value: *fieldMappings
 var fieldNameCache sync.Map
 
-// resolveFieldName computes the offset of fieldPtr relative to structPtr and
-// returns the matching field name from the cached lookups. It prefers a precise
-// offset+type match and falls back to an offset-only match.
+// resolveFieldName returns the name of the field fieldPtr points to in the
+// struct structPtr points to, or "" when fieldPtr is no field of it.
 func resolveFieldName(structPtr any, fieldPtr any) string {
-	structVal := reflect.ValueOf(structPtr)
-	structPtrAddr := structVal.Pointer()
-	fieldPtrAddr := reflect.ValueOf(fieldPtr).Pointer()
-	offset := fieldPtrAddr - structPtrAddr
+	fieldVal := reflect.ValueOf(fieldPtr)
+	return lookupFieldName(reflect.ValueOf(structPtr).Elem(), fieldVal.Pointer(), fieldVal.Type().Elem(), nil)
+}
 
-	structType := structVal.Elem().Type()
-	m := getFieldMappings(structType)
-
-	fieldType := reflect.TypeOf(fieldPtr).Elem()
-	if name, ok := m.byOffsetType[offsetTypeKey{offset: offset, typ: fieldType}]; ok {
-		return name
+// lookupFieldName names the field at addr of type ft in the addressable
+// struct v. A field inside v is found by its offset, preferring a precise
+// offset+type match over an offset-only one; a field promoted through an
+// embedded pointer is looked up in the pointee. visited holds the structs
+// already searched, so a pointer cycle ends.
+func lookupFieldName(v reflect.Value, addr uintptr, ft reflect.Type, visited []uintptr) string {
+	t := v.Type()
+	m := getFieldMappings(t)
+	base := v.UnsafeAddr()
+	if addr >= base && addr-base < max(t.Size(), 1) {
+		offset := addr - base
+		if name, ok := m.byOffsetType[offsetTypeKey{offset: offset, typ: ft}]; ok {
+			return name
+		}
+		// Fallback: offset-only match (covers most cases).
+		if name, ok := m.byOffset[offset]; ok {
+			return name
+		}
 	}
-	// Fallback: offset-only match (covers most cases).
-	if name, ok := m.byOffset[offset]; ok {
-		return name
+	if len(m.pointers) == 0 {
+		return ""
 	}
-
+	visited = append(visited, base)
+	for _, index := range m.pointers {
+		p := v.FieldByIndex(index)
+		if p.IsNil() || slices.Contains(visited, p.Pointer()) {
+			continue
+		}
+		if name := lookupFieldName(p.Elem(), addr, ft, visited); name != "" {
+			return name
+		}
+	}
 	return ""
 }
 
@@ -354,10 +378,11 @@ func getFieldMappings(t reflect.Type) *fieldMappings {
 // struct base vs. its first field), the first encountered in declaration order
 // wins — matching the previous linear-scan behaviour.
 func buildFieldMappings(t reflect.Type) *fieldMappings {
-	list := buildFieldMappingList(t, 0)
+	list, pointers := buildFieldMappingList(t, 0, nil)
 	m := &fieldMappings{
 		byOffsetType: make(map[offsetTypeKey]string, len(list)),
 		byOffset:     make(map[uintptr]string, len(list)),
+		pointers:     pointers,
 	}
 	for _, fm := range list {
 		key := offsetTypeKey{offset: fm.offset, typ: fm.typ}
@@ -372,35 +397,37 @@ func buildFieldMappings(t reflect.Type) *fieldMappings {
 }
 
 // buildFieldMappingList walks a struct type's fields and builds offset-to-name
-// mappings in declaration order. baseOffset is added to each field's offset for
-// embedded structs.
-func buildFieldMappingList(t reflect.Type, baseOffset uintptr) []fieldMapping {
-	var mappings []fieldMapping
-	for i := 0; i < t.NumField(); i++ {
+// mappings in declaration order, as encoding/json sees the fields: an
+// exported field is named, and an embedded struct promotes its exported
+// fields even when its type is unexported. An embedded pointer to an exported
+// struct type is named and its index returned among the pointers, whose
+// pointee's fields are mapped by the pointee's own offsets; an embedded
+// pointer to an unexported struct type is skipped, as no binder can allocate
+// it. baseOffset is added to each field's offset for embedded structs, and
+// index is the field index of t in the struct the walk started from.
+func buildFieldMappingList(t reflect.Type, baseOffset uintptr, index []int) (mappings []fieldMapping, pointers [][]int) {
+	for i := range t.NumField() {
 		f := t.Field(i)
+		offset := baseOffset + f.Offset
+		fieldIndex := append(slices.Clone(index), i)
+		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+			if f.IsExported() {
+				mappings = append(mappings, fieldMapping{offset: offset, typ: f.Type, name: getErrorFieldName(f)})
+			}
+			inner, innerPointers := buildFieldMappingList(f.Type, offset, fieldIndex)
+			mappings = append(mappings, inner...)
+			pointers = append(pointers, innerPointers...)
+			continue
+		}
 		if !f.IsExported() {
 			continue
 		}
-		offset := baseOffset + f.Offset
-		name := getErrorFieldName(f)
-		mappings = append(mappings, fieldMapping{
-			offset: offset,
-			typ:    f.Type,
-			name:   name,
-		})
-
-		// Recurse into embedded (anonymous) struct fields.
-		if f.Anonymous {
-			ft := f.Type
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-			if ft.Kind() == reflect.Struct {
-				mappings = append(mappings, buildFieldMappingList(ft, offset)...)
-			}
+		mappings = append(mappings, fieldMapping{offset: offset, typ: f.Type, name: getErrorFieldName(f)})
+		if f.Anonymous && f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct {
+			pointers = append(pointers, fieldIndex)
 		}
 	}
-	return mappings
+	return mappings, pointers
 }
 
 // getErrorFieldName returns the field name for error reporting.
