@@ -24,6 +24,18 @@ const (
 	KindReadOnly      Kind = "read_only"
 )
 
+// declared reports whether k is one of the kinds above other than
+// [KindUnknown].
+func (k Kind) declared() bool {
+	switch k {
+	case KindNotFound, KindAlreadyExists, KindConstraint, KindSerialization, KindDeadlock,
+		KindContention, KindConflict, KindTimeout, KindUnavailable, KindReadOnly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Provider is implemented by errors that expose a transport-neutral semantic
 // kind. Implementations must keep sensitive driver metadata out of FaultKind.
 type Provider interface {

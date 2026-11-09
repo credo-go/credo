@@ -422,8 +422,8 @@ func (app *App) logError(err error, status int, ctx *Context) {
 	}
 
 	logErr := err
-	if he, ok := errors.AsType[*HTTPError](err); ok && he.Internal != nil {
-		logErr = he.Internal
+	if cause := internalCause(err); cause != nil {
+		logErr = cause
 	}
 	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelError,
 		message, slog.Int("status", status), slog.Any("error", logErr))
@@ -431,21 +431,34 @@ func (app *App) logError(err error, status int, ctx *Context) {
 
 // logClientErrorCause writes the internal cause of an error below 500 at
 // Debug. A client error earns no line at the default level, but the cause
-// attached with [HTTPError.WithInternal], or the decoder error behind a
-// [BindError], is what explains the response to whoever goes looking. An
-// error that carries no such cause — a fault provider — writes nothing.
+// attached with [HTTPError.WithInternal] or [fault.Error.WithInternal], or
+// the decoder error behind a [BindError], is what explains the response to
+// whoever goes looking. An error that carries no such cause — a fault
+// provider other than a fault.Error — writes nothing.
 func logClientErrorCause(err error, status int, ctx *Context) {
-	var cause error
-	if he, isHTTPError := errors.AsType[*HTTPError](err); isHTTPError {
-		cause = he.Internal
-	} else if be, isBindError := errors.AsType[*BindError](err); isBindError {
-		cause = be.Internal
+	cause := internalCause(err)
+	if cause == nil {
+		if be, isBindError := errors.AsType[*BindError](err); isBindError {
+			cause = be.Internal
+		}
 	}
 	if cause == nil {
 		return
 	}
 	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelDebug,
 		"credo: client error", slog.Int("status", status), slog.Any("error", cause))
+}
+
+// internalCause is the internal cause of the error that classifies err: an
+// HTTPError's, or else a fault.Error's. Nil when that error carries none.
+func internalCause(err error) error {
+	if he, ok := errors.AsType[*HTTPError](err); ok {
+		return he.Internal
+	}
+	if fe, ok := errors.AsType[*fault.Error](err); ok {
+		return fe.Internal
+	}
+	return nil
 }
 
 func (app *App) renderError(ctx *Context, info *ErrorInfo) {
@@ -503,11 +516,15 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 //  1. *HTTPError → status/code from the error and message from exact-key
 //     resolution; invalid stored fields fail closed to a generic 500. An
 //     explicit status wins over a validation or bind error wrapped inside it.
-//  2. validation.Errors or a single *validation.ValidationError → 422
+//  2. *fault.Error → status from its kind, its code and details; an
+//     undeclared kind or an invalid code fails closed to a generic 500. Like
+//     an HTTPError it wins over a validation or bind error it wraps.
+//  3. validation.Errors or a single *validation.ValidationError → 422
 //     Unprocessable Entity with field violations
-//  3. *BindError → 400 Bad Request with a typed decode-reason violations entry
-//  4. fault.Provider → default root transport policy for the semantic kind
-//  5. Any other error → 500 Internal Server Error (message not leaked)
+//  4. *BindError → 400 Bad Request with a typed decode-reason violations entry
+//  5. any other fault.Provider → the status for its kind, with the kind as
+//     the code
+//  6. Any other error → 500 Internal Server Error (message not leaked)
 //
 // These are the only status channels: an error that merely has an
 // HTTPStatus() int method is "any other error".
@@ -532,6 +549,16 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		return info
 	}
 
+	if fe, ok := errors.AsType[*fault.Error](err); ok {
+		status, known := internalfaultstatus.HTTP(fe.Kind)
+		if !known || !isValidErrorCode(fe.Code) {
+			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
+		}
+		info := app.codedErrorInfo(ctx, status, fe.Code, "")
+		info.Details = fe.Details
+		return info
+	}
+
 	if ve, ok := errors.AsType[validation.Errors](err); ok {
 		return app.validationErrorInfo(ctx, ve)
 	}
@@ -546,11 +573,14 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 	}
 
 	if provider, ok := fault.ProviderOf(err); ok {
-		status, known := internalfaultstatus.HTTP(provider.FaultKind())
+		kind := provider.FaultKind()
+		status, known := internalfaultstatus.HTTP(kind)
 		if !known {
 			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 		}
-		return app.codedErrorInfo(ctx, status, "", "")
+		// The kind is the code, so a duplicate stays distinguishable from a
+		// retryable serialization or deadlock failure under the same 409.
+		return app.codedErrorInfo(ctx, status, string(kind), "")
 	}
 
 	return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
