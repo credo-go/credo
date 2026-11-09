@@ -281,7 +281,7 @@ func (r *Request) BindBody(target any) error {
 	// syntax error.
 	if coding := r.Header.Get("Content-Encoding"); !httpheader.IsIdentityContentCoding(coding) {
 		return NewHTTPError(http.StatusUnsupportedMediaType, CodeUnsupportedContentEncoding).
-			WithMessageKey("unsupported content encoding: " + coding)
+			WithDetails(map[string]any{"encoding": coding})
 	}
 
 	ct := r.Header.Get("Content-Type")
@@ -354,7 +354,7 @@ func (r *Request) BindBody(target any) error {
 
 	default:
 		return NewHTTPError(http.StatusUnsupportedMediaType).
-			WithMessageKey("unsupported content type: " + mediaType)
+			WithDetails(map[string]any{"content_type": mediaType})
 	}
 
 	return r.validateBoundTarget("BindBody", target)
@@ -373,9 +373,7 @@ func invalidBindTarget(reason string) error {
 // 400-class BindError.
 func maxBytesHTTPError(err error) (*HTTPError, bool) {
 	if mbe, ok := errors.AsType[*http.MaxBytesError](err); ok {
-		return NewHTTPError(http.StatusRequestEntityTooLarge).
-			WithMessageKey("request body too large").
-			WithInternal(mbe), true
+		return NewHTTPError(http.StatusRequestEntityTooLarge).WithInternal(mbe), true
 	}
 	return nil, false
 }

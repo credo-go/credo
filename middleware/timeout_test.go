@@ -83,7 +83,7 @@ func TestTimeout_CustomErrorHandler(t *testing.T) {
 		ErrorHandler: func(ctx *credo.Context, err error) error {
 			if errors.Is(err, context.DeadlineExceeded) {
 				return credo.NewHTTPError(http.StatusGatewayTimeout).
-					WithMessageKey("gateway timeout")
+					WithMessage("gateway timeout")
 			}
 			return err
 		},

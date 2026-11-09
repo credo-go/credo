@@ -103,8 +103,8 @@ var lifecycleUnavailableBody = func() []byte {
 	body, err := jsonv2.Marshal(ErrorResponse{
 		Success: false,
 		Error: ErrorBody{
-			Code:    MsgKeyServiceUnavailable,
-			Message: builtInMessages[MsgKeyServiceUnavailable],
+			Code:    defaultCodeForStatus(http.StatusServiceUnavailable),
+			Message: builtInMessages[defaultCodeForStatus(http.StatusServiceUnavailable)],
 		},
 	}, defaultJSONOptions)
 	if err != nil {

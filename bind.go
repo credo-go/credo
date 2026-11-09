@@ -3,7 +3,6 @@ package credo
 import (
 	"encoding"
 	"mime/multipart"
-	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -237,8 +236,7 @@ func setScalarField(field reflect.Value, kind reflect.Kind, name, val string) er
 		field.SetBool(b)
 
 	default:
-		return NewHTTPError(http.StatusBadRequest, "unsupported_bind_field_type").
-			WithMessageKey("unsupported field type '" + kind.String() + "' for field '" + name + "'")
+		return invalidBindTarget("credo: bind: field " + strconv.Quote(name) + " has type kind " + kind.String() + ", which the binder does not support")
 	}
 
 	return nil

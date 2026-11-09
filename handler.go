@@ -26,12 +26,15 @@ type ErrorInfo struct {
 	// Code is the stable machine-readable error identity.
 	Code string
 
-	// MessageKey is the exact effective i18n key before resolution. It is the
-	// explicit key carried by the error, the configured resolver result, or the
-	// bare Code when neither exists.
-	MessageKey string
+	// MessageKey is the effective catalog key before resolution: the explicit
+	// key carried by the error, the configured resolver result, or the bare
+	// Code when neither exists. It is empty when the error carries literal
+	// text ([HTTPError.WithMessage]).
+	MessageKey MessageKey
 
-	// Message is the resolved human-readable message, including safe fallback.
+	// Message is the resolved human-readable message: the error's literal
+	// text, the catalog's message for the key, or the built-in message for the
+	// code, then the status text. A key is never the message.
 	Message string
 
 	// Details is optional structured, client-safe application detail.
@@ -77,11 +80,10 @@ type RenderInfo struct {
 	// Data is the payload the handler passed to [Context.Render].
 	Data any
 
-	// MessageKey is an optional i18n message key attached via
-	// [RenderMessageKey]; empty when none was given. A renderer whose
-	// envelope carries a human-readable message resolves it, typically
-	// through [Context.T].
-	MessageKey string
+	// MessageKey is an optional catalog key attached via [RenderMessageKey];
+	// empty when none was given. A renderer whose envelope carries a
+	// human-readable message resolves it, typically through [Context.T].
+	MessageKey MessageKey
 
 	// Meta is optional structured metadata attached via [RenderMeta]
 	// (pagination, request echo, …); nil when none was given.

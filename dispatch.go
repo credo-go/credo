@@ -252,7 +252,7 @@ func (app *App) dispatchOnce(c *Context) error {
 	// A parameter candidate that is not valid percent-encoded UTF-8 is a
 	// malformed request, not a missing route: 400 before the redirect probe.
 	if rctx.InvalidCapture {
-		return NewHTTPError(http.StatusBadRequest, msgKeyInvalidPathEncoding)
+		return NewHTTPError(http.StatusBadRequest, codeInvalidPathEncoding)
 	}
 
 	// Trailing slash redirect: probe the alternate path (slash toggled).
@@ -274,7 +274,7 @@ func (app *App) dispatchOnce(c *Context) error {
 
 func requireQueryContentType(c *Context) error {
 	if strings.TrimSpace(c.request.Header.Get("Content-Type")) == "" {
-		return NewHTTPError(http.StatusBadRequest, msgKeyContentTypeRequired)
+		return NewHTTPError(http.StatusBadRequest, codeContentTypeRequired)
 	}
 	return nil
 }

@@ -379,10 +379,10 @@ func (r *Response) JSON(code int, v any) error {
 // construction-time App options.)
 type RenderOption func(*RenderInfo)
 
-// RenderMessageKey attaches an i18n message key to the [RenderInfo] a
+// RenderMessageKey attaches a catalog key to the [RenderInfo] a
 // [SuccessRenderer] receives. With no renderer installed it has no effect —
 // the side channel only exists for an envelope to consume.
-func RenderMessageKey(key string) RenderOption {
+func RenderMessageKey(key MessageKey) RenderOption {
 	return func(info *RenderInfo) { info.MessageKey = key }
 }
 
@@ -485,7 +485,7 @@ func (r *Response) NoContent(code int) error {
 func (r *Response) Redirect(code int, url string) error {
 	if code < 300 || code > 308 {
 		return NewHTTPError(http.StatusInternalServerError).
-			WithMessageKey("invalid redirect status code")
+			WithInternal(fmt.Errorf("credo: Redirect: status %d is not a redirect status (300..308)", code))
 	}
 	r.Header().Set("Location", url)
 	r.WriteHeader(code)

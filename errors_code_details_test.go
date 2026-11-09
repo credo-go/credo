@@ -109,7 +109,7 @@ func TestHandleError_LiteralMessageKeepsDefaultCode(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/test", func(ctx *credo.Context) error {
 		return credo.NewHTTPError(http.StatusBadRequest).
-			WithMessageKey("just a literal message")
+			WithMessage("just a literal message")
 	})
 
 	w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestHandleError_LiteralMessageKeepsDefaultCode(t *testing.T) {
 
 	pd := problemFromResponse(t, w)
 	if pd.Code != "bad_request" {
-		t.Errorf("code = %q, want %q (a literal message key never affects the code)", pd.Code, "bad_request")
+		t.Errorf("code = %q, want %q (a literal message never affects the code)", pd.Code, "bad_request")
 	}
 	if pd.Message != "just a literal message" {
 		t.Errorf("message = %q, want the literal message", pd.Message)

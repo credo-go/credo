@@ -107,7 +107,7 @@ func TestQUERY_ContentTypeRequired(t *testing.T) {
 			if !strings.Contains(body, `"code":"content_type_required"`) {
 				t.Fatalf("body = %q, want content_type_required code", body)
 			}
-			if !strings.Contains(body, `"message":"Content-Type is required for QUERY requests."`) {
+			if !strings.Contains(body, `"message":"Content-Type is required."`) {
 				t.Fatalf("body = %q, want built-in English fallback", body)
 			}
 		})

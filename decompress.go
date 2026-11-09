@@ -140,7 +140,7 @@ func contentDecoder(coding string) (func(io.ReadCloser) (io.ReadCloser, error), 
 
 func unsupportedContentEncoding(coding string) error {
 	return NewHTTPError(http.StatusUnsupportedMediaType, CodeUnsupportedContentEncoding).
-		WithMessageKey("unsupported content encoding: " + coding)
+		WithDetails(map[string]any{"encoding": coding})
 }
 
 // decompressOpenError classifies a failure to read the compressed stream's
@@ -148,9 +148,7 @@ func unsupportedContentEncoding(coding string) error {
 // stream is an empty body, anything else is a syntax failure.
 func decompressOpenError(err error) error {
 	if mbe, ok := errors.AsType[*http.MaxBytesError](err); ok {
-		return NewHTTPError(http.StatusRequestEntityTooLarge).
-			WithMessageKey("request body too large").
-			WithInternal(mbe)
+		return NewHTTPError(http.StatusRequestEntityTooLarge).WithInternal(mbe)
 	}
 	if errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return &BindError{Reason: BindReasonEmptyBody, Internal: err}

@@ -14,79 +14,90 @@ import (
 	"github.com/credo-go/credo/validation"
 )
 
-// MsgKey constants define Credo's bare default message keys for standard HTTP
-// errors. Applications may map them into their own namespaces with
-// [I18nConfig.ResolveMessageKey].
-const (
-	MsgKeyBadRequest          = "bad_request"
-	MsgKeyUnauthorized        = "unauthorized"
-	MsgKeyForbidden           = "forbidden"
-	MsgKeyNotFound            = "not_found"
-	MsgKeyMethodNotAllowed    = "method_not_allowed"
-	MsgKeyConflict            = "conflict"
-	MsgKeyUnprocessableEntity = "unprocessable_entity"
-	MsgKeyUnsupportedMedia    = "unsupported_media_type"
-	MsgKeyInternalError       = "internal_server_error"
-	MsgKeyTooManyRequests     = "too_many_requests"
-	MsgKeyServiceUnavailable  = "service_unavailable"
-	MsgKeyGatewayTimeout      = "gateway_timeout"
-	MsgKeyRequestTimeout      = "request_timeout"
-	MsgKeyValidationFailed    = "validation_failed"
-	MsgKeyBindFailed          = "bind_failed"
-)
-
-const msgKeyContentTypeRequired = "content_type_required"
-
-// msgKeyInvalidPathEncoding is the 400 code for a request path whose parameter
-// candidate is not valid percent-encoded UTF-8 (for example "%FF"). Malformed
-// escapes such as "%zz" never reach the router: net/http rejects them first.
-const msgKeyInvalidPathEncoding = "invalid_path_encoding"
+// MessageKey is a catalog key: the exact key of a message in the
+// application's translation catalog, never rendered as text. It is
+// [validation.MessageKey], whose violations carry a key too.
+type MessageKey = validation.MessageKey
 
 // Framework error codes carried on the wire in addition to the status-derived
-// defaults (see errorcode.go).
+// defaults (see errorcode.go). A code a status derives needs no constant:
+// NewHTTPError(http.StatusNotFound) carries "not_found".
 const (
+	// CodeValidationFailed is the 422 code for validation errors.
+	CodeValidationFailed = "validation_failed"
+
+	// CodeBindFailed is the 400 code for a request body or parameter that
+	// cannot be decoded into its target ([BindError]).
+	CodeBindFailed = "bind_failed"
+
 	// CodeUnsupportedContentEncoding is the 415 code for a request body whose
 	// Content-Encoding the decompression feature ([App.UseDecompress]) has
-	// not unwrapped.
+	// not unwrapped. The encoding is in the details, under "encoding".
 	CodeUnsupportedContentEncoding = "unsupported_content_encoding"
 
-	// CodeInvalidBindTarget is the 500 code for a nil or non-pointer bind
-	// target — a developer error, reported without client-facing detail.
+	// CodeInvalidBindTarget is the 500 code for a bind target the binder
+	// cannot fill — nil, not a pointer, or with a field of a type it does not
+	// bind — a developer error, reported without client-facing detail and
+	// logged with the reason.
 	CodeInvalidBindTarget = "invalid_bind_target"
 )
 
-// builtInMessages maps framework error codes to safe default English messages.
+// codeContentTypeRequired is the code for a request that must carry a
+// Content-Type and does not: a QUERY request (400), or a body under
+// ContractGuard's RequireContentType (415).
+const codeContentTypeRequired = "content_type_required"
+
+// codeInvalidPathEncoding is the 400 code for a request path whose parameter
+// candidate is not valid percent-encoded UTF-8 (for example "%FF"). Malformed
+// escapes such as "%zz" never reach the router: net/http rejects them first.
+const codeInvalidPathEncoding = "invalid_path_encoding"
+
+// builtInMessages maps error codes to safe default English messages. A code
+// that is not here renders its status text.
 var builtInMessages = map[string]string{
-	MsgKeyBadRequest:          "Bad Request",
-	MsgKeyUnauthorized:        "Unauthorized",
-	MsgKeyForbidden:           "Forbidden",
-	MsgKeyNotFound:            "Not Found",
-	MsgKeyMethodNotAllowed:    "Method Not Allowed",
-	MsgKeyConflict:            "Conflict",
-	MsgKeyUnprocessableEntity: "Unprocessable Entity",
-	MsgKeyUnsupportedMedia:    "Unsupported Media Type",
-	MsgKeyInternalError:       "Internal Server Error",
-	MsgKeyTooManyRequests:     "Too Many Requests",
-	MsgKeyServiceUnavailable:  "Service Unavailable",
-	MsgKeyGatewayTimeout:      "Gateway Timeout",
-	MsgKeyRequestTimeout:      "Request Timeout",
-	MsgKeyValidationFailed:    "Validation Failed",
-	MsgKeyBindFailed:          "Malformed Request",
-	msgKeyContentTypeRequired: "Content-Type is required for QUERY requests.",
-	msgKeyInvalidPathEncoding: "Request path contains an invalid percent-encoded value.",
+	"bad_request":            "Bad Request",
+	"unauthorized":           "Unauthorized",
+	"forbidden":              "Forbidden",
+	"not_found":              "Not Found",
+	"method_not_allowed":     "Method Not Allowed",
+	"conflict":               "Conflict",
+	"unprocessable_entity":   "Unprocessable Entity",
+	"unsupported_media_type": "Unsupported Media Type",
+	"internal_server_error":  "Internal Server Error",
+	"too_many_requests":      "Too Many Requests",
+	"service_unavailable":    "Service Unavailable",
+	"gateway_timeout":        "Gateway Timeout",
+	"request_timeout":        "Request Timeout",
+	CodeValidationFailed:     "Validation Failed",
+	CodeBindFailed:           "Malformed Request",
+	codeContentTypeRequired:  "Content-Type is required.",
+	codeInvalidPathEncoding:  "Request path contains an invalid percent-encoded value.",
+
+	CodeUnsupportedContentEncoding: "Unsupported Content-Encoding.",
+
+	// middleware.ContractGuard's rejections; their values are in the details.
+	"content_type_not_accepted":        "Content-Type is not accepted.",
+	"missing_required_header":          "A required header is missing.",
+	"missing_required_query_parameter": "A required query parameter is missing.",
+	"unsupported_api_version":          "Unsupported or missing API version.",
+	"missing_required_scope":           "A required scope is missing.",
 }
 
 // HTTPError represents an HTTP error carrying a status and a stable
-// machine-readable code, with an optional presentation message key.
+// machine-readable code, with an optional message: a catalog key or literal
+// text.
 //
-// Code is the primary wire identity; MessageKey only affects the
-// human-readable message. When MessageKey is empty, the message resolves
-// through the configured scoped resolver or bare Code lookup, then the safe
-// built-in/status fallback.
-// When MessageKey is set, the existing three-level chain applies:
-//  1. i18n bundle lookup — if a translation exists for MessageKey, use it
-//  2. builtInMessages lookup — if MessageKey matches a built-in key, use it
-//  3. MessageKey itself — used as-is (works for literal messages)
+// Code is the primary wire identity; the message only affects the
+// human-readable text. The message resolves in this order:
+//  1. Message, set with [HTTPError.WithMessage] — literal text, rendered as is
+//  2. MessageKey, set with [HTTPError.WithMessageKey] — looked up in the
+//     catalog; without one, the configured scoped resolver or the bare Code
+//     is the key
+//  3. the built-in message for the Code, then the status text
+//
+// A key the catalog does not define is never rendered as text: it falls back
+// to step 3, and in debug mode the pipeline warns with the key, the code and
+// the route.
 type HTTPError struct {
 	// Status is the HTTP status code.
 	Status int `json:"status"`
@@ -98,10 +109,14 @@ type HTTPError struct {
 	// satisfy the machine-code grammar ^[a-z0-9]+(_[a-z0-9]+)*$.
 	Code string `json:"code,omitempty"`
 
-	// MessageKey is an optional i18n message key or literal fallback message
-	// used only for title presentation; it never contributes to Code. Attach
-	// one with [HTTPError.WithMessageKey].
-	MessageKey string `json:"message_key,omitempty"`
+	// MessageKey is an optional catalog key for the message; it never
+	// contributes to Code. Attach one with [HTTPError.WithMessageKey].
+	MessageKey MessageKey `json:"message_key,omitempty"`
+
+	// Message is optional literal client text, rendered as is and never
+	// looked up; it wins over MessageKey. Attach it with
+	// [HTTPError.WithMessage]. Client input belongs in Details, not here.
+	Message string `json:"message,omitempty"`
 
 	// Details carries optional structured, client-safe detail rendered as the
 	// default error response's "details" member. It is encoded with the
@@ -116,8 +131,9 @@ type HTTPError struct {
 // NewHTTPError creates a new HTTPError with the given status and optional
 // stable machine-readable code. With no code argument, the frozen default
 // code for the status is used (404 → "not_found"; a status outside the
-// frozen table yields "http_<status>"). MessageKey starts empty; attach a
-// presentation key with [HTTPError.WithMessageKey].
+// frozen table yields "http_<status>"). The message starts empty; attach a
+// catalog key with [HTTPError.WithMessageKey] or literal text with
+// [HTTPError.WithMessage].
 //
 // The status domain is the full valid range 100..999, not just the error
 // classes: NewHTTPError(200) is accepted and defaults to code "ok".
@@ -137,7 +153,7 @@ func NewHTTPError(status int, code ...string) *HTTPError {
 		return &HTTPError{Status: status, Code: defaultCodeForStatus(status)}
 	case 1:
 		if !isValidErrorCode(code[0]) {
-			panic(fmt.Sprintf("credo: NewHTTPError: %q is not a valid machine code (want ^[a-z0-9]+(_[a-z0-9]+)*$); since v0.11.0 the second argument is the machine code — attach message keys or literal text with WithMessageKey", code[0]))
+			panic(fmt.Sprintf("credo: NewHTTPError: %q is not a valid machine code (want ^[a-z0-9]+(_[a-z0-9]+)*$); since v0.11.0 the second argument is the machine code — attach a catalog key with WithMessageKey or literal text with WithMessage", code[0]))
 		}
 		return &HTTPError{Status: status, Code: code[0]}
 	default:
@@ -146,14 +162,17 @@ func NewHTTPError(status int, code ...string) *HTTPError {
 }
 
 // Error implements the error interface. The diagnostic order is status,
-// code, key, internal; empty segments are omitted.
+// code, key, message, internal; empty segments are omitted.
 func (e *HTTPError) Error() string {
 	s := fmt.Sprintf("status=%d", e.Status)
 	if e.Code != "" {
 		s += ", code=" + e.Code
 	}
 	if e.MessageKey != "" {
-		s += ", key=" + e.MessageKey
+		s += ", key=" + string(e.MessageKey)
+	}
+	if e.Message != "" {
+		s += fmt.Sprintf(", message=%q", e.Message)
 	}
 	if e.Internal != nil {
 		s += fmt.Sprintf(", internal=%v", e.Internal)
@@ -180,13 +199,23 @@ func (e *HTTPError) WithInternal(err error) *HTTPError {
 	return c
 }
 
-// WithMessageKey returns a copy of the error with the presentation message
-// key set. The key affects only the human-readable title (resolved through
-// the i18n bundle → builtInMessages → literal chain); the machine-readable
-// Code is untouched.
-func (e *HTTPError) WithMessageKey(key string) *HTTPError {
+// WithMessageKey returns a copy of the error with the catalog key of its
+// message set. The key affects only the human-readable message, looked up in
+// the catalog; a key the catalog does not define renders the built-in message
+// for the Code, never the key. The machine-readable Code is untouched.
+func (e *HTTPError) WithMessageKey(key MessageKey) *HTTPError {
 	c := e.clone()
 	c.MessageKey = key
+	return c
+}
+
+// WithMessage returns a copy of the error with literal client text as its
+// message, rendered as is and never looked up. It wins over a message key.
+// The text is the application's own; client input belongs in
+// [HTTPError.WithDetails].
+func (e *HTTPError) WithMessage(text string) *HTTPError {
+	c := e.clone()
+	c.Message = text
 	return c
 }
 
@@ -493,7 +522,12 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		if !isValidHTTPStatus(he.Status) || (he.Code != "" && !isValidErrorCode(he.Code)) {
 			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 		}
-		info := app.codedErrorInfo(ctx, he.Status, he.Code, he.MessageKey)
+		var info *ErrorInfo
+		if he.Message != "" {
+			info = &ErrorInfo{Status: he.Status, Code: effectiveCode(he.Status, he.Code), Message: he.Message}
+		} else {
+			info = app.codedErrorInfo(ctx, he.Status, he.Code, he.MessageKey)
+		}
 		info.Details = he.Details
 		return info
 	}
@@ -506,7 +540,7 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 	}
 
 	if be, ok := errors.AsType[*BindError](err); ok {
-		info := app.codedErrorInfo(ctx, http.StatusBadRequest, "bind_failed", "")
+		info := app.codedErrorInfo(ctx, http.StatusBadRequest, CodeBindFailed, "")
 		info.Violations = []validation.ValidationError{app.bindProblemError(ctx, be)}
 		return info
 	}
@@ -524,7 +558,7 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 
 // validationErrorInfo is the 422 validation_failed classification.
 func (app *App) validationErrorInfo(ctx *Context, ve validation.Errors) *ErrorInfo {
-	info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, "validation_failed", "")
+	info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, CodeValidationFailed, "")
 	info.Violations = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
 	return info
 }
@@ -532,13 +566,18 @@ func (app *App) validationErrorInfo(ctx *Context, ve validation.Errors) *ErrorIn
 // codedErrorInfo is the single source of the effective-code and message
 // calculation for the HTTPError, fault and generic-500 classification
 // branches.
-func (app *App) codedErrorInfo(ctx *Context, status int, explicitCode, explicitKey string) *ErrorInfo {
-	code := explicitCode
-	if code == "" {
-		code = defaultCodeForStatus(status)
-	}
+func (app *App) codedErrorInfo(ctx *Context, status int, explicitCode string, explicitKey MessageKey) *ErrorInfo {
+	code := effectiveCode(status, explicitCode)
 	key, message := app.resolveErrorMessage(ctx, status, code, explicitKey)
 	return &ErrorInfo{Status: status, Code: code, MessageKey: key, Message: message}
+}
+
+// effectiveCode is the explicit code, or the status's default without one.
+func effectiveCode(status int, explicitCode string) string {
+	if explicitCode != "" {
+		return explicitCode
+	}
+	return defaultCodeForStatus(status)
 }
 
 func safeInternalErrorInfo() *ErrorInfo {
@@ -572,18 +611,18 @@ func writeDefaultError(ctx *Context, info *ErrorInfo) error {
 	}, ctx.app.errorJSONOptions())
 }
 
-func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey string) (string, string) {
+// resolveErrorMessage looks the effective key up in the catalog, then falls
+// back to the built-in message for the code and the status text. A key is
+// never rendered as text.
+func (app *App) resolveErrorMessage(ctx *Context, status int, code string, explicitKey MessageKey) (MessageKey, string) {
 	key, explicit := app.effectiveMessageKey(MessageScopeError, code, explicitKey)
 	if ctx.translatable() {
-		if message, ok := app.i18n.bundle.TranslateForLang(ctx.resolveLocale(), key, nil); ok {
+		if message, ok := app.i18n.bundle.TranslateForLang(ctx.resolveLocale(), string(key), nil); ok {
 			return key, message
 		}
 	}
 	if explicit {
-		if message, ok := builtInMessages[key]; ok {
-			return key, message
-		}
-		return key, key
+		app.noteCatalogMiss(ctx, key, code)
 	}
 	if message, ok := builtInMessages[code]; ok {
 		return key, message
@@ -594,7 +633,30 @@ func (app *App) resolveErrorMessage(ctx *Context, status int, code, explicitKey 
 	return key, fmt.Sprintf("HTTP %d", status)
 }
 
-func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string) (string, bool) {
+// noteCatalogMiss warns in debug mode that an explicit key is not in the
+// catalog, so the code's built-in message was rendered in its place.
+func (app *App) noteCatalogMiss(ctx *Context, key MessageKey, code string) {
+	if app == nil || !app.debug {
+		return
+	}
+	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
+		"credo: message key is not in the catalog; the built-in message for the code is rendered",
+		slog.String("key", string(key)), slog.String("code", code), slog.String("route", routeLabel(ctx.route)))
+}
+
+// routeLabel names a route in a diagnostic: its method and pattern, its
+// pattern alone for a mount, empty without a route.
+func routeLabel(r *Route) string {
+	if r == nil {
+		return ""
+	}
+	if r.method != "" {
+		return r.method + " " + r.pattern
+	}
+	return r.pattern
+}
+
+func (app *App) effectiveMessageKey(scope MessageScope, code string, explicitKey MessageKey) (MessageKey, bool) {
 	if explicitKey != "" {
 		return explicitKey, true
 	}
@@ -603,9 +665,9 @@ func (app *App) effectiveMessageKey(scope MessageScope, code, explicitKey string
 		if key == "" {
 			panic(fmt.Sprintf("credo: MessageKeyResolver returned an empty key for scope %d code %q", scope, code))
 		}
-		return key, false
+		return MessageKey(key), false
 	}
-	return code, false
+	return MessageKey(code), false
 }
 
 // translateValidationErrors resolves each validation error's exact key and
@@ -617,7 +679,7 @@ func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) va
 		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
 		result[i].MessageKey = key
 		if ctx.translatable() {
-			if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), key, e.Params, e.Field); ok {
+			if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), string(key), e.Params, e.Field); ok {
 				result[i].Message = s
 			}
 		}
@@ -658,7 +720,7 @@ func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Validat
 	}
 
 	if ctx.translatable() {
-		if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), key, ve.Params, be.Field); ok {
+		if s, ok := translateFieldMessage(app.i18n.bundle, ctx.resolveLocale(), string(key), ve.Params, be.Field); ok {
 			ve.Message = s
 		}
 	}

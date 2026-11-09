@@ -8,6 +8,19 @@ import (
 	"strings"
 )
 
+// MessageKey is a catalog key: the exact key of a message in the
+// application's translation catalog. It is never rendered as text — a key the
+// catalog does not define falls back to the built-in message for the code —
+// so literal client text goes elsewhere ([credo.HTTPError.WithMessage]), and
+// client input goes into details. The root package aliases it as
+// credo.MessageKey.
+//
+// The named type keeps a key a literal or a typed constant: a key computed as
+// a string, such as one concatenated from a request value, does not compile
+// without a conversion. Declare key constants with the type, so a scan of the
+// sources finds them.
+type MessageKey string
+
 // ValidationError represents a single field validation failure.
 type ValidationError struct {
 	// Field is the field path, e.g. "name", "address.city", "items[0]".
@@ -19,9 +32,9 @@ type ValidationError struct {
 	// Message is the default English error message.
 	Message string `json:"message"`
 
-	// MessageKey is an optional exact presentation key. It is used by Credo's
-	// i18n error pipeline and is never serialized to clients.
-	MessageKey string `json:"-"`
+	// MessageKey is an optional catalog key for the message. It is used by
+	// Credo's i18n error pipeline and is never serialized to clients.
+	MessageKey MessageKey `json:"-"`
 
 	// Params holds template variables for localized messages,
 	// e.g. {"min": 2, "max": 100}.

@@ -210,8 +210,7 @@ func checkAccept(ctx *credo.Context, accepted []string, require bool) error {
 	ct := ctx.Request().Header.Get("Content-Type")
 	if strings.TrimSpace(ct) == "" {
 		if require && requestHasBody(ctx.Request().Request) {
-			return credo.NewHTTPError(http.StatusUnsupportedMediaType, "content_type_required").
-				WithMessageKey("content type required")
+			return credo.NewHTTPError(http.StatusUnsupportedMediaType, "content_type_required")
 		}
 		return nil
 	}
@@ -226,7 +225,7 @@ func checkAccept(ctx *credo.Context, accepted []string, require bool) error {
 		}
 	}
 	return credo.NewHTTPError(http.StatusUnsupportedMediaType, "content_type_not_accepted").
-		WithMessageKey("content type not accepted: " + ct)
+		WithDetails(map[string]any{"content_type": ct})
 }
 
 // requestHasBody reports whether the request is expected to carry a body
@@ -255,7 +254,7 @@ func checkRequireHeaders(ctx *credo.Context, names []string) error {
 	for _, name := range names {
 		if h.Get(name) == "" {
 			return credo.NewHTTPError(http.StatusBadRequest, "missing_required_header").
-				WithMessageKey("missing required header: " + name)
+				WithDetails(map[string]any{"header": name})
 		}
 	}
 	return nil
@@ -265,7 +264,7 @@ func checkRequireQuery(ctx *credo.Context, names []string) error {
 	for _, name := range names {
 		if ctx.Request().QueryParam(name) == "" {
 			return credo.NewHTTPError(http.StatusBadRequest, "missing_required_query_parameter").
-				WithMessageKey("missing required query parameter: " + name)
+				WithDetails(map[string]any{"query": name})
 		}
 	}
 	return nil
@@ -279,8 +278,7 @@ func checkAPIVersion(ctx *credo.Context, header string, allowed []string) error 
 	if got != "" && slices.Contains(allowed, got) {
 		return nil
 	}
-	return credo.NewHTTPError(http.StatusBadRequest, "unsupported_api_version").
-		WithMessageKey("unsupported or missing API version")
+	return credo.NewHTTPError(http.StatusBadRequest, "unsupported_api_version")
 }
 
 // checkScope enforces that the request satisfies every required scope. A nil
@@ -295,7 +293,7 @@ func checkScope(ctx *credo.Context, checker func(*credo.Context, string) bool, r
 	for _, s := range required {
 		if !checker(ctx, s) {
 			return credo.NewHTTPError(http.StatusForbidden, "missing_required_scope").
-				WithMessageKey("missing required scope: " + s)
+				WithDetails(map[string]any{"scope": s})
 		}
 	}
 	return nil
@@ -311,8 +309,7 @@ func enforceMaxBody(ctx *credo.Context, limit int64) error {
 	}
 	req := ctx.Request()
 	if req.ContentLength > limit {
-		return credo.NewHTTPError(http.StatusRequestEntityTooLarge).
-			WithMessageKey("request body exceeds limit")
+		return credo.NewHTTPError(http.StatusRequestEntityTooLarge)
 	}
 	if req.Body != nil {
 		req.Body = http.MaxBytesReader(ctx.Response().Unwrap(), req.Body, limit)
