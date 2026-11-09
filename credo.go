@@ -38,13 +38,13 @@ type App struct {
 	// reload holds the slot serializing Reload (ADR-020).
 	reload reloadState
 
-	appServer
+	appPrep
 	appRouting
-	appFeatures
 	appRequest
+	appFeatures
 	appHealth
 	appDI
-	appPrep
+	appServer
 }
 
 // New creates a new App with the given options. When no RawConfig is provided,
@@ -167,15 +167,6 @@ func assembleApp(
 ) *App {
 	app := &App{
 		logger: logger,
-		appServer: appServer{
-			serverCfg:            serverCfg,
-			tlsConfig:            o.tlsConfig.value,
-			tlsConfigSet:         o.tlsConfig.isSet,
-			tlsFilesSet:          o.tlsFiles.isSet,
-			httpRedirectAddr:     o.httpRedirectAddr,
-			disableReloadSignals: o.disableReloadSignals,
-			configureServer:      o.configureServer,
-		},
 		appRouting: appRouting{
 			mux:                   newMux(),
 			staticHosts:           make(map[string]*hostEntry),
@@ -191,6 +182,15 @@ func assembleApp(
 		appDI: appDI{
 			container: c,
 			rawConfig: o.rawConfig,
+		},
+		appServer: appServer{
+			serverCfg:            serverCfg,
+			tlsConfig:            o.tlsConfig.value,
+			tlsConfigSet:         o.tlsConfig.isSet,
+			tlsFilesSet:          o.tlsFiles.isSet,
+			httpRedirectAddr:     o.httpRedirectAddr,
+			disableReloadSignals: o.disableReloadSignals,
+			configureServer:      o.configureServer,
 		},
 	}
 	app.errorJSONOpts = jsonv2.JoinOptions(app.jsonOpts, jsonv2.Deterministic(true))

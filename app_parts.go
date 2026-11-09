@@ -14,8 +14,11 @@ import (
 
 // App's fields are grouped by subsystem. Each group is a struct embedded in
 // App by value, so its fields are promoted and read at a fixed offset, with no
-// indirection added on the request path. Bootstrap writes every group; what
-// the request executor reads, it reads after preparation has published the
+// indirection added on the request path. The groups the request path reads
+// come first and the server group, the largest, last, so the fields a request
+// reads stay close together; placed first, the server group made the
+// parameter benchmarks about 4% slower. Bootstrap writes every group; what the
+// request executor reads, it reads after preparation has published the
 // handler.
 
 // appServer holds the HTTP server and its TLS: the server configuration, the
