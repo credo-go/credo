@@ -402,33 +402,67 @@ func TestValidateStruct_NestedValueReceiver(t *testing.T) {
 	}
 }
 
-func TestValidateStruct_NestedFieldWithRulesRunsRulesOnly(t *testing.T) {
+func TestValidateStruct_NestedRunsAfterTheFieldsRules(t *testing.T) {
 	type Input struct {
 		Address *readingAddress `json:"address"`
 	}
-	calls := 0
-	input := &Input{Address: &readingAddress{calls: &calls}}
 
-	err := validation.ValidateStruct(input,
-		validation.Field(&input.Address, validation.NotNil[readingAddress]()),
-	)
-	if err != nil {
-		t.Fatalf("ValidateStruct: %v", err)
-	}
-	if calls != 0 {
-		t.Fatalf("Validate calls = %d, want 0: a field with rules runs its rules only", calls)
-	}
+	t.Run("a present value is validated once NotNil passes", func(t *testing.T) {
+		calls := 0
+		input := &Input{Address: &readingAddress{calls: &calls}}
+		err := validation.ValidateStruct(input,
+			validation.Field(&input.Address, validation.NotNil[readingAddress]()),
+		)
+		errs, ok := errors.AsType[validation.Errors](err)
+		if !ok || len(errs) != 1 || errs[0].Field != "address.city" || errs[0].Code != "required" {
+			t.Fatalf("err = %v, want the nested required violation on address.city", err)
+		}
+		if calls != 1 {
+			t.Fatalf("Validate calls = %d, want 1", calls)
+		}
+	})
 
-	// A mandatory nested pointer: NotNil in a Field of its own, then Validate.
-	input.Address = nil
-	err = validation.ValidateStruct(input,
-		validation.Field(&input.Address, validation.NotNil[readingAddress]()),
-		validation.Field(&input.Address),
-	)
-	errs, ok := errors.AsType[validation.Errors](err)
-	if !ok || len(errs) != 1 || errs[0].Field != "address" {
-		t.Fatalf("err = %v, want one violation on address", err)
-	}
+	t.Run("a nil value reports only NotNil's violation", func(t *testing.T) {
+		input := &Input{}
+		err := validation.ValidateStruct(input,
+			validation.Field(&input.Address, validation.NotNil[readingAddress]()),
+		)
+		errs, ok := errors.AsType[validation.Errors](err)
+		if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "not_nil" {
+			t.Fatalf("err = %v, want only NotNil's violation on address", err)
+		}
+	})
+
+	t.Run("a field whose rules fail does not run Validate", func(t *testing.T) {
+		calls := 0
+		input := &Input{Address: &readingAddress{calls: &calls}}
+		err := validation.ValidateStruct(input,
+			validation.Field(&input.Address, alwaysFail[*readingAddress]{code: "rule", message: "rule failed"}),
+		)
+		errs, ok := errors.AsType[validation.Errors](err)
+		if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "rule" {
+			t.Fatalf("err = %v, want only the rule's violation on address", err)
+		}
+		if calls != 0 {
+			t.Fatalf("Validate calls = %d, want 0: a field whose rules fail reports their violations only", calls)
+		}
+	})
+
+	t.Run("a struct field keeps what its Validate normalizes after the rules", func(t *testing.T) {
+		type Trimmed struct {
+			Address trimmingAddress `json:"address"`
+		}
+		input := &Trimmed{Address: trimmingAddress{City: "  Ankara  "}}
+		err := validation.ValidateStruct(input,
+			validation.Field(&input.Address, alwaysPass[trimmingAddress]{}),
+		)
+		if err != nil {
+			t.Fatalf("ValidateStruct: %v", err)
+		}
+		if input.Address.City != "Ankara" {
+			t.Fatalf("City = %q, want %q", input.Address.City, "Ankara")
+		}
+	})
 }
 
 // --- Export test helpers ---

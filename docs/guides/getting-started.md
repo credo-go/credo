@@ -335,6 +335,22 @@ Validation errors are automatically converted to the default error envelope with
 }
 ```
 
+A violation's `field` is the name the client sent: the `json` name for a JSON body, the `form` tag for a form or multipart body, and the `query` tag for `BindQuery`. A nested value that implements `Validatable`, and each element of a slice of them, is validated once its field's rules pass, and an element's violations name it by index:
+
+```go
+type CreateOrderRequest struct {
+    Items   []LineItem `json:"items"`   // each LineItem's Validate runs: items[0].sku
+    Billing *Address   `json:"billing"`
+}
+
+func (r *CreateOrderRequest) Validate() error {
+    return validation.ValidateStruct(r,
+        validation.Field(&r.Items, validation.NotEmptySlice[LineItem]()),
+        validation.Field(&r.Billing, validation.NotNil[Address]()), // required, then validated
+    )
+}
+```
+
 Decode failures get the same structured treatment before validation ever runs: a malformed body, a wrong-typed value, a duplicated JSON member, or trailing content after the JSON value returns a 400 response in the same `violations[]` shape, with a machine-readable reason code (`syntax`, `type_mismatch`, `invalid_value`, `empty_body`, `trailing_data`, `duplicate_field`). Unknown JSON members are ignored by default; when your clients ship together with the server, `credo.WithStrictBodies()` (or `server.strict_bodies: true`) turns a misspelled member into a 400 with reason `unknown_field` instead of silently dropping it. See the [Context Spec](../specs/context.md) for the decode error model.
 
 See [Validation Spec](../specs/validation.md) for the full rule catalog.

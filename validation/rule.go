@@ -9,6 +9,7 @@ package validation
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -44,13 +45,20 @@ type fieldRules[T any] struct {
 // fieldPtr using the given rules. The type parameter T is inferred from
 // fieldPtr.
 //
-// When fieldPtr points to a field that implements Validatable and no explicit
-// rules are given, Validate() is called automatically (nested struct support),
-// and its failures are prefixed with the field's name. A struct field's
-// Validate runs on the field itself, so what a pointer-receiver Validate
-// normalizes is kept. A nil pointer or nil interface is valid and its Validate
-// is not called; presence is what [NotNil] and [Required] check. A field with
-// rules runs its rules only.
+// Once the rules pass, a field whose value implements Validatable is
+// validated by its Validate (nested struct support), and its failures are
+// prefixed with the field's name; a field whose rules fail reports their
+// violations only. A slice or array whose elements implement Validatable, or
+// are structs whose pointer does, has each element validated the same way,
+// its failures prefixed with the field's name and the element's index, as in
+// items[0].name. A struct field's or element's Validate runs on the value
+// itself, so what a pointer-receiver Validate normalizes is kept. A nil
+// pointer or nil interface is valid and its Validate is not called; presence
+// is what [NotNil] and [Required] check, so
+//
+//	validation.Field(&r.Billing, validation.NotNil[Address]())
+//
+// requires the address and then validates it.
 func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules {
 	return &fieldRules[T]{
 		ptr:   fieldPtr,
@@ -95,26 +103,27 @@ func ValidateStruct(structPtr any, fields ...FieldRules) error {
 func (f *fieldRules[T]) validate(structPtr any) error {
 	fieldName := resolveFieldName(structPtr, f.ptr)
 
-	// With no explicit rules, a field that implements Validatable is
-	// validated by its own Validate (nested struct auto-validation).
-	if len(f.rules) == 0 {
-		return validateNested(fieldName, f.ptr)
-	}
-
-	value := *f.ptr
-	var fieldErrors Errors
-	for _, rule := range f.rules {
-		if err := rule.Validate(value); err != nil {
-			if internal := collectErrors(&fieldErrors, err, fieldName); internal != nil {
-				return internal
+	if len(f.rules) > 0 {
+		value := *f.ptr
+		var fieldErrors Errors
+		for _, rule := range f.rules {
+			if err := rule.Validate(value); err != nil {
+				if internal := collectErrors(&fieldErrors, err, fieldName); internal != nil {
+					return internal
+				}
 			}
+		}
+		// A field whose rules fail reports their violations only, so an Each
+		// rule and the element validation below never report one violation
+		// twice.
+		if len(fieldErrors) > 0 {
+			return fieldErrors
 		}
 	}
 
-	if len(fieldErrors) == 0 {
-		return nil
-	}
-	return fieldErrors
+	// Once the rules pass, a value that implements Validatable, or a slice or
+	// array of such values, is validated by its own Validate.
+	return validateNested(fieldName, f.ptr)
 }
 
 // Validatable is implemented by types that can validate themselves.
@@ -122,40 +131,154 @@ func (f *fieldRules[T]) validate(structPtr any) error {
 // (BindBody, BindQuery) automatically call Validate()
 // after decoding ("parse, don't validate").
 //
-// Nested struct fields that implement Validatable are auto-validated
-// by [Field] when no explicit rules are given; a nil nested pointer is
-// valid.
+// Nested fields that implement Validatable, and the elements of a slice or
+// array of them, are validated by [Field] once the field's rules pass; a nil
+// nested pointer is valid.
 type Validatable interface {
 	Validate() error
 }
 
-// validateNested calls the Validate method of the field fieldPtr points to,
-// when the field has one. Failures are prefixed with the field name; an
-// internal error is returned unchanged.
+// nestedMode is how a value of one type is validated after its field's
+// rules. It depends only on the type, so it is computed once per type.
+type nestedMode uint8
+
+const (
+	// nestedNone: the type has no Validate to run.
+	nestedNone nestedMode = iota
+	// nestedAddr: a struct whose pointer implements Validatable, validated
+	// through its own address so a pointer-receiver Validate keeps what it
+	// normalizes.
+	nestedAddr
+	// nestedValue: a pointer, an interface or another value that implements,
+	// or may hold a value that implements, Validatable.
+	nestedValue
+	// nestedElems: a slice or array whose elements are validated.
+	nestedElems
+)
+
+// nestedPlan is the cached nestedMode of a field type and, for nestedElems,
+// of its element type.
+type nestedPlan struct {
+	mode nestedMode
+	elem nestedMode
+}
+
+var validatableType = reflect.TypeFor[Validatable]()
+
+// nestedPlans caches a nestedPlan per field type.
+// Key: reflect.Type, Value: nestedPlan
+var nestedPlans sync.Map
+
+func nestedPlanFor(t reflect.Type) nestedPlan {
+	// A basic type without methods, the common field, never nests: skip the
+	// cache lookup.
+	if k := t.Kind(); k >= reflect.Bool && k <= reflect.Complex128 || k == reflect.String {
+		if t.NumMethod() == 0 {
+			return nestedPlan{}
+		}
+	}
+	if cached, ok := nestedPlans.Load(t); ok {
+		return cached.(nestedPlan)
+	}
+	p := nestedPlan{mode: valueNestedMode(t)}
+	if p.mode == nestedNone && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
+		if em := valueNestedMode(t.Elem()); em != nestedNone {
+			p = nestedPlan{mode: nestedElems, elem: em}
+		}
+	}
+	nestedPlans.Store(t, p)
+	return p
+}
+
+// valueNestedMode is how a single value of type t is validated. A type with a
+// Validate of its own, a slice type included, is validated by it rather than
+// element by element.
+func valueNestedMode(t reflect.Type) nestedMode {
+	switch {
+	case t.Kind() == reflect.Struct:
+		if reflect.PointerTo(t).Implements(validatableType) {
+			return nestedAddr
+		}
+		return nestedNone
+	case t.Kind() == reflect.Interface, t.Implements(validatableType):
+		return nestedValue
+	}
+	return nestedNone
+}
+
+// validateNested runs the Validate of the field fieldPtr points to, or of its
+// elements, when it has one. Failures are prefixed with the field name, and an
+// element's with the field name and its index; an internal error is returned
+// unchanged.
 //
-// A struct field is validated through fieldPtr, the field's own pointer, so a
-// pointer-receiver Validate keeps what it normalizes and the field is not
+// A struct field, and a struct element, is validated through its own pointer,
+// so a pointer-receiver Validate keeps what it normalizes and nothing is
 // copied. A nil pointer or nil interface is valid and its Validate is not
 // called: presence is what [NotNil] and [Required] check.
 func validateNested[T any](fieldName string, fieldPtr *T) error {
-	var v Validatable
-	if reflect.TypeFor[T]().Kind() == reflect.Struct {
-		pv, ok := any(fieldPtr).(Validatable)
-		if !ok {
-			return nil
-		}
-		v = pv
-	} else {
-		value := any(*fieldPtr)
-		vv, ok := value.(Validatable)
-		if !ok {
-			return nil
-		}
-		if rv := reflect.ValueOf(value); rv.Kind() == reflect.Pointer && rv.IsNil() {
-			return nil
-		}
-		v = vv
+	// The common field types never nest; a type switch decides them without
+	// reflection.
+	switch any(fieldPtr).(type) {
+	case *string, *bool, *int, *int64, *int32, *uint, *uint64, *float64, *float32:
+		return nil
 	}
+	p := nestedPlanFor(reflect.TypeFor[T]())
+	switch p.mode {
+	case nestedAddr:
+		return runValidate(fieldName, any(fieldPtr).(Validatable))
+	case nestedValue:
+		if v := validatableValue(any(*fieldPtr)); v != nil {
+			return runValidate(fieldName, v)
+		}
+	case nestedElems:
+		return validateElements(fieldName, reflect.ValueOf(fieldPtr).Elem(), p.elem)
+	}
+	return nil
+}
+
+// validateElements validates each element of the slice or array rv, an
+// addressable value, by the element mode mode.
+func validateElements(fieldName string, rv reflect.Value, mode nestedMode) error {
+	var allErrors Errors
+	for i := range rv.Len() {
+		ev := rv.Index(i)
+		var v Validatable
+		if mode == nestedAddr {
+			v = ev.Addr().Interface().(Validatable)
+		} else {
+			v = validatableValue(ev.Interface())
+		}
+		if v == nil {
+			continue
+		}
+		if err := v.Validate(); err != nil {
+			prefix := joinFieldPath(fieldName, "["+strconv.Itoa(i)+"]")
+			if internal := collectErrors(&allErrors, err, prefix); internal != nil {
+				return internal
+			}
+		}
+	}
+	if len(allErrors) == 0 {
+		return nil
+	}
+	return allErrors
+}
+
+// validatableValue returns value as a Validatable, or nil when it is not one
+// or is a nil pointer, whose Validate is not called.
+func validatableValue(value any) Validatable {
+	v, ok := value.(Validatable)
+	if !ok {
+		return nil
+	}
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
+	}
+	return v
+}
+
+// runValidate calls v's Validate and prefixes its failures with fieldName.
+func runValidate(fieldName string, v Validatable) error {
 	err := v.Validate()
 	if err == nil {
 		return nil
