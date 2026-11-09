@@ -600,22 +600,28 @@ If you need managed background tasks, register them through the App's worker reg
 
 ### Reloading at Runtime
 
-A running service can pick up config changes without restarting. `app.Run()` maps `SIGHUP` (Unix) to `app.Reload(ctx)`; `RunContext` callers invoke `Reload` themselves, for example from an admin endpoint. A reload re-reads the config sources and hands each changed section to the typed subscriber registered for it, validating the new value before anything is published:
+A running service can pick up config changes without restarting. `app.Run()` maps `SIGHUP` (Unix) to `app.Reload(ctx)`; `RunContext` callers invoke `Reload` themselves, for example from an admin endpoint. A reload re-reads the config sources and replaces the value of every section you declared live, validating the new value before anything is published:
 
 ```go
-var level slog.LevelVar // wire this into your slog handler
+type LogConfig struct {
+    Level slog.Level
+}
 
-app.OnConfigChange("logging", func(ctx context.Context, next struct{ Level slog.Level }) error {
+var LogSection = config.Section[LogConfig]("log")
+
+logCfg, err := LogSection.Live(rawCfg) // rawCfg: the *config.Config passed to credo.WithRawConfig
+if err != nil {
+    log.Fatal(err)
+}
+var level slog.LevelVar // wire this into your slog handler
+level.Set(logCfg.Load().Level)
+logCfg.OnChange(func(ctx context.Context, prev, next LogConfig) error {
     level.Set(next.Level)
     return nil
 })
-
-app.OnReload(func(ctx context.Context) error {
-    return reopenAuditLog() // runs on every reload, config change or not
-})
 ```
 
-What is live: subscribed sections, file-based TLS certificates (re-read on every reload), and `OnReload` hooks. What is not: server settings (`host`, `port`, timeouts — `credo.New()` reads them once) and any changed key with no subscriber, which the reload logs as `restart required`. The [Configuration Guide](configuration.md#reloading-configuration) has the full rules and the [Deployment Guide](deployment.md) shows the systemd and container wiring.
+What is live: the sections declared live, through `Section.Live` or `app.Provide(section.Live)`. File-based TLS certificates rotate on their own when their files change, without a reload. What is not: server settings (`host`, `port`, timeouts, the TLS paths — `credo.New()` reads them once) and every section bound through `Decode`; `app.Reload` returns the keys that differ from the start outside a live section as `RestartRequired`, and logs them. The [Configuration Guide](configuration.md#reloading-configuration) has the full rules and the [Deployment Guide](deployment.md) shows the systemd and container wiring.
 
 ---
 

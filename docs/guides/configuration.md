@@ -270,15 +270,9 @@ Use `app.MustGetConfig(AppSection)` to panic on a missing or invalid required se
 
 ## Reloading Configuration
 
-The typed snapshot is loaded once at startup — but a long-running service can pick up changes to its config files without restarting. `app.Reload(ctx)` (or `SIGHUP` under `app.Run()` on Unix; see the [Deployment Guide](deployment.md)) re-reads every source the snapshot was built from, computes which leaf keys changed, and notifies the typed subscribers registered for those sections:
+A section is a snapshot unless you declare it live. A long-running service can pick up changes to its config files without restarting: `app.Reload(ctx)` (or `SIGHUP` under `app.Run()` on Unix; see the [Deployment Guide](deployment.md)) re-reads every source the configuration was built from and replaces the value of every live section the change touches. Every other change is reported as needing a restart.
 
 ```go
-app, err := credo.New()
-if err != nil {
-    log.Fatal(err)
-}
-
-// A reloadable section: decoded and validated on every change, then applied.
 type Limits struct {
     RPS   int
     Burst int
@@ -291,17 +285,47 @@ func (l Limits) Validate() error {
     return nil
 }
 
-var limits atomic.Pointer[Limits] // the live value; handlers read limits.Load()
+var (
+    AppSection    = config.Section[AppConfig]("app")   // static: a change takes a restart
+    LimitsSection = config.Section[Limits]("limits")   // live: a reload replaces its value
+)
 
-app.OnConfigChange("limits", func(ctx context.Context, next Limits) error {
-    limits.Store(&next)
-    return nil
-})
+app.Provide(AppSection.Decode)  // AppConfig
+app.Provide(LimitsSection.Live) // *config.Live[Limits]
+app.Provide(NewThrottle)
 
-// Log level without a restart: slog.LevelVar is already atomic.
+type Throttle struct {
+    limits *config.Live[Limits]
+}
+
+// The signature says the value can change.
+func NewThrottle(limits *config.Live[Limits]) *Throttle {
+    return &Throttle{limits: limits}
+}
+
+func (t *Throttle) Allow(key string) bool {
+    l := t.limits.Load() // once per operation: one value no reload changes under you
+    return t.bucket(key, l.RPS, l.Burst).Allow()
+}
+```
+
+State derived from a live section — a limiter, a compiled pattern, a log level — follows it through `OnChange`, which runs after the reload has published the new value:
+
+```go
+type LogConfig struct {
+    Level slog.Level
+}
+
+var LogSection = config.Section[LogConfig]("log")
+
+// In the composition root, over the *config.Config handed to credo.WithRawConfig.
+logCfg, err := LogSection.Live(rawCfg)
+if err != nil {
+    log.Fatal(err)
+}
 var level slog.LevelVar
-
-app.OnConfigChange("logging", func(ctx context.Context, next struct{ Level slog.Level }) error {
+level.Set(logCfg.Load().Level)
+logCfg.OnChange(func(ctx context.Context, prev, next LogConfig) error {
     level.Set(next.Level)
     return nil
 })
@@ -309,21 +333,36 @@ app.OnConfigChange("logging", func(ctx context.Context, next struct{ Level slog.
 
 The rules that make this safe:
 
-- **Only affected subscribers run.** A subscriber for `limits` fires when any leaf under `limits` (or `limits` itself) changes; a change to `logging.level` does not touch it. Nested keys are independent subscriptions — `databases` and `databases.primary` both fire when `databases.primary.dsn` changes.
-- **Validate before publish.** Every affected `T` is decoded from the _candidate_ snapshot first; if `T` has a `Validate() error` method it runs too. Any failure aborts the reload before anything is published — the old snapshot stays current, no subscriber runs, and the error is returned (and logged as `reload aborted before publish`). A bad YAML edit can therefore never half-apply.
-- **Apply is the subscriber's job, and it is atomic in your domain.** The framework never rebuilds DI singletons. Hold reloadable values behind `atomic.Pointer[T]`, a `slog.LevelVar`, or a swappable limiter inside the service that owns them, and have the subscriber swap them (see [DI: Config Changes and Singletons](dependency-injection.md#config-changes-and-singletons)). Subscriber errors are collected, later subscribers still run, and the joined error is returned — there is no rollback.
-- **Unsubscribed changes mean a restart.** Every changed key that no subscriber (or framework participant) covers is logged once at `WARN` with `restart required` and the key paths — never the values. That log line is how you discover which sections still need a subscriber.
-- **`OnReload` for everything else.** `app.OnReload(func(ctx) error)` hooks run FIFO after the subscribers on every reload, whether or not config changed — re-open a rotated log file, refresh an allowlist, drive your own certificate rotation.
+- **Validate before publish, all or nothing.** Every live section the change touches is decoded from the _candidate_ and validated (`Validate() error` when `T` has one). One failure aborts the reload before anything is published: every live section keeps its value, no callback runs, and the error names the section (`config: reload: live section "limits": …; nothing was published, and every live section keeps its value`). A bad YAML edit can never half-apply.
+- **One generation.** The snapshot and the changed sections are published together: once a `Load` returns a reload's value for one section, later `Load` calls return that reload's values or newer ones. Two `Load` calls can still straddle a reload, so values that must agree within one operation belong to one section.
+- **Callbacks run in order and never roll back.** `OnChange` callbacks run in registration order for the sections the reload changed, with the reload's context. An error or a panic is joined into the error `Reload` returns, the later callbacks still run, and none is skipped when the context has ended.
+- **What the type does not enforce.** Call `Load` in each operation rather than once at construction; derive state in `OnChange` rather than from a value read once; and treat a value's slices and maps as read-only, since every `Load` of one reload shares them.
+- **One nature per section.** A section is static (`Decode`, `GetConfig`, `MustGetConfig`, and the framework's own `server` section) or live (`Live`) within one configuration, and a read of the other nature fails, naming both reads: `config: section "limits" is read both as static, by …, and as live, by …`. A section nested in another, or one containing it, counts as the same section, so put the keys that need a restart and the keys a reload applies in separate sections. A raw `Unmarshal` with a string key is outside that check.
+- **Changes outside a live section are reported, never applied.** Every key that differs from the value the start read and that no live section covers is reported on every reload until it reverts — never its value — and so is a file key that `.env` or the process environment keeps.
 
-Registration happens before `Run`; `OnConfigChange` panics at registration when the app's `RawConfig` cannot reload (a subscription that could never fire is a startup bug). `*config.Config` — the store `credo.New()` loads and the one `config.Load` returns — always can.
+`app.Reload` returns what it did beside its error, and logs it (`credo: reload complete` at Info, the restart keys at Warn):
+
+```go
+res, err := app.Reload(ctx)
+// res.Published        true when the reload published its snapshot
+// res.Aborted          why nothing was published, naming the live section
+// res.Changed          the changed keys
+// res.Replaced         the live sections whose value was replaced, e.g. ["limits"]
+// res.RestartRequired  e.g. ["app.name"]: a restart applies them
+// res.Overridden       e.g. [{Key: "app.name", Source: "environment variable CREDO_APP__NAME"}]
+```
+
+Its JSON form (`published`, `aborted`, `changed`, `replaced`, `restart_required`, `overridden`) is what an admin endpoint can answer with ([Deployment Guide](deployment.md#reload-without-a-signal)). In a consumer's unit test, `config.Fixed(v)` is a `*config.Live[T]` whose value never changes.
+
+`Section.Live` and `app.Reload` need a configuration that can reload: the `*config.Config` that `credo.New()` loads or `config.Load` returns. Over `testutil`'s configuration or a custom `credo.WithRawConfig` store, `Live` fails at construction and `app.Reload` returns an error naming the type and `config.Load`.
 
 What a reload does **not** do:
 
 - It never switches environments: `CREDO_ENV` is fixed at first load, so `config.dev.yaml` stays the overlay even if the variable changes.
-- It never applies server settings. `server.host`, ports, timeouts, body limits, and proxies are read by `credo.New()` once; changing them is a restart. The one exception is `server.tls.*`: file-based certificates are re-read on every reload (see [TLS Server Config](#tls-server-config)).
+- It never applies server settings. `server.host`, ports, timeouts, body limits, proxies and the `server.tls.*` paths are read by `credo.New()` once; changing them is a restart, and the reload reports it. Certificate files rotate on their own when they change on disk (see [TLS Server Config](#tls-server-config)).
 - It cannot see environment changes the process never received. The process environment is re-read, but a supervisor's `EnvironmentFile=` is handed over at process start, so values sourced from env still require a restart.
 
-A custom `credo.WithRawConfig` store opts into all of this by implementing `config.Stager` (two-phase: stage a candidate, then commit — this is what enables validate-before-publish) or the one-shot `config.Reloader` (published first, validated after). The [Configuration Spec](../specs/config.md#reload--partial-reload-adr-020) has the contracts.
+The [Configuration Spec](../specs/config.md#reload-and-its-result) has the contracts.
 
 ---
 
@@ -481,12 +520,7 @@ File-based TLS can be configured through the `server.tls` section:
 
 When both paths are set, `Run()` and `RunContext()` serve HTTPS automatically. The key pair is loaded and validated at startup; missing files, mismatched pairs, and partial config fail before the server starts accepting connections.
 
-After startup the pair is served through `GetCertificate` backed by an atomic pointer, and **every reload re-reads it** — `app.Reload(ctx)`, or `systemctl reload` / `SIGHUP` under `Run()`. Rotating a certificate in place needs no config change at all; changing `server.tls.cert_file` / `key_file` in the config file moves the pair to the new paths on the next reload. New handshakes see the new certificate immediately, open connections are untouched, and a pair that fails to load keeps the current certificate serving while the failure surfaces through the reload error. An ACME deploy hook therefore reduces to one line:
-
-```sh
-# certbot renewal-hooks/deploy/credo.sh
-systemctl reload myservice
-```
+After startup the pair is served through `GetCertificate` backed by an atomic pointer, and **the files rotate when they change on disk**, with no signal and no reload: the handshake that finds the last check older than a second stats both files and, when either changed, loads the pair and swaps it in. `os.Stat` follows symbolic links, so the link swap of a Kubernetes Secret volume counts as a change. New handshakes see the new certificate, open connections are untouched, and a pair that fails to load — a half-written pair, a key that does not match its certificate — keeps the current certificate serving and is logged at Error once per change, then retried when its other file changes. A certificate renewed in place (ACME, an internal PKI) therefore needs no deploy hook. The paths themselves are read at start: changing `server.tls.cert_file` / `key_file` takes a restart, which a reload reports.
 
 TLS sources resolve by precedence:
 
@@ -496,7 +530,7 @@ WithTLSConfig(*tls.Config) > WithTLSFiles(cert, key) > server.tls.* > plaintext
 
 Each source is a whole-source override. For example, `WithTLSFiles` replaces both `server.tls.cert_file` and `server.tls.key_file`; it does not merge one path from the option with one path from config.
 
-Use `WithTLSConfig` for embedded certificates, mTLS, SNI, custom TLS versions, or when you want to own certificate rotation yourself: Credo never touches a caller-supplied `*tls.Config`, so drive it through your own `GetCertificate` (optionally refreshed from an `OnReload` hook). To redirect plaintext HTTP callers to HTTPS, configure TLS and add `credo.WithHTTPRedirect(":80")`.
+Use `WithTLSConfig` for embedded certificates, mTLS, SNI, custom TLS versions, or when you want to own certificate rotation yourself: Credo never touches a caller-supplied `*tls.Config`, so drive it through your own `GetCertificate`. To redirect plaintext HTTP callers to HTTPS, configure TLS and add `credo.WithHTTPRedirect(":80")`.
 
 ---
 
@@ -506,7 +540,7 @@ Quick-lookup of the commonly used config keys.
 
 ### Server — `server`
 
-Consumed automatically by `credo.New()`. The **Reloadable** column says what a [reload](#reloading-configuration) does with a change: `restart` keys are read once at startup and changing them logs `restart required`.
+Consumed automatically by `credo.New()`. The **Reloadable** column says what a [reload](#reloading-configuration) does with a change: `restart` keys are read once at startup, and a reload reports a change to them in its `restart_required` keys.
 
 | Key | Type | Default | Reloadable | Description |
 | --- | --- | --- | --- | --- |
@@ -525,10 +559,10 @@ Consumed automatically by `credo.New()`. The **Reloadable** column says what a [
 | `debug` | bool | `false` | restart | Enable development warnings |
 | `strict_bodies` | bool | `false` | restart | Reject unknown JSON object members in `BindBody` (400 `unknown_field`); `credo.WithStrictBodies()` wins over this key |
 | `trusted_proxies` | []string | `[]` | restart | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
-| `tls.cert_file` | string | `""` | **yes** — re-read on every reload | PEM certificate file for HTTPS |
-| `tls.key_file` | string | `""` | **yes** — re-read on every reload | PEM private key file for HTTPS |
+| `tls.cert_file` | string | `""` | restart (the file itself rotates when it changes) | PEM certificate file for HTTPS |
+| `tls.key_file` | string | `""` | restart (the file itself rotates when it changes) | PEM private key file for HTTPS |
 
-Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your own) are reloadable exactly when the application registers an `OnConfigChange[T]` subscriber for them; without one, a change is restart-only.
+Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your own) are reloadable exactly when the application declares them live with `Section.Live`; a section bound through `Decode` is restart-only, and a reload reports its changed keys.
 
 ### Databases — `databases.<name>`
 
