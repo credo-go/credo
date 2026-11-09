@@ -11,17 +11,17 @@
 Ships in v0.25.0. The [delivery plan](docs/plans/bootstrap-simplification.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
 
 - [x] W1: promotion and the decisions that change no code — the decisions written into the ADRs and specs, each marked pending until its work item ships; the root package's module allowlist and the rule that places a package (ADR-002); no automatic bindings and DI in the core (ADR-004) (2026-11-09)
-- [ ] W2: the logger of a framework module — `credo.InfraFrom(ctx)`, `websocket.New(cfg...)` with `Config.Logger`, the `component` and `module` log keys
-- [ ] W3: a store is an ordinary component — `*sqldb.DB` gains `Start` and `Ready`, `credo.OptionalReadiness()`, `sqldb.WithOptionalStart()`, `latency` on every readiness entry; `store.Register` and `store.Lifecycle` deleted
-- [ ] W4: workers in the root package — `app.Workers()`, the engine in `internal/worker`; the `worker` package and `internal/kernel` deleted
-- [ ] W5: worker constructors; built values claim nothing — the value, run-function and constructor forms, the holder of record, one tier per resource
-- [ ] W6: the first `Resolve` finalizes — and a late registration's panic names what finalized the container, where, and the calls that led there
-- [ ] W7: a type declares its ingress tier — `credo.IngressComponent`, implemented by `websocket.Server`
-- [x] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted
+- [x] W2: the logger of a framework module — `credo.InfraFrom(ctx)`, `websocket.New(cfg...)` with `Config.Logger`, the `component` and `module` log keys (2026-11-09)
+- [x] W3: a store is an ordinary component — `*sqldb.DB` gains `Start` and `Ready`, `credo.OptionalReadiness()`, `sqldb.WithOptionalStart()`, `latency` on every readiness entry; `store.Register` and `store.Lifecycle` deleted (2026-11-09)
+- [x] W4: workers in the root package — `app.Workers()`, the engine in `internal/worker`; the `worker` package and `internal/kernel` deleted (2026-11-09)
+- [x] W5: worker constructors; built values claim nothing — the value, run-function and constructor forms, the holder of record, one tier per resource (2026-11-09)
+- [x] W6: the first `Resolve` finalizes — and a late registration's panic names what finalized the container, where, and the calls that led there (2026-11-09)
+- [x] W7: a type declares its ingress tier — `credo.IngressComponent`, implemented by `websocket.Server` (2026-11-09)
+- [x] W8: rate limiting: not a component, in its own package — `ratelimit.Middleware(cfg...)` in `middleware/ratelimit`; `NewRateLimiter` deleted (2026-11-09)
 - [ ] W9: examples, guides and the release
-- [x] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field
-- [ ] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached
-- [ ] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer`
+- [x] W10: nested validation fixes — a nil nested pointer is valid; a pointer-receiver `Validate` runs on the field (2026-11-09)
+- [x] W11: `Provide` binds what its constructor returns — a hidden capability is refused, an alias is a binding, `Finalize` drops what an override leaves unreached (2026-11-09)
+- [x] W12: `credo.ComponentName` and `credo.CloseOnShutdown` replace `credo.Named` and `credo.Closer` (2026-11-09)
 - [ ] Checkpoint, once W5 has landed: judge splitting `internal/di` into DI and lifecycle, and dividing `App`'s implementation into internal parts; record the outcome in ADR-004 and here (a split ships in a later release)
 
 ## Components, Kernel Registries and Sequential Bootstrap
@@ -520,7 +520,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [ ] Tests
 - [ ] Update NOTICES
 
-### 4.2 Worker System (`worker/`)
+### 4.2 Worker System (`app.Workers()`, engine in `internal/worker/`)
 
 **Source**: robfig/cron v3 parser (MIT, expression parser only)
 
