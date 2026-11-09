@@ -440,8 +440,9 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // caller holds keeps the path values it had.
 //
 // Mount panics if handler is nil, if the pattern is malformed, names a
-// parameter _mount or uses a name twice, if a route already occupies the
-// prefix, or if called after compile; nothing is registered then.
+// parameter _mount, uses a name twice or holds a catch-all, if a route
+// already occupies the prefix, or if called after compile; nothing is
+// registered then.
 func (app *App) Mount(pattern string, handler http.Handler) {
 	app.checkFrozen("App.Mount")
 	if handler == nil {
@@ -464,6 +465,7 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// there would name a pattern nobody wrote.
 	names, segments := mountPrefixParams(exact)
 	checkPrefixNames("Mount", pattern, names, "_mount")
+	checkPrefixCatchAll("Mount", pattern)
 
 	// Preflight: the 16 registrations below — every forwarded method on both
 	// catchAll and exact — mutate a radix tree that has no delete. A duplicate
@@ -628,6 +630,26 @@ func checkPrefixNames(op, pattern string, names []string, reserved string) {
 		case slices.Contains(names[:i], name):
 			panic(fmt.Sprintf("credo: %s %q: duplicate parameter name %q", op, pattern, name))
 		}
+	}
+}
+
+// checkPrefixCatchAll panics when a registration prefix holds a catch-all.
+// The registration adds its own capture below the prefix, and a catch-all
+// takes the rest of the path, so that capture could never match. op names the
+// registration and pattern is the prefix as the caller wrote it, so the
+// message never shows the internal capture. A malformed parameter ends the
+// scan; registering the prefix reports it.
+func checkPrefixCatchAll(op, pattern string) {
+	rest := pattern
+	for {
+		seg, err := internalpattern.NextSegment(rest)
+		if err != nil || seg.Kind == internalpattern.Static {
+			return
+		}
+		if seg.Kind == internalpattern.CatchAll {
+			panic(fmt.Sprintf("credo: %s %q: a prefix cannot hold the catch-all {%s...}: a catch-all takes the rest of the path, and %s captures the path below its prefix itself", op, pattern, seg.Name, op))
+		}
+		rest = seg.Suffix
 	}
 }
 

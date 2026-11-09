@@ -778,6 +778,27 @@ func TestInsertRoute_DuplicateParamName(t *testing.T) {
 	}
 }
 
+// A pattern with text after a catch-all can never match, since the catch-all
+// takes the rest of the path; it is rejected before the tree is touched.
+func TestInsertRoute_TextAfterCatchAll(t *testing.T) {
+	for _, pattern := range []string{
+		"/a/{p...}/x",
+		"/a/{p...}/",
+		"/a/{p...}/{id}",
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			tree := newTree()
+			_, err := tree.InsertRoute(MGet, pattern, dummyValue)
+			if err == nil || !strings.Contains(err.Error(), "after the catch-all {p...}") {
+				t.Fatalf("InsertRoute(%s) error = %v, want text after the catch-all", pattern, err)
+			}
+			if !reflect.DeepEqual(tree, newTree()) {
+				t.Fatalf("the rejected pattern changed the tree: %+v", tree)
+			}
+		})
+	}
+}
+
 func TestInsertRoute_RegexSharedMatcherSameParam(t *testing.T) {
 	tree := newTree()
 

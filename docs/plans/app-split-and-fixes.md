@@ -13,7 +13,7 @@ Progress is tracked by the boxes below.
 
 One branch, one commit per item, one PR. Every item updates its spec and adds a CHANGELOG `[Unreleased]` entry in the short form ([CONTRIBUTING](../../CONTRIBUTING.md#changelog-and-release-notes)). A break also gets a row in the migration guide.
 
-- [ ] **A1. Text after a catch-all panics at registration** (`TODO.md`, Router Improvements).
+- [x] **A1. Text after a catch-all panics at registration** (`TODO.md`, Router Improvements).
   - **Problem:** the router accepts `GET /a/{p...}/x`, which can never match, and answers 405 for `/a/b/x`, `/a/b/c/x` and `/a/b`.
   - **Fix:** registration panics. `internal/pattern.NewMatcher` already rejects such a pattern for `middleware.Rewrite` with the message `pattern: text %q after the catch-all {%s...} in %q: a catch-all takes the rest of the path, so end the pattern with it`. The router parses patterns through the same package (`internal/radix/pattern.go`, `patNextSegment` in `internal/radix/tree.go`) but skips that check.
   - **Shape:** apply the check where the router registers a pattern, sharing the text with `internal/pattern` rather than copying it, so the router and `Rewrite` keep one message. The panic names the route as other registration panics do.

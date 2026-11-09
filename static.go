@@ -264,8 +264,8 @@ func DirFS(dir string) (fs.FS, io.Closer, error) {
 //
 // Panics if prefix contains { or } (route parameters in a static prefix are
 // not meaningful), if the group's prefix names a parameter _static (the name
-// the file path is captured under) or uses a name twice, or if called after
-// compile. The cache presets
+// the file path is captured under), uses a name twice or holds a catch-all, or
+// if called after compile. The cache presets
 // ([StaticCacheMaxAge], [StaticCacheImmutableAssets]) panic at their own
 // call site on invalid durations.
 //
@@ -299,6 +299,7 @@ func (g *Group) Static(prefix string, fsys fs.FS, cfgs ...StaticConfig) *StaticR
 
 	fullPrefix := joinPath(g.prefix, prefix)
 	checkPrefixNames("Static", fullPrefix, internalpattern.ParamNames(fullPrefix), "_static")
+	checkPrefixCatchAll("Static", fullPrefix)
 	// Normalize: strip trailing slash for consistent path building,
 	// but preserve "/" for the root prefix case.
 	cleanPrefix := strings.TrimRight(fullPrefix, "/")
