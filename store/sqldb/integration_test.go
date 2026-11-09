@@ -1869,7 +1869,7 @@ func TestSelectQuery_Unwrap(t *testing.T) {
 	}
 }
 
-func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
+func TestApplyFilter_CrossQueryReuse(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -1881,14 +1881,14 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 	}
 
 	// One predicate, reused across select, update, and delete.
-	scope := func(qb bun.QueryBuilder) bun.QueryBuilder {
-		return qb.Where("name = ?", "target")
+	scope := func(f *sqldb.Filter) {
+		f.Where("name = ?", "target")
 	}
 
 	// Select: the predicate scopes the read.
 	var got []User
-	if err := db.Select(&got).ApplyQueryBuilder(scope).Scan(ctx); err != nil {
-		t.Fatalf("Select+ApplyQueryBuilder: %v", err)
+	if err := db.Select(&got).ApplyFilter(scope).Scan(ctx); err != nil {
+		t.Fatalf("Select+ApplyFilter: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "target" {
 		t.Fatalf("select got %+v, want single 'target'", got)
@@ -1897,10 +1897,10 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 	// Update: the same predicate scopes the write.
 	res, err := db.Update((*User)(nil)).
 		Set("email = ?", "new").
-		ApplyQueryBuilder(scope).
+		ApplyFilter(scope).
 		Exec(ctx)
 	if err != nil {
-		t.Fatalf("Update+ApplyQueryBuilder: %v", err)
+		t.Fatalf("Update+ApplyFilter: %v", err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		t.Fatalf("update affected %d rows, want 1", n)
@@ -1923,9 +1923,9 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 	}
 
 	// Delete: the same predicate scopes the delete.
-	res, err = db.Delete((*User)(nil)).ApplyQueryBuilder(scope).Exec(ctx)
+	res, err = db.Delete((*User)(nil)).ApplyFilter(scope).Exec(ctx)
 	if err != nil {
-		t.Fatalf("Delete+ApplyQueryBuilder: %v", err)
+		t.Fatalf("Delete+ApplyFilter: %v", err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		t.Fatalf("delete affected %d rows, want 1", n)
@@ -1941,7 +1941,7 @@ func TestApplyQueryBuilder_CrossQueryReuse(t *testing.T) {
 	}
 }
 
-func TestApplyQueryBuilder_PreservesErrorMapping(t *testing.T) {
+func TestApplyFilter_PreservesErrorMapping(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -1950,8 +1950,8 @@ func TestApplyQueryBuilder_PreservesErrorMapping(t *testing.T) {
 	// interceptors: sql.ErrNoRows still maps to store.ErrNotFound.
 	var user User
 	err := db.Select(&user).
-		ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder {
-			return qb.Where("name = ?", "ghost")
+		ApplyFilter(func(f *sqldb.Filter) {
+			f.Where("name = ?", "ghost")
 		}).
 		Scan(ctx)
 	if !errors.Is(err, store.ErrNotFound) {
@@ -1959,7 +1959,7 @@ func TestApplyQueryBuilder_PreservesErrorMapping(t *testing.T) {
 	}
 }
 
-func TestApplyQueryBuilder_NilFnIsNoop(t *testing.T) {
+func TestApplyFilter_NilFnIsNoop(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -1969,16 +1969,16 @@ func TestApplyQueryBuilder_NilFnIsNoop(t *testing.T) {
 	}
 
 	// nil predicate adds no WHERE; the query still runs and returns all rows.
-	n, err := db.Select((*User)(nil)).ApplyQueryBuilder(nil).Count(ctx)
+	n, err := db.Select((*User)(nil)).ApplyFilter(nil).Count(ctx)
 	if err != nil {
-		t.Fatalf("nil ApplyQueryBuilder Count: %v", err)
+		t.Fatalf("nil ApplyFilter Count: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("count = %d, want 1", n)
 	}
 }
 
-func TestApplyQueryBuilder_WhereGroup(t *testing.T) {
+func TestApplyFilter_WhereGroup(t *testing.T) {
 	db := openTestDB(t)
 	createUsersTable(t, db)
 	ctx := t.Context()
@@ -1989,11 +1989,11 @@ func TestApplyQueryBuilder_WhereGroup(t *testing.T) {
 		}
 	}
 
-	// WhereGroup is not in the curated proxy set; it is reachable via the builder.
+	// WhereGroup is not in the curated proxy set; it is reachable via the filter.
 	n, err := db.Select((*User)(nil)).
-		ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder {
-			return qb.WhereGroup(" AND ", func(g bun.QueryBuilder) bun.QueryBuilder {
-				return g.Where("name = ?", "a").WhereOr("name = ?", "b")
+		ApplyFilter(func(f *sqldb.Filter) {
+			f.Where("email LIKE ?", "%@b").WhereGroup(" AND ", func(g *sqldb.Filter) {
+				g.Where("name = ?", "a").WhereOr("name = ?", "b")
 			})
 		}).
 		Count(ctx)

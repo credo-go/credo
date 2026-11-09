@@ -3,28 +3,28 @@ package sqldb
 import (
 	"errors"
 	"fmt"
-
-	"github.com/uptrace/bun"
 )
 
-// ErrTypedTerminalModel reports that One, All, or Page was called on a
-// SelectQuery that already has a model bound to it. Typed terminals own their
-// destination model, so overriding a pre-bound model would discard relation
-// and model state silently.
+// ErrTypedTerminalModel reports that One, All, Page, or PageWithCount was
+// called on a SelectQuery that already has a model bound to it. Typed
+// terminals own their destination model, so overriding a pre-bound model would
+// discard relation and model state silently.
 var ErrTypedTerminalModel = errors.New("sqldb: typed terminal requires a model-less query")
 
-// ErrUnsupportedCountQuery reports a query shape that Count and Page cannot
-// execute safely. Direct compound queries and HAVING without GROUP BY fail with
-// this sentinel before I/O and must be restructured behind an outer derived
-// table or CTE. Relation callbacks are rendered once and may not replace the
-// model or add root ORDER/LIMIT/OFFSET/FOR or another unsupported count shape.
+// ErrUnsupportedCountQuery reports a query whose total Count and Page cannot
+// prove. They run Bun's native count only on a query built without Apply,
+// Unwrap or a Relation callback, whose model's type does not implement
+// bun.BeforeSelectHook, and that either carries GroupExpr or Distinct or has no
+// raw ColumnExpr and no Having. Every other query fails with this sentinel
+// before I/O; the message names the rule, its culprit, and the remedy:
+// page the query with [SelectQuery.PageWithCount] and a count of your own.
 //
-// MySQL validates derived-table output names at execution. When the generated
-// logical COUNT returns ER_DUP_FIELDNAME (1060), Count and Page wrap this
+// MySQL validates the output names of the count's derived source at execution.
+// When the count returns ER_DUP_FIELDNAME (1060), Count and Page wrap this
 // sentinel while preserving the original driver cause. That mapping is local
-// to logical COUNT; the same MySQL error from any other operation passes through
+// to the count; the same MySQL error from any other operation passes through
 // unchanged.
-var ErrUnsupportedCountQuery = errors.New("sqldb: unsupported Count/Page query shape")
+var ErrUnsupportedCountQuery = errors.New("sqldb: unsupported Count/Page query")
 
 const mysqlErrDuplicateFieldName uint16 = 1060
 
@@ -34,9 +34,20 @@ func wrapMySQLCountExecutionError(family driverFamily, err error) error {
 		return err
 	}
 	return fmt.Errorf(
-		"%w: MySQL logical count returned ER_DUP_FIELDNAME (1060): %w",
+		"%w: MySQL count returned ER_DUP_FIELDNAME (1060); give the projection's columns unique aliases: %w",
 		ErrUnsupportedCountQuery,
 		err,
+	)
+}
+
+// unsupportedCountError names the terminal, the rule that made the query
+// unknown with its culprit (reason), and the remedy.
+func unsupportedCountError(terminal, reason string) error {
+	return fmt.Errorf(
+		"%w: %s cannot prove the total of this query: %s; count it with a query of your own and page it with PageWithCount",
+		ErrUnsupportedCountQuery,
+		terminal,
+		reason,
 	)
 }
 
@@ -47,45 +58,4 @@ func typedTerminalModelError(terminal string) error {
 		ErrTypedTerminalModel,
 		terminal,
 	)
-}
-
-type countQueryShape struct {
-	group    bool
-	having   bool
-	compound bool
-}
-
-func inspectCountQueryShape(raw *bun.SelectQuery) (countQueryShape, error) {
-	if raw == nil {
-		return countQueryShape{}, fmt.Errorf("sqldb: inspect count query shape: query must not be nil")
-	}
-	layout, err := loadBunSelectCloneLayout()
-	if err != nil {
-		return countQueryShape{}, err
-	}
-	return countQueryShape{
-		group:    bunSelectSliceLen(raw, layout.group) > 0,
-		having:   bunSelectSliceLen(raw, layout.having) > 0,
-		compound: bunSelectSliceLen(raw, layout.compound) > 0,
-	}, nil
-}
-
-func validateCountQueryShape(raw *bun.SelectQuery) error {
-	shape, err := inspectCountQueryShape(raw)
-	if err != nil {
-		return err
-	}
-	if shape.compound {
-		return fmt.Errorf(
-			"%w: direct UNION/INTERSECT/EXCEPT queries must be wrapped in an outer derived-table or CTE source",
-			ErrUnsupportedCountQuery,
-		)
-	}
-	if shape.having && !shape.group {
-		return fmt.Errorf(
-			"%w: HAVING without GROUP BY does not have a safe Bun v1.3.0 row-count contract",
-			ErrUnsupportedCountQuery,
-		)
-	}
-	return nil
 }

@@ -67,27 +67,18 @@ func (q *UpdateQuery) Conn(db bun.IConn) *UpdateQuery {
 // --- Escape hatches ---
 
 // Apply delegates to Bun's native Apply for advanced builder methods.
-// Nil functions are filtered out.
+// Nil functions are filtered out. A connection set inside fn is overridden by
+// TX injection at the terminal; use Conn for an explicit connection.
 func (q *UpdateQuery) Apply(fns ...func(*bun.UpdateQuery) *bun.UpdateQuery) *UpdateQuery {
 	q.raw = applyFiltered(q.raw, fns...)
 	return q
 }
 
-// ApplyQueryBuilder applies fn to Bun's shared [bun.QueryBuilder] — the
-// builder-only interface (Where, WhereOr, WhereGroup, WherePK,
-// WhereDeleted, WhereAllWithDeleted) common to select, update, and delete
-// queries. It lets a single WHERE predicate be reused across all three
-// query types instead of being duplicated per type via Apply.
-//
-// Conditions added through the builder land on this query, so the proxy's
-// terminal methods still apply TX injection and error mapping; interceptors
-// are preserved. A nil fn is a no-op. The builder's Unwrap() any remains a
-// terminal-bypass escape, the same caveat as Unwrap.
-func (q *UpdateQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder) *UpdateQuery {
-	if fn == nil {
-		return q
-	}
-	q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.UpdateQuery)
+// ApplyFilter runs fn on a [Filter] over this query's WHERE clause, so a single
+// predicate — tenant scoping, soft-delete filters, ownership checks — scopes a
+// select, an update, and a delete alike. A nil fn is a no-op.
+func (q *UpdateQuery) ApplyFilter(fn func(*Filter)) *UpdateQuery {
+	applyFilter(q.raw.QueryBuilder(), fn)
 	return q
 }
 

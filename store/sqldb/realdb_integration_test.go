@@ -83,10 +83,16 @@ func TestRealDB_Contracts(t *testing.T) {
 		testRealDBErrorMapping(t, ctx, db, cfg.Driver)
 	})
 	if cfg.Driver == "mysql" {
-		t.Run("MySQL logical count output names", func(t *testing.T) {
+		t.Run("MySQL count output names", func(t *testing.T) {
 			testRealDBMySQLCountSource(t, ctx, db)
 		})
 	}
+	t.Run("count conformance", func(t *testing.T) {
+		runCountConformance(t, ctx, db)
+	})
+	t.Run("count runs on the query's own connection", func(t *testing.T) {
+		testRealDBCountConnection(t, ctx, db)
+	})
 	t.Run("commit and rollback", func(t *testing.T) {
 		testRealDBTransactions(t, ctx, db)
 	})
@@ -334,8 +340,13 @@ func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB)
 			withRealDBMySQLMode(t, ctx, db, mode.statement, func(conn *sql.Conn) {
 				const bindSecret = "credo-count-bind-secret"
 
+				// A projection that repeats an output name is counted through
+				// Bun's derived source only with GroupExpr or Distinct; MySQL
+				// rejects the repeated name there with 1060, which the count
+				// wraps with ErrUnsupportedCountQuery.
 				_, countErr := db.Select((*realDBItem)(nil)).
 					Conn(conn).
+					Distinct().
 					ColumnExpr("?TableAlias.id AS duplicate_output").
 					ColumnExpr("?TableAlias.name AS duplicate_output").
 					Where("?TableAlias.required_value = ?", bindSecret).
@@ -347,38 +358,39 @@ func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB)
 					Conn(conn).
 					ColumnExpr("?TableAlias.id AS duplicate_output").
 					ColumnExpr("?TableAlias.name AS duplicate_output").
+					GroupExpr("?TableAlias.id").
 					Where("?TableAlias.required_value = ?", bindSecret).
 					Where(mode.predicate).
 					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
 				assertRealDBMySQL1060(t, pageErr, true, bindSecret)
 
-				// These positive pages make both COUNT and data SELECT depend on
-				// the leased connection's session mode. Losing Conn state makes the
-				// NO_BACKSLASH_ESCAPES case return the wrong window.
-				wildcardPage, wildcardErr := db.Select().
+				// These positive pages make both the count and the data query
+				// depend on the leased connection's session mode. Losing the Conn
+				// makes the NO_BACKSLASH_ESCAPES case return the wrong window.
+				plainPage, plainErr := db.Select().
 					Conn(conn).
-					ColumnExpr("?TableAlias.*").
 					Where(mode.predicate).
 					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
-				if wildcardErr != nil {
-					t.Fatalf("wildcard Page() = %v", wildcardErr)
+				if plainErr != nil {
+					t.Fatalf("plain Page() = %v", plainErr)
 				}
-				if wildcardPage.Total != 1 || len(wildcardPage.Records) != 1 ||
-					wildcardPage.Records[0].ID != 20 {
-					t.Fatalf("wildcard Page() = %+v, want one complete fixture row", wildcardPage)
+				if plainPage.Total != 1 || len(plainPage.Records) != 1 ||
+					plainPage.Records[0].ID != 20 {
+					t.Fatalf("plain Page() = %+v, want one complete fixture row", plainPage)
 				}
 
-				implicitAliasPage, implicitAliasErr := db.Select().
+				distinctPage, distinctErr := db.Select().
 					Conn(conn).
+					Distinct().
 					ColumnExpr("LOWER(?TableAlias.name) name").
 					Where(mode.predicate).
 					Page[realDBItem](ctx, &pagination.PageRequest{Page: 1, PerPage: 10})
-				if implicitAliasErr != nil {
-					t.Fatalf("implicit-alias Page() = %v", implicitAliasErr)
+				if distinctErr != nil {
+					t.Fatalf("distinct implicit-alias Page() = %v", distinctErr)
 				}
-				if implicitAliasPage.Total != 1 || len(implicitAliasPage.Records) != 1 ||
-					implicitAliasPage.Records[0].Name != "mixed" {
-					t.Fatalf("implicit-alias Page() = %+v, want one lower-cased name", implicitAliasPage)
+				if distinctPage.Total != 1 || len(distinctPage.Records) != 1 ||
+					distinctPage.Records[0].Name != "mixed" {
+					t.Fatalf("distinct implicit-alias Page() = %+v, want one lower-cased name", distinctPage)
 				}
 			})
 		})
@@ -393,6 +405,55 @@ func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB)
 		) AS raw_duplicate_source
 	`, rawBindSecret, "other")
 	assertRealDBMySQL1060(t, rawErr, false, rawBindSecret)
+}
+
+// testRealDBCountConnection pins that Count and Page count on the query's own
+// connection: inside a transaction an injected count sees the transaction's
+// uncommitted row, a count with an explicit pool connection does not, and a
+// connection set inside Apply is overridden by the injection.
+func testRealDBCountConnection(t *testing.T, ctx context.Context, db *sqldb.DB) {
+	t.Helper()
+	if _, deleteErr := db.Exec(ctx, "DELETE FROM "+realDBItemsTable); deleteErr != nil {
+		t.Fatalf("clear count-connection fixture: %v", deleteErr)
+	}
+	if _, insertErr := db.Insert(&realDBItem{ID: 30, Name: "committed", RequiredValue: "present"}).
+		Exec(ctx); insertErr != nil {
+		t.Fatalf("seed count-connection fixture: %v", insertErr)
+	}
+	rollback := errors.New("roll back")
+	txErr := db.InTx(ctx, func(txCtx context.Context) error {
+		if _, insertErr := db.Insert(&realDBItem{ID: 31, Name: "uncommitted", RequiredValue: "present"}).
+			Exec(txCtx); insertErr != nil {
+			return insertErr
+		}
+		injected, countErr := db.Select((*realDBItem)(nil)).Count(txCtx)
+		if countErr != nil || injected != 2 {
+			t.Errorf("injected Count = %d, %v; want 2 with the uncommitted row", injected, countErr)
+		}
+		page, pageErr := db.Select().Page[realDBItem](txCtx, &pagination.PageRequest{Page: 1, PerPage: 10})
+		if pageErr != nil || page.Total != 2 || len(page.Records) != 2 {
+			t.Errorf("injected Page = %+v, %v; want 2 with the uncommitted row", page, pageErr)
+		}
+		explicit, countErr := db.Select((*realDBItem)(nil)).Conn(db.Client()).Count(txCtx)
+		if countErr != nil || explicit != 1 {
+			t.Errorf("explicit-Conn Count = %d, %v; want 1 from the pool", explicit, countErr)
+		}
+		explicitPage, pageErr := db.Select().Conn(db.Client()).
+			Page[realDBItem](txCtx, &pagination.PageRequest{Page: 1, PerPage: 10})
+		if pageErr != nil || explicitPage.Total != 1 || len(explicitPage.Records) != 1 {
+			t.Errorf("explicit-Conn Page = %+v, %v; want 1 from the pool", explicitPage, pageErr)
+		}
+		overridden, allErr := db.Select().
+			Apply(func(q *bun.SelectQuery) *bun.SelectQuery { return q.Conn(db.Client()) }).
+			All[realDBItem](txCtx)
+		if allErr != nil || len(overridden) != 2 {
+			t.Errorf("Apply-Conn All = %d rows, %v; want 2 from the injected transaction", len(overridden), allErr)
+		}
+		return rollback
+	})
+	if !errors.Is(txErr, rollback) {
+		t.Fatalf("InTx = %v, want the rollback sentinel", txErr)
+	}
 }
 
 func withRealDBMySQLMode(

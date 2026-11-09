@@ -165,9 +165,6 @@ func Open(cfg *Config, opts ...Option) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateBunSelectCloneLayout(); err != nil {
-		return nil, err
-	}
 
 	// Open the sql.DB.
 	var sqlDB *sql.DB

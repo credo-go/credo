@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/uptrace/bun"
+
+	"github.com/credo-go/credo/store/sqldb"
 )
 
 // TestQueryProxyBuilders exercises the builder-method proxies on each query
@@ -38,8 +40,8 @@ func TestQueryProxyBuilders(t *testing.T) {
 			OmitZero().
 			Returning("id").
 			Conn(db.Client()).
-			ApplyQueryBuilder(nil). // nil fn is a no-op
-			ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder { return qb }).
+			ApplyFilter(nil). // nil fn is a no-op
+			ApplyFilter(func(f *sqldb.Filter) { f.WherePK() }).
 			Apply(func(uq *bun.UpdateQuery) *bun.UpdateQuery { return uq })
 		if q.Unwrap() == nil {
 			t.Fatal("Update Unwrap returned nil")
@@ -52,7 +54,7 @@ func TestQueryProxyBuilders(t *testing.T) {
 			WherePK().
 			Returning("id").
 			Conn(db.Client()).
-			ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder { return qb }).
+			ApplyFilter(func(f *sqldb.Filter) { f.WhereAllWithDeleted() }).
 			Apply(func(dq *bun.DeleteQuery) *bun.DeleteQuery { return dq })
 		if q.Unwrap() == nil {
 			t.Fatal("Delete Unwrap returned nil")
@@ -67,7 +69,7 @@ func TestQueryProxyBuilders(t *testing.T) {
 			WhereOr("id = ?", 1).
 			GroupExpr("name").
 			Having("COUNT(*) > ?", 0).
-			ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder { return qb }).
+			ApplyFilter(func(f *sqldb.Filter) { f.WhereOr("id = ?", 2) }).
 			Apply(func(sq *bun.SelectQuery) *bun.SelectQuery { return sq })
 		if q.Unwrap() == nil {
 			t.Fatal("Select Unwrap returned nil")

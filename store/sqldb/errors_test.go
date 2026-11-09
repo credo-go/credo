@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,6 +254,10 @@ func TestWrapMySQLCountExecutionError(t *testing.T) {
 	got := wrapMySQLCountExecutionError(driverFamilyMySQL, cause)
 	if !errors.Is(got, ErrUnsupportedCountQuery) || !errors.Is(got, cause) {
 		t.Fatalf("wrapped MySQL count error = %v, want sentinel and driver cause", got)
+	}
+	if msg := got.Error(); !strings.Contains(msg, "MySQL count returned ER_DUP_FIELDNAME (1060)") ||
+		!strings.Contains(msg, "give the projection's columns unique aliases") {
+		t.Fatalf("wrapped MySQL count error = %q, want the failure and its remedy", msg)
 	}
 	mapped := mapError(t.Context(), driverFamilyMySQL, got)
 	if mapped != got { //nolint:errorlint // Global mapping must preserve the local wrapper exactly.
