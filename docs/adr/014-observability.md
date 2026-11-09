@@ -21,6 +21,23 @@ Credo treats observability in two layers:
 
 When tracing and metrics land, they follow the wrap + pin strategy ([ADR-002](002-code-acquisition-strategy.md)): OpenTelemetry and Prometheus remain external, version-pinned libraries, and the root package avoids importing their SDK and exporter packages. Whether `credo.Infra` gains metrics and tracing fields, and the type of each — Credo-owned interfaces validated against the adapters, or the OpenTelemetry API types, which would add a root dependency — is decided before v1 ([v1 Gate](../../TODO.md#v1-gate)). The keyed-literal guard on `credo.Infra` ([ADR-004](004-dependency-injection-and-infra.md)) keeps such fields additive for existing constructor calls.
 
+### Observers read the request's values
+
+> **Pending v0.26.0 (R12):** not implemented yet; no `Observer` or `Exchange` exists, and the access log's `ResultFilter` reads the request's values from a pooled `*Context` it must not retain.
+
+An observer of the final response ([ADR-010](010-middleware-architecture.md#observers-of-the-final-response)) reads the request's values as the Context does. `Exchange.Context()` returns the request's context head as it stands when the response is final: the values set through `c.Set`, read with `Value` and their keys, and a span that a wrap enclosing the observers put there, from which the OpenTelemetry SDK takes exemplars when a metric records through that context (`Record(ctx, …)`). The head is made of immutable nodes, so an exporter may keep it beyond `Observe`; it is cancelled when the request ends. `Exchange.Get(key)` reads a typed key's value from the head, `(T, bool)` as `c.Get` returns it, with `T` inferred from the key, so an observer reads a value without a type assertion. The user is read with `Exchange.GetUser[T]`, as on the Context, since its key stays unexported ([ADR-012](012-authentication-and-authorization.md)). Where the tracing wrap sits is decided with the observability release.
+
+The record is checked against its real consumers before v1: until the observability release, the access log is the only consumer of `Observer` and `Exchange`, and the OpenTelemetry and Prometheus adapters written for that release's decision run on them before the stability window opens, so a change they need lands before v1 freezes the record.
+
+Rejected:
+
+- **Reading a value only through `ex.Context().Value(key)`:** a type assertion where the handler's `c.Get` needs none, for a record that already reads the user through a method.
+- **Typed keys alone, without the context:** a metrics observer would have no context to record through, so the OpenTelemetry SDK, which takes the span for an exemplar from that context, would attach none.
+
+**Problem.** The access log is the only observer of the final response, and its filter reads the request's values from the pooled Context, valid only until the Context is released; an exporter that must keep the request's context past the observation, to record a metric with the span's exemplar, has no record to read it from.
+
+**Removes.** Nothing beyond what [ADR-010](010-middleware-architecture.md#observers-of-the-final-response) lists: the access log's `AccessLogEntry` and its filter's `(*Context, AccessLogEntry)` parameters.
+
 ## Consequences
 
 **Positive:**

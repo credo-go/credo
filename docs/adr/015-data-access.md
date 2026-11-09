@@ -27,7 +27,7 @@ Applications that need a different ORM (GORM, sqlx, sqlc) bind their client dire
 ### Two-Package Split: store/ + store/sqldb/
 
 - **`store/`** — universal contracts (errors, `Health`, TX context helpers). Zero external dependencies. Part of the main `github.com/credo-go/credo` module.
-- **`store/sqldb/`** — Bun SQL wrapper (`DB`, `Config`, query builders, `RunInTx`, error mapping). Separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in.
+- **`store/sqldb/`** — Bun SQL wrapper (`DB`, `Config`, query builders, transactions, error mapping). Separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in.
 
 `store/` holds errors, `Health` and the TX context helpers; it has no registration and no lifecycle contract. `store/sqldb/`'s `*DB` implements `Start`, `Ready` and `Shutdown` and is a component like any other ([A Database Is a Component](#a-database-is-a-component)).
 
@@ -35,11 +35,27 @@ Applications that need a different ORM (GORM, sqlx, sqlc) bind their client dire
 
 The stdlib-only `fault` leaf package defines transport-neutral `Kind` values and a `Provider` interface. Both root HTTP policy and `store` import that leaf, and `store` imports nothing else, so neither the root nor `store` imports the other. `store.Kind` aliases `fault.Kind` for application-facing data-access code.
 
-`store.Error` carries the kind together with structured diagnostics — operation, resource, constraint, driver code, a transient flag and the cause — that never reach the wire: the default error renderer serializes none of them. Exact sentinels distinguish not-found, already-exists, persistent constraint, serialization, deadlock, lock/busy contention, timeout, unavailable, and read-only conditions, so callers branch on the condition rather than on a coarse conflict. `ErrDuplicate` (an alias of `ErrAlreadyExists`) and the `ErrConflict` umbrella, which the constraint and concurrency sentinels match through `errors.Is`, are deprecated compatibility names; the exact `Kind` is the primary contract. The [store spec](../specs/store.md#semantic-errors) lists the struct, the sentinels and their default statuses.
+`store.Error` carries the kind together with structured diagnostics — operation, resource, constraint, driver code, a transient flag and the cause — that never reach the wire: the default error renderer serializes none of them. Exact sentinels distinguish not-found, already-exists, persistent constraint, serialization, deadlock, lock/busy contention, timeout, unavailable, and read-only conditions, so callers branch on the condition rather than on a coarse conflict. The [store spec](../specs/store.md#semantic-errors) lists the struct, the sentinels and their default statuses.
+
+> **Current until v0.26.0 (R14):** the next paragraph describes `ErrDuplicate` and `ErrConflict`, which [One API per operation](#one-api-per-operation) removes.
+
+`ErrDuplicate` (an alias of `ErrAlreadyExists`) and the `ErrConflict` umbrella, which the constraint and concurrency sentinels match through `errors.Is`, are deprecated compatibility names; the exact `Kind` is the primary contract.
 
 `Transient` means only that the condition may clear. It never promises that replaying a statement, transaction callback, or externally visible operation is safe. Commit outcome is deliberately not inferred from a driver cause kind; an `OutcomeUnknown` model is deferred until operation-phase evidence can make it reliable.
 
+> **Current until v0.26.0 (R2):** the next paragraph describes the legacy `HTTPStatus()` seam and the store errors' deprecated `HTTPStatus()` bridge.
+
 Credo root maps `fault.Provider` after `*HTTPError` and before the legacy `HTTPStatus()` seam ([ADR-009](009-handler-and-error-handling.md)). This preserves service/domain override through `NewHTTPError(...).WithInternal(err)` while giving future gRPC policy the same semantic input. The store sentinels' `HTTPStatus()` is a deprecated compatibility bridge. Unknown kinds fail closed as 500.
+
+> **Pending v0.26.0 (R2):** the next three paragraphs state the one status channel and the kind as the code; until R2 ships, `*store.Error` and the kind sentinels also implement `HTTPStatus()`, and a store error renders the code its status gives (`not_found`, `conflict` for every 409 kind, `gateway_timeout`, `service_unavailable`).
+
+A store error reaches the client through its kind alone. Root HTTP policy reads `FaultKind` and maps the kind to its status ([ADR-009](009-handler-and-error-handling.md)); no store type has an `HTTPStatus` method. The classification order is `*HTTPError`, `*fault.Error`, the validation errors, `*BindError`, any other `fault.Provider`, then 500, so a service overrides a store error by returning an `HTTPError`, or a `fault.Error` that names a code of its own, with the store error as its internal cause, which is logged and never rendered; future gRPC policy reads the same kind. Unknown kinds fail closed as 500.
+
+A fault without an explicit code renders its kind as its code — `not_found`, `already_exists`, `constraint`, `serialization`, `deadlock`, `contention`, `conflict`, `timeout`, `unavailable`, `read_only` — so a client tells a duplicate from a serialization or deadlock failure that may clear, where a code derived from the status would name all of them `conflict`. The statuses do not change. `store.Error`'s `Code` is the driver's code, a diagnostic that is never rendered; the client-visible code is the kind's, or the code a service names through `fault.Error`.
+
+**Problem.** Two channels carry a store error's status: `FaultKind`, which the pipeline reads, and a deprecated `HTTPStatus()` bridge that code matching `interface{ HTTPStatus() int }` with `errors.As` still finds, so v1 would freeze two status contracts for one error. A code derived from the status gives every 409 kind the one code `conflict`, so a client cannot tell a duplicate from a failure a retry may clear without parsing the message.
+
+**Removes.** `(*store.Error).HTTPStatus`, the kind sentinels' `HTTPStatus` and the legacy kind-to-status mapping behind them; the codes a store error derived from its status — `conflict` for the 409 kinds, `gateway_timeout` and `service_unavailable` — which the kind names replace.
 
 **Classification reads structure, never text.** `sqldb` classifies with the configured driver family (the selected Bun dialect for a custom connector) and the operation context. SQLSTATE is the cross-driver path; when a MySQL error exposes both its number and a broad SQLSTATE class, the more specific number wins (1213/40001 is a deadlock, not a generic serialization failure). MySQL's strict `Error NNNN (STATE): ...` envelope is parsed only for MySQL, and SQLite's structured code only for SQLite. Loose substrings such as "duplicate key" or "read-only" are never inspected, so a scanner, query-hook or domain error that contains such text keeps its exact identity. PostgreSQL `57014` means query canceled, not timeout: caller cancellation stays cancellation, a caller deadline maps to `Timeout`, and with a live context only a structured driver error that explicitly says statement timeout does. MySQL 1290 is not classified as read-only because it is the generic option-prevents-statement code; the read-only transaction/server codes 1792 and 1836 are. Every mapped result is a `*store.Error` that preserves the cause and the driver code. A public classifier registry is deferred until a custom-driver consumer demonstrates the need. The code-level table is the store spec's [Error Mapping](../specs/store.md#error-mapping).
 
@@ -49,6 +65,8 @@ Credo root maps `fault.Provider` after `*HTTPError` and before the legacy `HTTPS
 - Each `sqldb.DB` owns a distinct `TxScope[bun.IDB]`, isolating multiple logical databases that share Bun's interface type.
 - `sqldb.RunInTx(ctx, db, fn)` starts a transaction, stores it in that DB's private scope, executes the callback, and commits/rolls back. Nested calls use savepoints.
 - `sqldb.DB.Conn(ctx)` exposes the active `bun.IDB` for transaction-aware native Bun operations; `RequireTx(ctx)` returns `store.ErrTxMissing` instead of falling back.
+
+> **Current until v0.26.0 (R14):** the third bullet above names `sqldb.RunInTx`, the next paragraph's last sentence names the deprecated unscoped `store.WithTx` / `GetTx` / `Conn` helpers, and the paragraph after it calls `InTx` and `InTxWith` method forms of the free functions; [One API per operation](#one-api-per-operation) removes the free functions, and `db.InTx(ctx, fn)` is the one way to run a transaction.
 
 This is an **opt-in convenience**. Proxy users participate automatically when they pass the callback context. Custom adapters use their own typed scope. The unscoped `store.WithTx` / `GetTx` / `Conn` helpers are deprecated: type-only context keys cannot protect a producer/consumer concrete-interface mismatch or isolate same-type logical connections.
 
@@ -66,6 +84,22 @@ Rejected:
 - **A `Session`/Unit-of-Work object** beside the typed ambient scope — deferred until an outbox or another transaction-bound multi-repository consumer demonstrates a boundary that `InTx` plus explicit `DB.Conn(ctx)` cannot express cleanly.
 - **An ambient Bun `ConnResolver`** to make `Client()` transaction-aware — Bun v1.3.0 gives a resolver one owned slot and closes it from `bun.DB.Close`; explicit query connections win over it, while direct `Client().ExecContext`, `QueryContext`, `QueryRowContext`, and `BeginTx` bypass it. Credo's proxy terminals bind an explicit connection, so a resolver would make only part of `Client()` transaction-aware and would complicate read-replica composition and ownership. Terminal-level injection stays the default and `DB.Conn(ctx)` is the explicit native path. A composite order (`explicit query conn → active Credo TX → user/replica resolver → base DB`) is reconsidered only when automatic native-builder or replica routing is a demonstrated requirement.
 
+### One API per operation
+
+> **Pending v0.26.0 (R14):** not implemented yet; the deprecated and parallel APIs this section names are exported beside their replacements.
+
+Each data-access operation has one exported spelling before v1 freezes the surface:
+
+- **One transaction scope API.** The `TxScope` methods — `WithTx`, `GetTx`, `RequireTx` and `Conn`, whose `T` the scope fixes — are the one transaction API, and `sqldb` uses it. The deprecated free functions `store.WithTx`, `GetTx` and `Conn` and the `…InScope` functions `WithTxInScope`, `GetTxInScope`, `RequireTxInScope` and `ConnInScope` go.
+- **One way to run a transaction.** `db.InTx(ctx, fn)` and `db.InTxWith(ctx, opts, fn)` put the operation on the database the caller holds; their free-function twins `sqldb.RunInTx` and `RunInTxWith` go.
+- **The exact sentinels are the error contract.** `store.ErrDuplicate`, an alias of `ErrAlreadyExists`, goes, and so does `store.ErrConflict`, the legacy umbrella over the constraint and concurrency kinds, with the matching that makes it one. `KindConflict` stays: it is a kind an adapter may return, and `store.KindOf` reports it.
+
+Kept: `store.Health`, the type `sqldb`'s `Health` returns and its `Ready` reads ([A Database Is a Component](#a-database-is-a-component)).
+
+**Problem.** An API exported beside its replacement freezes at v1 with it: two names for one transaction operation, two spellings of one sentinel, and an umbrella sentinel that matches four kinds whose handling differs — a serialization failure or a deadlock may clear, a constraint violation does not — so code that checks it branches on the coarse condition the exact sentinels exist to replace.
+
+**Removes.** `store.WithTx`, `GetTx` and `Conn`; `WithTxInScope`, `GetTxInScope`, `RequireTxInScope` and `ConnInScope`; `store.ErrDuplicate`; `store.ErrConflict` and the `errors.Is` match of `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` and `ErrContention` against it; `sqldb.RunInTx` and `RunInTxWith`.
+
 ### 3-Tier Bun Wrapping
 
 The `sqldb.DB` wrapper applies three strategies to Bun's API:
@@ -74,16 +108,34 @@ The `sqldb.DB` wrapper applies three strategies to Bun's API:
 2. **Enrich** — query builder proxies (`Select`, `Insert`, `Update`, `Delete`) that inject TX from context and map errors to semantic `store.Error` values. DB-level query-hook tracing is planned for the observability release ([ADR-014](014-observability.md)) and is not installed today.
 3. **Passthrough** — `Conn(ctx) bun.IDB` for transaction-aware native Bun work, which bypasses error mapping, and `Client() *bun.DB` for model registration, migration operations beyond `Migrate`, and work intentionally tied to the base pool, which bypasses both TX injection and error mapping.
 
+### Bun Through Its Exported API
+
+> **Pending v0.26.0 (R9):** not implemented yet; `sqldb` writes private fields of Bun's `SelectQuery` through `unsafe` offsets it discovers and checks in `Open` — the layer behind `Clone`, the terminal snapshots and the count source — and replays the model's SELECT hooks on a count source of its own.
+
+`sqldb` uses Bun through its exported API only. Terminals keep their snapshot semantics through Bun's own `Clone()`, complete from v1.3.0, and the public `Clone()` forwards to it. Whether a connection was set explicitly comes from the wrapper's `Conn`, as on the other three query types: a `Conn` set inside an `Apply` closure is overridden by transaction injection on all four. The curated forwarders, transaction injection and error mapping at the terminals, the typed `One`/`All`/`Page` terminals and the `Apply`/`Unwrap` escape hatches are the thin adapter [ADR-002](002-code-acquisition-strategy.md#wrap--pin--components-with-fast-evolution-and-high-security-pressure) describes, and they stay. A Bun upgrade passes the conformance tests that pin what the adapter relies on — a connection kept or overridden, the clauses every count drops, the totals, and the two hook facts of [Offset Pagination](#offset-pagination) — not a check of Bun's private layout. A predicate shared across query types goes through `ApplyFilter` ([Query Proxies](#query-proxies)), and the total of a query the wrapper cannot prove is the caller's ([Offset Pagination](#offset-pagination)).
+
+**Problem.** A wrapper that writes a dependency's private fields is pinned to one release's memory layout: every Bun upgrade needs a layout check, an application that minimal version selection gives a newer Bun fails at `Open`, and the layer outlives its reason, since Bun v1.3.0's `Clone` already copies the fields it restores. Reading the explicit connection from Bun's private state also lets `SelectQuery` alone honour a `Conn` set inside `Apply`, so one closure behaves differently on a select than on a write. A count source of Credo's own around every query, with the model's hooks replayed on it, restates Bun's count and hook semantics on that private state.
+
+**Removes.** The private-field layer — its offset discovery and `unsafe` writes, the layout check in `Open` and its compatibility error — and the hook replay on the count source; `ApplyQueryBuilder`; `SelectQuery`'s honouring of a `Conn` set inside an `Apply` closure; and the automatic total of a query the wrapper cannot prove, which takes `PageWithCount`.
+
 ### Query Proxies
 
 The proxies exist to attach the two terminal guarantees — TX injection and error mapping — not to hide Bun: Bun types appear in their signatures by design. The guarantees live in the terminals, so a missing builder method is reached through `Apply` or `ApplyQueryBuilder`, while a missing terminal is a request to extend the curated set. The [store spec](../specs/store.md#query-builders) lists each proxy's methods.
 
 The curated `SelectQuery` set includes `Join`, `JoinOn`, `JoinOnOr`, `TableExpr`, `ColumnExpr`, and `ExcludeColumn` so that non-model JOIN queries (reporting, auth, analytics) do not turn the `Apply` escape hatch into the normal path. They return `*SelectQuery`, and the terminals that carry the interceptors are unchanged.
 
+> **Current until v0.26.0 (R9):** the next paragraph and its two bullets describe `ApplyQueryBuilder`, which `ApplyFilter` replaces.
+
 `SelectQuery`, `UpdateQuery`, and `DeleteQuery` offer `ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder)` because the typed `Apply` is per query type (`func(*bun.SelectQuery) *bun.SelectQuery` cannot be applied to an update or delete): a predicate shared across reads and writes — soft-delete filters, account scoping, ownership checks, authorization scopes — would otherwise be written once per query type. Bun's `QueryBuilder` is the builder-only interface (`Where`, `WhereOr`, `WhereGroup`, `WherePK`, `WhereDeleted`, `WhereAllWithDeleted`) common to the three, so one predicate applies to all of them, and `WhereGroup`, which the curated set does not expose, becomes reachable. `InsertQuery` has no WHERE clause and is excluded, matching Bun's own `QueryBuilder` interface assertions.
 
 - **A function, not a raw `QueryBuilder()` accessor.** An accessor would return a Bun interface that breaks the proxy's fluent chain and is essentially a second `Unwrap` (`bun.QueryBuilder` carries `Unwrap() any`). `ApplyQueryBuilder(fn)` returns the proxy type, contains the Bun type inside a function boundary, and mirrors Bun's own `ApplyQueryBuilder`. Conditions land on the proxied query, so the terminals keep their interceptors — verified against Bun v1.3.0, whose `selectQueryBuilder` wraps the same `*bun.SelectQuery` pointer and whose Where-family methods mutate it in place. The builder's `Unwrap() any` is the same terminal-bypass escape as `Unwrap()`, and no easier to misuse than `Apply`, which hands out the concrete query directly.
 - **The cost is Bun type leakage.** A shared predicate's signature imports `bun` into repository code, at the same documented escape-hatch tier as `Apply`, `Unwrap`, `Conn`, and `Client`. A Credo-owned `WhereScope` interface (`Where`/`WhereOr`/`WherePK`, no `Unwrap`) is deferred until that coupling proves painful: it would reinvent Bun's interface and cannot cheaply express `WhereGroup` recursion.
+
+> **Pending v0.26.0 (R9):** the next two paragraphs state `ApplyFilter`; until R9 ships, a shared predicate goes through `ApplyQueryBuilder` as above.
+
+`SelectQuery`, `UpdateQuery` and `DeleteQuery` offer `ApplyFilter(fn func(*sqldb.Filter))`, because the typed `Apply` is per query type: a predicate shared across reads and writes — soft-delete filters, account or tenant scoping, ownership checks, authorization scopes — is one function that scopes a select, an update and a delete. `Filter` is Credo's type with the predicate methods and nothing else — `Where`, `WhereOr`, `WhereGroup`, whose callback takes a `*Filter`, `WherePK`, `WhereDeleted` and `WhereAllWithDeleted` — so the callback has no Bun type to assert and no builder to return. A query built with it keeps its automatic total whatever the callback does, and since `Filter` forwards only the methods it names, a method a later Bun adds to its builder changes nothing here. A callback that needs more than predicates uses `Apply`, whose query `Count` and `Page` cannot prove. `InsertQuery` has no WHERE clause and no `ApplyFilter`.
+
+Rejected: handing the callback a builder that embeds Bun's `bun.QueryBuilder` interface, on which a method a later Bun adds runs where Credo cannot see it, so that it needs a method-set comparison, a log at `Open` and a classification at every Bun upgrade, while an application that minimal version selection gives a newer Bun fails its filtered pages at request time; tracking `Unwrap` on Bun's own builder, which a type assertion passes unseen; and implementing Bun's builder interface method by method, which breaks every application that upgrades Bun before Credo does.
 
 ### Typed Terminals
 
@@ -94,16 +146,36 @@ The semantics are pinned by tests rather than left to Bun: `One` returns the fir
 - **Named for the return shape.** `One → T`, `All → []T`, `Page → *Page[T]`. `One`, not `First`: it is a single-row read, not an exactly-one assertion; "exactly one or error" composes `Count`/`Exists`. The pagination terminal is the noun `Page`, not the verb `Paginate`, and there is no destination-taking `Paginate` beside it: a second, differently shaped pagination API is rejected.
 - **`Scan` stays** for projections and DTOs whose `T` is not the table model, and for eager loading through a bound model. `TableExpr` does not turn a typed terminal into a projection API: `T` must be the actual table model.
 
+> **Current until v0.26.0 (R9):** the next paragraph describes the private-field compatibility layer.
+
 Public `Clone` is a top-level builder fork with Bun's sharing semantics, not a recursive object-graph copy. The private-field compatibility layer beneath it is confined to that fork, the terminal execution snapshots, and the logical-count source built from them; any new private-state use needs its own decision. Bun v1.3.0's `Clone` copies the restored fields itself, and removing the restore step is planned.
+
+> **Pending v0.26.0 (R9):** the next paragraph replaces the paragraph above when R9 ships.
+
+Public `Clone` forwards to Bun's `Clone()`: a top-level builder fork with Bun's sharing semantics, not a recursive object-graph copy. The terminal execution snapshots are Bun's `Clone()` too ([Bun Through Its Exported API](#bun-through-its-exported-api)).
 
 ### Offset Pagination
 
 `Page[T]` runs COUNT and a LIMIT/OFFSET SELECT and returns a `*pagination.Page[T]` with an exact total; the [pagination spec](../specs/pagination.md#adapter-selectquerypaget) owns its contract. The decisions behind it:
 
 - **Input policy and execution are separate.** `PageRequest.Normalize` and its `Validate` hook are forgiving and mutating: they apply defaults and clamp `PerPage`. `PageRequest.Offset` and `Page` are strict and non-mutating: `Offset` returns `(int, error)`, and `Page` rejects nil, non-positive values, and native `int` overflow with `pagination.ErrInvalidPageRequest` without clamping a valid custom page size, so an invalid request never becomes a silently different query.
+
+> **Current until v0.26.0 (R9):** the next three bullets describe the count source Credo renders around a query, its hook replay, and the absence of a custom-count API.
+
 - **The total counts logical projection rows** — rows, ungrouped-aggregate rows, distinct tuples, groups, or groups left after `Having` — through a Credo-owned derived source, pinned by conformance tests instead of Bun's narrower grouped/distinct count rewrite. Shapes without a safe Count+window contract (standalone `Having`, a direct compound root) fail with `ErrUnsupportedCountQuery` before I/O, and the model SELECT hooks run for the count too, so hook-added predicates cannot be missing from the total.
 - **MySQL is its own name oracle.** MySQL requires unique derived-table output names, but a local SQL parser cannot reproduce the server's naming rules across expressions, wildcards, comments, and session modes. Credo renders the count source once and lets the server judge those bytes under the connection's real `sql_mode`; a logical-count `ER_DUP_FIELDNAME` (1060) is wrapped with `ErrUnsupportedCountQuery` and keeps its driver cause, while every other 1060 passes through.
 - **No custom-count API yet.** A costly or volatile projection runs once for COUNT and again for SELECT; such repositories compose an explicit, deliberately equivalent count with the data query and `pagination.NewPage`. A first-class callback cannot prove that two divergent queries describe the same logical set, so it is reconsidered only after two real consumers repeat the same abstraction.
+
+> **Pending v0.26.0 (R9):** the next four bullets replace the three above when R9 ships; the server stays the judge of a count's output names, and the mapping of a count's `ER_DUP_FIELDNAME` (1060) to `ErrUnsupportedCountQuery` stays.
+
+- **The total is Bun's count, the caller's, or an error.** `Total` is the number of rows the data query returns without its `LIMIT` and `OFFSET`, never another number. `Count` and `Page` run Bun's native `Count` on a query the wrapper can prove: built without `Apply`, `Unwrap` or a `Relation` callback; whose root model's type does not implement `BeforeSelectHook`; and that either carries `GroupExpr` or `Distinct` or has no raw `ColumnExpr` and no `Having`. Every other query fails before I/O with `ErrUnsupportedCountQuery`, and the caller pages it with `PageWithCount`. No count Credo runs sorts or locks. Rejected: the derived-table count as the fallback for queries the wrapper cannot prove, which carries their sort and any lock clause; a derived count for a raw `ColumnExpr`, even with the sort held back until the data query, a second count path, which on MySQL fails with error 1060 for a projection that repeats a column name; `COUNT(*) OVER()`, which adds a column the model scan cannot place and miscounts under `DISTINCT`; and treating every query with a filter callback as unknown, which sends the tenant pattern down the explicit path on every page.
+- **`BeforeAppendModelHook` keeps the total.** On a SELECT, Bun calls it only for values already in the destination, `Page` scans into an empty slice of its own, and `Count` runs no hook, so the hook never sees a query whose total Credo computes, and a model that sets timestamps in it keeps its automatic total. A conformance test pins both facts against the pinned Bun, so a release that changes either fails `sqldb`'s tests, not an application's count. Rejected: making a model's `BeforeAppendModelHook` turn its query unknown, which takes the automatic total from Bun's timestamp idiom, although the hook never sees a counted query.
+- **The caller's count is `PageWithCount`.** `PageWithCount[T](ctx, req, count func(context.Context) (int, error))` validates the request as `Page` does, runs `count` — another query's `Count` passes as it is — and the data query with the page's window, and builds the page with `NewPage`. The count's sort and lock clauses are the caller's, in the caller's code.
+- **The error is part of the API.** `ErrUnsupportedCountQuery`'s message names the rule that made the query unknown, its culprit — the escape hatch, the raw `ColumnExpr`, the model type and its `BeforeSelect` hook — and the remedy, `PageWithCount`; `errors.Is` keeps matching the sentinel, and no exported reason type is added.
+
+**Problem** (the total). A count source of Credo's own, built from Bun's private query state and run through the model's hooks a second time, has to describe every query shape: for a query whose shape the wrapper cannot see — an escape hatch, a raw projection, a hook that rewrites the query — it can only guess a total, and a guessed total is a wrong count. A repository whose query needs its own count has no way to hand it to `Page`, so it reassembles the page by hand.
+
+**Removes** (the total). The `_credo_count_source` derived table and the hook replay on it, and the automatic total of a query built with `Apply`, `Unwrap` or a `Relation` callback, of a raw projection without `GroupExpr` or `Distinct` (an ungrouped aggregate included), and of a model with a `BeforeSelect` hook, each of which takes `PageWithCount`.
 - **`Page` never carries an unknown total.** An unknown total is not encoded as zero, `-1`, a pointer, or an omitted field. A total-free offset window is a separate future shape (working name `Slice[T]`) with its own design gate, not an option that changes `Page`.
 - **Snapshot consistency belongs to the caller.** `Page` never opens an implicit transaction: whether COUNT and SELECT see one snapshot depends on the caller's outer transaction, its isolation, and the database ([pagination spec](../specs/pagination.md#count--select-snapshot-consistency)).
 
@@ -192,6 +264,8 @@ app.ProvideValue(db) // pinged before its dependants start, reported by /ready, 
 - The store `/ready` reports is the value DI resolves, overrides included, and nothing is resolved per readiness request
 - A store costs one call, its binding; an unreachable database fails the start in its `Start`, unless it is opened with `sqldb.WithOptionalStart()`
 - A custom adapter implements `Start`, `Ready` and `Shutdown` with no framework interface to name them; identity sharing stays explicit through `ResourceIdentifier`, and the framework does not guess ownership by scanning arbitrary fields
+
+> **Current until v0.26.0 (R9):** the fourth item below ends with the private-field layout check each Bun upgrade passes; when R9 ships, an upgrade passes the conformance tests of [Bun Through Its Exported API](#bun-through-its-exported-api), and a query the wrapper cannot prove costs its repository a count of its own (`PageWithCount`).
 
 **Negative:**
 

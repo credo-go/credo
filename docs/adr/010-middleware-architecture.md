@@ -6,9 +6,13 @@
 
 Middleware is the primary extension mechanism for a web framework. It intercepts requests before/after handlers for cross-cutting concerns: logging, authentication, rate limiting, CORS, compression, etc.
 
+> **Current until v0.26.0 (R13):** the next paragraph's three scopes; the routed tier adds a fourth ([The routed tier](#the-routed-tier)).
+
 Credo needs a middleware model that supports three scopes (global, group, route), integrates with route metadata, and interoperates with the Go stdlib ecosystem.
 
 Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect.
+
+> **Current until v0.26.0 (R14):** the next paragraph's "and its interaction with handler-level re-dispatch"; `Context.Rewrite` goes, and ADR-018 keeps `middleware.Rewrite` only.
 
 Pre-dispatch rewrite middleware and its interaction with handler-level re-dispatch are documented in [ADR-018](018-host-routing-and-rewrite.md). The [middleware spec](../specs/middleware.md) is the user-chain contract and the [HTTP features spec](../specs/http-features.md) the feature contract; this ADR records the decisions and their rationale.
 
@@ -24,6 +28,8 @@ One type for all three tiers. No separate types for global vs group vs route mid
 
 ### Three-Tier Execution
 
+> **Current until v0.26.0 (R13):** this section's diagram, the paragraph after it and the paragraph on global middleware at 404/405; [The routed tier](#the-routed-tier) replaces them, with `PreRouting` in place of `GlobalMiddleware`.
+
 ```
 Request → Global MW → Group MW → Route MW → Handler
                                                 ↓
@@ -36,9 +42,42 @@ Global middleware (`app.GlobalMiddleware`) runs on every request, group middlewa
 
 **Group middleware membership is resolved at compile time from the group parent chain** — the same model `LookupMeta` uses for metadata. Middleware added to a group after a route or sub-group was registered still applies to it; registration order within a group affects execution order only, never membership.
 
+### The routed tier
+
+> **Pending v0.26.0 (R13):** not implemented yet; `app.Middleware` does not exist, the tier before routing is `app.GlobalMiddleware`, a mounted handler is dispatched raw with pre-routing middleware only, and `ContractGuard` without a route lets the request through.
+
+```
+Request → PreRouting MW → match → Routed MW → Group MW → Route MW → Handler
+```
+
+The user tiers are PreRouting → routed → Group → Route. `app.Middleware(m...)` adds middleware that runs on every route registered through the App — directly, in a group, in a host group, as a static route or as a mount — after the match and before group and route middleware, so it reads the route's meta:
+
+```go
+app.Middleware(middleware.ContractGuard()) // reads every route's meta; never runs for a 404 or a 405
+```
+
+The method delegates to the root group's `Middleware`: the App's routes, groups and host groups descend from that group, and group middleware is collected when the chain is compiled, so a middleware added after a group was created applies to its routes too. It does not run for the router's own 404 and 405, which reach the pre-routing tier only. After preparation the call panics, as every registration does.
+
+**`PreRouting` is named for when it runs:** before the match, on every request, the router's own 404 and 405 included. A middleware that acts before the match, or on a request no route matches, stays there: `CORS` answers a preflight, an `OPTIONS` request for which the router has no route, so on the routed tier the router's 405 would answer it instead; `Rewrite` changes the path that routing matches; and `Secure`'s headers and rate limiting's budget cover the router's 404 and 405 too. `CSRF` needs no route and works on either tier; authentication and `ContractGuard` go on the routed tier. The [middleware guide](../guides/middleware.md) shows the tier of each of Credo's middleware in one table.
+
+**A mount is a route.** A request a `Mount` matches carries a `*Route` of kind mount — the mount's pattern, the App's meta, no name — so `HasRoute` is true for it, and its handler runs inside the routed tier, through a chain compiled as a route's is. A mount belongs to no group and has no route value of its own, so group and route middleware still do not apply to it, while authentication on the routed tier covers a mounted path.
+
+**`ContractGuard` fails closed without a route.** Registered before routing, it sees no route on any request; it answers 500 through the error pipeline and logs one Error naming its registration before routing and the remedy: `app.Middleware`, a group or a route.
+
+Rejected:
+
+- **An open stage or rank registry:** the tier is ordinary middleware in registration order.
+- **A warning at preparation for a `ContractGuard` before routing:** it lets every request through until someone reads the log, and the framework could emit it only by identifying one middleware among the functions it is given.
+
+**Problem.** A pre-routing middleware cannot read route meta, so a meta-driven middleware such as `ContractGuard` does nothing as global middleware — its godoc calls that a safe no-op — and is repeated on every group. A middleware that must run on every route, but not for the router's own 404 and 405, has no tier. A mounted handler is dispatched raw, outside the compiled chain, and receives pre-routing middleware only, so authentication added to every route would let a mounted path through. The name `GlobalMiddleware` says where a middleware applies, not that it runs before the match.
+
+**Removes.** `app.GlobalMiddleware`, which becomes `app.PreRouting`. `ContractGuard`'s pass-through without a route. The raw dispatch of a mounted handler, for which `HasRoute` is false.
+
 ### Compile-Time Chain Building
 
 Middleware chains are precompiled when the App prepares to serve:
+
+> **Current until v0.26.0 (R13):** the next list; the per-route chain starts with the routed tier, `PreRouting` middleware takes the place of global middleware, and a mount's chain is compiled as a route's.
 
 1. Per-route: group middlewares + route middlewares + handler → single compiled `Handler`
 2. Global: global middlewares + dispatch → single compiled `Handler`
@@ -49,7 +88,13 @@ Because the chains are built once, middleware, route and feature registration cl
 
 ### Meta-Driven Behavior
 
+> **Current until v0.26.0 (R4):** the next paragraph's string-keyed `SetMeta` and `LookupMeta`'s walk at request time.
+
 Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta`, and the middleware reads it with `LookupMeta`, which walks the parent chain (route → group → app) for inherited values. The [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) shows the pattern and lists the framework's own meta keys.
+
+> **Pending v0.26.0 (R4):** until R4 ships, meta is keyed by string, read with `LookupMeta`, and walked at request time.
+
+Middleware reads route metadata declaratively instead of being configured per route or maintaining path allowlists and denylists: a route or group declares its intent with `SetMeta` and a typed key made by `credo.NewKey[T]`, and the middleware reads the typed value with `GetMeta`. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — so a request-time lookup walks nothing, and registration order never decides membership. The framework's middleware meta keys and `MetaAccessLog` are typed keys; the [middleware spec](../specs/middleware.md#meta-driven-middleware-goyave-inspired) lists them.
 
 ### Config Struct Pattern
 
@@ -59,6 +104,10 @@ Configurable middleware takes `cfg ...Config`: no argument selects the defaults,
 
 `WrapStdMiddleware` adapts `func(http.Handler) http.Handler` middleware to the Credo chain. It is kept as a deliberate ecosystem escape hatch — the large stdlib-middleware corpus (OTel instrumentation, vendor CORS/gzip) works without being rewritten, consistent with the override-friendly boundaries of [ADR-001 goal 3](001-framework-identity-and-goals.md#3-integrated-first-explicit-boundaries) and the other escape hatches (`ServeContext`, `WithRawConfig`, `JWTAdvanced`). It is second-class by design, and that is documented rather than hidden: adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`, so it cannot read route Meta, the typed principal (`ctx.GetUser[T]`), the renderer, or the error pipeline. There is no selective leak (no public `context.Context`-based principal accessor exists — see [ADR-012](012-authentication-and-authorization.md)). The first-class path for anything needing the principal, route meta, or the error pipeline is a native `func(Handler) Handler`. The [middleware spec](../specs/middleware.md#stdlib-adapter) defines how the adapter records a response the middleware writes itself.
 
+> **Pending v0.26.0 (R4):** until R4 ships, the adapter hands the stdlib middleware the embedded request, a value set through `ctx.Set` is not visible through `r.Context()`, and a context the middleware derives does not reach `ctx.Context()`.
+
+The adapter hands the request on through `Request.Std()`, whose context is the Context's current head, and takes the context of the request the stdlib middleware passes on as the head of the inner chain: the middleware reads a value set before it with `Value` and its key, and a deadline or span it adds is visible to the handler through `c.Context()`. Its contract excludes a middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. The user's key stays unexported, so the principal stays out of the adapter's reach.
+
 ### CSRF through CrossOriginProtection
 
 `middleware.CSRF` wraps the standard library's `net/http.CrossOriginProtection` instead of implementing token plumbing. Token or double-submit-cookie CSRF requires session state, template helpers and header plumbing across the stack; `Sec-Fetch-Site` has shipped in all browsers since 2023 and reduces the problem to a header check. Credo wraps the stdlib detector (maintained upstream, so security patches ride Go releases) and adds only config-struct ergonomics, error-pipeline integration and QUERY as a safe method; the older-browser fallback (Origin/Host comparison) is inherited from the stdlib. Token and double-submit-cookie CSRF are rejected for the plumbing they need.
@@ -67,7 +116,7 @@ No test pins the stdlib's own handling of QUERY. A Go release that adds QUERY to
 
 ### Framework features around the user chain
 
-Recovery, RequestID, AccessLog, i18n, Compress and Decompress are framework-owned HTTP processing around the three Global/Group/Route user middleware tiers. One request executor owns request initialization, the user chain, centralized error and panic handling, response finalization, optional access logging and Context release. It observes the final response after error rendering and compressor finalization, keeps framework diagnostics independent from access logging, and applies the installed features in one fixed plan whatever the `Use*` call order ([request execution](../specs/http-features.md#request-execution)).
+Recovery, RequestID, AccessLog, i18n, Compress and Decompress are framework-owned HTTP processing around the user middleware tiers. One request executor owns request initialization, the user chain, centralized error and panic handling, response finalization, optional access logging and Context release. It observes the final response after error rendering and compressor finalization, keeps framework diagnostics independent from access logging, and applies the installed features in one fixed plan whatever the `Use*` call order ([request execution](../specs/http-features.md#request-execution)).
 
 Why not middleware: these features need to see the final response, the original request, or both, and a middleware position gives neither. A middleware can only infer the final status from an error that has not been rendered yet, and an observation at its boundary disagrees with any other observer's on status, bytes and duration. Owning the features in the executor gives one authoritative observation and one implementation of each. The price is that these features cannot be scoped per group or route; an application that needs route-specific policy writes ordinary middleware (for example a group-level recover-and-return-error wrapper) or uses the selection knobs the features expose (`Skipper`, `MetaAccessLog`, `ResultFilter`).
 
@@ -94,6 +143,8 @@ Custom renderer installation is optional even though core error rendering always
 
 Access logging is explicit (`app.UseAccessLog(cfg...)`) and observes the final response outside recovery and centralized error rendering, so it is the one authoritative access record. `AccessLogConfig.Logger` selects a dedicated sink without giving up that boundary; the logger is not derived from `ctx.Logger()`, so arbitrary request-scoped enrichment is not inherited, while `request_id` is restored explicitly and exactly once.
 
+> **Current until v0.26.0 (R12):** the next paragraph's last sentence, under which `ResultFilter` reads a pooled Context and an `AccessLogEntry`; it takes the `*Exchange` ([Observers of the final response](#observers-of-the-final-response)).
+
 Filtering is split by observation phase, because each phase knows different things. The `Skipper` runs before routing and sees request data only, which suits blanket path/header skips (metrics scrape, static assets). The `MetaAccessLog` route meta is read once the route is known, so a route or a whole group is silenced declaratively, and a route-level value overrides its group's. `MinLevel` and `ResultFilter` run after the final response and see its status, duration and bytes along with route and request metadata.
 
 Status drives the record's level (`1xx/2xx/3xx → Info`, `4xx → Warn`, `5xx+ → Error`); `MinLevel` controls admission and never rewrites that level, and `ResultFilter` cannot restore a record the threshold rejected. The default is Info, so an installed access log preserves every status class and keeps the traffic/latency denominator while request metrics remain deferred; high-volume applications opt into Warn or Error. The [observability contract](../specs/http-features.md#observability-contract) defines the exact order, the record and its measurements.
@@ -107,6 +158,32 @@ A **status-code skip list** was rejected. Across the ecosystem request-level ski
 Changing successful requests to **Debug by default** or enabling a built-in fixed **1/N sampler** was rejected. Both silently weaken the traffic record and conflate the status-derived severity contract with admission. Applications can set `MinLevel` explicitly and implement deterministic request-ID sampling (or concurrency-safe counter sampling) in `ResultFilter`; general metrics and telemetry sampling belong to the observability release ([ADR-014](014-observability.md)).
 
 A **route-scoped access-log middleware** beside the feature was rejected. A middleware observes returned errors before centralized rendering, so its status, bytes and duration would be approximations, and two producers mean two schemas to keep aligned. Route and group selection uses `MetaAccessLog` and `ResultFilter` on the single record; a deliberate second audit sink is application middleware.
+
+### Observers of the final response
+
+> **Pending v0.26.0 (R12):** not implemented yet; the access log is a step of the executor, `ResultFilter` takes `(*Context, AccessLogEntry)`, the access record carries no application attributes, and no other observer can be added.
+
+An `Observer` sees one immutable record, `*Exchange`, after the response is final: the method, the path and the original path, the route pattern and name, the remote address and the user agent, the final status, the bytes after compression, the duration, the classified error code, whether a panic was recovered, the request ID, and the request's values, which an observer reads as [ADR-014](014-observability.md#observers-read-the-requests-values) states. `app.AddObserver(o)` adds one, and panics on a nil observer and after preparation, as the other registrations do. Observers run where the access log is observed, after finalization, in registration order. An `Exchange` is valid only during `Observe`; an exporter copies what it keeps, apart from the request's context.
+
+**The classified error code** has a fixed meaning: the code the pipeline classified, captured before the renderer runs; for a recovered panic, the code of the 500 it rendered; after a fallback, the fallback's code; and empty for an error returned after the response was committed or hijacked, for a handler that wrote its own error response, and for an escaped panic with recovery disabled. It is never inferred from the status.
+
+**A panicking observer is contained.** With recovery enabled, its panic is logged as a framework Error diagnostic and that observer is skipped for the exchange, while the observers after it still run; the response is already final. `http.ErrAbortHandler`, and every panic under `WithoutRecover`, propagate, as for `Attrs`.
+
+**The access log is an observer.** `MinLevel`, `ResultFilter` and `Attrs` are options of that observer, and `UseAccessLog` stays as sugar that installs it. `ResultFilter` takes the `*Exchange`, `func(ex *Exchange) bool`: the `Exchange` carries each field the record is built from, so one record has one type, and the filter reads the request's values and the user as every observer does. `Attrs` receives the `*Exchange` and returns application attributes for a record that is a candidate for emission — after `MetaAccessLog`, `MinLevel` and `ResultFilter`, and only when the logger is enabled for the record's level — emitted inside one `attrs` group. The guarantee is narrow: an application attribute never shadows a framework attribute, present or future, and `attrs` is a reserved key on the access record. A panic in `Attrs` is logged and the record is emitted without the group. The returned slice passes to the framework and must not be reused.
+
+**Checked against its real consumers before v1.** Until the observability release, the access log is the only consumer of `Observer` and `Exchange`. The OpenTelemetry and Prometheus adapters written for that release's decision run on them before the stability window opens, so a change they need lands before v1 freezes the record.
+
+Rejected:
+
+- **An open `Stage` or rank registry:** observers run at one point, after finalization, in registration order.
+- **`Attrs` as a field of the framework contract:** the attributes are the application's, kept in their own group under the narrow guarantee above.
+- **Top-level placement of the returned attributes:** an application attribute could shadow a framework attribute, present or future.
+- **A group named `app`.**
+- **A public constant for the access record's message.**
+
+**Problem.** The access log is a step of the executor with a record type of its own, `AccessLogEntry`, and its `ResultFilter` reads a pooled Context after the response. Any other consumer of the final response — a metrics or tracing exporter — has no place to observe it, and an observation at another boundary disagrees with the access record on status, bytes and duration. An application attribute cannot reach the access record without risking a framework attribute's key.
+
+**Removes.** `AccessLogEntry`, and `ResultFilter`'s `(*Context, AccessLogEntry)` parameters.
 
 ### Startup visibility of effective features
 
@@ -147,7 +224,12 @@ Activating or parameterizing middleware from configuration files — framework-r
 
 **Negative:**
 
+> **Current until v0.26.0 (R13):** the next item; from R13, it holds for `PreRouting` middleware only, and the routed tier does not run for unmatched routes.
+
 - Global MW on 404/405 runs full chain even for unmatched routes
+
+> **Current until v0.26.0 (R4):** the next item; meta keys are typed.
+
 - Meta values are `any` — no compile-time type safety
 - Precompilation means no dynamic middleware addition at runtime
 - Framework features cannot be scoped per group or route; route-specific policy is expressed through their selection knobs or ordinary middleware

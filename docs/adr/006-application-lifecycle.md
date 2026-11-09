@@ -53,6 +53,10 @@ TLS is **server configuration, not a serve-method variant**: `Run` and `RunConte
 - **A redirect-only listener, not dual-serve.** `WithHTTPRedirect(addr)` adds a second, plaintext listener whose only job is the permanent redirect to HTTPS (301 for GET and HEAD, 308 otherwise, as the trailing-slash redirect does). Its runtime failure tears the App down like the main listener's, so a requested redirect never silently dies while the App reports healthy, and on drain it closes before the main server, so no client is redirected to an HTTPS server that has just stopped accepting. Rejected: a second listener serving the application over plaintext — HTTP-without-TLS invites accidental cleartext traffic and is not a supported mode.
 - **HSTS is opt-in, through `middleware.Secure` only.** Making clients prefer HTTPS on their own is a near-permanent client-side commitment, sent only over HTTPS. Rejected: enabling it automatically, and a separate `WithHSTS` option, which would duplicate `middleware.Secure`.
 
+> **Pending v0.26.0 (R15):** not implemented yet; file-based certificates rotate on every reload, through a framework reload participant.
+
+**Certificate files rotate when they change, not on reload.** With `WithTLSFiles` or `server.tls.*`, the handshake checks the two files at most once a second and swaps in a changed pair that loads, keeping the old pair when it does not; the paths are read at start, so a reload that changes `server.tls.*` reports a restart, and `WithTLSConfig` stays the caller's ([ADR-020](020-reload-and-partial-config-reload.md#certificate-files-rotate-when-they-change), whose Problem and Removes this item shares).
+
 The [lifecycle spec](../specs/lifecycle.md#tls) states the sources, the preflight checks and the redirect target.
 
 ### Server Construction and the Escape Hatch
@@ -105,7 +109,17 @@ app.OnStop(func(ctx context.Context) error {
 
 The [lifecycle spec](../specs/lifecycle.md#apponstartfn-opts-and-apponstopfn-opts) states the hooks' contexts, error and panic handling, and registration rules.
 
+> **Current until v0.26.0 (R15):** the next paragraph describes `OnReload`, which goes.
+
 **OnReload** runs after a trigger-driven reload has re-published the config snapshot and the typed `OnConfigChange[T]` subscribers have run; the reload model is [ADR-020](020-reload-and-partial-config-reload.md).
+
+> **Pending v0.26.0 (R15):** the next paragraph replaces the paragraph above when R15 ships; until then `OnReload` hooks run at the end of every reload.
+
+**A reload runs no hooks of its own.** State derived from configuration follows its live section through the section's `OnChange` callback, and a refresh unrelated to configuration — re-opening a file after rotation — installs its own SIGHUP handler, which `signal.Notify` serves beside Credo's; the reload model is [ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live). Rejected: `OnReload`, or a component capability run at every reload, for these reasons ([ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live)).
+
+**Problem.** An `OnReload` hook runs at every reload whatever it changed, so a hook that refreshes state derived from one section runs for a change to another, and the state it derives is not tied to the section it derives from.
+
+**Removes.** `app.OnReload`; an `OnReload` hook that refreshed derived state becomes its section's `OnChange`, and one that reopened a file installs its own SIGHUP handler.
 
 ### Frozen Guard
 
