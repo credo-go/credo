@@ -35,8 +35,8 @@ func main() {
         log.Fatal(err)
     }
 
-    app.GET("/", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(200, map[string]string{
+    app.GET("/", func(c *credo.Context) error {
+        return c.Response().JSON(200, map[string]string{
             "message": "Hello, Credo!",
         })
     })
@@ -171,9 +171,9 @@ app.DELETE("/users/{id}", deleteUser)
 `{name}` captures a segment. `{name:[0-9]+}` adds a regex constraint. `{path...}` is a catch-all.
 
 ```go
-app.GET("/files/{path...}", func(ctx *credo.Context) error {
-    filePath := ctx.Request().RouteParam("path")
-    return ctx.Response().Text(200, "file: "+filePath)
+app.GET("/files/{path...}", func(c *credo.Context) error {
+    filePath := c.Request().RouteParam("path")
+    return c.Response().Text(200, "file: "+filePath)
 })
 ```
 
@@ -218,7 +218,7 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 }}))
 ```
 
-For conditional handler-driven forwards, use `ctx.Rewrite("/new-path")`. See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and `OriginalPath()`.
+For conditional handler-driven forwards, use `c.Rewrite("/new-path")`. See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and `OriginalPath()`.
 
 ---
 
@@ -258,34 +258,34 @@ See the [Middleware Guide](middleware.md) for the full list, configuration optio
 ### Reading Input
 
 ```go
-func createUser(ctx *credo.Context) error {
+func createUser(c *credo.Context) error {
     // Path parameters
-    id := ctx.Request().RouteParam("id")
+    id := c.Request().RouteParam("id")
 
     // Query parameters
-    page := ctx.Request().QueryParam("page")
+    page := c.Request().QueryParam("page")
 
     // JSON body (auto-validates if struct implements Validatable)
     var req CreateUserRequest
-    if err := ctx.Request().BindBody(&req); err != nil {
+    if err := c.Request().BindBody(&req); err != nil {
         return err // validation errors enter Credo's default error envelope
     }
 
     _ = id
     _ = page
-    return ctx.Response().JSON(201, req)
+    return c.Response().JSON(201, req)
 }
 ```
 
 ### Writing Output
 
 ```go
-ctx.Response().JSON(200, data)           // application/json
-ctx.Response().Text(200, "hello")        // text/plain
-ctx.Response().HTML(200, "<h1>Hi</h1>")  // text/html
-ctx.Response().XML(200, data)            // application/xml
-ctx.Response().NoContent(204)            // no body
-ctx.Response().Redirect(302, "/login")   // redirect
+c.Response().JSON(200, data)             // application/json
+c.Response().Text(200, "hello")          // text/plain
+c.Response().HTML(200, "<h1>Hi</h1>")    // text/html
+c.Response().XML(200, data)              // application/xml
+c.Response().NoContent(204)              // no body
+c.Response().Redirect(302, "/login")     // redirect
 ```
 
 JSON is encoded with `encoding/json/v2` under a documented profile ([ADR-021](../adr/021-json-output-profile.md)). Three points are worth knowing before you shape a response struct:
@@ -346,13 +346,13 @@ See [Validation Spec](../specs/validation.md) for the full rule catalog.
 Handlers return errors. The internal pipeline converts them to a compact JSON envelope:
 
 ```go
-func getUser(ctx *credo.Context) error {
-    user, err := svc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
+func getUser(c *credo.Context) error {
+    user, err := svc.FindByID(c.Context(), c.Request().RouteParam("id"))
     if err != nil {
         // Wrap with HTTP status and a stable machine code
         return credo.NewHTTPError(404, "user_not_found").WithInternal(err)
     }
-    return ctx.Response().JSON(200, user)
+    return c.Response().JSON(200, user)
 }
 ```
 
@@ -372,14 +372,14 @@ Internal errors (5xx) are logged but never leaked to the client.
 You can replace the error renderer to customize the body. It returns the shape while the framework owns status, Content-Type, and the write; nil keeps the default body:
 
 ```go
-app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
     // info.Err — original error (for Sentry, errors.As, custom headers)
     // info.Status / Code / MessageKey / Message / Details / Violations — normalized
     return myFormat(info)
 })
 ```
 
-Its success-side mirror is `UseSuccessRenderer` + `ctx.Render(status, data)` — the opt-in response-envelope pair; the error-handling guide's "Response Envelopes" section shows both together.
+Its success-side mirror is `UseSuccessRenderer` + `c.Render(status, data)` — the opt-in response-envelope pair; the error-handling guide's "Response Envelopes" section shows both together.
 
 ---
 
@@ -662,17 +662,17 @@ func NewItemService(infra credo.Infra) *ItemService {
     return &ItemService{infra: infra}
 }
 
-func (s *ItemService) Create(ctx *credo.Context) error {
+func (s *ItemService) Create(c *credo.Context) error {
     var req CreateItemRequest
-    if err := ctx.Request().BindBody(&req); err != nil {
+    if err := c.Request().BindBody(&req); err != nil {
         return err
     }
     s.infra.Logger.Info("item created", "name", req.Name)
-    return ctx.Response().JSON(http.StatusCreated, req)
+    return c.Response().JSON(http.StatusCreated, req)
 }
 
-func (s *ItemService) List(ctx *credo.Context) error {
-    return ctx.Response().JSON(http.StatusOK, []string{"item1", "item2"})
+func (s *ItemService) List(c *credo.Context) error {
+    return c.Response().JSON(http.StatusOK, []string{"item1", "item2"})
 }
 
 func main() {

@@ -662,7 +662,7 @@ The rate limiter is not a component: there is nothing to hand to `app.Manage`. I
 Every configurable middleware in the `middleware` package, and `ratelimit.Config`, accepts a `middleware.Skipper` function. When the skipper returns `true`, the middleware is bypassed for that request. (The framework features use the same shape: `AccessLogConfig`, `CompressConfig` and `DecompressConfig` each carry a `Skipper func(*credo.Context) bool`.)
 
 ```go
-type Skipper func(ctx *credo.Context) bool
+type Skipper func(c *credo.Context) bool
 ```
 
 Common patterns:
@@ -693,20 +693,20 @@ type MyConfig struct {
 }
 
 func MyMiddleware(cfg ...MyConfig) credo.Middleware {
-    var c MyConfig
+    var conf MyConfig
     if len(cfg) > 0 {
-        c = cfg[0]
+        conf = cfg[0]
     }
-    if c.Skipper == nil {
-        c.Skipper = middleware.DefaultSkipper
+    if conf.Skipper == nil {
+        conf.Skipper = middleware.DefaultSkipper
     }
     return func(next credo.Handler) credo.Handler {
-        return func(ctx *credo.Context) error {
-            if c.Skipper(ctx) {
-                return next(ctx)
+        return func(c *credo.Context) error {
+            if conf.Skipper(c) {
+                return next(c)
             }
             // ... middleware logic ...
-            return next(ctx)
+            return next(c)
         }
     }
 }

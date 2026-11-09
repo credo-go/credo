@@ -149,12 +149,12 @@ func NewUserController(svc *UserService) *UserController {
     return &UserController{svc: svc}
 }
 
-func (c *UserController) Show(ctx *credo.Context) error {
-    user, err := c.svc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
+func (h *UserController) Show(c *credo.Context) error {
+    user, err := h.svc.FindByID(c.Context(), c.Request().RouteParam("id"))
     if err != nil {
         return err
     }
-    return ctx.Response().JSON(http.StatusOK, user)
+    return c.Response().JSON(http.StatusOK, user)
 }
 
 func main() {
@@ -557,12 +557,12 @@ app.GET("/users/{id}", controller.Show)
 Not recommended as the default style:
 
 ```go
-app.GET("/users/{id}", func(ctx *credo.Context) error {
+app.GET("/users/{id}", func(c *credo.Context) error {
     svc, err := app.Resolve[*UserService]()
     if err != nil {
         return err
     }
-    _, err = svc.FindByID(ctx.Context(), ctx.Request().RouteParam("id"))
+    _, err = svc.FindByID(c.Context(), c.Request().RouteParam("id"))
     return err
 })
 ```

@@ -233,13 +233,13 @@ When the runtime cannot send `SIGHUP`, or when you want the reload's result to b
 ```go
 admin := app.Group("/admin").Middleware(auth.Middleware(adminAuth, nil))
 
-admin.POST("/reload", func(ctx *credo.Context) error {
-    res, err := app.Reload(ctx.Context())
+admin.POST("/reload", func(c *credo.Context) error {
+    res, err := app.Reload(c.Context())
     if err != nil {
         return credo.NewHTTPError(http.StatusInternalServerError).WithInternal(err)
     }
     // {"published":true,"changed":[…],"replaced":["log"],"restart_required":["app.name"],"overridden":[]}
-    return ctx.Response().JSON(http.StatusOK, res)
+    return c.Response().JSON(http.StatusOK, res)
 })
 ```
 

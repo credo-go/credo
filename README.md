@@ -58,7 +58,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 go get github.com/credo-go/credo@latest
 ```
 
-> **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Resolve[T]`, `q.Page[T]`, `ctx.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
+> **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Resolve[T]`, `q.Page[T]`, `c.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
 
 ## Quick Start
 
@@ -78,20 +78,20 @@ func main() {
         log.Fatal(err)
     }
 
-    app.GET("/", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
+    app.GET("/", func(c *credo.Context) error {
+        return c.Response().JSON(200, map[string]string{"message": "Hello, Credo!"})
     })
 
     // RFC 10008 QUERY carries a structured, safe/idempotent query in the body.
     // Clients must label it with Content-Type (for example application/json).
-    app.QUERY("/search", func(ctx *credo.Context) error {
+    app.QUERY("/search", func(c *credo.Context) error {
         var query struct {
             Term string `json:"term"`
         }
-        if err := ctx.Request().BindBody(&query); err != nil {
+        if err := c.Request().BindBody(&query); err != nil {
             return err
         }
-        return ctx.Response().JSON(200, query)
+        return c.Response().JSON(200, query)
     })
 
     // Panic recovery is on by default. Request IDs and access logging are
