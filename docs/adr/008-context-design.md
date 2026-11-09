@@ -8,7 +8,7 @@ Every web framework needs a request-scoped object that provides access to the HT
 
 Go's stdlib uses the `(http.ResponseWriter, *http.Request)` pair. Echo uses a `Context` interface. Gin uses a `*gin.Context` struct. Each approach has trade-offs between flexibility, performance, and type safety.
 
-The object exists once per request, so its allocation cost is paid on every request, and once it is reused a reference retained past its request observes a later one.
+The object exists once per request, so its allocation cost is paid on every request. Reusing it saves the allocation, but a reference kept past its request — captured by a goroutine, stored by a hook — then reads a later request's state, another tenant's user included; a caveat in the hook godocs can warn about it but not prevent it, and nothing can detect it after the fact.
 
 The request's values and its `context.Context` must be one thing. A deadline a timeout middleware sets or a span a stdlib middleware adds changes the request's context; a value a middleware records — a tenant, the user — must reach a repository given that context and a mounted stdlib handler, and must survive the end of the layer that set it, or the layers outside it lose the user. Values copied into a request per write cost an allocation each, and a key that binds no type to its name lets two packages share one value by accident and makes every read a type assertion. Request input that is decoded but not validated leaves every handler to remember a second step. Client metadata derived from proxy headers drifts when each middleware derives it on its own.
 
@@ -22,7 +22,7 @@ The request's values and its `context.Context` must be one thing. A deadline a t
 
 - Go generic methods need a concrete receiver: the typed user accessors (`c.SetUser`, `c.GetUser[T]`, `c.RequireUser[T]`, [ADR-012](012-authentication-and-authorization.md)) exist because Context is a struct.
 - A new helper is a new method, not a change to an interface that every implementation and mock must follow.
-- No user implementation can break framework invariants (pool reset, commit tracking, rewrite state).
+- No user implementation can break framework invariants (commit tracking, rewrite state).
 - Calls are static, with no interface dispatch on every method call.
 
 **Why root package:**
@@ -66,12 +66,6 @@ Unknown members are **ignored by default** and **rejected under an app-wide opt-
 `c.Logger()` returns a request-scoped `*slog.Logger`. The request ID feature (`app.UseRequestID`) and `c.AddLogAttrs` enrich it. Fallback chain: request logger → app logger (from `WithLogger`) → the framework default logger (a text handler on stderr).
 
 ### Request Context Access
-
-> **Current until v0.26.0 (R10):** the next paragraph gives the pool as the reason the Context does not implement `context.Context`.
-
-`credo.Context` deliberately does **not** implement `context.Context`. Because it is recycled through a `sync.Pool` (see below), a `*credo.Context` retained as a long-lived `context.Context` — handed to a goroutine or stored — would observe a _later_ request's state once the original request completed. To make that misuse impossible at the type level, `c.Context()` returns the underlying request's context explicitly.
-
-> **Pending v0.26.0 (R10):** the next paragraph replaces the paragraph above when R10 ships; until then the Context is pooled.
 
 `credo.Context` deliberately does **not** implement `context.Context`. Its head moves as scopes open and return ([below](#one-context-head-and-typed-keys)), so a `*Context` held as a `context.Context` — handed to a goroutine or stored — would not be one fixed context, and a `*Context` is not safe for concurrent use. `c.Context()` returns the head as it stands: a fixed node, whose values do not change after it is handed out.
 
@@ -117,21 +111,22 @@ Rejected for the keys:
 
 ### One Allocation per Request
 
-> **Current until v0.26.0 (R10):** the next paragraph describes the per-App pool.
+The Context is not pooled. Each request allocates one Context, which embeds its `Request` and `Response` by value and keeps the first four parameters and the first two values in fixed arrays, folding the five pooled allocations — the Context, its `Request` and `Response`, and the two parameter arrays — into one. A `*Context` kept past its request reads that request's state, `GetUser` included, never another request's. What remains of the old caveats is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The Context, Request and Response keep a back-reference to their App, set when the Context is built; through it request-time code reaches the installed i18n feature, the renderers, the JSON profile and the trusted proxies without the App being exposed on Context.
 
-Context instances are pooled per App, which removes the per-request allocation of the Context and its Request and Response. `reset()` clears the request state between requests. The Context, Request and Response keep a back-reference to their App, set once when the pool builds them and never cleared; through it request-time code reaches the installed i18n feature, the renderers, the JSON profile and the trusted proxies without the App being exposed on Context.
+**Measurement.** The pooled build is measured against the unpooled one, after the typed keys have settled the Context's layout, with a CPU-bound realistic handler such as a small JSON encode, at saturation — requests per second, CPU and allocations per request — and p99 at a fixed load; a handler that waits on I/O would hide the difference by construction. The measurement prices the change and does not decide it. Expected in advance: a cost well inside 5%, since one allocation is small against the ones `net/http` makes per request; a larger cost is answered in the layout, not by keeping the pool.
 
-> **Pending v0.26.0 (R10):** not implemented yet; the Context, its Request and Response and the two parameter arrays are pooled per App and reset between requests, so a `*Context` kept past its request reads a later request's state.
+The numbers, measured when the change shipped (Windows 11, AMD Ryzen 7 9700X, Go 1.27): a server process with `GOMAXPROCS=4` serving a handler that encodes a three-item JSON payload, driven over loopback by a separate client process with 64 keep-alive connections; five alternating rounds of ten seconds per build, medians shown. The fixed load is an open loop at 30,000 requests per second, latency measured from each request's scheduled time; it counts only the rounds in which every request connected.
 
-The Context is not pooled. Each request allocates one Context, which embeds its `Request` and `Response` by value and keeps the first parameters in fixed arrays, folding the five pooled allocations — the Context, its `Request` and `Response`, and the two parameter arrays — into one. A `*Context` kept past its request reads that request's state, `GetUser` included, never another request's. What remains of the old caveats is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The Context, Request and Response keep a back-reference to their App, set when the Context is built; through it request-time code reaches the installed i18n feature, the renderers, the JSON profile and the trusted proxies without the App being exposed on Context.
+| Measure | Pooled | Unpooled | Change |
+| --- | --- | --- | --- |
+| Requests per second at saturation | 144,374 | 139,755 | −3.2% |
+| Server CPU per request | 25.29 µs | 26.10 µs | +3.2% |
+| Allocations per request (server process) | 23.08 | 24.10 | +1 |
+| p50 / p99 at 30,000 requests per second | 274 / 549 µs | 274 / 551 µs | none measurable |
 
-**Measurement.** The pooled build is measured against the unpooled one, after the typed keys have settled the Context's layout, with a CPU-bound realistic handler such as a small JSON encode, at saturation — requests per second, CPU and allocations per request — and p99 at a fixed load; a handler that waits on I/O would hide the difference by construction. The measurement prices the change and does not decide it. Expected in advance: a cost well inside 5%, since one allocation is small against the ones `net/http` makes per request; a larger cost is answered in the layout, not by keeping the pool. The numbers are recorded here when the change ships.
+The added allocation is the Context itself, 896 bytes. In-process benchmarks without a network or a server in between, where nothing else is allocated, show it whole: `ServeHTTP_Static` goes from 99.8 to 194.4 ns and from 1 to 2 allocations, `ServeHTTP_JSON` from 316.9 to 420.0 ns, and the parallel variants more, since sixteen goroutines allocating and nothing else is the allocator's worst case. Behind `net/http` and the handler, which together allocate some twenty-three times per request, the cost is the 3.2% above, inside the 5% expected in advance.
 
 Rejected: keeping the pool when the unpooled build is more than 5% worse, which would price a read of another tenant's user against throughput; and detecting use after release instead, which a counter inside the object cannot do, since a retained bare pointer reads the reused object's new counter.
-
-**Problem.** A pooled Context is reused by a later request, so a `*Context` kept past its request — captured by a goroutine, stored by a hook — reads another request's state, another tenant's user included. The "must not be retained" caveats in the hook godocs warn about it but cannot prevent it, and nothing can detect it after the fact.
-
-**Removes.** The per-App pool and the reset between requests, and with them the "must not be retained" caveats that the pool was the reason for; `Response.Reset` loses its one caller ([below](#pruned-context-apis)).
 
 ### Pruned Context APIs
 
@@ -157,25 +152,22 @@ Kept: `NewContext`, with which the hooks that take a `*Context` — a locale det
 | Context as interface | Generic methods need a concrete receiver; every new helper changes the interface; user implementations can break framework invariants |
 | Separate `context/` package | Collides with stdlib `context` |
 | `FormValue()` on Context | No shortcut that bypasses "parse, don't validate": `Bind*` is the supported path, while the embedded `*http.Request` still exposes raw form access |
-| `SetRequest()` on Context | Breaks pool invariants, encourages unsafe patterns; middleware that must change the request's context opens a scope with `c.Within(ctx, next)` |
+| `SetRequest()` on Context | Lets the request drift from the Context's head, encourages unsafe patterns; middleware that must change the request's context opens a scope with `c.Within(ctx, next)` |
 | `ParseBody`/`ParseQuery` names | `Parse` describes decode-and-validate better, but the ecosystem name `Bind*` (Echo, Gin, Fiber) reduces friction |
 | Per-call `BindBody(target, opts...)` strict switch | Mixed posture inside one service makes the contract hard to reason about; JSON-only knob with no `BindQuery`/form counterpart — strict bodies is app-wide (`WithStrictBodies`) |
 
 ## Consequences
 
-> **Current until v0.26.0 (R10):** the bullets on pooling (the positive one on the removed Context allocations and the negative one on `reset()`), and the phrase "on the pooled struct"; with R10 the Context is one allocation per request and a `*Context` kept past its request reads only that request.
-
 **Positive:**
 
-- Pooling removes the per-request Context allocations
+- One allocation per request holds the Context, its Request and Response and the first parameters, and a `*Context` kept past its request reads only that request
 - Request/Response split provides clean API surface
 - A `Validatable` target is validated in the same call that decodes it
 - Centralized `Scheme()` and `RealIP()` prevent middleware-specific proxy trust drift
-- Context() exposes the request's context.Context for stdlib interop without implementing it on the pooled struct
+- Context() exposes the request's context.Context for stdlib interop without implementing it on the struct
 - Logger accessor enables structured, request-scoped logging
 
 **Negative:**
 
 - Struct cannot be extended by users (mitigate: typed keys with `c.Set`/`c.Get`)
-- sync.Pool requires careful `reset()` to prevent data leaks
 - `app` back-reference creates coupling (but needed for ErrorRenderer, i18n)

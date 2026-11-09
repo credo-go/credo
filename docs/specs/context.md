@@ -8,8 +8,6 @@
 
 `credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and the request's current `context.Context`, its head, over which typed keys carry the request's values ([Context head and typed keys](#context-head-and-typed-keys)). `Context()` returns the head; the struct deliberately does **not** itself implement `context.Context`, because its head moves as scopes open and return. Documentation and examples name the parameter `c *credo.Context`, since `ctx` conventionally names a `context.Context`.
 
-> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled per App and reset between requests ([Pooling](#pooling)).
-
 The Context is not pooled: a request allocates one ([Allocation](#allocation)), and a `*Context` kept past its request reads that request's state, never another request's.
 
 Lifecycle hooks such as `app.OnStart` and `app.OnStop`, and a component's `Start` and `Shutdown`, receive a standard `context.Context`, not `*credo.Context`. That context lives as long as its call and carries the cancellation and the deadline of the start phase or the drain; `credo.Context` exists only for an HTTP request.
@@ -31,11 +29,9 @@ Defined in the **root package** (not a sub-package) to avoid collision with stdl
 
 > **Current until v0.26.0 (R14):** in the next block, `Rewrite` and `IsRewriting`.
 
-> **Current until v0.26.0 (R10):** in the next block, "(pool safety)" as the reason the fields are unexported.
-
 ```go
 type Context struct {
-    // unexported fields — access via methods only (pool safety)
+    // unexported fields — access via methods only
 }
 
 func NewContext(w http.ResponseWriter, r *http.Request) *Context // for testing handlers, renderers and middleware
@@ -101,7 +97,7 @@ type Request struct {
 
 func NewRequest(r *http.Request) *Request
 func (r *Request) RouteParam(name string) string  // single path/host param; "" when absent (preferred)
-func (r *Request) RouteParams() map[string]string // all params; framework-owned map, do not retain
+func (r *Request) RouteParams() map[string]string // all params; a read-only view
 func (r *Request) PathValue(name string) string   // stdlib-shaped shadow → RouteParam, falls back to embedded request
 func (r *Request) QueryParam(name string) string
 func (r *Request) Scheme() string                 // "http" or "https"
@@ -359,14 +355,12 @@ This is primarily useful in middleware with `after` logic that should skip side 
 
 ### Params and Host Params
 
-`Request.RouteParam(name)` returns a single parameter value ("" when absent) and is the preferred accessor — parameters are stored as parallel key/value slices, so the lookup is an allocation-free linear scan (routes carry a handful of params at most). `Request.RouteParams()` returns all params as one `map[string]string` — path params and, for host-scoped routes, host params. The map is a read-only view materialized lazily on first call (writes to it are not seen by `RouteParam`), owned by the framework and recycled after the request completes; do not retain it.
+`Request.RouteParam(name)` returns a single parameter value ("" when absent) and is the preferred accessor — parameters are stored as parallel key/value slices, so the lookup is an allocation-free linear scan (routes carry a handful of params at most). `Request.RouteParams()` returns all params as one `map[string]string` — path params and, for host-scoped routes, host params. The map is a read-only view materialized lazily on first call (writes to it are not seen by `RouteParam`).
 
 ```go
 tenant := c.Request().RouteParam("tenant")
 id := c.Request().RouteParam("id")
 ```
-
-> **Pending v0.26.0 (R10):** not implemented yet; the parameters live in the pooled Context, and the map is recycled with it, as the paragraph above says.
 
 The parameters live in the request's own Context, which is not pooled, so the map `RouteParams` returns is never handed to another request; it stays a read-only view.
 
@@ -389,7 +383,7 @@ Forwarded headers are default-deny. Unless the immediate peer `RemoteAddr` is in
 
 `RealIP()` prefers the RFC 7239 `Forwarded` header (`for=` parameters), then walks `X-Forwarded-For` from right to left, skipping trusted proxy hops and returning the first untrusted address. If no usable value exists, it falls back to `X-Real-IP`, then the direct peer address. Each chain walk is limited to 32 hops as a DoS guard.
 
-Both values are cached for the lifetime of the request and cleared when the pooled context is reset.
+Both values are cached for the lifetime of the request.
 
 ## Bind Methods — "Parse, Don't Validate"
 
@@ -526,30 +520,13 @@ A field of a type outside this list is a developer error: the bind returns a 500
 - Route parameters are not stdlib path values: [ADR-008](../adr/008-context-design.md#route-parameters-are-not-stdlib-path-values).
 - The context head, the typed keys, `Within`, `Std()` and their rejected alternatives: [ADR-008](../adr/008-context-design.md#one-context-head-and-typed-keys).
 
-> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled.
-
 - One allocation per request, without a pool, and its measurement: [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
 
 > **Pending v0.26.0 (R14):** not implemented yet; the APIs the next bullet names are public.
 
 - The pruned APIs — `Response.Reset`, the `RouteContext` alias, `NewRequest`, `NewResponse`, `Context.Rewrite` and `IsRewriting` — and `NewContext`, which stays: [ADR-008](../adr/008-context-design.md#pruned-context-apis).
 
-## Pooling
-
-> **Current until v0.26.0 (R10):** this section; the [Allocation](#allocation) section replaces it.
-
-Context structs, each with its Request and Response, are pooled per App in a `sync.Pool` built by `New`. Each request:
-
-1. Passes the lifecycle admission gate in `ServeHTTP`, then takes a Context from the pool (a request answered with the [lifecycle 503](lifecycle.md#lifecycle-rejection-503) takes none)
-2. Resets it with the new `ResponseWriter` and `*http.Request`
-3. Runs the feature executor and the handler chain ([HTTP features spec](http-features.md#request-execution))
-4. Returns the Context to the pool after finalization, the access record and multipart cleanup, on every path including a propagating panic
-
-This removes the per-request Context, Request and Response allocations from the hot path.
-
 ## Allocation
-
-> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled as [Pooling](#pooling) describes.
 
 The Context is not pooled. Each request:
 
@@ -557,4 +534,4 @@ The Context is not pooled. Each request:
 2. Runs the feature executor and the handler chain ([HTTP features spec](http-features.md#request-execution))
 3. Finalizes, emits the access record and cleans up multipart files, on every path including a propagating panic
 
-The one allocation folds the Context, its `Request` and `Response`, embedded by value, and the first route parameters, kept in fixed arrays. A `*Context` kept past its request reads that request's values, `GetUser` included, after the next request on the same connection has run. What remains is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The measurement of the change is recorded in [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
+The one allocation folds the Context, its `Request` and `Response`, embedded by value, and the first four route parameters and the first two values, kept in fixed arrays. A `*Context` kept past its request reads that request's values, `GetUser` included, after the next request on the same connection has run. What remains is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The measurement of the change is recorded in [ADR-008](../adr/008-context-design.md#one-allocation-per-request).

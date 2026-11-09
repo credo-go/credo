@@ -100,7 +100,7 @@ Do not enable `InsecureSkipOriginCheck` merely to make a failed deployment work.
 
 Use `conn.Context()` for connection work. It is independent of request cancellation but retains request values such as the authenticated user and scoped logger.
 
-Do not retain `*credo.Context` or `*websocket.Conn` after the handler returns. Credo pools request contexts, and adapter cleanup owns the connection. Snapshot small immutable values at handler entry:
+Do not use `*credo.Context` or `*websocket.Conn` after the handler returns: the response cannot be written then, and adapter cleanup owns the connection. Snapshot small immutable values at handler entry:
 
 ```go
 func eventsHandler(req *credo.Context, conn *websocket.Conn) error {

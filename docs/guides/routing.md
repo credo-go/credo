@@ -73,7 +73,7 @@ func getUser(c *credo.Context) error {
 }
 ```
 
-`c.Request().RouteParams()` returns all params as a `map[string]string`. The map is owned by the framework and recycled after the request completes, so prefer `RouteParam` for single values.
+`c.Request().RouteParams()` returns all params as a `map[string]string`. The map is a read-only view built on first use, so prefer `RouteParam` for single values.
 
 Parameter names belong to the route that declares them. Routes that share a dynamic segment may name it differently, and each handler reads its own names:
 
