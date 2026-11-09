@@ -25,7 +25,7 @@ func NewPgUserRepo() *pgUserRepo { return &pgUserRepo{dsn: "postgres://localhost
 
 func TestAlias_ResolveByInterface(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
 	seal(t, c)
@@ -40,7 +40,7 @@ func TestAlias_ResolveByInterface(t *testing.T) {
 
 func TestAlias_SameInstance(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
 	seal(t, c)
@@ -59,7 +59,7 @@ func TestAlias_SameInstance(t *testing.T) {
 
 func TestAlias_NotInterface_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 
 	// *pgUserRepo is not an interface — should fail.
 	err := c.Alias[*pgUserRepo, *pgUserRepo]()
@@ -85,7 +85,7 @@ func TestAlias_ConcreteNotRegistered_Error(t *testing.T) {
 
 func TestAlias_DoesNotImplement_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	// *SimpleService does not implement UserRepo.
 	err := c.Alias[UserRepo, *SimpleService]()
@@ -99,7 +99,7 @@ func TestAlias_DoesNotImplement_Error(t *testing.T) {
 
 func TestAlias_DuplicateAlias_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
 	err := c.Alias[UserRepo, *pgUserRepo]()
@@ -113,9 +113,9 @@ func TestAlias_DuplicateAlias_Error(t *testing.T) {
 
 func TestAlias_InterfaceAlreadyRegistered_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 	// Register interface directly.
-	c.MustProvide[UserRepo](func() UserRepo { return &pgUserRepo{} })
+	c.MustProvide(func() UserRepo { return &pgUserRepo{} })
 
 	err := c.Alias[UserRepo, *pgUserRepo]()
 	if err == nil {
@@ -140,7 +140,7 @@ func TestMustAlias_Panics(t *testing.T) {
 
 func TestAlias_Seal_Passes(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 	c.MustAlias[UserRepo, *pgUserRepo]()
 
 	if err := c.Seal(); err != nil {
@@ -150,8 +150,8 @@ func TestAlias_Seal_Passes(t *testing.T) {
 
 func TestBindMany_ResolveAllByInterface(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
-	c.MustProvide[*frenchGreeter](NewFrenchGreeter)
+	c.MustProvide(NewEnglishGreeter)
+	c.MustProvide(NewFrenchGreeter)
 	c.MustBindMany[Greeter, *englishGreeter]()
 	c.MustBindMany[Greeter, *frenchGreeter]()
 
@@ -167,7 +167,7 @@ func TestBindMany_ResolveAllByInterface(t *testing.T) {
 
 func TestBindMany_NotInterface_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide(NewEnglishGreeter)
 
 	err := c.BindMany[*englishGreeter, *englishGreeter]()
 	if err == nil {
@@ -192,7 +192,7 @@ func TestBindMany_ConcreteNotRegistered_Error(t *testing.T) {
 
 func TestBindMany_ConcreteTypeMustNotBeInterface(t *testing.T) {
 	c := di.New()
-	c.MustProvide[Greeter](NewGreeter)
+	c.MustProvide(NewGreeter)
 
 	err := c.BindMany[Greeter, Greeter]()
 	if err == nil {
@@ -205,7 +205,7 @@ func TestBindMany_ConcreteTypeMustNotBeInterface(t *testing.T) {
 
 func TestBindMany_DoesNotImplement_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	err := c.BindMany[Greeter, *SimpleService]()
 	if err == nil {
@@ -218,7 +218,7 @@ func TestBindMany_DoesNotImplement_Error(t *testing.T) {
 
 func TestBindMany_Duplicate_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide(NewEnglishGreeter)
 	c.MustBindMany[Greeter, *englishGreeter]()
 
 	err := c.BindMany[Greeter, *englishGreeter]()
@@ -244,7 +244,7 @@ func TestMustBindMany_Panics(t *testing.T) {
 
 func TestBindMany_Seal_Passes(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide(NewEnglishGreeter)
 	c.MustBindMany[Greeter, *englishGreeter]()
 
 	if err := c.Seal(); err != nil {

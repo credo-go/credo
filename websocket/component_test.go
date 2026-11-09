@@ -91,7 +91,7 @@ func TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry(t *testing.
 	registry := &peerRegistry{peers: make(map[*Conn]struct{}), events: &events}
 	app.ProvideValue(registry)
 	var b *broadcaster
-	app.Provide[*broadcaster](func(r *peerRegistry) *broadcaster {
+	app.Provide(func(r *peerRegistry) *broadcaster {
 		b = &broadcaster{registry: r}
 		return b
 	})

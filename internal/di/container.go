@@ -12,7 +12,7 @@ import (
 )
 
 // Container is a type-safe dependency injection container using Go generics.
-// Services are registered with Provide[T] and resolved with Resolve[T].
+// Services are registered with Provide and resolved with Resolve[T].
 // All services use the Singleton lifecycle.
 //
 // The container moves through three phases. During registration, bindings are
@@ -46,6 +46,12 @@ type Container struct {
 	// started holds the resource keys the start walk has started, so a
 	// resource that several holders share is started once.
 	started map[any]bool
+	// unreached holds, per type an override left without the alias that
+	// pointed at it, which override did so, and unreachedOrder their order;
+	// Seal drops each one nothing else reaches into dropped.
+	unreached      map[reflect.Type]string
+	unreachedOrder []reflect.Type
+	dropped        map[reflect.Type]string
 	// frameworkProviders produces constructor parameters the framework injects
 	// without a registration (credo.Infra, Model 1). Written at setup only.
 	frameworkProviders map[reflect.Type]FrameworkProvider
@@ -131,6 +137,8 @@ func New() *Container {
 		names:          make(map[string]*Unit),
 		resources:      make(map[any][]*Unit),
 		started:        make(map[any]bool),
+		unreached:      make(map[reflect.Type]string),
+		dropped:        make(map[reflect.Type]string),
 
 		frameworkProviders: make(map[reflect.Type]FrameworkProvider),
 		logger:             slog.New(slog.DiscardHandler),

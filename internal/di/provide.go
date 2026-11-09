@@ -8,31 +8,35 @@ import (
 	"reflect"
 )
 
-// Provide registers a constructor for type T. The constructor can accept
-// any number of parameters that are themselves registered in the container,
-// and must return T or (T, error). It runs at most once, on the first
+// Provide registers a constructor. The binding's type is the constructor's
+// first result type: func(dependencies...) T or func(dependencies...)
+// (T, error) binds T. The constructor runs at most once, on the first
 // resolution after Seal. Every rejection is a [*MisuseError].
 //
-//	c.Provide[MyService](NewMyService)
-func (c *Container) Provide[T any](constructor any) error {
-	return c.ProvideWith[T](constructor, Options{})
+//	c.Provide(NewMyService)
+func (c *Container) Provide(constructor any) error {
+	return c.ProvideWith(constructor, Options{})
 }
 
 // ProvideWith is [Container.Provide] with registration options.
-func (c *Container) ProvideWith[T any](constructor any, o Options) error {
+func (c *Container) ProvideWith(constructor any, o Options) error {
+	reg, err := inspectConstructor(constructor)
+	if err != nil {
+		var types []reflect.Type
+		if ct := reflect.TypeOf(constructor); ct != nil && ct.Kind() == reflect.Func && ct.NumOut() > 0 {
+			types = []reflect.Type{ct.Out(0)}
+		}
+		return misuse("Provide", types, "%v; want func(dependencies...) T or func(dependencies...) (T, error), "+
+			"which binds T", err)
+	}
+	targetType := reg.resultType
+	types := []reflect.Type{targetType}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	targetType := reflect.TypeFor[T]()
-	types := []reflect.Type{targetType}
 	if err := c.closedLocked("Provide", targetType); err != nil {
 		return err
-	}
-
-	reg, err := inspectConstructor(constructor, targetType)
-	if err != nil {
-		return misuse("Provide", types, "%v; want func(dependencies...) %s or "+
-			"func(dependencies...) (%s, error)", err, targetType, targetType)
 	}
 	if o.Borrowed {
 		return misuse("Provide", types, "credo.Borrowed() is accepted on ProvideValue only: a value a "+
@@ -47,22 +51,42 @@ func (c *Container) ProvideWith[T any](constructor any, o Options) error {
 	}
 
 	// Pre-create singleton entry for later lazy resolution.
+	c.replaceAliasLocked("Provide", targetType)
 	c.bindLocked(u, reg, &singletonEntry{})
 	return nil
 }
 
 // checkOverrideLocked enforces that a second binding of one type is an
-// override and that an override has a binding to replace.
+// override and that an override has a binding to replace. An alias is a
+// binding of its interface: a direct binding after it is a duplicate, and an
+// override replaces it.
 func (c *Container) checkOverrideLocked(op string, t reflect.Type, override bool) error {
 	_, exists := c.registrations[t]
+	target, aliased := c.aliases[t]
 	switch {
 	case exists && !override:
 		return duplicateError(op, t)
-	case !exists && override:
+	case aliased && !override:
+		return misuse(op, []reflect.Type{t}, "%s is already bound through app.Alias[%s, %s](); give "+
+			"credo.Override() to replace the alias, or drop the Alias call", t, t, target)
+	case !exists && !aliased && override:
 		return misuse(op, []reflect.Type{t}, "credo.Override() replaces an earlier binding, but %s has none; "+
 			"bind %s first, or drop credo.Override()", t, t)
 	}
 	return nil
+}
+
+// replaceAliasLocked removes the alias of t that an override replaces. The
+// type it pointed at stays registered until Seal, which drops it when nothing
+// else reaches it. c.mu must be held.
+func (c *Container) replaceAliasLocked(op string, t reflect.Type) {
+	target, ok := c.aliases[t]
+	if !ok {
+		return
+	}
+	delete(c.aliases, t)
+	c.noteUnreachedLocked(target, fmt.Sprintf("%s[%s] with credo.Override() replaced app.Alias[%s, %s]()",
+		op, t, t, target))
 }
 
 // bindLocked publishes a binding unit. An override takes the replaced
@@ -84,8 +108,8 @@ func (c *Container) bindLocked(u *Unit, reg provider, entry *singletonEntry) {
 }
 
 // MustProvide is like Provide but panics on error.
-func (c *Container) MustProvide[T any](constructor any) {
-	if err := c.Provide[T](constructor); err != nil {
+func (c *Container) MustProvide(constructor any) {
+	if err := c.Provide(constructor); err != nil {
 		panic(err)
 	}
 }
@@ -123,6 +147,9 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 	if idErr != nil {
 		return misuse(op, types, "%v", idErr)
 	}
+	if err := c.hiddenCapabilityErrorLocked(u, any(value), token, hasToken); err != nil {
+		return misuse(op, types, "%v", err)
+	}
 	if o.Override {
 		c.forgetHolderLocked(c.unitOf[targetType])
 	}
@@ -130,6 +157,7 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 		return misuse(op, types, "%v", err)
 	}
 
+	c.replaceAliasLocked(op, targetType)
 	c.bindLocked(u, valueProvider{value: value}, &singletonEntry{state: entryBuilt, value: value})
 	return nil
 }
@@ -152,8 +180,9 @@ func (c *Container) MustProvideValue[T any](value T) {
 var errorType = reflect.TypeFor[error]()
 
 // inspectConstructor validates the constructor function signature and
-// extracts parameter/return type information.
-func inspectConstructor(constructor any, targetType reflect.Type) (*constructorProvider, error) {
+// extracts parameter/return type information. The result type is the
+// constructor's first result type.
+func inspectConstructor(constructor any) (*constructorProvider, error) {
 	if constructor == nil {
 		return nil, errors.New("constructor must not be nil")
 	}
@@ -168,11 +197,6 @@ func inspectConstructor(constructor any, targetType reflect.Type) (*constructorP
 	numOut := ct.NumOut()
 	if numOut == 0 || numOut > 2 {
 		return nil, fmt.Errorf("constructor must return 1 or 2 values, got %d", numOut)
-	}
-
-	// First return must be assignable to targetType.
-	if !ct.Out(0).AssignableTo(targetType) {
-		return nil, fmt.Errorf("first return type %s is not assignable to %s", ct.Out(0), targetType)
 	}
 
 	returnsError := false
@@ -192,7 +216,7 @@ func inspectConstructor(constructor any, targetType reflect.Type) (*constructorP
 	return &constructorProvider{
 		constructor:  cv,
 		paramTypes:   paramTypes,
-		resultType:   targetType,
+		resultType:   ct.Out(0),
 		returnsError: returnsError,
 	}, nil
 }

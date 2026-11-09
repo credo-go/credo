@@ -76,7 +76,7 @@ func ExampleSupervisor_ScheduledProvided() {
 
 	// The worker is built in the start walk, so the provider and the
 	// registration may come in either order, both before Finalize.
-	app.Provide[*invoiceSweeper](newInvoiceSweeper)
+	app.Provide(newInvoiceSweeper)
 	workers.ScheduledProvided[*invoiceSweeper]("invoice-sweeper", "@every 1m", worker.ScheduledConfig{
 		RunOnStart:             true,
 		RunTimeout:             15 * time.Second,

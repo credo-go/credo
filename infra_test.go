@@ -21,7 +21,7 @@ func newModel1Service(infra credo.Infra) *model1Service {
 
 func TestInfra_Model1_Injection(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*model1Service](newModel1Service)
+	app.Provide(newModel1Service)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*model1Service]()
@@ -45,7 +45,7 @@ func TestInfra_Model1_LoggerScoping(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	app.Provide[*model1Service](newModel1Service)
+	app.Provide(newModel1Service)
 	mustFinalize(t, app)
 	svc := app.MustResolve[*model1Service]()
 
@@ -69,8 +69,8 @@ func newModel1WithDep(infra credo.Infra, s *diSimpleService) *model1WithDep {
 
 func TestInfra_Model1_WithOtherDeps(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
-	app.Provide[*model1WithDep](newModel1WithDep)
+	app.Provide(newDISimpleService)
+	app.Provide(newModel1WithDep)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*model1WithDep]()
@@ -92,8 +92,8 @@ func TestInfra_Model1_WithOtherDeps(t *testing.T) {
 
 func TestInfra_PureConstructor_StillWorks(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diSimpleService](newDISimpleService)
-	app.Provide[*diServiceWithDep](newDIServiceWithDep)
+	app.Provide(newDISimpleService)
+	app.Provide(newDIServiceWithDep)
 
 	mustFinalize(t, app)
 	svc, err := app.Resolve[*diServiceWithDep]()
@@ -109,7 +109,7 @@ func TestInfra_PureConstructor_StillWorks(t *testing.T) {
 
 func TestInfra_DefaultLoggerFallback(t *testing.T) {
 	app := mustNew(t) // no WithLogger
-	app.Provide[*model1Service](newModel1Service)
+	app.Provide(newModel1Service)
 
 	mustFinalize(t, app)
 	svc := app.MustResolve[*model1Service]()
@@ -158,7 +158,7 @@ func TestApp_NewInfra_NilSafety(t *testing.T) {
 
 func TestInfra_Finalize_Model1_Valid(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*model1Service](newModel1Service)
+	app.Provide(newModel1Service)
 
 	if err := app.Finalize(); err != nil {
 		t.Fatalf("Finalize should pass for Model 1: %v", err)

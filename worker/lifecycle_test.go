@@ -208,8 +208,8 @@ func TestLifecycle_TiersAgainstTheHTTPDrain(t *testing.T) {
 	db := &lifecycleDB{consumerDone: &consumer.done}
 	queue := &lifecycleQueue{jobs: make(chan string, 1)}
 	app.ProvideValue(queue)
-	app.Provide[*lifecycleDB](func() *lifecycleDB { return db })
-	app.Provide[*lifecycleConsumer](func(q *lifecycleQueue, d *lifecycleDB) *lifecycleConsumer {
+	app.Provide(func() *lifecycleDB { return db })
+	app.Provide(func(q *lifecycleQueue, d *lifecycleDB) *lifecycleConsumer {
 		consumer.queue, consumer.db = q, d
 		return consumer
 	})
@@ -462,8 +462,8 @@ func TestLifecycle_RunIgnoringCancellationIsAbandoned(t *testing.T) {
 		stopLine := lifecycleStoppedLine(capture, "stubborn")
 		store := &lifecycleStore{}
 		run, started, release, returned := lifecycleStubborn()
-		app.Provide[*lifecycleStore](func() *lifecycleStore { return store })
-		app.Provide[*lifecycleStubbornWorker](func(s *lifecycleStore) *lifecycleStubbornWorker {
+		app.Provide(func() *lifecycleStore { return store })
+		app.Provide(func(s *lifecycleStore) *lifecycleStubbornWorker {
 			return &lifecycleStubbornWorker{store: s, run: run}
 		})
 		s := Use(app)

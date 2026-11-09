@@ -98,7 +98,7 @@ func TestAcceptance_DrainDeliversLastJob(t *testing.T) {
 	app.ProvideValue(log)
 	app.ProvideValue(db)
 	app.ProvideValue(queue)
-	app.Provide[*jobWriter](func(q *jobQueue, d *acceptanceDB, l *acceptanceLog) *jobWriter {
+	app.Provide(func(q *jobQueue, d *acceptanceDB, l *acceptanceLog) *jobWriter {
 		return &jobWriter{queue: q, db: d, log: l}
 	})
 	workers := worker.Use(app)

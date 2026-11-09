@@ -14,7 +14,7 @@ type diPanicky struct{}
 func TestResolve_BeforeFinalize_Rejected(t *testing.T) {
 	app := mustNew(t)
 	calls := 0
-	app.Provide[*diSimpleService](func() *diSimpleService {
+	app.Provide(func() *diSimpleService {
 		calls++
 		return newDISimpleService()
 	})
@@ -36,7 +36,7 @@ func TestHas(t *testing.T) {
 		t.Fatal("Has before registration = true")
 	}
 	calls := 0
-	app.Provide[*diSimpleService](func() *diSimpleService {
+	app.Provide(func() *diSimpleService {
 		calls++
 		return newDISimpleService()
 	})
@@ -59,7 +59,7 @@ func TestHas(t *testing.T) {
 
 func TestDIDiagnostics_PublicTypes(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*diPanicky](func() *diPanicky { panic("boom") })
+	app.Provide(func() *diPanicky { panic("boom") })
 	mustFinalize(t, app)
 
 	_, err := app.Resolve[*diPanicky]()

@@ -190,10 +190,14 @@ func (c *Container) forgetHolderLocked(u *Unit) {
 	c.resources[u.key] = holders
 }
 
-// admitBuiltLocked checks a value a constructor has just built: a component
-// found only on its value is internal, so it must not depend on an ingress
+// admitBuiltLocked checks a value a constructor has just built: its type
+// must not hide the Start or Ready of a component, a component found only on
+// its value is internal, so it must not depend on an ingress
 // component, and its resource's holders must agree. c.mu must be held.
 func (c *Container) admitBuiltLocked(u *Unit, value any, token any, hasToken bool) error {
+	if err := c.hiddenCapabilityErrorLocked(u, value, token, hasToken); err != nil {
+		return err
+	}
 	if u.foundOnValue(value) {
 		if path := c.ingressPathLocked(u); path != nil {
 			return fmt.Errorf("%s is an internal component — its Shutdown is found only on its built value — "+

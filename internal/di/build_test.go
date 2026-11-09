@@ -10,14 +10,14 @@ import (
 
 func TestSeal_FreezesContainer(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
 	// Provide after Seal should fail.
-	err := c.Provide[*ServiceWithDep](NewServiceWithDep)
+	err := c.Provide(NewServiceWithDep)
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
@@ -43,7 +43,7 @@ func TestSeal_ProvideValueAfterBuild_Error(t *testing.T) {
 
 func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pgUserRepo](NewPgUserRepo)
+	c.MustProvide(NewPgUserRepo)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -60,7 +60,7 @@ func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 
 func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*englishGreeter](NewEnglishGreeter)
+	c.MustProvide(NewEnglishGreeter)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -78,7 +78,7 @@ func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 func TestSeal_ValidationError(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, which is not registered.
-	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+	c.MustProvide(NewServiceWithDep)
 
 	err := c.Seal()
 	if err == nil {
@@ -91,7 +91,7 @@ func TestSeal_ValidationError(t *testing.T) {
 
 func TestSeal_Idempotent(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	err1 := c.Seal()
 	err2 := c.Seal()
@@ -102,7 +102,7 @@ func TestSeal_Idempotent(t *testing.T) {
 
 func TestSeal_ResolveAfterBuild(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -117,7 +117,7 @@ func TestSeal_ResolveAfterBuild(t *testing.T) {
 	}
 
 	// Provide after Seal should still fail.
-	err = c.Provide[*ServiceWithDep](NewServiceWithDep)
+	err = c.Provide(NewServiceWithDep)
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
@@ -133,7 +133,7 @@ func TestSeal_Empty(t *testing.T) {
 func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 	c := di.New()
 	// ServiceWithDep depends on SimpleService, which is not registered.
-	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+	c.MustProvide(NewServiceWithDep)
 
 	sealErr := c.Seal()
 	if sealErr == nil {
@@ -153,7 +153,7 @@ func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 func TestSeal_ResolveBeforeSeal_Rejected(t *testing.T) {
 	c := di.New()
 	calls := 0
-	c.MustProvide[*SimpleService](func() *SimpleService {
+	c.MustProvide(func() *SimpleService {
 		calls++
 		return NewSimpleService()
 	})
@@ -182,11 +182,11 @@ func TestSeal_ResolveBeforeSeal_Rejected(t *testing.T) {
 
 func TestFreeze_ClosesRegistrationWithoutSeal(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
+	c.MustProvide(NewSimpleService)
 
 	c.Freeze()
 
-	if err := c.Provide[*ServiceWithDep](NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "called after shutdown began") {
+	if err := c.Provide(NewServiceWithDep); err == nil || !strings.Contains(err.Error(), "called after shutdown began") {
 		t.Fatalf("Provide after Freeze = %v, want after-shutdown error", err)
 	}
 	if err := c.ProvideValueWith[*SimpleService](&SimpleService{}, di.Options{Override: true}); err == nil {

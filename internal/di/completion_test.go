@@ -23,7 +23,7 @@ type dependsOnPanicky struct{ P *panicky }
 // instance with a nil error.
 func TestResolve_ConstructorPanic_FailFastRegression(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*panicky](func() *panicky { panic("boom") })
+	c.MustProvide(func() *panicky { panic("boom") })
 	seal(t, c)
 
 	func() {
@@ -47,7 +47,7 @@ func TestResolve_ConstructorPanic_FailFastRegression(t *testing.T) {
 func TestResolve_ConstructorPanic_TerminalTypedError(t *testing.T) {
 	var calls atomic.Int32
 	c := di.New()
-	c.MustProvide[*panicky](func() *panicky {
+	c.MustProvide(func() *panicky {
 		calls.Add(1)
 		panic("boom")
 	})
@@ -114,7 +114,7 @@ func TestResolve_ConstructorPanic_TerminalTypedError(t *testing.T) {
 func TestResolve_ConstructorPanic_ErrorValueUnwraps(t *testing.T) {
 	cause := errors.New("db offline")
 	c := di.New()
-	c.MustProvide[*panicky](func() *panicky { panic(cause) })
+	c.MustProvide(func() *panicky { panic(cause) })
 	seal(t, c)
 
 	_, err := c.Resolve[*panicky]()
@@ -129,8 +129,8 @@ func TestResolve_ConstructorPanic_ErrorValueUnwraps(t *testing.T) {
 
 func TestResolve_ConstructorPanic_DependentFailsThroughParameter(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*panicky](func() *panicky { panic("boom") })
-	c.MustProvide[*dependsOnPanicky](func(p *panicky) *dependsOnPanicky { return &dependsOnPanicky{P: p} })
+	c.MustProvide(func() *panicky { panic("boom") })
+	c.MustProvide(func(p *panicky) *dependsOnPanicky { return &dependsOnPanicky{P: p} })
 	seal(t, c)
 
 	_, err := c.Resolve[*dependsOnPanicky]()
@@ -147,8 +147,8 @@ func TestResolve_ConstructorPanic_DependentFailsThroughParameter(t *testing.T) {
 
 func TestShutdown_ConstructionFailuresAreDiagnosticsOnly(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*panicky](func() *panicky { panic("boom") })
-	c.MustProvide[*ServiceWithError](NewServiceFailing)
+	c.MustProvide(func() *panicky { panic("boom") })
+	c.MustProvide(NewServiceFailing)
 	seal(t, c)
 	_, _ = c.Resolve[*panicky]()
 	_, _ = c.Resolve[*ServiceWithError]()

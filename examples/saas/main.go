@@ -468,9 +468,9 @@ func run() error {
 	// Nothing is built yet; a misused registration panics at its line.
 	app.ProvideValue(&appCfg)
 	app.ProvideValue(&dbCfg)
-	app.Provide[*TenantStore](NewTenantStore)
-	app.Provide[*TenantService](NewTenantService)
-	app.Provide[*UsageReporter](NewUsageReporter)
+	app.Provide(NewTenantStore)
+	app.Provide(NewTenantService)
+	app.Provide(NewUsageReporter)
 
 	// 3. Feature mounts and satellite registrations, in any order.
 	//

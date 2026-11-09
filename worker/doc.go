@@ -13,7 +13,7 @@
 //		return nil
 //	}))
 //
-//	app.Provide[*Cleanup](NewCleanup)
+//	app.Provide(NewCleanup)
 //	workers.ScheduledProvided[*Cleanup]("cleanup", "@every 5m", worker.ScheduledConfig{
 //		RunOnStart: true,
 //		RunTimeout: time.Minute,

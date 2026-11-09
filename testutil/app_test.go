@@ -63,6 +63,46 @@ func TestWithOverride_ReplacesWiredDep(t *testing.T) {
 	}
 }
 
+// userRepo is the interface the dependency-injection guide aliases to its
+// implementation.
+type userRepo interface{ Find() string }
+
+// pgRepo is the real implementation: a component with Start.
+type pgRepo struct{ built, started *atomic.Int32 }
+
+func (*pgRepo) Find() string                   { return "pg" }
+func (r *pgRepo) Start(context.Context) error  { r.started.Add(1); return nil }
+func (*pgRepo) Shutdown(context.Context) error { return nil }
+
+type fakeRepo struct{}
+
+func (fakeRepo) Find() string { return "fake" }
+
+type userService struct{ repo userRepo }
+
+// TestWithOverride_ReplacesAnAliasedInterface: over the guide's pattern, an
+// override of the aliased interface resolves the fake for every consumer,
+// and the real implementation is neither built nor started.
+func TestWithOverride_ReplacesAnAliasedInterface(t *testing.T) {
+	var built, started atomic.Int32
+	app := testutil.NewApp(t,
+		testutil.WithWiring(func(app *credo.App) {
+			app.Provide(func() *pgRepo { built.Add(1); return &pgRepo{built: &built, started: &started} })
+			app.Alias[userRepo, *pgRepo]()
+			app.Provide(func(r userRepo) *userService { return &userService{repo: r} })
+		}),
+		testutil.WithOverride[userRepo](fakeRepo{}),
+	)
+	testutil.Start(t, app)
+	if got := app.MustResolve[*userService]().repo.Find(); got != "fake" {
+		t.Errorf("userService uses %q, want the fake", got)
+	}
+	if built.Load() != 0 || started.Load() != 0 {
+		t.Errorf("built %d, started %d; the overridden implementation must stay unbuilt", built.Load(),
+			started.Load())
+	}
+}
+
 func TestWithOverride_PanicsWithoutBinding(t *testing.T) {
 	// An override that no longer matches the wiring fails instead of adding a
 	// binding nothing resolves.

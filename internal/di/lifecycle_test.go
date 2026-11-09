@@ -27,8 +27,8 @@ func (s *shutdownTracker) Shutdown(ctx context.Context) error {
 
 func TestSeal_CircularDependency(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*CircularA](NewCircularA)
-	c.MustProvide[*CircularB](NewCircularB)
+	c.MustProvide(NewCircularA)
+	c.MustProvide(NewCircularB)
 
 	err := c.Seal()
 	if err == nil {
@@ -41,7 +41,7 @@ func TestSeal_CircularDependency(t *testing.T) {
 
 func TestSeal_ContextParam_Error(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](func(ctx context.Context) *SimpleService {
+	c.MustProvide(func(ctx context.Context) *SimpleService {
 		return &SimpleService{Value: "ctx"}
 	})
 
@@ -56,8 +56,8 @@ func TestSeal_ContextParam_Error(t *testing.T) {
 
 func TestSeal_ValidGraph(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*SimpleService](NewSimpleService)
-	c.MustProvide[*ServiceWithDep](NewServiceWithDep)
+	c.MustProvide(NewSimpleService)
+	c.MustProvide(NewServiceWithDep)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed on valid graph: %v", err)
@@ -97,7 +97,7 @@ func NewCollectionPluginImpl(consumer *collectionPluginConsumer) *collectionPlug
 
 func TestSeal_InterfaceSliceDependency_AllowsEmptyCollection(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*collectionPluginConsumer](NewCollectionPluginConsumer)
+	c.MustProvide(NewCollectionPluginConsumer)
 
 	if err := c.Seal(); err != nil {
 		t.Fatalf("Seal failed with empty BindMany collection: %v", err)
@@ -106,8 +106,8 @@ func TestSeal_InterfaceSliceDependency_AllowsEmptyCollection(t *testing.T) {
 
 func TestSeal_InterfaceSliceDependency_CycleDetected(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*collectionPluginConsumer](NewCollectionPluginConsumer)
-	c.MustProvide[*collectionPluginImpl](NewCollectionPluginImpl)
+	c.MustProvide(NewCollectionPluginConsumer)
+	c.MustProvide(NewCollectionPluginImpl)
 	c.MustBindMany[collectionPlugin, *collectionPluginImpl]()
 
 	err := c.Seal()
@@ -177,15 +177,15 @@ func TestSeal_ReportsInRegistrationOrder(t *testing.T) {
 	// walks its maps fails this within a few iterations.
 	for i := range 50 {
 		c := di.New()
-		c.MustProvide[*orderNeeds1](newOrderNeeds1)
-		c.MustProvide[*orderCycleB2](newOrderCycleB2)
-		c.MustProvide[*orderNeeds2](newOrderNeeds2)
-		c.MustProvide[*orderCycleA2](newOrderCycleA2)
-		c.MustProvide[*orderNeeds3](newOrderNeeds3)
-		c.MustProvide[*orderCycleA1](newOrderCycleA1)
-		c.MustProvide[*orderNeeds4](newOrderNeeds4)
-		c.MustProvide[*orderCycleB1](newOrderCycleB1)
-		c.MustProvide[*orderNeeds5](newOrderNeeds5)
+		c.MustProvide(newOrderNeeds1)
+		c.MustProvide(newOrderCycleB2)
+		c.MustProvide(newOrderNeeds2)
+		c.MustProvide(newOrderCycleA2)
+		c.MustProvide(newOrderNeeds3)
+		c.MustProvide(newOrderCycleA1)
+		c.MustProvide(newOrderNeeds4)
+		c.MustProvide(newOrderCycleB1)
+		c.MustProvide(newOrderNeeds5)
 
 		err := c.Seal()
 		if err == nil {
@@ -221,12 +221,12 @@ func (*pathAudit) Name() string { return "audit" }
 // shared missing dependency is reported once.
 func TestSeal_MissingDependencyPath(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pathStripe](func(*pathClient) *pathStripe { return &pathStripe{} })
+	c.MustProvide(func(*pathClient) *pathStripe { return &pathStripe{} })
 	c.MustAlias[pathGateway, *pathStripe]()
-	c.MustProvide[*pathOrders](func(pathGateway) *pathOrders { return &pathOrders{} })
-	c.MustProvide[*pathAudit](func(*pathStore) *pathAudit { return &pathAudit{} })
+	c.MustProvide(func(pathGateway) *pathOrders { return &pathOrders{} })
+	c.MustProvide(func(*pathStore) *pathAudit { return &pathAudit{} })
 	c.MustBindMany[pathPlugin, *pathAudit]()
-	c.MustProvide[*pathPlugins](func([]pathPlugin) *pathPlugins { return &pathPlugins{} })
+	c.MustProvide(func([]pathPlugin) *pathPlugins { return &pathPlugins{} })
 
 	const want = "di: missing dependency: *di_test.pathOrders → di_test.pathGateway (alias of " +
 		"*di_test.pathStripe) → *di_test.pathClient (not registered); provide *di_test.pathClient before Finalize\n" +
@@ -242,7 +242,7 @@ func TestSeal_MissingDependencyPath(t *testing.T) {
 // one.
 func TestSeal_SelfDependency(t *testing.T) {
 	c := di.New()
-	c.MustProvide[*pathSelfLoop](func(*pathSelfLoop) *pathSelfLoop { return &pathSelfLoop{} })
+	c.MustProvide(func(*pathSelfLoop) *pathSelfLoop { return &pathSelfLoop{} })
 
 	const want = "di: circular dependency: *di_test.pathSelfLoop → *di_test.pathSelfLoop; " +
 		"remove one of these constructor parameters"
@@ -376,7 +376,7 @@ func TestShutdown_ContextDoneMidway_SkipsRemaining(t *testing.T) {
 func TestShutdown_LazyNotResolved(t *testing.T) {
 	var calls atomic.Int32
 	c := di.New()
-	c.MustProvide[*shutdownTracker](func() *shutdownTracker {
+	c.MustProvide(func() *shutdownTracker {
 		calls.Add(1)
 		return &shutdownTracker{order: &[]string{}, name: "lazy"}
 	})

@@ -146,9 +146,9 @@ func lifecycleEntry(t *testing.T, err error, name string) credo.LifecycleEntry {
 func TestComponents_TiersStartAndStopInOrder(t *testing.T) {
 	j := &journal{}
 	app := mustNew(t)
-	app.Provide[*partA](func() *partA { return &partA{&part{name: "store", j: j}} })
-	app.Provide[*partB](func(a *partA) *partB { return &partB{&part{name: "service", j: j}} })
-	app.Provide[*partC](func(b *partB) *partC { return &partC{&part{name: "consumer", j: j}} },
+	app.Provide(func() *partA { return &partA{&part{name: "store", j: j}} })
+	app.Provide(func(a *partA) *partB { return &partB{&part{name: "service", j: j}} })
+	app.Provide(func(b *partB) *partC { return &partC{&part{name: "consumer", j: j}} },
 		credo.Ingress())
 	app.OnStart(func(context.Context) error { j.add("hook:start-internal"); return nil })
 	app.OnStart(func(context.Context) error { j.add("hook:start-ingress"); return nil }, credo.Ingress())
@@ -232,7 +232,7 @@ func TestComponents_StartIsCalledOnce(t *testing.T) {
 	app := mustNew(t)
 	p := &partA{&part{name: "shared", j: j}}
 	app.ProvideValue[*partA](p)
-	app.ProvideValue[credo.Component](p)
+	app.ProvideValue[fullComponent](p)
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -245,6 +245,13 @@ func TestComponents_StartIsCalledOnce(t *testing.T) {
 	}
 }
 
+// fullComponent shows every capability of a component.
+type fullComponent interface {
+	credo.Component
+	credo.Starter
+	credo.Readier
+}
+
 // TestComponents_FailedStartRollsBack: a failed Start rolls back what was
 // built — not the component that failed — runs the stop hooks, leaves the
 // App stopped, refuses a second start and answers 503.
@@ -253,8 +260,8 @@ func TestComponents_FailedStartRollsBack(t *testing.T) {
 	errBoom := errors.New("boom")
 	app := mustNew(t)
 	app.GET("/ping", func(ctx *credo.Context) error { return ctx.Response().Text(200, "pong") })
-	app.Provide[*partA](func() *partA { return &partA{&part{name: "store", j: j}} })
-	app.Provide[*partB](func(*partA) *partB { return &partB{&part{name: "service", j: j, startErr: errBoom}} })
+	app.Provide(func() *partA { return &partA{&part{name: "store", j: j}} })
+	app.Provide(func(*partA) *partB { return &partB{&part{name: "service", j: j, startErr: errBoom}} })
 	app.OnStop(func(context.Context) error { j.add("hook:stop"); return nil })
 
 	err := app.Start(t.Context())
@@ -333,7 +340,7 @@ func TestComponents_StartIgnoringCancellationIsAbandoned(t *testing.T) {
 	entered := make(chan struct{})
 	app := mustNew(t, credo.WithShutdownTimeout(100*time.Millisecond))
 	app.ProvideValue[*partA](&partA{&part{name: "store", j: j}})
-	app.Provide[*partB](func(*partA) *partB {
+	app.Provide(func(*partA) *partB {
 		return &partB{&part{name: "stubborn", j: j, startBlock: release, startEntered: entered}}
 	})
 
@@ -368,7 +375,7 @@ func TestComponents_AbandonedShutdownKeepsDependenciesOpen(t *testing.T) {
 	app := mustNew(t)
 	store := &partA{&part{name: "store", j: j}}
 	app.ProvideValue[*partA](store)
-	app.Provide[*partB](func(*partA) *partB { return &partB{&part{name: "service", j: j, shutdownBlock: release}} })
+	app.Provide(func(*partA) *partB { return &partB{&part{name: "service", j: j, shutdownBlock: release}} })
 	startComponents(t, app)
 
 	err := shutdownApp(t, app, 50*time.Millisecond)
@@ -424,37 +431,13 @@ func TestComponents_UnresolvedComponentIsNeverBuilt(t *testing.T) {
 	j := &journal{}
 	var built atomic.Int32
 	app := mustNew(t)
-	app.Provide[*stopOnly](func() *stopOnly { built.Add(1); return &stopOnly{j: j, name: "lazy"} })
+	app.Provide(func() *stopOnly { built.Add(1); return &stopOnly{j: j, name: "lazy"} })
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
 	}
 	if built.Load() != 0 || len(j.list()) != 0 {
 		t.Errorf("built %d, events %v; want an unresolved component left alone", built.Load(), j.list())
-	}
-}
-
-// TestComponents_PlanFollowsTheBindingType: Start and Ready are planned from
-// the binding's type; an interface that hides them hides the capabilities,
-// while a Shutdown only the value shows still makes it an internal component.
-func TestComponents_PlanFollowsTheBindingType(t *testing.T) {
-	j := &journal{}
-	hidden := &partA{&part{name: "hidden", j: j, readyErr: errors.New("never asked")}}
-	app := mustNew(t)
-	app.ProvideValue[namedThing](hidden)
-	app.UseHealth()
-	startComponents(t, app)
-
-	rec := httptest.NewRecorder()
-	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("/ready = %d %s; a Ready hidden by the binding's type must not be asked", rec.Code, rec.Body)
-	}
-	if err := shutdownApp(t, app, 2*time.Second); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-	if want := []string{"stop:hidden"}; !slices.Equal(j.list(), want) {
-		t.Errorf("events = %v, want %v (no Start, Shutdown found on the value)", j.list(), want)
 	}
 }
 
@@ -520,7 +503,7 @@ func TestComponents_Override(t *testing.T) {
 	j := &journal{}
 	var built atomic.Int32
 	app := mustNew(t)
-	app.Provide[*partA](func() *partA { built.Add(1); return &partA{&part{name: "real", j: j}} })
+	app.Provide(func() *partA { built.Add(1); return &partA{&part{name: "real", j: j}} })
 	app.ProvideValue[*partA](&partA{&part{name: "fake", j: j}}, credo.Override())
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
@@ -541,7 +524,7 @@ func TestComponents_RegistrationMisusePanics(t *testing.T) {
 			app.ProvideValue[*partA](&partA{&part{j: &journal{}}}, credo.Override())
 		}},
 		{"borrowed constructor", "credo.Borrowed()", func(app *credo.App) {
-			app.Provide[*partA](func() *partA { return nil }, credo.Borrowed())
+			app.Provide(func() *partA { return nil }, credo.Borrowed())
 		}},
 		{"closer on manage", "does not accept", func(app *credo.App) {
 			app.Manage(&stopOnly{}, credo.Closer())
@@ -785,7 +768,7 @@ func TestComponents_IngressStopHooksOverlapTheHTTPDrain(t *testing.T) {
 
 	app := mustNew(t)
 	app.ProvideValue[*partA](store)
-	app.Provide[*partC](func(q *partA) *partC {
+	app.Provide(func(q *partA) *partC {
 		return &partC{&part{name: "consumer", j: j}}
 	}, credo.Ingress())
 	app.OnStop(func(context.Context) error {

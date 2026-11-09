@@ -41,7 +41,7 @@ func TestSnapshot_ResolvedConfigurationBeforeAndAfterStart(t *testing.T) {
 		UnreadyUntilFirstSuccess: true,
 		UnreadyAfterSuccessAge:   2 * time.Hour,
 	})
-	app.Provide[*infoProvided](func() *infoProvided { return &infoProvided{} })
+	app.Provide(func() *infoProvided { return &infoProvided{} })
 	workers.ContinuousProvided[*infoProvided]("provided", ContinuousConfig{Tier: credo.TierIngress})
 	workers.Continuous("plain", Func(infoBlocking))
 

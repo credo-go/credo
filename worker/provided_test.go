@@ -64,7 +64,7 @@ func TestProvided_ProvideBeforeOrAfterRegistration(t *testing.T) {
 			t.Run(string(kind)+"/"+order, func(t *testing.T) {
 				app := newTestApp(t)
 				s := Use(app)
-				provide := func() { app.Provide[*providedStub[providedKindA]](newProvidedStub[providedKindA]) }
+				provide := func() { app.Provide(newProvidedStub[providedKindA]) }
 				register := func() { providedRegister[*providedStub[providedKindA]](s, kind, "provided") }
 				if order == "provide-first" {
 					provide()
@@ -104,7 +104,7 @@ func TestProvided_InterfaceBoundWithAlias(t *testing.T) {
 	for _, kind := range []Kind{KindContinuous, KindScheduled} {
 		t.Run(string(kind), func(t *testing.T) {
 			app := newTestApp(t)
-			app.Provide[*providedStub[providedKindB]](newProvidedStub[providedKindB])
+			app.Provide(newProvidedStub[providedKindB])
 			app.Alias[providedAliased, *providedStub[providedKindB]]()
 			providedRegister[providedAliased](Use(app), kind, "aliased")
 			startApp(t, app)
@@ -175,8 +175,8 @@ func TestProvided_BuiltAfterItsDependenciesStartAndStoppedBeforeThem(t *testing.
 			app := newTestApp(t)
 			order := &providedOrder{}
 			owner := &providedOwner{order: order, running: make(chan struct{})}
-			app.Provide[*providedDep](func() *providedDep { return &providedDep{order: order} })
-			app.Provide[*providedOwner](func(*providedDep) *providedOwner {
+			app.Provide(func() *providedDep { return &providedDep{order: order} })
+			app.Provide(func(*providedDep) *providedOwner {
 				order.add("T built")
 				return owner
 			})
@@ -265,8 +265,8 @@ func TestProvided_ConstructionFailureFailsStart(t *testing.T) {
 				capture := newLogCapture()
 				app := newTestApp(t, credo.WithLogger(capture.logger()))
 				dep := &providedRecordingDep{}
-				app.Provide[*providedRecordingDep](func() *providedRecordingDep { return dep })
-				app.Provide[*stub](tc.ctor)
+				app.Provide(func() *providedRecordingDep { return dep })
+				app.Provide(tc.ctor)
 				s := Use(app)
 				providedRegister[*stub](s, kind, "broken")
 
@@ -316,8 +316,8 @@ func TestProvided_InternalWorkerOnIngressComponentFailsFinalize(t *testing.T) {
 	type stub = providedStub[providedKindA]
 	newApp := func(t *testing.T) *credo.App {
 		app := newTestApp(t)
-		app.Provide[*providedIngressDep](func() *providedIngressDep { return &providedIngressDep{} }, credo.Ingress())
-		app.Provide[*stub](func(*providedIngressDep) *stub { return newProvidedStub[providedKindA]() })
+		app.Provide(func() *providedIngressDep { return &providedIngressDep{} }, credo.Ingress())
+		app.Provide(func(*providedIngressDep) *stub { return newProvidedStub[providedKindA]() })
 		return app
 	}
 

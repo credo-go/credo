@@ -6,7 +6,8 @@ package di
 // Seal is idempotent — subsequent calls return the same result.
 //
 // Seal is side-effect-free: it does not instantiate any singletons
-// or perform I/O. It only freezes the container and runs validation.
+// or perform I/O. It freezes the container, drops each type an override of
+// its alias left unreached, and runs validation.
 //
 // Resolve is admitted only after Seal: constructor execution starts once the
 // graph is validated. After a failed Seal, Resolve returns the seal
@@ -24,6 +25,7 @@ func (c *Container) Seal() error {
 func (c *Container) doSeal() {
 	c.mu.Lock()
 	c.frozen = true
+	c.dropUnreachedLocked()
 	c.mu.Unlock()
 
 	err := c.validate()

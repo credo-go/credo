@@ -318,7 +318,7 @@ type bareDB struct{ store.Lifecycle }
 
 func TestRegister_NilValueFailsStart(t *testing.T) {
 	app := newTestApp(t)
-	app.Provide[*bareDB](func() *bareDB { return nil })
+	app.Provide(func() *bareDB { return nil })
 	store.Register[*bareDB](app)
 
 	err := app.Start(t.Context())
@@ -331,7 +331,7 @@ func TestRegister_ConstructorBindingIsBuiltByTheStartPhase(t *testing.T) {
 	app := newTestApp(t)
 	lc := &mockLifecycle{health: up()}
 	built := 0
-	app.Provide[*testDB](func() *testDB {
+	app.Provide(func() *testDB {
 		built++
 		return newTestDB(lc)
 	})

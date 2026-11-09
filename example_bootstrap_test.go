@@ -65,9 +65,9 @@ func Example_bootstrapOrder() {
 
 	// 2. Provide. A misused registration panics here, at its line.
 	app.ProvideValue(&exampleDB{})
-	app.Provide[*examplePayments](func() *examplePayments { return &examplePayments{} })
-	app.Provide[*exampleOrders](newExampleOrders)
-	app.Provide[*exampleRelay](newExampleRelay)
+	app.Provide(func() *examplePayments { return &examplePayments{} })
+	app.Provide(newExampleOrders)
+	app.Provide(newExampleRelay)
 
 	// 3. Feature mounts and satellite registrations, in any order.
 	app.UseI18n(credo.I18nConfig{

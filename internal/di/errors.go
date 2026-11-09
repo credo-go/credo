@@ -36,8 +36,12 @@ func misuse(op string, types []reflect.Type, format string, args ...any) error {
 	for i, t := range types {
 		names[i] = t.String()
 	}
+	call := op
+	if len(names) > 0 {
+		call += "[" + strings.Join(names, ", ") + "]"
+	}
 	return &MisuseError{
-		Call:   op + "[" + strings.Join(names, ", ") + "]",
+		Call:   call,
 		Reason: fmt.Sprintf(format, args...),
 	}
 }

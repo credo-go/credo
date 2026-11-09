@@ -75,7 +75,7 @@ func mustPanicWith(t *testing.T, fn func()) (recovered any) {
 func TestServeHTTP_ImplicitFinalizeThenServe(t *testing.T) {
 	app := mustNew(t)
 	var built atomic.Int32
-	app.Provide[*prepDep](func() *prepDep {
+	app.Provide(func() *prepDep {
 		built.Add(1)
 		return &prepDep{}
 	})
@@ -93,13 +93,13 @@ func TestServeHTTP_ImplicitFinalizeThenServe(t *testing.T) {
 		t.Fatalf("status = %d, built = %d; want 200 and one construction", w.Code, built.Load())
 	}
 	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after Finalize", func() {
-		app.Provide[*prepMissing](func() *prepMissing { return &prepMissing{} })
+		app.Provide(func() *prepMissing { return &prepMissing{} })
 	})
 }
 
 func TestFinalize_IsDIOnly_RoutesStayOpen(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*prepDep](func() *prepDep { return &prepDep{} })
+	app.Provide(func() *prepDep { return &prepDep{} })
 	mustFinalize(t, app)
 
 	// Composition after an explicit Finalize: resolve, then wire routes.
@@ -126,7 +126,7 @@ func TestFinalize_IsDIOnly_RoutesStayOpen(t *testing.T) {
 
 func TestServeHTTP_PreparationError_IsTerminal(t *testing.T) {
 	app := mustNew(t)
-	app.Provide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
+	app.Provide(func(*prepDep) *prepMissing { return &prepMissing{} })
 	app.GET("/x", func(ctx *credo.Context) error { return nil })
 
 	first := mustPanicWith(t, func() {
@@ -234,7 +234,7 @@ func TestServeHTTP_StoppedNeverPrepared_503WithoutCallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			app := mustNew(t, tc.opts...)
 			var constructed, middleware, handler, renderer, status atomic.Int32
-			app.Provide[*prepDep](func() *prepDep {
+			app.Provide(func() *prepDep {
 				constructed.Add(1)
 				return &prepDep{}
 			})
@@ -433,7 +433,7 @@ func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 	value := &prepCloser{}
 	app.ProvideValue[*prepCloser](value)
 	var built atomic.Int32
-	app.Provide[*prepDep](func() *prepDep {
+	app.Provide(func() *prepDep {
 		built.Add(1)
 		return &prepDep{}
 	})
@@ -457,7 +457,7 @@ func TestShutdown_Bootstrap_TearsDownRegisteredValues(t *testing.T) {
 		t.Fatalf("State() = %q, want stopped", got)
 	}
 	expectPanicContaining(t, "credo: App.Provide[*credo_test.prepMissing]: called after shutdown began", func() {
-		app.Provide[*prepMissing](func() *prepMissing { return nil })
+		app.Provide(func() *prepMissing { return nil })
 	})
 	if _, err := app.Resolve[*prepCloser](); !errors.Is(err, credo.ErrDIClosed) {
 		t.Fatalf("Resolve after Shutdown = %v, want ErrDIClosed", err)
@@ -475,7 +475,7 @@ func TestShutdown_Bootstrap_WorksAfterFailedFinalize(t *testing.T) {
 	app := mustNew(t)
 	value := &prepCloser{}
 	app.ProvideValue[*prepCloser](value)
-	app.Provide[*prepMissing](func(*prepDep) *prepMissing { return &prepMissing{} })
+	app.Provide(func(*prepDep) *prepMissing { return &prepMissing{} })
 	if err := app.Finalize(); err == nil {
 		t.Fatal("Finalize should fail on the missing dependency")
 	}
