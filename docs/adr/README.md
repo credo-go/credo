@@ -23,7 +23,7 @@ An Architecture Decision Record (ADR) records one decision: what was decided, th
 | [ADR-017](017-static-file-serving.md) | Static File Serving | Accepted | [Static file serving spec](../specs/static.md) |
 | [ADR-018](018-host-routing-and-rewrite.md) | Host Routing & URL Rewrite | Accepted | [Router spec](../specs/router.md), [Context spec](../specs/context.md), [Middleware spec](../specs/middleware.md) |
 | [ADR-019](019-websocket-integration-and-drain.md) | WebSocket Integration and Drain | Accepted | [WebSocket spec](../specs/websocket.md) |
-| [ADR-020](020-reload-and-partial-config-reload.md) | Reload Signal, Partial Config Reload, and TLS Certificate Rotation | Accepted | [Lifecycle spec](../specs/lifecycle.md#appreloadctx-contextcontext-error), [Config spec](../specs/config.md#reload--partial-reload-adr-020) |
+| [ADR-020](020-reload-and-partial-config-reload.md) | Reload Signal, Partial Config Reload, and TLS Certificate Rotation | Accepted | [Lifecycle spec](../specs/lifecycle.md#appreloadctx-contextcontext-configreloadresult-error), [Config spec](../specs/config.md#reload-and-its-result) |
 | [ADR-021](021-json-output-profile.md) | JSON Output Profile | Accepted | [Context spec](../specs/context.md#json-output-profile) |
 | [ADR-022](022-bootstrap-and-di-ownership.md) | Bootstrap Phases and DI Ownership | Accepted | [Container spec](../specs/container.md#sequential-bootstrap), [Lifecycle spec](../specs/lifecycle.md) |
 | [ADR-023](023-worker-system.md) | Worker System | Accepted | [Worker spec](../specs/worker.md) |

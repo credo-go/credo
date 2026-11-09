@@ -26,12 +26,6 @@ Reading a section has failure modes too. When every read names the section's key
 
 Config is positioned as a "snapshot produced at startup," not as a "globally accessed service." `config.Load()` produces a `RawConfig`; each section is named once, by a typed descriptor that decodes it at the boundary, and the typed value is bound in DI ([below](#a-section-is-named-once-configsectiont)). Business code receives typed config via constructors — string keys never appear beyond the module boundary.
 
-> **Current until v0.26.0 (R15):** the next paragraph names the `app.OnConfigChange[T]` subscription, which live sections replace.
-
-The snapshot is immutable for everything injected through DI. A section may opt into trigger-driven reload through a typed `app.OnConfigChange[T]` subscription; every other section is restart-only and the framework reports it as such ([ADR-020](020-reload-and-partial-config-reload.md)).
-
-> **Pending v0.26.0 (R15):** the next paragraph replaces the paragraph above when R15 ships; until then a section follows a reload only through an `app.OnConfigChange[T]` subscription.
-
 A section is a snapshot unless it is declared live. A section bound through its descriptor's `Decode` is decoded once, and a change to it takes a restart; a section bound through `Live` is a `*config.Live[T]` whose value a reload replaces whole once every live section the reload changes has validated. A section is static or live within one configuration, never both, and every key no live section covers is reported as needing a restart ([ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live)).
 
 Use of string keys in business code is documented as an **anti-pattern**.
@@ -101,10 +95,8 @@ Strings parse into basic types. Process environment and `.env` values are string
 
 Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
-> **Current until v0.26.0 (R15):** the second item's parenthesis names reload as "an explicit per-section subscription"; with R15 a reload replaces the value of a section declared live ([ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live)).
-
 - Config may require different sections for each service (`*OrderConfig` vs `*DatabaseConfig`), which one carrier type cannot express
-- Config is a startup snapshot (partial reload is an explicit per-section subscription, ADR-020); `Infra` carries runtime infrastructure (today the logger; metrics and tracing are planned, [ADR-014](014-observability.md))
+- Config is a startup snapshot (a reload replaces only the value of a section declared live, [ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live)); `Infra` carries runtime infrastructure (today the logger; metrics and tracing are planned, [ADR-014](014-observability.md))
 - Passing typed config explicitly via DI is more type-safe
 
 ## Rejected Alternatives
