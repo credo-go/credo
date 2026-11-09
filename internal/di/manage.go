@@ -52,7 +52,7 @@ func (c *Container) Manage(v any, o Options) error {
 	}
 	if _, dup := c.names[u.name]; dup {
 		return misuse("Manage", types, "a component named %q is already managed; "+
-			"give each component its own name with credo.Named", u.name)
+			"give each component its own name with credo.ComponentName", u.name)
 	}
 	if reason := planUnit(u, Options{Ingress: o.Ingress}); reason != "" {
 		return misuse("Manage", types, "%s", reason)

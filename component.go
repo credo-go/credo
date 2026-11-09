@@ -131,8 +131,8 @@ func (t *Tier) UnmarshalText(text []byte) error {
 }
 
 // RegistrationOption is an option of a component registration: [Ingress],
-// [Borrowed], [Closer], [Override] or [Named]. Each call accepts the options
-// that apply to it and panics on any other.
+// [Borrowed], [CloseOnShutdown], [Override] or [ComponentName]. Each call
+// accepts the options that apply to it and panics on any other.
 type RegistrationOption struct {
 	kind optionKind
 	name string
@@ -143,9 +143,9 @@ type optionKind uint8
 const (
 	optIngress optionKind = iota + 1
 	optBorrowed
-	optCloser
+	optCloseOnShutdown
 	optOverride
-	optNamed
+	optComponentName
 )
 
 func (k optionKind) String() string {
@@ -154,12 +154,12 @@ func (k optionKind) String() string {
 		return "credo.Ingress()"
 	case optBorrowed:
 		return "credo.Borrowed()"
-	case optCloser:
-		return "credo.Closer()"
+	case optCloseOnShutdown:
+		return "credo.CloseOnShutdown()"
 	case optOverride:
 		return "credo.Override()"
-	case optNamed:
-		return "credo.Named()"
+	case optComponentName:
+		return "credo.ComponentName()"
 	}
 	return "a zero RegistrationOption"
 }
@@ -167,7 +167,7 @@ func (k optionKind) String() string {
 // Ingress places a component — or a start or stop hook — in the ingress
 // tier. On Provide and ProvideValue it panics on a binding that is not a
 // component at registration: its type shows no Shutdown and it carries no
-// [Closer], and the tier is planned before the value exists.
+// [CloseOnShutdown], and the tier is planned before the value exists.
 func Ingress() RegistrationOption { return RegistrationOption{kind: optIngress} }
 
 // Borrowed, on ProvideValue only, keeps the binding and the value's readiness
@@ -176,12 +176,14 @@ func Ingress() RegistrationOption { return RegistrationOption{kind: optIngress} 
 // holder of the same resource that claims its teardown panics.
 func Borrowed() RegistrationOption { return RegistrationOption{kind: optBorrowed} }
 
-// Closer makes a binding whose type has a Close method — Close() error,
-// Close(), or Close(ctx) error, which receives the drain deadline — a
-// component the App closes after its consumers. It panics on a type with
-// none of the three, on a type that is already a component, and beside
-// [Borrowed]. Close is never discovered without it.
-func Closer() RegistrationOption { return RegistrationOption{kind: optCloser} }
+// CloseOnShutdown makes a binding whose type has a Close method — Close()
+// error, Close(), or Close(ctx) error, which receives the drain deadline — a
+// component the App closes on shutdown, after its consumers. It panics on a
+// type with none of the three, on a type that is already a component, and
+// beside [Borrowed]. Close is never discovered without it: a handle that
+// embeds another and closes it, such as bun's over its *sql.DB, would close
+// the pool while a sibling component still uses it.
+func CloseOnShutdown() RegistrationOption { return RegistrationOption{kind: optCloseOnShutdown} }
 
 // Override, on Provide, ProvideValue and Alias, replaces an earlier binding
 // of the same type before Finalize — a direct binding, or an alias of an
@@ -192,9 +194,13 @@ func Closer() RegistrationOption { return RegistrationOption{kind: optCloser} }
 // else uses it.
 func Override() RegistrationOption { return RegistrationOption{kind: optOverride} }
 
-// Named names a component handed to [App.Manage] in reports and readiness;
-// the default is its type name. Each managed component has its own name.
-func Named(name string) RegistrationOption { return RegistrationOption{kind: optNamed, name: name} }
+// ComponentName names a component handed to [App.Manage] in logs, readiness
+// and lifecycle errors; the default is its type name. Each managed component
+// has its own name. The name labels the component and is not a DI key: a
+// second value of one type is bound under a wrapper type of its own.
+func ComponentName(name string) RegistrationOption {
+	return RegistrationOption{kind: optComponentName, name: name}
+}
 
 // registrationOptions checks opts against the options call accepts and
 // converts them. It panics, naming call, on any other option, a zero option,
@@ -206,7 +212,7 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 		switch {
 		case opt.kind == 0:
 			panic("credo: " + call + ": a zero RegistrationOption; use credo.Ingress, credo.Borrowed, " +
-				"credo.Closer, credo.Override or credo.Named")
+				"credo.CloseOnShutdown, credo.Override or credo.ComponentName")
 		case !containsKind(accepted, opt.kind):
 			panic(fmt.Sprintf("credo: %s does not accept %s; it accepts %s", call, opt.kind, kindList(accepted)))
 		case seen[opt.kind]:
@@ -218,13 +224,13 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 			o.Ingress = true
 		case optBorrowed:
 			o.Borrowed = true
-		case optCloser:
-			o.Closer = true
+		case optCloseOnShutdown:
+			o.CloseOnShutdown = true
 		case optOverride:
 			o.Override = true
-		case optNamed:
+		case optComponentName:
 			if opt.name == "" {
-				panic("credo: " + call + ": credo.Named needs a non-empty name")
+				panic("credo: " + call + ": credo.ComponentName needs a non-empty name")
 			}
 			o.Name = opt.name
 		}
@@ -257,7 +263,7 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // Shutdown, or a constructor over DI parameters —
 // func(deps...) C or func(deps...) (C, error) — that the start walk builds and
 // that never becomes a binding. A function whose own type has Shutdown is a
-// value, not a constructor. [Named] names it (default: its type name);
+// value, not a constructor. [ComponentName] names it (default: its type name);
 // [Ingress] places it in the ingress tier. A value has no edges and stops in
 // reverse registration order within its tier; a constructor has its
 // parameters' edges. A mounted child App is handed to Manage so that its
@@ -267,7 +273,7 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // resource a ProvideValue binding already holds, on a resource handed to
 // Manage twice, and after Finalize or shutdown.
 func (app *App) Manage(v any, opts ...RegistrationOption) {
-	o := registrationOptions("App.Manage", opts, optIngress, optNamed)
+	o := registrationOptions("App.Manage", opts, optIngress, optComponentName)
 	if v != nil && reflect.TypeOf(v) == reflect.TypeFor[*App]() && v.(*App) == app {
 		panic("credo: App.Manage: an App cannot manage itself")
 	}

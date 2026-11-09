@@ -142,7 +142,7 @@ func (c *Container) ownerConflict(holders []*Unit, admitted *Unit, v any) error 
 }
 
 // kindConflict refuses holders of one resource that release it differently:
-// one through credo.Closer(), another through Shutdown. Among holders of one
+// one through credo.CloseOnShutdown(), another through Shutdown. Among holders of one
 // kind the one registered first runs the teardown, so kinds are all that is
 // compared.
 func (c *Container) kindConflict(holders []*Unit, admitted *Unit, v any) error {
@@ -167,9 +167,9 @@ func (c *Container) kindConflict(holders []*Unit, admitted *Unit, v any) error {
 	if closer == nil || shutdown == nil {
 		return nil
 	}
-	return fmt.Errorf("%s and %s hold one resource but disagree on its teardown: %s has credo.Closer() "+
-		"and %s has Shutdown; drop credo.Closer(), or bind %s under a type that shows Close and not "+
-		"Shutdown, with credo.Closer()",
+	return fmt.Errorf("%s and %s hold one resource but disagree on its teardown: %s has credo.CloseOnShutdown() "+
+		"and %s has Shutdown; drop credo.CloseOnShutdown(), or bind %s under a type that shows Close and not "+
+		"Shutdown, with credo.CloseOnShutdown()",
 		closer.label(), shutdown.label(), closer.label(), shutdown.label(), shutdown.label())
 }
 

@@ -640,10 +640,10 @@ func TestRegister_Misuse(t *testing.T) {
 			},
 		},
 		{
-			name: "name taken by a component managed with credo.Named",
+			name: "name taken by a component managed with credo.ComponentName",
 			misuse: func(t *testing.T) func() {
 				app := newTestApp(t)
-				app.Manage(&registerShutdowner{}, credo.Named("worker:x"))
+				app.Manage(&registerShutdowner{}, credo.ComponentName("worker:x"))
 				s := Use(app)
 				return func() { s.Continuous("x", registerIdle) }
 			},

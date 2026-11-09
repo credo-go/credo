@@ -42,9 +42,9 @@ type Options struct {
 	// Borrowed keeps the binding and its readiness contribution and leaves
 	// starting and shutting the value down to the caller (ProvideValue only).
 	Borrowed bool
-	// Closer makes a binding whose type has a Close method a component the
-	// App closes after its consumers.
-	Closer bool
+	// CloseOnShutdown makes a binding whose type has a Close method a
+	// component the App closes after its consumers.
+	CloseOnShutdown bool
 	// Override replaces an earlier binding of the same type.
 	Override bool
 	// Name names a managed component; empty means its type name.
@@ -55,7 +55,7 @@ type Options struct {
 	IngressRemedy string
 }
 
-// closeKind is the shape of the Close method a credo.Closer() binding calls.
+// closeKind is the shape of the Close method a credo.CloseOnShutdown() binding calls.
 type closeKind uint8
 
 const (
@@ -79,7 +79,7 @@ func (k teardownKind) String() string {
 	case teardownShutdown:
 		return "Shutdown"
 	case teardownClose:
-		return "credo.Closer()"
+		return "credo.CloseOnShutdown()"
 	default:
 		return "none"
 	}
@@ -143,7 +143,7 @@ type Unit struct {
 	steps []StartStep
 }
 
-// Name is the unit's name in reports: a managed component's credo.Named
+// Name is the unit's name in reports: a managed component's credo.ComponentName
 // name, otherwise its type.
 func (u *Unit) Name() string { return u.name }
 
@@ -181,18 +181,18 @@ func (u *Unit) label() string {
 // readiness. It returns the reason an option cannot apply, or "".
 func planUnit(u *Unit, o Options) string {
 	showsShutdown := u.t.Implements(shutdownerType)
-	if o.Closer {
+	if o.CloseOnShutdown {
 		switch {
 		case o.Borrowed:
-			return "credo.Closer() and credo.Borrowed() contradict each other: a borrowed value is " +
+			return "credo.CloseOnShutdown() and credo.Borrowed() contradict each other: a borrowed value is " +
 				"closed by its owner"
 		case showsShutdown:
-			return fmt.Sprintf("credo.Closer() on %s, which is already a component (it has Shutdown); "+
+			return fmt.Sprintf("credo.CloseOnShutdown() on %s, which is already a component (it has Shutdown); "+
 				"its Shutdown is its teardown", u.t)
 		}
 		u.closer = closeShape(u.t)
 		if u.closer == closeNone {
-			return fmt.Sprintf("credo.Closer() on %s, which has no Close() error, Close() or "+
+			return fmt.Sprintf("credo.CloseOnShutdown() on %s, which has no Close() error, Close() or "+
 				"Close(context.Context) error method", u.t)
 		}
 	}
@@ -200,7 +200,7 @@ func planUnit(u *Unit, o Options) string {
 	u.component = showsShutdown || u.closer != closeNone
 	if o.Ingress && !u.component {
 		return fmt.Sprintf("credo.Ingress() on %s, which is not a component: it shows no Shutdown method "+
-			"and has no credo.Closer(), and the tier is planned before the value exists; give %s a "+
+			"and has no credo.CloseOnShutdown(), and the tier is planned before the value exists; give %s a "+
 			"Shutdown method, or provide the concrete type that has one", u.t, u.t)
 	}
 	u.tier = TierInternal
@@ -239,7 +239,7 @@ func closeShape(t reflect.Type) closeKind {
 }
 
 // teardownOf is how holder u releases its resource once its value is
-// built: through credo.Closer(), through a Shutdown its value has, or not at
+// built: through credo.CloseOnShutdown(), through a Shutdown its value has, or not at
 // all. A borrowed holder has no teardown.
 func (u *Unit) teardownOf(value any) teardownKind {
 	switch {
@@ -255,7 +255,7 @@ func (u *Unit) teardownOf(value any) teardownKind {
 }
 
 // claims reports whether holder u claims its resource's teardown: a
-// credo.Closer() binding, a value bound with a teardown, or anything handed
+// credo.CloseOnShutdown() binding, a value bound with a teardown, or anything handed
 // to Manage. A Shutdown found on a value a constructor built is no claim.
 func (u *Unit) claims(value any) bool {
 	if u.borrowed {
@@ -273,7 +273,7 @@ func (u *Unit) foundOnValue(value any) bool {
 	return !u.component && !u.borrowed && u.teardownOf(value) == teardownShutdown
 }
 
-// close runs the Close method of a credo.Closer() holder.
+// close runs the Close method of a credo.CloseOnShutdown() holder.
 func (u *Unit) close(ctx context.Context, value any) error {
 	m := reflect.ValueOf(value).MethodByName("Close")
 	switch u.closer {

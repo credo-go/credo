@@ -123,7 +123,7 @@ func TestCloser_DistinctResourcesDoNotConflict(t *testing.T) {
 	ev := &events{}
 	c := di.New()
 	c.MustProvideValue[*unitPool](&unitPool{ev: ev})
-	if err := c.ProvideValueWith[*closeErrConn](&closeErrConn{ev: ev}, di.Options{Closer: true}); err != nil {
+	if err := c.ProvideValueWith[*closeErrConn](&closeErrConn{ev: ev}, di.Options{CloseOnShutdown: true}); err != nil {
 		t.Fatalf("distinct resources must not conflict: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestProvideValue_KindConflictOnSharedResource(t *testing.T) {
 	pool := &unitPool{ev: ev}
 	c := di.New()
 	c.MustProvideValue[*unitPool](pool)
-	err := c.ProvideValueWith[*identifiedCloser](&identifiedCloser{pool: pool, ev: ev}, di.Options{Closer: true})
+	err := c.ProvideValueWith[*identifiedCloser](&identifiedCloser{pool: pool, ev: ev}, di.Options{CloseOnShutdown: true})
 	reason := misuseReason(t, err)
 	if !strings.Contains(reason, "disagree on its teardown") {
 		t.Fatalf("reason = %q", reason)
@@ -178,13 +178,13 @@ func TestProvideValue_BorrowedIsNeverShutDown(t *testing.T) {
 func TestCloser_Shapes(t *testing.T) {
 	ev := &events{}
 	c := di.New()
-	if err := c.ProvideValueWith[*closeErrConn](&closeErrConn{ev: ev}, di.Options{Closer: true}); err != nil {
+	if err := c.ProvideValueWith[*closeErrConn](&closeErrConn{ev: ev}, di.Options{CloseOnShutdown: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.ProvideValueWith[*closeVoidConn](&closeVoidConn{ev: ev}, di.Options{Closer: true}); err != nil {
+	if err := c.ProvideValueWith[*closeVoidConn](&closeVoidConn{ev: ev}, di.Options{CloseOnShutdown: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.ProvideValueWith[*closeCtxConn](&closeCtxConn{ev: ev}, di.Options{Closer: true}); err != nil {
+	if err := c.ProvideValueWith[*closeCtxConn](&closeCtxConn{ev: ev}, di.Options{CloseOnShutdown: true}); err != nil {
 		t.Fatal(err)
 	}
 	seal(t, c)
@@ -205,13 +205,13 @@ func TestCloser_Misuse(t *testing.T) {
 		want string
 	}{
 		{"no Close", func(c *di.Container) error {
-			return c.ProvideValueWith[*noClose](&noClose{}, di.Options{Closer: true})
+			return c.ProvideValueWith[*noClose](&noClose{}, di.Options{CloseOnShutdown: true})
 		}, "has no Close"},
 		{"already a component", func(c *di.Container) error {
-			return c.ProvideValueWith[*unitPool](&unitPool{}, di.Options{Closer: true})
+			return c.ProvideValueWith[*unitPool](&unitPool{}, di.Options{CloseOnShutdown: true})
 		}, "already a component"},
 		{"with Borrowed", func(c *di.Container) error {
-			return c.ProvideValueWith[*closeErrConn](&closeErrConn{}, di.Options{Closer: true, Borrowed: true})
+			return c.ProvideValueWith[*closeErrConn](&closeErrConn{}, di.Options{CloseOnShutdown: true, Borrowed: true})
 		}, "contradict"},
 		{"Ingress on a non-component", func(c *di.Container) error {
 			return c.ProvideValueWith[*noClose](&noClose{}, di.Options{Ingress: true})

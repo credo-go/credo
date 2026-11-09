@@ -360,7 +360,7 @@ func TestLifecycle_WorkerNeverStartedStaysPending(t *testing.T) {
 	capture := newLogCapture()
 	app := newTestApp(t, credo.WithLogger(capture.logger()))
 	failing := &lifecycleFailingStart{}
-	app.Manage(failing, credo.Named("broker"))
+	app.Manage(failing, credo.ComponentName("broker"))
 
 	var runs atomic.Int32
 	run := Func(func(ctx context.Context) error {
