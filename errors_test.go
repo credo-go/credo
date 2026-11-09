@@ -38,9 +38,9 @@ func TestHandleError_HTTPError(t *testing.T) {
 	if pd.Success {
 		t.Error("success = true, want false")
 	}
-	// No i18n, no built-in match → explicit key is the literal fallback.
-	if pd.Error.Message != "user.not_found" {
-		t.Errorf("message = %q, want %q", pd.Error.Message, "user.not_found")
+	// No i18n: the key misses, so the code's built-in message renders, never the key.
+	if pd.Error.Message != "Not Found" {
+		t.Errorf("message = %q, want %q", pd.Error.Message, "Not Found")
 	}
 }
 
@@ -65,7 +65,7 @@ func TestHandleError_ValidationErrors(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// builtInMessages fallback for MsgKeyValidationFailed
+	// builtInMessages fallback for CodeValidationFailed
 	if pd.Error.Message != "Validation Failed" {
 		t.Errorf("message = %q, want %q", pd.Error.Message, "Validation Failed")
 	}
@@ -390,7 +390,7 @@ func TestRFC9457ErrorRenderer_ShapeAndTypeResolver(t *testing.T) {
 	}))
 	app.GET("/conflict", func(*credo.Context) error {
 		return credo.NewHTTPError(http.StatusConflict, "email_exists").
-			WithMessageKey("Email already exists").
+			WithMessage("Email already exists").
 			WithDetails(map[string]any{"field": "email"})
 	})
 
@@ -662,8 +662,8 @@ func TestHandleError_ErrorRendererCalled(t *testing.T) {
 	if receivedInfo.Status != http.StatusNotFound {
 		t.Errorf("info.Status = %d, want %d", receivedInfo.Status, http.StatusNotFound)
 	}
-	if receivedInfo.Message != "user.not_found" {
-		t.Errorf("info.Message = %q, want %q", receivedInfo.Message, "user.not_found")
+	if receivedInfo.Message != "Not Found" {
+		t.Errorf("info.Message = %q, want %q (a key that misses never renders as text)", receivedInfo.Message, "Not Found")
 	}
 	if receivedInfo.MessageKey != "user.not_found" {
 		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "user.not_found")
@@ -684,7 +684,7 @@ func TestHandleError_ErrorRendererNilBody(t *testing.T) {
 	// A nil body is the documented "keep the default error body" signal;
 	// headers set by the renderer decorate that default response.
 	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
-		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
+		ctx.Response().Header().Set("X-Error-Code", string(info.MessageKey))
 		return nil
 	})
 
@@ -1017,7 +1017,7 @@ func TestHandleError_HEADCallsRenderer(t *testing.T) {
 	rendererCalled := false
 	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 		rendererCalled = true
-		ctx.Response().Header().Set("X-Error-Code", info.MessageKey)
+		ctx.Response().Header().Set("X-Error-Code", string(info.MessageKey))
 		// nil body — the framework sends the status-only HEAD response.
 		return nil
 	})
@@ -1104,8 +1104,8 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 	if receivedInfo.Violations[0].Field != "name" {
 		t.Errorf("info.Violations[0].Field = %q, want %q", receivedInfo.Violations[0].Field, "name")
 	}
-	if receivedInfo.MessageKey != credo.MsgKeyValidationFailed {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.MsgKeyValidationFailed)
+	if receivedInfo.MessageKey != credo.CodeValidationFailed {
+		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, credo.CodeValidationFailed)
 	}
 }
 

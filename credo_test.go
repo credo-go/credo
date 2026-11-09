@@ -630,7 +630,7 @@ func TestApp_HEADAutoHandling(t *testing.T) {
 func TestApp_DefaultErrorHandling(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/error", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(422).WithMessageKey("validation failed")
+		return credo.NewHTTPError(422).WithMessage("validation failed")
 	})
 
 	w := httptest.NewRecorder()
@@ -654,7 +654,7 @@ func TestApp_CustomErrorRenderer(t *testing.T) {
 	})
 
 	app.GET("/fail", func(ctx *credo.Context) error {
-		return credo.NewHTTPError(500).WithMessageKey("oops")
+		return credo.NewHTTPError(500).WithMessage("oops")
 	})
 
 	w := httptest.NewRecorder()

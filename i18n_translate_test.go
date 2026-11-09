@@ -168,14 +168,17 @@ func TestResolveMessage_BuiltInFallback(t *testing.T) {
 	}
 }
 
-func TestResolveMessage_KeyFallback(t *testing.T) {
-	// No i18n, unknown key — should return the key itself
+func TestResolveMessage_KeyMissNeverRendersTheKey(t *testing.T) {
+	// No i18n: the key is not in a catalog, so the code's built-in message,
+	// then the status text, is rendered, never the key.
 	app := &App{}
 	ctx := &Context{app: app}
 
-	_, got := app.resolveErrorMessage(ctx, 400, "custom_error", "app.custom_error")
-	if got != "app.custom_error" {
-		t.Errorf("resolveMessage() = %q, want %q", got, "app.custom_error")
+	if _, got := app.resolveErrorMessage(ctx, 400, "custom_error", "app.custom_error"); got != "Bad Request" {
+		t.Errorf("resolveMessage() = %q, want the status text %q", got, "Bad Request")
+	}
+	if _, got := app.resolveErrorMessage(ctx, 400, CodeBindFailed, "app.custom_error"); got != "Malformed Request" {
+		t.Errorf("resolveMessage() = %q, want the code's built-in message %q", got, "Malformed Request")
 	}
 }
 

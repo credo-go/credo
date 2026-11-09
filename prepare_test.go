@@ -53,7 +53,7 @@ func assertLifecycle503(t *testing.T, w *httptest.ResponseRecorder, head bool) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("body %q is not the error envelope: %v", w.Body.String(), err)
 	}
-	if env.Success || env.Error.Code != credo.MsgKeyServiceUnavailable || env.Error.Message != "Service Unavailable" {
+	if env.Success || env.Error.Code != "service_unavailable" || env.Error.Message != "Service Unavailable" {
 		t.Fatalf("envelope = %+v, want success=false, code service_unavailable, default message", env)
 	}
 }

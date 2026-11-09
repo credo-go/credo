@@ -115,7 +115,7 @@ func TestFeatures_InstallOrderIrrelevant(t *testing.T) {
 			}
 		})
 		app.POST("/items", func(ctx *credo.Context) error {
-			return credo.NewHTTPError(http.StatusConflict, "conflict").WithMessageKey(strings.Repeat("x", 300))
+			return credo.NewHTTPError(http.StatusConflict, "conflict").WithMessage(strings.Repeat("x", 300))
 		})
 
 		w := httptest.NewRecorder()

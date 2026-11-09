@@ -394,7 +394,7 @@ type validatedStruct struct {
 
 func (v *validatedStruct) Validate() error {
 	if v.Name == "" {
-		return credo.NewHTTPError(422).WithMessageKey("name is required")
+		return credo.NewHTTPError(422).WithMessage("name is required")
 	}
 	return nil
 }
@@ -406,7 +406,7 @@ type validatedQuery struct {
 
 func (q *validatedQuery) Validate() error {
 	if q.Name == "" {
-		return credo.NewHTTPError(422).WithMessageKey("name is required")
+		return credo.NewHTTPError(422).WithMessage("name is required")
 	}
 	return nil
 }
@@ -425,7 +425,7 @@ type validatedFormInput struct {
 
 func (f *validatedFormInput) Validate() error {
 	if f.Name == "" {
-		return credo.NewHTTPError(422).WithMessageKey("name is required")
+		return credo.NewHTTPError(422).WithMessage("name is required")
 	}
 	return nil
 }
@@ -444,7 +444,7 @@ type validatedXMLInput struct {
 
 func (x *validatedXMLInput) Validate() error {
 	if x.Name == "" {
-		return credo.NewHTTPError(422).WithMessageKey("name is required")
+		return credo.NewHTTPError(422).WithMessage("name is required")
 	}
 	return nil
 }
@@ -998,8 +998,13 @@ func TestBindQuery_UnsupportedFieldType(t *testing.T) {
 	r := httptest.NewRequest("GET", "/test?t=hello", nil)
 	app.ServeHTTP(w, r)
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400 for unsupported field type", w.Code)
+	// A field type the binder does not support is a developer error: a 500
+	// whose reason is logged, never a 400 whose message names the field.
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500 for unsupported field type", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"code":"invalid_bind_target"`) || strings.Contains(w.Body.String(), "complex128") {
+		t.Errorf("body = %s, want invalid_bind_target without the reason", w.Body.String())
 	}
 }
 
