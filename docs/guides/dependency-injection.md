@@ -79,9 +79,8 @@ This example shows the common Credo pattern:
 2. register typed config
 3. register constructors
 4. alias interfaces
-5. finalize
-6. resolve a controller
-7. bind routes
+5. resolve a controller, which validates the graph
+6. bind routes
 
 ```go
 package main
@@ -470,6 +469,23 @@ The holders of one resource that have a teardown agree on its kind: `Shutdown`, 
 - **A value that defers takes no options.** A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers fails the start, since the value has no entry and no teardown of its own for the option to shape; give the option to the handle's binding instead.
 
 A wrapper with readiness of its own — one that overrides the `Ready` it embeds — holds the handle in a named field, like `ReportingDB` above, so that it is a resource of its own with an entry of its own. Embedded, the wrapper and the handle are one resource with one entry, and only one of the two `Ready` methods is asked.
+
+### What each registration form claims
+
+A call site does not show what a registration takes over: `app.Manage(v)` claims the teardown of what `v` holds, while `app.Manage(func() T { return v })` claims nothing a registration already holds. A registration that claims a resource is a candidate for its holder of record, which gives the resource its `/ready` entry and runs its teardown; one that claims nothing defers to such a registration when there is one.
+
+| Registration | A binding | What it claims |
+| --- | --- | --- |
+| `app.ProvideValue(v)` | yes | What `v` holds: its readiness entry and its teardown, after the consumers of every holder. Refused beside a `Manage` of the same resource |
+| `app.Provide(NewT)` | yes | What the value `NewT` builds holds: its readiness entry and its teardown |
+| `app.ProvideValue(v, credo.Borrowed())` | yes | Its readiness entry only: the App neither starts nor tears the value down, through this binding or any other holder |
+| `app.Manage(v)` | no | What `v` holds, as `ProvideValue` does. Refused beside a `ProvideValue` binding or another `Manage` of the same resource |
+| `app.Manage(NewT)` | no | Nothing a registration holds: the value it builds defers to the binding or `Manage` value that holds the same resource, and takes no `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()`. Holding a resource no registration holds, it is that resource's holder of record |
+| `app.Workers().Continuous(name, w)`, a worker value | no | Nothing: the App runs `w` in the loop `worker:<name>` and never calls its `Shutdown` |
+| `app.Workers().Continuous(name, fn)`, a run function | no | Nothing: it builds no value, and its parameters are the bindings' |
+| `app.Workers().Continuous(name, NewW)`, a worker constructor | no | What `app.Manage(NewT)` claims: its value, `worker-value:<name>`, defers to a registration that holds the same resource, and is torn down after its loop |
+
+`Scheduled` claims what `Continuous` does in each form. A worker that other code uses is therefore bound with `Provide` and registered through the method expression of its `Run`, `(*OutboxRelay).Run`, so that the binding keeps its readiness entry, its options and its teardown ([Worker Guide](worker.md)).
 
 For the full multi-database pattern, see the [Data Access Guide](data-access.md).
 

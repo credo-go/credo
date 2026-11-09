@@ -39,7 +39,8 @@ type App struct {
 
 	// logger is the application-level logger, set via WithLogger.
 	// Used by framework internals (error handler, server lifecycle, i18n setup).
-	// Service-scoped loggers (Infra.Logger) are derived from this.
+	// Component-scoped loggers (Infra.Logger, component=<name>) are derived
+	// from this.
 	logger *slog.Logger
 
 	// mux is the underlying radix-tree router.

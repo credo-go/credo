@@ -115,7 +115,7 @@ The App's implementation, by contrast, is divided into internal parts in a later
 
 ### credo.Infra: Explicit Infrastructure Carrier
 
-`credo.Infra` is a fixed struct defined by the framework; applications cannot add fields. It carries the service-scoped Logger. Metrics and tracing are deferred to the observability release, which decides whether and how they reach `Infra` ([ADR-014](014-observability.md)); the keyed-literal guard (`_ struct{}`) is deliberate, so that adding fields does not break existing `credo.Infra{Logger: ...}` literals.
+`credo.Infra` is a fixed struct defined by the framework; applications cannot add fields. It carries the component-scoped Logger. Metrics and tracing are deferred to the observability release, which decides whether and how they reach `Infra` ([ADR-014](014-observability.md)); the keyed-literal guard (`_ struct{}`) is deliberate, so that adding fields does not break existing `credo.Infra{Logger: ...}` literals.
 
 When a constructor has a parameter of type `credo.Infra`, at any position, the container produces it instead of resolving a registration: a framework provider builds it from the App's logger (`credo.WithLogger`, else the framework default stderr logger), scoped with a `component=<name>` attribute naming the binding the constructor builds ([One Key Names an Application Part](#one-key-names-an-application-part)). A constructor without such a parameter is pure constructor injection; the developer chooses per service, and `Infra` goes first by convention, like `context.Context`. The [container spec](../specs/container.md#credoinfra-----explicit-infrastructure-carrier) gives the struct, the detection rule and examples.
 

@@ -19,7 +19,7 @@ import (
 // before [App.Shutdown].
 //
 // An App with something to start — a component with Start or Ready, a start
-// hook, a constructor handed to [App.Manage], a store registration or
+// hook, a constructor handed to [App.Manage], a bound database, a worker or
 // [App.UseI18n] catalogs — refuses to serve until the
 // start phase has succeeded: before [App.Start] (or while it runs) every
 // request panics with a message naming App.Start and testutil.Start, and

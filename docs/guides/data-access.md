@@ -72,10 +72,6 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := app.Finalize(); err != nil { // optional: Run finalizes too
-        log.Fatal(err)
-    }
-
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
