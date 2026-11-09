@@ -13,6 +13,8 @@ Credo also needs two kinds of URL rewrite behavior:
 
 These are related but not the same concern.
 
+A pre-dispatch rewrite must also agree with the router on what a segment is. Matched against the decoded `URL.Path`, where an encoded slash has become a separator, a rule would match across a slash the client sent as data, a single-segment pattern would not match a segment that contains `%2F`, and a rewritten path set with `RawPath` cleared would turn a captured escape into a separator, so the router would see segments the client never sent.
+
 ## Decision
 
 > **Current until v0.26.0 (R14):** the next paragraph and its list keep rewrite as two features, the second being `ctx.Rewrite`.
@@ -44,13 +46,7 @@ Host params share one namespace with path params and are read through the same `
 
 `middleware.Rewrite` rewrites the request path before routing, so the first lookup already sees the rewritten path. It is middleware rather than router configuration, so it is registered, scoped and composed like other cross-cutting concerns. It runs once in the normal middleware chain: it does not create a loop and does not re-enter `PreRouting` middleware. Rules are evaluated in order and the first match wins, so overlapping rules resolve predictably. `RewriteConfig`, `RewriteRule` and placement: [middleware spec](../specs/middleware.md#rewrite).
 
-> **Pending v0.26.0 (R7):** not implemented yet; `middleware.Rewrite` matches its rules against the decoded `URL.Path` and sets the rewritten path with `RawPath` cleared, so an encoded slash in the path is a separator to a rule and a captured `%2F` becomes a separator in the target.
-
-**Rewrite matches the wire form.** `middleware.Rewrite` matches on the canonical wire form the router matches ([URL Round Trip](007-router-and-routing.md#url-round-trip)), not on the decoded `URL.Path`, and sets the rewritten path in wire form, keeping `Path` and `RawPath` consistent. An encoded `%2F` inside a segment stays data and is never a separator, so a single-segment pattern matches it and the rewrite keeps the escape; a catch-all keeps its slashes; a captured value is decoded once, as a route parameter is; and the router sees, after the rewrite, the segments the client sent. A malformed escape in a target is an error. Rewrite and routing therefore agree on what a segment is, as they already agree on a catch-all's empty rest.
-
-**Problem.** The middleware matches the decoded `URL.Path`, where an encoded slash has become a separator: a rule matches across a slash the client sent as data, a single-segment pattern does not match a segment that contains `%2F`, and the rewritten path, set with `RawPath` cleared, turns the captured escape into a separator, so the router sees segments the client never sent.
-
-**Removes.** Matching on the decoded path: a rule that matched across an encoded slash no longer does.
+**Rewrite matches the wire form.** `middleware.Rewrite` matches on the canonical wire form the router matches ([URL Round Trip](007-router-and-routing.md#url-round-trip)), not on the decoded `URL.Path`, and sets the rewritten path in wire form, keeping `Path` and `RawPath` consistent. An encoded `%2F` inside a segment stays data and is never a separator, so a single-segment pattern matches it and the rewrite keeps the escape; a catch-all keeps its slashes; a `{name:regex}` parameter is one segment and its constraint applies to the whole decoded value, as in the router; a captured value is decoded once, as a route parameter is; and the router sees, after the rewrite, the segments the client sent. A custom `Regexp` rule stays the caller's regexp over the canonical path. A malformed escape in a target is an error. Rewrite and routing therefore agree on what a segment is, as they already agree on a catch-all's empty rest.
 
 > **Current until v0.26.0 (R14):** this section describes `ctx.Rewrite`, which goes; the section after it replaces it.
 

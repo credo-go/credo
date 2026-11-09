@@ -462,7 +462,7 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{
 }))
 ```
 
-`Rules` must not be empty and every `From` pattern must parse; both are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `c.Rewrite()` instead.
+`Rules` must not be empty, every `From` pattern must parse and end with its catch-all if it has one, and every `To` path must spell its escapes as `%XX` (a literal `%` is `%25`); all of these are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `c.Rewrite()` instead.
 
 See the [Routing Guide](routing.md) for host routing, rewrite patterns, `OriginalPath()`, and rewrite-specific middleware caveats.
 
