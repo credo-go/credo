@@ -46,7 +46,7 @@ A5–A8 came after Part A merged: one more branch, one commit per item, one PR, 
   - **Problem:** with a `RawConfig` other than `*config.Config`, SIGHUP logs that it was received, `app.Reload` returns its "cannot reload" error, and the handler logs that error only when the server is not running.
   - **Fix:** the handler decides before calling `Reload`, by the configuration's type, never by the error's text, and logs at Info `credo: reload signal ignored: the configuration cannot reload` with the signal and the configuration's type, in the shape of the `WithoutReloadSignals` line. The signal stays subscribed, so a routine SIGHUP (a log rotation, say) stays harmless.
   - **Docs:** one line in the lifecycle spec or the configuration guide; CHANGELOG under Changed (a log line).
-- [ ] **A8. Input and access outcomes in `fault.Kind`** (`TODO.md` only).
+- [x] **A8. Input and access outcomes in `fault.Kind`** (`TODO.md` only).
   - `fault.Kind` covers data and concurrency outcomes but has no kind for invalid input, unauthenticated, permission denied or rate limited. One unchecked entry under 2.4 Error Handling records the design question, with gRPC's InvalidArgument, Unauthenticated, PermissionDenied and ResourceExhausted as the reference. No code.
 
 ## Part B: App's implementation in internal parts

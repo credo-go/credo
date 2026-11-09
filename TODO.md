@@ -275,6 +275,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Validation error → normalized ErrorInfo/default envelope conversion
 - [x] Offset `Page` tests (input, logical COUNT, snapshot, metadata, mapping)
 - [ ] Cursor conformance tests (tamper/scope/rotation, stable mixed order, insert/delete versus offset drift, and real PostgreSQL/MySQL/SQLite round trips for large int/time/string plus consumer UUID/decimal keys)
+- [ ] **Input and access outcomes in `fault.Kind`** (design question): the kinds cover data and concurrency outcomes (not found, constraint, conflict, timeout, unavailable and the like) but none for invalid input, unauthenticated, permission denied or rate limited. Decide whether `fault` carries them; gRPC's InvalidArgument, Unauthenticated, PermissionDenied and ResourceExhausted are the reference.
 
 ### 2.5 Binding & Lifecycle Completion
 
