@@ -12,9 +12,7 @@ A middleware that runs before the match cannot read route meta, so a meta-driven
 
 Some concerns cannot sit at any position in such a chain. Recovery and access logging must observe the final response: the status after error rendering and recovery, the bytes after compression. Transport features must select on the original request, before rewrites and body transformation. A middleware sees a returned error before it is rendered, so it can only infer the final status, and two observers at different boundaries disagree on status, bytes and duration. Features that are off by default fail silently: an application that omits a call compiles and runs without request IDs or access records, and nothing at runtime says which features are in effect. A consumer of the final response other than the access log — a metrics or tracing exporter — needs a place to observe it that agrees with the access record on status, bytes and duration, and an application attribute added to the access record must not risk a framework attribute's key.
 
-> **Current until v0.26.0 (R14):** the next paragraph's "and its interaction with handler-level re-dispatch"; `Context.Rewrite` goes, and ADR-018 keeps `middleware.Rewrite` only.
-
-Pre-dispatch rewrite middleware and its interaction with handler-level re-dispatch are documented in [ADR-018](018-host-routing-and-rewrite.md). The [middleware spec](../specs/middleware.md) is the user-chain contract and the [HTTP features spec](../specs/http-features.md) the feature contract; this ADR records the decisions and their rationale.
+Pre-dispatch rewrite middleware is documented in [ADR-018](018-host-routing-and-rewrite.md). The [middleware spec](../specs/middleware.md) is the user-chain contract and the [HTTP features spec](../specs/http-features.md) the feature contract; this ADR records the decisions and their rationale.
 
 ## Decision
 

@@ -218,7 +218,7 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 }}))
 ```
 
-For conditional handler-driven forwards, use `c.Rewrite("/new-path")`. See the [Routing Guide](routing.md) for host patterns, rewrite semantics, and `OriginalPath()`.
+See the [Routing Guide](routing.md) for host patterns, rewrite semantics, conditional forwarding, and `OriginalPath()`.
 
 ---
 

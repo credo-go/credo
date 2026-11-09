@@ -228,8 +228,6 @@ func AddServerHeader(next credo.Handler) credo.Handler {
 }
 ```
 
-If handlers can call `c.Rewrite()`, remember that group and route middleware may run again for the rewritten route. Use `c.IsRewriting()` when your post-handler logic should skip side effects during an internal forward.
-
 ### Short-Circuiting
 
 Return an error or write a response without calling `next` to stop the chain:
@@ -391,7 +389,7 @@ ResultFilter: func(ex *credo.Exchange) bool {
 
 - **Logger** routes access records to a dedicated sink, for example a JSON logger on its own file. It receives the standard fields and an explicit request ID, but it is not derived from `c.Logger()` and therefore does not inherit attributes added with `c.AddLogAttrs` or `c.SetLogger`.
 
-When the final served path differs from the client path because of `middleware.Rewrite()` or `c.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
+When the final served path differs from the client path because of `middleware.Rewrite()`, the entry includes `path_original`. When a route matched, it also carries `route`, the registered pattern (`/v1/jobs/{job_id}`) rather than the concrete path. Credo does not transform log fields itself; a deployment that must not persist identifiers from paths keeps `route` and drops `path`/`path_original` in the configured logger, using `slog.HandlerOptions.ReplaceAttr`.
 
 The access log is one observer of the final response. `app.AddObserver(o)` adds another — a metrics exporter, an audit sink — that receives the same `*credo.Exchange`, with the classified error code and whether a panic was recovered besides the fields above; observers run in registration order, and one that panics is logged and skipped while the next one still runs:
 
@@ -462,9 +460,9 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{
 }))
 ```
 
-`Rules` must not be empty, every `From` pattern must parse and end with its catch-all if it has one, and every `To` path must spell its escapes as `%XX` (a literal `%` is `%25`); all of these are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. For conditional handler-driven forwarding, use `c.Rewrite()` instead.
+`Rules` must not be empty, every `From` pattern must parse and end with its catch-all if it has one, and every `To` path must spell its escapes as `%XX` (a literal `%` is `%25`); all of these are configuration errors and panic when the middleware is built. Use it when you want routing to see a normalized path on the first lookup. A forward that needs handler logic calls the target's handler itself ([Routing Guide](routing.md#conditional-forwarding)).
 
-See the [Routing Guide](routing.md) for host routing, rewrite patterns, `OriginalPath()`, and rewrite-specific middleware caveats.
+See the [Routing Guide](routing.md) for host routing, rewrite patterns, `OriginalPath()`, and conditional forwarding.
 
 ### CORS
 

@@ -12,10 +12,6 @@ The Context is not pooled: a request allocates one ([Allocation](#allocation)), 
 
 Lifecycle hooks such as `app.OnStart` and `app.OnStop`, and a component's `Start` and `Shutdown`, receive a standard `context.Context`, not `*credo.Context`. That context lives as long as its call and carries the cancellation and the deadline of the start phase or the drain; `credo.Context` exists only for an HTTP request.
 
-> **Current until v0.26.0 (R14):** the next paragraph; with `Context.Rewrite` gone, the Context keeps only the original client path.
-
-In addition to request/response accessors, Context tracks rewrite lifecycle: the original client path, internal re-dispatch requests (`c.Rewrite()`), and whether the current dispatch round is about to rewrite.
-
 Input and output concerns are separated into `Request` and `Response` structs:
 
 - **Request** — wraps `*http.Request`, provides route params, query shortcuts, and `Bind*` methods ("parse, don't validate").
@@ -27,14 +23,12 @@ Defined in the **root package** (not a sub-package) to avoid collision with stdl
 
 ### Context Struct
 
-> **Current until v0.26.0 (R14):** in the next block, `Rewrite` and `IsRewriting`.
-
 ```go
 type Context struct {
     // unexported fields — access via methods only
 }
 
-func NewContext(w http.ResponseWriter, r *http.Request) *Context // for testing handlers, renderers and middleware
+func NewContext(w http.ResponseWriter, r *http.Request) *Context // without an App: for unit tests of hooks, a Request or a Response
 
 // Accessors
 func (c *Context) Request() *Request
@@ -47,8 +41,6 @@ func (c *Context) AddLogAttrs(args ...any) // add attrs, deriving from Logger() 
 func (c *Context) HasRequestLogger() bool  // true once a request-scoped logger was set; does not inspect its attributes
 func (c *Context) RequestID() string       // request ID installed by App.UseRequestID; "" without it
 func (c *Context) OriginalPath() string    // client path before any rewriting
-func (c *Context) Rewrite(path string) error
-func (c *Context) IsRewriting() bool
 
 // Locale and translation — resolved on first use and memoized for the request
 func (c *Context) Locale() string // "" without UseI18n
@@ -88,14 +80,11 @@ func (c *Context) Within(ctx context.Context, next Handler) error
 
 ### Request Struct
 
-> **Current until v0.26.0 (R14):** in the next block, `NewRequest`; a `Request` is taken from a Context built with `NewContext`.
-
 ```go
 type Request struct {
     *http.Request  // embedded — Cookie, Header, Method, URL all available
 }
 
-func NewRequest(r *http.Request) *Request
 func (r *Request) RouteParam(name string) string  // single path/host param; "" when absent (preferred)
 func (r *Request) RouteParams() map[string]string // all params; a read-only view
 func (r *Request) PathValue(name string) string   // stdlib-shaped shadow → RouteParam, falls back to embedded request
@@ -122,15 +111,11 @@ func (r *Request) Context() context.Context
 
 ### Response Struct
 
-> **Current until v0.26.0 (R14):** in the next block, `NewResponse` and `Reset`; a `Response` is taken from a Context built with `NewContext`, and nothing resets one.
-
 ```go
 type Response struct {
     http.ResponseWriter // swappable by the compression feature or a wrapped stdlib middleware
     // status, size, committed, hijacked — framework-owned tracking state (unexported)
 }
-
-func NewResponse(w http.ResponseWriter) *Response
 
 // State accessors (read-only — the framework owns the tracking state)
 func (r *Response) Status() int     // status code written; 0 until committed
@@ -147,7 +132,6 @@ func (r *Response) Flush()            // http.Flusher; see FlushError
 func (r *Response) FlushError() error // preferred by http.ResponseController
 func (r *Response) Hijack() (net.Conn, *bufio.ReadWriter, error)
 func (r *Response) Unwrap() http.ResponseWriter
-func (r *Response) Reset(w http.ResponseWriter)
 func (r *Response) String() string  // fmt.Stringer for debugging
 
 // Response helpers
@@ -309,49 +293,17 @@ Assigning `c.Request().Request` a request with a new context still compiles and 
 
 `SetUser`, `GetUser[T]` and `RequireUser[T]` stay, as shortcuts over a generic key whose type is unexported, so the user has no `context.Context` accessor ([auth spec](auth.md#user-accessors-generic-context-methods)). `SetUser` adds a node and copies no request.
 
-## Rewrite Helpers
+## Original Client Path
 
 ### OriginalPath
 
-`OriginalPath()` returns the wire-form path (`URL.EscapedPath()`, percent-encoding preserved) captured in `reset()` before any middleware, pre-dispatch rewrite, or handler-level re-dispatch runs.
+`OriginalPath()` returns the wire-form path (`URL.EscapedPath()`, percent-encoding preserved) captured when the Context is built, before any middleware or pre-dispatch rewrite runs.
 
 ```go
 func (c *Context) OriginalPath() string
 ```
 
 The value is immutable for the lifetime of the request. When the final served path differs, the access log includes a `path_original` attribute.
-
-### Rewrite
-
-> **Current until v0.26.0 (R14):** this subsection and [IsRewriting](#isrewriting) below; `Context.Rewrite` and `IsRewriting` leave the API, and a path is mapped by a `middleware.Rewrite` rule before routing, by static's SPA mode, or by a handler that calls the target's handler itself ([ADR-008](../adr/008-context-design.md#pruned-context-apis)).
-
-`Rewrite(path)` triggers an internal re-dispatch to a new path without sending an HTTP redirect to the client.
-
-```go
-func (c *Context) Rewrite(path string) error
-```
-
-Rules:
-
-- Call it as the last statement in a handler: `return ctx.Rewrite("/new")`.
-- The target must begin with `/`. It is a wire-form path: percent-encoded values decode once during matching (`/files/a%2Fb` reaches `RouteParam` as `a/b`), and a malformed escape makes `Rewrite` return an error.
-- The target's query string, or its absence, replaces the request's query.
-- Before matching again, dispatch writes the target onto the request — `URL.Path` decoded, `URL.RawPath` set when the spellings differ — so the target route's middleware and handler see the rewritten URL while `OriginalPath()` keeps the client's.
-- The matched host scope does not change. Re-dispatch stays within the host mux selected for the original request.
-- Framework features and `PreRouting` middleware run once per request; routed, group and route middleware run again for the target route.
-- Route params are cleared between dispatch rounds and rebuilt from the target route.
-- If the response is already committed or hijacked, `Rewrite` returns an error.
-- Credo enforces a hard limit of 10 internal rewrites per request. Exceeding the limit fails the request with a 500.
-
-### IsRewriting
-
-`IsRewriting()` reports whether the current handler chain has requested an internal rewrite that the dispatch loop will process next.
-
-```go
-func (c *Context) IsRewriting() bool
-```
-
-This is primarily useful in middleware with `after` logic that should skip side effects when a handler forwards to another route.
 
 ### Params and Host Params
 
@@ -519,11 +471,7 @@ A field of a type outside this list is a developer error: the bind returns a 500
 - The JSON output profile: [ADR-021](../adr/021-json-output-profile.md).
 - Route parameters are not stdlib path values: [ADR-008](../adr/008-context-design.md#route-parameters-are-not-stdlib-path-values).
 - The context head, the typed keys, `Within`, `Std()` and their rejected alternatives: [ADR-008](../adr/008-context-design.md#one-context-head-and-typed-keys).
-
 - One allocation per request, without a pool, and its measurement: [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
-
-> **Pending v0.26.0 (R14):** not implemented yet; the APIs the next bullet names are public.
-
 - The pruned APIs — `Response.Reset`, the `RouteContext` alias, `NewRequest`, `NewResponse`, `Context.Rewrite` and `IsRewriting` — and `NewContext`, which stays: [ADR-008](../adr/008-context-design.md#pruned-context-apis).
 
 ## Allocation
