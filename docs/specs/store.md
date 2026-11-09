@@ -6,9 +6,15 @@ This spec owns the data access contracts: semantic errors, the store registratio
 
 ## Overview
 
+> **Current until v0.25.0 (W3):** the list's first item names the `Lifecycle` interface and the store registration, which W3 deletes.
+
 - **`store/`** — universal contracts with no external dependencies, part of the main `github.com/credo-go/credo` module: [semantic errors](#semantic-errors) over the stdlib-only `fault` leaf package, the [`Lifecycle` interface](#lifecycle-interface) and [`Health`](#health), the [store registration](#registration), and the typed [TX scope](#tx-context). Applications on another ORM register their client directly in DI and still use these contracts.
 - **`store/sqldb/`** — the Bun wrapper, a separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in: the [`DB` type](#db-type) that owns the pool, [query proxies](#query-builders) that inject this DB's ambient transaction and map driver errors, [transactions](#tx-management), the [transaction-aware native connection](#transaction-aware-bun-connection), [migrations](#migrations-bunmigrate-wrapper), and [error mapping](#error-mapping).
 - **Escape hatches** — `Apply` and `ApplyQueryBuilder` keep both proxy guarantees; `DB.Conn(ctx)` joins the ambient transaction without error mapping; `Unwrap` and `Client()` opt out of both.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `store/` holds the `Lifecycle` interface and the registration.
+
+`store/` holds the semantic errors, [`Health`](#health) and the typed TX scope; it has no registration and no lifecycle contract. A bound `*sqldb.DB` is an ordinary component ([Lifecycle of a bound database](#lifecycle-of-a-bound-database)), and an adapter of another ORM implements `Start`, `Ready` and `Shutdown` itself.
 
 ## Core Package: store/
 
@@ -55,6 +61,8 @@ func Wrap(kind error, cause error) error
 
 ### Lifecycle Interface
 
+> **Current until v0.25.0 (W3):** this section; W3 deletes `store.Lifecycle` (`store/lifecycle.go`) with `store.Register`, its only consumer.
+
 ```go
 // Lifecycle is the contract a data store binding meets for Register[R]: the
 // start phase pings it, /ready reports its health, and the App shuts it down
@@ -89,9 +97,17 @@ type Health struct {
 }
 ```
 
+> **Current until v0.25.0 (W3):** the next paragraph's last sentence describes `/ready` reading a store's `Health` through the store registration.
+
 Status, latency, details, and the typed cause travel as one snapshot, so a caller never parses free-form `Details` for the reason: `Details["error"]` values are adapter metadata, not a trusted error contract. `Health.Clone` preserves the `Cause` identity and copies the top-level `Details` map (nested values stay shared). `Cause` is never encoded by `encoding/json`. `/ready` logs the cause, includes its text only under `HealthConfig.ExposeErrors`, and never serializes `Details` ([health spec](health.md#readiness-aggregation)), so pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
 
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `/ready` reads a registered store's `Health` directly.
+
+`Health` stays as what an adapter's `Health` returns — `sqldb`'s among them — and what its `Ready` reads. `/ready` never sees a `Health`: it asks the component's `Ready`, whose error names the status, and logs that error, including its text only under `HealthConfig.ExposeErrors` ([health spec](health.md#readiness-aggregation)). `Details` never reaches the probe response, so pool statistics remain available to application code and future metrics without becoming a public probe-response schema.
+
 ### Registration
+
+> **Current until v0.25.0 (W3):** this section and its subsections — Two calls, Phases, Resource identity, Several databases — describe `store.Register`, which W3 deletes; their successor is [Lifecycle of a bound database](#lifecycle-of-a-bound-database).
 
 ```go
 const DefaultPingTimeout = 5 * time.Second
@@ -247,6 +263,101 @@ func (db *DB) Health(ctx context.Context) store.Health
 
 `Shutdown` closes the pool even when its context is already done: `sql.DB.Close` is a fast local operation, and leaving the pool open would leak connections.
 
+> **Current until v0.25.0 (W3):** the code block above lists `StoreRegistrationWarningCodes` and calls the methods `store.Lifecycle`'s; W3 deletes both and adds `Start` and `Ready`.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `*DB` has no `Start` or `Ready`.
+
+```go
+// Start pings the database under Config.PingTimeout and logs the pool
+// warnings once the ping has succeeded. A failed ping closes the database
+// before the error is returned, unless the DB was opened with
+// WithOptionalStart.
+func (db *DB) Start(ctx context.Context) error
+
+// Ready returns an error naming the status when Health is not up.
+func (db *DB) Ready(ctx context.Context) error
+
+func (db *DB) Ping(ctx context.Context) error
+func (db *DB) Shutdown(ctx context.Context) error
+func (db *DB) Health(ctx context.Context) store.Health
+```
+
+`*DB` is a component with `Start`, `Ready`, `Shutdown` and `ResourceIdentity`; [Lifecycle of a bound database](#lifecycle-of-a-bound-database) is the contract.
+
+### Lifecycle of a bound database
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships a store is pinged, reported and named only through [`store.Register`](#registration).
+
+A bound `*sqldb.DB` is an ordinary [component](lifecycle.md#components-and-the-start-phase): the start walk plans its `Start`, `Ready` and teardown from the binding's type, as for every component. One binding is enough:
+
+```go
+db, err := sqldb.Open(&cfg)
+if err != nil {
+    return err
+}
+app.ProvideValue(db) // pinged before its dependants start, reported by /ready, shut down after its consumers
+```
+
+The binding may also be a constructor (`app.Provide(openDB)`), which the start walk builds after `Finalize`, so after every override: the value pinged, reported and shut down is the value DI hands its consumers, in tests too.
+
+**Start.** `Start(ctx)` pings with a deadline of `Config.PingTimeout`, derived from the start context, so a shutdown requested during the start cancels it. The start walk runs it in dependency order, in the internal tier unless the binding is ingress, before the components that depend on the database start.
+
+- On success, `Start` logs each pool warning once at Warn, to its logger ([Logging](#logging)). The code — today only `sqldb.pool.max_open_unlimited` — is read from the effective pool when the ping succeeds, so a `SetMaxOpenConns` on its client before the start counts. The record keeps its message, `credo: store configuration warning`, and its `code`, and carries `module=sqldb`; on the App's logger the component's scope adds `component=<name>`.
+- A failed ping closes the database before `Start` returns the error, which names the component and the deadline. The pool was opened by `Open`, not by `Start`, and the App does not shut down a component whose `Start` failed ([lifecycle spec](lifecycle.md#a-failed-start)), so `Start` releases what it holds. The start fails and rolls back, and no pool warning is logged.
+- With [`WithOptionalStart()`](#options) a failed ping is not fatal: `Start` logs it at Warn, with the component's name, the deadline and the error, logs the pool warnings as after a successful ping, and returns nil, leaving the pool open, since `database/sql` opens connections on demand once the server is back. `Ready` keeps pinging, so the database gates readiness until it answers unless it is bound with `credo.OptionalReadiness()`.
+- A borrowed database (`credo.Borrowed()` on `ProvideValue`) is never started or shut down by the App: its owner starts it. `/ready` still reports it.
+
+**Ready.** `Ready(ctx)` calls `Health` and returns an error naming the status when it is not up, so a `DEGRADED` an adapter reported is `down` in `/ready`. The readiness entry is planned from the binding's type, built once when the App enters running, and named after the component: the binding's type, `*sqldb.DB`, or its `credo.ComponentName` name. Its `latency` is the ping's ([health spec](health.md#readiness-aggregation)). Every bound database enters `/ready` and gates readiness; one that must not is bound with `credo.OptionalReadiness()`, and its failing entry is then shown `down` while `/ready` answers 200 `degraded`. `credo.OptionalReadiness()` changes readiness only: without `WithOptionalStart()`, an unreachable database whose readiness is optional still fails the start.
+
+**Teardown.** `Shutdown` closes the pool; the App runs it after the database's consumers, under the drain deadline, unless the binding is borrowed. Independent databases with no edges between them shut down in reverse registration order.
+
+#### One resource, one entry
+
+`*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too ([container spec](container.md#resource-identity-and-teardown)). A raw handle and a wrapper bound together give one ping (the start-once-per-resource rule), one readiness entry and one teardown, after the consumers of both, in either registration order.
+
+- The one readiness entry is the resource's holder of record's ([lifecycle spec](lifecycle.md)), whose `Ready` is asked.
+- The registrations that hold the resource and plan an entry for it agree on the options that shape it: `credo.OptionalReadiness()` is on every one of them or on none, and the names given with `credo.ComponentName` are one name, which the entry and the teardown carry — the holder of record's type name without one.
+- A disagreement panics at the registration for a value handed in (`ProvideValue`, `Manage`) and fails the start for a value a binding's constructor builds, naming both registrations, the option and the remedies: the same options on both, or a named field.
+- A wrapper with readiness of its own, one that overrides the `Ready` it embeds, holds the handle in a named field, so that it is a resource of its own.
+- A value a constructor builds that holds the handle — a worker's, or one from a constructor handed to `Manage` — adds no entry of its own and defers to the binding ([lifecycle spec](lifecycle.md)).
+
+#### Naming and several databases
+
+`credo.ComponentName(name)` on `Provide` or `ProvideValue` names the binding's component in `/ready`, in a `*credo.LifecycleError` and in the lifecycle's records; a duplicate name panics, except on registrations of one resource, which give it one name. The default name is the binding's type, such as `*sqldb.DB`. Each database beyond a default `*sqldb.DB` is a wrapper type, bound once:
+
+```go
+type PrimaryDB struct{ *sqldb.DB }
+type AnalyticsDB struct{ *sqldb.DB }
+
+app.ProvideValue(PrimaryDB{primary}, credo.ComponentName("primary"))
+app.ProvideValue(AnalyticsDB{analytics}, credo.ComponentName("analytics"))
+
+func NewReportRepo(db AnalyticsDB) *ReportRepo { return &ReportRepo{db: db.DB} }
+```
+
+- The constructor's signature names the database; the compiler and `Finalize` check the choice, and the graph orders each database's start and stop by its consumers. Each `*sqldb.DB` owns its transaction scope, so the transactions of two databases never meet.
+- An interface view is `app.Alias[I, T]()`, never a second binding.
+- A constructor that needs the raw handle unwraps it (`db.DB`, or `db.Client()` for Bun) instead of binding it again.
+- A generic repository is instantiated per wrapper: `NewOutboxRepo[PrimaryDB]` and `NewOutboxRepo[AnalyticsDB]` are two bindings.
+- A wrapper may also be bound through a constructor that returns it (`func NewPrimaryDB(cfg PrimaryConfig) (PrimaryDB, error)`); the start walk builds it.
+- Databases whose number comes from configuration — shards, tenants — are one binding of a collection type that owns and closes them all.
+- A read replica of one database is routing, not a second store, and is outside the rule; `sqldb` does not expose it.
+
+#### Logging
+
+`sqldb` follows the framework-module logger rule ([ADR-004](../adr/004-dependency-injection-and-infra.md)): `sqldb.WithLogger(l)` gives the database a logger of its own, used unscoped; otherwise `Start` logs to `credo.InfraFrom(ctx).Logger`, the App's logger scoped to the component, which falls back to the framework default outside an App's call. Every record `sqldb` writes carries `module=sqldb`, whichever logger it goes to. `sqldb` therefore imports the root package for `InfraFrom`, and `store/sqldb/go.mod` requires the root module of the same release.
+
+#### Other adapters
+
+A store adapter other than `sqldb` implements `Start`, `Ready` and `Shutdown` itself, as every component does; there is no framework interface to name them. `store.Health` remains available as the result type of its own `Health`.
+
+#### Removed
+
+- `store.Register`, `RegisterOption`, `WithName`, `WithPingTimeout` and `store.DefaultPingTimeout` (now `sqldb.DefaultPingTimeout`), with the registration's internal seam to the root.
+- `store.Lifecycle`, the constraint of `Register`'s type parameter and its only consumer.
+- `(*sqldb.DB).StoreRegistrationWarningCodes`, which only that seam read: `Start` logs the code, and a program that runs the database without an App calls `Start` or reads `Stats().MaxOpenConnections`.
+- The store branch of the readiness aggregation and of `internal/health` ([health spec](health.md#readiness-aggregation)).
+
 ### Config
 
 ```go
@@ -277,7 +388,15 @@ When Credo constructs a PostgreSQL or MySQL DSN, `Port` must be in `1..65535`; z
 
 `Options` is for additional driver parameters, not a second source for core PostgreSQL endpoint/credential keys. It may supply `sslmode`/`connect_timeout` or MySQL `tls`/`timeout` only when the corresponding structured field is unset; MySQL `parseTime` is fixed to `true`. Ambiguous duplicates fail and their values are not included in the error. A raw `DSN` is used as-is when full driver-native control is needed. TLS values are deliberately driver-specific: `SSLMode` maps to PostgreSQL `sslmode` and MySQL `tls`. Credo does not impose a universal TLS default; production deployments explicitly choose and provision a verified mode supported by their selected driver.
 
+> **Current until v0.25.0 (W3):** the next paragraph describes the pool warning as `store.Register`'s start step logs it.
+
 There is no workload-independent finite pool default ([ADR-015](../adr/015-data-access.md#connection-pool-policy)). `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is still unlimited when the start phase inspects a registered store emits, after a successful ping, one structured warning with code `sqldb.pool.max_open_unlimited`; standalone users can inspect `DB.StoreRegistrationWarningCodes()` and log the same codes themselves.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `Config` has no `PingTimeout` and the paragraph above holds.
+
+`Config` gains `PingTimeout time.Duration`, the deadline of the ping `Start` sends: zero means `sqldb.DefaultPingTimeout` (5 s), and a negative value fails `Open`. Unlike `ConnectTimeout`, zero is not "no deadline", because an unbounded ping would hang the start; the field's godoc says so.
+
+There is no workload-independent finite pool default ([ADR-015](../adr/015-data-access.md#connection-pool-policy)). `MaxOpen=0` preserves `database/sql`'s unlimited-open behavior. A pool that is still unlimited when `Start`'s ping succeeds gets one structured warning with code `sqldb.pool.max_open_unlimited` ([Lifecycle of a bound database](#lifecycle-of-a-bound-database)); a program that runs the database without an App calls `Start` or reads `Stats().MaxOpenConnections`.
 
 `MaxIdle` is a pointer because omission and zero have different stdlib semantics: `nil` does not call `SetMaxIdleConns` (the effective stdlib default remains subject to `MaxOpen`), `new(0)` explicitly disables idle retention, and a positive value is applied exactly. If `MaxOpen > 0`, an explicit `MaxIdle > MaxOpen` fails `Open` instead of relying on `database/sql`'s silent clamp. Negative pool counts or durations fail validation. A zero `MaxIdleTime` or `MaxLifetime` disables that expiry policy; positive values are passed to `SetConnMaxIdleTime` and `SetConnMaxLifetime`.
 
@@ -300,6 +419,20 @@ func WithConnector(connector driver.Connector) Option
 // release, rollback, and fail-safe ambient rollback. Default: 5s; d must be > 0.
 func WithTxCleanupTimeout(d time.Duration) Option
 ```
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `Open` has neither option.
+
+```go
+// WithOptionalStart makes a failed ping in Start non-fatal: Start logs it at
+// Warn and returns nil, leaving the pool open.
+func WithOptionalStart() Option
+
+// WithLogger gives the DB a logger of its own, used unscoped in place of the
+// App's logger scoped to the component.
+func WithLogger(l *slog.Logger) Option
+```
+
+The behavior of both is in [Lifecycle of a bound database](#lifecycle-of-a-bound-database).
 
 ### Query Builders
 
@@ -606,6 +739,8 @@ func (s *OrderService) PlaceOrder(ctx context.Context, input OrderInput) (*Order
 
 The rationale and the rejected alternatives are in ADR-015:
 
+> **Current until v0.25.0 (W3):** the list's last item describes `store.Register`.
+
 - One ORM, Bun, integrated deeply; other ORMs through raw DI — [Why Single-ORM (Bun)?](../adr/015-data-access.md#why-single-orm-bun)
 - A transport-neutral `fault` kind with structural, family-scoped classification — [Semantic Error Types](../adr/015-data-access.md#semantic-error-types)
 - An opt-in, per-database typed transaction scope that fails loud rather than falling back — [Context-Based TX](../adr/015-data-access.md#context-based-tx)
@@ -614,3 +749,7 @@ The rationale and the rejected alternatives are in ADR-015:
 - No finite pool default and no automatic `DEGRADED` — [Connection-Pool Policy](../adr/015-data-access.md#connection-pool-policy)
 - A thin `bun/migrate` wrapper run as a pre-deploy job — [Migrations](../adr/015-data-access.md#migrations)
 - Ownership follows the binding; registration pings and reports but never closes — [Registration](../adr/015-data-access.md#registration)
+
+> **Pending v0.25.0 (W3):** not implemented yet; the item below replaces the list's last one once W3 ships.
+
+- A bound database is an ordinary component, pinged in `Start` and reported through `Ready`, with an optional start that is the module's — [A Database Is a Component](../adr/015-data-access.md#a-database-is-a-component)

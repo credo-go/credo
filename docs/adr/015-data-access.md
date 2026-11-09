@@ -20,14 +20,26 @@ Maintaining adapters for multiple ORMs multiplies the wrapper surface area and t
 
 Bun was chosen because it maps closely to SQL (no magic struct-scan), supports raw SQL alongside the query builder, and has a clean `bun.IDB` interface that unifies `*bun.DB` and `bun.Tx`.
 
+> **Current until v0.25.0 (W3):** the next paragraph names the `Lifecycle` registration, which W3 deletes.
+
 Applications that need a different ORM (GORM, sqlx, sqlc) register their client directly in DI (`app.ProvideValue[*gorm.DB](db)`) without using `store/sqldb/`; the `store/` contracts (errors, health, `Lifecycle` registration) are ORM-agnostic and still apply.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships the paragraph above holds.
+
+Applications that need a different ORM (GORM, sqlx, sqlc) bind their client directly in DI without using `store/sqldb/`; the `store/` contracts (errors, health) are ORM-agnostic and still apply, and an adapter type that implements `Start`, `Ready` and `Shutdown` is a component like `*sqldb.DB` ([A Database Is a Component](#a-database-is-a-component)).
 
 ## Decision
 
 ### Two-Package Split: store/ + store/sqldb/
 
+> **Current until v0.25.0 (W3):** the list's first item names `Lifecycle` and `Register[R]`, which W3 deletes from `store/`.
+
 - **`store/`** — universal contracts (errors, `Lifecycle`, `Health`, `Register[R]`, TX context helpers). Zero external dependencies. Part of the main `github.com/credo-go/credo` module.
 - **`store/sqldb/`** — Bun SQL wrapper (`DB`, `Config`, query builders, `RunInTx`, error mapping). Separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `store/` holds `Lifecycle` and `Register[R]`.
+
+`store/` holds errors, `Health` and the TX context helpers; it has no registration and no lifecycle contract. `store/sqldb/`'s `*DB` implements `Start`, `Ready` and `Shutdown` and is a component like any other ([A Database Is a Component](#a-database-is-a-component)).
 
 ### Semantic Error Types
 
@@ -119,13 +131,23 @@ The gate stays closed until (1) a real consumer supplies its model, filters, ord
 
 ### Connection-Pool Policy
 
+> **Current until v0.25.0 (W3):** the next paragraph describes the pool warning as the start phase of `store.Register` logs it today.
+
 Credo does not invent a workload-independent connection-pool size. `MaxOpen=0` retains `database/sql`'s unlimited-open behavior; silently choosing a finite default could either under-provision a busy service or overrun a smaller database. Instead, a pool that is still unlimited when the start phase pings a store registered with `store.Register` emits one structured warning with code `sqldb.pool.max_open_unlimited`. Standalone users that do not call `store.Register` can inspect `DB.StoreRegistrationWarningCodes()` and route the same secret-free code through their own bootstrap logging.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships the paragraph above holds.
+
+Credo does not invent a workload-independent connection-pool size. `MaxOpen=0` retains `database/sql`'s unlimited-open behavior; silently choosing a finite default could either under-provision a busy service or overrun a smaller database. Instead, `DB.Start` logs one structured warning with code `sqldb.pool.max_open_unlimited` once its ping has succeeded, when the effective pool is still unlimited at that moment, so a `SetMaxOpenConns` on its client before the start counts. The record goes to the database's logger (`sqldb.WithLogger`, else the App's logger scoped to the component) with `module=sqldb`. A program that runs the database without an App calls `Start` or reads `Stats().MaxOpenConnections`; `StoreRegistrationWarningCodes`, which only the registration read, is gone.
 
 Pool settings distinguish absence from an explicit value (`MaxIdle` is a pointer: `nil` leaves the `database/sql` default, `new(0)` disables idle retention) and refuse an explicit `MaxIdle` above a finite `MaxOpen` at `Open` instead of relying on `database/sql`'s silent clamp; see the store spec's [Config](../specs/store.md#config).
 
 `DB.Stats()` exposes the complete `sql.DBStats` snapshot, and SQL health metadata carries the pool's gauges and cumulative counters. Readiness does not serialize adapter `Details`, so these values are operational diagnostics for code and future metrics rather than an accidental public probe schema.
 
 Pool saturation does not produce `StatusDegraded`. A useful signal requires production metrics, an explicit SLO, windowed counter deltas, hysteresis, and opt-in thresholds. A universal instantaneous threshold would be noisy; because every store is critical and `DEGRADED` removes readiness, such noise could also trigger a replica-wide traffic cascade.
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships every registered store gates readiness, as the paragraph above says.
+
+Once a database is a component, its `Ready` fails whenever its `Health` is not up, so a `DEGRADED` it reported would take the instance out of rotation like `DOWN`; the same cascade argument holds for every database that gates readiness, which a bound database does unless it is bound with `credo.OptionalReadiness()` ([ADR-016](016-health-checks.md#optional-readiness)). A component that reports `degraded` itself, through a status capability, stays deferred for the same reason: no component produces such a status.
 
 ### Migrations
 
@@ -137,7 +159,13 @@ Pool saturation does not produce `StatusDegraded`. A useful signal requires prod
 - **A transactional migration's COMMIT counts.** Bun v1.3.0 returns the COMMIT or ROLLBACK error of a `.tx.up.sql` file, so a failed commit leaves the migration unapplied. Mark-on-success depends on that contract, which earlier Bun releases broke ([Bun #1389](https://github.com/uptrace/bun/issues/1389)), so a conformance test on SQLite and PostgreSQL pins it.
 - **Signature compatibility, not coupling.** `Migrate` matches the `App.OnStart` hook signature, while `sqldb` imports only `credo/store`, never the root framework package. Registration misuse (a nil set, a second registration) panics per the panic-vs-error policy; `Migrate` itself only returns errors.
 
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships `sqldb` imports only `credo/store`, as the list's last item says.
+
+`sqldb` imports the root package for `credo.InfraFrom`, which `DB.Start` reads for its logger, so `store/sqldb/go.mod` requires the root module of the same release. `Migrate` still only matches the `App.OnStart` hook signature; it depends on no hook.
+
 ### Registration
+
+> **Current until v0.25.0 (W3):** this section describes `store.Register`, which W3 deletes; its successor is [A Database Is a Component](#a-database-is-a-component).
 
 A store takes two calls, each with one job. The application binds the store where ownership is decided — `ProvideValue`, or `Provide` with a constructor, and `credo.Borrowed()` on `ProvideValue` for a handle it shares with another App or a test fixture — and `store.Register` names that binding by type and adds it to the App's store registry:
 
@@ -171,7 +199,47 @@ Store names share the named-health validator. Explicit empty, padded, control-ch
 - **A store-specific ownership ledger** reserving name, type and resource identity — it would see only `store.Register` calls, so the same resource bound another way would escape it; the component registry's resource identity covers every binding.
 - **A generic handle in `sqldb`** (`sqldb.Of[Analytics]`) for several databases — still a marker type per database, for an API that turns generic throughout; the wrapper type is that marker with a better name.
 
+### A Database Is a Component
+
+> **Pending v0.25.0 (W3):** not implemented yet; until W3 ships a store is pinged and reported only through `store.Register`, as [Registration](#registration) describes.
+
+A bound store is an ordinary component: the type of its binding plans the ping, the readiness entry and the teardown, as for every component ([ADR-024](024-lifecycle-components.md)). One call is enough:
+
+```go
+app.ProvideValue(db) // pinged before its dependants start, reported by /ready, shut down after its consumers
+```
+
+- **`Start` pings.** `*sqldb.DB` implements `Start(ctx)`, which pings under `Config.PingTimeout` (zero means `sqldb.DefaultPingTimeout`, five seconds; a negative value fails `Open`). Zero is not "no deadline", unlike `ConnectTimeout`, because an unbounded ping would hang the start. The start walk runs it before the components that depend on the database start, in dependency order and after every override, so the value pinged is the value DI hands its consumers. An unreachable database therefore fails the start, and the start rolls back.
+- **A failed ping closes the database.** `Open` opened the pool, not `Start`, and the App does not shut down a component whose `Start` failed ([ADR-024](024-lifecycle-components.md)): that rule assumes `Start` released what it holds, so `Start` closes the database before it returns the error, which names the component and the deadline.
+- **`Ready` reports.** `*sqldb.DB` implements `Ready(ctx)`, which returns an error naming the status when `Health` is not up. Its readiness entry is planned from the binding's type like any component's, under the component's name — `*sqldb.DB`, or its `credo.ComponentName` name — and carries the ping's latency ([ADR-016](016-health-checks.md#readiness-from-the-kernels-registries)). Every bound database enters `/ready` and gates readiness by default; one that must not is bound with `credo.OptionalReadiness()` ([ADR-016](016-health-checks.md#optional-readiness)).
+- **An optional start is the module's.** `sqldb.WithOptionalStart()`, an `Open` option, makes a failed ping non-fatal: `Start` logs it at Warn, with the component's name, the deadline and the error, logs the pool warnings as after a successful ping, and returns nil, leaving the pool open, since `database/sql` opens connections on demand once the server is back. `Ready` keeps pinging, so the database gates readiness until it answers unless it is bound with `credo.OptionalReadiness()`. Only the module knows that its value is usable after a failed ping, so the option is the module's, and ADR-024's failed-start rule is unchanged; a component in general whose failed `Start` does not fail the start stays deferred, since it would need a reconnect contract.
+- **The pool warning is logged by `Start`** ([Connection-Pool Policy](#connection-pool-policy)), with `module=sqldb`, to `sqldb.WithLogger`'s logger when one is given, else to the App's logger scoped to the component, which adds `component=<name>`.
+- **A borrowed database is not pinged.** Its owner starts it, so the App never calls its `Start` or `Shutdown`; readiness still reports it, since `/ready` asks a borrowed value's `Ready`.
+- **One resource, one entry.** A raw handle and a wrapper that embeds it, bound together, are one resource ([ADR-024](024-lifecycle-components.md#resource-identity-one-resource-one-teardown)): one ping, one readiness entry and one teardown, after the consumers of both. The registrations that hold the resource agree on the options that shape its entry — `credo.OptionalReadiness()` on all of them or on none, and one `credo.ComponentName` name, which the entry and the teardown carry — and a disagreement is refused, naming both registrations, the option and the remedies: the same options on both, or a named field. A wrapper with readiness of its own, one that overrides the `Ready` it embeds, holds the handle in a named field, so that it is a resource of its own.
+- **Several databases** stay wrapper types, each bound once, named with `credo.ComponentName` on its binding; a consumer names its database in its constructor signature. [Several Instances of One Type](004-dependency-injection-and-infra.md#several-instances-of-one-type) records the rule.
+- **An adapter other than `sqldb`** implements `Start`, `Ready` and `Shutdown` itself, as every component does.
+
+`store.Health` stays, as what `sqldb`'s `Health` returns and its `Ready` reads. `store.Lifecycle` goes with `store.Register`, the constraint of its type parameter and its only consumer: without it no code checks the interface — the root cannot import `store` — so it would be a contract frozen at v1 that nothing enforces.
+
+**Rejected alternatives:**
+
+- **A store registration that takes the store's value**, pings it at the call and publishes it itself — after an override it would ping, report and shut down a value DI does not hand its consumers. The start pings and `/ready` reports the bound value, overrides included.
+- **A separate health handle passed as a value**, with its own flag for caller ownership — it drifts from an override the same way, and lets ping, health and shutdown target different objects; a wrapper type gives the same reach with one value, and `credo.Borrowed()` gives caller ownership.
+- **A store-specific ownership ledger** reserving name, type and resource identity — the component registry's resource identity covers every binding.
+- **A generic handle in `sqldb`** (`sqldb.Of[Analytics]`) for several databases — still a marker type per database; the wrapper type is that marker with a better name.
+
+- **`store.Register` kept as optional sugar** beside the plan from the binding's type: two ways to one ping and one readiness entry, with ordering and duplicate-name rules between them.
+- **The health engine recognizing `store.Lifecycle` on any component:** the root cannot import `store`, and an internal seam for one interface rebuilds the store registry under another name.
+- **Readiness without a start ping:** it drops the guarantee that an unreachable database fails the start.
+- **Moving `store.Health` into the root** to keep the typed status in `/ready`: it inverts the dependency direction.
+- **Keeping `store.Lifecycle` as the adapter contract:** once `store.Register` goes, no code checks it.
+- **A start forgiven for every registration whose readiness is optional:** the App cannot know whether a component is usable after its failed `Start`, which is why `WithOptionalStart` is the module's.
+- **An optional component whose dependants are refused at `Finalize` and whose failed `Start` lets the App continue:** unusable for a database that repositories use, and the database stays closed after its failed `Start`.
+- **A module option that makes `Ready` succeed:** an entry that reports up while its database is down.
+
 ## Consequences
+
+> **Current until v0.25.0 (W3):** the Positive list's last item and the Negative list's last two describe `store.Register` and `store.Lifecycle`; the Pending block after the Negative list replaces them.
 
 **Positive:**
 
@@ -194,3 +262,10 @@ Store names share the named-health validator. Explicit empty, padded, control-ch
 - Error mapping is driver-family-aware but cannot cover every custom driver until a classifier seam exists
 - A store costs two calls — the binding and the registration — and an unreachable database fails the start rather than the registration
 - A value that does not implement `Lifecycle` needs a wrapper type; identity sharing is explicit through `ResourceIdentifier`, and the framework does not guess ownership by scanning arbitrary fields
+
+> **Pending v0.25.0 (W3):** not implemented yet; these consequences follow from [A Database Is a Component](#a-database-is-a-component) once W3 ships.
+
+- A store costs one call, its binding; an unreachable database fails the start in its `Start`, unless it is opened with `sqldb.WithOptionalStart()`.
+- Every bound database gates readiness unless its binding says otherwise; a database bound before without `store.Register`, which `/ready` did not report, now gates readiness.
+- `sqldb` imports the root package for `credo.InfraFrom` and is released with the root it requires.
+- A custom adapter implements `Start`, `Ready` and `Shutdown` with no framework interface to name them; identity sharing stays explicit through `ResourceIdentifier`.
