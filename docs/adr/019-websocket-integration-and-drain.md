@@ -12,7 +12,7 @@ Credo therefore needs an integrated server API without owning RFC 6455 frame par
 
 ### Wrap and pin the protocol engine
 
-Credo imports exact-pinned `github.com/coder/websocket v1.8.15` under its ISC license. The upstream library owns the wire protocol, framing, masking, close handshake, ping/pong, and per-message deflate. Package `websocket` owns the public types, secure defaults, error normalization, logging, admission, and App lifecycle integration.
+Credo imports exact-pinned `github.com/coder/websocket v1.8.15` under its ISC license. The upstream library owns the wire protocol, framing, masking, close handshake, ping/pong, and per-message deflate. Package `websocket` owns the public types, secure defaults, error normalization, logging, admission, and App lifecycle integration. The package stays in the root module: a module of its own waits for a consumer that cannot resolve a version conflict or must keep coder/websocket out of its module graph.
 
 The upstream connection is reachable only through `Conn.Unwrap` as an expert escape hatch. It remains borrowed: raw calls do not transfer ownership and bypass Credo's validation, normalized errors, close policy, and logging.
 
