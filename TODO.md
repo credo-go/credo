@@ -6,6 +6,26 @@
 
 ---
 
+## Pre-v1 Reshaping
+
+Ships in v0.26.0 and the minors after it, before v1.0.0. The [delivery plan](docs/plans/pre-v1-reshaping.md) defines each work item's scope, sequence and acceptance; these boxes are the only progress tracker.
+
+- [x] R1: promotion and the decisions that change no code — the decisions written into the ADRs and specs, each marked pending until its work item ships; the path as received (ADR-007, pinned by tests), no stdlib path values (ADR-008), `Validate` takes no context (ADR-011), the App stays the one facade (ADR-003) (2026-11-09)
+- [ ] R2: one error channel; keys, messages and fault codes — `HTTPStatus() int` and `store`'s bridge deleted, `credo.MessageKey` a named type, `WithMessage` literal, client input in `Details`, `Code*` constants, the fault kind as the default code, `fault.Error`, `testutil.CheckMessageKeys`
+- [ ] R3: strict configuration decoding by default — `config.WithWeakDecoding()` the opt-in; `WithStrictDecoding` deleted
+- [ ] R4: typed keys over one context head — `credo.NewKey[T]`, typed route meta and `GetMeta`, `Request.Std()`, `Context.Within`
+- [ ] R5: typed configuration sections — `config.Section[T]` with `Decode`, `GetConfig` takes the descriptor; `Config.Get` and `MustGet` deleted
+- [ ] R6: validation names fields by their source and validates slices and nested values
+- [ ] R7: `Rewrite` matches the wire form
+- [ ] R8: application modules — `Module`, `app.UseModules`, `testutil.WithModules`
+- [ ] R9: `sqldb` without Bun's private fields — `ApplyFilter`, `PageWithCount`, `ErrUnsupportedCountQuery`; the private-field layer deleted
+- [ ] R10: the Context is not pooled — the measurement recorded in ADR-008
+- [ ] R11: JWT in `auth/jwtauth`
+- [ ] R12: observers of the final response — `app.AddObserver`, `Exchange`; the access log an observer, `AccessLogEntry` deleted
+- [ ] R13: a routed middleware tier — `app.Middleware`, a mount is a route, `GlobalMiddleware` becomes `PreRouting`, `ContractGuard` fails closed
+- [ ] R14: normative specs and the last prunings
+- [ ] R15: live configuration sections; certificates rotate on change — `Section.Live`, `config.Live[T]`; `OnConfigChange`, `OnReload` and staging deleted
+
 ## Bootstrap Simplification
 
 The delivery plan for this work was folded into [ADR-002](docs/adr/002-code-acquisition-strategy.md), [ADR-004](docs/adr/004-dependency-injection-and-infra.md), [ADR-010](docs/adr/010-middleware-architecture.md), [ADR-011](docs/adr/011-validation-strategy.md), [ADR-015](docs/adr/015-data-access.md), [ADR-016](docs/adr/016-health-checks.md), [ADR-019](docs/adr/019-websocket-integration-and-drain.md), [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), [ADR-023](docs/adr/023-worker-system.md) and [ADR-024](docs/adr/024-lifecycle-components.md), their specs and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-11-09; shipped in v0.25.0. These boxes are the only progress tracker.
@@ -673,17 +693,17 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 **Must land before v1** (each touches a surface that v1 freezes):
 
-- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, first whether `credo.Infra` gains metrics and tracing fields at all — instrumentation may instead reach requests through an observer of the final response — and only then their _types_ (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0.
+- [ ] **Phase 3.5 observability — the `Infra` shape decision** — decide, before v1, first whether `credo.Infra` gains metrics and tracing fields at all — instrumentation may instead reach requests through an observer of the final response — and only then their _types_ (Credo-owned interfaces designed against real OTel/Prometheus adapters, or the OTel API types, which is a root-dependency decision) and the form of the tracing wrap. `Infra` forces keyed literals, so adding the fields later is additive for every constructor; what v1 freezes is each field's type. The implementation follows the decision and may ship on either side of v1.0.0. The OpenTelemetry and Prometheus adapters written for the decision run on the `Observer` and `Exchange` of the [Pre-v1 Reshaping](#pre-v1-reshaping) (R12), so a change they need lands before v1 freezes the record; until they are written, the access log is the record's only consumer.
 - [x] **json/v2 output profile** (`Response.JSON`, default error bodies, renderer bodies, `WithJSONOptions`, [ADR-021](docs/adr/021-json-output-profile.md)) — shipped in v0.7.0.
 - [x] **`http.Server` escape hatch** (`WithHTTPServer`, `ErrorLog` → slog bridge, `server.max_header_value_count`, [ADR-006](docs/adr/006-application-lifecycle.md)) — shipped in v0.8.0; closes the class "stdlib added a field, Credo needs a release" permanently.
-- [x] **Typed endpoint / operation model decision** — out of the pre-v1 reshaping (2026-10-02); reopened once the architecture has settled and real applications have run on it. v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface, and until the question reopens the root adds no package-level non-generic route verbs, so an additive typed layer stays possible. Open before v1 in its own right: whether `Validatable.Validate` takes a `context.Context` (a later addition would break every implementor).
+- [x] **Typed endpoint / operation model decision** — out of the pre-v1 reshaping (2026-10-02); reopened once the architecture has settled and real applications have run on it. v1 keeps `func(*Context) error` and `app.POST(...)` as its single canonical authoring surface, and until the question reopens the root adds no package-level non-generic route verbs, so an additive typed layer stays possible. Decided for v1 in its own right: `Validatable.Validate` takes no `context.Context` ([ADR-011](docs/adr/011-validation-strategy.md#validatable-interface)); a context-taking interface would be additive, added beside it.
 - [x] **Maturity labels** on every package `doc.go` (`experimental` / `beta` / `stable`); only `stable` packages carry the v1 compatibility promise. Done 2026-09-02: every public package closes its doc with `// Maturity: beta` (enforced by `maturity_test.go` together with the README table), and the README-only placeholder directories (`observability`, `pubsub`, `grpc`, `openapi`) were removed from the module — planned areas exist only as roadmap entries here until real code lands.
 - [ ] **Deferred breaking changes**, each shipped in a minor before the stability window opens, under its own CHANGELOG heading:
   - [ ] `ContractConfig.RequireContentType` default → `true` (4.7)
   - [x] Protected-binding API (`App.ProvideProtectedValue` / `App.ProtectBinding` / `App.CanProvideValue` and their `Must` twins) was **deleted in v0.24.0** rather than kept or batched ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#the-public-surface)): framework infrastructure moved to kernel-owned registries, so nothing framework-owned is bound in the application's container, and the guarantee protection gave — no integration monitors one value while DI resolves another — holds because registrations name bindings, not values.
   - [ ] revisit `time.Duration` as integer nanoseconds on both bind and response (only if the stdlib gains a format mechanism — go.dev/issue/74472; otherwise keep and close)
   - [ ] remove the deprecated `store.ErrDuplicate` / `store.ErrConflict` compatibility aliases (3.3)
-  - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide
+  - [ ] strict decoding as the default, mapstructure's weak coercion the opt-in through `config.WithWeakDecoding()`, `WithStrictDecoding` deleted — decided; ships with the [Pre-v1 Reshaping](#pre-v1-reshaping)'s R3
 - [ ] **Lifecycle acceptance scenarios** ([ADR-024](docs/adr/024-lifecycle-components.md#consequences), added in v0.24.0) stay pinned by tests (`TestAcceptance_DrainDeliversLastJob`, `TestAcceptance_FailedStartStopsWhatWasBuilt`): the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
 - [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` points at the migration guide, where each deferred breaking change is recorded with the minor that shipped it under its own CHANGELOG heading.
