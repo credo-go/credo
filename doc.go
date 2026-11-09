@@ -3,7 +3,14 @@
 // & components), and GoFr (enterprise toolkit).
 //
 // It targets Go 1.27+ and leverages generics for type-safe dependency
-// injection without reflection.
+// injection with no reflection on the request path.
+//
+// The package is large because the App's subsystems live in it: routing,
+// dependency injection, components and their lifecycle, health, i18n, the
+// HTTP features and the workers. The sections below group the overview by
+// subject; the symbol index stays alphabetical, so [ContinuousConfig],
+// [RestartPolicy], [Schedule] and [ScheduledConfig] stand apart from
+// [Worker], [WorkerInfo] and [Workers].
 //
 // # Quick Start
 //
@@ -65,6 +72,10 @@
 //     route value (e.g. [Context.SetUser], [Route.SetMeta]).
 //   - On<X> — registers a lifecycle hook (e.g. [App.OnStart], [App.OnStop],
 //     [App.OnReload]).
+//   - Add<X> — adds one of several registrations of a kind (e.g.
+//     [App.AddLivenessCheck], [App.AddReadinessCheck]).
+//   - A noun accessor returns the App's one registry of a subsystem that
+//     takes many registrations (e.g. [App.Workers]).
 //
 // Panic recovery is on by default; request IDs, access logging, response
 // compression and request decompression are explicit ([App.UseRequestID],
@@ -74,6 +85,61 @@
 // result classes with [AccessLogConfig.MinLevel] and
 // [AccessLogConfig.ResultFilter]; health probes are silent by default
 // ([HealthConfig.LogRequests] re-enables them).
+//
+// # Dependency Injection
+//
+// The container binds one singleton per type. [App.Provide] registers a
+// constructor, whose first result type is the binding's type and whose
+// parameters are resolved from the container — [Infra] first by convention,
+// produced by the container for the binding it builds; [App.ProvideValue]
+// binds a value built by the application, such as an opened database;
+// [App.Alias] binds an interface to a bound type, and [App.BindMany] adds a
+// type to the collection [App.ResolveAll] returns. Nothing is built at
+// registration. The first [App.Resolve], [App.ResolveAll], [App.MustResolve]
+// or [App.MustResolveAll] finalizes the container — validating the whole
+// graph — and then resolves; [App.Finalize] is an optional early check that
+// returns the same report as an error. [App.Has] probes a binding without
+// building or finalizing anything. Framework components are never bound
+// automatically: the one framework-made binding is [RawConfig].
+//
+// [RegistrationOption] values shape a registration: [Override] replaces an
+// earlier binding or alias of the type, [Borrowed] binds a value whose start
+// and teardown its owner keeps, [CloseOnShutdown] makes a value with Close a
+// component, [ComponentName] names a component in logs, /ready and
+// lifecycle errors — it is not a DI key — [Ingress] places a component in
+// the ingress tier, and [OptionalReadiness] reports its readiness entry
+// without letting it gate readiness. Each call checks the options it
+// accepts and panics on the others.
+//
+// # Components
+//
+// A [Component] is a value whose teardown the App owns: a binding whose type
+// shows Shutdown, or a value or constructor handed to [App.Manage], which
+// adds a component that is not a binding. The binding's type, not its value,
+// plans the rest: a component whose type shows [Starter] is started before
+// its dependants, one that shows [Readier] enters /ready, and one that
+// implements [IngressComponent] is placed in the ingress tier. A type that
+// hides its value's Start, Ready or ingress tier is refused. The App starts
+// components in dependency order before it accepts requests and shuts them
+// down after their consumers in two tiers ([Tier]): the ingress tier with the
+// HTTP drain, then the internal tier. Holders that share a resource
+// ([ResourceIdentifier]) start it once and tear it down once, through its
+// holder of record. Every call the App makes on a component carries its
+// scoped [Infra], read with [InfraFrom], whose logger writes
+// component=<name>. Start and drain failures are reported as a
+// [*LifecycleError].
+//
+// # Workers
+//
+// [App.Workers] returns the App's one worker registry. [Workers.Continuous]
+// registers a worker that runs until the App stops, restarted under its
+// [RestartPolicy]; [Workers.Scheduled] registers one that runs on a
+// [Schedule]. Each takes a worker — a [Worker] or a func(context.Context)
+// error — a run function whose other parameters the container supplies, or
+// a constructor of a worker that the start walk builds. Each worker is a
+// component named "worker:<name>", started and stopped in its tier;
+// [Workers.Snapshot] and [Workers.Lookup] report every worker's
+// [WorkerInfo].
 //
 // # Panics and Errors
 //
@@ -95,9 +161,10 @@
 // The documented order is:
 //
 //  1. configuration — [New];
-//  2. [App.Provide] and [App.ProvideValue];
-//  3. feature mounts and satellite registrations, in any order among
-//     themselves — [App.UseI18n], [App.UseHealth], stores and workers;
+//  2. the application's bindings — [App.Provide], [App.ProvideValue], a
+//     database it opened among them, [App.Alias] and [App.BindMany];
+//  3. feature mounts and component registrations, in any order among
+//     themselves — [App.UseI18n], [App.UseHealth], workers and [App.Manage];
 //  4. [App.Resolve], routes and anything built from a resolved value, a
 //     readiness check included: the first resolving call finalizes the
 //     container, and [App.Finalize], called before it, is an optional early

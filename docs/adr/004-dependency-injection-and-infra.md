@@ -97,8 +97,6 @@ The container is not a separate public package; it lives in `internal/di` behind
 - DI is already optional: a minimal App binds nothing, and a CLI or batch job builds an App, resolves and shuts it down with no listener.
 - The root package links only its allowlist of modules, and the placement rule puts a subsystem the App holds one of and reaches through `app.` in the root ([ADR-002](002-code-acquisition-strategy.md#what-lives-in-the-root-package)).
 
-> **Pending v0.25.0 (W9):** not implemented yet; the root package's documentation is not yet grouped by subject.
-
 The cost accepted is the size of the root package, answered by grouping its package documentation by subject — DI, components, workers; the symbol index of `go doc` and pkg.go.dev stays alphabetical.
 
 ### Finalize Phase
