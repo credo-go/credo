@@ -464,7 +464,7 @@ func (lm *lifecycleManager) serve(
 
 	// Phase 1b: prepare — implicit DI finalize, compile, publish. The result is
 	// stored once; a failure releases the slot but stays terminal.
-	p := app.prepare()
+	p := app.prepare(label)
 	if p == nil {
 		lm.abortClaim(run)
 		return fmt.Errorf("credo: %s: preparation rejected: app is shutting down", label)

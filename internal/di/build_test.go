@@ -21,8 +21,8 @@ func TestSeal_FreezesContainer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Provide after Seal")
 	}
-	if !strings.Contains(err.Error(), "called after Finalize") {
-		t.Errorf("error should say it was called after Finalize, got: %v", err)
+	if !strings.Contains(err.Error(), afterSeal) {
+		t.Errorf("error = %v, want it to contain %q", err, afterSeal)
 	}
 }
 
@@ -36,8 +36,8 @@ func TestSeal_ProvideValueAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for ProvideValue after Seal")
 	}
-	if !strings.Contains(err.Error(), "called after Finalize") {
-		t.Errorf("error should say it was called after Finalize, got: %v", err)
+	if !strings.Contains(err.Error(), afterSeal) {
+		t.Errorf("error = %v, want it to contain %q", err, afterSeal)
 	}
 }
 
@@ -53,8 +53,8 @@ func TestSeal_AliasAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Alias after Seal")
 	}
-	if !strings.Contains(err.Error(), "called after Finalize") {
-		t.Errorf("error should say it was called after Finalize, got: %v", err)
+	if !strings.Contains(err.Error(), afterSeal) {
+		t.Errorf("error = %v, want it to contain %q", err, afterSeal)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestSeal_BindManyAfterBuild_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for BindMany after Seal")
 	}
-	if !strings.Contains(err.Error(), "called after Finalize") {
-		t.Errorf("error should say it was called after Finalize, got: %v", err)
+	if !strings.Contains(err.Error(), afterSeal) {
+		t.Errorf("error = %v, want it to contain %q", err, afterSeal)
 	}
 }
 
@@ -150,33 +150,93 @@ func TestSeal_ResolveAfterFailedSeal(t *testing.T) {
 	}
 }
 
-func TestSeal_ResolveBeforeSeal_Rejected(t *testing.T) {
+// afterSeal is the reason of a registration after Seal.
+const afterSeal = "called after the container was finalized by Finalize; register before that call"
+
+func TestSeal_ResolveSealsImplicitly(t *testing.T) {
 	c := di.New()
 	calls := 0
 	c.MustProvide(func() *SimpleService {
 		calls++
 		return NewSimpleService()
 	})
-	c.MustProvideValue[*ServiceWithConfig](&ServiceWithConfig{Value: "prebuilt"})
 
-	// Constructor execution starts only after Seal: neither a constructor nor
-	// a prebuilt value is resolvable during registration.
-	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
-		t.Fatalf("Resolve before Seal = %v, want before-Finalize error", err)
+	// The first Resolve seals: the constructor runs then, and the container
+	// records the call as what finalized it.
+	if svc, err := c.Resolve[*SimpleService](); err != nil || svc.Value != "hello" || calls != 1 {
+		t.Fatalf("Resolve = %v, %v; calls = %d", svc, err, calls)
 	}
-	if _, err := c.Resolve[*ServiceWithConfig](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
-		t.Fatalf("Resolve of prebuilt value before Seal = %v, want before-Finalize error", err)
+	want := "called after the container was finalized by Resolve[*di_test.SimpleService]; register before that call"
+	if reason := misuseReason(t, c.Provide(NewServiceWithDep)); reason != want {
+		t.Fatalf("Provide after the first Resolve: reason = %q, want %q", reason, want)
 	}
-	if _, err := c.ResolveAll[Greeter](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
-		t.Fatalf("ResolveAll before Seal = %v, want before-Finalize error", err)
-	}
-	if calls != 0 {
-		t.Fatalf("constructor ran %d times before Seal, want 0", calls)
-	}
-
+	// A later Seal leaves the recorded trigger as it was.
 	seal(t, c)
-	if svc := c.MustResolve[*SimpleService](); svc.Value != "hello" || calls != 1 {
-		t.Fatalf("after Seal: Value = %q, calls = %d", svc.Value, calls)
+	if reason := misuseReason(t, c.Provide(NewServiceWithDep)); reason != want {
+		t.Fatalf("Provide after a later Seal: reason = %q, want %q", reason, want)
+	}
+}
+
+func TestSeal_ResolveAllSealsImplicitly(t *testing.T) {
+	c := di.New()
+	c.MustProvide(NewEnglishGreeter)
+	c.MustBindMany[Greeter, *englishGreeter]()
+	if got, err := c.ResolveAll[Greeter](); err != nil || len(got) != 1 {
+		t.Fatalf("ResolveAll = %v, %v", got, err)
+	}
+	want := "called after the container was finalized by ResolveAll[di_test.Greeter]; register before that call"
+	if reason := misuseReason(t, c.Provide(NewSimpleService)); reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestSealBy_RecordsTheFirstTrigger(t *testing.T) {
+	c := di.New()
+	if err := c.SealBy(di.Trigger{By: "Run at main.go:9", Remedy: "register before that call"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SealBy(di.Trigger{By: "Finalize at main.go:10", Remedy: "register before that call"}); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	c.SealOnResolve(func() di.Trigger {
+		called = true
+		return di.Trigger{By: "Resolve[x]"}
+	})
+	if called {
+		t.Error("SealOnResolve computed a trigger for a sealed container")
+	}
+	want := "called after the container was finalized by Run at main.go:9; register before that call"
+	if reason := misuseReason(t, c.Provide(NewSimpleService)); reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestSealOnResolve_SealsWithItsTrigger(t *testing.T) {
+	c := di.New()
+	c.MustProvide(NewSimpleService)
+	c.SealOnResolve(func() di.Trigger {
+		return di.Trigger{By: "MustResolve[*app.S] at main.go:3", Remedy: "register before that call"}
+	})
+	if _, err := c.Resolve[*SimpleService](); err != nil {
+		t.Fatal(err)
+	}
+	want := "called after the container was finalized by MustResolve[*app.S] at main.go:3; register before that call"
+	if reason := misuseReason(t, c.Provide(NewServiceWithDep)); reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestSeal_FailedImplicitSealIsEveryResolvesError(t *testing.T) {
+	c := di.New()
+	c.MustProvide(NewServiceWithDep) // needs *SimpleService, which is not registered
+	_, first := c.Resolve[*ServiceWithDep]()
+	if first == nil || !strings.Contains(first.Error(), "missing dependency") {
+		t.Fatalf("first Resolve = %v, want the seal's missing-dependency report", first)
+	}
+	_, later := c.Resolve[*ServiceWithDep]()
+	if later == nil || later.Error() != first.Error() {
+		t.Fatalf("later Resolve = %v, want %v", later, first)
 	}
 }
 
@@ -192,9 +252,10 @@ func TestFreeze_ClosesRegistrationWithoutSeal(t *testing.T) {
 	if err := c.ProvideValueWith[*SimpleService](&SimpleService{}, di.Options{Override: true}); err == nil {
 		t.Fatal("an override after Freeze should be rejected")
 	}
-	// Freeze neither validates nor admits resolution.
-	if _, err := c.Resolve[*SimpleService](); err == nil || !strings.Contains(err.Error(), "called before Finalize") {
-		t.Fatalf("Resolve after Freeze = %v, want before-Finalize error", err)
+	// Freeze neither validates nor admits resolution: the App is shutting
+	// down, so a Resolve does not seal it.
+	if _, err := c.Resolve[*SimpleService](); !errors.Is(err, di.ErrClosed) {
+		t.Fatalf("Resolve after Freeze = %v, want ErrClosed", err)
 	}
 	// Seal still runs its own validation afterwards and admits resolution.
 	seal(t, c)

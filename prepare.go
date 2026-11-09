@@ -37,7 +37,10 @@ const preparationPanicStackSize = 8192
 // shutdown admission: Shutdown moves the state to stopping first, then takes
 // prepMu, so a preparation already in flight either publishes before the
 // state changed or observes the change and withholds its result.
-func (app *App) prepare() *preparation {
+//
+// entry names the entry point, such as "Run" or "Start", as the trigger of
+// the implicit Finalize; "" is the first ServeHTTP call.
+func (app *App) prepare(entry string) *preparation {
 	if p := app.prep.Load(); p != nil {
 		return p
 	}
@@ -51,7 +54,7 @@ func (app *App) prepare() *preparation {
 	}
 	app.frozen.Store(true)
 	p := &preparation{}
-	p.handler, p.err = app.buildHandler()
+	p.handler, p.err = app.buildHandler(entry)
 	p.needsStart = p.err == nil && (app.container.HasStartWork() || len(app.lifecycle.onStart) > 0 ||
 		len(app.lifecycle.frameworkSteps) > 0)
 	if app.lifecycle.currentState() >= stateStopping {
@@ -63,13 +66,17 @@ func (app *App) prepare() *preparation {
 	return p
 }
 
-// buildHandler runs the DI-only Finalize and compiles the handler chain,
-// converting a compile panic (duplicate routes, a panicking middleware
-// constructor) into a recorded preparation error. The panic origin is logged
+// buildHandler runs the DI-only Finalize, with entry's trigger, and compiles
+// the handler chain, converting a compile panic (duplicate routes, a
+// panicking middleware constructor) into a recorded preparation error. The panic origin is logged
 // once with its stack; the stored error is what every later request or serve
 // call reports, so a partly compiled handler is never executed.
-func (app *App) buildHandler() (handler Handler, err error) {
-	if finalizeErr := app.Finalize(); finalizeErr != nil {
+func (app *App) buildHandler(entry string) (handler Handler, err error) {
+	trigger := serveHTTPTrigger
+	if entry != "" {
+		trigger = callTrigger(entry)
+	}
+	if finalizeErr := app.container.SealBy(trigger); finalizeErr != nil {
 		return nil, fmt.Errorf("credo: prepare: DI finalize: %w", finalizeErr)
 	}
 	defer func() {

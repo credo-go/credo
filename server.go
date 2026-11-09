@@ -39,7 +39,7 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			app.rejectUnavailable(w, r, state)
 			return
 		}
-		if p = app.prepare(); p == nil {
+		if p = app.prepare(""); p == nil {
 			app.rejectUnavailable(w, r, app.lifecycle.currentState())
 			return
 		}

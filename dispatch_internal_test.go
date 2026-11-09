@@ -98,7 +98,7 @@ func TestMountPrefixParams(t *testing.T) {
 // the centralized error renderer, so sentinel returns stay observable.
 func dispatchOnceForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	if p := app.prepare(); p == nil || p.err != nil {
+	if p := app.prepare(""); p == nil || p.err != nil {
 		t.Fatalf("prepare: %v", p)
 	}
 	rec := httptest.NewRecorder()

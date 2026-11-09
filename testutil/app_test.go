@@ -2,11 +2,13 @@ package testutil_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +45,29 @@ func TestNewApp_Defaults(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != "pong" {
 		t.Errorf("GET /ping = %d %q, want %d %q",
 			rec.Code, rec.Body.String(), http.StatusOK, "pong")
+	}
+}
+
+func TestStart_LateRegistrationNamesTheTestsLine(t *testing.T) {
+	app := testutil.NewApp(t)
+	_, file, line, _ := runtime.Caller(0)
+	testutil.Start(t, app)
+	want := fmt.Sprintf("credo: App.ProvideValue[*testutil_test.greeter]: called after the container was "+
+		"finalized by Start at %s:%d; register before that call", file, line+1)
+	defer func() {
+		if got := fmt.Sprint(recover()); got != want {
+			t.Errorf("panic = %q\nwant    %q", got, want)
+		}
+	}()
+	app.ProvideValue(&greeter{msg: "late"})
+}
+
+func TestNewApp_ResolveWithoutFinalize(t *testing.T) {
+	app := testutil.NewApp(t, testutil.WithWiring(func(app *credo.App) {
+		app.ProvideValue(&greeter{msg: "wired"})
+	}))
+	if got := app.MustResolve[*greeter](); got.msg != "wired" {
+		t.Fatalf("greeter.msg = %q, want %q", got.msg, "wired")
 	}
 }
 

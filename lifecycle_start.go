@@ -567,7 +567,7 @@ func (app *App) Start(ctx context.Context) error {
 	}
 	run.watch(ctx, lm.shutdownTimeout())
 
-	p := app.prepare()
+	p := app.prepare("Start")
 	if p == nil {
 		lm.abortClaim(run)
 		return errors.New("credo: Start: preparation rejected: app is shutting down")

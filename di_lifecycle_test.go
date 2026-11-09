@@ -11,25 +11,6 @@ import (
 
 type diPanicky struct{}
 
-func TestResolve_BeforeFinalize_Rejected(t *testing.T) {
-	app := mustNew(t)
-	calls := 0
-	app.Provide(func() *diSimpleService {
-		calls++
-		return newDISimpleService()
-	})
-	expectPanicContaining(t, "credo: App.Resolve[*credo_test.diSimpleService]: called before Finalize", func() {
-		_, _ = app.Resolve[*diSimpleService]()
-	})
-	if calls != 0 {
-		t.Fatalf("constructor ran %d times before Finalize", calls)
-	}
-	mustFinalize(t, app)
-	if svc := app.MustResolve[*diSimpleService](); svc.Value != "hello" || calls != 1 {
-		t.Fatalf("after Finalize: Value = %q, calls = %d", svc.Value, calls)
-	}
-}
-
 func TestHas(t *testing.T) {
 	app := mustNew(t)
 	if app.Has[*diSimpleService]() {

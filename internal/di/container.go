@@ -64,8 +64,11 @@ type Container struct {
 	// frozen closes the registration window: set by Seal, by the validation-free
 	// Freeze used for bootstrap teardown, and by Shutdown.
 	frozen bool
-	// sealed records that Seal ran (successfully or not). Resolve is admitted
-	// only after it.
+	// trigger is what finalized the container (SealBy), recorded with frozen;
+	// nil while it is open and when a shutdown froze it first.
+	trigger *Trigger
+	// sealed records that the seal ran (successfully or not). Resolve
+	// admits a resolution only after it, sealing first when nothing has.
 	sealed   bool
 	sealOnce sync.Once
 	sealErr  error
@@ -233,16 +236,17 @@ func isInterfaceSlice(t reflect.Type) bool {
 }
 
 // closedLocked rejects a write once the registration window has closed,
-// naming the phase that closed it: Finalize, or a shutdown that began before
-// it. It returns nil while registration is open. c.mu must be held.
+// naming what closed it: the trigger that finalized the container, or a
+// shutdown that began before it. It returns nil while registration is open.
+// c.mu must be held.
 func (c *Container) closedLocked(op string, types ...reflect.Type) error {
 	switch {
 	case !c.frozen:
 		return nil
-	case c.closing || !c.sealed:
+	case c.closing || c.trigger == nil:
 		return misuse(op, types, "called after shutdown began; registration ends when the App shuts down")
 	default:
-		return misuse(op, types, "called after Finalize; make every registration before Finalize, "+
-			"which Run and the first ServeHTTP call implicitly")
+		return misuse(op, types, "called after the container was finalized by %s; %s", c.trigger.By,
+			c.trigger.Remedy)
 	}
 }

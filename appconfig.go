@@ -219,8 +219,8 @@ func (app *App) GetConfig[T any](key string) (T, error) {
 // ConfigExists reports whether key is present in the application's
 // [RawConfig], mirroring [RawConfig.Exists]. Like [App.GetConfig] it is a
 // bootstrap helper that reads configuration directly, so framework modules
-// and composition roots can consult optional sections during registration,
-// before [App.Finalize] makes [App.Resolve] available.
+// and composition roots can consult optional sections during registration:
+// unlike [App.Resolve], it never finalizes the container.
 func (app *App) ConfigExists(key string) bool {
 	return app.rawConfig.Exists(key)
 }

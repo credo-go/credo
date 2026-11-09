@@ -86,13 +86,11 @@ func WithLogBuffer(buf *LogBuffer) Option {
 // NewApp registers a graceful shutdown via tb.Cleanup: it tears down every
 // singleton the test created whether or not the App was run. The App is not
 // finalized, so tests may still register routes, providers, and overrides.
-// Constructors run only after [credo.App.Finalize], so call it (or serve a
-// request, which finalizes implicitly) before resolving services:
+// The first resolving call finalizes it, as [Start] and serving a request
+// do, and a registration after that panics naming the test's line that
+// finalized it:
 //
 //	app := testutil.NewApp(t, testutil.WithOverride[UserRepo](fakeRepo))
-//	if err := app.Finalize(); err != nil {
-//		t.Fatal(err)
-//	}
 //	svc := app.MustResolve[*UserService]()
 func NewApp(tb testing.TB, opts ...Option) *credo.App {
 	tb.Helper()

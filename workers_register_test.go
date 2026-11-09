@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -44,15 +45,29 @@ func (*registerComponent) Shutdown(context.Context) error { return nil }
 // registerWant fails the test unless msg is exactly want.
 func registerWant(t *testing.T, msg, want string) {
 	t.Helper()
-	if msg != want {
+	if !matchesWithSite(msg, want) {
 		t.Errorf("message = %q\nwant      %q", msg, want)
 	}
 }
 
+// siteWildcard stands, in an expected message, for a trigger's site and its
+// callers, which finalize_trigger_test.go asserts exactly.
+const siteWildcard = "<site>"
+
+// matchesWithSite reports whether msg is want, each siteWildcard in want
+// matching a non-empty run of text.
+func matchesWithSite(msg, want string) bool {
+	parts := strings.Split(want, siteWildcard)
+	for i, part := range parts {
+		parts[i] = regexp.QuoteMeta(part)
+	}
+	return regexp.MustCompile("^" + strings.Join(parts, ".+?") + "$").MatchString(msg)
+}
+
 // registerAfterFinalize is the container's reason for a registration after
-// Finalize.
-const registerAfterFinalize = "called after Finalize; make every registration before Finalize, " +
-	"which Run and the first ServeHTTP call implicitly"
+// mustFinalize.
+const registerAfterFinalize = "called after the container was finalized by Finalize at " + siteWildcard +
+	"; register before that call"
 
 func TestWorkersConfiguration_ContinuousResolution(t *testing.T) {
 	defaults := credo.RestartPolicy{MinDelay: credo.DefaultMinRestartDelay, MaxDelay: credo.DefaultMaxRestartDelay}
@@ -641,7 +656,8 @@ func TestWorkersRegister_Misuse(t *testing.T) {
 				app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 				return func() { s.Continuous("late", registerIdle) }
 			},
-			want: `credo: Workers.Continuous("late"): ` + registerAfterFinalize,
+			want: `credo: Workers.Continuous("late"): called after the container was finalized by the first ` +
+				"ServeHTTP call; register before the App serves",
 		},
 		{
 			name: "after shutdown",
