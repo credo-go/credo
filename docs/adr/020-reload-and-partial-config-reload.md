@@ -54,7 +54,7 @@ The config store takes part through optional interfaces in the `config` package,
 
 ### `OnConfigChange[T]` is a generic method on `*App`
 
-`OnConfigChange[T](key, fn)` follows the Go 1.27 concrete-type generic-method convention of `Provide[T]`/`Resolve[T]`/`GetConfig[T]`. It is subject to the same registration guards as `OnStart` (rejected once the App is frozen, that is prepared or shut down). The same key may have several subscribers; nested keys are independent subscriptions (`"databases"` and `"databases.primary"` can both exist; both fire when `databases.primary.dsn` changes).
+`OnConfigChange[T](key, fn)` follows the Go 1.27 concrete-type generic-method convention of `ProvideValue[T]`/`Resolve[T]`/`GetConfig[T]`. It is subject to the same registration guards as `OnStart` (rejected once the App is frozen, that is prepared or shut down). The same key may have several subscribers; nested keys are independent subscriptions (`"databases"` and `"databases.primary"` can both exist; both fire when `databases.primary.dsn` changes).
 
 The subscriber receives the decoded `T` and is responsible for applying it atomically in its own domain (`atomic.Pointer[T]`, `slog.LevelVar.Set`, swapping a rate-limit bucket, re-opening a file). The framework does not mutate DI singletons, re-run constructors, or touch handlers: the DI graph is immutable after `Finalize` (ADR-004), and reload does not change that.
 

@@ -101,7 +101,7 @@ app.OnStop(func(ctx context.Context) error {
 ```
 
 - Both are anonymous components of a tier, internal unless `credo.Ingress()` says otherwise. Within a tier, start hooks run FIFO after the tier's components have started, and stop hooks run LIFO before they stop, so a hook can use what the components provide and never outlives it. Under managed serving the listener is already bound when start hooks run, so `app.Addr()` is available.
-- A hook is a leaf action. Anything with its own teardown is a component ([ADR-024](024-lifecycle-components.md)) — a value built outside DI with `app.Manage`, a resource whose teardown is `Close` with `credo.Closer()` on its binding — and process-level cleanup that must outlive every component, such as flushing a log sink, belongs after `Run` returns. A stop hook that closed a resource would run before that resource's consumers, because its slot precedes its tier's components.
+- A hook is a leaf action. Anything with its own teardown is a component ([ADR-024](024-lifecycle-components.md)) — a value built outside DI with `app.Manage`, a resource whose teardown is `Close` with `credo.CloseOnShutdown()` on its binding — and process-level cleanup that must outlive every component, such as flushing a log sink, belongs after `Run` returns. A stop hook that closed a resource would run before that resource's consumers, because its slot precedes its tier's components.
 
 The [lifecycle spec](../specs/lifecycle.md#apponstartfn-opts-and-apponstopfn-opts) states the hooks' contexts, error and panic handling, and registration rules.
 

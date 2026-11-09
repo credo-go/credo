@@ -265,7 +265,7 @@ The name is the registration identity. It is the `worker` attribute of every log
 - non-empty;
 - no leading or trailing whitespace (names are never trimmed or otherwise normalized);
 - no control characters;
-- unique within the supervisor (`worker: Continuous("x"): duplicate worker name "x"; give each worker its own name`), across all four methods; across supervisors, the component registry's unique-name rule refuses a second `worker:<name>`, and so does a component of that name added with `credo.Named` (`worker: Continuous("x"): the App already has a component named "worker:x", registered by another supervisor or with credo.Named; give each worker its own name`).
+- unique within the supervisor (`worker: Continuous("x"): duplicate worker name "x"; give each worker its own name`), across all four methods; across supervisors, the component registry's unique-name rule refuses a second `worker:<name>`, and so does a component of that name added with `credo.ComponentName` (`worker: Continuous("x"): the App already has a component named "worker:x", registered by another supervisor or with credo.ComponentName; give each worker its own name`).
 
 No prefix is reserved. The health engine's reserved `credo.` prefix applies to the full name, which always starts with `worker:`.
 
@@ -333,7 +333,7 @@ The four methods share one path. In order, a registration panics when:
 4. a configuration value is rejected by the table above;
 5. the schedule does not parse (see [Schedules](#schedules));
 6. the name is a duplicate in the supervisor, or a provided `T` is already registered in the App, by this supervisor or another;
-7. the component registry refuses the worker's component: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App shut down, or another supervisor or a `credo.Named` component already holds `worker:<name>`.
+7. the component registry refuses the worker's component: the registration comes after `Finalize` (an App that is prepared has been finalized) or after the App shut down, or another supervisor or a `credo.ComponentName` component already holds `worker:<name>`.
 
 Every panic follows one format, `worker: <Call>: <problem>; <remedy>`, where `<Call>` is `Continuous("name")`, `Scheduled("name")`, `ContinuousProvided[*T]("name")` or `ScheduledProvided[*T]("name")`, with `T` spelled as Go prints the type (package-qualified). For example:
 
@@ -364,7 +364,7 @@ The site is the first frame outside Credo's packages and `testutil`; the first `
 
 `ContinuousProvided[T]` and `ScheduledProvided[T]` add the worker's component to the registry as a constructor over `T` — the App's component registry receives a `func(T) (component, error)` — so `T` is an edge: the start walk builds the component, resolving `T` from the container, after `T`'s component dependencies have started. Consequences:
 
-- `Provide[T]` and the provided registration may be called in either order, both before `Finalize`.
+- The `Provide` binding of `T` and the provided registration may be called in either order, both before `Finalize`.
 - The constraint `T Worker` makes a type without `Run` a compile error. `T` may be an interface bound with `app.Alias`.
 - A `T` with no binding is a missing dependency: `Finalize` returns it with its path. `T`'s own constructor graph is validated by `Finalize` like any provider's.
 - A constructor error or panic while building `T`, or a nil value (`worker: "name": *app.Relay resolved to nil`), is a start failure of the worker's component: the start phase rolls back what was built and `Run` returns the error naming `worker:<name>`.
@@ -377,7 +377,7 @@ A worker registered by value has no edges the dependency graph can see — a clo
 
 ### Start, Shutdown, Ready
 
-Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to, exactly as `app.Manage(component, credo.Named("worker:<name>"))` would add it, with `credo.Ingress()` when that tier is ingress. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
+Each registration adds one component, named `worker:<name>`, in the tier its configuration resolves to, exactly as `app.Manage(component, credo.ComponentName("worker:<name>"))` would add it, with `credo.Ingress()` when that tier is ingress. The component follows the lifecycle's rules for every component ([ADR-024](../adr/024-lifecycle-components.md), [lifecycle spec](lifecycle.md)); what it does in each method:
 
 - **`Start(ctx)`** derives the worker's own context from `context.WithoutCancel(ctx)` with a cancel that only `Shutdown` calls, launches the loop on one goroutine and returns nil. The call-scoped `ctx` ends when `Start` returns; the worker's context ends only when its component is shut down. A provided worker's construction precedes `Start`, so its failure is the component's start failure. A second `Start`, or a `Start` after `Shutdown`, returns an error; the lifecycle never makes either call.
 - **`Shutdown(ctx)`** cancels the worker's context and returns when `Run` and the loop have returned — and not before. It does not return at the deadline itself: a `Run` that ignores cancellation past the drain deadline is abandoned by the lifecycle, reported in the error `Run` returns, and the components the worker depends on stay open, so nothing closes a database under a run that may still use it. A worker whose component was built but never started shuts down at once.
@@ -740,9 +740,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	app.Provide[*Queue](NewQueue)
-	app.Provide[*OrderService](NewOrderService)
-	app.Provide[*OrderConsumer](NewOrderConsumer)
+	app.Provide(NewQueue)
+	app.Provide(NewOrderService)
+	app.Provide(NewOrderConsumer)
 
 	// Internal tier: stops after the HTTP drain, before the queue and the service.
 	// Restarts after 5s, backing off up to the cap (1m by default) while failures repeat.
@@ -783,7 +783,7 @@ func (w *SessionCleanup) Run(ctx context.Context) error {
 }
 
 func registerCleanup(app *credo.App, workers *worker.Supervisor) {
-	app.Provide[*SessionCleanup](NewSessionCleanup)
+	app.Provide(NewSessionCleanup)
 
 	// Every 6 hours plus once at startup; each run gets 10 minutes;
 	// failed after 3 consecutive failures. Ingress tier: no run starts during the drain.
@@ -862,7 +862,7 @@ workers.Continuous("config-watcher", &ConfigWatcher{path: "./configs", onChange:
 
 > **Current until v0.25.0 (W4):** the next paragraph describes the `worker` package and the `internal/kernel` seam.
 
-`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The cron parser in `worker/schedule.go` is adapted from robfig/cron v3. The supervisor adds each worker's component — a value, or a constructor over `T` for the provided forms — through the module-internal kernel seam (`internal/kernel`), which does what `App.Manage` with `credo.Named` and `credo.Ingress()` does and also carries the worker's own remedy into `Finalize`'s tier finding.
+`worker/` imports the root package (like `store/`); the root package does not import `worker/`. The cron parser in `worker/schedule.go` is adapted from robfig/cron v3. The supervisor adds each worker's component — a value, or a constructor over `T` for the provided forms — through the module-internal kernel seam (`internal/kernel`), which does what `App.Manage` with `credo.ComponentName` and `credo.Ingress()` does and also carries the worker's own remedy into `Finalize`'s tier finding.
 
 > **Pending v0.25.0 (W4):** the next paragraph replaces the paragraph above when W4 ships.
 

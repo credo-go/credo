@@ -8,7 +8,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, the logger, `credo.New(credo.WithRawConfig(rawCfg), …)`.
 2. **`Provide`** — the typed config values and the constructors of `TenantStore`, `TenantService` and `UsageReporter`, each taking `credo.Infra` first.
-3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, `store.Register[*TenantStore]`, a provided scheduled worker, the WebSocket server handed to `app.Manage(ws, credo.Ingress())`, and the `OnConfigChange`, `OnStart` and `OnStop` hooks.
+3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, `store.Register[*TenantStore]`, a provided scheduled worker, the WebSocket server handed to `app.Manage(ws)`, and the `OnConfigChange`, `OnStart` and `OnStop` hooks.
 4. **`Finalize`** — the graph is validated and its error handled before anything is built.
 5. **`Resolve`, middleware and routes** — `TenantService` is resolved and its handlers bound; Secure and CORS are global middleware, authentication and the admin role check stay on their groups, and a `StatusHandler` answers the router's 404.
 6. **`Run`** — the start phase pings the store, starts the worker and the WebSocket server and runs the start hooks before the App accepts requests; SIGINT/SIGTERM drains the listener, the WebSocket server and the worker first, then `TenantService`, then the store.
@@ -17,7 +17,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 - **Store.** `TenantStore` stands in for a `*sqldb.DB`: it implements `store.Lifecycle`, is bound with `app.Provide` and named `tenants-db` with `store.Register`. `/ready` reports its health; the App shuts it down after the services that use it. An application with `store/sqldb` binds the opened handle the same way.
 - **Worker.** `UsageReporter` is built from the container and registered with `worker.Use(app).ScheduledProvided`, one run per hour; it stops with the HTTP drain.
-- **WebSocket.** `websocket.New(app.NewInfra("websocket"))` is an ingress component; `GET /ws/echo` echoes every message.
+- **WebSocket.** `websocket.New()` is an ingress component by its type; `GET /ws/echo` echoes every message.
 - **Localization.** `UseI18n` takes a programmatic English catalog: error codes, validation codes and field display names are exact keys, and `ctx.T` translates the admin greeting.
 - **Validation and errors.** `CreateTenantRequest.Validate` uses programmatic rules and one custom rule that returns `validation.NewError`; failures render in the default error envelope with field-level `violations`.
 - **Reload.** `OnConfigChange("app", …)` switches the log level when `app.debug` changes and the process receives SIGHUP.

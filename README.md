@@ -56,7 +56,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 go get github.com/credo-go/credo@latest
 ```
 
-> **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Provide[T]`, `q.Page[T]`, `ctx.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
+> **Requires Go 1.27+.** Credo tracks the current Go release to build on the modern standard library (e.g. `os.Root`, structured `log/slog`) and language features — the 1.27 floor is driven by generic methods (`app.Resolve[T]`, `q.Page[T]`, `ctx.GetUser[T]`). It targets new and actively-maintained services rather than legacy codebases pinned to older toolchains — enterprise-grade in capability, modern in its baseline.
 
 ## Quick Start
 
@@ -160,11 +160,11 @@ if err != nil {
 }
 
 app.ProvideValue(db)                          // 2. Provide (db is a *sqldb.DB)
-app.Provide[*PgOrderRepo](NewPgOrderRepo)
+app.Provide(NewPgOrderRepo)
 app.Alias[OrderRepo, *PgOrderRepo]()
-app.Provide[*OrderService](NewOrderService)
-app.Provide[*OrderController](NewOrderController)
-app.Provide[*OutboxRelay](NewOutboxRelay)
+app.Provide(NewOrderService)
+app.Provide(NewOrderController)
+app.Provide(NewOutboxRelay)
 
 app.UseHealth()                               // 3. feature mounts and satellites
 store.Register[*sqldb.DB](app)                //    pinged at start, reported by /ready
@@ -184,18 +184,17 @@ if err := app.Run(); err != nil {             // 6. start, serve, drain
 
 | API | Purpose |
 | --- | --- |
-| `Provide[T]`, `ProvideValue[T]` | Register a constructor or a built value; misuse panics at the call |
+| `Provide`, `ProvideValue[T]` | Register a constructor, bound as the type it returns, or a built value; misuse panics at the call |
 | `Alias[I, T]`, `BindMany[I, T]` | Resolve an interface as `T`'s singleton; build an ordered `[]I` collection |
 | `Has[T]` | Ask whether `T` is registered, without constructing it |
 | `Finalize` | Freeze registrations and report every missing dependency (with its path) and cycle |
 | `Resolve[T]`, `ResolveAll[I]` (`MustResolve`, `MustResolveAll`) | Retrieve singletons after `Finalize`; before it they panic |
-| `credo.Ingress()`, `credo.Borrowed()`, `credo.Closer()`, `credo.Override()` | Registration options: the drain tier, a caller-owned value, a `Close`-based teardown, replacing an earlier binding |
 | `credo.Component`, `credo.Starter`, `credo.Readier` | A value with `Shutdown` is a component the App stops after its consumers; `Start` and `Ready` on its binding's type are called in the start phase and by `/ready` |
-| `app.Manage(v, opts...)` | A component that is not a binding, such as a WebSocket server or a mounted child App |
+| `app.Manage(v)` | A component that is not a binding, such as a WebSocket server or a mounted child App |
 | `app.OnStart`, `app.OnStop` | Leaf start and stop actions, run in their tier |
 | `app.Start(ctx)`, `testutil.Start(t, app)` | Run the start phase without a listener, for an external `http.Server` or a test |
 
-A value the App should start or ask for readiness is provided as its concrete type, with `Alias` for the interface the application uses. See the [dependency-injection guide](docs/guides/dependency-injection.md).
+A value the App should start or ask for readiness is provided as its concrete type, with `Alias` for the interface the application uses; a binding whose type hides them is refused. The [dependency-injection guide](docs/guides/dependency-injection.md) describes the registration options: the drain tier, a caller-owned value, a `Close`-based teardown, replacing an earlier binding.
 
 ## Documentation
 

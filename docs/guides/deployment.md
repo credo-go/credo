@@ -93,7 +93,7 @@ Kubernetes has no reload verb. Its two idioms are:
 On `SIGTERM` (or a cancelled `RunContext` context, or `app.Shutdown`), the App drains what it owns in two tiers:
 
 1. `/ready` answers 503 `shutting_down`, so load balancers stop routing; `/health` stays 200, since the process is alive and draining.
-2. The **ingress tier** — where work enters the process: the WebSocket server, scheduled workers, consumers of external queues (a continuous worker registered with `Tier: credo.TierIngress` among them) and anything registered with `credo.Ingress()` — stops concurrently with the HTTP drain: its `OnStop` hooks in reverse registration order, then its components, those that no dependency orders stopping concurrently with each other.
+2. The **ingress tier** — where work enters the process: the WebSocket server, scheduled workers, consumers of external queues (a continuous worker registered with `Tier: credo.TierIngress` among them) and anything registered with `credo.Ingress()` or whose type declares the tier — stops concurrently with the HTTP drain: its `OnStop` hooks in reverse registration order, then its components, those that no dependency orders stopping concurrently with each other.
 3. A reload that overlapped the stop finishes.
 4. The **internal tier** — everything else: continuous workers, which consume what the handlers enqueue, and the database pools and clients the handlers and workers use — stops: its `OnStop` hooks in reverse registration order, then its components one at a time, each consumer before the components it depends on.
 
@@ -146,7 +146,7 @@ if err := app.Shutdown(drainCtx); err != nil { // then: the App stops its tiers
 
 ## What Lands in Your Logs
 
-Beyond Credo's own access and error logs, the standard library's server diagnostics are bridged into the application logger at `ERROR` with `component=net/http`. In production these are the entries worth alerting on:
+Beyond Credo's own access and error logs, the standard library's server diagnostics are bridged into the application logger at `ERROR` with `module=net/http`. In production these are the entries worth alerting on:
 
 | Message | Usually means |
 | --- | --- |
@@ -155,7 +155,7 @@ Beyond Credo's own access and error logs, the standard library's server diagnost
 | `http: panic serving …` | A panic outside the framework recovery (only when `WithoutRecover` is set, or from a hijacked connection) |
 | `http: superfluous response.WriteHeader call from …` | A handler bug: the response was already committed |
 
-Filter them with `component=net/http` to separate them from Credo's own records. Note that header-limit rejections (`431`) never appear here — `net/http` writes that response directly to the connection without logging it; if you need to count them, terminate at a proxy that records status codes, or install a `ConnState` hook through [`WithHTTPServer`](#tuning-the-http-server).
+Filter them with `module=net/http` to separate them from Credo's own records. Note that header-limit rejections (`431`) never appear here — `net/http` writes that response directly to the connection without logging it; if you need to count them, terminate at a proxy that records status codes, or install a `ConnState` hook through [`WithHTTPServer`](#tuning-the-http-server).
 
 ## Tuning the HTTP Server
 

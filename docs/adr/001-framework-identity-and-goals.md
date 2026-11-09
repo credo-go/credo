@@ -40,7 +40,7 @@ A handler is `func(*credo.Context) error`. Handlers return failures as errors in
 
 ### 5. Generics Over Reflection
 
-Typed APIs are generic, so callers work with typed values instead of runtime type assertions: `app.Provide[T]`/`Resolve[T]` in the container ([ADR-004](004-dependency-injection-and-infra.md)) and `Rule[T]`/`Field[T]` in validation ([ADR-011](011-validation-strategy.md)). Reflection is kept to what generics cannot express: JSON decoding, binder struct tags, DI constructor inspection and validation's field-name lookup.
+Typed APIs are generic, so callers work with typed values instead of runtime type assertions: `app.ProvideValue[T]`/`Resolve[T]` in the container ([ADR-004](004-dependency-injection-and-infra.md)) and `Rule[T]`/`Field[T]` in validation ([ADR-011](011-validation-strategy.md)). Reflection is kept to what generics cannot express: JSON decoding, binder struct tags, DI constructor inspection and validation's field-name lookup.
 
 ### 6. Observable by Default
 
@@ -52,7 +52,7 @@ Integrated tools (goal 1) need a shared handler signature, context type and midd
 
 ### 8. Go 1.27+ Baseline
 
-Credo tracks the current Go release and builds on its modern standard-library APIs (`errors.AsType`, `crypto/rand.Text`, testing's `b.Loop`/`t.Context`, `sync.WaitGroup.Go`). The 1.27 floor is driven by generic methods — `app.Provide[T]`/`Resolve[T]`, `q.One[T]`/`All[T]`/`Page[T]`, and `ctx.GetUser[T]` all require the 1.27 language version.
+Credo tracks the current Go release and builds on its modern standard-library APIs (`errors.AsType`, `crypto/rand.Text`, testing's `b.Loop`/`t.Context`, `sync.WaitGroup.Go`). The 1.27 floor is driven by generic methods — `app.ProvideValue[T]`/`Resolve[T]`, `q.One[T]`/`All[T]`/`Page[T]`, and `ctx.GetUser[T]` all require the 1.27 language version.
 
 ## Consequences
 

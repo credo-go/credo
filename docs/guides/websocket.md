@@ -22,13 +22,13 @@ func main() {
         log.Fatal(err)
     }
 
-    ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+    ws := websocket.New(websocket.Config{
         AllowedOrigins:     []string{"https://app.example.com"},
         Subprotocols:       []string{"echo.v1"},
         RequireSubprotocol: true,
         ReadLimit:          64 << 10,
     })
-    app.Manage(ws, credo.Ingress()) // started with the App, drained beside HTTP
+    app.Manage(ws) // started with the App, drained beside HTTP
 
     app.GET("/ws/echo", ws.Handler(func(_ *credo.Context, conn *websocket.Conn) error {
         for {
@@ -52,20 +52,18 @@ func main() {
 
 ## Registering the Server
 
-`websocket.New(infra, cfg...)` validates and freezes the configuration and returns the server. It takes zero or one `Config`, copies its slices, performs no I/O and registers nothing; more than one `Config` or an invalid one panics as startup misuse. The server logs through `infra.Logger` with `module=websocket` added (`slog.Default()` when the logger is nil), so `app.NewInfra("websocket")` gives it the App's logger.
+`websocket.New(cfg...)` validates and freezes the configuration and returns the server. It takes zero or one `Config`, copies its slices, performs no I/O and registers nothing; more than one `Config` or an invalid one panics as startup misuse. The server settles its logger in `Start`: `Config.Logger` when set, else the App's logger, which it reads with `credo.InfraFrom` from the `Start` context, else the framework default. Every record it writes carries `module=websocket`.
 
-The application registers the server as an **ingress component**, so the App starts it in the start phase and drains it beside the HTTP drain, before the internal components its handlers use. A server that only routes use is handed to `app.Manage(ws, credo.Ingress())`, as above. A server that controllers take as a dependency is bound with `credo.Ingress()` instead:
+The server is an **ingress component** by its type, so the App starts it in the start phase and drains it beside the HTTP drain, before the internal components its handlers use, with no registration option. A server that only routes use is handed to `app.Manage(ws)`, as above. A server that controllers take as a dependency is bound instead:
 
 ```go
-app.Provide[*websocket.Server](func(infra credo.Infra) *websocket.Server {
-    return websocket.New(infra, websocket.Config{ReadLimit: 64 << 10})
-}, credo.Ingress())
-app.Provide[*ChatController](NewChatController) // NewChatController(ws *websocket.Server) *ChatController
+app.ProvideValue(websocket.New(websocket.Config{ReadLimit: 64 << 10}))
+app.Provide(NewChatController) // NewChatController(ws *websocket.Server) *ChatController
 ```
 
-`Start` opens admission; the App calls it. It does no I/O and starts no goroutine, so it keeps no context: each connection's context still derives from its request, as described below. A second `Start`, or a `Start` after `Shutdown`, returns an error. A server that was never started refuses every upgrade at the handshake's admission step — after the mechanical upgrade-request, origin and subprotocol checks, which still win — with an error that names the missing registration: `credo/websocket: the server was never started; register it as an ingress component with app.Manage(server, credo.Ingress()) or bind it with credo.Ingress()`. It goes through the centralized error pipeline as a 500 (`internal_server_error` in the default envelope); the message is logged, not sent to the client. After `Shutdown` the handshake answers 503.
+`Start` opens admission; the App calls it. It does no I/O and starts no goroutine, so it keeps no context: each connection's context still derives from its request, as described below. A second `Start`, or a `Start` after `Shutdown`, returns an error. A server that was never started refuses every upgrade at the handshake's admission step — after the mechanical upgrade-request, origin and subprotocol checks, which still win — with an error that names the missing registration: `credo/websocket: the server was never started; hand it to the App with app.Manage(server), or bind it`. It goes through the centralized error pipeline as a 500 (`internal_server_error` in the default envelope); the message is logged, not sent to the client. After `Shutdown` the handshake answers 503.
 
-A managed component's default name is its type name, so an App with two servers names each with `credo.Named`, such as `app.Manage(chat, credo.Ingress(), credo.Named("chat"))`. An App that registered a server has start work: a test serving it through `httptest` starts it first with `testutil.Start(t, app)`, and an [external `http.Server`](#external-httpserver) with `app.Start(ctx)`.
+A managed component's default name is its type name, so an App with two servers names each with `credo.ComponentName`, such as `app.Manage(chat, credo.ComponentName("chat"))`. An App that registered a server has start work: a test serving it through `httptest` starts it first with `testutil.Start(t, app)`, and an [external `http.Server`](#external-httpserver) with `app.Start(ctx)`.
 
 ## Authentication and Browser Clients
 
@@ -88,7 +86,7 @@ Avoid long-lived credentials in the URL query. URLs routinely reach proxy, load-
 Configure `AllowedOrigins` for every trusted browser deployment origin:
 
 ```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+ws := websocket.New(websocket.Config{
     AllowedOrigins: []string{
         "https://app.example.com",
         "https://*.tenant.example.com", // exactly one wildcard label
@@ -156,7 +154,7 @@ Choose heartbeat intervals from the shortest proxy/load-balancer/NAT idle timeou
 The secure default read limit is 32 KiB per message. Set an explicit limit from the largest legitimate application message plus modest protocol growth—not from available server memory:
 
 ```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+ws := websocket.New(websocket.Config{
     ReadLimit: 256 << 10,
 })
 ```
@@ -164,7 +162,7 @@ ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
 Compression is disabled by default because it adds CPU/memory cost and can amplify secret-compression side channels. Enable it only after measuring the payload and threat model:
 
 ```go
-ws := websocket.New(app.NewInfra("websocket"), websocket.Config{
+ws := websocket.New(websocket.Config{
     CompressionMode:      websocket.CompressionNoContextTakeover,
     CompressionThreshold: 1024,
 })

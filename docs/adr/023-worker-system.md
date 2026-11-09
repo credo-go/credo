@@ -97,7 +97,7 @@ DI access to the registry is the application's choice. The framework binds nothi
 
 > **Current until v0.25.0 (W5):** this section describes the provided form, which the [three forms](#three-forms-a-worker-a-run-function-a-constructor) replace.
 
-`ContinuousProvided[T Worker](name, cfg...)` and `ScheduledProvided[T Worker](name, expr, cfg...)` are generic methods on `*Supervisor`, the form `app.Provide[T]` uses. `T` is resolved when the start walk builds the worker's component, not at registration, so registration order relative to `Provide` is free and `T` may be an interface bound through `Alias`. Each mistake surfaces in the phase that reveals it — a type without `Run` at compile time, a `T` with no binding at `Finalize`, a failed construction at start ([worker spec](../specs/worker.md#provided-workers)). Registering one `T` twice panics, under two names or in two supervisors of one App, because the container would hand both loops one instance.
+`ContinuousProvided[T Worker](name, cfg...)` and `ScheduledProvided[T Worker](name, expr, cfg...)` are generic methods on `*Supervisor`, the form `app.Resolve[T]` uses. `T` is resolved when the start walk builds the worker's component, not at registration, so registration order relative to `Provide` is free and `T` may be an interface bound through `Alias`. Each mistake surfaces in the phase that reveals it — a type without `Run` at compile time, a `T` with no binding at `Finalize`, a failed construction at start ([worker spec](../specs/worker.md#provided-workers)). Registering one `T` twice panics, under two names or in two supervisors of one App, because the container would hand both loops one instance.
 
 ### Three forms: a worker, a run function, a constructor
 

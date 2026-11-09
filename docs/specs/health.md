@@ -103,11 +103,11 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...Re
 
 | Source | Entry name | Probe built | Up when |
 | --- | --- | --- | --- |
-| Components' `Ready` | The component's name: its `credo.Named` name, else its type name; `worker:<name>` for a worker | Once, when the App enters running, from the values the start walk built | `Ready(ctx)` returns nil |
+| Components' `Ready` | The component's name: its `credo.ComponentName` name, else its type name; `worker:<name>` for a worker | Once, when the App enters running, from the values the start walk built | `Ready(ctx)` returns nil |
 | Store registrations | The store's name (`store.WithName`, else the type name) | Once per store, when the start phase has built and pinged its binding — after `Finalize`, so after every override | Its `Health` status is up |
 | Application checks | The `AddReadinessCheck` name | At the call | `Check(ctx)` returns nil |
 
-- A component contributes when its type — the binding's type, or the type handed to `app.Manage` — shows `Ready` (`credo.Readier`); a borrowed value's `Ready` contributes too, although the App neither starts nor stops it. A `Ready` that only the built value has is never asked ([lifecycle spec](lifecycle.md#readiness)).
+- A component contributes when its type — the binding's type, or the type handed to `app.Manage` — shows `Ready` (`credo.Readier`); a borrowed value's `Ready` contributes too, although the App neither starts nor stops it. A component whose binding's type hides its value's `Ready` is refused, unless another registration of the same resource plans it ([lifecycle spec](lifecycle.md#component-types)).
 - A worker contributes only when its registration sets a readiness condition ([worker spec](worker.md#health-integration)).
 - Before the App has started there are no component or store entries.
 - The three sources share one name space. A store whose name equals an application check's, and a component whose name equals an application check's, a store's or another component's, is not run: a down entry named `credo.store_name_conflict.<i>` or `credo.contributed_name_conflict.<i>` takes its place, where `<i>` is the entry's position in its source, and readiness answers 503. The application check keeps its name.

@@ -226,7 +226,7 @@ func main() {
     app.ProvideValue(&dbCfg)
 
     // Services receive *DatabaseConfig via constructor injection.
-    app.Provide[*MyService](NewMyService)
+    app.Provide(NewMyService)
 }
 
 func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
@@ -334,13 +334,13 @@ func setupDatabases(app *credo.App) error {
     }
 
     // Each database is bound under its own wrapper type and registered by it.
-    app.Provide[PrimaryDB](func() (PrimaryDB, error) {
+    app.Provide(func() (PrimaryDB, error) {
         db, err := sqldb.Open(&primaryCfg)
         return PrimaryDB{db}, err
     })
     store.Register[PrimaryDB](app, store.WithName("primary"))
 
-    app.Provide[AnalyticsDB](func() (AnalyticsDB, error) {
+    app.Provide(func() (AnalyticsDB, error) {
         db, err := sqldb.Open(&analyticsCfg)
         return AnalyticsDB{db}, err
     })

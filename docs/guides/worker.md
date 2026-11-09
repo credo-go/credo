@@ -92,9 +92,9 @@ func main() {
         log.Fatal(err)
     }
 
-    app.Provide[*Queue](NewQueue)
-    app.Provide[*Sender](NewSender)
-    app.Provide[*EmailConsumer](NewEmailConsumer)
+    app.Provide(NewQueue)
+    app.Provide(NewSender)
+    app.Provide(NewEmailConsumer)
 
     workers := worker.Use(app)
     workers.ContinuousProvided[*EmailConsumer]("email-consumer", worker.ContinuousConfig{
@@ -137,8 +137,8 @@ func main() {
         log.Fatal(err)
     }
 
-    app.Provide[*CleanupRepository](NewCleanupRepository)
-    app.Provide[*CleanupWorker](NewCleanupWorker)
+    app.Provide(NewCleanupRepository)
+    app.Provide(NewCleanupWorker)
 
     workers := worker.Use(app)
     workers.ScheduledProvided[*CleanupWorker]("cleanup", "0 */6 * * *", worker.ScheduledConfig{
@@ -197,7 +197,7 @@ A method value works too: `workers.Scheduled("daily-report", "0 6 * * *", worker
 // RegisterBilling is the billing module's registration: it takes the
 // supervisor the composition root created.
 func RegisterBilling(app *credo.App, workers *worker.Supervisor) {
-    app.Provide[*InvoiceWorker](NewInvoiceWorker)
+    app.Provide(NewInvoiceWorker)
     workers.ScheduledProvided[*InvoiceWorker]("invoice-worker", "@every 1m", worker.ScheduledConfig{
         RunTimeout: 15 * time.Second,
     })
@@ -226,7 +226,7 @@ A nil worker, a malformed name, more than one configuration, a negative value an
 
 `ContinuousProvided[T]` and `ScheduledProvided[T]` register a worker that the container builds. They record the type, not an instance: the worker's component is a constructor over `T`, which the start phase builds after `T`'s dependencies have started.
 
-- `app.Provide[T]` and the registration may come in either order, both before `Finalize`.
+- The `app.Provide` binding of `T` and the registration may come in either order, both before `Finalize`.
 - `T` must have a `Run` method — the constraint is `T worker.Worker`, so anything else does not compile. `T` may be an interface bound with `app.Alias`.
 - A `T` without a binding fails `Finalize` with the dependency path. A constructor error, a panic or a nil `T` fails the start: what was built is rolled back, and `Run` returns a `*credo.LifecycleError` naming `worker:<name>`.
 - The worker stops **before** the components `T` depends on: the database a consumer writes to is still open while the consumer flushes its last batch. If `T` itself has `Shutdown`, it is a component too and is shut down after the worker.
