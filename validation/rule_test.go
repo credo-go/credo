@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/credo-go/credo/validation"
@@ -286,6 +287,147 @@ func TestValidateStruct_NestedValidatable(t *testing.T) {
 		if !fieldMap[f] {
 			t.Errorf("missing error for field %q; got fields: %v", f, fieldMap)
 		}
+	}
+}
+
+// readingAddress has a pointer-receiver Validate that reads its fields, so a
+// call on a nil receiver panics. calls counts the calls on non-nil values.
+type readingAddress struct {
+	City  string `json:"city"`
+	calls *int
+}
+
+func (a *readingAddress) Validate() error {
+	if a.calls != nil {
+		*a.calls++
+	}
+	if a.City == "" {
+		return validation.Errors{{Field: "city", Code: "required", Message: "is required"}}
+	}
+	return nil
+}
+
+// trimmingAddress normalizes its City in a pointer-receiver Validate.
+type trimmingAddress struct {
+	City string `json:"city"`
+}
+
+func (a *trimmingAddress) Validate() error {
+	a.City = strings.TrimSpace(a.City)
+	return nil
+}
+
+// valueAddress has a value-receiver Validate.
+type valueAddress struct {
+	City string `json:"city"`
+}
+
+func (a valueAddress) Validate() error {
+	if a.City == "" {
+		return validation.Errors{{Field: "city", Code: "required", Message: "is required"}}
+	}
+	return nil
+}
+
+func TestValidateStruct_NestedNilIsValid(t *testing.T) {
+	type Input struct {
+		Address  *readingAddress        `json:"address"`
+		Shipping validation.Validatable `json:"shipping"`
+		Billing  validation.Validatable `json:"billing"`
+	}
+	input := &Input{Billing: (*readingAddress)(nil)}
+
+	err := validation.ValidateStruct(input,
+		validation.Field(&input.Address),
+		validation.Field(&input.Shipping),
+		validation.Field(&input.Billing),
+	)
+	if err != nil {
+		t.Fatalf("a nil pointer, a nil interface and a nil pointer in an interface must be valid, got %v", err)
+	}
+}
+
+func TestValidateStruct_NestedPointerSetIsValidated(t *testing.T) {
+	type Input struct {
+		Address *readingAddress `json:"address"`
+	}
+	calls := 0
+	input := &Input{Address: &readingAddress{calls: &calls}}
+
+	err := validation.ValidateStruct(input, validation.Field(&input.Address))
+
+	errs, ok := errors.AsType[validation.Errors](err)
+	if !ok || len(errs) != 1 || errs[0].Field != "address.city" || errs[0].Code != "required" {
+		t.Fatalf("err = %v, want one required violation on address.city", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Validate calls = %d, want 1", calls)
+	}
+}
+
+func TestValidateStruct_NestedPointerReceiverKeepsNormalization(t *testing.T) {
+	type Input struct {
+		Address trimmingAddress `json:"address"`
+	}
+	input := &Input{Address: trimmingAddress{City: "  Ankara  "}}
+
+	if err := validation.ValidateStruct(input, validation.Field(&input.Address)); err != nil {
+		t.Fatalf("ValidateStruct: %v", err)
+	}
+	if input.Address.City != "Ankara" {
+		t.Fatalf("City = %q, want the value Validate normalized, %q", input.Address.City, "Ankara")
+	}
+}
+
+func TestValidateStruct_NestedValueReceiver(t *testing.T) {
+	type Input struct {
+		Address    valueAddress  `json:"address"`
+		AddressPtr *valueAddress `json:"address_ptr"`
+		Optional   *valueAddress `json:"optional"`
+	}
+	input := &Input{AddressPtr: &valueAddress{}}
+
+	err := validation.ValidateStruct(input,
+		validation.Field(&input.Address),
+		validation.Field(&input.AddressPtr),
+		validation.Field(&input.Optional),
+	)
+
+	errs, ok := errors.AsType[validation.Errors](err)
+	if !ok || len(errs) != 2 {
+		t.Fatalf("err = %v, want two violations", err)
+	}
+	if errs[0].Field != "address.city" || errs[1].Field != "address_ptr.city" {
+		t.Fatalf("fields = %q, %q; want address.city, address_ptr.city", errs[0].Field, errs[1].Field)
+	}
+}
+
+func TestValidateStruct_NestedFieldWithRulesRunsRulesOnly(t *testing.T) {
+	type Input struct {
+		Address *readingAddress `json:"address"`
+	}
+	calls := 0
+	input := &Input{Address: &readingAddress{calls: &calls}}
+
+	err := validation.ValidateStruct(input,
+		validation.Field(&input.Address, validation.NotNil[readingAddress]()),
+	)
+	if err != nil {
+		t.Fatalf("ValidateStruct: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("Validate calls = %d, want 0: a field with rules runs its rules only", calls)
+	}
+
+	// A mandatory nested pointer: NotNil in a Field of its own, then Validate.
+	input.Address = nil
+	err = validation.ValidateStruct(input,
+		validation.Field(&input.Address, validation.NotNil[readingAddress]()),
+		validation.Field(&input.Address),
+	)
+	errs, ok := errors.AsType[validation.Errors](err)
+	if !ok || len(errs) != 1 || errs[0].Field != "address" {
+		t.Fatalf("err = %v, want one violation on address", err)
 	}
 }
 

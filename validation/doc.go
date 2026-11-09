@@ -30,6 +30,25 @@
 // automatically by BindBody and BindQuery. In debug mode, a warning is logged
 // if the target does not implement Validatable.
 //
+// # Nested Structs
+//
+// A [Field] with no rules validates a field that implements [Validatable] by
+// calling its Validate, and prefixes the failures with the field's name
+// (address.city). A struct field's Validate runs on the field itself, so what
+// a pointer-receiver Validate normalizes is kept. A nil pointer or nil
+// interface is valid and its Validate is not called, so an optional nested
+// object may be omitted. A field with rules runs its rules only, so a
+// mandatory nested pointer takes [NotNil] in a Field of its own:
+//
+//	func (o *CreateOrderInput) Validate() error {
+//	    return v.ValidateStruct(o,
+//	        v.Field(&o.Shipping),                     // Address: always validated
+//	        v.Field(&o.Billing),                      // *Address: validated when set
+//	        v.Field(&o.Contact, v.NotNil[Contact]()), // *Contact: must be set
+//	        v.Field(&o.Contact),                      // and is then validated
+//	    )
+//	}
+//
 // # Error Format
 //
 // Validation errors are returned as [Errors] ([]ValidationError), designed
