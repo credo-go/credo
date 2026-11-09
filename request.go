@@ -36,8 +36,7 @@ import (
 type Request struct {
 	*http.Request
 
-	// owner is the Context the request belongs to; nil for a Request built
-	// with NewRequest outside a Context.
+	// owner is the Context the request belongs to.
 	owner *Context
 
 	// app is a back-reference to the application, set when the Context is built.
@@ -78,11 +77,6 @@ type Request struct {
 	multipartForm *multipart.Form
 }
 
-// NewRequest creates a new Request wrapping the given *http.Request.
-func NewRequest(r *http.Request) *Request {
-	return &Request{Request: r}
-}
-
 // RouteParam returns the URL parameter value for name — a path parameter such
 // as {id}, or, for host-scoped routes, a host parameter. It returns "" when
 // the parameter is not present.
@@ -114,8 +108,8 @@ func (r *Request) RouteParam(name string) string {
 // For host-scoped routes, host params and path params share the same namespace.
 //
 // The map is a read-only view, materialized lazily on first call: writes
-// to it are not seen by [Request.RouteParam], and a re-dispatch that changes
-// the parameters rebuilds it. For single values, prefer [Request.RouteParam].
+// to it are not seen by [Request.RouteParam]. For single values, prefer
+// [Request.RouteParam].
 func (r *Request) RouteParams() map[string]string {
 	if !r.paramsMapValid {
 		if r.paramsMap == nil {
@@ -131,7 +125,7 @@ func (r *Request) RouteParams() map[string]string {
 	return r.paramsMap
 }
 
-// resetRouteParams clears the parameter set before a (re-)dispatch.
+// resetRouteParams clears the parameter set before a dispatch.
 // Backing storage is retained.
 func (r *Request) resetRouteParams() {
 	r.paramKeys = r.paramKeys[:0]

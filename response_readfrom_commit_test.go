@@ -28,7 +28,7 @@ func TestResponse_ReadFrom_DoesNotCommitBeforeFirstByte(t *testing.T) {
 		if delegate {
 			w = &readerFromRecorder{ResponseRecorder: w.(*httptest.ResponseRecorder)}
 		}
-		resp := credo.NewResponse(w)
+		resp := newResponse(w)
 		n, err := io.Copy(resp, failingReader{})
 		if err == nil || n != 0 {
 			t.Fatalf("delegate=%v: io.Copy = %d, %v", delegate, n, err)
@@ -97,7 +97,7 @@ func TestResponse_ReadFrom_PanicAfterFirstByteKeepsCommit(t *testing.T) {
 		if delegate {
 			w = &readerFromRecorder{ResponseRecorder: w.(*httptest.ResponseRecorder)}
 		}
-		resp := credo.NewResponse(w)
+		resp := newResponse(w)
 		func() {
 			defer func() {
 				if recover() == nil {
@@ -159,7 +159,7 @@ func TestResponse_ReadFrom_PanicAfterDelegationCountsBytes(t *testing.T) {
 		if delegate {
 			w = &readerFromRecorder{ResponseRecorder: w.(*httptest.ResponseRecorder)}
 		}
-		resp := credo.NewResponse(w)
+		resp := newResponse(w)
 		func() {
 			defer func() {
 				if recover() == nil {

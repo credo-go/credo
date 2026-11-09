@@ -33,7 +33,7 @@ Adapted in:
                          matching ({param}, {param:regex}, {path...})
     Files (derived from chi tree.go / context.go):
       method.go        — HTTP method bitflags (MethodTyp, MethodMap)
-      context.go       — RouteContext, RouteParams, Routes interface
+      context.go       — RouteContext, RouteParams
       pattern.go       — PatNextSegment ({param}, {id:[0-9]+}, {path...})
       sort.go          — Node sorting by type priority
       tree.go          — Node, InsertRoute, FindRoute with backtracking
@@ -42,7 +42,6 @@ Adapted in:
     Files (derived from chi mux.go / chi.go, merged into root 2026-02-28):
       routectx.go      — routeCtxKey, GetRouteContext, URLParam
       mux.go           — Mux (radix tree storage), InsertRoute, FindRoute
-      walk.go          — WalkFunc, Walk
       credo.go          — App struct, ServeHTTP, dispatch, Handle, Group, Mount
 
   - (root package)     — Recover, RequestID, AccessLog, Compress HTTP features

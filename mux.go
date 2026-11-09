@@ -12,12 +12,6 @@ import (
 	"github.com/credo-go/credo/internal/radix"
 )
 
-// Routes describes the interface for route introspection.
-type Routes interface {
-	// Routes returns a slice of RouteInfo for all registered routes.
-	Routes() []RouteInfo
-}
-
 // RouteKind distinguishes a normal registered route from a mounted handler
 // prefix in introspection output.
 type RouteKind string

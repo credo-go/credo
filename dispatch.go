@@ -2,7 +2,6 @@ package credo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -62,8 +61,8 @@ func (app *App) compile() Handler {
 }
 
 // compileRoutes precompiles per-route middleware chains for a given mux.
-// Each route handler is wrapped: leaf (errRewrite swallower) → route MW →
-// group MW, the root group's — the routed tier — outermost. A mount's
+// Each route handler is wrapped: leaf → route MW → group MW, the root
+// group's — the routed tier — outermost. A mount's
 // payload is compiled the same way around the mounted handler; it is
 // inserted once per forwarded method, and compiled once.
 func (app *App) compileRoutes(m *mux) {
@@ -85,14 +84,7 @@ func (app *App) compileRoutes(m *mux) {
 				return handler(c)
 			}
 		}
-		leaf := func(c *Context) error {
-			err := leafHandler(c)
-			if errors.Is(err, errRewrite) && c.rewriteRequested {
-				return nil // swallow: dispatch loop handles it
-			}
-			return err
-		}
-		compiled := leaf
+		compiled := leafHandler
 		for i := len(rh.route.middlewares) - 1; i >= 0; i-- {
 			compiled = rh.route.middlewares[i](compiled)
 		}
@@ -111,46 +103,9 @@ func (app *App) compileRoutes(m *mux) {
 	}
 }
 
-// dispatch is the rewrite-aware dispatch loop. It calls dispatchOnce and
-// re-dispatches if the handler signaled an internal rewrite via c.Rewrite.
+// dispatch performs the radix tree lookup and executes the matched handler
+// with group and route middleware.
 func (app *App) dispatch(c *Context) error {
-	for {
-		c.rewriteRequested = false
-		err := app.dispatchOnce(c)
-		if err != nil {
-			return err
-		}
-		if !c.rewriteRequested {
-			return nil
-		}
-
-		c.rewriteCount++
-		if c.rewriteCount > maxRewrites {
-			return fmt.Errorf("credo: rewrite loop after %d internal rewrites", maxRewrites)
-		}
-
-		target := c.rewriteTarget
-		c.rewriteTarget = ""
-
-		// Parse query from target.
-		if i := strings.IndexByte(target, '?'); i >= 0 {
-			c.request.URL.RawQuery = target[i+1:]
-			target = target[:i]
-		} else {
-			c.request.URL.RawQuery = ""
-		}
-		if err := wirepath.SetPath(c.request.URL, target); err != nil {
-			return fmt.Errorf("credo: rewrite target %q: %w", target, err)
-		}
-		c.route = nil
-		c.request.resetRouteParams()
-		c.request.cachedQuery = nil // RawQuery changed above; drop stale query cache
-	}
-}
-
-// dispatchOnce performs a single radix tree lookup and executes the matched
-// handler with group and route middleware.
-func (app *App) dispatchOnce(c *Context) error {
 	r := c.request.Request
 
 	// Host matching: select the appropriate mux.
@@ -205,7 +160,7 @@ func (app *App) dispatchOnce(c *Context) error {
 
 	if found {
 		if rh.mounted == nil {
-			// Clear params for re-dispatch safety.
+			// Start from an empty parameter set.
 			c.request.resetRouteParams()
 
 			// Copy params from radix RouteContext into credo Context. The
@@ -298,7 +253,7 @@ func (app *App) redirectTrailingSlash301or308(c *Context, r *http.Request, altPa
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		code = http.StatusPermanentRedirect // 308
 	}
-	// altPath is canonical (see dispatchOnce); the Location header carries
+	// altPath is canonical (see dispatch); the Location header carries
 	// the wire spelling.
 	loc := wirepath.Escape(altPath)
 	if r.URL.RawQuery != "" {
@@ -607,7 +562,7 @@ func serveMounted(handler http.Handler, w http.ResponseWriter, child *http.Reque
 // _mount) from leaking to child handlers.
 func mountChildRequest(r *http.Request, newPath string) *http.Request {
 	r2 := rewriteRequest(r, newPath)
-	return r2.WithContext(context.WithValue(r2.Context(), routeCtxKey, (*RouteContext)(nil)))
+	return r2.WithContext(context.WithValue(r2.Context(), routeCtxKey, (*radix.RouteContext)(nil)))
 }
 
 // mountParamChildRequest creates the child request for a handler mounted
@@ -625,7 +580,7 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 // keeps its own.
 func mountParamChildRequest(r *http.Request, names []string, newPath string) *http.Request {
 	rctx := getRouteContext(r)
-	child := r.Clone(context.WithValue(r.Context(), routeCtxKey, (*RouteContext)(nil)))
+	child := r.Clone(context.WithValue(r.Context(), routeCtxKey, (*radix.RouteContext)(nil)))
 	if err := wirepath.SetPath(child.URL, newPath); err != nil {
 		child.URL.Path = newPath
 		child.URL.RawPath = ""

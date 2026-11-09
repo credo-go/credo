@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"mime/multipart"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -1491,87 +1490,6 @@ func TestOriginalPath_PreservedAfterURLMutation(t *testing.T) {
 	}
 	if current != "/new-path" {
 		t.Errorf("URL.Path = %q, want %q", current, "/new-path")
-	}
-}
-
-// --- Rewrite validation tests ---
-
-func TestRewrite_Validation(t *testing.T) {
-	tests := []struct {
-		name    string
-		path    string
-		wantErr string
-	}{
-		{"empty path", "", "must start with '/'"},
-		{"no leading slash", "no-slash", "must start with '/'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := mustNew(t)
-			var rewriteErr error
-			app.GET("/trigger", func(c *credo.Context) error {
-				rewriteErr = c.Rewrite(tt.path)
-				// Don't return the rewrite error — return nil so we can inspect it.
-				return c.Response().Text(200, "ok")
-			})
-
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest("GET", "/trigger", nil)
-			app.ServeHTTP(w, r)
-
-			if rewriteErr == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(rewriteErr.Error(), tt.wantErr) {
-				t.Errorf("error = %q, want to contain %q", rewriteErr.Error(), tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestRewrite_CommittedGuard(t *testing.T) {
-	app := mustNew(t)
-	var rewriteErr error
-	app.GET("/trigger", func(c *credo.Context) error {
-		// Write response first (commits it)
-		_ = c.Response().Text(200, "already committed")
-		// Now try to rewrite
-		rewriteErr = c.Rewrite("/target")
-		return nil
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/trigger", nil)
-	app.ServeHTTP(w, r)
-
-	if rewriteErr == nil {
-		t.Fatal("expected error for committed response, got nil")
-	}
-	if !strings.Contains(rewriteErr.Error(), "committed") {
-		t.Errorf("error = %q, want to contain 'committed'", rewriteErr.Error())
-	}
-}
-
-func TestRewrite_HijackedGuard(t *testing.T) {
-	app := mustNew(t)
-	var rewriteErr error
-	app.GET("/trigger", func(c *credo.Context) error {
-		if _, _, err := c.Response().Hijack(); err != nil {
-			return err
-		}
-		rewriteErr = c.Rewrite("/target")
-		return nil
-	})
-
-	w := newHijackResponseWriter()
-	r := httptest.NewRequest(http.MethodGet, "/trigger", nil)
-	app.ServeHTTP(w, r)
-
-	if rewriteErr == nil || !strings.Contains(rewriteErr.Error(), "hijacked") {
-		t.Fatalf("Rewrite() error = %v, want hijacked guard", rewriteErr)
-	}
-	if w.writeHeaderCalls != 0 || w.Body.Len() != 0 {
-		t.Fatalf("post-hijack HTTP writes = %d/%q, want none", w.writeHeaderCalls, w.Body.String())
 	}
 }
 
