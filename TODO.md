@@ -686,7 +686,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
   - [ ] consider making `config.WithStrictDecoding` behavior the default (weak decoding opt-in instead) — decide
 - [ ] **Lifecycle acceptance scenarios** ([ADR-024](docs/adr/024-lifecycle-components.md#consequences), added in v0.24.0) stay pinned by tests (`TestAcceptance_DrainDeliversLastJob`, `TestAcceptance_FailedStartStopsWhatWasBuilt`): the last job an HTTP handler hands to a worker before the drain reaches the database, and a failed start that stops exactly the components that were built, except the one whose `Start` failed.
 - [ ] **Stability evidence**: two consecutive minors with no entry under CHANGELOG **Changed (breaking)** / **Removed**, and at least two independent consumer applications upgraded through them without source changes.
-- [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` lists the applied breaking batch with migration notes.
+- [ ] **Docs current**: every ADR reflects the shipped design (no shipped-then-removed residue), every spec has a status line, and `docs/releases/v1.0.0.md` points at the migration guide, where each deferred breaking change is recorded with the minor that shipped it under its own CHANGELOG heading.
 - [ ] `make lint` fully blocking again (Quality Gates) — the Go 1.27 linter canary back to green.
 
 **Explicitly post-v1** (additive, own packages, do not block the tag): pub/sub (4.1), gRPC (4.3), OpenAPI generation (4.5 — not a v1 blocker), admin server (4.9), controller registration (4.10), CLI (5.1), performance budgets in CI, cursor pagination (3.6), Redis/cache contracts (3.3c).
