@@ -11,7 +11,7 @@
 - **All-in-one**: router, DI, config, validation, observability, data access -- one cohesive framework.
 - **Enterprise defaults**: Clean Architecture is the recommended path (documented and supported by the DI design), but not enforced.
 - **Errors are values**: handlers return `error`; centralized classification renders a small `success:false` JSON envelope, with RFC 9457 available as an opt-in renderer.
-- **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI; `SIGHUP`/`app.Reload` re-reads it and notifies typed per-section subscribers, with file-based TLS certificates rotating on every reload.
+- **Typed config snapshot**: config is loaded once at startup and injected as typed structs via DI; a section declared live (`Section.Live`) follows a `SIGHUP`/`app.Reload`, which validates it before publishing and reports every other change as needing a restart; file-based TLS certificates rotate when their files change.
 - **Integrated-first, explicit boundaries**: framework infrastructure is wired by convention; app deps and typed config stay visible and override-friendly.
 - **stdlib boundary compatibility**: `*credo.App` is an `http.Handler`; stdlib middleware can be adapted.
 

@@ -726,30 +726,35 @@ All steps share one deadline — `WithShutdownTimeout` for a signal or a cancell
 
 ## Config Changes and Singletons
 
-DI singletons are built once and never rebuilt — a [reload](configuration.md#reloading-configuration) does not re-run constructors or replace bindings. A typed config struct injected at startup is therefore a startup snapshot. When a service needs a value that can change at runtime, keep the live value inside the service behind an atomic holder and let an `OnConfigChange[T]` subscriber swap it:
+DI singletons are built once and never rebuilt — a [reload](configuration.md#reloading-configuration) does not re-run constructors or replace bindings. A section bound through `Decode` is therefore a startup snapshot. When a service needs a value that can change at runtime, bind its section live and take the handle: the constructor's signature then says the value can change, and state derived from it follows the section through `OnChange`:
 
 ```go
+var LimitsSection = config.Section[Limits]("limits")
+
+app.Provide(LimitsSection.Live) // *config.Live[Limits]
+app.Provide(NewRateLimiter)
+
 type RateLimiter struct {
-    limits atomic.Pointer[Limits]
+    limits *config.Live[Limits]
+    bucket atomic.Pointer[Bucket] // derived from the section
 }
 
-func NewRateLimiter(infra credo.Infra, initial *Limits) *RateLimiter {
-    rl := &RateLimiter{}
-    rl.limits.Store(initial)
+func NewRateLimiter(infra credo.Infra, limits *config.Live[Limits]) *RateLimiter {
+    rl := &RateLimiter{limits: limits}
+    rl.bucket.Store(NewBucket(limits.Load()))
+    limits.OnChange(func(ctx context.Context, prev, next Limits) error {
+        rl.bucket.Store(NewBucket(next)) // runs after the reload published next
+        return nil
+    })
     return rl
 }
 
-func (rl *RateLimiter) Apply(next Limits) { rl.limits.Store(&next) }
-
-// Composition root: the subscriber owns the swap; handlers only ever Load().
-rl := app.MustResolve[*RateLimiter]()
-app.OnConfigChange("limits", func(ctx context.Context, next Limits) error {
-    rl.Apply(next)
-    return nil
-})
+func (rl *RateLimiter) Allow() bool { return rl.bucket.Load().Take() }
 ```
 
-Resources that cannot be swapped atomically — a database pool built from a changed DSN, a listener on a new port — are restart-only by design; the reload logs them as `restart required`.
+A unit test of `RateLimiter` passes `config.Fixed(Limits{RPS: 10, Burst: 20})`, a handle whose value never changes.
+
+Resources that cannot be swapped atomically — a database pool built from a changed DSN, a listener on a new port — are restart-only by design; a reload reports their keys in its `restart_required` list.
 
 ---
 

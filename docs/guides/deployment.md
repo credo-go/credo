@@ -19,7 +19,7 @@ There is no `SIGHUP` on Windows. The programmatic `app.Reload(ctx)` works identi
 
 For deployments where configuration must never change through a signal — an immutable, file-only setup, or an environment where something else already sends `SIGHUP` (logrotate postrotate scripts, orchestration habits) — `credo.WithoutReloadSignals()` turns the signal into a logged no-op: `SIGHUP` is still captured, so it can never terminate the process, but no reload runs (`credo: reload signal ignored (reload signals disabled)` at Info). `SIGINT`/`SIGTERM` shutdown and programmatic `app.Reload` keep working.
 
-What a reload does and does not change is defined in the [Configuration Guide](configuration.md#reloading-configuration): typed `OnConfigChange[T]` subscribers receive their re-decoded sections, file-based TLS certificates are re-read, `OnReload` hooks run, and every other changed key is logged as **restart required**.
+What a reload does and does not change is defined in the [Configuration Guide](configuration.md#reloading-configuration): every live section the change touches is validated and replaced, its `OnChange` callbacks run, and every other key that differs from the start is reported as needing a restart — in the result `app.Reload` returns and in a Warn log line. File-based TLS certificates are not part of a reload: they rotate when their files change.
 
 ---
 
@@ -57,15 +57,9 @@ Points worth matching to your app:
 
 ### Certificate rotation with certbot
 
-File-based TLS (`WithTLSFiles` or `server.tls.*`) re-reads its key pair on every reload, so an ACME client only needs to signal the service after renewal:
+File-based TLS (`WithTLSFiles` or `server.tls.*`) checks its two files at most once a second, at a handshake, and swaps in the pair when either file changed, so an ACME client that renews the files in place needs no deploy hook and no reload. The check follows symbolic links, so certbot's `live/` links count: a renewal that points them at new files is a change.
 
-```ini
-# /etc/letsencrypt/renewal-hooks/deploy/example.sh
-#!/bin/sh
-systemctl reload example
-```
-
-New TLS handshakes see the new certificate immediately; open connections are untouched. If the new pair fails to load (a half-written file, a key that does not match), the previous certificate keeps serving and the failure is logged — rotation never takes the service down. `WithTLSConfig` is the exception: Credo never touches a caller-supplied `*tls.Config`, so its owner drives rotation through their own `GetCertificate` (optionally from an `OnReload` hook).
+New TLS handshakes see the new certificate; open connections are untouched. If the new pair fails to load (a half-written file, a key that does not match), the previous certificate keeps serving, the failure is logged at Error once per change (`credo: TLS certificate pair failed to load after a change on disk; keeping the current pair`), and the pair is retried when its other file changes — rotation never takes the service down. The paths are read at start: pointing `server.tls.*` at new paths takes a restart. `WithTLSConfig` is the exception: Credo never touches a caller-supplied `*tls.Config`, so its owner drives rotation through their own `GetCertificate`.
 
 ---
 
@@ -79,10 +73,24 @@ To reload a running container:
 docker kill --signal=HUP example
 ```
 
-Kubernetes has no reload verb. Its two idioms are:
+Kubernetes has no reload verb. Mounted ConfigMap and Secret files change in place — after the kubelet's sync delay, and never when mounted through `subPath` — and no signal reaches the process.
 
-- **Rolling restart** (`kubectl rollout restart deployment/example`) — the default answer for config and certificate changes delivered through ConfigMaps, Secrets, and image updates. A Credo pod drains gracefully on `SIGTERM`; set `terminationGracePeriodSeconds` above `WithShutdownTimeout`.
-- **In-place reload** — only when a restart is too disruptive. Mounted ConfigMap/Secret files update in place (with a delay, and not when mounted via `subPath`), so a sidecar or an operator action can trigger `app.Reload` through an admin endpoint; `kubectl exec example -- kill -HUP 1` works for one-off use.
+- **A structural change takes a rollout.** A change that needs a restart — a key a reload reports in `restart_required`, a new `server.*` setting, an image or environment change — goes out as a rolling restart (`kubectl rollout restart deployment/example`). A Credo pod drains gracefully on `SIGTERM`; set `terminationGracePeriodSeconds` above `WithShutdownTimeout`, and readiness gates the rollout.
+- **Certificates need nothing.** A Secret volume holding the TLS pair is checked at the handshake, and the kubelet's link swap is a change, so a renewed pair is served without a restart or a signal.
+- **A live section needs a trigger.** Credo watches no configuration file, so a live section follows the volume only when something calls `app.Reload`. Credo ships no endpoint, whose authentication is yours, and no watcher, which would apply a change at each kubelet's sync rather than when you decide. Three triggers, from the simplest:
+  1. **An admin endpoint** behind your authentication that calls `app.Reload` and returns its result ([Reload Without a Signal](#reload-without-a-signal)); you or a script call it on a pod.
+  2. **A job that walks the pods** and calls that endpoint on each in turn, stopping at the first failure, so a bad value stops at one pod instead of reaching every replica:
+
+     ```sh
+     for pod in $(kubectl get pods -l app=example -o name); do
+       kubectl exec "$pod" -- curl --fail --silent -X POST \
+         --unix-socket /run/example/admin.sock http://localhost/admin/reload || exit 1
+     done
+     ```
+
+  3. **A sidecar that sends `SIGHUP`** when the mounted volume changes. `Run` maps `SIGHUP` to a reload, so no endpoint is needed, at the cost of `shareProcessNamespace: true` on the pod, which lets the sidecar's container see and signal the application's process. Every replica then reloads at its own kubelet sync, with no gate between them.
+
+  `kubectl exec example -- kill -HUP 1` works for one-off use.
 
 ---
 
@@ -220,16 +228,18 @@ Two more rules: the server's lifecycle methods (`Serve`, `ServeTLS`, `Shutdown`,
 
 ## Reload Without a Signal
 
-When the runtime cannot send `SIGHUP`, or when you want the reload's result to be the exit status of the operation, expose `app.Reload` behind an authenticated admin route. `Reload` is safe to call from a handler: it is serialized, runs only while the server is running, and returns the joined errors of the steps that failed.
+When the runtime cannot send `SIGHUP`, or when you want the reload's result to be the exit status of the operation, expose `app.Reload` behind an authenticated admin route. `Reload` is safe to call from a handler: it is serialized, runs only while the server is running, and returns what it did — `config.ReloadResult` — beside the joined errors of what failed.
 
 ```go
 admin := app.Group("/admin").Middleware(auth.Middleware(adminAuth, nil))
 
 admin.POST("/reload", func(ctx *credo.Context) error {
-    if err := app.Reload(ctx.Context()); err != nil {
+    res, err := app.Reload(ctx.Context())
+    if err != nil {
         return credo.NewHTTPError(http.StatusInternalServerError).WithInternal(err)
     }
-    return ctx.Response().NoContent(http.StatusNoContent)
+    // {"published":true,"changed":[…],"replaced":["log"],"restart_required":["app.name"],"overridden":[]}
+    return ctx.Response().JSON(http.StatusOK, res)
 })
 ```
 
@@ -239,7 +249,7 @@ With that in place, a unit file can make `systemctl reload` fail loudly:
 ExecReload=/usr/bin/curl --fail --silent -X POST --unix-socket /run/example/admin.sock http://localhost/admin/reload
 ```
 
-Bind the admin group to a Unix socket or an internal host via `app.Host` / `ServeContext` rather than the public listener, and keep the reload details (which keys changed) in the service log rather than the HTTP response.
+Bind the admin group to a Unix socket or an internal host via `app.Host` / `ServeContext` rather than the public listener. The result names key paths, never values, so it answers the operator with what was applied and what still needs a restart; the error, which may quote a value, stays in the service log, where `app.Reload` writes it.
 
 ---
 
@@ -248,8 +258,8 @@ Bind the admin group to a Unix socket or an internal host via `app.Host` / `Serv
 - `TimeoutStopSec` / `terminationGracePeriodSeconds` / `docker stop --time` > `WithShutdownTimeout`.
 - `ExecReload` (or the container equivalent) sends `SIGHUP`; never use `SIGHUP` as the stop signal.
 - Runtime-changeable values live in the config file, not in `EnvironmentFile=`.
-- Every section you expect to change at runtime has an `OnConfigChange[T]` subscriber; watch the log for `restart required` to find the ones that do not.
-- ACME deploy hooks call `systemctl reload` (file-based TLS) or your own rotation (`WithTLSConfig`).
+- Every section you expect to change at runtime is declared live (`Section.Live`); the reload's `restart_required` keys name the ones that are not.
+- File-based certificates rotate when their files change; only `WithTLSConfig` needs your own rotation.
 - Health probes: `/ready` returns 503 as soon as shutdown starts, so load balancers stop routing before the drain completes ([Getting Started: Health Checks](getting-started.md#health-checks)).
 - `WithShutdownTimeout` covers the HTTP drain, the ingress tier and the internal tier together; a component that misses it is abandoned and reported ([Shutdown and Readiness](#shutdown-and-readiness)).
 - Liveness checks depend only on state a restart repairs, never on a dependency every replica shares.

@@ -683,16 +683,20 @@ The check fails when the worker is failed **or when `Lookup` does not know the n
 
 ## Reloadable Settings
 
-Workers are registered once and run for the life of the process; a [config reload](configuration.md#reloading-configuration) does not re-register them or change their configuration. For a setting a worker should honour without a restart — a batch size, a concurrency cap, a polling interval — give the worker an atomic holder and swap it from an `OnConfigChange[T]` subscriber:
+Workers are registered once and run for the life of the process; a [config reload](configuration.md#reloading-configuration) does not re-register them or change their configuration. For a setting a worker should honour without a restart — a batch size, a concurrency cap, a polling interval — declare its section live and give the worker the handle:
 
 ```go
+var SyncSection = config.Section[SyncConfig]("sync")
+
 type Sync struct {
-    cfg atomic.Pointer[SyncConfig]
+    cfg *config.Live[SyncConfig]
 }
+
+func NewSync(cfg *config.Live[SyncConfig]) *Sync { return &Sync{cfg: cfg} }
 
 func (s *Sync) Run(ctx context.Context) error {
     for {
-        cfg := s.cfg.Load() // read the live value on every iteration
+        cfg := s.cfg.Load() // read the live value once per iteration
         if err := s.runBatch(ctx, cfg.BatchSize); err != nil {
             return err
         }
@@ -704,19 +708,12 @@ func (s *Sync) Run(ctx context.Context) error {
     }
 }
 
-// The subscriber resolves the worker, so the worker is a binding.
+app.Provide(SyncSection.Live) // *config.Live[SyncConfig]
 app.Provide(NewSync)
 app.Workers().Continuous("sync", (*Sync).Run)
-
-// After every registration; the first resolving call finalizes the container:
-syncer := app.MustResolve[*Sync]()
-app.OnConfigChange("sync", func(ctx context.Context, next SyncConfig) error {
-    syncer.cfg.Store(&next)
-    return nil
-})
 ```
 
-A changed cron expression is restart-only; the reload logs it as `restart required` when nothing subscribes to its section.
+A test builds the worker with `NewSync(config.Fixed(SyncConfig{BatchSize: 10, Interval: time.Second}))`. A changed cron expression is restart-only; the reload reports it in its `restart_required` keys when no live section covers it.
 
 ---
 
