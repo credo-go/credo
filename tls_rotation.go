@@ -84,10 +84,6 @@ func statPair(certFile, keyFile string) pairSignature {
 	return pairSignature{cert: cert, key: key}
 }
 
-// active reports whether a pair has been loaded, i.e. the server serves
-// file-based TLS.
-func (s *fileCertSource) active() bool { return s.cur.Load() != nil }
-
 // getCertificate is the tls.Config.GetCertificate callback: an atomic load per
 // handshake, and a file check when the last one is older than the interval.
 func (s *fileCertSource) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {

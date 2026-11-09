@@ -82,12 +82,6 @@ func (app *App) checkHookRegistration(label string, fnIsNil bool) {
 	}
 }
 
-// registerHook appends a plain context hook after checkHookRegistration.
-func (app *App) registerHook(label string, fn func(ctx context.Context) error, hooks *[]func(ctx context.Context) error) {
-	app.checkHookRegistration(label, fn == nil)
-	*hooks = append(*hooks, fn)
-}
-
 // Addr returns the actual network address the server is listening on.
 // This is particularly useful when the server was started with port 0,
 // as the OS assigns an ephemeral port.
