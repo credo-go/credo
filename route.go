@@ -23,7 +23,8 @@ type Route struct {
 	// handler is the Credo handler function.
 	handler Handler
 
-	// middlewares are per-route middlewares applied lazily at request time.
+	// middlewares are per-route middlewares, precompiled into the route's
+	// chain when the app compiles.
 	middlewares []Middleware
 
 	// meta holds key-value metadata for this route.

@@ -8,7 +8,7 @@ import (
 )
 
 // TestNewServerErrorLog pins the bridge semantics: the stdlib message text is
-// preserved verbatim, records land at Error level tagged component=net/http,
+// preserved verbatim, records land at Error level tagged module=net/http,
 // the trailing newline log.Logger appends is dropped, and a nil logger falls
 // back to the framework default instead of panicking.
 func TestNewServerErrorLog(t *testing.T) {

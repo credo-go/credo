@@ -346,8 +346,9 @@
 //
 // # Stability
 //
-// Beta, versioned independently from the root module (see the project README's
-// "Maturity by Area" table). Breaking changes are possible before v1.
+// Beta (see the project README's "Maturity by Area" table): the module is
+// released in lockstep with the root module, and its beta label keeps it outside
+// the v1 compatibility promise. Breaking changes are possible before v1.
 //
 // Maturity: beta
 package sqldb
