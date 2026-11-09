@@ -344,7 +344,7 @@ Each registration method takes its kind's configuration — no argument for the 
 
 A setting of the other kind cannot be written: `ContinuousConfig` has no schedule fields and `ScheduledConfig` no restart policy.
 
-The configuration lives in code. The registry reads no configuration section, so a setting that should come from the environment — a schedule that differs per deployment, a restart delay you tune in production — is a typed section of your own, read once in the composition root and passed in:
+The configuration lives in code. The registry reads no configuration section, so a setting that should come from the environment — a schedule that differs per deployment, a restart delay you tune in production — is a typed section of your own, named once with a `config.Section[T]` descriptor, read once in the composition root and passed in:
 
 ```go
 type WorkerSettings struct {
@@ -353,7 +353,9 @@ type WorkerSettings struct {
     RestartMaxDelay time.Duration // workers.restart_max_delay
 }
 
-settings := app.MustGetConfig[WorkerSettings]("workers")
+var WorkersSection = config.Section[WorkerSettings]("workers")
+
+settings := app.MustGetConfig(WorkersSection)
 if _, err := credo.ParseSchedule(settings.CleanupSchedule); err != nil {
     log.Fatalf("workers.cleanup_schedule: %v", err)
 }

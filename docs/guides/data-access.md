@@ -42,13 +42,16 @@ import (
     "log"
 
     "github.com/credo-go/credo"
+    "github.com/credo-go/credo/config"
     "github.com/credo-go/credo/store/sqldb"
 
     _ "github.com/jackc/pgx/v5/stdlib"
 )
 
+var DatabaseSection = config.Section[sqldb.Config]("databases.default")
+
 func setupStore(app *credo.App) error {
-    cfg, err := app.GetConfig[sqldb.Config]("databases.default")
+    cfg, err := app.GetConfig(DatabaseSection)
     if err != nil {
         return err
     }
@@ -81,7 +84,7 @@ func main() {
 Important points:
 
 - import the SQL driver with a blank import
-- read `sqldb.Config` with `app.GetConfig` during registration (the first `Resolve` would finalize the container; `GetConfig` never does)
+- read `sqldb.Config` through its section descriptor with `app.GetConfig(DatabaseSection)` during registration (the first `Resolve` would finalize the container; `GetConfig` never does)
 - bind the handle with `ProvideValue`; the binding is all it takes, and it does no I/O at the call
 
 `*sqldb.DB` is a component, so its binding's type plans what a database needs ([What a Bound Database Does](#what-a-bound-database-does)):
@@ -494,7 +497,9 @@ page := pagination.NewPage(
 A `*sqldb.DB` is a component: its type shows `Start`, `Ready` and `Shutdown`, so its binding is all the App needs. The binding is made where ownership is decided — `app.ProvideValue`, or `app.Provide` with a constructor, with `credo.Borrowed()` for a handle the caller shares — and `credo.ComponentName` names it:
 
 ```go
-cfg := app.MustGetConfig[sqldb.Config]("databases.default")
+var DatabaseSection = config.Section[sqldb.Config]("databases.default")
+
+cfg := app.MustGetConfig(DatabaseSection)
 cfg.PingTimeout = 10 * time.Second // zero means sqldb.DefaultPingTimeout, 5s
 
 // The constructor runs in the start phase, after Finalize and every override.
@@ -581,12 +586,17 @@ Credo DI keys bindings by Go type, so two databases cannot both be bound as `*sq
 type PrimaryDB struct{ *sqldb.DB }
 type AnalyticsDB struct{ *sqldb.DB }
 
+var (
+    PrimarySection   = config.Section[sqldb.Config]("databases.primary")
+    AnalyticsSection = config.Section[sqldb.Config]("databases.analytics")
+)
+
 func setupMultiDB(app *credo.App) error {
-    primaryCfg, err := app.GetConfig[sqldb.Config]("databases.primary")
+    primaryCfg, err := app.GetConfig(PrimarySection)
     if err != nil {
         return err
     }
-    analyticsCfg, err := app.GetConfig[sqldb.Config]("databases.analytics")
+    analyticsCfg, err := app.GetConfig(AnalyticsSection)
     if err != nil {
         return err
     }
@@ -681,7 +691,9 @@ The rest of the rule:
       return errors.Join(errs...)
   }
 
-  shardCfgs := app.MustGetConfig[[]sqldb.Config]("databases.shards")
+  var ShardsSection = config.Section[[]sqldb.Config]("databases.shards")
+
+  shardCfgs := app.MustGetConfig(ShardsSection)
   app.Provide(func() (*Shards, error) { return OpenShards(shardCfgs) })
   ```
 
@@ -953,7 +965,7 @@ That path works, but you do not get the Bun-specific features from `store/sqldb`
 
 For most applications:
 
-1. load `sqldb.Config` with `app.GetConfig` during registration
+1. load `sqldb.Config` through its section descriptor with `app.GetConfig` during registration
 2. open the connection with `sqldb.Open`, or in a constructor that the start phase runs
 3. bind it (`app.ProvideValue` or `app.Provide`); the binding pings it at start, reports it in `/ready` and shuts it down after its consumers
 4. inject the resulting type into repositories
