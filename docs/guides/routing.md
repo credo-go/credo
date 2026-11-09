@@ -1,6 +1,6 @@
 # Routing Guide
 
-This guide explains how to use Credo's routing features in application code: path routing, route groups, host-based routing, pre-dispatch rewrite, and handler-driven internal forwarding.
+This guide explains how to use Credo's routing features in application code: path routing, route groups, host-based routing, pre-dispatch rewrite, handler-driven internal forwarding, and testing handlers.
 
 For internal design rationale, see the [Router Spec](../specs/router.md), [Middleware Spec](../specs/middleware.md), [Context Spec](../specs/context.md), and [ADR-018](../adr/018-host-routing-and-rewrite.md).
 
@@ -128,6 +128,8 @@ _, err = order.BuildURI("x1")     // error: does not match constraint "[0-9]+"
 ```
 
 #### Route Parameters Are Not File Names
+
+The router matches the path as the client sent it: it removes no dot-segment and merges no empty segment, so `/a/../b` does not reach a route `/b`, `//a` does not reach a route `/a`, and neither is redirected to a clean form. A `..` therefore reaches a handler only as a parameter's value, never as a resolved path. Browsers and HTTP clients remove dot-segments before they send a request, so a `..` on the wire was sent on purpose — and it is exactly the value a handler that opens files must refuse.
 
 A route parameter is untrusted, already-decoded data. One URL segment is not a safe file name: `/files/..%2F..%2Fetc` gives `{name}` the value `../../etc`, and `/files/..` gives it `..`. Before using a parameter to open a file, confine the access to a directory:
 
@@ -517,6 +519,47 @@ credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
 ```
 
 `app.Routes()` returns the same data as a slice in a deterministic total order (`Host`, `Pattern`, `Method`, `Kind`), so it is a stable source for route/permission catalogs and golden-file tests. Introspection reads live route state, so call it once wiring is complete — not concurrently with route registration.
+
+---
+
+## Testing Handlers
+
+Test a handler through the App, the way production serves it: build a test App with `testutil.NewApp`, register the route under test, and call `app.ServeHTTP` with an `httptest` recorder. The request runs the real pipeline, so route parameters come from the path, a middleware that reads route meta reads the route's own, and an error the handler returns is rendered as in production. Credo exports no router of its own to test against.
+
+```go
+func TestShowUser(t *testing.T) {
+    app := testutil.NewApp(t)
+    app.GET("/users/{id}", showUser)
+
+    rec := httptest.NewRecorder()
+    app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/42", nil))
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+    }
+}
+
+func TestShowUser_NotFound(t *testing.T) {
+    app := testutil.NewApp(t)
+    app.GET("/users/{id}", showUser) // returns credo.ErrNotFound for an unknown id
+
+    rec := httptest.NewRecorder()
+    app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/unknown", nil))
+
+    var body struct {
+        Error struct {
+            Code string `json:"code"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+        t.Fatal(err)
+    }
+    if rec.Code != http.StatusNotFound || body.Error.Code != "not_found" {
+        t.Fatalf("got %d %q, want 404 not_found", rec.Code, body.Error.Code)
+    }
+}
+```
+
+`testutil.NewApp` loads no configuration from disk or the environment: `testutil.WithConfig` sets the values a test needs. A handler that is a method of a resolved service is registered as `main` registers it, after `testutil.WithWiring` has provided its dependencies and `testutil.WithOverride` has replaced the ones the test fakes ([dependency injection guide](dependency-injection.md#testing)). An App with something to start — a component with `Start` or `Ready`, a start hook, workers — refuses `ServeHTTP` until `testutil.Start(t, app)` has run its start phase. Group and route middleware run as registered, so test a protected route through the group that protects it.
 
 ---
 
