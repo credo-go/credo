@@ -27,8 +27,8 @@ server:
 Use the request helpers everywhere application code needs client metadata:
 
 ```go
-scheme := ctx.Request().Scheme() // "http" or "https"
-ip := ctx.Request().RealIP()     // original client IP
+scheme := c.Request().Scheme() // "http" or "https"
+ip := c.Request().RealIP()     // original client IP
 ```
 
 Trust model:
@@ -49,6 +49,6 @@ Framework middleware uses the same helpers:
 
 When Credo runs behind a load balancer or reverse proxy, TLS is often terminated before the request reaches the app. In that setup the app usually listens on plaintext HTTP, while the proxy forwards `X-Forwarded-Proto: https`.
 
-Configure `WithTrustedProxies` (or `server.trusted_proxies`) so `ctx.Request().Scheme()` can trust that forwarded scheme. This matters for HSTS: `middleware.Secure` sends `Strict-Transport-Security` only when the request scheme is HTTPS.
+Configure `WithTrustedProxies` (or `server.trusted_proxies`) so `c.Request().Scheme()` can trust that forwarded scheme. This matters for HSTS: `middleware.Secure` sends `Strict-Transport-Security` only when the request scheme is HTTPS.
 
 If Credo terminates TLS itself, configure `credo.WithTLSFiles`, `credo.WithTLSConfig`, or `server.tls.*`. To redirect direct plaintext callers to HTTPS, add `credo.WithHTTPRedirect(":80")`.

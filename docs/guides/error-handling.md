@@ -3,15 +3,15 @@
 Credo handlers return errors and one framework pipeline classifies, logs, localizes, and renders them:
 
 ```go
-app.GET("/users/{id}", func(ctx *credo.Context) error {
-    user, err := service.Find(ctx.Context(), ctx.Request().RouteParam("id"))
+app.GET("/users/{id}", func(c *credo.Context) error {
+    user, err := service.Find(c.Context(), c.Request().RouteParam("id"))
     if errors.Is(err, store.ErrNotFound) {
         return credo.NewHTTPError(http.StatusNotFound, "user_not_found")
     }
     if err != nil {
         return err // generic 500; err text is not exposed
     }
-    return ctx.Response().JSON(http.StatusOK, user)
+    return c.Response().JSON(http.StatusOK, user)
 })
 ```
 
@@ -131,7 +131,7 @@ The resolver-produced key is never leaked after a miss. HTTP errors fall back to
 Install a shape-only renderer once, before the app prepares to serve. The window stays open after the container is finalized — by the first `Resolve` or an explicit `app.Finalize()` — so the renderer may be a method of a DI-resolved service; a second `UseErrorRenderer` call panics.
 
 ```go
-app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
     return map[string]any{
         "ok":         false,
         "error":      info.Code,
@@ -147,14 +147,14 @@ app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
 Returning nil keeps the default body, which is useful for side effects:
 
 ```go
-app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
+app.UseErrorRenderer(func(c *credo.Context, info *credo.ErrorInfo) any {
     telemetry.Capture(info.Err)
-    ctx.Response().Header().Set("X-Error-Code", info.Code)
+    c.Response().Header().Set("X-Error-Code", info.Code)
     return nil
 })
 ```
 
-Change the outgoing status by mutating `info.Status` before return. An invalid status fails closed to a generic 500. For a non-JSON body, write and commit through `ctx.Response()`; after commit the framework ignores the return value.
+Change the outgoing status by mutating `info.Status` before return. An invalid status fails closed to a generic 500. For a non-JSON body, write and commit through `c.Response()`; after commit the framework ignores the return value.
 
 ## RFC 9457 Problem Details
 
@@ -187,10 +187,10 @@ app.UseErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
 })
 
 // Uses SuccessRenderer.
-return ctx.Render(http.StatusOK, user)
+return c.Render(http.StatusOK, user)
 
 // Deliberately bypasses it.
-return ctx.Response().JSON(http.StatusOK, webhookPayload)
+return c.Response().JSON(http.StatusOK, webhookPayload)
 ```
 
 ## Custom 404 and 405 responses
@@ -198,8 +198,8 @@ return ctx.Response().JSON(http.StatusOK, webhookPayload)
 `app.StatusHandler(code, h)` replaces the router's own answer when no route matches (404) or when routes match the path but none serves the method (405, with `Allow` already set). Only those two codes are consulted, so any other code panics at registration — a handler for 403 or 500 would never run. A status handler is not an error handler: an error a handler or middleware returns, `credo.ErrNotFound` included, goes through the pipeline above, and `UseErrorRenderer` shapes its body.
 
 ```go
-app.StatusHandler(http.StatusNotFound, func(ctx *credo.Context) error {
-    return ctx.Response().HTML(http.StatusNotFound, notFoundPage)
+app.StatusHandler(http.StatusNotFound, func(c *credo.Context) error {
+    return c.Response().HTML(http.StatusNotFound, notFoundPage)
 })
 ```
 

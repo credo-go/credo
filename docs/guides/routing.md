@@ -30,14 +30,14 @@ func main() {
 
     api := app.Host("api.example.com")
     v1 := api.Group("/api/v1")
-    v1.GET("/users/{id}", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(200, map[string]string{
-            "id": ctx.Request().RouteParam("id"),
+    v1.GET("/users/{id}", func(c *credo.Context) error {
+        return c.Response().JSON(200, map[string]string{
+            "id": c.Request().RouteParam("id"),
         })
     })
 
-    app.GET("/", func(ctx *credo.Context) error {
-        return ctx.Response().Text(200, "landing")
+    app.GET("/", func(c *credo.Context) error {
+        return c.Response().Text(200, "landing")
     })
 
     if err := app.Run(); err != nil {
@@ -64,16 +64,16 @@ app.GET("/users/{id:[0-9]+}", getNumericUser)
 app.GET("/files/{path...}", serveFile)
 ```
 
-Read a single param with `ctx.Request().RouteParam(name)`:
+Read a single param with `c.Request().RouteParam(name)`:
 
 ```go
-func getUser(ctx *credo.Context) error {
-    id := ctx.Request().RouteParam("id")
-    return ctx.Response().Text(200, id)
+func getUser(c *credo.Context) error {
+    id := c.Request().RouteParam("id")
+    return c.Response().Text(200, id)
 }
 ```
 
-`ctx.Request().RouteParams()` returns all params as a `map[string]string`. The map is owned by the framework and recycled after the request completes, so prefer `RouteParam` for single values.
+`c.Request().RouteParams()` returns all params as a `map[string]string`. The map is owned by the framework and recycled after the request completes, so prefer `RouteParam` for single values.
 
 Parameter names belong to the route that declares them. Routes that share a dynamic segment may name it differently, and each handler reads its own names:
 
@@ -98,19 +98,19 @@ Within one pattern each name is used once, counting a group or mount prefix and 
 Routing matches a canonical form of the path: every escape is decoded except those of the RFC 3986 reserved characters (such as `/`, `;` and `?`) and of `%` itself. Any spelling of the same bytes therefore reaches the same route (`/caf%C3%A9` and `/caf%c3%a9` both meet `/café`), a percent-encoded slash is data inside one segment, each captured value is decoded exactly once, and a constraint is evaluated on the decoded value:
 
 ```go
-app.GET("/files/{name}", func(ctx *credo.Context) error {
+app.GET("/files/{name}", func(c *credo.Context) error {
     // GET /files/a%2Fb      -> "a/b"  (one segment; the encoded slash is data)
     // GET /files/%31        -> "1"
     // GET /files/caf%C3%A9  -> "café"
     // GET /files/a/b        -> 404    (a raw slash ends the segment)
-    return ctx.Response().Text(200, ctx.Request().RouteParam("name"))
+    return c.Response().Text(200, c.Request().RouteParam("name"))
 })
 
 app.GET("/orders/{id:[0-9]+}", getOrder) // GET /orders/%31 matches with id "1"
 app.GET("/docs/{path...}", serveDoc)      // GET /docs/a%2Fb/c -> "a/b/c"
 ```
 
-Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded unreserved delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain an unreserved byte that follows its parameter in the pattern. Reserved characters keep their escape (RFC 3986 §2.2): `/t/a%3Bb;v` gives `{id};v` the value `a;b`, and `/lit/a%3Bb` does not match static `/lit/a;b`. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `ctx.Rewrite` takes a wire-form target, so `ctx.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
+Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded unreserved delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain an unreserved byte that follows its parameter in the pattern. Reserved characters keep their escape (RFC 3986 §2.2): `/t/a%3Bb;v` gives `{id};v` the value `a;b`, and `/lit/a%3Bb` does not match static `/lit/a;b`. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `c.Rewrite` takes a wire-form target, so `c.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
 
 URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment; static text comes out in its wire spelling. A value that could not route back — invalid UTF-8, or one containing its parameter's delimiter (`a.b` for `{name}.json`) — is an error.
 
@@ -140,13 +140,13 @@ if err != nil {
 }
 app.OnStop(func(context.Context) error { return uploads.Close() }) // after the HTTP drain
 
-app.GET("/uploads/{name}", func(ctx *credo.Context) error {
-    f, err := uploads.Open(ctx.Request().RouteParam("name"))
+app.GET("/uploads/{name}", func(c *credo.Context) error {
+    f, err := uploads.Open(c.Request().RouteParam("name"))
     if err != nil {
         return credo.ErrNotFound // "../../etc": "path escapes from parent"
     }
     defer f.Close()
-    return ctx.Response().Stream(http.StatusOK, "application/octet-stream", f)
+    return c.Response().Stream(http.StatusOK, "application/octet-stream", f)
 })
 ```
 
@@ -176,12 +176,12 @@ func (q *ProductQuery) Validate() error {
     )
 }
 
-app.QUERY("/products", func(ctx *credo.Context) error {
+app.QUERY("/products", func(c *credo.Context) error {
     var query ProductQuery
-    if err := ctx.Request().BindBody(&query); err != nil {
+    if err := c.Request().BindBody(&query); err != nil {
         return err
     }
-    return ctx.Response().JSON(http.StatusOK, searchProducts(query))
+    return c.Response().JSON(http.StatusOK, searchProducts(query))
 })
 ```
 
@@ -190,7 +190,7 @@ Clients must send a non-blank `Content-Type`, even with an empty body. Missing o
 `Accept-Query` is optional capability advertisement, not permission to use QUERY. Set it directly when useful:
 
 ```go
-ctx.Response().Header().Set("Accept-Query", "application/json")
+c.Response().Header().Set("Accept-Query", "application/json")
 ```
 
 When every response, including errors, should retain it, use ordinary application middleware:
@@ -199,9 +199,9 @@ When every response, including errors, should retain it, use ordinary applicatio
 func AcceptQuery(mediaTypes ...string) credo.Middleware {
     value := strings.Join(mediaTypes, ", ")
     return func(next credo.Handler) credo.Handler {
-        return func(ctx *credo.Context) error {
-            ctx.Response().Header().Set("Accept-Query", value)
-            return next(ctx)
+        return func(c *credo.Context) error {
+            c.Response().Header().Set("Accept-Query", value)
+            return next(c)
         }
     }
 }
@@ -213,10 +213,10 @@ app.QUERY("/products", queryProducts).
 Credo does not synthesize OPTIONS. Advertise both method and media type explicitly when an application needs discovery:
 
 ```go
-app.OPTIONS("/products", func(ctx *credo.Context) error {
-    ctx.Response().Header().Set("Allow", "OPTIONS, QUERY")
-    ctx.Response().Header().Set("Accept-Query", "application/json")
-    return ctx.Response().NoContent(http.StatusNoContent)
+app.OPTIONS("/products", func(c *credo.Context) error {
+    c.Response().Header().Set("Allow", "OPTIONS, QUERY")
+    c.Response().Header().Set("Accept-Query", "application/json")
+    return c.Response().NoContent(http.StatusNoContent)
 })
 ```
 
@@ -274,7 +274,7 @@ app.Mount("/t/{tenant}", tenantApp) // /t/acme/reports reaches tenantApp as /rep
 tenant := r.PathValue("tenant") // or credo.URLParam(r, "tenant")
 
 // in a mounted Credo app
-tenant := ctx.Request().PathValue("tenant")
+tenant := c.Request().PathValue("tenant")
 ```
 
 In a mounted Credo app `RouteParam` returns that app's own route parameters; the parameters of the mount prefix are reached through `PathValue`. Nested parametric mounts add up: the innermost handler sees the parameters of every prefix on the way down. A catch-all parameter does not belong in a mount pattern — it consumes the whole path, and the handler would always see `/`.
@@ -317,9 +317,9 @@ admin.GET("/dashboard", showDashboard)
 
 ```go
 tenant := app.Host("{tenant}.example.com")
-tenant.GET("/dashboard", func(ctx *credo.Context) error {
-    slug := ctx.Request().RouteParam("tenant")
-    return ctx.Response().Text(200, slug)
+tenant.GET("/dashboard", func(c *credo.Context) error {
+    slug := c.Request().RouteParam("tenant")
+    return c.Response().Text(200, slug)
 })
 ```
 
@@ -426,14 +426,14 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 
 ## Handler-Level Internal Forwarding
 
-Use `ctx.Rewrite()` when the decision depends on handler logic.
+Use `c.Rewrite()` when the decision depends on handler logic.
 
 ```go
-app.GET("/checkout", func(ctx *credo.Context) error {
-    if useNewCheckout(ctx) {
-        return ctx.Rewrite("/checkout/v2")
+app.GET("/checkout", func(c *credo.Context) error {
+    if useNewCheckout(c) {
+        return c.Rewrite("/checkout/v2")
     }
-    return ctx.Rewrite("/checkout/v1")
+    return c.Rewrite("/checkout/v1")
 })
 ```
 
@@ -446,7 +446,7 @@ app.GET("/checkout", func(ctx *credo.Context) error {
 
 ### Rules
 
-- Return it directly: `return ctx.Rewrite("/new")`
+- Return it directly: `return c.Rewrite("/new")`
 - The target must start with `/`
 - A request can rewrite at most 10 times
 - Re-dispatch stays in the same host scope
@@ -457,13 +457,13 @@ app.GET("/checkout", func(ctx *credo.Context) error {
 
 ## Original Path and Logging
 
-`ctx.OriginalPath()` always returns the path that entered the framework before any rewrite happened.
+`c.OriginalPath()` always returns the path that entered the framework before any rewrite happened.
 
 ```go
-app.GET("/debug", func(ctx *credo.Context) error {
-    return ctx.Response().JSON(200, map[string]string{
-        "original": ctx.OriginalPath(),
-        "current":  ctx.Request().URL.Path,
+app.GET("/debug", func(c *credo.Context) error {
+    return c.Response().JSON(200, map[string]string{
+        "original": c.OriginalPath(),
+        "current":  c.Request().URL.Path,
     })
 })
 ```
@@ -478,18 +478,18 @@ The access log (`app.UseAccessLog`) records both.
 
 ---
 
-## Middleware Gotchas with `ctx.Rewrite()`
+## Middleware Gotchas with `c.Rewrite()`
 
-If a handler calls `ctx.Rewrite()`, routed, group and route middleware for the target route execute again.
+If a handler calls `c.Rewrite()`, routed, group and route middleware for the target route execute again.
 
 That means `after` logic is per dispatch round, not per whole request:
 
 ```go
 func Timer(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
+    return func(c *credo.Context) error {
         start := time.Now()
-        err := next(ctx)
-        if ctx.IsRewriting() {
+        err := next(c)
+        if c.IsRewriting() {
             return err
         }
         slog.Info("route duration", "duration", time.Since(start))
@@ -569,5 +569,5 @@ func TestShowUser_NotFound(t *testing.T) {
 - Use `app.Host()` for domain isolation.
 - Use `app.Group()` for path prefixes and scoped middleware.
 - Use `middleware.Rewrite()` for deterministic URL normalization.
-- Use `ctx.Rewrite()` for conditional internal forwards.
+- Use `c.Rewrite()` for conditional internal forwards.
 - Use `OriginalPath()` when you care about analytics, debugging, or audit logs.

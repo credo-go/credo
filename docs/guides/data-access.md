@@ -351,16 +351,16 @@ func (r *UserRepo) List(ctx context.Context, req *pagination.PageRequest) (*pagi
 `BindQuery` applies the request-input policy automatically — `pagination.PageRequest` implements `Validate`, so binding it from the request query fills defaults and clamps `page`/`per_page` in place before the repository sees it. `Page` itself does not repeat that forgiving policy. It copies the request and strictly validates the snapshot without mutating the caller:
 
 ```go
-func (h *UserHandler) List(ctx *credo.Context) error {
+func (h *UserHandler) List(c *credo.Context) error {
     var req pagination.PageRequest
-    if err := ctx.Request().BindQuery(&req); err != nil {
+    if err := c.Request().BindQuery(&req); err != nil {
         return err
     }
-    page, err := h.users.List(ctx.Context(), &req)
+    page, err := h.users.List(c.Context(), &req)
     if err != nil {
         return err
     }
-    return ctx.Response().JSON(http.StatusOK, page)
+    return c.Response().JSON(http.StatusOK, page)
 }
 ```
 
@@ -711,7 +711,7 @@ func (s *OrderService) Place(ctx context.Context, order *Order) error {
 }
 ```
 
-From a handler, pass the request context: `db.InTx(ctx.Context(), fn)`. The package-level `sqldb.RunInTx(ctx, db, fn)` is equivalent; `InTxWith` / `RunInTxWith` accept `sql.TxOptions` for isolation level and read-only mode.
+From a handler, pass the request context: `db.InTx(c.Context(), fn)`. The package-level `sqldb.RunInTx(ctx, db, fn)` is equivalent; `InTxWith` / `RunInTxWith` accept `sql.TxOptions` for isolation level and read-only mode.
 
 The callback error is a domain value. When rollback succeeds, Credo returns the exact error unchanged; it is not reclassified from its text or passed through driver mapping. A panic triggers a rollback attempt and re-raises the same panic value. Passing a nil callback returns `sqldb.ErrNilTxCallback` before the transaction begins.
 

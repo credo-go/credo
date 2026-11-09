@@ -11,8 +11,8 @@ All locale examples in this guide use JSON.
 Credo's i18n support is intentionally small from the application's point of view:
 
 - `app.UseI18n(...)` registers i18n during startup; the locale files are read in the start phase
-- `ctx.Locale()` returns the resolved locale for the current request
-- `ctx.T(key, data...)` translates application messages by key
+- `c.Locale()` returns the resolved locale for the current request
+- `c.T(key, data...)` translates application messages by key
 
 When i18n is active, Credo also translates:
 
@@ -83,10 +83,10 @@ func main() {
 
     app.UseI18n()
 
-    app.GET("/hello", func(ctx *credo.Context) error {
-        return ctx.Response().JSON(http.StatusOK, map[string]string{
-            "locale":  ctx.Locale(),
-            "welcome": ctx.T("messages.welcome"),
+    app.GET("/hello", func(c *credo.Context) error {
+        return c.Response().JSON(http.StatusOK, map[string]string{
+            "locale":  c.Locale(),
+            "welcome": c.T("messages.welcome"),
         })
     })
 
@@ -210,12 +210,12 @@ Template variables use Go's `text/template` syntax:
 ```
 
 ```go
-ctx.T("messages.hello_name", map[string]any{"name": "Ada"})
+c.T("messages.hello_name", map[string]any{"name": "Ada"})
 ```
 
 Template syntax is validated eagerly: programmatic `Messages` when `UseI18n` is called, locale files when the start phase reads them. An invalid template panics at the call or fails the start instead of silently breaking later at request time.
 
-For count-dependent messages, define CLDR plural forms as an object and use `ctx.TPlural` — it picks the right form for the detected locale and exposes the count as `{{.count}}`:
+For count-dependent messages, define CLDR plural forms as an object and use `c.TPlural` — it picks the right form for the detected locale and exposes the count as `{{.count}}`:
 
 ```json
 {
@@ -224,13 +224,13 @@ For count-dependent messages, define CLDR plural forms as an object and use `ctx
 ```
 
 ```go
-ctx.TPlural("messages.items", 1) // "1 item"
-ctx.TPlural("messages.items", 5) // "5 items"
+c.TPlural("messages.items", 1) // "1 item"
+c.TPlural("messages.items", 5) // "5 items"
 ```
 
-`ctx.T` always renders the `other` form; reach for `ctx.TPlural` whenever the text varies with a number. If the count cannot be interpreted as a number, `ctx.TPlural` renders the `other` form rather than failing — like the key fallback, the helpers degrade gracefully instead of surfacing i18n errors to end users.
+`c.T` always renders the `other` form; reach for `c.TPlural` whenever the text varies with a number. If the count cannot be interpreted as a number, `c.TPlural` renders the `other` form rather than failing — like the key fallback, the helpers degrade gracefully instead of surfacing i18n errors to end users.
 
-> **Trust model.** Locale files are code: templates can call methods on the data you pass to `ctx.T`, so review translation files (including community-contributed ones) like any other code change. Messages render as plain text (`text/template`); when you embed them in HTML, escape at the rendering layer — `html/template` does this automatically for interpolated strings.
+> **Trust model.** Locale files are code: templates can call methods on the data you pass to `c.T`, so review translation files (including community-contributed ones) like any other code change. Messages render as plain text (`text/template`); when you embed them in HTML, escape at the rendering layer — `html/template` does this automatically for interpolated strings.
 
 ---
 
@@ -372,7 +372,7 @@ If the client sends:
 Accept-Language: tr-TR,tr;q=0.9,en;q=0.8
 ```
 
-and you only provide `tr/` and `en/`, Credo resolves the request locale to `tr`. `ctx.Locale()` returns that resolved locale, not the raw header value.
+and you only provide `tr/` and `en/`, Credo resolves the request locale to `tr`. `c.Locale()` returns that resolved locale, not the raw header value.
 
 ### Custom Detection
 
@@ -382,8 +382,8 @@ You can override detection completely:
 app.UseI18n(credo.I18nConfig{
     Dir:     "locales/",
     Default: "en",
-    Detect: func(ctx *credo.Context) string {
-        r := ctx.Request()
+    Detect: func(c *credo.Context) string {
+        r := c.Request()
         if lang := r.URL.Query().Get("lang"); lang != "" {
             return lang
         }
@@ -401,20 +401,20 @@ Your detector may return:
 
 Credo resolves that input against the locales you actually loaded.
 
-Detection is lazy: the detector runs on the first `ctx.Locale()`, `ctx.T()` or automatic error translation of a request, its result is remembered for that request, and requests that never translate anything do not call it. It sees the request as it is at that moment — the authenticated user is available through `ctx.GetUser[T]()` only if authentication already ran, so a detector that reads the user must handle its absence. To pin the authenticated user's language for errors rendered later, call `ctx.Locale()` right after `ctx.SetUser(...)`; an earlier read wins. Do not call `ctx.Locale()` or a translation from inside the detector (that panics).
+Detection is lazy: the detector runs on the first `c.Locale()`, `c.T()` or automatic error translation of a request, its result is remembered for that request, and requests that never translate anything do not call it. It sees the request as it is at that moment — the authenticated user is available through `c.GetUser[T]()` only if authentication already ran, so a detector that reads the user must handle its absence. To pin the authenticated user's language for errors rendered later, call `c.Locale()` right after `c.SetUser(...)`; an earlier read wins. Do not call `c.Locale()` or a translation from inside the detector (that panics).
 
 ---
 
 ## Translating Normal Application Messages
 
-Use `ctx.T()` anywhere you build the response body.
+Use `c.T()` anywhere you build the response body.
 
 ```go
-app.GET("/dashboard", func(ctx *credo.Context) error {
-    return ctx.Response().JSON(http.StatusOK, map[string]any{
-        "locale":  ctx.Locale(),
-        "title":   ctx.T("messages.dashboard_title"),
-        "welcome": ctx.T("messages.hello_name", map[string]any{"name": "Ada"}),
+app.GET("/dashboard", func(c *credo.Context) error {
+    return c.Response().JSON(http.StatusOK, map[string]any{
+        "locale":  c.Locale(),
+        "title":   c.T("messages.dashboard_title"),
+        "welcome": c.T("messages.hello_name", map[string]any{"name": "Ada"}),
     })
 })
 ```
@@ -455,14 +455,14 @@ func (in *CreateUserInput) Validate() error {
     )
 }
 
-func createUser(ctx *credo.Context) error {
+func createUser(c *credo.Context) error {
     var input CreateUserInput
-    if err := ctx.Request().BindBody(&input); err != nil {
+    if err := c.Request().BindBody(&input); err != nil {
         return err
     }
 
-    return ctx.Response().JSON(http.StatusCreated, map[string]string{
-        "message": ctx.T("messages.user_created"),
+    return c.Response().JSON(http.StatusCreated, map[string]string{
+        "message": c.T("messages.user_created"),
     })
 }
 ```
@@ -511,12 +511,12 @@ Notes:
 Credo localizes error messages automatically. An explicit `MessageKey` is an exact key and falls back to its literal value. Otherwise Credo invokes the optional scope-aware resolver, then uses the bare code. An implicit lookup miss falls back to built-in/HTTP status text, never to the resolver-generated key.
 
 ```go
-app.GET("/users/{id}", func(ctx *credo.Context) error {
-    id := ctx.Request().RouteParam("id")
+app.GET("/users/{id}", func(c *credo.Context) error {
+    id := c.Request().RouteParam("id")
     if id == "missing" {
         return credo.ErrNotFound // code "not_found", no explicit key
     }
-    return ctx.Response().JSON(http.StatusOK, map[string]string{"id": id})
+    return c.Response().JSON(http.StatusOK, map[string]string{"id": id})
 })
 ```
 
@@ -548,19 +548,19 @@ If no translation is found, the explicit key itself (`"user.email_exists"`) is u
 A clea Credo handler usually looks like this:
 
 ```go
-func (c *UserController) Create(ctx *credo.Context) error {
+func (h *UserController) Create(c *credo.Context) error {
     var input CreateUserInput
-    if err := ctx.Request().BindBody(&input); err != nil {
+    if err := c.Request().BindBody(&input); err != nil {
         return err
     }
 
-    user, err := c.svc.Create(ctx.Context(), input)
+    user, err := h.svc.Create(c.Context(), input)
     if err != nil {
         return err
     }
 
-    return ctx.Response().JSON(http.StatusCreated, map[string]any{
-        "message": ctx.T("messages.user_created"),
+    return c.Response().JSON(http.StatusCreated, map[string]any{
+        "message": c.T("messages.user_created"),
         "user":    user,
     })
 }
@@ -568,7 +568,7 @@ func (c *UserController) Create(ctx *credo.Context) error {
 
 The key idea is:
 
-- use `ctx.T(...)` for success payloads and application copy
+- use `c.T(...)` for success payloads and application copy
 - return errors normally
 - let Credo's error handler perform automatic translation for errors
 
@@ -584,8 +584,8 @@ Inactive behavior is intentionally cheap:
 
 - the start succeeds and logs `credo: i18n inactive, locale directory not found or empty` at Warn
 - the detector is never called
-- `ctx.Locale()` returns `""`
-- `ctx.T("messages.welcome")` returns `"messages.welcome"`
+- `c.Locale()` returns `""`
+- `c.T("messages.welcome")` returns `"messages.welcome"`
 - automatic error translation does not run
 
 This is useful when:
@@ -620,7 +620,7 @@ This is deliberate: broken locale assets should fail fast, before the App serves
 
 ## Troubleshooting
 
-### `ctx.T()` Returns the Key Instead of a Translation
+### `c.T()` Returns the Key Instead of a Translation
 
 Check the following:
 
@@ -630,7 +630,7 @@ Check the following:
 4. the request resolved to the locale you expect
 5. for `DirFS`, you passed the correct filesystem root, often via `fs.Sub(...)`
 
-### `ctx.Locale()` Is Empty
+### `c.Locale()` Is Empty
 
 This means i18n is inactive. Common causes:
 
@@ -669,7 +669,7 @@ If a key is missing, Credo keeps the original default message.
 - always define `http.*` keys for the statuses your API returns often
 - add validation and bind keys early so `BindBody()` and `BindQuery()` become useful immediately; use a resolver if those keys are namespaced
 - use `fields.json` only when server-generated messages need human field labels
-- prefer `ctx.T(...)` for response copy, not for control flow
+- prefer `c.T(...)` for response copy, not for control flow
 - when embedding locales, use `fs.Sub(...)` so `DirFS` points at the locale root
 
 ---
@@ -740,19 +740,19 @@ func main() {
 
     app.UseI18n()
 
-    app.POST("/users", func(ctx *credo.Context) error {
+    app.POST("/users", func(c *credo.Context) error {
         var input CreateUserInput
-        if err := ctx.Request().BindBody(&input); err != nil {
+        if err := c.Request().BindBody(&input); err != nil {
             return err
         }
 
-        return ctx.Response().JSON(http.StatusCreated, map[string]string{
-            "message": ctx.T("messages.user_created"),
-            "locale":  ctx.Locale(),
+        return c.Response().JSON(http.StatusCreated, map[string]string{
+            "message": c.T("messages.user_created"),
+            "locale":  c.Locale(),
         })
     })
 
-    app.GET("/users/{id}", func(ctx *credo.Context) error {
+    app.GET("/users/{id}", func(c *credo.Context) error {
         return credo.ErrNotFound
     })
 
@@ -764,7 +764,7 @@ func main() {
 
 This gives you:
 
-- translated success messages through `ctx.T(...)`
+- translated success messages through `c.T(...)`
 - translated validation field messages from `BindBody()`
 - translated HTTP error titles from `credo.ErrNotFound`
-- resolved per-request locale via `ctx.Locale()`
+- resolved per-request locale via `c.Locale()`

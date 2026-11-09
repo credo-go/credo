@@ -570,15 +570,15 @@ func (w *InvoiceWorker) Run(ctx context.Context) error {
 ```go
 workers := app.Workers()
 admin := app.Group("/admin") // protect it: auth middleware, a separate listener, or both
-admin.GET("/workers", func(ctx *credo.Context) error {
-    return ctx.Response().JSON(http.StatusOK, workers.Snapshot())
+admin.GET("/workers", func(c *credo.Context) error {
+    return c.Response().JSON(http.StatusOK, workers.Snapshot())
 })
-admin.GET("/workers/{name}", func(ctx *credo.Context) error {
-    info, ok := workers.Lookup(ctx.Request().RouteParam("name"))
+admin.GET("/workers/{name}", func(c *credo.Context) error {
+    info, ok := workers.Lookup(c.Request().RouteParam("name"))
     if !ok {
         return credo.ErrNotFound
     }
-    return ctx.Response().JSON(http.StatusOK, info)
+    return c.Response().JSON(http.StatusOK, info)
 })
 ```
 
