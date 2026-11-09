@@ -231,9 +231,10 @@ Copyright (c) Seth Vargo and go-limiter contributors
 License: Apache-2.0 (https://github.com/sethvargo/go-limiter/blob/main/LICENSE)
 
 Wrapped in:
-  - middleware/       — token bucket rate limiting middleware adapter
+  - middleware/ratelimit/ — token bucket rate limiting middleware adapter
     Files:
-      ratelimit.go    — RateLimit middleware wrapper over go-limiter store
+      ratelimit.go    — Middleware wrapper over a go-limiter store
+      store.go        — default in-memory go-limiter store
 
 ----------------------------------------------------------------------
 

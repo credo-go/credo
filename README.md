@@ -28,6 +28,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Area | Status |
 | --- | --- |
 | Routing, Context, Handlers, Middleware | Beta |
+| Rate limiting (`middleware/ratelimit`) | Beta |
 | Dependency Injection (`Provide`/`Resolve`, `Infra`) | Beta |
 | Configuration (`config`, typed snapshot) | Beta |
 | Validation | Beta |

@@ -1,4 +1,4 @@
-package middleware_test
+package ratelimit_test
 
 import (
 	"net/http"
@@ -9,10 +9,10 @@ import (
 	"github.com/sethvargo/go-limiter/memorystore"
 
 	"github.com/credo-go/credo"
-	"github.com/credo-go/credo/middleware"
+	"github.com/credo-go/credo/middleware/ratelimit"
 )
 
-func TestRateLimit_DeniesAfterLimitReached(t *testing.T) {
+func TestMiddleware_DeniesAfterLimitReached(t *testing.T) {
 	store, err := memorystore.New(&memorystore.Config{
 		Tokens:   1,
 		Interval: time.Hour,
@@ -27,7 +27,7 @@ func TestRateLimit_DeniesAfterLimitReached(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(middleware.RateLimit(middleware.RateLimitConfig{
+	}).Middleware(ratelimit.Middleware(ratelimit.Config{
 		Store: store,
 		KeyFunc: func(ctx *credo.Context) (string, error) {
 			return "client-1", nil
@@ -54,11 +54,11 @@ func TestRateLimit_DeniesAfterLimitReached(t *testing.T) {
 	}
 }
 
-func TestRateLimit_KeyFuncError(t *testing.T) {
+func TestMiddleware_KeyFuncError(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(middleware.RateLimit(middleware.RateLimitConfig{
+	}).Middleware(ratelimit.Middleware(ratelimit.Config{
 		KeyFunc: func(ctx *credo.Context) (string, error) {
 			return "", http.ErrNoCookie
 		},
@@ -73,7 +73,7 @@ func TestRateLimit_KeyFuncError(t *testing.T) {
 	}
 }
 
-func TestRateLimit_CustomDeniedHandler(t *testing.T) {
+func TestMiddleware_CustomDeniedHandler(t *testing.T) {
 	store, err := memorystore.New(&memorystore.Config{
 		Tokens:   1,
 		Interval: time.Hour,
@@ -88,7 +88,7 @@ func TestRateLimit_CustomDeniedHandler(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(middleware.RateLimit(middleware.RateLimitConfig{
+	}).Middleware(ratelimit.Middleware(ratelimit.Config{
 		Store: store,
 		KeyFunc: func(ctx *credo.Context) (string, error) {
 			return "client-1", nil
@@ -114,11 +114,11 @@ func TestRateLimit_CustomDeniedHandler(t *testing.T) {
 	}
 }
 
-func TestRateLimit_DefaultMiddlewareConstructor(t *testing.T) {
+func TestMiddleware_DefaultMiddlewareConstructor(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(middleware.RateLimit())
+	}).Middleware(ratelimit.Middleware())
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -133,7 +133,7 @@ func TestRateLimit_DefaultMiddlewareConstructor(t *testing.T) {
 	}
 }
 
-func TestRateLimit_DefaultKeyUsesRealIP(t *testing.T) {
+func TestMiddleware_DefaultKeyUsesRealIP(t *testing.T) {
 	store, err := memorystore.New(&memorystore.Config{
 		Tokens:   1,
 		Interval: time.Hour,
@@ -148,7 +148,7 @@ func TestRateLimit_DefaultKeyUsesRealIP(t *testing.T) {
 	app := mustNew(t, credo.WithTrustedProxies("10.0.0.0/8"))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(middleware.RateLimit(middleware.RateLimitConfig{Store: store}))
+	}).Middleware(ratelimit.Middleware(ratelimit.Config{Store: store}))
 
 	first := httptest.NewRecorder()
 	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -175,5 +175,48 @@ func TestRateLimit_DefaultKeyUsesRealIP(t *testing.T) {
 	app.ServeHTTP(third, thirdReq)
 	if third.Code != http.StatusTooManyRequests {
 		t.Fatalf("third status = %d, want 429", third.Code)
+	}
+}
+
+// One Middleware value attached to two routes holds one store, so the two
+// routes spend one budget per key.
+func TestMiddleware_SharedAcrossRoutesSpendsOneBudget(t *testing.T) {
+	limit := ratelimit.Middleware(ratelimit.Config{
+		Tokens:   2,
+		Interval: time.Hour,
+		KeyFunc: func(*credo.Context) (string, error) {
+			return "client-1", nil
+		},
+	})
+
+	app := mustNew(t)
+	ok := func(ctx *credo.Context) error { return ctx.Response().NoContent(http.StatusOK) }
+	app.GET("/a", ok).Middleware(limit)
+	app.GET("/b", ok).Middleware(limit)
+
+	codes := make([]int, 0, 3)
+	for _, path := range []string{"/a", "/b", "/a"} {
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		codes = append(codes, w.Code)
+	}
+	if codes[0] != http.StatusOK || codes[1] != http.StatusOK || codes[2] != http.StatusTooManyRequests {
+		t.Fatalf("statuses = %v, want [200 200 429]: the two routes share one budget", codes)
+	}
+
+	// A second Middleware call keeps a budget of its own.
+	app2 := mustNew(t)
+	app2.GET("/a", ok).Middleware(limit)
+	app2.GET("/c", ok).Middleware(ratelimit.Middleware(ratelimit.Config{
+		Tokens:   1,
+		Interval: time.Hour,
+		KeyFunc: func(*credo.Context) (string, error) {
+			return "client-1", nil
+		},
+	}))
+	w := httptest.NewRecorder()
+	app2.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/c", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 from a second Middleware's own budget", w.Code)
 	}
 }

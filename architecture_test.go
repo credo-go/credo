@@ -53,8 +53,10 @@ var modulePolicies = map[string]importPolicy{
 			"internal/host", "internal/httpheader", "internal/httpwriter", "internal/origin",
 			"internal/observe", "internal/pattern", "internal/requestid",
 		},
-		external: []string{"github.com/sethvargo/go-limiter"},
 	},
+
+	"middleware/ratelimit": {credo: []string{"", "middleware"}, external: []string{"github.com/sethvargo/go-limiter"}},
+
 	"pagination": {},
 	"store":      {credo: []string{"", "fault", "internal/health", "internal/kernel"}},
 	"testutil":   {credo: []string{"", "config"}},

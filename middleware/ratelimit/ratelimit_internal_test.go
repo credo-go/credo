@@ -1,4 +1,4 @@
-package middleware
+package ratelimit
 
 import (
 	"context"
@@ -38,7 +38,7 @@ func (s *stubLimiterStore) Close(context.Context) error {
 	return nil
 }
 
-func TestRateLimitKeyFromContext(t *testing.T) {
+func TestKeyFromContext(t *testing.T) {
 	tests := []struct {
 		name string
 		req  *http.Request
@@ -74,7 +74,7 @@ func TestRateLimitKeyFromContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := credo.NewContext(httptest.NewRecorder(), tt.req)
-			got, err := rateLimitKeyFromContext(ctx)
+			got, err := keyFromContext(ctx)
 			if tt.err {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -197,25 +197,16 @@ func TestInMemoryRateLimitStore_SetBurstGetCloseAndContext(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_CloseAndShutdown(t *testing.T) {
-	r := NewRateLimiter(RateLimitConfig{})
-
-	if err := r.Close(t.Context()); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if err := r.Shutdown(t.Context()); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-}
-
-func TestRateLimiter_Close_DoesNotCloseCustomStore(t *testing.T) {
+// A store passed in through Config.Store stays its owner's: the middleware
+// uses it and never closes it.
+func TestMiddleware_DoesNotCloseConfigStore(t *testing.T) {
 	store := &stubLimiterStore{}
-	r := NewRateLimiter(RateLimitConfig{Store: store})
+	h := Middleware(Config{Store: store})(func(*credo.Context) error { return nil })
 
-	if err := r.Close(t.Context()); err != nil {
-		t.Fatalf("close: %v", err)
+	ctx := credo.NewContext(httptest.NewRecorder(), httptestRequest("192.0.2.1:9000"))
+	if err := h(ctx); err != nil {
+		t.Fatalf("handler: %v", err)
 	}
-
 	if store.closeCalls != 0 {
 		t.Fatalf("custom store close calls = %d, want 0", store.closeCalls)
 	}
