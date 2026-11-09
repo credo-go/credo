@@ -463,9 +463,6 @@ func TestBindError_ErrorString(t *testing.T) {
 			t.Errorf("Error() = %q, want it to contain %q", got, want)
 		}
 	}
-	if be.HTTPStatus() != 400 {
-		t.Errorf("HTTPStatus() = %d, want 400", be.HTTPStatus())
-	}
 }
 
 // strictBindApp builds an app with strict bodies and a /bind route decoding

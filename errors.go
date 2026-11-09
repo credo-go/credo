@@ -161,11 +161,6 @@ func (e *HTTPError) Error() string {
 	return s
 }
 
-// HTTPStatus returns the HTTP status code carried by the error.
-func (e *HTTPError) HTTPStatus() int {
-	return e.Status
-}
-
 // Unwrap returns the internal error, supporting errors.Is/As.
 func (e *HTTPError) Unwrap() error {
 	return e.Internal
@@ -392,9 +387,7 @@ func (app *App) logError(err error, status int, ctx *Context) {
 
 	message := "credo: server error"
 	if _, isHTTPError := errors.AsType[*HTTPError](err); !isHTTPError {
-		_, isFault := fault.ProviderOf(err)
-		_, hasLegacyStatus := internalfaultstatus.ProviderOf(err)
-		if !isFault && !hasLegacyStatus {
+		if _, isFault := fault.ProviderOf(err); !isFault {
 			message = "credo: unhandled error"
 		}
 	}
@@ -411,8 +404,7 @@ func (app *App) logError(err error, status int, ctx *Context) {
 // Debug. A client error earns no line at the default level, but the cause
 // attached with [HTTPError.WithInternal], or the decoder error behind a
 // [BindError], is what explains the response to whoever goes looking. An
-// error that carries no such cause — a fault provider, an HTTPStatus error —
-// writes nothing.
+// error that carries no such cause — a fault provider — writes nothing.
 func logClientErrorCause(err error, status int, ctx *Context) {
 	var cause error
 	if he, isHTTPError := errors.AsType[*HTTPError](err); isHTTPError {
@@ -486,9 +478,10 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 //     Unprocessable Entity with field violations
 //  3. *BindError → 400 Bad Request with a typed decode-reason violations entry
 //  4. fault.Provider → default root transport policy for the semantic kind
-//  5. HTTPStatus() int interface → legacy or explicit transport status;
-//     out-of-domain statuses fail closed to a generic 500
-//  6. Any other error → 500 Internal Server Error (message not leaked)
+//  5. Any other error → 500 Internal Server Error (message not leaked)
+//
+// These are the only status channels: an error that merely has an
+// HTTPStatus() int method is "any other error".
 //
 // Every branch resolves its effective code and message through [codedErrorInfo],
 // so the default pipeline always emits a non-empty machine code.
@@ -526,14 +519,6 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		return app.codedErrorInfo(ctx, status, "", "")
 	}
 
-	if se, ok := internalfaultstatus.ProviderOf(err); ok {
-		status := se.HTTPStatus()
-		if !isValidHTTPStatus(status) {
-			return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
-		}
-		return app.codedErrorInfo(ctx, status, "", "")
-	}
-
 	return app.codedErrorInfo(ctx, http.StatusInternalServerError, "", "")
 }
 
@@ -545,8 +530,8 @@ func (app *App) validationErrorInfo(ctx *Context, ve validation.Errors) *ErrorIn
 }
 
 // codedErrorInfo is the single source of the effective-code and message
-// calculation for the HTTPError, fault, legacy-status, and generic-500
-// classification branches.
+// calculation for the HTTPError, fault and generic-500 classification
+// branches.
 func (app *App) codedErrorInfo(ctx *Context, status int, explicitCode, explicitKey string) *ErrorInfo {
 	code := explicitCode
 	if code == "" {

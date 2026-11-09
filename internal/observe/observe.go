@@ -3,35 +3,10 @@ package observe
 import (
 	"fmt"
 	"log/slog"
-	"net/http"
 	"reflect"
 	"runtime/debug"
 	"unicode/utf8"
-
-	"github.com/credo-go/credo/fault"
-	internalfaultstatus "github.com/credo-go/credo/internal/faultstatus"
 )
-
-// Status resolves the final HTTP status from a tracked response status and an
-// optional returned error.
-func Status(status int, err error) int {
-	if status != 0 {
-		return status
-	}
-	if err == nil {
-		return http.StatusOK
-	}
-	if provider, ok := fault.ProviderOf(err); ok {
-		if semanticStatus, known := internalfaultstatus.HTTP(provider.FaultKind()); known {
-			return semanticStatus
-		}
-		return http.StatusInternalServerError
-	}
-	if provider, ok := internalfaultstatus.ProviderOf(err); ok {
-		return provider.HTTPStatus()
-	}
-	return http.StatusInternalServerError
-}
 
 // Level maps an HTTP status code to the structured log level Credo uses.
 func Level(status int) slog.Level {

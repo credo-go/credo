@@ -80,7 +80,8 @@ func TestHandleError_ValidationErrors(t *testing.T) {
 	}
 }
 
-// httpStatusError simulates a store-style error with HTTPStatus() int.
+// httpStatusError has an HTTPStatus() int method and nothing else the error
+// pipeline reads: the method is not a status channel.
 type httpStatusError struct {
 	msg    string
 	status int
@@ -89,45 +90,45 @@ type httpStatusError struct {
 func (e *httpStatusError) Error() string   { return e.msg }
 func (e *httpStatusError) HTTPStatus() int { return e.status }
 
-func TestHandleError_HTTPStatusInterface(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/users/99", func(ctx *credo.Context) error {
-		return &httpStatusError{msg: "store: record not found", status: http.StatusNotFound}
-	})
+func TestHandleError_HTTPStatusMethodIsNotAStatusChannel(t *testing.T) {
+	for name, err := range map[string]error{
+		"direct":  &httpStatusError{msg: "store: record not found", status: http.StatusNotFound},
+		"wrapped": errors.Join(errors.New("repo: create user"), &httpStatusError{msg: "store: duplicate record", status: http.StatusConflict}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := mustNew(t)
+			app.GET("/users/99", func(*credo.Context) error { return err })
 
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/users/99", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-
-	var pd credo.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if pd.Error.Message != "Not Found" {
-		t.Errorf("message = %q, want %q", pd.Error.Message, "Not Found")
-	}
-	if contains(w.Body.String(), "store: record not found") {
-		t.Errorf("body leaks internal error: %s", w.Body.String())
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/users/99", nil))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", w.Code)
+			}
+			var pd credo.ErrorResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if pd.Error.Code != "internal_server_error" {
+				t.Fatalf("code = %q, want internal_server_error", pd.Error.Code)
+			}
+			if contains(w.Body.String(), "store:") {
+				t.Fatalf("body leaks the internal error: %s", w.Body.String())
+			}
+		})
 	}
 }
 
-func TestHandleError_HTTPStatusInterface_Wrapped(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/users/99", func(ctx *credo.Context) error {
-		inner := &httpStatusError{msg: "store: duplicate record", status: http.StatusConflict}
-		return errors.Join(errors.New("repo: create user"), inner)
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/users/99", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+func TestErrorTypes_HaveNoHTTPStatusMethod(t *testing.T) {
+	type statusMethod interface{ HTTPStatus() int }
+	for name, err := range map[string]error{
+		"HTTPError":         credo.ErrNotFound,
+		"BindError":         &credo.BindError{Reason: credo.BindReasonSyntax},
+		"store.Error":       store.Wrap(store.ErrConstraint, errors.New("driver")),
+		"store.ErrNotFound": store.ErrNotFound,
+	} {
+		if _, ok := err.(statusMethod); ok {
+			t.Errorf("%s has an HTTPStatus method", name)
+		}
 	}
 }
 
@@ -193,7 +194,6 @@ type unknownSemanticHTTPError struct {
 
 func (*unknownSemanticHTTPError) Error() string           { return "sensitive future fault" }
 func (e *unknownSemanticHTTPError) FaultKind() fault.Kind { return e.kind }
-func (*unknownSemanticHTTPError) HTTPStatus() int         { return http.StatusTeapot }
 
 func TestHandleError_UnknownSemanticFaultFailsClosed(t *testing.T) {
 	for _, kind := range []fault.Kind{fault.KindUnknown, fault.Kind("future_kind")} {
@@ -561,11 +561,11 @@ func TestLogClientErrorCause(t *testing.T) {
 			status:  http.StatusNotFound,
 		},
 		{
-			name: "HTTPStatus error",
+			name: "HTTPStatus method only",
 			handler: func(*credo.Context) error {
 				return &httpStatusError{msg: "store: record not found", status: http.StatusNotFound}
 			},
-			status: http.StatusNotFound,
+			status: http.StatusInternalServerError,
 		},
 		{
 			name: "validation errors",
@@ -1134,31 +1134,6 @@ func TestHandleError_ErrorInfoErrForSentry(t *testing.T) {
 	}
 }
 
-func TestHandleError_ErrorInfoMessageKey_HTTPStatusProvider(t *testing.T) {
-	app := mustNew(t)
-
-	var receivedInfo credo.ErrorInfo
-	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
-		receivedInfo = *info
-		return nil
-	})
-
-	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusError{msg: "store: not found", status: http.StatusNotFound}
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-	if receivedInfo.MessageKey != "not_found" {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "not_found")
-	}
-}
-
 func TestHandleError_ErrorInfoMessageKey_GenericError(t *testing.T) {
 	app := mustNew(t)
 
@@ -1216,31 +1191,6 @@ func TestHandleError_RequestTimeout(t *testing.T) {
 	}
 	if pd.Error.Message != "Request Timeout" {
 		t.Errorf("message = %q, want %q", pd.Error.Message, "Request Timeout")
-	}
-}
-
-func TestClassifyError_HTTPStatusProvider_408(t *testing.T) {
-	app := mustNew(t)
-
-	var receivedInfo credo.ErrorInfo
-	app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
-		receivedInfo = *info
-		return nil
-	})
-
-	app.GET("/test", func(ctx *credo.Context) error {
-		return &httpStatusError{msg: "request timed out", status: http.StatusRequestTimeout}
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	app.ServeHTTP(w, r)
-
-	if w.Code != http.StatusRequestTimeout {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestTimeout)
-	}
-	if receivedInfo.MessageKey != "request_timeout" {
-		t.Errorf("info.MessageKey = %q, want %q", receivedInfo.MessageKey, "request_timeout")
 	}
 }
 
