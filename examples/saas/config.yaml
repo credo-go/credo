@@ -20,7 +20,9 @@
 # ---------------------------------------------------------------------------
 # Server [framework-read]
 # Automatically consumed by credo.New(credo.WithRawConfig(rawCfg)).
-# The "server" key is the ONLY section read by the framework itself.
+# The framework reads "server" itself, and "i18n" once app.UseI18n is
+# installed (this example passes its catalog in code, so it has no "i18n"
+# section); every other section is the application's.
 # ---------------------------------------------------------------------------
 server:
   host: "0.0.0.0"
@@ -47,9 +49,10 @@ server:
 # ---------------------------------------------------------------------------
 # Databases [user-read]
 # Named database connections. main.go reads "databases.default" into its own
-# DatabaseConfig for an in-memory stand-in store. With store/sqldb, each entry
-# is unmarshalled into sqldb.Config and the opened *sqldb.DB is bound with
-# app.Provide, a component the start phase pings and /ready reports.
+# DatabaseConfig and opens an in-memory stand-in store from it. With
+# store/sqldb, each entry is unmarshalled into sqldb.Config and the opened
+# *sqldb.DB is bound with app.ProvideValue, a component the start phase pings
+# and /ready reports.
 # Usage:  rawCfg.Unmarshal("databases.default", &cfg)
 # ---------------------------------------------------------------------------
 databases:
