@@ -2,11 +2,25 @@
 
 **Status:** Implemented (beta) **Package:** root (`github.com/credo-go/credo`) **ADR:** [ADR-008](../adr/008-context-design.md), [ADR-009](../adr/009-handler-and-error-handling.md), [ADR-011](../adr/011-validation-strategy.md), [ADR-012](../adr/012-authentication-and-authorization.md), [ADR-013](../adr/013-internationalization.md), [ADR-018](../adr/018-host-routing-and-rewrite.md), [ADR-021](../adr/021-json-output-profile.md) **Guide:** [Getting started](../guides/getting-started.md#request-and-response), [Error handling](../guides/error-handling.md), [Routing](../guides/routing.md), [Proxy trust](../guides/proxy-trust.md) **Sources:** Echo (MIT)
 
+> **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
+
 ## Overview
+
+> **Current until v0.26.0 (R4):** the next paragraph's key-value store, the underlying request's context, and the pool as the reason the Context does not implement `context.Context`.
 
 `credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and a key-value store. It exposes the underlying `http.Request`'s `context.Context` via `Context()`; it deliberately does **not** itself implement `context.Context`, because the struct is pooled and reused across requests.
 
+> **Pending v0.26.0 (R4):** the next paragraph replaces the paragraph above when R4 ships.
+
+`credo.Context` is Credo's HTTP request context: a request-scoped **struct** (not interface) that holds the `*Request`, `*Response`, matched `*Route`, a logger, and the request's current `context.Context`, its head, over which typed keys carry the request's values ([Context head and typed keys](#context-head-and-typed-keys)). `Context()` returns the head; the struct deliberately does **not** itself implement `context.Context`, because its head moves as scopes open and return. Documentation and examples name the parameter `c *credo.Context`, since `ctx` conventionally names a `context.Context`.
+
+> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled per App and reset between requests ([Pooling](#pooling)).
+
+The Context is not pooled: a request allocates one ([Allocation](#allocation)), and a `*Context` kept past its request reads that request's state, never another request's.
+
 Lifecycle hooks such as `app.OnStart` and `app.OnStop`, and a component's `Start` and `Shutdown`, receive a standard `context.Context`, not `*credo.Context`. That context lives as long as its call and carries the cancellation and the deadline of the start phase or the drain; `credo.Context` exists only for an HTTP request.
+
+> **Current until v0.26.0 (R14):** the next paragraph; with `Context.Rewrite` gone, the Context keeps only the original client path.
 
 In addition to request/response accessors, Context tracks rewrite lifecycle: the original client path, internal re-dispatch requests (`ctx.Rewrite()`), and whether the current dispatch round is about to rewrite.
 
@@ -20,6 +34,12 @@ Defined in the **root package** (not a sub-package) to avoid collision with stdl
 ## API Surface
 
 ### Context Struct
+
+> **Current until v0.26.0 (R4):** in the next block, the string-keyed request-scoped store (`Set(key string, val any)`, `Get(key string) any`); the typed forms follow the block.
+
+> **Current until v0.26.0 (R14):** in the next block, `Rewrite` and `IsRewriting`.
+
+> **Current until v0.26.0 (R10):** in the next block, "(pool safety)" as the reason the fields are unexported.
 
 ```go
 type Context struct {
@@ -60,9 +80,29 @@ func (c *Context) Get(key string) any
 func (c *Context) Context() context.Context
 ```
 
+> **Pending v0.26.0 (R4):** the next block replaces the request-scoped store above and adds the scope method; until R4 ships, values are string-keyed.
+
+```go
+// Typed keys — one key type for request values and route meta
+type Key[T any] struct {
+    // unexported; build one with NewKey
+}
+
+func NewKey[T any](name string) Key[T] // the name is for diagnostics; identity is the key value
+
+// Request values — over the Context's head
+func (c *Context) Set[T any](key Key[T], val T)    // a value of another type does not compile
+func (c *Context) Get[T any](key Key[T]) (T, bool) // the zero value and false when no layer set it
+
+// Scopes — ctx, derived from c.Context(), is the head of the inner chain until next returns or panics
+func (c *Context) Within(ctx context.Context, next Handler) error
+```
+
 `Locale`, `T` and `TPlural` follow the [i18n spec](i18n.md#detector-contract); the user accessors and `credo.ErrUserMissing` follow the [auth spec](auth.md#user-accessors-generic-context-methods).
 
 ### Request Struct
+
+> **Current until v0.26.0 (R14):** in the next block, `NewRequest`; a `Request` is taken from a Context built with `NewContext`.
 
 ```go
 type Request struct {
@@ -82,7 +122,19 @@ func (r *Request) BindBody(target any) error
 func (r *Request) BindQuery(target any) error
 ```
 
+> **Pending v0.26.0 (R4):** not implemented yet; stdlib code takes the embedded request, `c.Request().Request`, whose context is the request's context.
+
+```go
+// Std returns the standard request carrying the Context's head. The call may replace the
+// embedded request: when it does not already carry the head, it is replaced by a copy with it.
+func (r *Request) Std() *http.Request
+```
+
+`Std()` is the one accessor for the standard request, used wherever stdlib code takes one ([stdlib boundary](#the-stdlib-boundary)). The embedded `Request.Request` stays the field it is; its `Context()` is the context it was built with, which lags the head after a `Set`, so code that wants the head reads `c.Context()`.
+
 ### Response Struct
+
+> **Current until v0.26.0 (R14):** in the next block, `NewResponse` and `Reset`; a `Response` is taken from a Context built with `NewContext`, and nothing resets one.
 
 ```go
 type Response struct {
@@ -132,6 +184,8 @@ Every body-writing helper (`JSON`, `Text`, `HTML`, `XML`, `Blob`, `Stream`) trea
 
 #### Render and the envelope seam
 
+> **Current until v0.26.0 (R2):** in the next block, the `string` type of `RenderMessageKey`'s parameter, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey`; each becomes `credo.MessageKey`.
+
 ```go
 // Method on *Context — the single call site that consults App.UseSuccessRenderer
 func (c *Context) Render(status int, data any, opts ...RenderOption) error
@@ -176,6 +230,10 @@ type ErrorBody struct {
 }
 ```
 
+> **Pending v0.26.0 (R2):** not implemented yet; a message key is a `string`, and a key the catalog lacks is rendered as the message text.
+
+A message key has its own named string type, `credo.MessageKey`, an alias of `validation.MessageKey`, so a violation's key has it too: `RenderMessageKey(key MessageKey)`, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey` take it, as `HTTPError.WithMessageKey` does. A key is a catalog key only, never rendered as text and never carrying client input: a key the catalog lacks falls back to the built-in message for the code and then to the status text, and in debug mode the pipeline warns with the key, the code and the route. Literal client text is set with `HTTPError.WithMessage`, which is never looked up. A key computed as a `string` converts to `MessageKey`; a `string` variable passed without a conversion does not compile ([ADR-009](../adr/009-handler-and-error-handling.md)).
+
 `Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it.
 
 The error-side mirror is `ErrorRenderer` ([ADR-009](../adr/009-handler-and-error-handling.md)) with the identical shape-only contract: it receives the classified `ErrorInfo`, and a nil return writes the [default error envelope](../adr/009-handler-and-error-handling.md#default-error-envelope) (`ErrorResponse`, `Content-Type: application/json; charset=utf-8`). The renderer may set headers and may change `info.Status`; an invalid status fails closed to a generic 500 and discards the renderer body, and a renderer panic yields the same generic 500. HEAD and body-forbidding statuses render status-only. The pairing is documented in the [error-handling guide](../guides/error-handling.md#success-and-error-envelopes).
@@ -205,6 +263,68 @@ credo.WithJSONOptions(jsonv1.DefaultOptionsV1())          // full legacy mode
 
 There is no per-call variant: one posture per application. `Context.Render` inherits the profile: with a `SuccessRenderer` installed, its returned body is encoded under the same profile, and only a renderer that commits the response itself writes other bytes. Framework-owned default error bodies always sort map keys, even when the application disables `Deterministic`; custom error-renderer bodies use the application profile.
 
+## Context Head and Typed Keys
+
+> **Pending v0.26.0 (R4):** not implemented yet; values live in a string-keyed store on the Context, route meta is a `map[string]any` read with `LookupMeta`, `c.Context()` and `c.Request().Context()` return the embedded request's context, `SetUser` copies the request, and a middleware that derives a context assigns `c.Request().Request` a request with it, as `middleware.Timeout` does. The section describes the contract that replaces them ([ADR-008](../adr/008-context-design.md#one-context-head-and-typed-keys)).
+
+### Typed keys
+
+```go
+var Tenant = credo.NewKey[*TenantInfo]("tenant")
+
+c.Set(Tenant, t)       // a value of another type does not compile
+t, ok := c.Get(Tenant) // t is a *TenantInfo
+
+var RequiredScopes = credo.NewKey[[]Scope]("auth.scope")
+route.SetMeta(RequiredScopes, []Scope{"admin"})  // the value type is checked at compile time
+scopes, ok := c.Route().GetMeta(RequiredScopes) // the route, then its groups, then the App
+```
+
+One key type, `Key[T]`, serves request values and [route meta](router.md#route-meta-system-goyave-inspired). The name passed to `NewKey` is for diagnostics; identity is the key value, so the keys of two packages never collide. Two `NewKey` calls with one name are two keys, while two `MessageKey` values with one text are one catalog key; both godocs say so. A zero `Key[T]`, declared without `NewKey`, panics in every method that takes a key, naming the method, since all zero keys of one type would be one context key.
+
+`Set`, `Get`, `SetMeta` and `RemoveMeta` take a key, as generic methods whose type parameter is inferred from it; `GetMeta` returns `(T, bool)`, as `Get` and `GetUser` do. Credo reads and writes values only through these methods. Code that holds only a `context.Context` reads a value with the standard `Value` and its key, which is the context key; Credo adds no reader of its own. The framework's own keys are typed too: the middleware meta constants, `credo.MetaAccessLog` and the request ID's key.
+
+### The head
+
+The Context holds the request's current `context.Context`, its head; `c.Context()` and `c.Request().Context()` return it. `c.Set` replaces the head with a `context.WithValue` node over it: no request is copied for a value, and no custom `Value` implementation exists. A context handed to a goroutine is a fixed node, so successive `Value` calls on it agree, and no later `Set` changes what it holds.
+
+A key set again and again, as a server-sent-events or WebSocket loop may set one, does not lengthen the chain without bound. When the head is the node the Context built for that key, the new node is built over that node's parent. Keys set in turn add a node each, so once the nodes the Context built over the request's context, or over a scope's, number twice the keys set there, it rebuilds them from the record of `Set` calls, which keeps one entry per key. Neither modifies a node, so a context handed out before keeps its values.
+
+### Scopes
+
+A layer that derives a context derives it from the head and makes the result the head of the inner chain: `middleware.Timeout`'s deadline and a span a stdlib middleware adds through `WrapStdMiddleware` are visible through `c.Context()`. When the layer returns or panics, the head reverts to the outer one, so a deadline or span ends with its scope, and the values set through `c.Set` inside it are applied again over the outer head: a user or a tenant is a fact about the request, not about one layer. The Context keeps the order of its `Set` calls for that and reapplies them in a deferred call, so when the handler panics, a user set inside the scope is still the request's user for the error rendering, the observers and the access record.
+
+`c.Within(ctx, next)` opens a scope: it makes `ctx` the head of the inner chain, keeps the embedded request in step with one copy per scope, runs `next`, and reverts as above when `next` returns or panics. `ctx` is derived from `c.Context()`; one that is not is an unrelated context ([edges](#edges-of-the-head)). A value the scope owns, such as a transaction or a span, goes into the context given to `Within` and ends with it, while `c.Set` records a fact about the request, which outlives the scope: a transaction stored with `c.Set` would still be found after its commit.
+
+```go
+func Deadline(d time.Duration) credo.Middleware {
+    return func(next credo.Handler) credo.Handler {
+        return func(c *credo.Context) error {
+            ctx, cancel := context.WithTimeout(c.Context(), d)
+            defer cancel()
+            return c.Within(ctx, next)
+        }
+    }
+}
+```
+
+Assigning `c.Request().Request` a request with a new context still compiles and no longer moves the head; in debug mode the Context reports, once per route, an embedded request it did not install.
+
+### The stdlib boundary
+
+`c.Request().Std()` is the one accessor for the standard request: the embedded `*http.Request` when it already carries the head, otherwise a copy with the head that replaces the embedded request, so a second call without a new `Set` copies nothing, and a multipart form that stdlib code parses on the copy stays under the request-end cleanup. `WrapStdMiddleware` and `Mount` hand the request on through it, and take the context of the request the stdlib code passes on as the head of the inner chain. `c.Request().Request` stays the embedded field, and its `Context()` is the context it was built with, which lags the head after a `Set`: `Std()`'s godoc says in its first sentence that the call may replace the embedded request, and the `Request` type's godoc points to `c.Context()` for the head.
+
+### Edges of the head
+
+- **A retry.** A Credo middleware that calls `next` again runs the second attempt over the head the first left: the values the failed attempt set are visible to the second and, unless it sets them again, to the observers. The Context cannot tell a retry from a middleware that handles the error and goes on, and a user set before the failure is still the request's user.
+- **Another goroutine.** A stdlib middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does, is outside `WrapStdMiddleware`'s contract: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. `middleware.Timeout` sets its deadline on the request's own goroutine.
+- **An unrelated context.** A stdlib middleware that passes on a context not derived from the request's, which drops the request's cancellation too, cuts the handlers after it off from the values set before it, through `c.Get` as through `Value`.
+- **A mounted Credo App** has a Context of its own. The mount hands it the request through `Std()`, so it reads what was set before the mount, the user included; what it sets stays in its own Context, and the parent's observers and access record do not see it.
+
+### User accessors
+
+`SetUser`, `GetUser[T]` and `RequireUser[T]` stay, as shortcuts over a generic key whose type is unexported, so the user has no `context.Context` accessor ([auth spec](auth.md#user-accessors-generic-context-methods)). `SetUser` adds a node and copies no request.
+
 ## Rewrite Helpers
 
 ### OriginalPath
@@ -218,6 +338,8 @@ func (c *Context) OriginalPath() string
 The value is immutable for the lifetime of the request. When the final served path differs, the access log includes a `path_original` attribute.
 
 ### Rewrite
+
+> **Current until v0.26.0 (R14):** this subsection and [IsRewriting](#isrewriting) below; `Context.Rewrite` and `IsRewriting` leave the API, and a path is mapped by a `middleware.Rewrite` rule before routing, by static's SPA mode, or by a handler that calls the target's handler itself ([ADR-008](../adr/008-context-design.md#pruned-context-apis)).
 
 `Rewrite(path)` triggers an internal re-dispatch to a new path without sending an HTTP redirect to the client.
 
@@ -256,9 +378,13 @@ tenant := ctx.Request().RouteParam("tenant")
 id := ctx.Request().RouteParam("id")
 ```
 
+> **Pending v0.26.0 (R10):** not implemented yet; the parameters live in the pooled Context, and the map is recycled with it, as the paragraph above says.
+
+The parameters live in the request's own Context, which is not pooled, so the map `RouteParams` returns is never handed to another request; it stays a read-only view.
+
 Host and path params share one namespace, so a host-scoped route whose path params collide with its host params panics at registration ([router spec](router.md#host-based-route-groups)).
 
-`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. The dispatcher deliberately does not populate stdlib path values with a route's parameters (an extra allocation per request for data `RouteParam` already serves), so without this shadow `ctx.Request().PathValue("id")` would silently return "", and the raw embedded request — as seen by middleware via `WrapStdMiddleware` — carries none of them. The fallback is also how an app mounted under a parametric prefix reads that prefix: `Mount("/t/{tenant}", child)` hands the child a request whose path values hold `tenant`, so in the child `PathValue("tenant")` returns it while `RouteParam`/`RouteParams` hold the child's own route parameters only ([router spec](router.md#sub-router-mounting)).
+`Request.PathValue(name)` is a stdlib-shaped shadow over the embedded `*http.Request` method: it resolves route params first and falls back to the embedded request. The dispatcher deliberately does not populate stdlib path values with a route's parameters: doing so would allocate a map per request outside a `ServeMux` pattern, for data `RouteParam` already serves, and share that map between a request and its `WithContext` copy, so that a value set on one would show through the other ([ADR-008](../adr/008-context-design.md#route-parameters-are-not-stdlib-path-values)). Without this shadow `ctx.Request().PathValue("id")` would silently return "", and the raw embedded request — as seen by middleware via `WrapStdMiddleware` — carries none of them. The fallback is also how an app mounted under a parametric prefix reads that prefix: `Mount("/t/{tenant}", child)` hands the child a request whose path values hold `tenant`, so in the child `PathValue("tenant")` returns it while `RouteParam`/`RouteParams` hold the child's own route parameters only ([router spec](router.md#sub-router-mounting)).
 
 ### Scheme and RealIP
 
@@ -294,6 +420,10 @@ For ordinary methods, a missing `Content-Type` retains the JSON convenience defa
 
 `BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `app.UseDecompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before Global middleware runs (see the [HTTP features spec](http-features.md#locale-and-transport-features)).
 
+> **Pending v0.26.0 (R2):** not implemented yet; the rejected coding and the rejected media type are appended to the error's message key.
+
+An unsupported content encoding and an unsupported content type carry the rejected value in the error's `Details`, never in its message key or its message: the error sets no key, so its message is resolved from its code.
+
 A nil or non-pointer bind target (and a non-struct target for query/form binding) is a developer error: `BindBody`/`BindQuery` return a 500 with the code `invalid_bind_target`, the reason is logged as the error's internal cause, and nothing about it reaches the client.
 
 | Content-Type                        | Decoder            |
@@ -303,7 +433,13 @@ A nil or non-pointer bind target (and a non-struct target for query/form binding
 | `application/x-www-form-urlencoded` | Form decoder       |
 | `multipart/form-data`               | Multipart decoder  |
 
+> **Current until v0.26.0 (R4):** the next paragraph's list of request copies (`SetUser`, `middleware.Timeout`, a wrapped stdlib middleware that substitutes the request).
+
 **Multipart files live for the request.** File parts beyond the in-memory threshold (32 MiB per form) are spilled to temporary files. They are removed when the request ends — on normal completion, a returned error and a panic alike — whether the form was parsed by `BindBody` or by the handler itself (`ParseMultipartForm`, `FormFile`). That includes a form parsed on a copy of the request, which `net/http` does not clean up on its own: after `SetUser`, behind `middleware.Timeout` or a wrapped stdlib middleware that substitutes the request, and in a handler attached with `Mount` (removed when the mounted handler returns). A `*multipart.FileHeader` is therefore valid only until the handler returns; copy the content before handing it to a goroutine that outlives the request.
+
+> **Pending v0.26.0 (R4):** the next paragraph replaces the paragraph above when R4 ships.
+
+**Multipart files live for the request.** File parts beyond the in-memory threshold (32 MiB per form) are spilled to temporary files. They are removed when the request ends — on normal completion, a returned error and a panic alike — whether the form was parsed by `BindBody` or by the handler itself (`ParseMultipartForm`, `FormFile`). That includes a form parsed on a copy of the request, which `net/http` does not clean up on its own: the copy `Request.Std()` hands to stdlib code, the copy a scope opened with `Within` installs, a request a wrapped stdlib middleware passes on, and a handler attached with `Mount` (removed when the mounted handler returns). `SetUser` and `Set` copy no request. A `*multipart.FileHeader` is therefore valid only until the handler returns; copy the content before handing it to a goroutine that outlives the request.
 
 ```go
 type CreateUserInput struct {
@@ -400,13 +536,32 @@ app.GET("/users", func(ctx *credo.Context) error {
 
 **Supported field types**: `string`, `bool`, all integer types (`int`, `int8`–`int64`, `uint`–`uint64`), `float32`, `float64`, any type implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`, custom types — takes precedence over native conversions, matching the config decoder), slices of all of these (`[]string`, `[]int`, `[]float64`, repeated params), and pointer variants of all scalar types (`*string`, `*int`, `*time.Time`, etc.). Pointer fields stay `nil` when the parameter is absent, enabling nil-vs-zero-value distinction (e.g., PATCH partial updates, optional filters). Embedded structs and pointer-to-embedded-structs are supported recursively. The same type support applies to `form:"..."` tags used by `BindBody` for form-urlencoded and multipart content types.
 
+> **Pending v0.26.0 (R2):** not implemented yet; a field of an unsupported type fails the bind with 400 and the code `unsupported_bind_field_type`, whose message key names the field and its kind.
+
+A field of a type outside this list is a developer error: the bind returns a 500, the reason is logged as the error's internal cause, as for an invalid bind target, and nothing about it reaches the client.
+
 ## Design Decisions
 
 - A struct rather than an interface, the Request/Response split, the `RouteParam`, `Text` and `Bind*` names, the reflection boundary of binding, proxy metadata on Request and the original path on Context, and the rejected alternatives (`FormValue` and `SetRequest` on Context, a per-call strict-bodies switch): [ADR-008](../adr/008-context-design.md).
 - The error-side choices (handler signature, classification, default envelope, renderer seam): [ADR-009](../adr/009-handler-and-error-handling.md).
 - The JSON output profile: [ADR-021](../adr/021-json-output-profile.md).
+- Route parameters are not stdlib path values: [ADR-008](../adr/008-context-design.md#route-parameters-are-not-stdlib-path-values).
+
+> **Pending v0.26.0 (R4):** not implemented yet; the next bullet's head and typed keys replace the string-keyed store.
+
+- The context head, the typed keys, `Within`, `Std()` and their rejected alternatives: [ADR-008](../adr/008-context-design.md#one-context-head-and-typed-keys).
+
+> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled.
+
+- One allocation per request, without a pool, and its measurement: [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
+
+> **Pending v0.26.0 (R14):** not implemented yet; the APIs the next bullet names are public.
+
+- The pruned APIs — `Response.Reset`, the `RouteContext` alias, `NewRequest`, `NewResponse`, `Context.Rewrite` and `IsRewriting` — and `NewContext`, which stays: [ADR-008](../adr/008-context-design.md#pruned-context-apis).
 
 ## Pooling
+
+> **Current until v0.26.0 (R10):** this section; the [Allocation](#allocation) section replaces it.
 
 Context structs, each with its Request and Response, are pooled per App in a `sync.Pool` built by `New`. Each request:
 
@@ -416,3 +571,15 @@ Context structs, each with its Request and Response, are pooled per App in a `sy
 4. Returns the Context to the pool after finalization, the access record and multipart cleanup, on every path including a propagating panic
 
 This removes the per-request Context, Request and Response allocations from the hot path.
+
+## Allocation
+
+> **Pending v0.26.0 (R10):** not implemented yet; the Context is pooled as [Pooling](#pooling) describes.
+
+The Context is not pooled. Each request:
+
+1. Passes the lifecycle admission gate in `ServeHTTP`, then allocates one Context (a request answered with the [lifecycle 503](lifecycle.md#lifecycle-rejection-503) allocates none)
+2. Runs the feature executor and the handler chain ([HTTP features spec](http-features.md#request-execution))
+3. Finalizes, emits the access record and cleans up multipart files, on every path including a propagating panic
+
+The one allocation folds the Context, its `Request` and `Response`, embedded by value, and the first route parameters, kept in fixed arrays. A `*Context` kept past its request reads that request's values, `GetUser` included, after the next request on the same connection has run. What remains is stated where it applies: a `*Context` is not safe for concurrent use, since its head moves as scopes return, and its response cannot be written after the handler returns, as `net/http` forbids for every `ResponseWriter`. The measurement of the change is recorded in [ADR-008](../adr/008-context-design.md#one-allocation-per-request).
