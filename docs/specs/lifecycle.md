@@ -460,7 +460,8 @@ The following methods panic with `credo: <what> called after app was compiled or
 
 | Method | Guard |
 | --- | --- |
-| `app.GlobalMiddleware()` | `checkFrozen("App.GlobalMiddleware")` |
+| `app.PreRouting()` | `checkFrozen("App.PreRouting")` |
+| `app.Middleware()` | `checkFrozen("App.Middleware")` |
 | `app.GET/POST/PUT/...()` (and `group.*`) | `checkFrozen("App.GET")` etc., one label per method (via `addRoute`) |
 | `app.Host()` | `checkFrozen("App.Host")` |
 | `app.Mount()` | `checkFrozen("App.Mount")` |

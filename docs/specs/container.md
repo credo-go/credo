@@ -587,7 +587,7 @@ func main() {
 }
 ```
 
-There is no resolve-then-provide step: a DI or component registration after the first resolving call panics naming that call, its site and the calls that led there. A value that needs a resolved dependency and I/O to exist — a provider whose settings are read from a database table, for example — is a component whose constructor takes its dependencies and whose `Start` reads the settings and opens its backend ([lifecycle spec](lifecycle.md#the-start-walk)), not a late registration. HTTP setup that uses no resolved value — global middleware, the [built-in HTTP features](http-features.md), a route that calls no service — may come at any point before preparation. `credo.New()`, routes and `Run()` stay the minimal shape: an App that resolves nothing before serving is finalized when it is prepared.
+There is no resolve-then-provide step: a DI or component registration after the first resolving call panics naming that call, its site and the calls that led there. A value that needs a resolved dependency and I/O to exist — a provider whose settings are read from a database table, for example — is a component whose constructor takes its dependencies and whose `Start` reads the settings and opens its backend ([lifecycle spec](lifecycle.md#the-start-walk)), not a late registration. HTTP setup that uses no resolved value — middleware, the [built-in HTTP features](http-features.md), a route that calls no service — may come at any point before preparation. `credo.New()`, routes and `Run()` stay the minimal shape: an App that resolves nothing before serving is finalized when it is prepared.
 
 ### Modules
 

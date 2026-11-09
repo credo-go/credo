@@ -272,7 +272,7 @@ scopes, ok := c.Route().GetMeta(RequiredScopes) // the route, then its groups, t
 
 One key type, `Key[T]`, serves request values and [route meta](router.md#route-meta-system-goyave-inspired). The name passed to `NewKey` is for diagnostics; identity is the key value, so the keys of two packages never collide. Two `NewKey` calls with one name are two keys, while two `MessageKey` values with one text are one catalog key; both godocs say so. A zero `Key[T]`, declared without `NewKey`, panics in every method that takes a key, naming the method, since all zero keys of one type would be one context key.
 
-`Set`, `Get`, `SetMeta` and `RemoveMeta` take a key, as generic methods whose type parameter is inferred from it; `GetMeta` returns `(T, bool)`, as `Get` and `GetUser` do. Credo reads and writes values only through these methods. Code that holds only a `context.Context` reads a value with the standard `Value` and its key, which is the context key; Credo adds no reader of its own. The framework's own keys are typed too: `middleware.MetaAccept`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` are `Key[[]string]`, `middleware.MetaMaxBody` is a `Key[int64]`, and `credo.MetaAccessLog` and `credo.MetaRawResponse` are `Key[bool]`. The request ID's key stays unexported: `c.RequestID()` reads it.
+`Set`, `Get`, `SetMeta` and `RemoveMeta` take a key, as generic methods whose type parameter is inferred from it; `GetMeta` returns `(T, bool)`, as `Get` and `GetUser` do. Credo reads and writes values only through these methods. Code that holds only a `context.Context` reads a value with the standard `Value` and its key, which is the context key; Credo adds no reader of its own. The framework's own keys are typed too: `middleware.MetaAccept`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` are `Key[[]string]`, `middleware.MetaMaxBody` is a `Key[int64]`, and `credo.MetaAccessLog` and `credo.MetaRawResponse` are `Key[bool]`. The request ID's typed key stays unexported: `c.RequestID()` reads it.
 
 ### The head
 
@@ -346,7 +346,7 @@ Rules:
 - The target's query string, or its absence, replaces the request's query.
 - Before matching again, dispatch writes the target onto the request — `URL.Path` decoded, `URL.RawPath` set when the spellings differ — so the target route's middleware and handler see the rewritten URL while `OriginalPath()` keeps the client's.
 - The matched host scope does not change. Re-dispatch stays within the host mux selected for the original request.
-- Framework features and global middleware run once per request; group and route middleware run again for the target route.
+- Framework features and `PreRouting` middleware run once per request; routed, group and route middleware run again for the target route.
 - Route params are cleared between dispatch rounds and rebuilt from the target route.
 - If the response is already committed or hijacked, `Rewrite` returns an error.
 - Credo enforces a hard limit of 10 internal rewrites per request. Exceeding the limit fails the request with a 500.
@@ -410,7 +410,7 @@ Reads request body. Content-Type determines decoder:
 
 For ordinary methods, a missing `Content-Type` retains the JSON convenience default. A matched RFC 10008 QUERY route is stricter: routing requires a non-blank `Content-Type` before the handler, even for an empty body. Once present, `BindBody` uses the same decoder, validation, strict-body, and error contracts shown below; unsupported media types return 415.
 
-`BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `app.UseDecompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before Global middleware runs (see the [HTTP features spec](http-features.md#locale-and-transport-features)).
+`BindBody` never decompresses implicitly. A request whose `Content-Encoding` is anything other than `identity` is rejected with 415 and the code `unsupported_content_encoding` before any decoder runs, so a compressed body is reported as what it is instead of as a JSON syntax error. Applications that accept compressed bodies opt in with `app.UseDecompress`, which unwraps gzip/deflate under its own decompressed-size bound and removes the header before `PreRouting` middleware runs (see the [HTTP features spec](http-features.md#locale-and-transport-features)).
 
 > **Pending v0.26.0 (R2):** not implemented yet; the rejected coding and the rejected media type are appended to the error's message key.
 

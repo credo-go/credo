@@ -116,7 +116,7 @@ type RenderInfo struct {
 type SuccessRenderer func(ctx *Context, info RenderInfo) any
 
 // Middleware is the single middleware type used throughout Credo.
-// All middleware — global, group, and route level — uses this signature.
+// Middleware of every tier — PreRouting, routed, group and route — uses this signature.
 type Middleware func(next Handler) Handler
 
 // StdMiddleware is a stdlib-compatible middleware signature.

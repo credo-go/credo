@@ -370,7 +370,7 @@ func TestApp_PreRouting(t *testing.T) {
 		return ctx.Response().Text(200, "ok")
 	})
 
-	// Global MW should run on matched routes
+	// PreRouting MW should run on matched routes
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
 	app.ServeHTTP(w, r)
@@ -379,7 +379,7 @@ func TestApp_PreRouting(t *testing.T) {
 		t.Errorf("X-Global = %q, want 'yes'", got)
 	}
 
-	// Global MW should also run on 404
+	// PreRouting MW should also run on 404
 	w = httptest.NewRecorder()
 	r = httptest.NewRequest("GET", "/notfound", nil)
 	app.ServeHTTP(w, r)
@@ -594,7 +594,7 @@ func TestMiddlewareTiers_ExecutionOrder(t *testing.T) {
 	}).Middleware(tag("route"))
 
 	// Group middleware registered AFTER the route: collected at compile.
-	// Expected order is Global → Group (parent before child, append order
+	// Expected order is PreRouting → Group (parent before child, append order
 	// within a group) → Route → handler.
 	api.Middleware(tag("group-parent1"), tag("group-parent2"))
 	v1.Middleware(tag("group-child"))
@@ -726,7 +726,7 @@ func TestApp_ContextStore(t *testing.T) {
 
 	app.PreRouting(func(next credo.Handler) credo.Handler {
 		return func(ctx *credo.Context) error {
-			// Global MW can now access credo.Context directly
+			// PreRouting MW can now access credo.Context directly
 			return next(ctx)
 		}
 	})
@@ -1300,14 +1300,14 @@ func TestRouting_Mount_HostScopeInteraction(t *testing.T) {
 	app.Mount("/admin", sub)
 
 	// Default-scope request reaches the mounted handler; mounted handlers
-	// receive framework features and global middleware but never group middleware.
+	// receive framework features and PreRouting middleware but never group middleware.
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, httptest.NewRequest("GET", "http://other.test/admin", nil))
 	if w.Code != 200 || w.Body.String() != "mounted" {
 		t.Fatalf("default scope: status=%d body=%q, want 200 %q", w.Code, w.Body.String(), "mounted")
 	}
 	if w.Header().Get("X-Global") != "1" {
-		t.Error("mounted handler must run inside the global middleware chain")
+		t.Error("mounted handler must run inside the PreRouting middleware chain")
 	}
 	if w.Header().Get("X-Host-MW") != "" {
 		t.Error("host-group middleware must not leak into mounted handlers")

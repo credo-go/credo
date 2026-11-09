@@ -82,7 +82,7 @@ func TestUseAccessLog_Misuse(t *testing.T) {
 
 // TestFeatures_InstallOrderIrrelevant installs every feature in two orders
 // and checks the request executor produces the same runtime plan: request
-// ID resolved before the access record, decompression before global
+// ID resolved before the access record, decompression before PreRouting
 // middleware, compression around error rendering, access bytes counted after
 // the compressor closed.
 func TestFeatures_InstallOrderIrrelevant(t *testing.T) {
@@ -102,7 +102,7 @@ func TestFeatures_InstallOrderIrrelevant(t *testing.T) {
 		app.PreRouting(func(next credo.Handler) credo.Handler {
 			return func(ctx *credo.Context) error {
 				if ctx.RequestID() == "" {
-					t.Error("request ID not resolved before global middleware")
+					t.Error("request ID not resolved before PreRouting middleware")
 				}
 				var in struct {
 					Name string `json:"name"`

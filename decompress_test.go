@@ -157,7 +157,7 @@ func TestDecompress_RejectsBeforeUserMiddleware(t *testing.T) {
 		t.Fatalf("status = %d, want 415", w.Code)
 	}
 	if middlewareRan {
-		t.Fatal("global middleware ran for a request rejected by decompression")
+		t.Fatal("PreRouting middleware ran for a request rejected by decompression")
 	}
 }
 
@@ -168,7 +168,7 @@ func TestDecompress_PreRoutingSeesDecodedBody(t *testing.T) {
 		return func(ctx *credo.Context) error {
 			req := ctx.Request()
 			if got := req.Header.Get("Content-Encoding"); got != "" {
-				t.Errorf("Content-Encoding reached global middleware: %q", got)
+				t.Errorf("Content-Encoding reached PreRouting middleware: %q", got)
 			}
 			if req.ContentLength != -1 {
 				t.Errorf("ContentLength = %d, want -1 (unknown) after decompression", req.ContentLength)
@@ -187,7 +187,7 @@ func TestDecompress_PreRoutingSeesDecodedBody(t *testing.T) {
 		t.Fatalf("status = %d body = %q, want 200 Bob", w.Code, w.Body.String())
 	}
 	if seen != `{"name":"Bob"}` {
-		t.Fatalf("global middleware read %q, want the decoded body", seen)
+		t.Fatalf("PreRouting middleware read %q, want the decoded body", seen)
 	}
 }
 

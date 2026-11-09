@@ -7,8 +7,8 @@
 // ([credo.IngressComponent]), so the App starts it in the start phase and
 // drains it beside the HTTP drain, before the internal components its
 // handlers use. Then register [Server.Handler] through the normal Credo
-// GET route API. Global, group, route, authentication, rewrite, and
-// access-log middleware retain their normal ordering.
+// GET route API. PreRouting, routed, group, route, authentication, rewrite,
+// and access-log middleware retain their normal ordering.
 //
 // The zero Config is secure and bounded: browser same-origin authorization,
 // optional subprotocol negotiation, disabled compression, and a 32 KiB

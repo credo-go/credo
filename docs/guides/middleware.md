@@ -62,28 +62,55 @@ func Timer(next credo.Handler) credo.Handler {
 
 ---
 
-## The 3-Tier Model
+## Middleware Tiers
 
-Credo provides three tiers for middleware registration. Each tier controls a different scope:
+Credo has four tiers for middleware registration. Each one says when it runs and what it covers:
 
 | Tier | Registration | Scope | Runs on 404/405? |
 | --- | --- | --- | --- |
-| **Global** | `app.GlobalMiddleware(m...)` | Every request | Yes |
+| **PreRouting** | `app.PreRouting(m...)` | Every request, before the route is matched | Yes |
+| **Routed** | `app.Middleware(m...)` | Every route of the App — in groups, host groups, static routes and mounts — after the match | No |
 | **Group** | `group.Middleware(m...)` | Routes under that group | No |
 | **Route** | `route.Middleware(m...)` | Single route only | No |
 
-### Global Middleware
+### PreRouting Middleware
 
-Global middleware runs on **every** request, including unmatched routes (404) and method-not-allowed (405). Use it for cross-cutting concerns that must always execute.
+`PreRouting` middleware runs on **every** request, before the router matches it, including unmatched routes (404) and method-not-allowed (405). Use it for concerns that must answer or decorate a request no route serves.
 
 ```go
-app.GlobalMiddleware(
+app.PreRouting(
     middleware.CORS(),
     middleware.Secure(),
 )
 ```
 
-Without a global tier, a 404 response would bypass CORS and security headers. The global tier closes that gap. (Panic recovery, request IDs, access logging and compression are framework features rather than middleware — see [Framework Features](#framework-features-not-middleware) below — and they cover 404/405 responses as well.)
+Without a tier before routing, a 404 response would bypass CORS and security headers. The `PreRouting` tier closes that gap. It cannot read the route: none is matched yet. (Panic recovery, request IDs, access logging and compression are framework features rather than middleware — see [Framework Features](#framework-features-not-middleware) below — and they cover 404/405 responses as well.)
+
+### Routed Middleware
+
+Routed middleware runs on every route the App serves, after the match, so it reads the route and its meta. It is the place for authentication and other meta-driven middleware that must cover every route, including a mounted handler, without being repeated on each group:
+
+```go
+app.Middleware(
+    authMiddleware,
+    middleware.ContractGuard(),
+)
+```
+
+It never runs for the router's own 404 and 405: those requests have no route.
+
+### Which Tier Each Middleware Belongs To
+
+A middleware that acts before the match, or on a request no route matches, stays on `PreRouting`; one that reads the route goes on the routed tier, a group or a route:
+
+| Middleware | Tier | Why |
+| --- | --- | --- |
+| `CORS` | PreRouting | answers a preflight, an `OPTIONS` request for which the router has no route; on the routed tier the router's 405 would answer it |
+| `Rewrite` | PreRouting | changes the path that routing matches |
+| `Secure` | PreRouting | its headers cover the router's 404 and 405 |
+| `ratelimit.Middleware` | PreRouting | its budget covers the router's 404 and 405 |
+| `CSRF` | either | needs no route |
+| `auth.Middleware`, `ContractGuard` | routed, Group or Route | read the route and its meta |
 
 ### Group Middleware
 
@@ -127,13 +154,16 @@ app.GET("/admin/dashboard", adminDashboard).
 ```
 Request
   -> Framework features (request ID, request decompression, compression writer)
-    -> Global middleware (outer to inner)
-      -> Group middleware (outer to inner, parent to child)
-        -> Route middleware (outer to inner)
-          -> Handler
-        <- Route middleware
-      <- Group middleware
-    <- Global middleware
+    -> PreRouting middleware (outer to inner)
+      -> match
+        -> Routed middleware (outer to inner)
+          -> Group middleware (outer to inner, parent to child)
+            -> Route middleware (outer to inner)
+              -> Handler
+            <- Route middleware
+          <- Group middleware
+        <- Routed middleware
+    <- PreRouting middleware
   <- Framework error rendering, panic recovery, finalization, access log
 Response
 ```
@@ -165,7 +195,7 @@ func RequestTimer(next credo.Handler) credo.Handler {
     }
 }
 
-app.GlobalMiddleware(RequestTimer)
+app.Middleware(RequestTimer)
 ```
 
 ### Pre-Handler Logic (Before)
@@ -247,10 +277,10 @@ Middleware with options uses an optional config parameter:
 
 ```go
 // Default config
-app.GlobalMiddleware(middleware.CORS())
+app.PreRouting(middleware.CORS())
 
 // Custom config
-app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+app.PreRouting(middleware.CORS(middleware.CORSConfig{
     AllowOrigins: []string{"https://example.com", "https://app.example.com"},
     AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
     AllowHeaders: []string{"Authorization", "Content-Type"},
@@ -262,7 +292,7 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 
 ## Framework Features (Not Middleware)
 
-Panic recovery, request IDs, access logging, response compression and request decompression are framework-owned HTTP features of the root package. They run outside the middleware chain — before Global middleware on the way in and after error rendering on the way out — so they see the final response, error envelopes and panic responses included, and cannot be scoped to a group or route. Each has exactly one public path:
+Panic recovery, request IDs, access logging, response compression and request decompression are framework-owned HTTP features of the root package. They run outside the middleware chain — before `PreRouting` middleware on the way in and after error rendering on the way out — so they see the final response, error envelopes and panic responses included, and cannot be scoped to a group or route. Each has exactly one public path:
 
 | Feature | Default | Enable / configure |
 | --- | --- | --- |
@@ -389,7 +419,7 @@ app.UseDecompress(credo.DecompressConfig{
 })
 ```
 
-The feature understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tolerated), unwraps the body as a stream, removes the header and sets `ContentLength` to -1 so Global middleware, handlers and `BindBody` all see the same plain stream. The server-wide `max_body_bytes` still applies to the compressed bytes on the wire; reading past `MaxBytes` after decompression fails with the same 413 as any oversized body. Unsupported codings (`br`, `zstd`, or a list such as `gzip, br`) return 415 and a corrupt stream returns 400 `bind_failed`, both before any user middleware runs. The Skipper sees the original request only (method, path, headers): no route, no user, and a later rewrite does not re-evaluate it.
+The feature understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tolerated), unwraps the body as a stream, removes the header and sets `ContentLength` to -1 so middleware, handlers and `BindBody` all see the same plain stream. The server-wide `max_body_bytes` still applies to the compressed bytes on the wire; reading past `MaxBytes` after decompression fails with the same 413 as any oversized body. Unsupported codings (`br`, `zstd`, or a list such as `gzip, br`) return 415 and a corrupt stream returns 400 `bind_failed`, both before any user middleware runs. The Skipper sees the original request only (method, path, headers): no route, no user, and a later rewrite does not re-evaluate it.
 
 ---
 
@@ -400,13 +430,13 @@ The feature understands `gzip` and `deflate` (zlib-wrapped, with raw DEFLATE tol
 `middleware.Rewrite(cfg)` is Credo's pre-dispatch path rewrite middleware. Like every configurable middleware it takes one config struct: `RewriteConfig.Rules` holds the ordered rule list (first match wins) and the optional `Skipper` bypasses rewriting for selected requests.
 
 ```go
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {From: "/v1/{path...}", To: "/api/v1/{path}"},
     {Host: "old.example.com", From: "/{path...}", To: "/legacy/{path}"},
 }}))
 
 // Skip rewriting for a health probe path:
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{
     Skipper: func(c *credo.Context) bool { return c.Request().URL.Path == "/healthz" },
     Rules:   []middleware.RewriteRule{{From: "/v1/{path...}", To: "/api/v1/{path}"}},
 }))
@@ -422,10 +452,10 @@ Handles Cross-Origin Resource Sharing preflight and actual requests.
 
 ```go
 // Allow all origins (default)
-app.GlobalMiddleware(middleware.CORS())
+app.PreRouting(middleware.CORS())
 
 // Restrict to specific origins
-app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
+app.PreRouting(middleware.CORS(middleware.CORSConfig{
     AllowOrigins:     []string{"https://example.com"},
     AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "QUERY"},
     AllowHeaders:     []string{"Authorization", "Content-Type"},
@@ -467,10 +497,10 @@ Rejects state-changing cross-origin browser requests — no tokens, cookies, or 
 
 ```go
 // Zero config: blocks cross-origin state-changing methods; QUERY is safe.
-app.GlobalMiddleware(middleware.CSRF())
+app.PreRouting(middleware.CSRF())
 
 // Frontend on another origin + webhook endpoints
-app.GlobalMiddleware(middleware.CSRF(middleware.CSRFConfig{
+app.PreRouting(middleware.CSRF(middleware.CSRFConfig{
     TrustedOrigins:         []string{"https://app.example.com"},
     InsecureBypassPatterns: []string{"/webhooks/"},
 }))
@@ -504,13 +534,13 @@ QUERY is safe under RFC 10008, but it is not a CORS-safelisted method. Cross-ori
 Sets common security headers: `X-XSS-Protection`, `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, `Content-Security-Policy`, and `Referrer-Policy`.
 
 ```go
-app.GlobalMiddleware(middleware.Secure())
+app.PreRouting(middleware.Secure())
 ```
 
 Full configuration:
 
 ```go
-app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
+app.PreRouting(middleware.Secure(middleware.SecureConfig{
     XSSProtection:         "1; mode=block",
     ContentTypeNosniff:    "nosniff",
     XFrameOptions:         "DENY",
@@ -530,7 +560,7 @@ HSTS tells browsers to use HTTPS for all future requests to your domain. It is *
 ```go
 // Enable HSTS only — set HSTSMaxAge; the other Secure headers stay off because
 // the zero-value config does not apply the X-XSS/nosniff/frame defaults.
-app.GlobalMiddleware(middleware.Secure(middleware.SecureConfig{
+app.PreRouting(middleware.Secure(middleware.SecureConfig{
     HSTSMaxAge:            31536000, // 1 year, in seconds
     HSTSExcludeSubdomains: false,    // includeSubDomains on (the default)
 }))
@@ -577,10 +607,10 @@ Token bucket rate limiting per client IP, in its own package (`github.com/credo-
 import "github.com/credo-go/credo/middleware/ratelimit"
 
 // 60 requests per minute (default)
-app.GlobalMiddleware(ratelimit.Middleware())
+app.PreRouting(ratelimit.Middleware())
 
 // Custom limits
-app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
+app.PreRouting(ratelimit.Middleware(ratelimit.Config{
     Tokens:   120,
     Interval: time.Minute,
 }))
@@ -591,7 +621,7 @@ Behind a reverse proxy, configure trusted proxy CIDRs on the app. The default ra
 ```go
 app, err := credo.New(credo.WithTrustedProxies("10.0.0.0/8"))
 
-app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
+app.PreRouting(ratelimit.Middleware(ratelimit.Config{
     Tokens:   100,
     Interval: time.Minute,
 }))
@@ -600,7 +630,7 @@ app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
 Custom key function (e.g., rate limit by API key):
 
 ```go
-app.GlobalMiddleware(ratelimit.Middleware(ratelimit.Config{
+app.PreRouting(ratelimit.Middleware(ratelimit.Config{
     Tokens:   1000,
     Interval: time.Hour,
     KeyFunc: func(c *credo.Context) (string, error) {
@@ -756,7 +786,7 @@ api.POST("/users", createUser).
     SetMeta(middleware.MetaRequireHeaders, []string{"X-Request-Id"})
 ```
 
-Register ContractGuard at the **group or route level**, not via `app.GlobalMiddleware`. It reads matched-route metadata, and a route is only matched _after_ app-global middleware runs — group and route middleware run after the match, so the route (and its inherited group meta) is available there. Applied globally it degrades to a safe no-op rather than an error.
+Register ContractGuard on the routed tier (`app.Middleware`), on a group or on a route: it reads the matched route's meta, which exists only after the match. Registered with `app.PreRouting`, where no route is matched, it denies every request with a 500 and logs the misplacement once, rather than letting a declared contract go unchecked.
 
 The keys are typed, so a value of another type does not compile and the guard never meets a contract it cannot read. If you model scopes or header names as a named type, convert where you declare the contract:
 
@@ -769,7 +799,7 @@ api.GET("/reports", listReports).
     SetMeta(middleware.MetaScope, []string{string(ScopeReports)}) // a []Scope does not compile
 ```
 
-A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` (or a `nil` list) for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `RemoveMeta` on the route drops its own value and lets the group's contract apply again.
+A route overrides a contract inherited from its group by setting the same key. To lift an inherited requirement for one route, set the value that requires nothing: `[]string{}` or a `nil` list for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept`, a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `RemoveMeta` on the route drops its own value and lets the group's contract apply again.
 
 By default a request with **no** `Content-Type` header passes the `MetaAccept` contract — there may be nothing to police. For a JSON API where every body must be labelled, set `ContractConfig.RequireContentType: true`: a request that carries a body (positive or unknown `Content-Length` — chunked and HTTP/2 streams included) but no or an empty `Content-Type` is rejected with 415. Bodiless requests (`GET`, `Content-Length: 0`) and routes without `MetaAccept` are unaffected, so the switch arms a declared contract rather than adding a new one:
 
@@ -816,7 +846,7 @@ stdMiddleware := func(next http.Handler) http.Handler {
     })
 }
 
-app.GlobalMiddleware(credo.WrapStdMiddleware(stdMiddleware))
+app.PreRouting(credo.WrapStdMiddleware(stdMiddleware))
 ```
 
 This works with any community middleware from Chi, Gorilla, or other ecosystem packages:
@@ -824,7 +854,7 @@ This works with any community middleware from Chi, Gorilla, or other ecosystem p
 ```go
 import "github.com/some/middleware/pkg"
 
-app.GlobalMiddleware(credo.WrapStdMiddleware(pkg.SomeMiddleware))
+app.PreRouting(credo.WrapStdMiddleware(pkg.SomeMiddleware))
 ```
 
 The adapter hands the middleware the standard request through `c.Request().Std()`, whose context carries the values set before it, and takes the context of the request the middleware passes on as the request's context for the rest of the chain: a span or deadline the middleware adds is visible to the handler through `c.Context()`, and a value set inside — a user, a tenant — is still there for the layers outside it once the middleware returns. A middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does, is outside the adapter's contract: the Context is not safe for concurrent use.
@@ -845,19 +875,21 @@ app.UseRequestID()
 app.UseAccessLog()
 app.UseCompress()
 
-// Global: always runs, even on 404/405
-app.GlobalMiddleware(
+// PreRouting: always runs, even on 404/405
+app.PreRouting(
     middleware.Secure(),                // 1. security headers
     middleware.CORS(),                  // 2. CORS headers
     middleware.CSRF(),                  // 3. cross-origin write protection
 )
 
-// API group: only matched routes
+// Routed: every route, mounts included, after the match
+app.Middleware(authMiddleware)          // authentication
+
+// API group: only routes under /api
 api := app.Group("/api")
 api.Middleware(
     ratelimit.Middleware(),             // rate limiting
     middleware.Timeout(middleware.TimeoutConfig{Timeout: 10 * time.Second}),
-    authMiddleware,                     // authentication
 )
 
 // Admin sub-group
@@ -868,8 +900,8 @@ admin.Middleware(requireAdmin)
 Order matters:
 
 - Framework features (recovery, request ID, access log, compression) are always the outermost layers; their `Use*` call order does not matter
-- `CORS` must run globally so preflight and 404 responses include CORS headers
-- Group-level middleware runs only on matched routes
+- `CORS` must run on `PreRouting` so preflight and 404 responses include CORS headers
+- Routed, group and route middleware run only on matched routes
 
 ---
 
@@ -877,21 +909,21 @@ Order matters:
 
 Credo's middleware chains are precompiled at startup into immutable function closures. There is no per-request slice manipulation or dynamic chain building, which eliminates an entire class of concurrency-based middleware bypass vulnerabilities. That said, a few architectural boundaries require developer awareness:
 
-### Mounted Handlers Bypass Group/Route Middleware
+### Mounted Handlers Get the Routed Tier, Not Group or Route Middleware
 
-`app.Mount()` registers a plain `http.Handler`. Mounted handlers receive only **global** middleware (and the framework features, which wrap every request). Group and route middleware do not apply because the mounted handler is called directly after dispatch, outside the per-route compiled chain.
+`app.Mount()` registers a plain `http.Handler`. A mount is a route: its handler runs inside `PreRouting` and the routed tier (and the framework features, which wrap every request). Group and route middleware do not apply, because a mount belongs to no group and has no route value of its own.
 
-If the mounted sub-application requires authentication or authorization, the sub-application must enforce it internally:
+Authentication registered with `app.Middleware` therefore covers a mounted path; authentication on a group does not:
 
 ```go
-// Global middleware (CORS, Secure) applies.
-// Group-level authMiddleware does NOT apply to /legacy routes.
+app.Middleware(authMiddleware)    // runs for /legacy too
 app.Mount("/legacy", legacyApp)
 
-// To protect mounted handlers, either:
-// 1. Add auth as global middleware (affects all routes), or
-// 2. Ensure the mounted handler has its own auth layer.
+admin := app.Group("/admin")
+admin.Middleware(requireAdmin)    // does NOT run for /legacy
 ```
+
+The mount's prefix parameters reach the mounted handler as path values of its request. The mount's route carries none, so a routed middleware on a parametric mount reads none through `c.Request().RouteParam`.
 
 ### Custom 404/405 Handlers Lack Route Context
 
@@ -899,7 +931,7 @@ Custom status handlers registered via `app.StatusHandler()` execute when no rout
 
 - `c.Route()` is **nil** — there is no matched route.
 - Group and route middleware have not run (no route to attach them to).
-- Only framework features and global middleware are active.
+- Only framework features and `PreRouting` middleware are active; the routed tier does not run.
 
 Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers. Use `c.HasRoute()` to guard against nil before calling `c.Route()` methods — this prevents nil pointer panics in middleware that may run on both matched and unmatched request paths:
 
@@ -922,29 +954,29 @@ func RequirePermission(next credo.Handler) credo.Handler {
 
 ### Rewrite Ordering Affects Auth Decisions
 
-`middleware.Rewrite()` runs as global middleware and modifies the URL path **before** dispatch. Any global middleware registered **before** the rewrite middleware evaluates the **original** path; middleware registered **after** evaluates the **rewritten** path.
+`middleware.Rewrite()` runs on `PreRouting` and modifies the URL path **before** dispatch. Any `PreRouting` middleware registered **before** the rewrite middleware evaluates the **original** path; middleware registered **after** evaluates the **rewritten** path.
 
-If auth middleware runs globally before Rewrite, it makes decisions based on the original path. If the rewritten path targets a route with different authorization requirements, the auth decision may be incorrect:
+If auth middleware runs on `PreRouting` before Rewrite, it makes decisions based on the original path. If the rewritten path targets a route with different authorization requirements, the auth decision may be incorrect:
 
 ```go
 // Risky: auth runs on original path, rewrite changes target.
-app.GlobalMiddleware(authMiddleware)
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+app.PreRouting(authMiddleware)
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {From: "/public/{p...}", To: "/internal/{p}"},
 }}))
 
-// Safer: rewrite first, then auth sees the final path.
-app.GlobalMiddleware(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
+// Safer: rewrite before routing, auth on the routed tier sees the final route.
+app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{
     {From: "/public/{p...}", To: "/internal/{p}"},
 }}))
-app.GlobalMiddleware(authMiddleware)
+app.Middleware(authMiddleware)
 ```
 
-When possible, prefer **group-level** auth middleware over global auth. Group middleware runs after dispatch — it always sees the final matched route and its metadata, regardless of rewrite ordering.
+Prefer auth on the **routed tier** or a group over `PreRouting`. Routed and group middleware run after dispatch — they always see the final matched route and its metadata, regardless of rewrite ordering.
 
-### Group Middleware Is Collected at Compile Time
+### Routed and Group Middleware Are Collected at Compile Time
 
-Per-route middleware chains are assembled when the app compiles (at `Run()` or the first request) by walking the group parent chain — the same model route metadata uses. Middleware added to a group **after** routes or sub-groups were created therefore still applies to them:
+Per-route middleware chains are assembled when the app compiles (at `Run()` or the first request) by walking the group parent chain — the same model route metadata uses. Middleware added to a group, or with `app.Middleware`, **after** routes or sub-groups were created therefore still applies to them:
 
 ```go
 api := app.Group("/api")
@@ -1008,8 +1040,8 @@ func main() {
     app.UseAccessLog()
     app.UseCompress()
 
-    // Global middleware for additional cross-cutting concerns:
-    app.GlobalMiddleware(
+    // PreRouting middleware, which covers the router's 404 and 405 too:
+    app.PreRouting(
         middleware.Secure(middleware.SecureConfig{
             HSTSMaxAge:    31536000,
             XFrameOptions: "DENY",
