@@ -465,3 +465,18 @@ func TestAccessLog_Attrs(t *testing.T) {
 		})
 	})
 }
+
+func TestObserver_SeesARequestTheAccessLogSkips(t *testing.T) {
+	var buf bytes.Buffer
+	app := mustNew(t)
+	app.UseAccessLog(credo.AccessLogConfig{
+		Logger:  slog.New(slog.NewJSONHandler(&buf, nil)),
+		Skipper: func(*credo.Context) bool { return true },
+	})
+	seen := recordObserver(app)
+	app.GET("/x", okHandler)
+	observeOne(app, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if buf.Len() != 0 || len(*seen) != 1 || (*seen)[0].Status != http.StatusOK {
+		t.Fatalf("record = %q, exchanges = %+v; want no access record and one observed 200", buf.String(), *seen)
+	}
+}
