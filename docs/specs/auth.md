@@ -1,12 +1,10 @@
 # Auth Spec
 
-**Status:** Implemented (beta) **Package:** `auth/`; the user accessors are methods on the root `*credo.Context` **ADR:** [ADR-012](../adr/012-authentication-and-authorization.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
+**Status:** Implemented (beta) **Package:** `auth/`, `auth/jwtauth/`; the user accessors are methods on the root `*credo.Context` **ADR:** [ADR-012](../adr/012-authentication-and-authorization.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
 
 ## Overview
 
-The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface, a middleware factory that populates them, and three built-in authenticators (JWT, API key, HTTP Basic). The JWT authenticator wraps `github.com/golang-jwt/jwt/v5` (pinned v5.3.1 in `go.mod`) and exposes it on purpose in its advanced tier. The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md).
-
-> **Pending v0.26.0 (R11):** not implemented yet; the JWT authenticator is part of `auth`, and every application that imports `auth` compiles golang-jwt.
+The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface, a middleware factory that populates them, and two built-in authenticators (API key, HTTP Basic); `auth/jwtauth` supplies a third, for JWTs. The JWT authenticator wraps `github.com/golang-jwt/jwt/v5` (pinned v5.3.1 in `go.mod`) and exposes it on purpose in its advanced tier. The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md).
 
 The JWT authenticator lives in `auth/jwtauth`, in the root module, so that only an application that verifies JWTs compiles golang-jwt; the middleware factory, the `Authenticator[T]` interface and the API-key and Basic authenticators stay in `auth` ([JWT in `auth/jwtauth`](#jwt-in-authjwtauth)).
 
@@ -89,7 +87,7 @@ Each constructor returns an error when its required input is missing; each `Auth
 
 | Constructor | Credentials, in order | Defaults | Constructor errors | Sentinels |
 | --- | --- | --- | --- | --- |
-| `NewJWTAuthenticator[T](JWTConfig[T])` | `Header` (after `Prefix`), `Query`, `Cookie` | `Header` = `Authorization` when no source is set; `Prefix` = `Bearer`; `SigningMethod` = HS256 | no `SigningKey`, `SigningKeys` or `Advanced.KeyFunc`; both `ParseClaims` and `Advanced.ParseToken` | `ErrJWTMissing`, `ErrJWTInvalid` |
+| `jwtauth.NewAuthenticator[T](jwtauth.Config[T])` | `Header` (after `Prefix`), `Query`, `Cookie` | `Header` = `Authorization` when no source is set; `Prefix` = `Bearer`; `SigningMethod` = HS256 | no `SigningKey`, `SigningKeys` or `Advanced.KeyFunc`; both `ParseClaims` and `Advanced.ParseToken` | `jwtauth.ErrTokenMissing`, `jwtauth.ErrTokenInvalid` |
 | `NewAPIKeyAuthenticator[T](APIKeyConfig[T])` | `Header` (after optional `Prefix`), `Query` | `Header` = `X-API-Key` when `Header` and `Query` are empty | no `Validator` | `ErrAPIKeyMissing`, `ErrAPIKeyInvalid` |
 | `NewBasicAuthenticator[T](BasicConfig[T])` | `Authorization: Basic` | `Realm` = `Restricted` | no `Validator` | `ErrBasicCredentialsMissing`, `ErrBasicCredentialsInvalid` |
 
@@ -100,27 +98,16 @@ Each constructor returns an error when its required input is missing; each `Auth
 
 ### JWT in `auth/jwtauth`
 
-> **Pending v0.26.0 (R11):** not implemented yet; the JWT types and errors are in `auth` under the names of the left column, and the table above and the section below use them.
+The JWT authenticator, its configuration and its errors are in `auth/jwtauth`: `Config[T]`, `Advanced[T]`, `Claims`, `Authenticator[T]` and `NewAuthenticator[T]`, with no `JWT` prefix since the package names it, and the sentinels `ErrTokenMissing` (`jwtauth: token is missing`) and `ErrTokenInvalid` (`jwtauth: token is invalid`), which take golang-jwt's `ErrToken` stem. The constructor's errors name the field to set: `jwtauth: Config has no signing key; set SigningKey, SigningKeys or Advanced.KeyFunc` and `jwtauth: Config sets both ParseClaims and Advanced.ParseToken; set one of them`. `Authenticator[T]` implements `auth.Authenticator[T]`, so `auth.Middleware` takes it like the others; the credential extraction it shares with the API-key authenticator is internal.
 
-The JWT authenticator, its configuration and its errors move into `auth/jwtauth`. The types drop the `JWT` prefix the package names, and the errors take golang-jwt's `ErrToken` stem, with `jwtauth:` as the prefix of their text:
-
-| `auth` today | `auth/jwtauth` |
-| --- | --- |
-| `JWTConfig[T]` | `Config[T]` |
-| `JWTAdvanced[T]` | `Advanced[T]` |
-| `JWTClaims` | `Claims` |
-| `JWTAuthenticator[T]` | `Authenticator[T]` |
-| `NewJWTAuthenticator[T](cfg)` | `NewAuthenticator[T](cfg)` |
-| `ErrJWTMissing`, `ErrJWTInvalid` | `ErrTokenMissing`, `ErrTokenInvalid` |
-
-The package is not named `jwt`, golang-jwt's package name, which code that configures `Advanced` imports beside it. Its behaviour — extraction, key selection, the two configuration tiers and the validation semantics below — does not change.
+The package is not named `jwt`, golang-jwt's package name, which code that configures `Advanced` imports beside it.
 
 ### JWT Configuration (two tiers)
 
-`JWTConfig[T]` separates a Credo-typed simple tier from a golang-jwt escape hatch:
+`jwtauth.Config[T]` separates a Credo-typed simple tier from a golang-jwt escape hatch:
 
-- **Simple tier** — extraction (`Header`/`Prefix`/`Query`/`Cookie`), key material (`SigningMethod`/`SigningKey`/`SigningKeys`), registered-claim validation (`Issuer`, `Audience`, `Leeway`, `RequireExpiry`), and user extraction via `ParseClaims func(JWTClaims) (T, error)`. `JWTClaims` is a read-only accessor view: registered claims come back with proper Go types (`ExpiresAt() time.Time` — never the raw float64 that JSON decoding produces), and `Get`/`GetString` read custom claims from the default map representation.
-- **Advanced tier** — `Advanced JWTAdvanced[T]` exposes golang-jwt primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims structs; default `jwt.MapClaims`), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions` (appended after the options derived from the simple tier, so they win on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken` is a constructor error. When neither is set, the raw claims value is type-asserted to `T`.
+- **Simple tier** — extraction (`Header`/`Prefix`/`Query`/`Cookie`), key material (`SigningMethod`/`SigningKey`/`SigningKeys`), registered-claim validation (`Issuer`, `Audience`, `Leeway`, `RequireExpiry`), and user extraction via `ParseClaims func(Claims) (T, error)`. `Claims` is a read-only accessor view: registered claims come back with proper Go types (`ExpiresAt() time.Time` — never the raw float64 that JSON decoding produces), and `Get`/`GetString` read custom claims from the default map representation.
+- **Advanced tier** — `Advanced Advanced[T]` exposes golang-jwt primitives directly: `KeyFunc` (e.g. JWKS), `NewClaims` (typed claims structs; default `jwt.MapClaims`), `ParseToken func(*jwt.Token) (T, error)`, and `ParserOptions` (appended after the options derived from the simple tier, so they win on conflict). Configuring both `ParseClaims` and `Advanced.ParseToken` is a constructor error. When neither is set, the raw claims value is type-asserted to `T`.
 
 Validation semantics:
 
@@ -249,8 +236,6 @@ func ViewProduct(c *credo.Context) error {
 
 ## Design Decisions
 
-The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorFunc` callback, RBAC via route meta, the separate `auth` package, the two-tier `JWTConfig` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
-
-> **Pending v0.26.0 (R11):** not implemented yet; the JWT authenticator is part of `auth`.
+The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorFunc` callback, RBAC via route meta, the separate `auth` package, the two-tier `jwtauth.Config` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
 
 The JWT authenticator's own package, `auth/jwtauth`, and its name: [ADR-012](../adr/012-authentication-and-authorization.md#jwt-in-its-own-package).
