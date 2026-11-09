@@ -92,18 +92,21 @@ Note that `config.WithPrefix("")` is **not** a way to disable environment variab
 
 ### Strict Decoding
 
-Hermetic setups usually also want typo detection: with `config.WithStrictDecoding()`, a config key that does not map to a field of the target struct is an error (nested sections included), and weak string coercion (`"8080"` → int, `"true"` → bool) is off. Duration strings (`"5s"`), `encoding.TextUnmarshaler` fields, and JSON numbers into int fields keep decoding:
+Decoding is strict by default. A configuration key that no field of the target struct decodes is an error naming its key path, nested sections included, so a typo fails instead of silently leaving a default:
 
-```go
-rawCfg, err := config.Load(
-    config.WithFiles("config.json"),
-    config.WithoutProcessEnv(),
-    config.WithoutDotenv(),
-    config.WithStrictDecoding(),
-)
+```text
+config: unknown key "server.prot": no field of the target decodes it; fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()
 ```
 
-Strict mode applies to every decode from that store: `Unmarshal`/`Get`, reload validation, and the framework's own `server` section read in `credo.New` — a typo under `server.*` then fails startup instead of silently using a default. Two things to design for: string env/.env overrides on typed fields no longer decode (strict mode is meant for typed, file-only sources like the setup above), and every struct that decodes a section must cover all of that section's keys — including narrow `OnConfigChange` subscribers and full-tree decodes (a config with a `server` section needs a `Server` field on a full-tree target).
+A value is not converted across kinds: a boolean into a number, a number into a string or a scalar into a slice is an error that names the key and `config.WithWeakDecoding()`. Strings still parse by their target type, so environment and `.env` overrides keep working: `CREDO_SERVER__PORT=9090` decodes into an `int`, `"true"` into a `bool`, `"5s"` into a `time.Duration`, and an `encoding.TextUnmarshaler` field from its text. JSON numbers decode into int fields.
+
+The policy applies to every decode from that store: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own `server` section read in `credo.New`, so a typo under `server.*` fails startup. Every struct that decodes a section must therefore cover all of that section's keys, full-tree decodes included (a config with a `server` section needs a `Server` field on a full-tree target).
+
+An application that relies on mapstructure's weak coercion (a number into a string field, a single value into a slice, unknown keys ignored) opts in for the whole store:
+
+```go
+rawCfg, err := config.Load(config.WithWeakDecoding())
+```
 
 ### Logging the Config
 
