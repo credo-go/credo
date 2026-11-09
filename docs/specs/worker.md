@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** root (`workers.go`, `worker.go`; engine in `internal/worker/`) **ADR:** [ADR-023](../adr/023-worker-system.md) **Guide:** [Worker guide](../guides/worker.md) **Sources:** robfig/cron v3 (MIT, cron expression parser only)
 
+> **Normative:** the sections [Public API](#public-api), [Workers in the Root Package](#workers-in-the-root-package), [Registration Forms](#registration-forms), [Registration](#registration), [Components](#components), [Execution](#execution), [Logging Contract](#logging-contract), [Snapshot](#snapshot), [Health Integration](#health-integration) and [Schedules](#schedules). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 This file is the contract of Credo's worker system: what registration accepts, how each worker attaches to the App as a lifecycle component, how a run is admitted and classified, what the registry reports, and which log lines it writes. The rationale and the rejected alternatives live in [ADR-023](../adr/023-worker-system.md); the component model lives in [ADR-024](../adr/024-lifecycle-components.md) and the [lifecycle spec](lifecycle.md).
 
 ## Overview

@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `validation/` **ADR:** [ADR-011](../adr/011-validation-strategy.md) **Guide:** [Getting started](../guides/getting-started.md#validation), [Error handling guide](../guides/error-handling.md#validation-and-bind-failures) **Sources:** ozzo-validation (MIT), Goyave (MIT, topic-based file grouping), govy (design inspiration only, no code adapted)
 
+> **Normative:** the sections [API Surface](#api-surface) and [Error Format](#error-format). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 ## Overview
 
 Credo uses **programmatic-only** validation with **generic type-safe rules** and compile-time safe pointer-based field references. No struct tags for rule definition. Reflection limited to field name extraction (cached). Integrated with Context via the "Parse, don't validate" pattern.

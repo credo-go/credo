@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta); cursor/keyset pagination deferred **Package:** `pagination/`, `store/sqldb/` (`SelectQuery.Page[T]`) **ADR:** [ADR-015](../adr/015-data-access.md) **Guide:** [Data access guide](../guides/data-access.md)
 
+> **Normative:** the sections [Core Package: `pagination/`](#core-package-pagination) and [Adapter: `SelectQuery.Page[T]`](#adapter-selectquerypaget). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 This spec owns offset pagination (the `pagination` core and the `SelectQuery.Page[T]` terminal), the logical-count contract that `SelectQuery.Count` and `Page.Total` share, and the cursor/keyset design gate. Query builders, transactions and error mapping are in the [store spec](store.md).
 
 ## Overview

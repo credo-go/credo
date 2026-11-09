@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** root (`health.go`), `internal/health/` **ADR:** [ADR-016](../adr/016-health-checks.md) **Guide:** [Getting started: Health Checks](../guides/getting-started.md#health-checks), [Deployment guide](../guides/deployment.md#shutdown-and-readiness)
 
+> **Normative:** every section of this spec.
+
 This spec is the contract for the liveness and readiness endpoints, their configuration, check registration and execution, what `/ready` aggregates, and the response format. What a component's `Ready` is and when the start walk builds it is in the [lifecycle spec](lifecycle.md#readiness); a bound database's readiness is in the [store spec](store.md#lifecycle-of-a-bound-database); a worker's readiness conditions are in the [worker spec](worker.md#health-integration). The engine lives in `internal/health` (`Engine`, `Probe`, name validation); the root package owns the endpoints, the registration API and the response and logging policy.
 
 ## Endpoints

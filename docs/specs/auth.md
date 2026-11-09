@@ -2,6 +2,8 @@
 
 **Status:** Implemented (beta) **Package:** `auth/`, `auth/jwtauth/`; the user accessors are methods on the root `*credo.Context` **ADR:** [ADR-012](../adr/012-authentication-and-authorization.md) **Guide:** [Middleware guide](../guides/middleware.md#meta-driven-middleware)
 
+> **Normative:** the sections [Overview](#overview) and [API Surface](#api-surface). The others illustrate the contract or describe current behaviour, which is not guaranteed.
+
 ## Overview
 
 The `auth/` package provides authentication infrastructure for Credo applications. It does NOT provide a built-in `User` field on Context. Instead, the authenticated principal is reached through generic `*credo.Context` methods (`SetUser`/`GetUser`/`RequireUser`), and this package supplies the `Authenticator[T]` strategy interface, a middleware factory that populates them, and two built-in authenticators (API key, HTTP Basic); `auth/jwtauth` supplies a third, for JWTs. The JWT authenticator wraps `github.com/golang-jwt/jwt/v5` (pinned v5.3.1 in `go.mod`) and exposes it on purpose in its advanced tier. The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md).
