@@ -70,7 +70,7 @@ Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](do
 
 ## Pre-v1 Contract Migration
 
-The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker. New contracts are not shipped behavior until their implementation and verification are complete. Deliver the behavioral themes in separate minors, without one-minor-ahead announcements.
+The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker.
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
 - [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
@@ -107,7 +107,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Adapt: route groups, sub-router mounting
 - [x] Implement `http.Handler` interface on `App`
 - [x] **Fluent Route API** (Goyave): HTTP method registrations return `*Route` for chaining
-- [x] **Route Meta system** (Goyave): `SetMeta(key, val)` / `LookupMeta(key)` with parent chain inheritance
+- [x] **Route Meta system** (Goyave): `SetMeta(key, val)` / `LookupMeta(key)` with parent chain inheritance (typed keys and `GetMeta(key)` since v0.26.0, R4)
 - [x] **Named Routes** (Goyave): `route.Name("x")` + strict `BuildURI(params...)` / `BuildURL(params...)`
 - [x] **StatusHandler** (Goyave): App-level handlers for the router's own 404 and 405 (no other code is consulted)
 - [x] **3-tier middleware** (Goyave): Global / Group / Route levels
@@ -136,19 +136,19 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Implement `context.go` as struct (inspired by Echo, [ADR-008](docs/adr/008-context-design.md))
 - [x] Define `App` struct with `New()` constructor
   - [x] HTTP method registrations return `*Route` (fluent API)
-  - [x] `GlobalMiddleware()` for global middleware (runs on 404/405 too)
+  - [x] `GlobalMiddleware()` for global middleware (runs on 404/405 too) — renamed `PreRouting()` in v0.26.0 (R13)
   - [x] `Group()` for route groups, `group.Middleware()` for group-level middleware
   - [x] `Run()` for lifecycle (`Shutdown()` is placeholder — see Phase 2.5)
 - [x] Define `Middleware` type: `func(Handler) Handler`
 - [x] Define `Route` struct with fluent methods: `Name()`, `SetMeta()`, `Middleware()`
 - [x] ~~Define `Component` struct~~ — **Removed**: replaced by explicit Infra injection ([ADR-004](docs/adr/004-dependency-injection-and-infra.md))
 - [x] `ErrorRenderer` function type for pluggable error response formatting
-- [x] Context pool via `sync.Pool` (root package `pool.go`)
+- [x] Context pool via `sync.Pool` (root package `pool.go`) — removed in v0.26.0 (R10): one allocation per request
 - [x] `dispatch()` executes handler chain directly (no stdlib adapter needed)
 - [x] Write `doc.go` for root package
 - [x] Tests pass, `go vet` clean
 
-> **Middleware Unification** (2026-02-28): `app.Use()` and `group.Use()` removed. Replaced by `app.GlobalMiddleware()`, `group.Middleware()`, `route.Middleware()`. `chain.go` deleted, `mux_test.go` merged into `credo_test.go`. `dispatch()` replaces `mux.ServeHTTP`/`routeHTTP` — runs middleware chain natively.
+> **Middleware Unification** (2026-02-28): `app.Use()` and `group.Use()` removed. Replaced by `app.GlobalMiddleware()`, `group.Middleware()`, `route.Middleware()`. `chain.go` deleted, `mux_test.go` merged into `credo_test.go`. `dispatch()` replaces `mux.ServeHTTP`/`routeHTTP` — runs middleware chain natively. In v0.26.0 (R13) `GlobalMiddleware()` became `PreRouting()`, and `app.Middleware()` is the routed tier.
 
 ### 1.4 Basic Middleware
 
@@ -302,7 +302,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] `OnShutdown(fn)` — register shutdown hooks
 - [x] `State()` / `IsRunning()` — public accessors
 - [x] `OnStart(fn)` — register FIFO startup hooks
-- [x] `OnPreDrain(fn)` — register unordered pre-cancellation hooks for the narrow live-worker/live-DI drain phase
+- [x] `OnPreDrain(fn)` — register unordered pre-cancellation hooks for the narrow live-worker/live-DI drain phase (removed in v0.24.0)
 - [x] `OnDrain(fn)` — register unordered pre-DI hooks concurrent with HTTP drain
 - [x] `Addr() net.Addr` — actual bound address accessor
 - [x] Registration guards: `checkFrozen()` on addRoute, Mount, StatusHandler, SetMeta, OnStart, OnPreDrain, OnDrain, OnShutdown
@@ -315,7 +315,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Server config (host, port, timeouts) framework-internal — no user-facing CoreConfig
 - [x] `Run()` / `RunContext()` / `ServeContext()` / `Shutdown()` lifecycle
 - [x] TLS as server config — `WithTLSFiles` / `WithTLSConfig` / `server.tls.*` (precedence; `Run`/`RunContext` serve HTTPS, no separate `RunTLS`)
-- [x] `config.Load(opts...)` returns `*config.Config` (satisfies `credo.RawConfig`); typed getters `Config.Get[T]` / `App.GetConfig[T]`
+- [x] `config.Load(opts...)` returns `*config.Config` (satisfies `credo.RawConfig`); typed getters `Config.Get[T]` / `App.GetConfig[T]` (`Config.Get[T]` removed and `GetConfig` takes a `config.Section[T]` in v0.26.0, R5)
 - [x] `http.Server` escape hatch — `WithHTTPServer(fn)` last-word callback (Handler/Addr/TLSConfig re-imposed, redirect server excluded), `server.max_header_value_count`, `ErrorLog` → slog bridge ([ADR-006](docs/adr/006-application-lifecycle.md))
 
 **Import Boundary Fitness Test**
@@ -334,7 +334,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Adapt go-i18n core to `internal/i18n/`: Bundle, Message types (the per-request Localizer was dropped once the root package translated through `Bundle` directly)
 - [x] CLDR plural rule support (`internal/i18n/internal/plural/` — 200+ languages)
 - [x] String-based public APIs: `TranslateForLang()`, `FieldNameForLang()`, `HasMessages()`
-- [x] Key-based HTTP translation through `HTTPError.MessageKey`, semantic `fault.Provider` root policy, and legacy `HTTPStatus()`→MsgKey mapping (no `TranslationKeyer` interface)
+- [x] Key-based HTTP translation through `HTTPError.MessageKey`, semantic `fault.Provider` root policy, and legacy `HTTPStatus()`→MsgKey mapping (no `TranslationKeyer` interface; the `HTTPStatus()` channel and the status `MsgKey*` constants removed in v0.26.0, R2)
 - [x] Default error renderer i18n-aware (nil bundle check, zero cost when unused)
 - [x] `app.UseI18n(...)` — root package setup (bundle + locale detection middleware)
 - [x] `ctx.Locale()` / `ctx.T(key, data...)` — request-scoped locale access
@@ -400,7 +400,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Context/driver-family-aware error mapping: structured PostgreSQL SQLSTATE, strict MySQL number envelopes, SQLite numeric codes, cancellation-vs-timeout separation, unavailable classification, cause/code preservation, and no loose domain-message fallback
 - [x] `RunInTx` / `RunInTxWith` — per-DB typed context propagation, exact callback-error preservation, mapped begin/commit/rollback failures, panic rollback/re-panic, nil-callback guard, and cancellation-safe savepoints with fail-loud nested options + ambient abort on cleanup failure (removed in v0.26.0, R14; `db.InTx` / `db.InTxWith` are the API)
 - [x] Query builder proxies: `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`
-- [x] 7 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, and fail-loud unsupported Count/Page shapes
+- [x] 7 query guardrails: TX execution snapshot/injection, public Select Clone contract, Apply varargs+nil, Unwrap builder-only, raw terminals, ApplyQueryBuilder, and fail-loud unsupported Count/Page shapes (`ApplyQueryBuilder` replaced by `ApplyFilter`, and the count shapes by the provable-query rule, in v0.26.0, R9)
 - [x] Select execution snapshots preserve explicit/raw `Conn`, builder errors, `WherePK`, soft-delete flags, model hooks and relation state across `Scan`/`Count`/`Exists`/`Page`
 - [x] Typed `One`/`All`/`Page` are model-less terminals: pre-bound `Select`/`Model`/`Apply` state returns `ErrTypedTerminalModel` before DB execution; optional query model args reject arity >1
 - [x] Escape hatches: transaction-aware `Conn(ctx) bun.IDB` / `RequireTx(ctx)` plus base-pool `Client() *bun.DB`
@@ -500,7 +500,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 - [x] ADR-020 + spec updates (`lifecycle.md`, `config.md`), ADR-005/006 cross-references
 - [x] `config`: `Reloader` + two-phase `Stager`/`Staged` interfaces, `Changes` (sorted leaf-key symmetric difference), `(*Config).Stage()`/`Reload()` re-running the captured load pipeline with an atomic snapshot swap; fixed `CREDO_ENV`
-- [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys; context-aware reload slot (queued callers abort on ctx/shutdown), callback ctx bound to the lifecycle, `Shutdown` waits for an in-flight reload before DI teardown, signal-triggered reloads off the signal loop (SIGTERM mid-reload drains immediately)
+- [x] root: `Reload(ctx)` (running-only, serialized, validate-before-publish via `config.Stager`, no rollback, `errors.Join`), `OnReload` (FIFO), `OnConfigChange[T](key, fn)` (generic method; non-reloadable store panics at registration), `WithReloadTimeout` + `server.reload_timeout`, restart-required Warn for unsubscribed changed keys; context-aware reload slot (queued callers abort on ctx/shutdown), callback ctx bound to the lifecycle, `Shutdown` waits for an in-flight reload before DI teardown, signal-triggered reloads off the signal loop (SIGTERM mid-reload drains immediately); `OnReload`, `OnConfigChange` and `config.Stager` replaced by live sections in v0.26.0 (R15)
 - [x] Signal path: SIGHUP under `Run()` (Unix build tag; coalescing; never terminates); `RunContext`/`ServeContext` stay signal-free
 - [x] TLS: file-based sources served via `GetCertificate` + atomic pointer; internal reload participant re-reads the pair on every reload (failure keeps the old pair); `WithTLSConfig` untouched
 - [x] Tests: config diff/atomicity, reload state/serialization/abort/partial-failure, SIGHUP (unix), certificate rotation via real handshakes
@@ -546,13 +546,13 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 **Source**: robfig/cron v3 parser (MIT, expression parser only)
 
 - [x] Adapt cron expression parser from robfig/cron v3
-- [x] `worker.Use(app)` → `*Supervisor` with `Continuous`/`Scheduled` and the DI-provided `ContinuousProvided[T]`/`ScheduledProvided[T]`; the name is registration identity, misuse panics; `Worker` is `Run`-only, `Func` is a function type (v0.24.0; `worker.Register`/`MustRegister` before)
+- [x] `worker.Use(app)` → `*Supervisor` with `Continuous`/`Scheduled` and the DI-provided `ContinuousProvided[T]`/`ScheduledProvided[T]`; the name is registration identity, misuse panics; `Worker` is `Run`-only, `Func` is a function type (v0.24.0; `worker.Register`/`MustRegister` before; replaced by `app.Workers()` in v0.25.0, W4)
 - [x] Continuous + scheduled worker execution modes
 - [x] Graceful shutdown (wait for active workers) — each worker is a component `worker:<name>` stopped in its tier: scheduled workers with the HTTP drain, continuous workers after it and before their dependencies; a `Run` that ignores cancellation is abandoned with its dependencies kept open
 - [x] Integration with app lifecycle — registration after `Finalize` panics; per-kind `ContinuousConfig`/`ScheduledConfig` in code (no `worker` configuration section); readiness through each component's `Ready`; `Snapshot`/`Lookup` with no DI binding
 - [x] Tests
 - [x] Update NOTICES
-- [x] Worker contract (v0.20.0, [ADR-023](docs/adr/023-worker-system.md)): DI-provided workers through `RegisterProvided[T]` resolved at pool start (all-or-nothing, Shutdown during resolution wins); `Info` with the effective `Config`, typed `Kind`, `Restarts`/`ConsecutiveFailures` and a snake_case JSON shape; ordered run-outcome classification separate from the loop exit; permanent continuous workers (an early nil return restarts); cooperative `WithRunTimeout` with `ErrRunTimeout` as cause; panic stack kept out of `LastError`; `WithMaxRestarts(N)` = first run + N restarts; pre-run cancellation check in one admission step; `@every` rejects zero, negative and sub-second input; one start and one stop line per worker, `run_id`/`duration` on run lines, collapsed skip line
+- [x] Worker contract (v0.20.0, [ADR-023](docs/adr/023-worker-system.md)): DI-provided workers through `RegisterProvided[T]` resolved at pool start (all-or-nothing, Shutdown during resolution wins); `Info` with the effective `Config`, typed `Kind`, `Restarts`/`ConsecutiveFailures` and a snake_case JSON shape; ordered run-outcome classification separate from the loop exit; permanent continuous workers (an early nil return restarts); cooperative `WithRunTimeout` with `ErrRunTimeout` as cause; panic stack kept out of `LastError`; `WithMaxRestarts(N)` = first run + N restarts; pre-run cancellation check in one admission step; `@every` rejects zero, negative and sub-second input; one start and one stop line per worker, `run_id`/`duration` on run lines, collapsed skip line (the API names were superseded by `app.Workers()` in v0.25.0)
 - [ ] Observability hooks (metrics/tracing) — reuse the `run_id` and `duration` log attributes
 
 ### 4.3 gRPC (`grpc/`)
@@ -605,7 +605,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 **Source**: Original (builds on existing Route Meta system) · `middleware/contractguard.go`
 
-> **Registration note:** ContractGuard reads matched-route Meta, so it is a **group/route** middleware (`group.Middleware(...)`), not `app.GlobalMiddleware` — app-global middleware runs _before_ the route is matched. Applied globally it is a safe no-op. (Spec originally said "global"; corrected to match the Built-in → Global → Group → Route execution order.)
+> **Registration note:** ContractGuard reads matched-route Meta, so it belongs on the routed tier (`app.Middleware(...)`) or on a group or route. Registered on `app.PreRouting`, which runs before the match, it fails closed since v0.26.0 (R13): 500 for every request and one Error naming the registration.
 
 - [x] Define standard meta key constants in `middleware/` (`MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaScope`, `MetaAPIVersion`)
 - [x] `middleware.ContractGuard()` — single meta-driven middleware that reads meta and enforces:
@@ -617,7 +617,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
   - [x] `RequireQuery` → query param existence check → 400 Bad Request
   - [x] `Scope` → pluggable `ScopeChecker` (auth is generic); fail-closed when unset → 403 Forbidden
   - [x] `APIVersion` → version header (`X-API-Version`) or `version` path param check → 400 Bad Request
-- [x] Group-level Meta inheritance for contract propagation (via `Route.LookupMeta` parent chain)
+- [x] Group-level Meta inheritance for contract propagation (the route's meta parent chain, read with `Route.GetMeta`)
 - [x] `ContractConfig.CustomChecks` extension point for user-defined checks
 - [x] Tests per contract type (`contractguard_test.go`)
 - [x] Document Meta-driven contract pattern in `docs/guides/middleware.md`
@@ -717,7 +717,8 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [ ] **Capability interfaces** + contract test suites for each module boundary
 - [ ] Keep root package re-export surface minimal — avoid premature aliases
 - [ ] **Divide `App`'s implementation into internal parts**, with no API change, after the request-path reshaping: the lifecycle manager's back-pointer (logger, container, server configuration, reload, the preparation lock) becomes an explicit dependency, and the App's fields are grouped by subsystem, routing and HTTP and the server and TLS first ([ADR-004](docs/adr/004-dependency-injection-and-infra.md#di-and-lifecycle-stay-one-package))
-- [ ] **Decisions left outside v0.24.0**, each taken on its own and none reopening the component model: exporting `App`'s parts and giving the satellite packages narrow interfaces instead of `*credo.App`; an observer over the final response and a post-match middleware tier; `Context` pooling — kept or dropped on a measurement whose metric is fixed in advance — and typed context keys; the rest of the error model (one error channel, message keys separate from messages, fault codes); `store/sqldb`'s private-field layer and its count rule; typed configuration sections and reload's mechanisms, which stay outside the component model ([ADR-024](docs/adr/024-lifecycle-components.md#scope)); a pre-v1 pruning of the public surface (`MustResolve`/`MustResolveAll` included) and a split of the specs v1 freezes into a normative contract and informative notes. Typed endpoints and the strict-decoding default are tracked in the [v1 Gate](#v1-gate).
+- [ ] **Exporting `App`'s parts** and giving the satellite packages narrow interfaces instead of `*credo.App` — the one decision left outside v0.24.0 that v0.26.0 did not take; it follows the internal division above
+- [x] **Decisions left outside v0.24.0**, taken in v0.26.0 by the pre-v1 reshaping: an observer over the final response and a routed middleware tier (R12, R13); the Context not pooled, on the measurement in ADR-008, and typed context keys (R10, R4); one error channel, message keys separate from messages and fault codes (R2); `store/sqldb` without Bun's private fields, with the provable-count rule (R9); typed and live configuration sections (R5, R15); the pre-v1 pruning, which kept `MustResolve`/`MustResolveAll` as resolve conveniences, and the split of the frozen specs into contract and current behaviour (R14). Typed endpoints are tracked in the [v1 Gate](#v1-gate)
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
   - [ ] Routes with `Scope` meta must have auth middleware registered
   - [ ] Routes with `Accept` meta must have ContractGuard middleware
@@ -779,4 +780,4 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 - [x] 80%+ coverage for Phase 1-2 packages — every root-module package measures 83–100% (root 94.0%, config 94.3%, validation 96.5%, middleware 94.0%, internal/di 94.3%, internal/radix 92.1%; snapshot 2026-07-03)
 - [ ] Zero lint warnings on `make lint` — blocked on golangci-lint gaining full Go 1.27 support; CI runs a safe linter subset as blocking in the meantime
-- [x] Benchmark suite for hot paths (router match, context pool, DI resolve) — 34 benchmarks across 8 files: root `benchmark_test.go` (ServeHTTP static/param/JSON/middleware/parallel, exercising the router and the context pool), `internal/di` (Resolve variants), `internal/radix`, `middleware`, `validation`, i18n
+- [x] Benchmark suite for hot paths (router match, context allocation, DI resolve) — 34 benchmarks across 8 files: root `benchmark_test.go` (ServeHTTP static/param/JSON/middleware/parallel, exercising the router and the context pool), `internal/di` (Resolve variants), `internal/radix`, `middleware`, `validation`, i18n
