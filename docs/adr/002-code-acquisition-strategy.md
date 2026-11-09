@@ -30,7 +30,21 @@ For these components, Credo provides a thin adapter layer and pins the version. 
 
 ### Direct import — Small, stable utilities
 
-Low-level, small tools with stable APIs are imported directly: `golang.org/x/text` (BCP 47 language tags and CLDR plural data for i18n), `go.yaml.in/yaml/v3` and `github.com/go-viper/mapstructure/v2` (config decoding). These are the only modules the root package links besides its own; `TestImportBoundary_RootPackageGraph` in `architecture_test.go` enforces that allowlist.
+Low-level, small tools with stable APIs are imported directly: `golang.org/x/text` (BCP 47 language tags and CLDR plural data for i18n), `go.yaml.in/yaml/v3` and `github.com/go-viper/mapstructure/v2` (config decoding). These are the only modules the root package links besides its own, an allowlist decided [below](#what-lives-in-the-root-package).
+
+### What lives in the root package
+
+**The root package's module allowlist.** Every application pays for what the root package links, so the modules it links are a decision, not a snapshot: the standard library, Credo's own module, and exactly `go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2` and `golang.org/x/text`. `credo.New()` loads configuration automatically so that a setup works with minimal configuration ([ADR-001](001-framework-identity-and-goals.md)), which puts a YAML parser and the decoder of typed sections in the graph; `x/text` enters through `internal/i18n`, which the error pipeline and `UseI18n` import, and is maintained by the Go team and carries the CLDR data that BCP 47 matching and plural rules need. `TestImportBoundary_RootPackageGraph` in `architecture_test.go` enforces the list: a module that enters through `config`, `validation` or an internal package the root imports is added to it in the same change, and one that leaves the graph is removed. The [contributing guide](../../CONTRIBUTING.md#coding-standards) states the procedure; the rejected alternatives are [below](#rejected-alternatives).
+
+**The rule that places a package.** Where a piece of Credo lives follows from how the App holds it:
+
+> **Pending v0.25.0 (W4):** the workers named in the next paragraph still live in the `worker` package (`worker.Use(app)` returns a `*worker.Supervisor`); W4 moves them into the root package as `app.Workers()`.
+
+- A subsystem the App holds one of and reaches through `app.` lives in the root package: routing, DI, the lifecycle, health, i18n, the `Use*` features and the workers, and later the observers and the application modules planned before v1.
+- A value the application builds and hands to the App lives in a package of its own: `sqldb`'s database, the WebSocket server, a middleware such as CORS or a rate limit, a JWT authenticator, and later the pubsub adapters.
+- A package the App never touches stays a package: `config`, `validation`, `fault`.
+
+The allowlist is the rule's constraint: a subsystem that needs a third-party module lives in a package however closely the App holds it. [ADR-004](004-dependency-injection-and-infra.md) (DI stays in the core) and [ADR-023](023-worker-system.md) (workers in the root package) apply this rule.
 
 ### Adaptation Process
 
@@ -51,6 +65,11 @@ Every adapted file follows this sequence:
 - Every adapted file retains the original copyright header at the top.
 - The NOTICES file (project root) lists each source project.
 - When code has been >80% rewritten, an "Originally derived from [project]" note suffices, but the NOTICES entry must remain.
+
+## Rejected Alternatives
+
+- **A root package that is stdlib-only transitively, with configuration loading made opt-in.** `credo.New()` loads YAML automatically so that a setup works with minimal configuration (ADR-001); making that opt-in moves a step into every application to remove a parser from the graph.
+- **YAML as the only entry, with `x/text` behind a `Translator` interface and mapstructure replaced by a native decoder.** mapstructure stays until it is replaced, and `x/text` enters through `internal/i18n`, which the error pipeline and `UseI18n` import, so an interface alone does not remove it. `x/text` is maintained by the Go team and carries the CLDR data, so allowlisting it is the honest choice.
 
 ## Consequences
 

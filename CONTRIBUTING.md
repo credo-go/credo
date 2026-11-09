@@ -103,7 +103,7 @@ go run ./scripts/releasegate workspace
 - Table-driven tests with `t.Run()` sub-tests.
 - An error or panic message is part of the API: it names what failed, the phase and the remedy, and the test that triggers it asserts those parts, so a message changes only on purpose ([ADR-022](docs/adr/022-bootstrap-and-di-ownership.md)).
 - Target 80%+ code coverage for core packages.
-- Dependencies are an allowlist, enforced by `architecture_test.go`: what each package may import directly (the root package: the standard library and in-module packages only) and which modules the root package links in through them (`go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`, `golang.org/x/text`). Adding a dependency means changing that file in the same PR.
+- Dependencies are an allowlist, enforced by `architecture_test.go`: what each package may import directly (the root package: the standard library and in-module packages only) and which modules the root package links in through them (`go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`, `golang.org/x/text`). Adding a dependency means changing that file in the same PR. The allowlist and the rule that decides what lives in the root package are recorded in [ADR-002](docs/adr/002-code-acquisition-strategy.md#what-lives-in-the-root-package).
 
 ## Reporting Issues
 
