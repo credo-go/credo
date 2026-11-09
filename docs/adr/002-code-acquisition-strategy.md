@@ -42,7 +42,7 @@ Low-level, small tools with stable APIs are imported directly: `golang.org/x/tex
 
 **The rule that places a package.** Where a piece of Credo lives follows from how the App holds it:
 
-- A subsystem the App holds one of and reaches through `app.` lives in the root package: routing, DI, the lifecycle, health, i18n, the `Use*` features and the workers, and later the observers and the application modules planned before v1.
+- A subsystem the App holds one of and reaches through `app.` lives in the root package: routing, DI, the lifecycle, health, i18n, the `Use*` features, the workers, the observers and the application modules.
 - A value the application builds and hands to the App lives in a package of its own: `sqldb`'s database, the WebSocket server, a middleware such as CORS or a rate limit, a JWT authenticator, and later the pubsub adapters.
 - A package the App never touches stays a package: `config`, `validation`, `fault`.
 

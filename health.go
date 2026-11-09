@@ -119,7 +119,7 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 
 	// Silence probe access logging by default; LogRequests re-enables it. The
 	// meta is always set (not only when false) so an explicit true overrides a
-	// silenced parent group — LookupMeta reads the route before its parents.
+	// silenced parent group — GetMeta reads the route before its parents.
 	// SetMeta propagates to the auto-generated HEAD twin, so HEAD probes follow
 	// the same rule as GET.
 	if livenessEnabled {
