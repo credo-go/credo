@@ -89,6 +89,7 @@ var (
 	shutdownerType = reflect.TypeFor[shutdowner]()
 	starterType    = reflect.TypeFor[starter]()
 	readierType    = reflect.TypeFor[readier]()
+	ingressType    = reflect.TypeFor[ingressComponent]()
 )
 
 // starter, readier and identifier mirror the root's Starter, Readier and
@@ -103,6 +104,13 @@ type readier interface {
 
 type identifier interface {
 	ResourceIdentity() any
+}
+
+// ingressComponent mirrors the root's IngressComponent: a component type
+// that declares the ingress tier.
+type ingressComponent interface {
+	shutdowner
+	IngressTier()
 }
 
 // Unit is one entry of the component registry: a DI binding, or a component
@@ -204,7 +212,7 @@ func planUnit(u *Unit, o Options) string {
 			"Shutdown method, or provide the concrete type that has one", u.t, u.t)
 	}
 	u.tier = TierInternal
-	if o.Ingress {
+	if o.Ingress || u.t.Implements(ingressType) {
 		u.tier = TierIngress
 	}
 	// A borrowed value is never started; its Ready still contributes.
@@ -293,8 +301,9 @@ func (u *Unit) close(ctx context.Context, value any) error {
 }
 
 // hiddenCapabilityErrorLocked refuses a component whose binding's type hides
-// its value's Start or Ready: the plan is taken from the type, so the App
-// would never call them. A borrowed value is its caller's to start, a value
+// its value's Start, Ready or declared ingress tier: the plan is taken from
+// the type, so the App would never call them or would place the value in
+// the internal tier. A borrowed value is its caller's to start, a value
 // that is not a component has nothing the App would call, and a capability
 // another holder of the same resource plans is called through that holder.
 // c.mu must be held.
@@ -304,15 +313,17 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 	}
 	_, starts := value.(starter)
 	_, readies := value.(readier)
+	_, ingress := value.(ingressComponent)
 	if hasToken {
 		for _, h := range c.resources[token] {
 			if h != u && !h.borrowed {
 				starts = starts && !h.starts
 				readies = readies && !h.readies
+				ingress = ingress && h.tier != TierIngress
 			}
 		}
 	}
-	if (!starts || u.starts) && (!readies || u.readies) {
+	if (!starts || u.starts) && (!readies || u.readies) && (!ingress || u.tier == TierIngress) {
 		return nil
 	}
 	vt := reflect.TypeOf(value)
@@ -320,7 +331,7 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 	for _, m := range []struct {
 		name string
 		t    reflect.Type
-	}{{"Shutdown", shutdownerType}, {"Start", starterType}, {"Ready", readierType}} {
+	}{{"Shutdown", shutdownerType}, {"Start", starterType}, {"Ready", readierType}, {"IngressTier", ingressType}} {
 		if vt.Implements(m.t) && !u.t.Implements(m.t) {
 			hidden = append(hidden, m.name)
 		}
@@ -328,17 +339,17 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 	methods := joinAnd(hidden)
 	switch {
 	case u.valueBinding:
-		return fmt.Errorf("the binding's type %s hides %s of its value, a %s, and the App starts and asks "+
-			"for readiness only what the binding's type shows; bind the value as %s and the interface with "+
+		return fmt.Errorf("the binding's type %s hides %s of its value, a %s, and the App plans Start, "+
+			"Ready and the ingress tier only from the binding's type; bind the value as %s and the interface with "+
 			"app.Alias[%s, %s](), or give credo.Borrowed() when the caller starts and stops it",
 			u.t, methods, vt, vt, u.t, vt)
 	case u.managed:
 		return fmt.Errorf("the constructor handed to %s returns a %s, whose %s its result type %s hides, "+
-			"and the App starts and asks for readiness only what that type shows; declare the constructor "+
+			"and the App plans Start, Ready and the ingress tier only from that type; declare the constructor "+
 			"to return %s", u.label(), vt, methods, u.t, vt)
 	default:
 		return fmt.Errorf("the constructor of %s returns a %s, whose %s the binding's type hides, and the "+
-			"App starts and asks for readiness only what the binding's type shows; declare the constructor "+
+			"App plans Start, Ready and the ingress tier only from the binding's type; declare the constructor "+
 			"to return %s and bind %s with app.Alias[%s, %s]()", u.t, vt, methods, vt, u.t, u.t, vt)
 	}
 }

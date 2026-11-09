@@ -31,11 +31,11 @@ func newHandlerTestApp(t *testing.T, cfg ...Config) (*credo.App, *Server) {
 	return app, useTestServer(app, cfg...)
 }
 
-// useTestServer builds a server on app's logger and registers it as an
-// ingress component, as an application does.
+// useTestServer builds a server and hands it to app, as an application
+// does; the server declares the ingress tier itself.
 func useTestServer(app *credo.App, cfg ...Config) *Server {
 	server := New(cfg...)
-	app.Manage(server, credo.Ingress())
+	app.Manage(server)
 	return server
 }
 

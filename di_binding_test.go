@@ -162,8 +162,8 @@ func TestHiddenCapability_ConstructorFailsTheStart(t *testing.T) {
 		app.Manage(func() credo.Component { return &partA{&part{name: "hidden", j: &journal{}}} })
 		err := app.Start(t.Context())
 		want := "the constructor handed to Manage(credo.Component) returns a *credo_test.partA, whose Start " +
-			"and Ready its result type credo.Component hides, and the App starts and asks for readiness only " +
-			"what that type shows; declare the constructor to return *credo_test.partA"
+			"and Ready its result type credo.Component hides, and the App plans Start, Ready and the ingress " +
+			"tier only from that type; declare the constructor to return *credo_test.partA"
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("App.Start() = %v\nwant it to contain %q", err, want)
 		}

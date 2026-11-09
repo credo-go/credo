@@ -1,7 +1,11 @@
 package websocket
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -82,7 +86,25 @@ func (b *broadcaster) Shutdown(context.Context) error {
 	return nil
 }
 
+// TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry: a server
+// handed to the App, managed or bound, with or without the redundant
+// credo.Ingress(), drains in the ingress tier its type declares: beside the
+// HTTP drain and before the internal components its handlers use.
 func TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(app *credo.App, server *Server)
+	}{
+		{"Manage", func(app *credo.App, s *Server) { app.Manage(s) }},
+		{"ProvideValue", func(app *credo.App, s *Server) { app.ProvideValue(s) }},
+		{"Manage with Ingress", func(app *credo.App, s *Server) { app.Manage(s, credo.Ingress()) }},
+		{"ProvideValue with Ingress", func(app *credo.App, s *Server) { app.ProvideValue(s, credo.Ingress()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) { broadcastAfterTheDrain(t, tc.register) })
+	}
+}
+
+func broadcastAfterTheDrain(t *testing.T, register func(app *credo.App, server *Server)) {
 	app, err := credo.New(credo.WithAddr("127.0.0.1", 0))
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +118,7 @@ func TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry(t *testing.
 		return b
 	})
 	server := New()
-	app.Manage(server, credo.Ingress())
+	register(app, server)
 	connected := make(chan struct{})
 	app.GET("/ws", server.Handler(func(_ *credo.Context, conn *Conn) error {
 		registry.add(conn)
@@ -141,5 +163,36 @@ func TestBroadcastAfterTheDrainFindsNoPeersAndStopsBeforeTheRegistry(t *testing.
 	}
 	if got := strings.Join(events, ","); got != "broadcaster stop,registry stop" {
 		t.Fatalf("stop order = %q, want the broadcaster before the registry", got)
+	}
+}
+
+// TestServerNeverHandedToTheAppRefusesTheUpgrade: a server that was never
+// handed to the App refuses an upgrade with the message that names the
+// registration.
+func TestServerNeverHandedToTheAppRefusesTheUpgrade(t *testing.T) {
+	var logs bytes.Buffer
+	app, err := credo.New(credo.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New()
+	app.GET("/ws", server.Handler(func(*credo.Context, *Conn) error { return nil }))
+	httpServer := httptest.NewServer(app)
+	defer httpServer.Close()
+	client, resp, err := coderwebsocket.Dial(t.Context(), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	if err == nil {
+		client.CloseNow()
+		t.Fatal("the upgrade succeeded on a server that was never started")
+	}
+	if resp == nil || resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("response = %v, want 500", resp)
+	}
+	const want = "credo/websocket: the server was never started; hand it to the App with " +
+		"app.Manage(server), or bind it"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("logs = %s\nwant them to carry %q", logs.String(), want)
 	}
 }

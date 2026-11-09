@@ -24,9 +24,9 @@ const (
 )
 
 // errNotStarted is the handshake's error for a server whose Start never ran:
-// the server was never registered as a component, so nothing would drain it.
-var errNotStarted = errors.New("credo/websocket: the server was never started; register it as an ingress " +
-	"component with app.Manage(server, credo.Ingress()) or bind it with credo.Ingress()")
+// the server was never handed to the App, so nothing would drain it.
+var errNotStarted = errors.New("credo/websocket: the server was never started; hand it to the App with " +
+	"app.Manage(server), or bind it")
 
 type connectionRecord struct {
 	conn             *Conn
@@ -49,7 +49,8 @@ type connectionRecord struct {
 
 // Server owns the immutable policy and managed lifecycle state for WebSocket
 // handlers registered through one Credo application. A Server must be created
-// with [New] and registered as an ingress component of the App.
+// with [New] and handed to the App, whose ingress tier it declares
+// ([credo.IngressComponent]).
 type Server struct {
 	config resolvedConfig
 	// logger is the server's own logger, settled by Start: Config.Logger,
@@ -74,14 +75,15 @@ type Server struct {
 // It accepts zero or one Config value, copies its slices defensively, and
 // performs no I/O; it registers nothing.
 //
-// The application registers the server as an ingress component, so it
-// starts with the App and drains beside the HTTP drain, before the internal
-// components its handlers use:
+// The application hands the server to the App, so it starts with the App
+// and drains beside the HTTP drain, before the internal components its
+// handlers use; the server declares the ingress tier itself:
 //
 //	ws := websocket.New(cfg)
-//	app.Manage(ws, credo.Ingress())
+//	app.Manage(ws)
 //
-// or binds it with credo.Ingress() when controllers take it as a dependency.
+// or binds it, with app.ProvideValue(ws), when controllers take it as a
+// dependency.
 // The server logs to [Config.Logger] when it is set and otherwise to the
 // App's logger, which Start receives. Invalid configuration or more than
 // one Config panics as startup misuse.
@@ -125,6 +127,11 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("credo/websocket: Server.Start: the server is shut down")
 	}
 }
+
+// IngressTier declares the server an ingress component: it is where work
+// enters the process, so it drains beside the HTTP drain. It is never
+// called.
+func (*Server) IngressTier() {}
 
 // moduleLogger applies the framework module rule: the module's own logger,
 // else the App's, else the framework default, each with module=websocket.

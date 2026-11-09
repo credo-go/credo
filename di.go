@@ -37,8 +37,8 @@ import (
 // down after its consumers, and starts it and asks it for readiness when the
 // type also shows Start or Ready ([Component]). A value whose Shutdown only
 // the built value shows is shut down too, in the internal tier. A component
-// whose built value has a Start or Ready the binding's type hides fails the
-// start once it is built: declare the constructor to return the concrete
+// whose built value has a Start, a Ready or an [IngressComponent] tier the
+// binding's type hides fails the start once it is built: declare the constructor to return the concrete
 // type, and bind the interface with [App.Alias]. The options are [Ingress],
 // [CloseOnShutdown] and [Override]; each panics on misuse at the call.
 //
@@ -57,7 +57,8 @@ func (app *App) Provide(constructor any, opts ...RegistrationOption) {
 // alias of T — for a stub, and the value it replaces never becomes the App's.
 // A second binding of T without [Override], a call after [App.Finalize] or
 // after shutdown began, a value whose resource another holder owns
-// differently, and a component whose Start or Ready the type T hides panic,
+// differently, and a component whose Start, Ready or [IngressComponent] tier
+// the type T hides panic,
 // like [App.Provide]; a hidden capability's remedies are binding the
 // concrete type with an [App.Alias] of T, or [Borrowed] when the caller
 // starts and stops the value.

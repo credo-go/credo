@@ -66,6 +66,20 @@ type Readier interface {
 	Ready(ctx context.Context) error
 }
 
+// IngressComponent is the capability of a component type whose tier follows
+// from its nature: a server or a consumer, where work enters the process. A
+// registration whose type implements it is planned in the ingress tier
+// without [Ingress], which stays accepted and redundant. IngressTier is
+// never called; the check needs no value, so Finalize validates the tiers
+// before anything is built. A type declares the tier only when no
+// registration could rightly place it internal: there is no way down. A
+// binding whose type hides the method of its value, such as an interface
+// view, is refused, as a hidden Start is.
+type IngressComponent interface {
+	Component
+	IngressTier()
+}
+
 // ResourceIdentifier names the resource a value holds. Values that share an
 // identity are one resource, started once and torn down once: the teardown
 // runs when the last holder retires, through the holder registered first
@@ -165,7 +179,7 @@ func (k optionKind) String() string {
 }
 
 // Ingress places a component — or a start or stop hook — in the ingress
-// tier. On Provide and ProvideValue it panics on a binding that is not a
+// tier; a type that implements [IngressComponent] is there without it. On Provide and ProvideValue it panics on a binding that is not a
 // component at registration: its type shows no Shutdown and it carries no
 // [CloseOnShutdown], and the tier is planned before the value exists.
 func Ingress() RegistrationOption { return RegistrationOption{kind: optIngress} }
