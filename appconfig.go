@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/credo-go/credo/config"
 )
 
 // serverConfig holds HTTP server settings.
@@ -195,25 +197,22 @@ func WithRawConfig(rc RawConfig) Option {
 	return func(o *appOptions) { o.rawConfig = rc }
 }
 
-// GetConfig decodes the configuration value or sub-tree at the given dotted key
-// path into a value of type T and returns it. It is a convenience wrapper over
-// the application's [RawConfig] (auto-loaded or supplied via [WithRawConfig]),
-// saving an explicit app.MustResolve[RawConfig]() plus Unmarshal:
+// GetConfig decodes section from the application's [RawConfig] (auto-loaded
+// or supplied via [WithRawConfig]) with [config.Section.Decode]. It is the
+// composition root's reader, for code that holds the App rather than its
+// configuration:
 //
-//	db, err := app.GetConfig[DatabaseConfig]("database")
+//	var DatabaseSection = config.Section[DatabaseConfig]("database")
 //
-// Like config.(*Config).Get, this is a bootstrap/composition-root helper: read
-// config here and inject typed structs into services via DI rather than reading
-// string keys inside business code (a handler cannot reach this method — there
-// is no App accessor on *Context). A missing key or decode failure returns an
-// error; on error the zero value of T is returned.
-func (app *App) GetConfig[T any](key string) (T, error) {
-	var dst T
-	if err := app.rawConfig.Unmarshal(key, &dst); err != nil {
-		var zero T
-		return zero, err
-	}
-	return dst, nil
+//	db, err := app.GetConfig(DatabaseSection)
+//	db, err := app.GetConfig[DatabaseConfig]("database") // the untyped key converts
+//
+// A service receives its section through the container instead, bound with
+// app.Provide(DatabaseSection.Decode); a handler cannot reach this method, as
+// there is no App accessor on *Context. A missing section, a decode failure or
+// a failed validation returns an error naming the key, with the zero value of T.
+func (app *App) GetConfig[T any](section config.Section[T]) (T, error) {
+	return section.Decode(app.rawConfig)
 }
 
 // ConfigExists reports whether key is present in the application's
@@ -226,10 +225,10 @@ func (app *App) ConfigExists(key string) bool {
 }
 
 // MustGetConfig is like [App.GetConfig] but panics on error. It suits
-// composition-root code where a missing or invalid required key should abort
-// startup.
-func (app *App) MustGetConfig[T any](key string) T {
-	v, err := app.GetConfig[T](key)
+// composition-root code where a missing or invalid required section should
+// abort startup.
+func (app *App) MustGetConfig[T any](section config.Section[T]) T {
+	v, err := app.GetConfig(section)
 	if err != nil {
 		panic(err)
 	}

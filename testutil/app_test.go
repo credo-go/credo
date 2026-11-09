@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/testutil"
 )
 
@@ -290,7 +291,7 @@ func TestWithConfig_IsHermetic(t *testing.T) {
 	check := func(t *testing.T, app *credo.App) {
 		t.Helper()
 		for key, want := range map[string]string{"app.name": "credo-test", "app.env": "testing"} {
-			got, err := app.GetConfig[string](key)
+			got, err := app.GetConfig(config.Section[string](key))
 			if err != nil {
 				t.Fatalf("GetConfig(%q): %v", key, err)
 			}
@@ -300,7 +301,7 @@ func TestWithConfig_IsHermetic(t *testing.T) {
 		}
 		for _, key := range []string{"app.extra", "app.secret"} {
 			if app.ConfigExists(key) {
-				got, _ := app.GetConfig[string](key)
+				got, _ := app.GetConfig(config.Section[string](key))
 				t.Errorf("%s = %q came from outside the test", key, got)
 			}
 		}

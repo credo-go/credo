@@ -51,7 +51,7 @@ func TestReloadPicksUpFileChanges(t *testing.T) {
 	if got, want := changes.Keys(), []string{"extra", "server.port"}; !slices.Equal(got, want) {
 		t.Errorf("Keys = %v, want %v", got, want)
 	}
-	if port := c.MustGet[int]("server.port"); port != 9090 {
+	if port := mustGet[int](t, c, "server.port"); port != 9090 {
 		t.Errorf("server.port after reload = %d, want 9090", port)
 	}
 	if !c.Exists("extra") {
@@ -132,7 +132,7 @@ func TestReloadErrorKeepsPreviousSnapshot(t *testing.T) {
 	if !changes.Empty() {
 		t.Errorf("failed reload must report no changes, got %v", changes.Keys())
 	}
-	if port := c.MustGet[int]("server.port"); port != 8080 {
+	if port := mustGet[int](t, c, "server.port"); port != 8080 {
 		t.Errorf("previous snapshot must survive a failed reload; port = %d", port)
 	}
 
@@ -143,7 +143,7 @@ func TestReloadErrorKeepsPreviousSnapshot(t *testing.T) {
 	if _, err := c.Reload(); err == nil {
 		t.Fatal("expected an error when the explicit file disappears")
 	}
-	if port := c.MustGet[int]("server.port"); port != 8080 {
+	if port := mustGet[int](t, c, "server.port"); port != 8080 {
 		t.Errorf("previous snapshot must survive a missing file; port = %d", port)
 	}
 }
@@ -157,7 +157,7 @@ func TestReloadReflectsEnvVarChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if port := c.MustGet[int]("server.port"); port != 1111 {
+	if port := mustGet[int](t, c, "server.port"); port != 1111 {
 		t.Fatalf("initial port = %d, want 1111", port)
 	}
 
@@ -169,7 +169,7 @@ func TestReloadReflectsEnvVarChanges(t *testing.T) {
 	if !changes.Affects("server.port") {
 		t.Errorf("env var change should be reported, got %v", changes.Keys())
 	}
-	if port := c.MustGet[int]("server.port"); port != 2222 {
+	if port := mustGet[int](t, c, "server.port"); port != 2222 {
 		t.Errorf("port after reload = %d, want 2222", port)
 	}
 }
@@ -190,7 +190,7 @@ func TestReloadReflectsDotenvChanges(t *testing.T) {
 	if _, err := c.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if host := c.MustGet[string]("server.host"); host != "from-dotenv-2" {
+	if host := mustGet[string](t, c, "server.host"); host != "from-dotenv-2" {
 		t.Errorf("host after reload = %q, want from-dotenv-2", host)
 	}
 }
@@ -207,7 +207,7 @@ func TestReloadKeepsCredoEnvFixed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if tier := c.MustGet[string]("tier"); tier != "dev" {
+	if tier := mustGet[string](t, c, "tier"); tier != "dev" {
 		t.Fatalf("initial tier = %q, want dev", tier)
 	}
 
@@ -219,7 +219,7 @@ func TestReloadKeepsCredoEnvFixed(t *testing.T) {
 	if !changes.Empty() {
 		t.Errorf("switching CREDO_ENV must not change anything, got %v", changes.Keys())
 	}
-	if tier := c.MustGet[string]("tier"); tier != "dev" {
+	if tier := mustGet[string](t, c, "tier"); tier != "dev" {
 		t.Errorf("tier after reload = %q, want dev (CREDO_ENV is fixed at first load)", tier)
 	}
 }
@@ -243,10 +243,10 @@ func TestReloadLoadBytesReplaysDocument(t *testing.T) {
 	if got, want := changes.Keys(), []string{"server.port"}; !slices.Equal(got, want) {
 		t.Errorf("Keys = %v, want %v", got, want)
 	}
-	if port := c.MustGet[int]("server.port"); port != 2 {
+	if port := mustGet[int](t, c, "server.port"); port != 2 {
 		t.Errorf("port after reload = %d, want 2", port)
 	}
-	if host := c.MustGet[string]("server.host"); host != "embedded" {
+	if host := mustGet[string](t, c, "server.host"); host != "embedded" {
 		t.Errorf("embedded document must be replayed; host = %q", host)
 	}
 }
@@ -282,7 +282,7 @@ func TestReloadConcurrentReadersSeeWholeSnapshots(t *testing.T) {
 					return
 				default:
 				}
-				p, err := c.Get[pair]("pair")
+				p, err := config.Section[pair]("pair").Decode(c)
 				if err != nil {
 					t.Error(err)
 					return
@@ -319,7 +319,7 @@ func TestStagePublishesOnlyOnCommit(t *testing.T) {
 	if !staged.Changes().Affects("server.port") {
 		t.Fatalf("staged changes = %v, want server.port", staged.Changes().Keys())
 	}
-	if port := c.MustGet[int]("server.port"); port != 8080 {
+	if port := mustGet[int](t, c, "server.port"); port != 8080 {
 		t.Errorf("parent must be unchanged before Commit; port = %d", port)
 	}
 	var candidate int
@@ -331,7 +331,7 @@ func TestStagePublishesOnlyOnCommit(t *testing.T) {
 	}
 
 	staged.Commit()
-	if port := c.MustGet[int]("server.port"); port != 9090 {
+	if port := mustGet[int](t, c, "server.port"); port != 9090 {
 		t.Errorf("port after Commit = %d, want 9090", port)
 	}
 }
@@ -342,7 +342,7 @@ func TestStageDiscardedWithoutCommit(t *testing.T) {
 	if _, err := c.Stage(); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
-	if a := c.MustGet[int]("a"); a != 1 {
+	if a := mustGet[int](t, c, "a"); a != 1 {
 		t.Errorf("an uncommitted stage must not publish; a = %d", a)
 	}
 	changes, err := c.Reload()

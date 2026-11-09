@@ -46,8 +46,8 @@ var bootstrapKeys = map[string]bool{
 //
 // Load is NOT concurrency-safe; call it once at startup.
 //
-// The returned *Config satisfies [RawConfig]; use [Config.Get] for typed
-// snapshot access or pass it to credo.WithRawConfig as-is.
+// The returned *Config satisfies [RawConfig]; read a typed section with
+// [Section.Decode], or pass it to credo.WithRawConfig as-is.
 func Load(opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
 	if err := c.opts.validate(); err != nil {
@@ -73,8 +73,8 @@ func Load(opts ...Option) (*Config, error) {
 //
 //	rc, err := config.LoadBytes(configData, config.FormatJSON)
 //
-// The returned *Config satisfies [RawConfig]; use [Config.Get] for typed
-// snapshot access or pass it to credo.WithRawConfig as-is.
+// The returned *Config satisfies [RawConfig]; read a typed section with
+// [Section.Decode], or pass it to credo.WithRawConfig as-is.
 func LoadBytes(data []byte, format string, opts ...Option) (*Config, error) {
 	c := newConfig(opts...)
 	if err := c.opts.validate(); err != nil {
