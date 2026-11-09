@@ -10,29 +10,24 @@ import (
 	"github.com/credo-go/credo/internal/radix"
 )
 
-// RouteContext is the routing context type used by the radix tree.
-// Re-exported from internal/radix so consumers can reference this
-// type without importing internal packages.
-type RouteContext = radix.RouteContext
-
 // routeCtxKey is the context key for storing the RouteContext.
 // Using a pointer to a private struct guarantees uniqueness.
 var routeCtxKey = &struct{ name string }{"RouteContext"}
 
 // getRouteContext returns the RouteContext from the request context.
 // Returns nil if no RouteContext is set.
-func getRouteContext(r *http.Request) *RouteContext {
+func getRouteContext(r *http.Request) *radix.RouteContext {
 	val := r.Context().Value(routeCtxKey)
 	if val == nil {
 		return nil
 	}
-	rctx, _ := val.(*RouteContext)
+	rctx, _ := val.(*radix.RouteContext)
 	return rctx
 }
 
 // withRouteContext returns a new request with the given RouteContext
 // stored in its context.
-func withRouteContext(r *http.Request, rctx *RouteContext) *http.Request {
+func withRouteContext(r *http.Request, rctx *radix.RouteContext) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), routeCtxKey, rctx))
 }
 

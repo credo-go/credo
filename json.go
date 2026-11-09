@@ -36,8 +36,8 @@ var defaultJSONOptions = jsonv2.JoinOptions(
 var defaultErrorJSONOptions = jsonv2.JoinOptions(defaultJSONOptions, jsonv2.Deterministic(true))
 
 // jsonOptions returns the application's response encoding profile, falling
-// back to the framework default for a nil App (a Response built directly with
-// [NewResponse], as tests do).
+// back to the framework default for a nil App (a Context built with
+// [NewContext], as tests do).
 func (app *App) jsonOptions() jsonv2.Options {
 	if app == nil || app.jsonOpts == nil {
 		return defaultJSONOptions

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	internalpattern "github.com/credo-go/credo/internal/pattern"
 	internalstatic "github.com/credo-go/credo/internal/static"
@@ -195,26 +196,36 @@ func (sr *StaticRoute) Middleware(m ...Middleware) *StaticRoute {
 	return sr
 }
 
-// BuildURI returns the URL path for a file within this static endpoint.
+// BuildURI returns the URL path for a file within this static endpoint. The
+// file path is slash-separated and relative to the prefix (leading slashes
+// are ignored); each segment is percent-encoded, so the URL serves the file
+// it names. An empty file path returns the prefix with its trailing slash:
 //
-//	sr.BuildURI("css/app.css")  → "/static/css/app.css"
-//	sr.BuildURI("")             → "/static/"
-//	sr.BuildURI()               → "/static/"
-func (sr *StaticRoute) BuildURI(filePath ...string) string {
-	p := ""
-	if len(filePath) > 0 {
-		p = strings.TrimLeft(filePath[0], "/")
+//	sr.BuildURI("css/app.css")  → "/static/css/app.css", nil
+//	sr.BuildURI("a b/ü.txt")    → "/static/a%20b/%C3%BC.txt", nil
+//	sr.BuildURI("")             → "/static/", nil
+//
+// It returns an error, naming the path and the reason, for a path no URL can
+// represent: one that is not valid UTF-8, which the router answers with 400,
+// and one with a "." or ".." segment, which a client removes before it sends
+// the request (RFC 3986, section 5.2.4), so that the URL would name another
+// file or leave the prefix.
+func (sr *StaticRoute) BuildURI(filePath string) (string, error) {
+	p := strings.TrimLeft(filePath, "/")
+	if !utf8.ValidString(p) {
+		return "", fmt.Errorf("credo: StaticRoute.BuildURI(%q): the path is not valid UTF-8, which the router answers with 400", filePath)
 	}
-	if p == "" {
-		if sr.prefix == "/" {
-			return "/"
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
+			return "", fmt.Errorf("credo: StaticRoute.BuildURI(%q): the segment %q is a dot-segment, which a client removes "+
+				"before sending (RFC 3986, section 5.2.4), so the URL would not name this file", filePath, seg)
 		}
-		return sr.prefix + "/"
 	}
+	base := sr.prefix + "/"
 	if sr.prefix == "/" {
-		return "/" + p
+		base = "/"
 	}
-	return sr.prefix + "/" + p
+	return base + escapeCatchAll(p), nil
 }
 
 // DirFS returns a traversal-safe [fs.FS] rooted at dir, together with an

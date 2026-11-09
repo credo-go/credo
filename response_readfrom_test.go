@@ -91,7 +91,7 @@ func (w *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func TestResponse_ReadFrom_DelegatesToUnderlyingReaderFrom(t *testing.T) {
 	const size = 100 << 10
 	w := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
-	resp := credo.NewResponse(w)
+	resp := newResponse(w)
 
 	n, err := resp.ReadFrom(&patternReader{n: size})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestResponse_ReadFrom_DelegatesToUnderlyingReaderFrom(t *testing.T) {
 func TestResponse_ReadFrom_PooledCopyWithoutReaderFrom(t *testing.T) {
 	const size = 100 << 10 // several 32 KiB buffer rounds
 	w := httptest.NewRecorder()
-	resp := credo.NewResponse(w)
+	resp := newResponse(w)
 	resp.WriteHeader(http.StatusCreated)
 
 	n, err := resp.ReadFrom(&patternReader{n: size})
@@ -139,7 +139,7 @@ func TestResponse_ReadFrom_WriterToSourceIsCounted(t *testing.T) {
 	// the pooled branch must still route it through Response.Write.
 	body := strings.Repeat("y", 3000)
 	w := httptest.NewRecorder()
-	resp := credo.NewResponse(w)
+	resp := newResponse(w)
 
 	n, err := resp.ReadFrom(strings.NewReader(body))
 	if err != nil {
@@ -155,7 +155,7 @@ func TestResponse_ReadFrom_WriterToSourceIsCounted(t *testing.T) {
 
 func TestResponse_ReadFrom_PartialWriteError(t *testing.T) {
 	w := &failingWriter{ResponseRecorder: httptest.NewRecorder(), limit: 10}
-	resp := credo.NewResponse(w)
+	resp := newResponse(w)
 
 	n, err := resp.ReadFrom(&patternReader{n: 1000})
 	if !errors.Is(err, errWriterClosed) {
@@ -171,7 +171,7 @@ func TestResponse_ReadFrom_PartialWriteError(t *testing.T) {
 
 func TestResponse_ReadFrom_Hijacked(t *testing.T) {
 	w := &hijackableWriter{ResponseRecorder: httptest.NewRecorder()}
-	resp := credo.NewResponse(w)
+	resp := newResponse(w)
 	conn, _, err := resp.Hijack()
 	if err != nil {
 		t.Fatalf("Hijack() error = %v", err)

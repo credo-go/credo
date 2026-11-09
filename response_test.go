@@ -11,6 +11,12 @@ import (
 	"github.com/credo-go/credo"
 )
 
+// newResponse returns the Response of a Context built with NewContext around
+// w, as a test of a Response takes one.
+func newResponse(w http.ResponseWriter) *credo.Response {
+	return credo.NewContext(w, httptest.NewRequest(http.MethodGet, "/", nil)).Response()
+}
+
 type hijackResponseWriter struct {
 	*httptest.ResponseRecorder
 	hijackErr        error
@@ -41,7 +47,7 @@ func (w *unwrapResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 func TestResponse_StateAccessors(t *testing.T) {
-	resp := credo.NewResponse(httptest.NewRecorder())
+	resp := newResponse(httptest.NewRecorder())
 
 	if resp.Committed() || resp.Hijacked() || resp.Status() != 0 || resp.Size() != 0 {
 		t.Fatalf("fresh response: Status=%d Size=%d Committed=%v Hijacked=%v, want 0/0/false/false",
@@ -70,18 +76,11 @@ func TestResponse_StateAccessors(t *testing.T) {
 	if resp.Status() != http.StatusTeapot {
 		t.Errorf("Status() after second WriteHeader = %d, want %d", resp.Status(), http.StatusTeapot)
 	}
-
-	// Reset returns the tracking state to zero for pool reuse.
-	resp.Reset(httptest.NewRecorder())
-	if resp.Committed() || resp.Hijacked() || resp.Status() != 0 || resp.Size() != 0 {
-		t.Errorf("after Reset: Status=%d Size=%d Committed=%v Hijacked=%v, want 0/0/false/false",
-			resp.Status(), resp.Size(), resp.Committed(), resp.Hijacked())
-	}
 }
 
 func TestResponse_HijackedTracksActualOutcomeAndSuppressesHTTPWrites(t *testing.T) {
 	underlying := newHijackResponseWriter()
-	resp := credo.NewResponse(&unwrapResponseWriter{ResponseWriter: underlying})
+	resp := newResponse(&unwrapResponseWriter{ResponseWriter: underlying})
 
 	resp.WriteHeader(http.StatusSwitchingProtocols)
 	if resp.Hijacked() {
@@ -104,18 +103,13 @@ func TestResponse_HijackedTracksActualOutcomeAndSuppressesHTTPWrites(t *testing.
 	if n, err := resp.Write([]byte("must not leak")); n != 0 || !errors.Is(err, http.ErrHijacked) {
 		t.Fatalf("Write after Hijack = %d, %v; want 0, http.ErrHijacked", n, err)
 	}
-
-	resp.Reset(httptest.NewRecorder())
-	if resp.Hijacked() {
-		t.Fatal("Hijacked() = true after Reset")
-	}
 }
 
 func TestResponse_HijackFailureDoesNotSetState(t *testing.T) {
 	wantErr := errors.New("hijack failed")
 	underlying := newHijackResponseWriter()
 	underlying.hijackErr = wantErr
-	resp := credo.NewResponse(underlying)
+	resp := newResponse(underlying)
 	resp.WriteHeader(http.StatusSwitchingProtocols)
 
 	if _, _, err := resp.Hijack(); !errors.Is(err, wantErr) {
@@ -127,7 +121,7 @@ func TestResponse_HijackFailureDoesNotSetState(t *testing.T) {
 }
 
 func TestResponse_ImplicitCommitOnWrite(t *testing.T) {
-	resp := credo.NewResponse(httptest.NewRecorder())
+	resp := newResponse(httptest.NewRecorder())
 
 	if _, err := resp.Write([]byte("hi")); err != nil {
 		t.Fatalf("Write error: %v", err)

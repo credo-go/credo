@@ -92,40 +92,40 @@ func TestMountPrefixParams(t *testing.T) {
 	}
 }
 
-// dispatchOnceForTest runs a single dispatchOnce pass against app for the
+// dispatchForTest runs a single dispatch pass against app for the
 // given request, returning the recorder and the handler-chain error. It builds
 // the Context as ServeHTTP does but stops below the rewrite loop and the
 // centralized error renderer, so sentinel returns stay observable.
-func dispatchOnceForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
+func dispatchForTest(t *testing.T, app *App, method, target string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	if p := app.prepare(""); p == nil || p.err != nil {
 		t.Fatalf("prepare: %v", p)
 	}
 	rec := httptest.NewRecorder()
-	err := app.dispatchOnce(newContext(app, rec, httptest.NewRequest(method, target, nil)))
+	err := app.dispatch(newContext(app, rec, httptest.NewRequest(method, target, nil)))
 	return rec, err
 }
 
-// TestDispatchOnce_UnknownMethod_NotFound locks the documented subtlety that a
+// TestDispatch_UnknownMethod_NotFound locks the documented subtlety that a
 // method absent from the radix method map short-circuits to 404 — never 405 —
 // because no route could possibly match it.
-func TestDispatchOnce_UnknownMethod_NotFound(t *testing.T) {
+func TestDispatch_UnknownMethod_NotFound(t *testing.T) {
 	app, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	app.GET("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
 
-	_, dispatchErr := dispatchOnceForTest(t, app, "FROB", "/x")
+	_, dispatchErr := dispatchForTest(t, app, "FROB", "/x")
 	if !errors.Is(dispatchErr, ErrNotFound) {
 		t.Fatalf("unknown method dispatch = %v, want ErrNotFound", dispatchErr)
 	}
 }
 
-// TestDispatchOnce_MethodNotAllowed_SetsAllow verifies the 405 path returns
+// TestDispatch_MethodNotAllowed_SetsAllow verifies the 405 path returns
 // the sentinel and stamps the Allow header with the registered method set
-// before the error leaves dispatchOnce.
-func TestDispatchOnce_MethodNotAllowed_SetsAllow(t *testing.T) {
+// before the error leaves dispatch.
+func TestDispatch_MethodNotAllowed_SetsAllow(t *testing.T) {
 	app, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestDispatchOnce_MethodNotAllowed_SetsAllow(t *testing.T) {
 	app.GET("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
 	app.PUT("/x", func(c *Context) error { return c.Response().NoContent(http.StatusNoContent) })
 
-	rec, dispatchErr := dispatchOnceForTest(t, app, http.MethodPost, "/x")
+	rec, dispatchErr := dispatchForTest(t, app, http.MethodPost, "/x")
 	if !errors.Is(dispatchErr, ErrMethodNotAllowed) {
 		t.Fatalf("POST to GET/PUT route = %v, want ErrMethodNotAllowed", dispatchErr)
 	}
@@ -145,10 +145,10 @@ func TestDispatchOnce_MethodNotAllowed_SetsAllow(t *testing.T) {
 	}
 }
 
-// TestDispatchOnce_TrailingSlashRedirect verifies the alternate-path probe:
+// TestDispatch_TrailingSlashRedirect verifies the alternate-path probe:
 // GET/HEAD redirect with 301, other methods with 308, and the query string is
 // preserved on the Location target.
-func TestDispatchOnce_TrailingSlashRedirect(t *testing.T) {
+func TestDispatch_TrailingSlashRedirect(t *testing.T) {
 	app, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -168,9 +168,9 @@ func TestDispatchOnce_TrailingSlashRedirect(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rec, dispatchErr := dispatchOnceForTest(t, app, tc.method, tc.target)
+			rec, dispatchErr := dispatchForTest(t, app, tc.method, tc.target)
 			if dispatchErr != nil {
-				t.Fatalf("dispatchOnce = %v, want nil (redirect written)", dispatchErr)
+				t.Fatalf("dispatch = %v, want nil (redirect written)", dispatchErr)
 			}
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)

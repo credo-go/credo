@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/middleware"
 )
 
 func gunzipBody(t *testing.T, r io.Reader) string {
@@ -182,9 +183,7 @@ func TestCompress_SkipperSeesOriginalRequest(t *testing.T) {
 			return ctx.Route() != nil // route is never matched yet
 		},
 	})
-	app.GET("/legacy", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/new")
-	})
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/legacy", To: "/new"}}}))
 	app.GET("/new", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, "rewritten")
 	})

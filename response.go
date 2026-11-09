@@ -80,14 +80,9 @@ type Response struct {
 	// nothing. R is cleared as soon as the delegation returns.
 	delegated io.LimitedReader
 
-	// app supplies the JSON encoding profile. Nil for a Response built with
-	// NewResponse, which then uses the framework default profile.
+	// app supplies the JSON encoding profile. Nil for a Response of a Context
+	// built with NewContext, which then uses the framework default profile.
 	app *App
-}
-
-// NewResponse creates a new Response wrapping the given http.ResponseWriter.
-func NewResponse(w http.ResponseWriter) *Response {
-	return &Response{ResponseWriter: w}
 }
 
 // Status returns the HTTP status code written, or 0 when the response
@@ -316,18 +311,6 @@ func (r *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Unwrap returns the underlying http.ResponseWriter.
 func (r *Response) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
-}
-
-// Reset resets the response for reuse from the pool.
-func (r *Response) Reset(w http.ResponseWriter) {
-	r.ResponseWriter = w
-	r.status = 0
-	r.size = 0
-	r.committed = false
-	r.hijacked = false
-	r.exemptJSON = false
-	r.envelopeBypassed = false
-	r.delegated = io.LimitedReader{}
 }
 
 // String implements fmt.Stringer for debugging.

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/middleware"
 )
 
 // echoParam registers pattern and returns a function that serves path and
@@ -216,16 +217,12 @@ func TestURLRoundTrip_TrailingSlashRedirectKeepsEncoding(t *testing.T) {
 
 func TestURLRoundTrip_RewriteTargetIsWireForm(t *testing.T) {
 	app := mustNew(t)
-	var original string
+	var original, query string
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/old", To: "/one/a%2Fb?x=1"}}}))
 	app.GET("/one/{v}", func(ctx *credo.Context) error {
 		original = ctx.OriginalPath()
+		query = ctx.Request().URL.RawQuery
 		return ctx.Response().Text(200, ctx.Request().RouteParam("v"))
-	})
-	app.GET("/old", func(ctx *credo.Context) error { return ctx.Rewrite("/one/a%2Fb?x=1") })
-	var rewriteErr error
-	app.GET("/bad", func(ctx *credo.Context) error {
-		rewriteErr = ctx.Rewrite("/one/%zz")
-		return rewriteErr
 	})
 
 	rec := httptest.NewRecorder()
@@ -233,17 +230,8 @@ func TestURLRoundTrip_RewriteTargetIsWireForm(t *testing.T) {
 	if rec.Code != 200 || rec.Body.String() != "a/b" {
 		t.Fatalf("rewrite = %d %q, want 200 \"a/b\"", rec.Code, rec.Body.String())
 	}
-	if original != "/old" {
-		t.Fatalf("OriginalPath = %q, want /old", original)
-	}
-
-	rec = httptest.NewRecorder()
-	app.ServeHTTP(rec, httptest.NewRequest("GET", "/bad", nil))
-	if rewriteErr == nil || !strings.Contains(rewriteErr.Error(), "invalid URL escape") {
-		t.Fatalf("Rewrite(/one/%%zz) error = %v, want invalid URL escape", rewriteErr)
-	}
-	if rec.Code != 500 {
-		t.Fatalf("status after rejected rewrite = %d, want 500", rec.Code)
+	if original != "/old" || query != "x=1" {
+		t.Fatalf("OriginalPath = %q, query = %q; want /old and x=1", original, query)
 	}
 }
 

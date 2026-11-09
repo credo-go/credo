@@ -6,12 +6,10 @@ package credo
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
+
+	"github.com/credo-go/credo/internal/radix"
 )
 
 // Context is the request-scoped struct that holds the Request, Response,
@@ -39,8 +37,8 @@ type Context struct {
 	route    *Route
 	logger   *slog.Logger
 	// mountRouteCtx is the pooled RouteContext a mount's handler is given,
-	// set by dispatch for the mount's chain only (see dispatchOnce).
-	mountRouteCtx *RouteContext
+	// set by dispatch for the mount's chain only (see dispatch).
+	mountRouteCtx *radix.RouteContext
 	// pendingLogAttrID defers the request ID tier's logger enrichment: the
 	// enriched logger (base.With("request_id", …)) is only built when
 	// Logger() is first called, so requests whose handlers never log skip
@@ -58,20 +56,17 @@ type Context struct {
 	// request the Context last installed and installedGen the headGen it
 	// carries, so Std knows without comparing contexts whether the embedded
 	// request is in step.
-	head             context.Context
-	scope            headScope
-	values           []valueEntry
-	valuesBuf        [2]valueEntry // the first entries of values
-	seq              uint64
-	pending          bool // values set after pendingStart await reapplication
-	pendingStart     uint64
-	headGen          uint64
-	installed        *http.Request
-	installedGen     uint64
-	originalPath     string // set when the Context is built, never modified after
-	rewriteTarget    string // set by Rewrite(), consumed by dispatch loop
-	rewriteRequested bool   // set by Rewrite(), read by dispatch loop
-	rewriteCount     int    // loop detection counter
+	head         context.Context
+	scope        headScope
+	values       []valueEntry
+	valuesBuf    [2]valueEntry // the first entries of values
+	seq          uint64
+	pending      bool // values set after pendingStart await reapplication
+	pendingStart uint64
+	headGen      uint64
+	installed    *http.Request
+	installedGen uint64
+	originalPath string // set when the Context is built, never modified after
 	// exec is the request executor's per-request bookkeeping.
 	exec execState
 }
@@ -83,14 +78,21 @@ const (
 	localeResolved
 )
 
-const maxRewrites = 10
-
-// errRewrite is an internal sentinel used by the leaf handler wrapper.
-// It is caught by the wrapper and never escapes to user middleware.
-var errRewrite = errors.New("credo: internal rewrite")
-
-// NewContext creates a new Context wrapping the given ResponseWriter and Request.
-// This is primarily useful for testing error handlers and middleware.
+// NewContext creates a Context for w and r without an App. It is for unit
+// tests of the hooks that take a *Context — a locale detector, a Skipper, an
+// ErrorRenderer, the middleware around an auth.Authenticator — and of a
+// [Request] or a [Response], taken with [Context.Request] and
+// [Context.Response].
+//
+// A Context built without an App has what the App supplies to a served
+// request missing: no route ([Context.Route] is nil and there are no route
+// parameters), no request ID unless one is set, no translation (the
+// locale is empty and [Context.T] returns its key), no trusted proxies
+// ([Request.RealIP] and [Request.Scheme] read the peer alone), the package
+// default logger, the framework's default JSON profile and multipart memory
+// limit, no strict body decoding, and no success renderer ([Context.Render]
+// writes plain JSON). Nothing finalizes it: a returned error is not rendered,
+// and no observer or access record sees the request.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 	return newContext(nil, w, r)
 }
@@ -354,51 +356,9 @@ func (c *Context) Context() context.Context {
 }
 
 // OriginalPath returns the request path as received from the client in its
-// wire form (percent-encoding preserved), before any rewriting
-// (middleware.Rewrite or c.Rewrite).
+// wire form (percent-encoding preserved), before any rewriting by
+// middleware.Rewrite.
 // Useful for access logging, analytics, and debugging.
 func (c *Context) OriginalPath() string {
 	return c.originalPath
-}
-
-// Rewrite triggers an internal re-dispatch to the given path.
-// The client is unaware of the rewrite (no HTTP redirect is sent).
-// The original request path is preserved in OriginalPath().
-// The matched host scope does not change.
-//
-// Rewrite must be the last call in a handler — the return value
-// must be returned directly:
-//
-//	return c.Rewrite("/new-path")
-//
-// A maximum of 10 rewrites per request is enforced to prevent loops.
-// If exceeded, an error is returned and the request fails with 500.
-func (c *Context) Rewrite(path string) error {
-	if c.Response().Hijacked() {
-		return errors.New("credo: cannot rewrite after response is hijacked")
-	}
-	if c.Response().Committed() {
-		return errors.New("credo: cannot rewrite after response is committed")
-	}
-	if path == "" || path[0] != '/' {
-		return fmt.Errorf("credo: rewrite target must start with '/': %q", path)
-	}
-	// The target is a wire-form path: a percent-encoded value survives as one
-	// parameter ("/files/a%2Fb" reaches RouteParam as "a/b"), so a malformed
-	// escape is rejected here instead of at the next dispatch round.
-	if pathOnly, _, _ := strings.Cut(path, "?"); strings.IndexByte(pathOnly, '%') >= 0 {
-		if _, err := url.PathUnescape(pathOnly); err != nil {
-			return fmt.Errorf("credo: rewrite target %q: %w", path, err)
-		}
-	}
-	c.rewriteTarget = path
-	c.rewriteRequested = true
-	return errRewrite
-}
-
-// IsRewriting reports whether this context has a pending internal rewrite.
-// This can be useful in middleware to avoid side-effects (e.g., response
-// writing) when the handler signaled a re-dispatch.
-func (c *Context) IsRewriting() bool {
-	return c.rewriteRequested
 }

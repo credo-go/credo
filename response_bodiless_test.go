@@ -60,7 +60,7 @@ func TestResponse_BodilessStatusesSkipBodyAndContentType(t *testing.T) {
 		for _, code := range codes {
 			t.Run(h.name+"/"+http.StatusText(code), func(t *testing.T) {
 				rec := httptest.NewRecorder()
-				resp := credo.NewResponse(rec)
+				resp := newResponse(rec)
 
 				if err := h.call(resp, code); err != nil {
 					t.Fatalf("%s(%d) error = %v, want nil", h.name, code, err)
@@ -84,7 +84,7 @@ func TestResponse_BodilessStatusesSkipBodyAndContentType(t *testing.T) {
 // consumption has side effects without it being drained.
 func TestResponse_StreamBodilessNeverReadsReader(t *testing.T) {
 	rd := &countingReader{}
-	resp := credo.NewResponse(httptest.NewRecorder())
+	resp := newResponse(httptest.NewRecorder())
 
 	if err := resp.Stream(http.StatusNoContent, "application/octet-stream", rd); err != nil {
 		t.Fatalf("Stream error = %v", err)
@@ -99,7 +99,7 @@ func TestResponse_StreamBodilessNeverReadsReader(t *testing.T) {
 // handler (ETag, Cache-Control on a 304) still reach the wire.
 func TestResponse_BodilessPreservesConditionalHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
-	resp := credo.NewResponse(rec)
+	resp := newResponse(rec)
 	resp.Header().Set("ETag", `"v1"`)
 	resp.Header().Set("Cache-Control", "max-age=60")
 

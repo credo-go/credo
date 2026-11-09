@@ -166,7 +166,7 @@ func TestCoderAcceptPreUpgradeFailures(t *testing.T) {
 func TestCoderAcceptCommits101BeforeActualHijack(t *testing.T) {
 	base := newCoderHandshakeRecorder()
 	w := &coderHijackRecorder{coderHandshakeRecorder: base}
-	response := credo.NewResponse(w)
+	response := credo.NewContext(w, newCoderValidHandshakeRequest()).Response()
 
 	conn, err := coderwebsocket.Accept(response, newCoderValidHandshakeRequest(), nil)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestCoderAcceptHijackFailureOccursAfter101(t *testing.T) {
 	hijackErr := errors.New("hijack failed")
 	base := newCoderHandshakeRecorder()
 	w := &coderHijackRecorder{coderHandshakeRecorder: base, hijackErr: hijackErr}
-	response := credo.NewResponse(w)
+	response := credo.NewContext(w, newCoderValidHandshakeRequest()).Response()
 
 	conn, err := coderwebsocket.Accept(response, newCoderValidHandshakeRequest(), nil)
 	if !errors.Is(err, hijackErr) {

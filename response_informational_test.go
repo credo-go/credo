@@ -124,7 +124,7 @@ func TestResponse_InformationalStatusIsNotFinal(t *testing.T) {
 // recorded as the response status like any final one.
 func TestResponse_SwitchingProtocolsIsFinal(t *testing.T) {
 	rec := httptest.NewRecorder()
-	res := credo.NewResponse(rec)
+	res := newResponse(rec)
 	res.WriteHeader(http.StatusSwitchingProtocols)
 	if res.Status() != http.StatusSwitchingProtocols || !res.Committed() {
 		t.Fatalf("Status() = %d, Committed() = %t, want 101, true", res.Status(), res.Committed())

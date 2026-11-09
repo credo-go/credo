@@ -1045,26 +1045,6 @@ func TestRouting_MultipleMethods(t *testing.T) {
 	}
 }
 
-func TestRouting_Walk(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/", func(ctx *credo.Context) error { return nil })
-	app.POST("/users", func(ctx *credo.Context) error { return nil })
-
-	var visited []string
-	err := credo.Walk(app, func(method, pattern string) error {
-		visited = append(visited, method+" "+pattern)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Walk error: %v", err)
-	}
-
-	// GET / registers both GET and HEAD, plus POST /users = 3 routes
-	if len(visited) < 2 {
-		t.Fatalf("visited %d routes, want at least 2", len(visited))
-	}
-}
-
 func TestRouting_Mount(t *testing.T) {
 	// Create a sub-router (stdlib mux)
 	sub := http.NewServeMux()
@@ -1726,27 +1706,7 @@ func TestRouting_UnknownMethod_Returns404(t *testing.T) {
 	}
 }
 
-func TestRouting_Walk_ErrorPropagation(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/a", func(ctx *credo.Context) error { return nil })
-	app.POST("/b", func(ctx *credo.Context) error { return nil })
-
-	errStop := io.EOF // any error
-	var count int
-	err := credo.Walk(app, func(method, pattern string) error {
-		count++
-		return errStop // stop immediately
-	})
-
-	if !errors.Is(err, errStop) {
-		t.Errorf("Walk error = %v, want %v", err, errStop)
-	}
-	if count != 1 {
-		t.Errorf("Walk visited %d routes before stopping, want 1", count)
-	}
-}
-
-func TestRouting_WalkRoutes_IncludesHostRoutes(t *testing.T) {
+func TestRouting_Routes_IncludesHostRoutes(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/health", func(ctx *credo.Context) error { return nil })
 	app.Host("api.example.com").GET("/users", func(ctx *credo.Context) error { return nil })
@@ -1758,12 +1718,8 @@ func TestRouting_WalkRoutes_IncludesHostRoutes(t *testing.T) {
 	}
 
 	var seen []seenRoute
-	err := credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
+	for _, ri := range app.Routes() {
 		seen = append(seen, seenRoute{method: ri.Method, pattern: ri.Pattern, host: ri.Host})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkRoutes error: %v", err)
 	}
 
 	contains := func(method, pattern, host string) bool {
@@ -1776,10 +1732,10 @@ func TestRouting_WalkRoutes_IncludesHostRoutes(t *testing.T) {
 	}
 
 	if !contains("GET", "/health", "") {
-		t.Fatalf("WalkRoutes missing default route GET /health")
+		t.Fatalf("Routes missing default route GET /health")
 	}
 	if !contains("GET", "/users", "api.example.com") {
-		t.Fatalf("WalkRoutes missing host route GET /users on api.example.com")
+		t.Fatalf("Routes missing host route GET /users on api.example.com")
 	}
 }
 
@@ -1980,39 +1936,29 @@ func TestApp_Routes_TotalOrderDeterministic(t *testing.T) {
 	}
 }
 
-func TestApp_Walk_SkipsMounts_WalkRoutesIncludes(t *testing.T) {
+// TestApp_Routes_IncludesMounts: a mount is one entry with an empty Method
+// and its forwarded method set, so a loop that wants routes alone skips
+// RouteKindMount.
+func TestApp_Routes_IncludesMounts(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/users", noopHandler)
 	app.Mount("/admin", noopMount())
 
-	// Walk: routes only — a mount would surface as a misleading empty method.
-	sawUsers := false
-	_ = credo.Walk(app, func(method, pattern string) error {
-		if method == "" {
-			t.Errorf("Walk yielded empty method for %q — a mount leaked", pattern)
+	sawUsers, sawMount := false, false
+	for _, ri := range app.Routes() {
+		if ri.Kind == credo.RouteKindMount {
+			if ri.Pattern != "/admin" || ri.Method != "" || len(ri.Methods) != 8 {
+				t.Errorf("mount = %q Method %q Methods %v, want /admin with 8 methods and no Method", ri.Pattern, ri.Method, ri.Methods)
+			}
+			sawMount = true
+			continue
 		}
-		if method == "GET" && pattern == "/users" {
+		if ri.Method == "GET" && ri.Pattern == "/users" {
 			sawUsers = true
 		}
-		return nil
-	})
-	if !sawUsers {
-		t.Error("Walk missing GET /users")
 	}
-
-	// WalkRoutes: the mount is visible with its forwarded method set.
-	sawMount := false
-	_ = credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
-		if ri.Kind == credo.RouteKindMount && ri.Pattern == "/admin" {
-			sawMount = true
-			if len(ri.Methods) != 8 {
-				t.Errorf("mount Methods length = %d, want 8", len(ri.Methods))
-			}
-		}
-		return nil
-	})
-	if !sawMount {
-		t.Error("WalkRoutes did not yield the /admin mount")
+	if !sawUsers || !sawMount {
+		t.Errorf("Routes: GET /users %v, /admin mount %v; want both", sawUsers, sawMount)
 	}
 }
 
@@ -3063,135 +3009,5 @@ func TestHost_TrailingSlashRedirect(t *testing.T) {
 	app.ServeHTTP(w, r)
 	if w.Code != 301 {
 		t.Errorf("status = %d, want 301", w.Code)
-	}
-}
-
-// --- ctx.Rewrite integration tests ---
-
-func TestRewrite_Basic(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/old", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/new")
-	})
-	app.GET("/new", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "new-handler")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/old", nil)
-	app.ServeHTTP(w, r)
-	if w.Body.String() != "new-handler" {
-		t.Errorf("body = %q, want 'new-handler'", w.Body.String())
-	}
-}
-
-func TestRewrite_WithQuery(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/old", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/new?key=val")
-	})
-	app.GET("/new", func(ctx *credo.Context) error {
-		q := ctx.Request().QueryParam("key")
-		return ctx.Response().Text(200, "key="+q)
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/old", nil)
-	app.ServeHTTP(w, r)
-	if w.Body.String() != "key=val" {
-		t.Errorf("body = %q, want 'key=val'", w.Body.String())
-	}
-}
-
-func TestRewrite_LoopLimit(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/loop", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/loop")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/loop", nil)
-	app.ServeHTTP(w, r)
-	// Should get 500 from rewrite loop
-	if w.Code != 500 {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
-func TestRewrite_PreservesOriginalPath(t *testing.T) {
-	app := mustNew(t)
-	var origPath string
-	app.GET("/old", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/new")
-	})
-	app.GET("/new", func(ctx *credo.Context) error {
-		origPath = ctx.OriginalPath()
-		return ctx.Response().Text(200, "ok")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/old", nil)
-	app.ServeHTTP(w, r)
-	if origPath != "/old" {
-		t.Errorf("OriginalPath() = %q, want '/old'", origPath)
-	}
-}
-
-func TestRewrite_NotFound(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/old", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/nonexistent")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/old", nil)
-	app.ServeHTTP(w, r)
-	if w.Code != 404 {
-		t.Errorf("status = %d, want 404", w.Code)
-	}
-}
-
-func TestRewrite_ParamsCleared(t *testing.T) {
-	app := mustNew(t)
-	app.GET("/users/{id}", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/items")
-	})
-	app.GET("/items", func(ctx *credo.Context) error {
-		// "id" param from first route should NOT leak
-		id := ctx.Request().RouteParams()["id"]
-		return ctx.Response().Text(200, "id="+id)
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/users/42", nil)
-	app.ServeHTTP(w, r)
-	if w.Body.String() != "id=" {
-		t.Errorf("body = %q, want 'id=' (param should be cleared)", w.Body.String())
-	}
-}
-
-func TestRewrite_MiddlewarePerRound(t *testing.T) {
-	app := mustNew(t)
-	var mwCount int
-	g := app.Group("")
-	g.Middleware(func(next credo.Handler) credo.Handler {
-		return func(ctx *credo.Context) error {
-			mwCount++
-			return next(ctx)
-		}
-	})
-	g.GET("/a", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/b")
-	})
-	g.GET("/b", func(ctx *credo.Context) error {
-		return ctx.Response().Text(200, "ok")
-	})
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/a", nil)
-	app.ServeHTTP(w, r)
-	// MW runs for /a AND /b dispatch
-	if mwCount != 2 {
-		t.Errorf("middleware ran %d times, want 2", mwCount)
 	}
 }

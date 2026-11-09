@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/credo-go/credo"
+	"github.com/credo-go/credo/middleware"
 )
 
 // testFS creates a minimal in-memory filesystem for static serving tests.
@@ -718,9 +719,7 @@ func TestStatic_DecodesCapturedPathOnce(t *testing.T) {
 func TestStatic_RewriteToEncodedPathServesSameFile(t *testing.T) {
 	app := mustNew(t)
 	app.Static("/static", fstest.MapFS{"100%.txt": {Data: []byte("percent")}})
-	app.GET("/alias", func(ctx *credo.Context) error {
-		return ctx.Rewrite("/static/100%25.txt")
-	})
+	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/alias", To: "/static/100%25.txt"}}}))
 
 	w := serve(t, app, http.MethodGet, "/alias")
 	if w.Code != http.StatusOK || w.Body.String() != "percent" {
@@ -873,20 +872,21 @@ func TestStaticRoute_BuildURI(t *testing.T) {
 	app := mustNew(t)
 	sr := app.Static("/assets", testFS())
 
-	tests := []struct {
-		args []string
-		want string
-	}{
-		{nil, "/assets/"},
-		{[]string{""}, "/assets/"},
-		{[]string{"css/app.css"}, "/assets/css/app.css"},
-		{[]string{"logo.png"}, "/assets/logo.png"},
+	tests := []struct{ path, want string }{
+		{"", "/assets/"},
+		{"/", "/assets/"},
+		{"css/app.css", "/assets/css/app.css"},
+		{"logo.png", "/assets/logo.png"},
+		{"/css/style.css", "/assets/css/style.css"},
+		{"a b/ü.txt", "/assets/a%20b/%C3%BC.txt"},
+		{"100%.txt", "/assets/100%25.txt"},
+		{"q?x#y;z.txt", "/assets/q%3Fx%23y%3Bz.txt"},
+		{"..x/x..", "/assets/..x/x.."},
 	}
-
 	for _, tt := range tests {
-		got := sr.BuildURI(tt.args...)
-		if got != tt.want {
-			t.Errorf("BuildURI(%v) = %q, want %q", tt.args, got, tt.want)
+		got, err := sr.BuildURI(tt.path)
+		if err != nil || got != tt.want {
+			t.Errorf("BuildURI(%q) = %q, %v; want %q", tt.path, got, err, tt.want)
 		}
 	}
 }
@@ -895,20 +895,57 @@ func TestStaticRoute_BuildURI_RootPrefix(t *testing.T) {
 	app := mustNew(t)
 	sr := app.Static("/", testFS())
 
-	tests := []struct {
-		args []string
-		want string
-	}{
-		{nil, "/"},
-		{[]string{""}, "/"},
-		{[]string{"app.js"}, "/app.js"},
-		{[]string{"/css/style.css"}, "/css/style.css"},
+	tests := []struct{ path, want string }{
+		{"", "/"},
+		{"app.js", "/app.js"},
+		{"/css/style.css", "/css/style.css"},
+		{"a b.txt", "/a%20b.txt"},
 	}
-
 	for _, tt := range tests {
-		got := sr.BuildURI(tt.args...)
-		if got != tt.want {
-			t.Errorf("BuildURI(%v) = %q, want %q", tt.args, got, tt.want)
+		got, err := sr.BuildURI(tt.path)
+		if err != nil || got != tt.want {
+			t.Errorf("BuildURI(%q) = %q, %v; want %q", tt.path, got, err, tt.want)
+		}
+	}
+}
+
+// The URL BuildURI returns serves the file it names, whatever its name needs
+// escaped.
+func TestStaticRoute_BuildURI_ServesTheFile(t *testing.T) {
+	app := mustNew(t)
+	files := fstest.MapFS{
+		"a b/ü.txt":   {Data: []byte("spaced")},
+		"100%.txt":    {Data: []byte("percent")},
+		"q?x#y;z.txt": {Data: []byte("reserved")},
+	}
+	sr := app.Static("/files", files)
+	for name, f := range files {
+		uri, err := sr.BuildURI(name)
+		if err != nil {
+			t.Fatalf("BuildURI(%q): %v", name, err)
+		}
+		w := serve(t, app, http.MethodGet, uri)
+		if w.Code != http.StatusOK || w.Body.String() != string(f.Data) {
+			t.Errorf("GET %s (%q) = %d %q, want 200 %q", uri, name, w.Code, w.Body.String(), f.Data)
+		}
+	}
+}
+
+// A path no URL can represent is an error naming the path and the reason.
+func TestStaticRoute_BuildURI_Unrepresentable(t *testing.T) {
+	app := mustNew(t)
+	sr := app.Static("/assets", testFS())
+
+	tests := []struct{ path, want string }{
+		{"bad\xff.txt", `credo: StaticRoute.BuildURI("bad\xff.txt"): the path is not valid UTF-8, which the router answers with 400`},
+		{"../secret.txt", `credo: StaticRoute.BuildURI("../secret.txt"): the segment ".." is a dot-segment, which a client removes before sending (RFC 3986, section 5.2.4), so the URL would not name this file`},
+		{"css/./app.css", `credo: StaticRoute.BuildURI("css/./app.css"): the segment "." is a dot-segment, which a client removes before sending (RFC 3986, section 5.2.4), so the URL would not name this file`},
+		{"css/..", `credo: StaticRoute.BuildURI("css/.."): the segment ".." is a dot-segment, which a client removes before sending (RFC 3986, section 5.2.4), so the URL would not name this file`},
+	}
+	for _, tt := range tests {
+		got, err := sr.BuildURI(tt.path)
+		if err == nil || err.Error() != tt.want || got != "" {
+			t.Errorf("BuildURI(%q) = %q, %v; want the error %q", tt.path, got, err, tt.want)
 		}
 	}
 }
