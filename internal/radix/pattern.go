@@ -26,7 +26,11 @@ func patNextSegment(p string) (PatternSegment, error) {
 	return pattern.NextSegment(p)
 }
 
-// patCheckNames rejects a route pattern that repeats a parameter name.
-func patCheckNames(p string) error {
-	return pattern.CheckNames(p)
+// patCheck rejects a route pattern that repeats a parameter name or puts text
+// after a catch-all, which can never match.
+func patCheck(p string) error {
+	if err := pattern.CheckNames(p); err != nil {
+		return err
+	}
+	return pattern.CheckCatchAll(p)
 }

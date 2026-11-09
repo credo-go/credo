@@ -12,7 +12,7 @@ func ExportResolveFieldName(structPtr any, fieldPtr any) string {
 
 // ExportBuildFieldMappings exposes buildFieldMappingList for testing.
 func ExportBuildFieldMappings(t reflect.Type) []FieldMappingExport {
-	mappings := buildFieldMappingList(t, 0)
+	mappings, _ := buildFieldMappingList(t, 0, nil)
 	result := make([]FieldMappingExport, len(mappings))
 	for i, m := range mappings {
 		result[i] = FieldMappingExport{

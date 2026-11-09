@@ -202,6 +202,24 @@ func CheckNames(pattern string) error {
 	return nil
 }
 
+// CheckCatchAll reports an error when text follows a catch-all in pattern: a
+// catch-all takes the rest of the path, so nothing after it could ever match.
+// Parsing stops at the first malformed parameter, which NextSegment reports.
+func CheckCatchAll(pattern string) error {
+	for seg, err := NextSegment(pattern); err == nil && seg.Kind != Static; seg, err = NextSegment(seg.Suffix) {
+		if seg.Kind == CatchAll && seg.Suffix != "" {
+			return textAfterCatchAll(seg, pattern)
+		}
+	}
+	return nil
+}
+
+// textAfterCatchAll is the error for seg, a catch-all followed by text in
+// pattern; the router and the Rewrite middleware report it in these words.
+func textAfterCatchAll(seg Segment, pattern string) error {
+	return fmt.Errorf("pattern: text %q after the catch-all {%s...} in %q: a catch-all takes the rest of the path, so end the pattern with it", seg.Suffix, seg.Name, pattern)
+}
+
 // Matcher matches a canonical wire path (see [wirepath.Canonical]) against
 // one pattern the way the router matches a route: literal text in canonical
 // form (see [wirepath.Static]); a {name} or {name:regex} candidate that ends
@@ -226,8 +244,8 @@ type matcherParam struct {
 }
 
 // NewMatcher parses pattern into a [Matcher]. A malformed parameter, a
-// repeated parameter name (see [CheckNames]) and literal text after a
-// catch-all, which takes the rest of the path, are errors.
+// repeated parameter name (see [CheckNames]) and text after a catch-all (see
+// [CheckCatchAll]) are errors.
 func NewMatcher(pattern string) (*Matcher, error) {
 	if err := CheckNames(pattern); err != nil {
 		return nil, err
@@ -244,7 +262,7 @@ func NewMatcher(pattern string) (*Matcher, error) {
 			return m, nil
 		}
 		if seg.Kind == CatchAll && seg.Suffix != "" {
-			return nil, fmt.Errorf("pattern: text %q after the catch-all {%s...} in %q: a catch-all takes the rest of the path, so end the pattern with it", seg.Suffix, seg.Name, pattern)
+			return nil, textAfterCatchAll(seg, pattern)
 		}
 		m.params = append(m.params, matcherParam{
 			prefix: wirepath.Static(seg.Prefix),

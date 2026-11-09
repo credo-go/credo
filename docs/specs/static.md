@@ -73,6 +73,7 @@ Registers a catch-all and an exact GET route that serve files from `fsys` under 
 
 - `prefix` contains `{` or `}`: `Static`'s own prefix takes no route parameters (a parametric group prefix is accepted)
 - the group's prefix names a parameter `_static`, the name the file path is captured under, or uses a parameter name twice (`credo: Static "/t/{_static}/files": the parameter name "_static" is reserved`)
+- the group's prefix holds a catch-all, which would take the path the file is captured from (`credo: Static "/t/{p...}/files": a prefix cannot hold the catch-all {p...}: …`)
 - the App is already prepared ([registration guards](lifecycle.md#registration-guards))
 
 ### File (single file serving)

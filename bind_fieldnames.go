@@ -138,8 +138,8 @@ func sourceFields(t reflect.Type, tag string) map[string]sourceField {
 }
 
 // buildSourceFields walks t's exported fields in declaration order, embedded
-// structs included, as the validation engine does when it names them: the
-// first field of a json-derived name wins.
+// structs included (see [embeddedStruct]), as the validation engine does when
+// it names them: the first field of a json-derived name wins.
 func buildSourceFields(t reflect.Type, tag string, m map[string]sourceField, seen map[reflect.Type]bool) {
 	if seen[t] {
 		return
@@ -147,16 +147,13 @@ func buildSourceFields(t reflect.Type, tag string, m map[string]sourceField, see
 	seen[t] = true
 	for i := range t.NumField() {
 		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		if engineName := tagFieldName(f, "json"); m[engineName].typ == nil {
-			m[engineName] = sourceField{name: tagFieldName(f, tag), typ: f.Type}
-		}
-		if f.Anonymous {
-			if st := structType(f.Type); st != nil {
-				buildSourceFields(st, tag, m, seen)
+		if f.IsExported() {
+			if engineName := tagFieldName(f, "json"); m[engineName].typ == nil {
+				m[engineName] = sourceField{name: tagFieldName(f, tag), typ: f.Type}
 			}
+		}
+		if st, ok := embeddedStruct(f); ok {
+			buildSourceFields(st, tag, m, seen)
 		}
 	}
 }

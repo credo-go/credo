@@ -639,3 +639,95 @@ func TestValidateStruct_EmbeddedStruct(t *testing.T) {
 		t.Error("missing error for field 'name'")
 	}
 }
+
+// A field promoted through an embedded pointer lives in the pointee, not in
+// the parent, so it is named by its offset in the pointee.
+func TestValidateStruct_EmbeddedPointer(t *testing.T) {
+	type Base struct {
+		Pad  int64  `json:"pad"`
+		Name string `json:"name"`
+	}
+	type Input struct {
+		ID int `json:"id"`
+		*Base
+		Note string `json:"note"`
+	}
+	input := &Input{Base: &Base{}}
+
+	err := validation.ValidateStruct(input,
+		validation.Field(&input.Name, alwaysFail[string]{code: "required", message: "is required"}),
+	)
+	errs, ok := errors.AsType[validation.Errors](err)
+	if !ok || len(errs) != 1 {
+		t.Fatalf("err = %v, want one violation", err)
+	}
+	if errs[0].Field != "name" {
+		t.Errorf("Field = %q, want %q", errs[0].Field, "name")
+	}
+}
+
+// embeddedBase is unexported, as an embedded base often is; its exported
+// fields are promoted as encoding/json promotes them.
+type embeddedBase struct {
+	ID   int    `json:"id"`
+	Kind string `json:"kind"`
+}
+
+// A field promoted from an unexported embedded struct is named, and so is one
+// promoted through an embedded pointer to an exported struct type, in the
+// pointee. An embedded pointer to an unexported struct type is skipped, as
+// encoding/json skips it: its fields have no name.
+func TestValidateStruct_UnexportedEmbedded(t *testing.T) {
+	type Inner struct {
+		Code string `json:"code"`
+	}
+	type Input struct {
+		embeddedBase
+		*Inner
+		*embeddedPointee
+		Name string `json:"name"`
+	}
+	input := &Input{Inner: &Inner{}, embeddedPointee: &embeddedPointee{}}
+	fail := alwaysFail[string]{code: "required", message: "is required"}
+
+	err := validation.ValidateStruct(input,
+		validation.Field(&input.ID, alwaysFail[int]{code: "required", message: "is required"}),
+		validation.Field(&input.Kind, fail),
+		validation.Field(&input.Code, fail),
+		validation.Field(&input.Hidden, fail),
+		validation.Field(&input.Name, fail),
+	)
+	errs, ok := errors.AsType[validation.Errors](err)
+	if !ok {
+		t.Fatalf("err = %v, want validation.Errors", err)
+	}
+	var got []string
+	for _, e := range errs {
+		got = append(got, e.Field)
+	}
+	if want := []string{"id", "kind", "code", "", "name"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("fields = %q, want %q", got, want)
+	}
+}
+
+type embeddedPointee struct {
+	Hidden string `json:"hidden"`
+}
+
+// An embedded pointer that points back to its own struct ends the search
+// instead of following the cycle.
+func TestResolveFieldName_EmbeddedPointerCycle(t *testing.T) {
+	type Node struct {
+		*Node
+		Name string `json:"name"`
+	}
+	n := &Node{}
+	n.Node = n
+	if got := validation.ExportResolveFieldName(n, &n.Name); got != "name" {
+		t.Errorf("name = %q, want %q", got, "name")
+	}
+	var other string
+	if got := validation.ExportResolveFieldName(n, &other); got != "" {
+		t.Errorf("unrelated field = %q, want empty", got)
+	}
+}

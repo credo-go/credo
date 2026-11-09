@@ -123,7 +123,7 @@ These keys are read by framework features and framework middleware. Application 
 | --- | --- | --- |
 | `credo.MetaAccessLog` | `credo.Key[bool]` (`false` silences) | Access log feature (`app.UseAccessLog`) |
 | `credo.MetaRawResponse` | `credo.Key[bool]` (`true` marks a raw route) | Envelope-bypass diagnostic in debug mode (`app.UseSuccessRenderer`) |
-| `middleware.MetaAccept` | `credo.Key[[]string]` | `ContractGuard` — 415 on Content-Type mismatch; a missing/empty header passes unless `ContractConfig.RequireContentType` is set and the request carries a body |
+| `middleware.MetaAccept` | `credo.Key[[]string]` | `ContractGuard` — 415 on Content-Type mismatch, and on a missing/empty header when the request carries a body, unless `ContractConfig.AllowMissingContentType` is set |
 | `middleware.MetaMaxBody` | `credo.Key[int64]` (bytes) | `ContractGuard` — 413 over the per-route cap |
 | `middleware.MetaRequireHeaders` | `credo.Key[[]string]` | `ContractGuard` — 400 if a header is missing |
 | `middleware.MetaRequireQuery` | `credo.Key[[]string]` | `ContractGuard` — 400 if a query param is missing |
@@ -136,7 +136,7 @@ Register `ContractGuard` on the routed tier, `app.Middleware`, or on a group or 
 
 Each rejection renders its code's built-in message, with its value in `Details`: the rejected content type (`content_type`), which is client input, the header (`header`) or query parameter (`query`) the route requires, and the missing scope (`scope`). The API-version and body-size rejections carry no details. No rejection carries a message key of its own ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
 
-`ExampleContractGuard` runs a content-type and a required-header rejection. A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
+`ExampleContractGuard` runs a content-type and a required-header rejection. A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; a body still needs a `Content-Type` unless `AllowMissingContentType` is set) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
 
 ## Config Struct Pattern (Echo-inspired)
 
