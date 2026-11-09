@@ -9,7 +9,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, the logger, `credo.New(credo.WithRawConfig(rawCfg), …)`.
 2. **`Provide`** — the typed config values and the constructors of `TenantStore`, named `tenants-db` with `credo.ComponentName`, and `TenantService`, each taking `credo.Infra` first.
 3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, a scheduled worker registered through its constructor, `NewUsageReporter`, which also takes `credo.Infra` first, the WebSocket server handed to `app.Manage(ws)`, and the `OnConfigChange`, `OnStart` and `OnStop` hooks.
-4. **`Finalize`** — the graph is validated and its error handled before anything is built.
+4. **`Finalize`** — an optional early check: the graph is validated and its error handled before anything is built; without it, the first `Resolve` would finalize the container.
 5. **`Resolve`, middleware and routes** — `TenantService` is resolved and its handlers bound; Secure and CORS are global middleware, authentication and the admin role check stay on their groups, and a `StatusHandler` answers the router's 404.
 6. **`Run`** — the start phase pings the store, starts the worker and the WebSocket server and runs the start hooks before the App accepts requests; SIGINT/SIGTERM drains the listener, the WebSocket server and the worker first, then `TenantService`, then the store.
 

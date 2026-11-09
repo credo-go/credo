@@ -33,9 +33,7 @@ Credo's DI flow is:
 ```text
 Provide / ProvideValue / Alias / BindMany
                     ->
-                Finalize
-                    ->
-         Resolve / ResolveAll
+         Resolve / ResolveAll   (the first call finalizes)
                     ->
                   Run
 ```
@@ -47,24 +45,29 @@ Provide / ProvideValue / Alias / BindMany
 - `Has[T]`: check whether `T` is registered, without constructing anything ([Checking for an optional binding](#checking-for-an-optional-binding))
 - `Alias[I, T]`: resolve an interface `I` as the singleton of concrete type `T`; an alias is a binding of `I`
 - `BindMany[I, T]`: add a concrete singleton `T` to the ordered collection for interface `I`
-- `app.Finalize()`: freeze registrations and validate the dependency graph
-- `Resolve[T]`: retrieve a fully wired singleton (available after `Finalize`)
+- `Resolve[T]`: retrieve a fully wired singleton; the first resolving call freezes registrations and validates the dependency graph
+- `app.Finalize()`: an optional early check that freezes registrations and validates the graph before anything is resolved, returning the whole report as an error
 - `ResolveAll[I]`: retrieve the ordered collection bound for interface `I`
 
 That is the whole DI surface: registration calls return nothing and panic on misuse, so there are no `Must*` registration twins, and `MustResolve`/`MustResolveAll` are the resolve conveniences for a composition root that cannot continue without the value.
 
-Constructors never run before `Finalize`, and `Resolve` panics until then. `Run()` and `RunContext()` call `Finalize()` implicitly as a safeguard, but a composition root that resolves services before running must call it explicitly, and explicit `app.Finalize()` is recommended in any case so dependency errors fail fast during startup.
+Constructors never run against an unvalidated graph. The first `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` finalizes the container — it freezes registrations and validates the whole graph — then resolves; `Run`, `App.Start` and the first request do the same for an App that resolved nothing. A failed validation is that call's error, `MustResolve` panics with the whole report, and every later `Resolve` returns the same error. `Has` and the configuration reads (`GetConfig`, `MustGetConfig`, `ConfigExists`) never finalize. `app.Finalize()` stays as an optional early check that returns the whole report as an error, useful in tests or before serving ([`Finalize`](#finalize)).
 
 Bootstrap is sequential: registration calls come from the goroutine that builds the App, before it runs, and are not safe for concurrent use; an application that registers from several goroutines serializes the calls itself. The whole bootstrap follows one order, every satellite included:
 
 1. configuration — `credo.New()`, or `credo.New(credo.WithRawConfig(raw))`;
 2. `Provide` and `ProvideValue`, with `Alias` and `BindMany`;
 3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, `Manage`;
-4. `Finalize`, handling its error;
-5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
-6. `Run`.
+4. `Resolve`, routes and anything built from a resolved value, a readiness check included — the first resolving call finalizes the container;
+5. `Run`.
 
-Mistakes surface in one phase each. Registration panics at the line that misused it: a constructor of the wrong shape, a duplicate binding, an `Alias` or `BindMany` whose types do not fit, a DI registration after `Finalize` or after shutdown began, and `Resolve` before `Finalize`. `Finalize` returns what only the whole graph reveals, joined in registration order: every missing dependency with its whole path, such as `di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); provide *http.Client before Finalize`, and every cycle. Starting and serving return errors for I/O.
+Mistakes surface in one phase each. Registration panics at the line that misused it: a constructor of the wrong shape, a duplicate binding, an `Alias` or `BindMany` whose types do not fit, a DI registration after the container was finalized or after shutdown began. A registration after the freeze names what finalized the container, where, and the calls that led there:
+
+```text
+credo: App.Provide[*app.Mailer]: called after the container was finalized by Resolve[*app.Hub] at /src/wiring/wiring.go:17 (called from /src/main.go:31); register before that call
+```
+
+The site is the file path the binary records, with the line. Finalizing returns what only the whole graph reveals, joined in registration order: every missing dependency with its whole path, such as `di: missing dependency: *app.OrderService → *app.PaymentClient → *http.Client (not registered); provide *http.Client before Finalize`, and every cycle — the error of `Finalize`, or of the first resolving call when nothing called `Finalize`. Starting and serving return errors for I/O.
 
 ---
 
@@ -162,7 +165,7 @@ func main() {
         log.Fatal(err)
     }
 
-    // Configuration is read during registration; Resolve waits for Finalize.
+    // Configuration is read during registration: GetConfig never finalizes.
     dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
     if err != nil {
         log.Fatal(err)
@@ -178,16 +181,12 @@ func main() {
 
     // 3. Feature mounts and satellites would go here (UseHealth, workers).
 
-    // 4. Finalize validates the whole graph.
-    if err := app.Finalize(); err != nil {
-        log.Fatal(err)
-    }
-
-    // 5. Resolve the controller and bind its routes.
+    // 4. Resolve the controller and bind its routes. The first resolving call
+    // validates the whole graph and panics here with every problem it finds.
     users := app.MustResolve[*UserController]()
     app.GET("/users/{id}", users.Show)
 
-    // 6. Run.
+    // 5. Run.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
@@ -280,7 +279,7 @@ app.ProvideValue[UserRepository](fakeRepo, credo.Override())            // repla
 | `credo.Ingress()` | `Provide`, `ProvideValue`, `Manage`, `OnStart`, `OnStop` | Places a component in the ingress tier, which stops first, concurrently with the HTTP drain. On a binding it requires a component at registration: a type that shows `Shutdown`, or a binding with `credo.CloseOnShutdown()` |
 | `credo.Borrowed()` | `ProvideValue` | Keeps the binding and the value's `Ready`, and leaves starting and shutting the value down to the caller — a pool two Apps in one process share, a fixture a test suite reuses |
 | `credo.CloseOnShutdown()` | `Provide`, `ProvideValue` | Makes a binding whose type has `Close() error`, `Close()` or `Close(ctx) error` a component the App closes after its consumers; the context form receives the drain deadline |
-| `credo.Override()` | `Provide`, `ProvideValue`, `Alias` | Replaces an earlier binding of the same type, or an alias of it, before `Finalize`; on `Alias`, points the interface at another type |
+| `credo.Override()` | `Provide`, `ProvideValue`, `Alias` | Replaces an earlier binding of the same type, or an alias of it, before the container is finalized; on `Alias`, points the interface at another type |
 | `credo.ComponentName(name)` | `Provide`, `ProvideValue`, `Manage` | Names the component in logs, `/ready` and lifecycle errors (default: its type, such as `*sqldb.DB`); it is not a DI key |
 | `credo.OptionalReadiness()` | `Provide`, `ProvideValue`, `Manage` | Reports the component in `/ready` without letting it gate readiness: a failing entry shows `down`, and `/ready` answers 200 `degraded` while every gating entry is up. `Start` and `Shutdown` are unchanged |
 
@@ -288,16 +287,16 @@ Each option is checked at the call, and misuse panics there: an option the call 
 
 ### Replacing a binding
 
-A binding is replaced at registration, before `Finalize`, with `credo.Override()` on `Provide` or `ProvideValue` — in a composition root that swaps one implementation for another, or in a module that lets the application substitute a default:
+A binding is replaced at registration, before the container is finalized, with `credo.Override()` on `Provide` or `ProvideValue` — in a composition root that swaps one implementation for another, or in a module that lets the application substitute a default:
 
 ```go
 app.Provide(NewDB)                                     // the default wiring
 app.ProvideValue[*sql.DB](replicaDB, credo.Override()) // replaces it; NewDB never runs
 ```
 
-The override panics when there is no earlier binding of the type, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Since constructors run only after `Finalize`, an override never supersedes an instance the App built, and the value it replaces never becomes the App's: the App neither starts nor shuts it down. A value you built, bound and then overrode is yours to release. In tests, `testutil.WithOverride[T](v)` applies `credo.Override()` to the App the test builds and is equally strict ([Testing](#testing)).
+The override panics when there is no earlier binding of the type, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. Since constructors run only after the container is finalized, an override never supersedes an instance the App built, and the value it replaces never becomes the App's: the App neither starts nor shuts it down. A value you built, bound and then overrode is yours to release. In tests, `testutil.WithOverride[T](v)` applies `credo.Override()` to the App the test builds and is equally strict ([Testing](#testing)).
 
-There is no runtime replacement: after `Finalize` the graph is fixed, and every binding the App resolves is the one it validated.
+There is no runtime replacement: once the container is finalized the graph is fixed, and every binding the App resolves is the one it validated.
 
 ### Checking for an optional binding
 
@@ -311,13 +310,13 @@ if !app.Has[*AuditLog]() {
 
 ### No factory closures
 
-`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake panics at the `Provide` call, not at compile time. Credo does not offer a closure factory that resolves its own dependencies, and a constructor that captures `app` and calls `Resolve` inside its body is unsupported: those dependencies are invisible to `Finalize` validation, cycle detection and dependency-ordered shutdown, and constructors run only after `Finalize`, so the call cannot be scheduled against the graph. Declare dependencies as constructor parameters and let the container inject them.
+`Provide`'s `constructor` parameter is typed `any` — Go cannot express "a function with arbitrary parameters returning `T`" — so a signature mistake panics at the `Provide` call, not at compile time. Credo does not offer a closure factory that resolves its own dependencies, and a constructor that captures `app` and calls `Resolve` inside its body is unsupported: those dependencies are invisible to `Finalize` validation, cycle detection and dependency-ordered shutdown, and constructors run only after the container is finalized, so the call cannot be scheduled against the graph. Declare dependencies as constructor parameters and let the container inject them.
 
 Some Credo subsystems build on top of DI with helpers instead of asking you to wire every internal singleton manually. Examples:
 
 - `app.Workers().Continuous("name", NewMyWorker)` and `app.Workers().Scheduled("name", expr, NewMyWorker)` on the App's worker registry, which take a worker's constructor, or a run function such as `func(ctx context.Context, db *sqldb.DB) error`, whose parameters the container supplies
 
-These helpers build on the DI container and attach framework behavior to it: each worker registration adds components that are not bindings — the worker's loop, and the value its constructor builds — which the start phase builds after the worker's dependencies and which stop before them, and binds nothing into the container. Use them before `app.Finalize()`; a parameter nothing provides fails `Finalize` with its path. A worker that handlers also call is bound with `app.Provide(NewMyWorker)` and registered through its `Run`, `app.Workers().Continuous("name", (*MyWorker).Run)`, so both share the binding's one singleton. See the [Worker Guide](worker.md) for the user-facing patterns. A database needs no helper: `*sqldb.DB` is a component, so its binding alone pings it at start, reports it in `/ready` and shuts it down after its consumers ([Data Access Guide](data-access.md#what-a-bound-database-does)).
+These helpers build on the DI container and attach framework behavior to it: each worker registration adds components that are not bindings — the worker's loop, and the value its constructor builds — which the start phase builds after the worker's dependencies and which stop before them, and binds nothing into the container. Use them before the first `Resolve`, which finalizes the container; a parameter nothing provides fails `Finalize` with its path. A worker that handlers also call is bound with `app.Provide(NewMyWorker)` and registered through its `Run`, `app.Workers().Continuous("name", (*MyWorker).Run)`, so both share the binding's one singleton. See the [Worker Guide](worker.md) for the user-facing patterns. A database needs no helper: `*sqldb.DB` is a component, so its binding alone pings it at start, reports it in `/ready` and shuts it down after its consumers ([Data Access Guide](data-access.md#what-a-bound-database-does)).
 
 ---
 
@@ -478,17 +477,19 @@ For the full multi-database pattern, see the [Data Access Guide](data-access.md)
 
 ## `Finalize`
 
-`app.Finalize()` does two things:
+Finalizing the container does two things:
 
 1. freezes the container
 2. validates the dependency graph
 
-After `Finalize`:
+The first resolving call — `Resolve`, `ResolveAll`, `MustResolve` or `MustResolveAll` — finalizes the container when nothing has, then resolves; `Run`, `App.Start` and the first request finalize an App that resolved nothing. `app.Finalize()` does the same before anything is resolved: it is optional, an early check.
 
-- `Provide`, `ProvideValue`, `Alias`, `BindMany` and `Manage` panic at the call, a `credo.Override()` included
-- `Resolve` and `ResolveAll` become available (before `Finalize` they panic and run no constructor; after a failed `Finalize` they return its error)
+After the container is finalized:
 
-`Finalize` is DI-only. Routes, middleware, hooks and renderers stay open until the App prepares to serve (the first request or `Run`), so you can resolve a controller after `Finalize` and still bind its routes.
+- `Provide`, `ProvideValue`, `Alias`, `BindMany`, `Manage` and the worker registrations panic at the call, a `credo.Override()` included, naming what finalized the container, where, and the calls that led there — `credo: App.Provide[*app.Mailer]: called after the container was finalized by MustResolve[*app.UserController] at /src/main.go:42 (called from /src/main.go:12); register before that call`
+- after a failed validation, every `Resolve` and `ResolveAll` returns its error
+
+Finalizing is DI-only. Routes, middleware, hooks and renderers stay open until the App prepares to serve (the first request or `Run`), so you can resolve a controller and still bind its routes.
 
 Validation catches startup problems early and reports all of them at once, joined in registration order with the same text on every run:
 
@@ -497,7 +498,7 @@ Validation catches startup problems early and reports all of them at once, joine
 - constructors that take a `context.Context`
 - internal components that depend on an ingress one, each with its path
 
-`Run()` and `RunContext()` call `Finalize()` implicitly, but that safeguard cannot precede a `Resolve` your composition root has already executed. Explicit, error-checked finalize between the last registration and the first `Resolve` is the recommended pattern:
+Without an explicit call, the report is the first resolving call's error, and `MustResolve` panics with it. Call `app.Finalize()` after the last registration when you want the whole report as an error before anything is resolved — in a test that checks the wiring, or in a composition root that handles the error itself before serving:
 
 ```go
 if err := app.Finalize(); err != nil {
@@ -753,11 +754,11 @@ app := testutil.NewApp(t) // hermetic: reads no configuration from disk or the e
 app.ProvideValue[UserRepository](&FakeUserRepository{})
 app.Provide(NewUserService)
 
-if err := app.Finalize(); err != nil { // a missing dependency fails here, with its path
+if err := app.Finalize(); err != nil { // optional: a missing dependency fails here, with its path
     t.Fatal(err)
 }
 
-svc := app.MustResolve[*UserService]()
+svc := app.MustResolve[*UserService]() // without Finalize, this call finalizes
 _ = svc
 ```
 
@@ -787,9 +788,9 @@ Do not try to inject request ID, auth user, or transactions through DI. Use `*cr
 
 RawConfig should be unmarshaled into typed structs and registered with `ProvideValue`.
 
-### Resolving before `Finalize`
+### Resolving before the last registration
 
-`Resolve` panics until `app.Finalize()` has run; a composition root that resolves controllers before `Run` must finalize first, and reads configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`. `Run()` finalizes implicitly only as a safeguard, and explicit `app.Finalize()` gives earlier feedback and clearer startup failures.
+The first resolving call ends registration, so a `Provide`, a `Manage` or a worker registration after it panics, naming that call and its line. Resolve after every registration, and read configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`: `GetConfig`, `ConfigExists` and `Has` never finalize.
 
 ### Resolving inside stop hooks
 
@@ -819,9 +820,8 @@ For medium and large Credo applications, the default shape should be:
 4. register concrete constructors with `Provide`
 5. connect single implementations with `Alias` and collections with `BindMany` when needed
 6. mount features and register satellites — `UseI18n`, `UseHealth`, workers, `Manage`
-7. call `app.Finalize()` and handle its error
-8. resolve top-level controllers/services and register the routes built from them
-9. `app.Run()`
+7. resolve top-level controllers/services — the first call validates the graph — and register the routes built from them
+8. `app.Run()`
 
 This keeps dependency graphs explicit, startup failures early, and runtime behavior simple.
 

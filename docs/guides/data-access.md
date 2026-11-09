@@ -72,7 +72,7 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := app.Finalize(); err != nil {
+    if err := app.Finalize(); err != nil { // optional: Run finalizes too
         log.Fatal(err)
     }
 
@@ -85,7 +85,7 @@ func main() {
 Important points:
 
 - import the SQL driver with a blank import
-- read `sqldb.Config` with `app.GetConfig` during registration (`Resolve` is available only after `Finalize`)
+- read `sqldb.Config` with `app.GetConfig` during registration (the first `Resolve` would finalize the container; `GetConfig` never does)
 - bind the handle with `ProvideValue`; the binding is all it takes, and it does no I/O at the call
 
 `*sqldb.DB` is a component, so its binding's type plans what a database needs ([What a Bound Database Does](#what-a-bound-database-does)):

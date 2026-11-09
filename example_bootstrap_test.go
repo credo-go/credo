@@ -48,8 +48,10 @@ func (*exampleRelay) Run(ctx context.Context) error {
 
 // Example_bootstrapOrder follows the documented bootstrap order, every
 // satellite included: configuration, Provide, feature mounts and satellite
-// registrations, Finalize, then Resolve and routes, then Run. Registration is
-// sequential — every call comes from this goroutine, before the App runs.
+// registrations, then Resolve and routes, then Run. It calls the optional
+// Finalize before its first Resolve, which would finalize the container
+// otherwise. Registration is sequential — every call comes from this
+// goroutine, before the App runs.
 func Example_bootstrapOrder() {
 	// 1. Configuration.
 	app, err := credo.New(
@@ -73,18 +75,19 @@ func Example_bootstrapOrder() {
 	app.UseHealth()
 	app.Workers().Continuous("outbox-relay", newExampleRelay)
 
-	// 4. Finalize reports every missing dependency and cycle at once.
+	// Optional: Finalize reports every missing dependency and cycle at once,
+	// before anything is built; without it, the first Resolve finalizes.
 	if err := app.Finalize(); err != nil {
 		log.Fatal(err)
 	}
 
-	// 5. Resolve, routes and what is built from resolved values.
+	// 4. Resolve, routes and what is built from resolved values.
 	orders := app.MustResolve[*exampleOrders]()
 	app.GET("/orders", orders.List)
 	payments := app.MustResolve[*examplePayments]()
 	app.AddReadinessCheck("payments", credo.HealthCheckFunc(payments.Ping))
 
-	// 6. Run. Here a start hook asks the running App for its routes and then
+	// 5. Run. Here a start hook asks the running App for its routes and then
 	// stops it, so the example ends.
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()

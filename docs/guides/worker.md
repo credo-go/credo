@@ -212,12 +212,12 @@ The name identifies the registration: it is `Name` in the snapshot, the suffix o
 
 ### Registration window and misuse
 
-Register workers before `app.Finalize()` (or before `Run`, which finalizes implicitly). Registration does no I/O and checks everything it can at the call: a misuse panics there, with a message naming the call, the problem and the remedy:
+Register workers before the container is finalized: before the first `Resolve` (or `ResolveAll`, `MustResolve`, `MustResolveAll`), before an explicit `app.Finalize()`, and before `Run`, which finalizes an App that resolved nothing. Registration does no I/O and checks everything it can at the call: a misuse panics there, with a message naming the call, the problem and the remedy. A registration after the freeze names what finalized the container, where, and the calls that led there:
 
 ```text
 credo: Workers.Continuous("order-consumer"): Restart.MaxDelay 1s is below MinDelay 3s (the default); set MinDelay to at most 1s, or raise MaxDelay
 credo: Workers.Continuous("x"): a worker named "x" is already registered; give each worker its own name
-credo: Workers.Scheduled("report"): called after Finalize; make every registration before Finalize, which Run and the first ServeHTTP call implicitly
+credo: Workers.Scheduled("report"): called after the container was finalized by MustResolve[*app.OrderController] at /src/main.go:42 (called from /src/main.go:12); register before that call
 ```
 
 A nil worker, a `w` of none of the [three forms](#three-forms), a malformed name, more than one configuration, a negative value and a cron expression that does not parse panic the same way. A schedule that comes from configuration is checked first with `credo.ParseSchedule`, which returns the error instead of panicking ([Configuration](#configuration)). What only the whole graph reveals — a parameter of a run function or a constructor that nothing provides — is an error `Finalize` returns, with its path, and a constructor that fails in the start phase fails the start.
@@ -246,7 +246,7 @@ The last line is a run function too: a method expression's first parameter is it
 
 A worker gets the components it uses — a database, a client, a queue — as parameters of its constructor or its run function, so the App sees its dependencies: it starts the worker after them and stops it before them, and the database a consumer writes to is still open while the consumer flushes its last batch. A run function's parameters are resolved once, after their components have started, and every run receives them with its own context. A constructor is called once in the start phase, after its parameters' components have started:
 
-- A parameter nothing provides fails `Finalize` with its path, which starts at the worker: `di: missing dependency: worker-value:email-consumer → *app.Queue (not registered); provide *app.Queue before Finalize`. For a run function the path starts at `Manage(worker:<name>)`, the loop.
+- A parameter nothing provides fails `Finalize` with its path, which starts at the worker's registration call: `di: missing dependency: the value Workers.Continuous("email-consumer") builds → *app.Queue (not registered); provide *app.Queue before Finalize`. For a run function the path starts at `Workers.Continuous("<name>")`, the loop.
 - A constructor error, a panic or a nil worker fails the start, reported as the start failure of `worker-value:<name>`: what was built is rolled back, the loop never starts, and the worker stays `pending`.
 - The constructor is not a binding. Nothing else resolves the value it builds, and each registration calls its constructor separately, so two registrations of one constructor get two values, `worker-value:a` and `worker-value:b`.
 
@@ -708,7 +708,7 @@ func (s *Sync) Run(ctx context.Context) error {
 app.Provide(NewSync)
 app.Workers().Continuous("sync", (*Sync).Run)
 
-// After Finalize:
+// After every registration; the first resolving call finalizes the container:
 syncer := app.MustResolve[*Sync]()
 app.OnConfigChange("sync", func(ctx context.Context, next SyncConfig) error {
     syncer.cfg.Store(&next)

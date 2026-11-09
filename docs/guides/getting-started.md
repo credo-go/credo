@@ -89,7 +89,7 @@ type AppConfig struct {
     Debug bool
 }
 
-// Read it during registration; Resolve is available only after Finalize.
+// Read it during registration: GetConfig never finalizes the container.
 cfg, err := app.GetConfig[AppConfig]("app")
 if err != nil {
     log.Fatal(err)
@@ -400,7 +400,7 @@ func NewUserService(infra credo.Infra, repo *UserRepository) *UserService {
 
 `credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
 
-A Credo application is built in one order — `New`, the registrations, `Run` — with `Finalize` and `Resolve` in between when routes need a service from the container:
+A Credo application is built in one order — `New`, the registrations, `Run` — with `Resolve` in between when routes need a service from the container:
 
 ```go
 app, err := credo.New() // 1. configuration
@@ -415,16 +415,12 @@ app.Provide(NewUserService)
 // 3. Feature mounts and satellite registrations.
 app.UseHealth()
 
-// 4. Finalize reports every missing dependency and cycle at once.
-if err := app.Finalize(); err != nil {
-    log.Fatal(err)
-}
-
-// 5. Resolve what the routes need, then register them.
+// 4. Resolve what the routes need, then register them. The first resolving
+// call validates the graph and reports every missing dependency and cycle.
 svc := app.MustResolve[*UserService]()
 app.GET("/users/{id}", svc.GetUser)
 
-// 6. Run starts what the App owns, serves, and drains on SIGINT/SIGTERM.
+// 5. Run starts what the App owns, serves, and drains on SIGINT/SIGTERM.
 if err := app.Run(); err != nil {
     log.Fatal(err)
 }
@@ -435,13 +431,12 @@ Bootstrap is sequential: every registration call comes from the goroutine that b
 1. configuration — `credo.New()`;
 2. `Provide` and `ProvideValue`;
 3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, `Manage`;
-4. `Finalize`, handling its error;
-5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
-6. `Run`.
+4. `Resolve`, routes and anything built from a resolved value, a readiness check included;
+5. `Run`.
 
-An application that resolves nothing before `Run`, such as [Hello, Credo](#hello-credo), needs no explicit `Finalize`: `Run` finalizes implicitly. Once routes come from a resolved service, call it yourself, because `Resolve` before `Finalize` panics.
+The first resolving call ends registration: it freezes the container and validates the whole graph, then resolves. An application that resolves nothing before `Run`, such as [Hello, Credo](#hello-credo), is validated when `Run` prepares it. `app.Finalize()` is an optional early check that returns the whole report as an error, useful in tests or before serving.
 
-A misused registration — a constructor of the wrong shape, a duplicate binding, a dependency registration after `Finalize`, `Resolve` before it — panics at its line. `Finalize` returns every missing dependency, each with its whole path, and every cycle at once.
+A misused registration — a constructor of the wrong shape, a duplicate binding, a dependency registration after the first `Resolve` — panics at its line; a late registration's message names what finalized the container, where, and the calls that led there. Validation reports every missing dependency, each with its whole path, and every cycle at once: `MustResolve` panics with the report, and `Resolve` and `Finalize` return it.
 
 See [Dependency Injection Guide](dependency-injection.md) for `Alias`, `BindMany`/`ResolveAll`, `ProvideValue`, testing patterns, and the full mental model.
 
@@ -689,12 +684,7 @@ func main() {
     app.UseRequestID()
     app.UseAccessLog()
 
-    // 4. Finalize.
-    if err := app.Finalize(); err != nil {
-        log.Fatal(err)
-    }
-
-    // 5. Resolve, middleware and routes.
+    // 4. Resolve, middleware and routes. The first Resolve validates the graph.
     svc := app.MustResolve[*ItemService]()
     app.GlobalMiddleware(
         middleware.CORS(),
@@ -703,7 +693,7 @@ func main() {
     app.GET("/items", svc.List)
     app.POST("/items", svc.Create)
 
-    // 6. Run blocks until SIGINT/SIGTERM, then drains gracefully.
+    // 5. Run blocks until SIGINT/SIGTERM, then drains gracefully.
     if err := app.Run(); err != nil {
         log.Fatal(err)
     }
