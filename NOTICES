@@ -183,8 +183,6 @@ Adapted in:
     Files (inspired by gofr pkg/gofr/ patterns):
       health.go        — Health struct, HealthStatus constants
                          (adapted from GoFr's health check design)
-      lifecycle.go     — Lifecycle interface design (interface-driven
-                          pluggable backends pattern)
 
 ----------------------------------------------------------------------
 

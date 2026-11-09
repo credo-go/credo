@@ -208,8 +208,8 @@ func (app *App) Shutdown(ctx context.Context) error {
 
 // errNotStarted is the ServeHTTP panic of an App with something to start that
 // has not been started.
-var errNotStarted = errors.New("credo: ServeHTTP: the App has start work (components, start hooks, " +
-	"store registrations or UseI18n) and has not been started; call App.Start before serving it " +
+var errNotStarted = errors.New("credo: ServeHTTP: the App has start work (components, start hooks " +
+	"or UseI18n) and has not been started; call App.Start before serving it " +
 	"through ServeHTTP (testutil.Start in tests), serve it with Run, RunContext or ServeContext, or, " +
 	"for a mounted child App, hand it to the parent with parent.Manage(child)")
 

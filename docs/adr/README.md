@@ -19,7 +19,7 @@ An Architecture Decision Record (ADR) records one decision: what was decided, th
 | [ADR-013](013-internationalization.md) | Internationalization | Accepted | [i18n spec](../specs/i18n.md) |
 | [ADR-014](014-observability.md) | Observability | Accepted; tracing and metrics deferred | [HTTP features](../specs/http-features.md#observability-contract), [HTTP client](../specs/httpclient.md#trace-propagation-semantics), [DI container](../specs/container.md) |
 | [ADR-015](015-data-access.md) | Data Access | Accepted; cursor/keyset pagination deferred | [Store spec](../specs/store.md), [Pagination spec](../specs/pagination.md) |
-| [ADR-016](016-health-checks.md) | Health Checks | Accepted; optional/critical store readiness deferred | [Health spec](../specs/health.md) |
+| [ADR-016](016-health-checks.md) | Health Checks | Accepted; a component that reports `degraded` itself deferred | [Health spec](../specs/health.md) |
 | [ADR-017](017-static-file-serving.md) | Static File Serving | Accepted | [Static file serving spec](../specs/static.md) |
 | [ADR-018](018-host-routing-and-rewrite.md) | Host Routing & URL Rewrite | Accepted | [Router spec](../specs/router.md), [Context spec](../specs/context.md), [Middleware spec](../specs/middleware.md) |
 | [ADR-019](019-websocket-integration-and-drain.md) | WebSocket Integration and Drain | Accepted | [WebSocket spec](../specs/websocket.md) |

@@ -612,7 +612,8 @@ func TestComponents_ServeHTTPBeforeStartPanics(t *testing.T) {
 			app := mustNew(t)
 			app.GET("/ping", func(ctx *credo.Context) error { return ctx.Response().Text(200, "pong") })
 			tc.setup(app)
-			expectPanicContaining(t, "call App.Start before serving it through ServeHTTP", func() {
+			expectPanicContaining(t, "credo: ServeHTTP: the App has start work (components, start hooks or "+
+				"UseI18n) and has not been started; call App.Start before serving it through ServeHTTP", func() {
 				app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
 			})
 		})

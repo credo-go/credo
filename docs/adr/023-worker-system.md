@@ -57,7 +57,7 @@ One registry per App makes the report whole: `Snapshot` and `Lookup` cover every
 
 > **Current until v0.25.0 (W5):** `worker.Func` is a function type in the `http.HandlerFunc` style that adapts a `func(context.Context) error` to `Worker`.
 
-`Worker` has one method, `Run(ctx) error`. The name is an argument of the registration method, the same position Credo takes for routes and stores: a name identifies a registration, not an instance. Names are validated strictly and uniformly — non-empty, no surrounding whitespace, no control characters, never normalized — because a name is a log attribute, a future metric label and the suffix of the component name `worker:<name>`, under which readiness and the lifecycle report the worker. No prefix is reserved: no framework-owned worker needs a namespace, and health's `credo.` reservation applies to the full name `worker:<name>`.
+`Worker` has one method, `Run(ctx) error`. The name is an argument of the registration method, the same position Credo takes for routes and health checks: a name identifies a registration, not an instance. Names are validated strictly and uniformly — non-empty, no surrounding whitespace, no control characters, never normalized — because a name is a log attribute, a future metric label and the suffix of the component name `worker:<name>`, under which readiness and the lifecycle report the worker. No prefix is reserved: no framework-owned worker needs a namespace, and health's `credo.` reservation applies to the full name `worker:<name>`.
 
 > **Pending v0.25.0 (W5):** until W5 ships, a function is registered through `worker.Func`.
 

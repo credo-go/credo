@@ -6,8 +6,8 @@ All config examples in this guide use JSON for consistency. Credo also supports 
 
 Credo's data access story has two layers:
 
-- `store/`: core contracts, store registration (start-phase ping and readiness reporting), transaction helpers
-- `store/sqldb/`: Bun-based SQL wrapper with query proxies and transaction support
+- `store/`: core contracts (semantic errors, `Health`) and transaction helpers
+- `store/sqldb/`: Bun-based SQL wrapper with query proxies and transaction support; its `*sqldb.DB` is a component the App pings at start, reports in `/ready` and shuts down
 
 ---
 
@@ -42,7 +42,6 @@ import (
     "log"
 
     "github.com/credo-go/credo"
-    "github.com/credo-go/credo/store"
     "github.com/credo-go/credo/store/sqldb"
 
     _ "github.com/jackc/pgx/v5/stdlib"
@@ -59,8 +58,7 @@ func setupStore(app *credo.App) error {
         return err
     }
 
-    app.ProvideValue(db)           // the App owns db from here on
-    store.Register[*sqldb.DB](app) // pinged at start, reported by /ready
+    app.ProvideValue(db) // the App owns db: pinged at start, reported by /ready, shut down after its consumers
     return nil
 }
 
@@ -88,15 +86,15 @@ Important points:
 
 - import the SQL driver with a blank import
 - read `sqldb.Config` with `app.GetConfig` during registration (`Resolve` is available only after `Finalize`)
-- bind the handle with `ProvideValue`, then name that binding as a store with `store.Register[*sqldb.DB]`
+- bind the handle with `ProvideValue`; the binding is all it takes, and it does no I/O at the call
 
-The binding decides ownership; `store.Register` adds what a data store needs on top of it, without I/O at the call:
+`*sqldb.DB` is a component, so its binding's type plans what a database needs ([What a Bound Database Does](#what-a-bound-database-does)):
 
-- the start phase pings the store before the components that depend on it start, and a failed ping fails the start
-- `/ready` reports its typed health under the store's name
-- its secret-free configuration warnings are logged after a successful ping
+- the start phase calls its `Start`, which pings it before the components that depend on it start; a failed ping fails the start
+- `/ready` reports it through its `Ready`, under the name `*sqldb.DB` or its `credo.ComponentName` name
+- its secret-free pool warnings are logged after a successful ping
 
-From `ProvideValue` on, the App owns `db`: `*sqldb.DB` is a `credo.Component` (it has `Shutdown`), so the drain shuts it down in the internal tier, after the components constructed from it, while the shared deadline remains, and a composition root that fails after the binding releases it with `app.Shutdown(ctx)`, which tears down an App that never ran. A handle the caller shares — with a second App, or across the tests of a suite — is bound with `app.ProvideValue(db, credo.Borrowed())`: it is still pinged and reported, and its shutdown stays the caller's.
+From `ProvideValue` on, the App owns `db`: `*sqldb.DB` is a `credo.Component` (it has `Shutdown`), so the drain shuts it down in the internal tier, after the components constructed from it, while the shared deadline remains, and a composition root that fails after the binding releases it with `app.Shutdown(ctx)`, which tears down an App that never ran. A handle the caller shares — with a second App, or across the tests of a suite — is bound with `app.ProvideValue(db, credo.Borrowed())`: it is still reported by `/ready`, and its start and shutdown stay the caller's.
 
 ---
 
@@ -114,6 +112,7 @@ type Config struct {
     Password       string
     DSN            string
     ConnectTimeout time.Duration
+    PingTimeout    time.Duration
     MaxOpen        int
     MaxIdle        *int
     MaxLifetime    time.Duration
@@ -150,13 +149,13 @@ Example production config file (capacity values are illustrative; size them agai
 
 If `DSN` is set, it is used as-is; structured connection fields are not merged into it. For generated PostgreSQL/MySQL DSNs, set `port` explicitly in the `1..65535` range. Credo rejects zero instead of producing `:0`, and correctly brackets IPv6 hosts. Driver detection recognizes only the exact aliases `postgres`/`pgx`, `mysql`, and `sqlite`/`sqlite3`/`sqliteshim`; a custom registered name uses its native `Config.DSN` plus `sqldb.WithDialect`, while a custom connector uses `sqldb.WithConnector` plus `sqldb.WithDialect`. Explicit nil values and known driver/dialect family mismatches fail at startup.
 
-PostgreSQL represents `connect_timeout` in whole seconds, so Credo rounds any positive fractional value up rather than silently truncating it to disabled. `Options` may add driver parameters but cannot override core PostgreSQL endpoint/credential keys, MySQL's required `parseTime=true`, or a simultaneously set `SSLMode`/`ConnectTimeout`; ambiguous values fail without being echoed in the error. `SSLMode` itself is driver-specific (`sslmode` for PostgreSQL, `tls` for MySQL). Credo sets no universal TLS default—production configuration must choose a verified mode and trust setup supported by the selected driver. See the canonical [store specification](../specs/store.md#config) for the complete precedence and escape-hatch contract.
+`ping_timeout` is the deadline of the ping `Start` sends: zero means `sqldb.DefaultPingTimeout` (5s), not "no deadline" as for `connect_timeout`, since an unbounded ping would hang the start, and a negative value fails `sqldb.Open`. PostgreSQL represents `connect_timeout` in whole seconds, so Credo rounds any positive fractional value up rather than silently truncating it to disabled. `Options` may add driver parameters but cannot override core PostgreSQL endpoint/credential keys, MySQL's required `parseTime=true`, or a simultaneously set `SSLMode`/`ConnectTimeout`; ambiguous values fail without being echoed in the error. `SSLMode` itself is driver-specific (`sslmode` for PostgreSQL, `tls` for MySQL). Credo sets no universal TLS default—production configuration must choose a verified mode and trust setup supported by the selected driver. See the canonical [store specification](../specs/store.md#config) for the complete precedence and escape-hatch contract.
 
-There is intentionally no universal finite pool default. `max_open: 0` (and an omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A store registered with `store.Register` logs one structured warning with code `sqldb.pool.max_open_unlimited` after its start-phase ping succeeds when the effective pool maximum is still unlimited; it never silently changes the value. Services that open a DB without `store.Register` can inspect `db.StoreRegistrationWarningCodes()` during bootstrap and send the returned secret-free codes to their own logger.
+There is intentionally no universal finite pool default. `max_open: 0` (and an omitted `max_open`) retains `database/sql`'s unlimited-open behavior. A database's `Start` logs one structured warning, `credo: store configuration warning` with `code=sqldb.pool.max_open_unlimited` and `module=sqldb`, once its ping succeeds when the effective pool maximum is still unlimited; it never silently changes the value. The pool is read at that moment, so a `SetMaxOpenConns` on `db.Client()` before the start counts. A program that runs the database without an App calls `db.Start(ctx)` itself or reads `db.Stats().MaxOpenConnections`.
 
 `max_idle` distinguishes omission from an explicit zero. Omit it to leave the idle setter to `database/sql` (its effective default remains subject to `max_open`), set it to `0` to retain no idle connections, or set a positive limit. With a finite `max_open`, `max_idle` must not be greater than `max_open`; `sqldb.Open` rejects that combination rather than accepting the stdlib's silent clamp. `max_idle_time: 0` disables idle-age expiry, while `max_lifetime: 0` disables connection-lifetime expiry. Explicit positive values are applied unchanged; Credo does not overwrite them with defaults.
 
-For operational telemetry, `db.Stats()` returns the complete `sql.DBStats` snapshot. Track at least `InUse`, `Idle`, `WaitCount`, `WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed`. Wait and closure counters are cumulative: alert on windowed rates/deltas tied to an SLO, not on raw totals. Credo does not mark a pool `DEGRADED` from a universal saturation threshold. Such a policy needs explicit opt-in thresholds and hysteresis; today `DEGRADED` removes readiness for every store and a noisy threshold could cause cascading traffic shifts.
+For operational telemetry, `db.Stats()` returns the complete `sql.DBStats` snapshot. Track at least `InUse`, `Idle`, `WaitCount`, `WaitDuration`, `MaxIdleClosed`, `MaxIdleTimeClosed`, and `MaxLifetimeClosed`. Wait and closure counters are cumulative: alert on windowed rates/deltas tied to an SLO, not on raw totals. Credo does not mark a pool `DEGRADED` from a universal saturation threshold. Such a policy needs explicit opt-in thresholds and hysteresis; a database's `Ready` fails on any status but `UP`, so a noisy threshold would take a gating database's instances out of rotation and could cause cascading traffic shifts.
 
 Nested savepoint operations are bounded separately from query/callback execution. The default is five seconds of caller wait for each savepoint creation/release/rollback and fail-safe ambient abort; override it at construction when driver/network characteristics require a different budget:
 
@@ -502,45 +501,54 @@ page := pagination.NewPage(
 
 ---
 
-## What `store.Register` Does
+## What a Bound Database Does
 
-`store.Register[R]` names a binding as a data store. It takes no value and returns nothing: the store is bound where its ownership is decided — `app.ProvideValue`, or `app.Provide` with a constructor, with `credo.Borrowed()` for a handle the caller shares — and `Register` refers to that binding by its type:
+A `*sqldb.DB` is a component: its type shows `Start`, `Ready` and `Shutdown`, so its binding is all the App needs. The binding is made where ownership is decided — `app.ProvideValue`, or `app.Provide` with a constructor, with `credo.Borrowed()` for a handle the caller shares — and `credo.ComponentName` names it:
 
 ```go
 cfg := app.MustGetConfig[sqldb.Config]("databases.default")
+cfg.PingTimeout = 10 * time.Second // zero means sqldb.DefaultPingTimeout, 5s
 
 // The constructor runs in the start phase, after Finalize and every override.
-app.Provide(func() (*sqldb.DB, error) { return sqldb.Open(&cfg) })
-store.Register[*sqldb.DB](app,
-    store.WithName("primary"),
-    store.WithPingTimeout(10*time.Second),
-)
+app.Provide(func() (*sqldb.DB, error) { return sqldb.Open(&cfg) }, credo.ComponentName("primary"))
 ```
 
-A registration goes through four phases:
+A bound database goes through four phases:
 
-1. **Registration.** `Register` records the type, the name and the ping timeout, and performs no I/O. Misuse panics at the call: a nil App or option, a ping timeout that is not positive, an invalid name, an `R` without a stable default name and no `WithName`, a type or a name registered twice, and a call after `Finalize`, after the App is prepared, or after shutdown. An `R` that does not implement `store.Lifecycle` does not compile.
-2. **`Finalize`.** `R` may be bound directly or be an interface an `Alias` names. A registration whose `R` has no binding fails `Finalize` — `di: store.Register[*sqldb.DB]: *sqldb.DB has no binding; bind it with Provide or ProvideValue before Finalize` — reported together with the graph's other findings.
-3. **Start.** When the start walk reaches the binding, in dependency order, it builds the value and pings it as the binding's first start step — before the value's own `Start` and before the components that depend on it start — under a deadline of `WithPingTimeout` (default `store.DefaultPingTimeout`, 5 seconds) derived from the start context. A constructor error, a nil bound value (`store: "primary": the bound value is nil`) or a failed ping (`store: ping "primary": …`) fails the start: `Run` or `app.Start` returns a `*credo.LifecycleError` that names the component, and the App rolls back what it built, the store included unless it is borrowed. After a successful ping, the store's secret-free warning codes are logged at Warn (`credo: store configuration warning`, with `store` and `code` attributes).
-4. **Readiness.** With [health checks](getting-started.md#health-checks) mounted, `/ready` reports the typed `Health` of each pinged store under its name, through a probe built once at start; no readiness request resolves anything from the container. Before the App has started there are no store checks.
+1. **Registration.** The binding performs no I/O. Misuse panics at the call: a `credo.ComponentName` name the health-name rules refuse (empty, padded, with a control character or the reserved `credo.` prefix), as `credo: App.Provide[*sqldb.DB]: credo.ComponentName(" primary"): name " primary" must not have leading or trailing whitespace`, and a name another component has, as `a component named "primary" is already registered, as <registration>; give each component its own name with credo.ComponentName`; for a `Provide` constructor, whose value is not known yet, that conflict fails the start instead. The name is not a DI key: a second `*sqldb.DB` under another name is still a duplicate binding ([Multiple Databases](#multiple-databases)).
+2. **Start.** When the start walk reaches the binding, in dependency order, it builds the value and calls its `Start`, which pings the database under `Config.PingTimeout`, derived from the start context, before the components that depend on it start. A constructor error or a failed ping — `sqldb: ping did not answer within 10s: …` when the deadline passed, else `sqldb: ping: …` — fails the start: `Run` or `app.Start` returns a `*credo.LifecycleError` that names the component, the failed `Start` has already closed the database, and the App rolls back the rest of what it built. After a successful ping, the pool warnings are logged at Warn (`credo: store configuration warning`, with `code` and `module=sqldb`, and `component=<name>` on the App's logger; `sqldb.WithLogger(l)` sends them to `l` instead).
+3. **Readiness.** With [health checks](getting-started.md#health-checks) mounted, `/ready` asks the database's `Ready`, which returns nil while its `Health` is `UP` and `sqldb: database is DOWN: <cause>` otherwise. The entry is named `*sqldb.DB` or its `credo.ComponentName` name, carries the ping's `latency`, and is built once at start; no readiness request resolves anything from the container. It gates readiness: while it fails, `/ready` answers 503. Before the App has started there is no entry.
+4. **Teardown.** The App shuts the database down after its consumers, in the internal tier, unless it is borrowed. A borrowed database is never started or shut down by the App — its owner does both — and `/ready` still reports it.
 
-The teardown is the binding's, not the registration's: the App shuts the store down after its consumers, in the internal tier, unless it is borrowed. A binding without `store.Register` is an ordinary component — still shut down after its consumers, but neither pinged at start nor reported by `/ready`.
+Because the plan comes from the binding, an override is what the App pings, reports and shuts down. A test that replaces the database with `testutil.WithOverride[*sqldb.DB](testDB)` or `credo.Override()` never pings the original value.
 
-Because the registration names a binding rather than holding a value, an override is what the App pings, reports and shuts down. A test that replaces the database with `testutil.WithOverride[*sqldb.DB](testDB)` or `credo.Override()` never pings the original value.
+### A database that must not gate readiness or stop the start
 
-`Lifecycle.Ping` implementations must honor `ctx`: a ping that ignores its deadline is abandoned only at the rollback deadline.
+Two options, of different owners, relax the defaults:
 
-Store names use the same rules as named health checks. An explicit empty name, leading or trailing whitespace, control characters, and the reserved `credo.` prefix are rejected rather than normalized. If `WithName` is omitted, Credo unwraps pointer layers and uses the package-qualified name of the registered type (`sqldb.DB` for `*sqldb.DB`); unnamed types require an explicit name. A store whose name collides with a custom readiness check makes `/ready` fail closed.
+```go
+db, err := sqldb.Open(&cfg, sqldb.WithOptionalStart()) // a failed ping does not fail the start
+if err != nil {
+    return err
+}
+app.ProvideValue(db, credo.OptionalReadiness()) // reported in /ready without gating it
+```
+
+- **`credo.OptionalReadiness()`** on the binding reports the database without letting it gate readiness: a failing entry shows `down` and is logged, and while every gating entry is up `/ready` answers 200 with the top-level status `degraded`. It changes readiness only: without `WithOptionalStart`, an unreachable database still fails the start.
+- **`sqldb.WithOptionalStart()`** on `Open` makes a failed ping non-fatal: `Start` logs `sqldb: ping failed; starting without the database, which gates readiness until it answers` at Warn, with `ping_timeout` and `error`, logs the pool warnings, and returns nil, leaving the pool open, since `database/sql` opens connections on demand once the server is back. `Ready` keeps pinging, so the database gates readiness until it answers unless it is also bound with `credo.OptionalReadiness()`.
+
+Gating is the default for a reason, and it has a cost under load; the [deployment guide](deployment.md#shutdown-and-readiness) explains both.
 
 ### One database, several holders
 
-A store's teardown follows the component rule of the [Dependency Injection Guide](dependency-injection.md#wrappers-and-resource-identity): values that share a resource identity are one resource, shut down once, after the consumers of every holder. `*sqldb.DB` implements `credo.ResourceIdentifier` — `ResourceIdentity()` returns the `*DB` itself — and a wrapper that embeds it inherits that identity:
+A database's teardown follows the component rule of the [Dependency Injection Guide](dependency-injection.md#wrappers-and-resource-identity): values that share a resource identity are one resource. `*sqldb.DB` implements `credo.ResourceIdentifier` — `ResourceIdentity()` returns the `*DB` itself — and a wrapper that embeds it inherits that identity:
 
-- A `*sqldb.DB` bound raw and a wrapper that embeds it are one database, closed once, after the last holder retires. Registering both with `store.Register` is not refused: each is pinged and reported under its own name.
-- Only a wrapper without state of its own to release may share the identity. A wrapper that releases state of its own holds the `*DB` in a named field and does not forward `ResourceIdentity`; its own `Shutdown` releases its state and the handle, which is then the wrapper's alone.
+- A `*sqldb.DB` bound raw and a wrapper that embeds it are one database: one ping, one readiness entry and one teardown, after the consumers of both, in either registration order.
+- Their registrations agree on `credo.OptionalReadiness()` and on the `credo.ComponentName` name, which the entry and the teardown carry. A disagreement panics at the second `ProvideValue`, or fails the start when a `Provide` constructor builds the second value, naming both registrations and the remedies: give both the same options, or hold the handle in a named field.
+- Only a wrapper without state of its own to release, and without readiness of its own, may share the identity. A wrapper that releases state of its own, or overrides the `Ready` it embeds, holds the `*DB` in a named field and does not forward `ResourceIdentity`; it is then a resource of its own ([A wrapper with a lifecycle of its own](#a-wrapper-with-a-lifecycle-of-its-own)).
 - A named-field wrapper without such state forwards the identity with one method, `ResourceIdentity() any`. Credo never scans wrapper fields.
 
-Another interface view of the same store is an alias, never a second binding:
+Another interface view of the same database is an alias, never a second binding:
 
 ```go
 type StoreHealth interface {
@@ -548,15 +556,14 @@ type StoreHealth interface {
 }
 
 app.ProvideValue(db)
-store.Register[*sqldb.DB](app)
 app.Alias[StoreHealth, *sqldb.DB]()
 ```
 
-`Resolve[StoreHealth]` returns the registered `*sqldb.DB`; nothing else is pinged, reported or shut down.
+`Resolve[StoreHealth]` returns the bound `*sqldb.DB`; nothing else is pinged, reported or shut down.
 
-### A wrapper that implements `Lifecycle`
+### A wrapper with a lifecycle of its own
 
-A value that does not implement `store.Lifecycle`, or a store whose teardown must release more than the handle, is registered through a wrapper type that implements it: the wrapper is the binding, and its `Ping`, `Health` and `Shutdown` act on one value.
+A store whose teardown must release more than the handle, or an adapter over another client, is a wrapper type that implements `Start`, `Ready` and `Shutdown` itself, as every component does; there is no framework interface to name them. The wrapper is the binding, and its methods act on one value:
 
 ```go
 type ReportingDB struct {
@@ -564,24 +571,23 @@ type ReportingDB struct {
     buffer *AuditBuffer
 }
 
-func (r *ReportingDB) Ping(ctx context.Context) error         { return r.db.Ping(ctx) }
-func (r *ReportingDB) Health(ctx context.Context) store.Health { return r.db.Health(ctx) }
+func (r *ReportingDB) Start(ctx context.Context) error { return r.db.Start(ctx) }
+func (r *ReportingDB) Ready(ctx context.Context) error { return r.db.Ready(ctx) }
 
 func (r *ReportingDB) Shutdown(ctx context.Context) error {
     return errors.Join(r.buffer.Flush(ctx), r.db.Shutdown(ctx))
 }
 
-app.ProvideValue(&ReportingDB{db: reportingHandle, buffer: NewAuditBuffer()})
-store.Register[*ReportingDB](app, store.WithName("reporting"))
+app.ProvideValue(&ReportingDB{db: reportingHandle, buffer: NewAuditBuffer()}, credo.ComponentName("reporting"))
 ```
 
-To keep the teardown with the caller instead, bind the wrapper with `credo.Borrowed()`: it is still pinged and reported, and the caller closes it after `Run` returns.
+`Start` must honour its context — a start that ignores its deadline is abandoned only at the rollback deadline — and release what it opened when it fails, since the App does not shut down a component whose `Start` failed. To keep the start and the teardown with the caller instead, bind the wrapper with `credo.Borrowed()`: it is still reported by `/ready`, and the caller starts it and closes it after `Run` returns.
 
 ---
 
 ## Multiple Databases
 
-Credo DI keys bindings by Go type, so two databases cannot both be bound as `*sqldb.DB`. Each database beyond a default `*sqldb.DB` is a wrapper type, bound once and registered by its type:
+Credo DI keys bindings by Go type, so two databases cannot both be bound as `*sqldb.DB`. Each database beyond a default `*sqldb.DB` is a wrapper type, bound once and named with `credo.ComponentName`:
 
 ```go
 type PrimaryDB struct{ *sqldb.DB }
@@ -601,15 +607,13 @@ func setupMultiDB(app *credo.App) error {
     if err != nil {
         return err
     }
-    app.ProvideValue(PrimaryDB{primary})
-    store.Register[PrimaryDB](app, store.WithName("primary"))
+    app.ProvideValue(PrimaryDB{primary}, credo.ComponentName("primary"))
 
     // A constructor opens the database in the start phase instead.
     app.Provide(func() (AnalyticsDB, error) {
         db, err := sqldb.Open(&analyticsCfg)
         return AnalyticsDB{db}, err
-    })
-    store.Register[AnalyticsDB](app, store.WithName("analytics"))
+    }, credo.ComponentName("analytics"))
     return nil
 }
 ```
@@ -634,7 +638,7 @@ func NewReportRepo(db AnalyticsDB) *ReportRepo {
 }
 ```
 
-The type is the qualifier: the constructor's signature names the database, the compiler and `Finalize` check the choice, and the graph orders each database's ping, start and stop by its consumers — no string keys, no ambiguity in constructors. Embedding carries every capability of the handle — `Ping`, `Health`, `Shutdown`, `ResourceIdentity` and the query proxies (`db.Select(...)`, `db.InTx(...)`) — and each `*sqldb.DB` owns its transaction scope, so the transactions of two databases never meet. Because the wrapper inherits the handle's resource identity, `PrimaryDB` and the `*sqldb.DB` inside it are one database with one teardown; a wrapper that releases state of its own holds the handle in a named field instead ([A wrapper that implements `Lifecycle`](#a-wrapper-that-implements-lifecycle)).
+The type is the qualifier: the constructor's signature names the database, the compiler and `Finalize` check the choice, and the graph orders each database's ping, start and stop by its consumers — no string keys, no ambiguity in constructors. Embedding carries every capability of the handle — `Start`, `Ready`, `Shutdown`, `ResourceIdentity`, `Ping`, `Health` and the query proxies (`db.Select(...)`, `db.InTx(...)`) — and each `*sqldb.DB` owns its transaction scope, so the transactions of two databases never meet. Because the wrapper inherits the handle's resource identity, `PrimaryDB` and the `*sqldb.DB` inside it are one database with one teardown; a wrapper that releases state of its own holds the handle in a named field instead ([A wrapper with a lifecycle of its own](#a-wrapper-with-a-lifecycle-of-its-own)).
 
 The rest of the rule:
 
@@ -693,7 +697,7 @@ The rest of the rule:
   app.Provide(func() (*Shards, error) { return OpenShards(shardCfgs) })
   ```
 
-  To have the shards pinged at start and reported by `/ready`, give `*Shards` `Ping` and `Health` methods — it then implements `store.Lifecycle` — and register it with `store.Register[*Shards](app, store.WithName("shards"))`.
+  To have the shards pinged at start and reported by `/ready`, give `*Shards` `Start` and `Ready` methods that ping every shard, and name its binding with `credo.ComponentName("shards")`.
 - **A read replica of one database is routing**, not a second store, and sits outside the rule; `sqldb` does not expose it.
 
 ---
@@ -775,8 +779,7 @@ var sqlMigrations embed.FS
 func main() {
     app, _ := credo.New(...)
     db := mustOpenDB()
-    app.ProvideValue(db)
-    store.Register[*sqldb.DB](app) // pinged before the start hooks run
+    app.ProvideValue(db) // pinged before the start hooks run
 
     migrations := migrate.NewMigrations()
     if err := migrations.Discover(sqlMigrations); err != nil {
@@ -941,6 +944,7 @@ If you use another ORM or client:
 
 - register it through DI directly
 - keep Credo's higher-level application structure the same
+- to have it pinged at start, reported by `/ready` and shut down after its consumers, bind it through a wrapper that implements `Start`, `Ready` and `Shutdown` ([A wrapper with a lifecycle of its own](#a-wrapper-with-a-lifecycle-of-its-own))
 
 Example:
 
@@ -963,14 +967,14 @@ For most applications:
 
 1. load `sqldb.Config` with `app.GetConfig` during registration
 2. open the connection with `sqldb.Open`, or in a constructor that the start phase runs
-3. bind it (`app.ProvideValue` or `app.Provide`) and name the binding with `store.Register`
+3. bind it (`app.ProvideValue` or `app.Provide`); the binding pings it at start, reports it in `/ready` and shuts it down after its consumers
 4. inject the resulting type into repositories
 5. keep services and controllers free of DSN strings and runtime config lookups
 
 For multiple databases:
 
 1. create wrapper types such as `PrimaryDB` and `AnalyticsDB`
-2. bind each wrapper once and register it by its type with `store.Register[R]`
+2. bind each wrapper once, named with `credo.ComponentName`
 3. inject wrappers explicitly in constructors; reach other views through `Alias`, not a second binding
 4. keep transaction boundaries local to a single database unless you have a very deliberate explicit strategy
 

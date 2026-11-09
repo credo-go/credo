@@ -434,7 +434,7 @@ Bootstrap is sequential: every registration call comes from the goroutine that b
 
 1. configuration — `credo.New()`;
 2. `Provide` and `ProvideValue`;
-3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, stores, workers, `Manage`;
+3. feature mounts and satellite registrations, in any order among themselves — `UseI18n`, `UseHealth`, workers, `Manage`;
 4. `Finalize`, handling its error;
 5. `Resolve`, routes and anything built from a resolved value, a readiness check included;
 6. `Run`.
@@ -504,16 +504,15 @@ app.UseHealth(credo.HealthConfig{
 })
 ```
 
-### Store Integration
+### Database Integration
 
-A store bound in DI and named with `store.Register` is wired into the readiness endpoint automatically. The start phase pings it — a failed ping fails the start — and builds its readiness probe once; `/ready` then reports it under its name without resolving anything per request. Before the App has started there are no store checks:
+A bound `*sqldb.DB` is a component, so its binding alone wires it into the readiness endpoint. The start phase pings it in its `Start` — a failed ping fails the start — and builds its readiness probe once; `/ready` then reports it through its `Ready`, under its name, without resolving anything per request. Before the App has started there is no database entry:
 
 ```go
-app.ProvideValue(db) // db is a *sqldb.DB
-store.Register[*sqldb.DB](app, store.WithName("postgres"))
+app.ProvideValue(db, credo.ComponentName("postgres")) // db is a *sqldb.DB; the default name is *sqldb.DB
 ```
 
-The registered store appears in the `/ready` response:
+The database appears in the `/ready` response:
 
 ```json
 {
@@ -524,16 +523,17 @@ The registered store appears in the `/ready` response:
 }
 ```
 
-Named and store checks run together in parallel, so readiness latency is close to the slowest check rather than the sum of all store latencies. A store panic or timeout becomes that store's `down` result without aborting sibling checks. Store causes are logged but masked from the response by default; set `HealthConfig.ExposeErrors` only for a network-restricted endpoint.
+Every entry, a named check's included, carries its `latency`. Named checks and components run together in parallel, so readiness latency is close to the slowest check rather than the sum of all of them. A panic or a timeout becomes that entry's `down` result without aborting sibling checks. Causes are logged but masked from the response by default; set `HealthConfig.ExposeErrors` only for a network-restricted endpoint.
 
-All stores are currently critical. `UP` is ready; `DOWN`, `DEGRADED`, an unknown adapter status, or a custom-check/store name collision returns 503. Critical/optional store configuration is intentionally deferred to a separate API decision.
+Every entry gates readiness by default: a `down` entry, or a name that a component and a named check share, returns 503. A dependency the instance can serve without is reported with `credo.OptionalReadiness()`, on its binding or on `AddReadinessCheck`: its failing entry shows `down`, and `/ready` answers 200 with the status `degraded` while every gating entry is up. The [deployment guide](deployment.md#shutdown-and-readiness) explains when to use it and `sqldb.WithOptionalStart()`, which lets the start succeed while the database is unreachable.
 
 For multi-database wiring and transaction behavior, see the [Data Access Guide](data-access.md).
 
 ### Response Codes
 
 - `200` with `{"status": "up"}` when all checks pass
-- `503` with `{"status": "down"}` when any check fails
+- `200` with `{"status": "degraded"}` when every gating check passes and an optional one fails
+- `503` with `{"status": "down"}` when a gating check fails
 
 ---
 
@@ -717,7 +717,7 @@ func main() {
 - [Configuration Guide](configuration.md) — env files, typed config, env vars, runtime reload
 - [Deployment Guide](deployment.md) — systemd, containers, signals, certificate rotation
 - [Dependency Injection Guide](dependency-injection.md) — Alias, Infra, testing
-- [Data Access Guide](data-access.md) — store.Register, transactions, multi-DB
+- [Data Access Guide](data-access.md) — a bound database, transactions, multi-DB
 - [Routing Guide](routing.md) — host groups, rewrite middleware, internal forwarding
 - [Worker Guide](worker.md) — continuous workers, schedules, shutdown, status snapshots
 - [Localization Guide](localization.md) — locale detection, translation
