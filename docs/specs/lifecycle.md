@@ -94,6 +94,8 @@ On Unix, `Run` also handles `SIGHUP`: each signal triggers [`app.Reload`](#appre
 
 `credo.WithoutReloadSignals()` disables the reload trigger without changing the rest of `Run`'s signal policy: SIGHUP is still captured — so a stray signal can never fall through to its default action and terminate the process — but is ignored with an Info log line (`credo: reload signal ignored (reload signals disabled)`). SIGINT/SIGTERM handling and programmatic `Reload` are unaffected; the option is a no-op on Windows. Raw Unix signal disposition (an unhandled SIGHUP terminates) remains available via `RunContext`/`ServeContext`, which install no signal handlers.
 
+Over a configuration that cannot reload (a custom `RawConfig`, not a `*config.Config`), SIGHUP is captured and ignored the same way, with the Info line `credo: reload signal ignored: the configuration cannot reload` naming the signal and the configuration's type, so a routine SIGHUP such as a log rotation's stays harmless.
+
 `Run` is the safe default for a process whose lifetime is the server's. For explicit lifecycle control — tests, embedding, caller-driven cancellation — use `RunContext`.
 
 ### `app.RunContext(ctx context.Context) error`

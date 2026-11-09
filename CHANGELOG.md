@@ -19,6 +19,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **BREAKING (behavior): text after a catch-all panics at registration.** A pattern such as `/a/{p...}/x` can never match; it now panics with the message `middleware.Rewrite` gives such a pattern, and so does a catch-all in a `Mount` or `Static` prefix.
 - **BREAKING: `ContractGuard` requires a Content-Type on a body by default.** A body-carrying request without one fails a `MetaAccept` contract with 415; `ContractConfig.AllowMissingContentType` lets it pass, and `RequireContentType` is removed.
 - A strict unknown-key error names the `.env` entry or environment variable that set the key.
+- A SIGHUP under `Run` over a configuration that cannot reload is logged at Info as ignored, with the signal and the configuration's type, instead of being dropped.
 
 ### Fixed
 

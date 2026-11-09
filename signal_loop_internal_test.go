@@ -1,12 +1,14 @@
 package credo
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -15,6 +17,33 @@ import (
 
 	"github.com/credo-go/credo/config"
 )
+
+// TestHandleReloadSignal_ConfigurationThatCannotReload: over a RawConfig
+// other than *config.Config, a reload signal is ignored with one Info line
+// naming the signal and the configuration's type, and never reaches Reload.
+func TestHandleReloadSignal_ConfigurationThatCannotReload(t *testing.T) {
+	var logs bytes.Buffer
+	app, err := New(WithRawConfig(stubServerRC{fields: map[string]any{}}),
+		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.lifecycle.handleReloadSignal(syscall.SIGHUP)
+	got := logs.String()
+	for _, part := range []string{
+		"level=INFO",
+		`msg="credo: reload signal ignored: the configuration cannot reload"`,
+		"signal=hangup",
+		"config_type=credo.stubServerRC",
+	} {
+		if !strings.Contains(got, part) {
+			t.Errorf("log %q does not contain %q", got, part)
+		}
+	}
+	if strings.Contains(got, "reload signal received") || strings.Contains(got, "credo: Reload:") {
+		t.Errorf("the signal reached the reload path:\n%s", got)
+	}
+}
 
 // signalLoopFixture drives lifecycleManager.signalLoop with plain channels in
 // place of the OS signal plumbing, so the loop's behaviour is testable on

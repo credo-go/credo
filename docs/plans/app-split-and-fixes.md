@@ -42,7 +42,7 @@ A5–A8 came after Part A merged: one more branch, one commit per item, one PR, 
 - [x] **A6. Migration rows for the whole-tree reads.**
   - **Problem:** the v0.26.0 migration rows map `cfg.Get[T]("app")` to a section, but not the whole-tree form with an empty key, which a section rejects.
   - **Fix:** rows map `cfg.Get[T]("")` and `cfg.MustGet[T]("")` to `cfg.Unmarshal("", &v)`, and `app.GetConfig[T]("")` and `app.MustGetConfig[T]("")` to `Unmarshal("", &v)` on the `RawConfig`, pointing to A5's caveat. The published v0.26.0 release notes stay as they are.
-- [ ] **A7. A reload signal over a configuration that cannot reload is ignored silently.**
+- [x] **A7. A reload signal over a configuration that cannot reload is ignored silently.**
   - **Problem:** with a `RawConfig` other than `*config.Config`, SIGHUP logs that it was received, `app.Reload` returns its "cannot reload" error, and the handler logs that error only when the server is not running.
   - **Fix:** the handler decides before calling `Reload`, by the configuration's type, never by the error's text, and logs at Info `credo: reload signal ignored: the configuration cannot reload` with the signal and the configuration's type, in the shape of the `WithoutReloadSignals` line. The signal stays subscribed, so a routine SIGHUP (a log rotation, say) stays harmless.
   - **Docs:** one line in the lifecycle spec or the configuration guide; CHANGELOG under Changed (a log line).
