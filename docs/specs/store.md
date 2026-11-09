@@ -8,7 +8,7 @@ This spec owns the data access contracts: semantic errors, `Health`, transaction
 
 - **`store/`** — universal contracts with no external dependencies, part of the main `github.com/credo-go/credo` module: [semantic errors](#semantic-errors) over the stdlib-only `fault` leaf package, [`Health`](#health), and the typed [TX scope](#tx-context). Applications on another ORM bind their client directly in DI and still use these contracts.
 - **`store/sqldb/`** — the Bun wrapper, a separate Go submodule (`github.com/credo-go/credo/store/sqldb`) so the Bun dependency is opt-in: the [`DB` type](#db-type) that owns the pool and is a [component](#lifecycle-of-a-bound-database), [query proxies](#query-builders) that inject this DB's ambient transaction and map driver errors, [transactions](#tx-management), the [transaction-aware native connection](#transaction-aware-bun-connection), [migrations](#migrations-bunmigrate-wrapper), and [error mapping](#error-mapping).
-- **Escape hatches** — `Apply` and `ApplyQueryBuilder` keep both proxy guarantees; `DB.Conn(ctx)` joins the ambient transaction without error mapping; `Unwrap` and `Client()` opt out of both.
+- **Escape hatches** — `Apply` keeps both proxy guarantees, and a select built with it pages with `PageWithCount`; `ApplyFilter` adds predicates shared across query types and keeps the automatic total too; `DB.Conn(ctx)` joins the ambient transaction without error mapping; `Unwrap` and `Client()` opt out of both.
 
 `store/` has no registration and no lifecycle contract. A bound `*sqldb.DB` is an ordinary component ([Lifecycle of a bound database](#lifecycle-of-a-bound-database)), and an adapter of another ORM implements `Start`, `Ready` and `Shutdown` itself.
 
@@ -347,11 +347,11 @@ The optional model argument accepts zero or one value. Supplying more than one c
 
 Each proxy type:
 
-- Proxies a curated subset of builder methods for clean chaining. Methods not in the proxy set are available via `Apply`.
+- Proxies a curated subset of builder methods for clean chaining. Methods not in the proxy set are available via `Apply`, shared predicates via `ApplyFilter`.
 - Selects TX from the owning DB's private `TxScope[bun.IDB]` on terminal operations
 - Maps errors to structured semantic `store.Error` values after execution
 
-**Visibility policy: Credo does not hide Bun — it integrates it.** The proxy exists to attach the two terminal guarantees above, not to abstract Bun away; bun types appear in proxy signatures by design. A missing builder method is reached via `Apply`/`ApplyQueryBuilder` (guarantees preserved); a missing _terminal_ method is a request to extend the curated set — the guarantees live in the terminals, so terminals must be on the proxy. `Unwrap` and `Client()` are deliberate opt-outs from both guarantees.
+**Visibility policy: Credo does not hide Bun — it integrates it.** The proxy exists to attach the two terminal guarantees above, not to abstract Bun away; bun types appear in proxy signatures by design. A missing builder method is reached via `Apply` (guarantees preserved, the automatic total given up), a predicate shared across query types via `ApplyFilter`; a missing _terminal_ method is a request to extend the curated set — the guarantees live in the terminals, so terminals must be on the proxy. `Unwrap` and `Client()` are deliberate opt-outs from both guarantees.
 
 Curated builder methods:
 
@@ -360,23 +360,11 @@ Curated builder methods:
 - **`UpdateQuery`**: `Model`, `Column`, `Set`, `Where`, `WherePK`, `Returning`, `OmitZero`, `Conn`.
 - **`DeleteQuery`**: `Model`, `Where`, `WherePK`, `Returning`, `Conn`.
 
-> **Current until v0.26.0 (R9):** the next paragraph names `ApplyQueryBuilder`.
-
-Every proxy also has `Apply` and `Unwrap`, and `SelectQuery`, `UpdateQuery`, and `DeleteQuery` have `ApplyQueryBuilder` ([escape hatches](#escape-hatches)). Any other builder method — `WhereOr` on an update or a delete, for example — goes through `Apply` or `ApplyQueryBuilder`.
-
-> **Pending v0.26.0 (R9):** the next paragraph replaces the paragraph above when R9 ships.
-
 Every proxy also has `Apply` and `Unwrap`, and `SelectQuery`, `UpdateQuery`, and `DeleteQuery` have `ApplyFilter` ([escape hatches](#escape-hatches)). A predicate the curated set lacks on a query type — `WhereOr` on an update or a delete, for example — goes through `ApplyFilter`, and any other builder method through `Apply`, whose query `Count` and `Page` cannot prove ([pagination spec](pagination.md#logical-total-and-supported-count-shapes)).
 
 The curated `Limit(int)` and `Offset(int)` methods forward every value to Bun, which takes and stores both as `int64`. Zero and negative values keep Bun's semantics: the clause is omitted. Calling raw Bun through `Apply` or `Unwrap` is an explicit escape hatch whose `Limit` and `Offset` take `int64`.
 
-**Terminal methods** — `Scan`, `Count`, `Exists` and the generic `One[T]`/`All[T]`/`Page[T]` on `SelectQuery`, `Exec` on the write proxies — execute the query and return mapped errors. Driver errors become `store.Err*` sentinels as listed in [Error Mapping](#error-mapping), so callers branch with `errors.Is` without importing `database/sql` or driver-specific packages. `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
-
-> **Current until v0.26.0 (R9):** the next paragraph describes the logical count Credo's own count source computes.
-
-`SelectQuery.Count` returns the number of complete logical projection rows, the count `Page.Total` reports; the [pagination spec](pagination.md#logical-total-and-supported-count-shapes) is its contract, including the shapes that return `sqldb.ErrUnsupportedCountQuery`, the MySQL output-name rule, relation callbacks, and model SELECT hooks.
-
-> **Pending v0.26.0 (R9):** the next paragraph replaces the paragraph above when R9 ships.
+**Terminal methods** — `Scan`, `Count`, `Exists` and the generic `One[T]`/`All[T]`/`Page[T]`/`PageWithCount[T]` on `SelectQuery`, `Exec` on the write proxies — execute the query and return mapped errors. Driver errors become `store.Err*` sentinels as listed in [Error Mapping](#error-mapping), so callers branch with `errors.Is` without importing `database/sql` or driver-specific packages. `Update.Exec` and `Delete.Exec` do **not** convert "no rows affected" into `ErrNotFound` — callers must inspect `sql.Result` for that.
 
 `SelectQuery.Count` returns the number of rows the query returns without its `LIMIT` and `OFFSET`, the count `Page.Total` reports, through Bun's native `Count` on a query the wrapper can prove, and fails before I/O with `sqldb.ErrUnsupportedCountQuery` on any other; the [pagination spec](pagination.md#logical-total-and-supported-count-shapes) is its contract, including the rules that make a query unknown and `PageWithCount`, which pages it with the caller's count.
 
@@ -387,7 +375,7 @@ user, err := db.Select().Where("id = ?", id).One[User](ctx)        // (User, err
 users, err := db.Select().Where("active = ?", true).All[User](ctx) // ([]User, error)
 ```
 
-`One` applies `LIMIT 1` and returns the first matching row, so multiple matches are not an error — add `OrderExpr` for a deterministic choice; no row returns `store.ErrNotFound` with the zero `T`. `All` returns every matching row, or a non-nil empty slice with a nil error when none match (an empty result is not `ErrNotFound`). Both execute an internal snapshot and inject the ambient transaction exactly like `Scan`, so the receiver is never mutated and a terminal's model/`LIMIT 1` never leaks back into a reused query. The query must be model-less: a model bound through `Select`, `Model`, or `Apply` returns `sqldb.ErrTypedTerminalModel` before execution. `T` must be the actual table model; `TableExpr` does not make `All[DTO]` a projection terminal. Use `TableExpr(...).Scan(ctx, &dest)` or another explicit-destination `Scan` form for projections.
+`One` applies `LIMIT 1` and returns the first matching row, so multiple matches are not an error — add `OrderExpr` for a deterministic choice; no row returns `store.ErrNotFound` with the zero `T`. `All` returns every matching row, or a non-nil empty slice with a nil error when none match (an empty result is not `ErrNotFound`). Both execute an internal snapshot and inject the ambient transaction exactly like `Scan`, so the receiver is never mutated and a terminal's model/`LIMIT 1` never leaks back into a reused query. The query must be model-less: a model bound through `Select`, `Model`, or `Apply` returns `sqldb.ErrTypedTerminalModel` before execution, ahead of a Bun builder error recorded on the same query, which the wrapper sees only at the terminal. `T` must be the actual table model; `TableExpr` does not make `All[DTO]` a projection terminal. Use `TableExpr(...).Scan(ctx, &dest)` or another explicit-destination `Scan` form for projections.
 
 Relations require a bound model and therefore use the general `Scan` terminal, not `One`/`All`/`Page`:
 
@@ -396,60 +384,57 @@ var users []User
 err := db.Select(&users).Relation("Orders").Scan(ctx)
 ```
 
-**Pagination terminal: `Page[T]`.** The third typed terminal runs COUNT and a LIMIT/OFFSET SELECT and returns a `*pagination.Page[T]`:
+**Pagination terminals: `Page[T]` and `PageWithCount[T]`.** `Page` runs Bun's count and a LIMIT/OFFSET SELECT and returns a `*pagination.Page[T]`; `PageWithCount` takes the caller's count in place of Bun's, for a query whose total `Page` cannot prove:
 
 ```go
 page, err := db.Select().Where("active = ?", true).OrderExpr("id").Page[User](ctx, req)
+page, err = db.Select().Apply(withReportColumns).OrderExpr("id").
+    PageWithCount[Report](ctx, req, db.Select((*Report)(nil)).ApplyFilter(scope).Count)
 ```
 
-It is model-less like `One` and `All`; the [pagination spec](pagination.md#adapter-selectquerypaget) is its contract: request validation, the unique tie-breaker the order needs, the total, snapshot consistency, and model→DTO mapping. Cursor/keyset pagination is designed but not exported ([design gate](pagination.md#cursorkeyset-design-gate)).
+They are model-less like `One` and `All`; the [pagination spec](pagination.md#adapter-selectquerypaget) is its contract: request validation, the unique tie-breaker the order needs, the total, snapshot consistency, and model→DTO mapping. Cursor/keyset pagination is designed but not exported ([design gate](pagination.md#cursorkeyset-design-gate)).
 
 #### Escape hatches
 
-> **Current until v0.26.0 (R9):** the next code block declares `ApplyQueryBuilder`, which `ApplyFilter` replaces.
-
 ```go
 // Apply delegates to Bun's native Apply for advanced builder methods.
-// Nil functions are filtered out. Typed per query type.
+// Nil functions are filtered out. Typed per query type. Count and Page
+// cannot prove the total of a query built with it.
 func (q *SelectQuery) Apply(fns ...func(*bun.SelectQuery) *bun.SelectQuery) *SelectQuery
 
-// ApplyQueryBuilder applies fn to Bun's shared bun.QueryBuilder (the
-// builder-only Where/WhereOr/WhereGroup/WherePK/WhereDeleted interface
-// common to select/update/delete), so a single WHERE predicate can be
-// reused across all three query types. Interceptors preserved; nil is a
-// no-op. Available on SelectQuery, UpdateQuery, DeleteQuery.
-func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder) *SelectQuery
-
-// Unwrap returns the underlying *bun.SelectQuery for builder-only use.
-// Terminal methods on the unwrapped query bypass Credo interceptors.
-func (q *SelectQuery) Unwrap() *bun.SelectQuery
-```
-
-> **Pending v0.26.0 (R9):** the next code block and paragraph state `ApplyFilter` and `Filter`; until R9 ships, a shared predicate goes through `ApplyQueryBuilder` as above.
-
-```go
 // ApplyFilter applies fn to the query's WHERE clause through a *Filter, so
 // one predicate scopes a select, an update and a delete. Interceptors and
 // the automatic total are preserved; nil is a no-op. Available on
 // SelectQuery, UpdateQuery, DeleteQuery.
 func (q *SelectQuery) ApplyFilter(fn func(*Filter)) *SelectQuery
 
+// Unwrap returns the underlying *bun.SelectQuery for builder-only use.
+// Terminal methods on the unwrapped query bypass Credo interceptors, and
+// Count and Page cannot prove the total of the query afterwards.
+func (q *SelectQuery) Unwrap() *bun.SelectQuery
+
 // Filter is the predicate builder ApplyFilter hands its callback. It has
-// the predicate methods and nothing else.
+// the predicate methods and nothing else, and is valid only during the
+// callback.
 type Filter struct { /* unexported */ }
+
+func (f *Filter) Where(query string, args ...any) *Filter
+func (f *Filter) WhereOr(query string, args ...any) *Filter
+func (f *Filter) WhereGroup(sep string, fn func(*Filter)) *Filter
+func (f *Filter) WherePK(cols ...string) *Filter
+func (f *Filter) WhereDeleted() *Filter
+func (f *Filter) WhereAllWithDeleted() *Filter
 ```
 
-`Filter`'s methods are `Where`, `WhereOr`, `WhereGroup`, whose callback takes a `*Filter`, `WherePK`, `WhereDeleted` and `WhereAllWithDeleted`, each forwarding to the Bun method of its name on the proxied query. `Filter` is Credo's type, so the callback has no Bun type to assert and no builder to return, and a query built with `ApplyFilter` keeps its automatic total whatever the callback does. `Filter` forwards only the methods it names: a method a later Bun adds to its builder changes nothing here. A callback that needs more than predicates uses `Apply`, whose query `Count` and `Page` cannot prove. The rationale and the rejected builder forms are in [ADR-015](../adr/015-data-access.md#query-proxies).
+`Filter`'s methods are `Where`, `WhereOr`, `WhereGroup`, whose callback takes a `*Filter` and adds its conditions as one parenthesized group joined with `sep`, `WherePK`, `WhereDeleted` and `WhereAllWithDeleted`, each forwarding to the Bun method of its name on the proxied query and returning the `*Filter` for chaining. `Filter` is Credo's type, so the callback has no Bun type to assert and no builder to return, and a query built with `ApplyFilter` keeps its automatic total whatever the callback does. `Filter` forwards only the methods it names: a method a later Bun adds to its builder changes nothing here. A callback that needs more than predicates uses `Apply`, whose query `Count` and `Page` cannot prove. The rationale and the rejected builder forms are in [ADR-015](../adr/015-data-access.md#query-proxies).
 
 ### Proxy Guardrails
 
-> **Current until v0.26.0 (R9):** guardrails 1, 2, 6 and 7 below describe the private execution snapshot, the restored `Clone` state, `ApplyQueryBuilder`, and a count-shape guard that sees through `Apply`.
+1. **TX inject: snapshot, don't mutate** — a terminal executes a copy of the query and sets the connection on the copy: Bun's `Clone()` for a `SelectQuery`, complete from Bun v1.3.0, and a shallow copy for the three write queries, which suffices because Bun reads, never mutates, the builder while generating SQL. The original is never modified, so a builder can be reused, inside a transaction and again after it. Whether a connection was set explicitly comes from the wrapper's `Conn` on all four query types: an explicit `Conn` wins over the ambient transaction, and a `Conn` set inside an `Apply` closure is overridden by transaction injection. `sqldb` writes no private field of Bun.
 
-1. **TX inject: snapshot, don't mutate** — terminal methods copy the underlying query before applying the TX connection. `SelectQuery` uses an internal execution snapshot that preserves the explicit connection, builder error, `WherePK` fields, soft-delete flags, and model/relation state. `InsertQuery`, `UpdateQuery`, and `DeleteQuery` use a Go struct shallow copy (`copied := *q.raw`) since Bun does not provide `Clone()` on these types — this isolates the `conn` field without affecting shared slices; it suffices because Bun reads, never mutates, the builder while generating SQL. The original `q.raw` is never modified, so query builders can be reused safely — including executing the same builder inside a transaction and again after that transaction finished. Write-query wrappers track `.Conn()` explicitly. Select reads the actual raw connection after `Conn`/`Apply`: a non-nil explicit connection wins, while clearing or replacing it with a connection-less query re-enables ambient TX injection.
+2. **Public `Clone` forwards to Bun's** — `SelectQuery.Clone` returns a proxy over Bun's `Clone()` with the wrapper's own state; it is a top-level builder fork, not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared, and source and clone must not mutate or scan shared values concurrently.
 
-2. **Public `Clone`: top-level builder fork, nested sharing** — `SelectQuery.Clone` keeps the execution state (explicit connection, builder error, `WherePK` fields, soft-delete and CTE materialization flags) and otherwise follows Bun's clone semantics. It is not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared. Source and clone must not mutate or scan shared values concurrently.
-
-3. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery) *bun.XQuery)` matches Bun's own varargs signature and delegates to `q.raw.Apply(fns...)`. Nil functions are filtered out. Terminals keep their interceptors.
+3. **Apply: Bun-native ergonomics** — `Apply(fns ...func(*bun.XQuery) *bun.XQuery)` matches Bun's own varargs signature and delegates to `q.raw.Apply(fns...)`. Nil functions are filtered out. Terminals keep their interceptors; a connection set inside a callback is overridden by transaction injection.
 
 4. **Unwrap: builder-only escape** — `Unwrap()` returns the underlying `bun.*Query` for use as a subquery or parameter to other Bun methods. Terminal methods called on the unwrapped query bypass TX injection and error mapping.
 
@@ -462,16 +447,9 @@ func (db *DB) QueryRow(ctx context.Context, dest any, query string, args ...any)
 func (db *DB) Query(ctx context.Context, dest any, query string, args ...any) error
 ```
 
-6. **ApplyQueryBuilder: predicates land on the proxied query** — `q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.XQuery)`, mirroring Bun's own `ApplyQueryBuilder`, so terminals keep TX injection and error mapping exactly as with `Apply`. A nil fn is a no-op. Why it is a function rather than a `QueryBuilder()` accessor is in [ADR-015](../adr/015-data-access.md#query-proxies).
+6. **ApplyFilter: predicates land on the proxied query** — the `Filter` forwards each predicate to the proxied query, so terminals keep TX injection and error mapping exactly as with `Apply`, and the query keeps its automatic total. A nil fn is a no-op.
 
-7. **The count-shape guard sees `Apply`** — `Count` and `Page` inspect the builder that `Apply` produced, so `Apply` stays inside the [count-shape guard](pagination.md#logical-total-and-supported-count-shapes); executing a terminal through `Unwrap` bypasses it with the other proxy guarantees.
-
-> **Pending v0.26.0 (R9):** the next four items replace guardrails 1, 2, 6 and 7 when R9 ships; guardrails 3, 4 and 5 stay.
-
-- **TX inject: snapshot, don't mutate** — a terminal executes a copy of the query and sets the connection on the copy: Bun's `Clone()` for a `SelectQuery`, complete from Bun v1.3.0, and a shallow copy for the three write queries, which suffices because Bun reads, never mutates, the builder while generating SQL. The original is never modified, so a builder can be reused, inside a transaction and again after it. Whether a connection was set explicitly comes from the wrapper's `Conn` on all four query types: an explicit `Conn` wins over the ambient transaction, and a `Conn` set inside an `Apply` closure is overridden by transaction injection. `sqldb` writes no private field of Bun.
-- **Public `Clone` forwards to Bun's** — `SelectQuery.Clone` returns a proxy over Bun's `Clone()` with the wrapper's own state; it is a top-level builder fork, not a recursive object-graph copy: bound destinations and nested CTE/relation query values may remain shared, and source and clone must not mutate or scan shared values concurrently.
-- **ApplyFilter: predicates land on the proxied query** — the `Filter` forwards each predicate to the proxied query, so terminals keep TX injection and error mapping exactly as with `Apply`, and the query keeps its automatic total. A nil fn is a no-op.
-- **`Apply` and `Unwrap` make the total the caller's** — `Count` and `Page` fail before I/O with `ErrUnsupportedCountQuery` for a query built with `Apply` or `Unwrap`, whose builder the wrapper cannot prove; the caller pages it with `PageWithCount` ([pagination spec](pagination.md#logical-total-and-supported-count-shapes)). Executing a terminal through `Unwrap` bypasses every proxy guarantee.
+7. **Escape hatches make the total the caller's** — `Count` and `Page` fail before I/O with `ErrUnsupportedCountQuery` for a query built with `Apply`, `Unwrap` or a `Relation` callback, whose changes the wrapper cannot see; the caller pages it with `PageWithCount` ([pagination spec](pagination.md#logical-total-and-supported-count-shapes)). Executing a terminal through `Unwrap` bypasses every proxy guarantee.
 
 **Planned observability:** automatic tracing via a DB-level `bun.QueryHook` belongs to the observability release ([ADR-014](../adr/014-observability.md)) and is not installed by `Open()` today. Attaching it at the Bun DB boundary will cover proxy queries, native `Client()`/`Conn()` builders, raw SQL, and migrations without duplicating instrumentation in terminal wrappers.
 
@@ -590,7 +568,7 @@ func (db *DB) Migrate(ctx context.Context) error
 - **Transaction boundary**: ordinary `.up.sql` files are not transactional; `.tx.up.sql` runs in one transaction, whose COMMIT or ROLLBACK error reaches `Migrate` and leaves the migration unapplied (pinned by a conformance test on SQLite and PostgreSQL). Database DDL support still applies, and replay/repair must stay safe even then.
 - **Seeding** is a plain migration file (e.g. `2_seed_plans.up.sql`) — no separate mechanism.
 - **No CLI here**: the planned `credo migrate:*` commands are optional sugar over this wrapper. Rollback/status/file generation stay on Bun's migrator, but a directly constructed migrator does not inherit `RegisterMigrations` options. Read-only status and file generation repeat only relevant options; DB-mutating apply/rollback paths also own Init, Lock, and bounded cancellation-detached Unlock.
-- **OnStart integration is signature compatibility**, not coupling: `sqldb` imports only `credo/store`, never the root framework package.
+- **OnStart integration is signature compatibility**, not coupling: `db.Migrate` has the shape of an `OnStart` hook, and the wrapper names no lifecycle type of the root.
 
 ### Error Mapping
 
@@ -707,8 +685,6 @@ The rationale and the rejected alternatives are in ADR-015:
 - No finite pool default and no automatic `DEGRADED` — [Connection-Pool Policy](../adr/015-data-access.md#connection-pool-policy)
 - A thin `bun/migrate` wrapper run as a pre-deploy job — [Migrations](../adr/015-data-access.md#migrations)
 - A bound database is an ordinary component, pinged in `Start` and reported through `Ready`, with an optional start that is the module's — [A Database Is a Component](../adr/015-data-access.md#a-database-is-a-component)
-
-> **Pending v0.26.0 (R9):** the next decision is not implemented yet.
 
 - Bun through its exported API only, with conformance tests in place of a layout check — [Bun Through Its Exported API](../adr/015-data-access.md#bun-through-its-exported-api)
 

@@ -199,7 +199,7 @@ These proxies add:
 
 - transaction pickup from context
 - error mapping to `store.Err*`
-- escape hatches via `Apply(...)`, `ApplyQueryBuilder(...)`, and `Unwrap()`
+- escape hatches via `Apply(...)` and `Unwrap()`, and predicates shared across query types via `ApplyFilter(...)`
 
 `Select`, `Insert`, `Update`, and `Delete` accept at most one optional model. Supplying more causes the builder to record `sqldb: <Op> accepts at most one model, got N`; the terminal returns that error without executing, and no model is silently ignored.
 
@@ -370,53 +370,45 @@ When COUNT reports zero rows, SELECT is skipped and the page comes back with a n
 
 #### What `Total` counts
 
-`Page.Total` is the number of complete logical projection rows before ordering and the Page-owned LIMIT/OFFSET window. Credo removes root ORDER/LIMIT/OFFSET/FOR state and counts a universal outer `_credo_count_source` derived table:
+`Page.Total` is the number of rows the data query returns without its LIMIT and OFFSET. `Count` and `Page` compute it with Bun's own `Count` on a query whose total the wrapper can prove, and fail before database I/O with `sqldb.ErrUnsupportedCountQuery` on every other query. A query is provable when it was built without `Apply`, `Unwrap` or a `Relation` callback (`ApplyFilter` keeps it provable), its model type does not implement Bun's `BeforeSelectHook`, and it carries `GroupExpr` or `Distinct`, or has no raw `ColumnExpr` and no `Having`:
 
 | Query | Total |
 | --- | --- |
-| Plain filtered projection | Projection rows |
-| Ungrouped aggregate projection | Normally one row, including `COUNT(*)` over empty input |
-| `Column(...).Distinct()` | Distinct selected projection tuples |
-| `GroupExpr(...)` | Groups |
-| `GroupExpr(...).Having(...)` | Groups left after `Having` |
-
-Credo pins both the outer SQL shape and its behavior with conformance tests. Two shapes are rejected before database I/O because their Count+window semantics are not safe:
+| Filtered model or `Column(...)` projection | Rows |
+| `Column(...).Distinct()` | Distinct rows |
+| `GroupExpr(...)`, with or without `Having(...)` | Groups, after `Having` |
+| `ColumnExpr(...)` or `Having(...)` without `GroupExpr`/`Distinct`, an ungrouped aggregate included | `ErrUnsupportedCountQuery` |
+| Built with `Apply`, `Unwrap` or a `Relation` callback | `ErrUnsupportedCountQuery` |
+| Model implements `BeforeSelectHook` | `ErrUnsupportedCountQuery` |
 
 ```go
 _, err := db.Select((*User)(nil)).
-    Having("COUNT(*) > 0").
+    ColumnExpr("COUNT(*) AS n").
     Count(ctx)
-// errors.Is(err, sqldb.ErrUnsupportedCountQuery) == true
-
-_, err = db.Select().
-    Apply(func(q *bun.SelectQuery) *bun.SelectQuery {
-        return q.UnionAll(other)
-    }).
-    Page[User](ctx, req)
 // errors.Is(err, sqldb.ErrUnsupportedCountQuery) == true
 ```
 
-For a compound query, place the compound SELECT behind an outer derived-table or CTE count source. If the data side also needs a custom source or destination, run an explicit count query and data query, then call `pagination.NewPage(records, int64(total), req.Page, req.PerPage)`. Typed `Page[T]` remains a model-owned terminal; wrapping a projection does not turn it into a general projection API.
+The error's message names the rule, its culprit and the remedy, `PageWithCount`. Every count drops `ORDER BY`, `LIMIT`, `OFFSET` and `FOR`, and runs on the query's own connection, so it joins the ambient transaction exactly like the data query.
 
-MySQL requires unique derived-table output names. Credo renders the logical count source once and lets the server apply its actual naming and `sql_mode` rules, so wildcard and implicit/unaliased expressions are accepted when their derived names are unique. If MySQL returns `ER_DUP_FIELDNAME` (1060) while executing Count/Page's COUNT statement, Credo wraps `sqldb.ErrUnsupportedCountQuery` after I/O and preserves the driver cause. Give colliding projections explicit unique aliases:
+A `BeforeAppendModel` hook keeps the automatic total: on a SELECT, Bun calls it only for values already in the destination, `Page` scans into an empty slice of its own, and `Count` runs no hook. A `BeforeSelect` hook is the case the wrapper cannot count, because it may change the data query in a way Bun's count would not see.
+
+On MySQL, Bun counts a grouped or `DISTINCT` query through a CTE, which requires unique output names. If such a count returns `ER_DUP_FIELDNAME` (1060), Credo wraps it with `sqldb.ErrUnsupportedCountQuery` and keeps the driver cause; give the projection's columns unique aliases. A 1060 from any other statement passes through unchanged. Keep the retained cause for logs and diagnostics; never render raw driver messages directly to HTTP clients.
+
+#### Paging with your own count
+
+`PageWithCount` pages a query whose total `Page` cannot prove with a count the repository supplies. Another query's `Count` passes as it is, so the usual shape is a cheap, deliberately equivalent count query next to the expensive data query, both scoped by one `ApplyFilter` predicate:
 
 ```go
-total, err := db.Select((*User)(nil)).
-    ColumnExpr("LOWER(name) AS normalized_name").
-    Count(ctx)
+scope := func(f *sqldb.Filter) { f.Where("tenant_id = ?", tenantID) }
+
+page, err := db.Select().
+    Apply(withScore). // a Bun-only projection: Page cannot prove its total
+    ApplyFilter(scope).
+    OrderExpr("created_at DESC, id DESC").
+    PageWithCount[Report](ctx, req, db.Select((*Report)(nil)).ApplyFilter(scope).Count)
 ```
 
-The wrapper is local to the logical count execution point. A raw query, `Scan`, `Exists`, or other non-count operation returning MySQL 1060 remains the original driver error. Because the server does not identify which derived-table level failed, an indistinguishable 1060 from a caller-supplied nested source during Count/Page is wrapped too. Keep the retained cause for logs and diagnostics; never render raw driver messages directly to HTTP clients. Real conformance covers normal mode and `NO_BACKSLASH_ESCAPES`. See MySQL's [derived-table rule](https://dev.mysql.com/doc/mysql/en/derived-tables.html).
-
-Relation callbacks are evaluated once while Credo renders the count source. They may add predicates or relation projections. Do not use them to replace the root model or add root ORDER/LIMIT/OFFSET/FOR, standalone `Having`, or a direct compound query; those mutations return `sqldb.ErrUnsupportedCountQuery` before I/O.
-
-The universal count source evaluates the complete projection. This is what makes aggregate and set-returning cardinality exact, but a costly or volatile expression may run once for COUNT and again for the data SELECT.
-
-Model SELECT hooks are not bypassed by the logical count. Credo runs `BeforeSelect`, `BeforeAppendModel`, and successful-query `AfterSelect` on the private count source; when Page also runs its data SELECT, the normal Bun scan invokes them again. A hook-added tenant predicate or projection therefore contributes to both `Total` and `Records`. Query hooks still receive the model through `QueryEvent.Model`; soft-delete filtering is kept inside the derived source so it is applied once rather than again by the outer count. Count does not scan or change a bound model, so its successful `AfterSelect` observes the value that existed before Count.
-
-Keep query-shaping hooks deterministic. Repeatable Read can stabilize rows seen by the database, but it cannot make a volatile expression or an application-side hook decision produce the same result in COUNT and SELECT.
-
-There is no custom-count callback/strategy on `Page`. For an expensive or volatile projection, reuse common predicates between a deliberately cheaper count builder and the data builder with `ApplyQueryBuilder`; use `Apply` for Bun-specific builder features, execute both explicitly, and construct `pagination.NewPage`. The repository owns query equivalence, PageRequest/window validation, and the shared transaction context. A first-class strategy waits until two real consumers repeat the same abstraction.
+`PageWithCount` checks `req`, a nil `count` and a bound model before any I/O, like `Page`. It then calls `count` with the context it was given, so pass `txCtx` inside a transaction, and runs the data query even when the count is zero. An error from `count` is returned as it is, and `Total` is the count's result: the repository owns the equivalence of the two queries and the count's sort and lock clauses.
 
 #### Keeping COUNT and SELECT on one database snapshot
 
@@ -863,45 +855,45 @@ group, err := migrator.Rollback(ctx)
 
 ## Reusing Filters Across Queries
 
-`Apply(...)` is typed per query — a `func(*bun.SelectQuery) *bun.SelectQuery` cannot be applied to an update or delete. When the _same_ WHERE logic must run across reads and writes — tenant scoping, soft-delete filters, ownership checks — use `ApplyQueryBuilder`, which accepts Bun's shared `bun.QueryBuilder` (the builder-only interface common to select, update, and delete):
+`Apply(...)` is typed per query — a `func(*bun.SelectQuery) *bun.SelectQuery` cannot be applied to an update or delete. When the _same_ WHERE logic must run across reads and writes — tenant scoping, soft-delete filters, ownership checks — use `ApplyFilter`, whose callback takes the `*sqldb.Filter` that the select, update and delete proxies share:
 
 ```go
 // One predicate, reused everywhere.
-func tenantScope(tenantID int64) func(bun.QueryBuilder) bun.QueryBuilder {
-    return func(qb bun.QueryBuilder) bun.QueryBuilder {
-        return qb.Where("tenant_id = ?", tenantID)
+func tenantScope(tenantID int64) func(*sqldb.Filter) {
+    return func(f *sqldb.Filter) {
+        f.Where("tenant_id = ?", tenantID)
     }
 }
 
 scope := tenantScope(tid)
 
-err := db.Select(&users).ApplyQueryBuilder(scope).Scan(ctx)
+err := db.Select(&users).ApplyFilter(scope).Scan(ctx)
 _, err = db.Update((*User)(nil)).Set("status = ?", "archived").
-    ApplyQueryBuilder(scope).Exec(ctx)
-_, err = db.Delete((*User)(nil)).ApplyQueryBuilder(scope).Exec(ctx)
+    ApplyFilter(scope).Exec(ctx)
+_, err = db.Delete((*User)(nil)).ApplyFilter(scope).Exec(ctx)
 ```
 
-Conditions added through the builder land on the proxied query, so the terminal methods still apply TX injection and error mapping — interceptors are preserved, exactly like `Apply`. A nil predicate is a no-op.
+Conditions added through the filter land on the proxied query, so the terminal methods still apply TX injection and error mapping, and `Count` and `Page` keep their automatic total. A nil callback is a no-op.
 
-`bun.QueryBuilder` also exposes `WhereOr`, `WherePK`, `WhereDeleted`, `WhereAllWithDeleted`, and `WhereGroup` — including `WhereGroup`, which the curated proxy set does not surface directly:
+`Filter` has `Where`, `WhereOr`, `WhereGroup`, `WherePK`, `WhereDeleted` and `WhereAllWithDeleted`, and nothing else; each returns the `*Filter` for chaining, and a `Filter` is valid only during the callback. `WhereGroup`, which the curated proxy set does not surface directly, puts its callback's conditions in one parenthesized group:
 
 ```go
 err := db.Select(&users).
-    ApplyQueryBuilder(func(qb bun.QueryBuilder) bun.QueryBuilder {
-        return qb.WhereGroup(" AND ", func(g bun.QueryBuilder) bun.QueryBuilder {
-            return g.Where("role = ?", "admin").WhereOr("role = ?", "owner")
+    ApplyFilter(func(f *sqldb.Filter) {
+        f.WhereGroup(" AND ", func(g *sqldb.Filter) {
+            g.Where("role = ?", "admin").WhereOr("role = ?", "owner")
         })
     }).
     Scan(ctx)
 ```
 
-Because the predicate signature mentions `bun.QueryBuilder`, this path imports `bun` into repository code — it is an escape hatch like `Apply`, not the default. The builder's `Unwrap() any` returns the concrete query; calling terminal methods on it bypasses interceptors, the same caveat as `Unwrap()`.
+The callback's signature names only `sqldb.Filter`, so a shared predicate keeps `bun` out of repository code.
 
 ---
 
 ## Raw SQL And Bun Escape Hatch
 
-Credo does not hide Bun — it integrates it. If the proxy layer does not cover a Bun feature you need, use the escape hatches: a missing _builder_ method is reached with `Apply`/`ApplyQueryBuilder` (proxy guarantees preserved); a missing _terminal_ method is worth a feature request — the guarantees live in the terminals, so they belong on the proxy. `Unwrap()` and `Client()` opt out of the guarantees entirely.
+Credo does not hide Bun — it integrates it. If the proxy layer does not cover a Bun feature you need, use the escape hatches: a missing _builder_ method is reached with `Apply` (proxy guarantees preserved; a select built with it pages with `PageWithCount`); a missing _terminal_ method is worth a feature request — the guarantees live in the terminals, so they belong on the proxy. `Unwrap()` and `Client()` opt out of the guarantees entirely.
 
 Raw helpers:
 

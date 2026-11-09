@@ -56,11 +56,11 @@ An upgrade to a wrapped protocol or infrastructure dependency must identify the 
 
 ### Updating Bun
 
-`store/sqldb` has a narrow compatibility layer that restores private `bun.SelectQuery` execution state after `Clone`. Bun v1.3.0's `Clone` copies that state itself, so the layer is redundant on the pinned release; it stays, structurally pinned to the Bun release, until a later minor removes it. Update `github.com/uptrace/bun` and its three dialect modules together to the same reviewed release.
+`store/sqldb` uses Bun through its exported API only: no file imports `unsafe` (`TestBunBoundary_NoUnsafe`), and no wrapper reads or restores a private Bun field. Update `github.com/uptrace/bun` and its three dialect modules together to the same reviewed release.
 
-Every Bun update must pass the full `Test (store/sqldb)` race job, including `TestBunSelectCloneLayoutCompatibility` and the critical query-state, pagination-count, and SQL-rendering contract tests. The normal build, tidy, lint, and real PostgreSQL/MySQL jobs must pass as well.
+Every Bun update must pass the full `Test (store/sqldb)` race job, including the count conformance tests: `TestCountConformance_SQLite`, and the "count conformance" and "count runs on the query's own connection" subtests of `TestRealDB_Contracts` on PostgreSQL and MySQL. They check Bun's `Count` against the rows of each query shape the wrapper counts, that every count drops ORDER BY, LIMIT, OFFSET and FOR, the `BeforeAppendModel` facts the automatic total relies on, and the connection a count runs on. The query-state, pagination and SQL-rendering contract tests, and the normal build, tidy, lint, and real PostgreSQL/MySQL jobs must pass as well.
 
-If a Bun update changes private layout or SQL semantics, first evaluate an upstream fix, removing or narrowing the compatibility layer, or narrowing the Credo contract. Do not automatically expand unsafe private-field access or add SQL parser logic merely to preserve the previous implementation.
+If a Bun update changes what its `Count` returns for a shape the wrapper counts, first evaluate an upstream fix, or narrowing the shapes `Count` and `Page` accept so such a query pages with `PageWithCount`. Do not read Bun's private state or add SQL parser logic to preserve the previous behavior.
 
 The `.tx.up.sql` finalizer contract — a COMMIT or ROLLBACK error reaches `Migrate` and leaves the migration unapplied, fixed upstream in Bun v1.3.0 ([Bun #1389](https://github.com/uptrace/bun/issues/1389)) — is pinned by `TestMigrate_TxSQLCommitErrorReachesCaller` on SQLite and by the "transactional SQL migration commit error" subtest of `TestRealDB_Contracts` on PostgreSQL. A Bun update that fails them reinstates the documented warning instead of weakening the tests.
 
