@@ -1,6 +1,6 @@
 # Routing Guide
 
-This guide explains how to use Credo's routing features in application code: path routing, route groups, host-based routing, pre-dispatch rewrite, handler-driven internal forwarding, and testing handlers.
+This guide explains how to use Credo's routing features in application code: path routing, route groups, host-based routing, pre-dispatch rewrite, conditional forwarding, introspection, and testing handlers.
 
 For internal design rationale, see the [Router Spec](../specs/router.md), [Middleware Spec](../specs/middleware.md), [Context Spec](../specs/context.md), and [ADR-018](../adr/018-host-routing-and-rewrite.md).
 
@@ -110,7 +110,7 @@ app.GET("/orders/{id:[0-9]+}", getOrder) // GET /orders/%31 matches with id "1"
 app.GET("/docs/{path...}", serveDoc)      // GET /docs/a%2Fb/c -> "a/b/c"
 ```
 
-Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded unreserved delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain an unreserved byte that follows its parameter in the pattern. Reserved characters keep their escape (RFC 3986 §2.2): `/t/a%3Bb;v` gives `{id};v` the value `a;b`, and `/lit/a%3Bb` does not match static `/lit/a;b`. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. `c.Rewrite` takes a wire-form target, so `c.Rewrite("/files/a%2Fb")` reaches the handler as `a/b`.
+Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded unreserved delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain an unreserved byte that follows its parameter in the pattern. Reserved characters keep their escape (RFC 3986 §2.2): `/t/a%3Bb;v` gives `{id};v` the value `a;b`, and `/lit/a%3Bb` does not match static `/lit/a;b`. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. A `middleware.Rewrite` target is wire form too, so `To: "/files/a%2Fb"` reaches the handler as `a/b`.
 
 URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment; static text comes out in its wire spelling. A value that could not route back — invalid UTF-8, or one containing its parameter's delimiter (`a.b` for `{name}.json`) — is an error.
 
@@ -428,34 +428,20 @@ A rule matches the path the way the router does, so an encoded slash is data ins
 
 ---
 
-## Handler-Level Internal Forwarding
+## Conditional Forwarding
 
-Use `c.Rewrite()` when the decision depends on handler logic.
+A path is rewritten before routing or not at all. When the decision needs handler logic — a feature flag, a cookie, the user — call the target's handler yourself:
 
 ```go
 app.GET("/checkout", func(c *credo.Context) error {
     if useNewCheckout(c) {
-        return c.Rewrite("/checkout/v2")
+        return checkoutV2(c)
     }
-    return c.Rewrite("/checkout/v1")
+    return checkoutV1(c)
 })
 ```
 
-### When to Use It
-
-- A/B routing
-- SPA fallback
-- custom error-page routing
-- conditional forwarding based on cookies, auth, or database state
-
-### Rules
-
-- Return it directly: `return c.Rewrite("/new")`
-- The target must start with `/`
-- A request can rewrite at most 10 times
-- Re-dispatch stays in the same host scope
-- Routed, group and route middleware run again for the rewritten route
-- Framework features and `PreRouting` middleware do not run again
+The call runs inside the `/checkout` route, so that route's middleware and meta apply once, and the request keeps the client's URL. Serve a single-page app's client routes with static's SPA mode ([Static Files Guide](static-files.md#spa-mode)), and map a path decided by the path alone with `middleware.Rewrite` before routing.
 
 ---
 
@@ -482,48 +468,21 @@ The access log (`app.UseAccessLog`) records both.
 
 ---
 
-## Middleware Gotchas with `c.Rewrite()`
+## Introspection
 
-If a handler calls `c.Rewrite()`, routed, group and route middleware for the target route execute again.
-
-That means `after` logic is per dispatch round, not per whole request:
+`app.Routes()` returns every route and every mount as a `RouteInfo`: the `Method` and `Pattern`, the route `Name`, the resolved meta (route ← group ← app) through `ri.GetMeta(key)`, `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. A loop that wants routes only skips the mounts:
 
 ```go
-func Timer(next credo.Handler) credo.Handler {
-    return func(c *credo.Context) error {
-        start := time.Now()
-        err := next(c)
-        if c.IsRewriting() {
-            return err
-        }
-        slog.Info("route duration", "duration", time.Since(start))
-        return err
+for _, ri := range app.Routes() {
+    if ri.Kind == credo.RouteKindMount {
+        continue // a mount has no Method; its forwarded methods are in ri.Methods
     }
+    perm, _ := ri.GetMeta(Permission) // Permission is a credo.Key[string]
+    fmt.Println(ri.Method, ri.Host, ri.Pattern, ri.Name, perm)
 }
 ```
 
-Use `PreRouting` middleware when you want one measurement for the whole request.
-
----
-
-## Introspection
-
-`Walk` takes a simple `(method, pattern)` callback and visits real routes only — mounts are skipped because the method/pattern shape cannot represent them. `WalkRoutes` (and the equivalent `app.Routes()`) hands you the full `RouteInfo`: the route `Name`, the resolved meta (route ← group ← app) through `ri.GetMeta(key)`, `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. Reach for `WalkRoutes`/`Routes` whenever you need anything beyond method and pattern, or you need mounts to appear.
-
-```go
-credo.Walk(app, func(method, pattern string) error {
-    fmt.Println(method, pattern) // real routes only; mounts skipped
-    return nil
-})
-
-credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
-    perm, _ := ri.GetMeta(Permission) // Permission is a credo.Key[string]; a mount reports none
-    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, perm)
-    return nil
-})
-```
-
-`app.Routes()` returns the same data as a slice in a deterministic total order (`Host`, `Pattern`, `Method`, `Kind`), so it is a stable source for route/permission catalogs and golden-file tests. Introspection reads live route state, so call it once wiring is complete — not concurrently with route registration.
+The slice is in a deterministic total order (`Host`, `Pattern`, `Method`, `Kind`), so it is a stable source for route/permission catalogs and golden-file tests. Introspection reads live route state, so call it once wiring is complete — not concurrently with route registration.
 
 ---
 
@@ -573,5 +532,5 @@ func TestShowUser_NotFound(t *testing.T) {
 - Use `app.Host()` for domain isolation.
 - Use `app.Group()` for path prefixes and scoped middleware.
 - Use `middleware.Rewrite()` for deterministic URL normalization.
-- Use `c.Rewrite()` for conditional internal forwards.
+- Call the target's handler yourself for a forward that needs handler logic.
 - Use `OriginalPath()` when you care about analytics, debugging, or audit logs.

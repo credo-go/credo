@@ -14,6 +14,8 @@ A mounted handler is a route like any other for the middleware every route gets:
 
 A router also decides which spellings of a URL are one route. The path a client sends is percent-encoded: routing must not invent a segment the client never sent, must not let two spellings of one URI reach different routes, and must hand a captured value to the handler, to a nested app and to URL generation without decoding it twice or losing it.
 
+The routing API v1 freezes should have one way to do each thing. A second introspection API beside `app.Routes()` — free functions that take an interface the App satisfies — would freeze a `(method, pattern)` callback that cannot represent a mount, so it skips them silently. An exported alias of the radix tree's route context would expose its internal fields although nothing hands an application one. And a static URL built from a file path written unescaped does not reach a file whose name needs escaping, while a dot-segment in it makes a URL a client resolves out of the static prefix.
+
 Host routing and URL rewrite: [ADR-018](018-host-routing-and-rewrite.md).
 
 ## Decision
@@ -104,12 +106,6 @@ The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix
 
 ### Route Introspection
 
-> **Current until v0.26.0 (R14):** the next paragraph names `Walk` and `WalkRoutes` beside `app.Routes()`.
-
-`app.Routes()`, `Walk` and `WalkRoutes` report the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)). `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and reads the resolved meta (route ← group ← app) through `RouteInfo.GetMeta(key)`, whose values are shared with the route and read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out, and `Walk` skips mounts because its method+pattern callback cannot represent them. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
-
-> **Pending v0.26.0 (R14):** the next paragraph replaces the paragraph above when the `Walk` family goes; until then `Walk` and `WalkRoutes` report the same surface through a callback.
-
 `app.Routes()` reports the live route surface as `RouteInfo` ([router spec](../specs/router.md#router-interface)), every route and every mount. `RouteInfo` is derived from the route store at call time rather than snapshotted at registration, and reads the resolved meta (route ← group ← app) through `RouteInfo.GetMeta(key)`, whose values are shared with the route and read-only by convention. A mount is opaque: one `RouteKindMount` entry reports its cleaned prefix and forwarded methods, never the internal catch-all pattern or method fan-out; a caller that wants routes only skips the mounts in its loop. Output is a deterministic total order `(Host, Pattern, Method, Kind)`, independent of registration order and host compile-sort state, so route/permission catalogs and golden-file tests are stable. Introspection reads live `*Route` fields without locking; it is a post-wiring operation and must not run concurrently with route registration or configuration.
 
 **Alternatives considered:**
@@ -122,13 +118,7 @@ The prefix may carry parameters (`Mount("/t/{tenant}", h)`). A parametric prefix
 
 ### One Introspection Call, No Exposed Routing State
 
-> **Pending v0.26.0 (R14):** not implemented yet; `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface are exported, `credo.RouteContext` aliases `internal/radix`'s type, and `StaticRoute.BuildURI` returns a `string` built without escaping.
-
 The routing API v1 freezes has one way to do each thing. `app.Routes()` is the one introspection call: it returns every route, mounts included, and a loop over it does what `Walk` and `WalkRoutes` did, with `Walk`'s skip of mounts written in the loop. No routing type of `internal/radix` is exported: no exported function returns one, so an alias would only expose its fields. `StaticRoute.BuildURI` builds a URL as `Route.BuildURI` does — it escapes each segment of the file path, and returns an error for a path it cannot represent, such as invalid UTF-8 or a dot-segment that a client would resolve out of the static prefix — so a generated static URL routes back to the file it names.
-
-**Problem.** `Walk`, `WalkRoutes` and the `Routes` interface they take are a second introspection API beside `app.Routes()`, and `Walk`'s `(method, pattern)` callback cannot represent a mount, so it skips them silently. The `RouteContext` alias exposes the radix tree's internal fields although nothing hands an application one. `StaticRoute.BuildURI` writes the file path unescaped and cannot fail, so a file name that needs escaping produces a URL that does not reach the file, and a dot-segment produces one a client resolves out of the prefix.
-
-**Removes.** `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface, replaced by a loop over `app.Routes()`; the `credo.RouteContext` alias, with no replacement; and `StaticRoute.BuildURI`'s `string` result, which becomes `(string, error)`. A static URL whose file path needs escaping is now escaped.
 
 ### Compile & Freeze
 
@@ -152,7 +142,7 @@ When no route matches but the path with its trailing slash toggled does, the rou
 - Named routes + URL generation prevent hardcoded paths
 - Fluent API is readable and chainable
 - HEAD auto-handling follows HTTP spec
-- Live route introspection (`Routes`/`WalkRoutes`) exposes `Name`, the resolved meta through `GetMeta`, and mounts — enabling drift-free route/permission catalogs
+- Live route introspection (`app.Routes()`) exposes `Name`, the resolved meta through `GetMeta`, and mounts — enabling drift-free route/permission catalogs
 
 **Negative:**
 

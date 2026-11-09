@@ -12,6 +12,8 @@ The object exists once per request, so its allocation cost is paid on every requ
 
 The request's values and its `context.Context` must be one thing. A deadline a timeout middleware sets or a span a stdlib middleware adds changes the request's context; a value a middleware records — a tenant, the user — must reach a repository given that context and a mounted stdlib handler, and must survive the end of the layer that set it, or the layers outside it lose the user. Values copied into a request per write cost an allocation each, and a key that binds no type to its name lets two packages share one value by accident and makes every read a type assertion. Request input that is decoded but not validated leaves every handler to remember a second step. Client metadata derived from proxy headers drifts when each middleware derives it on its own.
 
+A public surface frozen at v1 should carry no contract that nothing needs: a reset with no pool to reset for, a type alias that exposes internal fields, a second way to build a `Request` or a `Response` beside the Context that owns them, or a post-match re-dispatch whose pending signal, rewrite limit and second run of group and route middleware no common case uses.
+
 ## Decision
 
 ### Context as Struct in Root Package
@@ -22,7 +24,7 @@ The request's values and its `context.Context` must be one thing. A deadline a t
 
 - Go generic methods need a concrete receiver: the typed user accessors (`c.SetUser`, `c.GetUser[T]`, `c.RequireUser[T]`, [ADR-012](012-authentication-and-authorization.md)) exist because Context is a struct.
 - A new helper is a new method, not a change to an interface that every implementation and mock must follow.
-- No user implementation can break framework invariants (commit tracking, rewrite state).
+- No user implementation can break framework invariants (commit tracking).
 - Calls are static, with no interface dispatch on every method call.
 
 **Why root package:**
@@ -33,11 +35,11 @@ The request's values and its `context.Context` must be one thing. A deadline a t
 
 ### Request / Response Split
 
-Input and output live on separate objects reached through `c.Request()` and `c.Response()`; Context itself stays a thin carrier of the matched route, the logger, the request's context head and the rewrite state. `Request` embeds `*http.Request` and adds route and query parameters, binding, and proxy-derived client metadata. `Response` wraps `http.ResponseWriter` with framework-owned commit tracking and the body helpers. A new response format or binding method lands on the side it belongs to without touching Context. The [Context spec](../specs/context.md#api-surface) holds both method sets.
+Input and output live on separate objects reached through `c.Request()` and `c.Response()`; Context itself stays a thin carrier of the matched route, the logger, the request's context head and the original client path. `Request` embeds `*http.Request` and adds route and query parameters, binding, and proxy-derived client metadata. `Response` wraps `http.ResponseWriter` with framework-owned commit tracking and the body helpers. A new response format or binding method lands on the side it belongs to without touching Context. The [Context spec](../specs/context.md#api-surface) holds both method sets.
 
 `RouteParam(name)` is the preferred single-value accessor, named for symmetry with `QueryParam` and `RouteParams` rather than Echo's bare `Param`. Parameters are stored as parallel key/value slices, so `RouteParam` is an allocation-free scan; the slices are not exposed (no Echo-style `ParamNames`/`ParamValues`), and `RouteParams` materializes a read-only map only when it is called.
 
-The plain-text helper is `Text`, not `String`, because `Response` implements `fmt.Stringer` for debugging. The original client path lives on Context, not Request: it is dispatch and rewrite state, and keeping it on Context avoids mutating the wrapped `*http.Request`.
+The plain-text helper is `Text`, not `String`, because `Response` implements `fmt.Stringer` for debugging. The original client path lives on Context, not Request: it is dispatch state, recorded before any rewrite, and keeping it on Context avoids mutating the wrapped `*http.Request`.
 
 ### Route Parameters Are Not Stdlib Path Values
 
@@ -130,8 +132,6 @@ Rejected: keeping the pool when the unpooled build is more than 5% worse, which 
 
 ### Pruned Context APIs
 
-> **Pending v0.26.0 (R14):** not implemented yet; `Response.Reset`, the `RouteContext` alias, `NewRequest`, `NewResponse`, `Context.Rewrite` and `IsRewriting` are public.
-
 Three leftovers of earlier shapes and the Context's parallel APIs leave the public surface before v1 freezes it:
 
 - `Response.Reset`: only the Context pool resets a response, the pool is gone, and an application has none to reset.
@@ -140,10 +140,6 @@ Three leftovers of earlier shapes and the Context's parallel APIs leave the publ
 - `Context.Rewrite` and `IsRewriting`: the common cases have their own path, static's SPA mode and `middleware.Rewrite` before routing, while the post-match re-dispatch would freeze at v1 with its contract and adding it back later is additive ([ADR-018](018-host-routing-and-rewrite.md)).
 
 Kept: `NewContext`, with which the hooks that take a `*Context` — a locale detector, a `Skipper`, an `ErrorRenderer`, an `Authenticator` — are unit-tested, and a `Request` or a `Response` with them; its godoc names what a Context built without an App lacks.
-
-**Problem.** Each of these freezes at v1 with a contract nothing needs: a reset with no pool, a type alias that exposes internal fields, a second way to build a `Request` or a `Response` beside the Context that owns them, and a re-dispatch whose pending signal, rewrite limit and second run of group and route middleware no common case uses.
-
-**Removes.** `Response.Reset` and `credo.RouteContext`, with no replacement; `credo.NewRequest(r)` and `credo.NewResponse(w)`, which become `credo.NewContext(w, r).Request()` and `.Response()`; `Context.Rewrite` and `IsRewriting`, which become a `middleware.Rewrite` rule, static's SPA mode, or a handler that calls the target's handler itself.
 
 ## Rejected Alternatives
 

@@ -212,11 +212,7 @@ app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.R
 }}))
 ```
 
-At group or route scope it only mutates the request seen by downstream middleware/handler for an already matched route. It does not trigger a re-dispatch loop.
-
-> **Current until v0.26.0 (R14):** the next paragraph; `Context.Rewrite` and `IsRewriting` go, and a client route is served through static's SPA mode or mapped by `Rewrite` before routing.
-
-When a handler later calls `ctx.Rewrite()`, framework features and `PreRouting` middleware do not run again. Routed, group and route middleware for the newly matched route do run again, so `after` logic must be written with per-dispatch semantics in mind. The [context spec](context.md#rewrite) defines `ctx.Rewrite`.
+At group or route scope it only mutates the request seen by downstream middleware/handler for an already matched route. It does not route the request again.
 
 ### CSRF
 
@@ -302,6 +298,4 @@ Both arrive with the observability release ([ADR-014](../adr/014-observability.m
 
 - The single middleware type with its stdlib adapter, the PreRouting/routed/Group/Route tiers, meta-driven behavior, the config struct pattern, CSRF through the stdlib detector, and the framework features outside the chain are recorded in [ADR-010](../adr/010-middleware-architecture.md).
 
-> **Current until v0.26.0 (R14):** the next item's "with conditional internal forwarding on `ctx.Rewrite()`".
-
-- Pre-dispatch rewrite as middleware rather than router configuration, with conditional internal forwarding on `ctx.Rewrite()`, is recorded in [ADR-018](../adr/018-host-routing-and-rewrite.md#rejected-alternatives).
+- Pre-dispatch rewrite as middleware rather than router configuration is recorded in [ADR-018](../adr/018-host-routing-and-rewrite.md#rejected-alternatives), and why no rewrite runs after the match in [ADR-018](../adr/018-host-routing-and-rewrite.md#no-post-match-re-dispatch).

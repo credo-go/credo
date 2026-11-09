@@ -93,14 +93,12 @@ Registers a single GET route, with the router's HEAD twin, that serves the file 
 
 ### StaticRoute
 
-> **Current until v0.26.0 (R14):** the next block's `BuildURI` returns a `string`; it becomes `BuildURI(filePath ...string) (string, error)` ([below](#staticroute)).
-
 ```go
 func (sr *StaticRoute) Name(name string) *StaticRoute
 func (sr *StaticRoute) SetMeta[T any](key Key[T], val T) *StaticRoute
 func (sr *StaticRoute) RemoveMeta[T any](key Key[T]) *StaticRoute
 func (sr *StaticRoute) Middleware(m ...Middleware) *StaticRoute
-func (sr *StaticRoute) BuildURI(filePath ...string) string
+func (sr *StaticRoute) BuildURI(filePath string) (string, error)
 ```
 
 `*StaticRoute` wraps the two GET routes `Static` registers and proxies fluent configuration to them:
@@ -117,23 +115,20 @@ func (sr *StaticRoute) BuildURI(filePath ...string) string
 
 ```go
 sr := app.Static("/static", fsys)
-sr.BuildURI("css/app.css") // "/static/css/app.css"
-sr.BuildURI("")            // "/static/"
-sr.BuildURI()              // "/static/"
+uri, err := sr.BuildURI("css/app.css") // "/static/css/app.css"
+uri, err = sr.BuildURI("a b/ü.txt")    // "/static/a%20b/%C3%BC.txt"
+uri, err = sr.BuildURI("")             // "/static/": the prefix with its trailing slash
+_, err = sr.BuildURI("../secret.txt")  // error: the segment ".." is a dot-segment
 ```
 
-> **Current until v0.26.0 (R14):** the next paragraph and the example above it describe a `BuildURI` that percent-encodes nothing and returns no error.
+`BuildURI` takes one slash-separated file path, relative to the prefix, and escapes each of its segments for the URL, so the URL it returns serves the file it names. It returns an error, naming the path and the reason, for a path it cannot represent: invalid UTF-8, which the router answers with 400, or a `.` or `..` segment, which a client removes before it sends the request, so that the URL would name another file or leave the prefix. An empty file path returns the prefix with its trailing slash. It is the static counterpart of `Route.BuildURI`, which returns an error for a value it cannot route back.
 
-Leading slashes of the file path are dropped; under the root prefix `"/"` the results are `/css/app.css` and `/`. `BuildURI` joins the prefix as registered and the file path verbatim: it percent-encodes nothing and substitutes no parameters. Under a parametric group prefix it therefore returns pattern text (`/t/{tenant}/files/css/app.css`), not a routable URL. Name the static route and build from the catch-all instead, which fills the parameters in order and escapes each segment:
+Leading slashes of the file path are dropped; under the root prefix `"/"` the results are `/css/app.css` and `/`. `BuildURI` joins the prefix as registered and substitutes no parameters. Under a parametric group prefix it therefore returns pattern text (`/t/{tenant}/files/css/app.css`), not a routable URL. Name the static route and build from the catch-all instead, which fills the parameters in order and escapes each segment:
 
 ```go
 app.Group("/t/{tenant}").Static("/files", fsys).Name("files")
 uri, err := app.GetRoute("files").BuildURI("acme", "css/app.css") // "/t/acme/files/css/app.css"
 ```
-
-> **Pending v0.26.0 (R14):** not implemented yet; `BuildURI` returns a `string` built without escaping, as the paragraph above states.
-
-`BuildURI(filePath ...string) (string, error)` escapes each segment of the file path for the URL and returns an error, naming the path and the reason, for a path it cannot represent: invalid UTF-8, or a dot-segment that a client would resolve out of the prefix. It is the static counterpart of `Route.BuildURI`, which returns an error for a value it cannot route back.
 
 ## Internal Behavior
 

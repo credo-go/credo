@@ -255,12 +255,12 @@ This propagation is universal across the framework: `app.GET(...)`, `group.GET(.
 ```go
 sr := app.Static("/assets", sub).Name("assets")
 
-sr.BuildURI("css/app.css")  // "/assets/css/app.css"
-sr.BuildURI("")             // "/assets/"
-sr.BuildURI()               // "/assets/"
+uri, err := sr.BuildURI("css/app.css") // "/assets/css/app.css"
+uri, err = sr.BuildURI("a b.png")      // "/assets/a%20b.png"
+uri, err = sr.BuildURI("")             // "/assets/": the prefix with its trailing slash
 ```
 
-Use `StaticRoute.BuildURI` for clean URLs. `Route.BuildURI` on the underlying catch-all route requires the `_static` parameter explicitly.
+Use `StaticRoute.BuildURI` for clean URLs. It escapes each segment of the file path, so the URL serves the file it names, and returns an error naming the path for one no URL can represent: invalid UTF-8, or a `.` or `..` segment. `Route.BuildURI` on the underlying catch-all route requires the `_static` parameter explicitly.
 
 ---
 

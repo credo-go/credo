@@ -297,36 +297,11 @@ Matching runs on the canonical form of the wire path: `URL.EscapedPath()` with e
 
 A decoded value is data, not a path: it may contain `/`, `\` and `..`, and the router makes no filesystem guarantee. Confining file access is the consumer's job — `os.Root` for handlers ([routing guide](../guides/routing.md#route-parameters-are-not-file-names)), the built-in sanitization for `app.Static` and `app.File` ([static spec](static.md)).
 
-A well-formed value that fails its constraint is a route non-match: the tree backtracks to the sibling parameter or catch-all node and answers 404 when nothing else matches. A candidate that decodes to invalid UTF-8 (`%FF`) is skipped, and when no route matches the request receives 400 with the code `invalid_path_encoding` instead of 404; malformed percent-encoding (`%zz`) never reaches the router because net/http rejects the request line first. Static text follows the canonical form above; a static segment that decodes to invalid UTF-8 is simply a non-match. `Context.OriginalPath` reports the wire-form path, a `Context.Rewrite` target is a wire-form path (a malformed escape makes `Rewrite` return an error) and a mounted handler receives the raw remainder below its prefix (see [Sub-router Mounting](#sub-router-mounting)).
+A well-formed value that fails its constraint is a route non-match: the tree backtracks to the sibling parameter or catch-all node and answers 404 when nothing else matches. A candidate that decodes to invalid UTF-8 (`%FF`) is skipped, and when no route matches the request receives 400 with the code `invalid_path_encoding` instead of 404; malformed percent-encoding (`%zz`) never reaches the router because net/http rejects the request line first. Static text follows the canonical form above; a static segment that decodes to invalid UTF-8 is simply a non-match. `Context.OriginalPath` reports the wire-form path, a `middleware.Rewrite` target is a wire-form path (a malformed escape in it panics when the middleware is built) and a mounted handler receives the raw remainder below its prefix (see [Sub-router Mounting](#sub-router-mounting)).
 
 The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https://www.rfc-editor.org/rfc/rfc3986#section-2.4); the line between escapes that are normalized and escapes that are kept follows [§2.2](https://www.rfc-editor.org/rfc/rfc3986#section-2.2) and [§2.3](https://www.rfc-editor.org/rfc/rfc3986#section-2.3). Path parameter `+` behavior matches [Go PathUnescape](https://pkg.go.dev/net/url#PathUnescape).
 
 ### Router Interface
-
-> **Current until v0.26.0 (R14):** the next block and the paragraph after it present the free functions `Walk` and `WalkRoutes` and the `Routes` interface beside `app.Routes()`.
-
-```go
-// App implements http.Handler
-app.ServeHTTP(w, r)
-
-// Named route lookup
-app.GetRoute(name string) *Route
-
-// Route introspection (free functions)
-credo.Walk(app, func(method, pattern string) error {
-    fmt.Println(method, pattern)
-    return nil
-})
-
-credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
-    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name)
-    return nil
-})
-```
-
-`*App` satisfies the `Routes` introspection interface directly (`credo.Walk(app, …)` / `credo.WalkRoutes(app, …)`), covering the default mux and all host-scoped muxes. `Walk` keeps the simple `(method, pattern)` callback and visits real routes only; `WalkRoutes` (like `app.Routes()`) exposes the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), read with `GetMeta(key)` — a mount reports the App's, and values are read-only by convention; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden, and `Walk` skips mounts entirely. `Routes()` output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration.
-
-> **Pending v0.26.0 (R14):** the next block and paragraph replace the two above when the `Walk` family goes; until then `Walk`, `WalkRoutes`, `WalkFunc`, `WalkRoutesFunc` and the `Routes` interface are exported.
 
 ```go
 // App implements http.Handler
