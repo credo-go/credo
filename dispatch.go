@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -140,7 +139,7 @@ func (app *App) dispatch(c *Context) error {
 		} else {
 			c.request.URL.RawQuery = ""
 		}
-		if err := setWirePath(c.request.URL, target); err != nil {
+		if err := wirepath.SetPath(c.request.URL, target); err != nil {
 			return fmt.Errorf("credo: rewrite target %q: %w", target, err)
 		}
 		c.route = nil
@@ -627,7 +626,7 @@ func mountChildRequest(r *http.Request, newPath string) *http.Request {
 func mountParamChildRequest(r *http.Request, names []string, newPath string) *http.Request {
 	rctx := getRouteContext(r)
 	child := r.Clone(context.WithValue(r.Context(), routeCtxKey, (*RouteContext)(nil)))
-	if err := setWirePath(child.URL, newPath); err != nil {
+	if err := wirepath.SetPath(child.URL, newPath); err != nil {
 		child.URL.Path = newPath
 		child.URL.RawPath = ""
 	}
@@ -721,37 +720,16 @@ func mountRemainderBelow(r *http.Request, segments int) string {
 }
 
 // rewriteRequest returns a shallow copy of r whose URL carries rawPath as its
-// wire-form path (decoded Path plus RawPath when the spellings differ). Used by
-// Mount to adjust the path for sub-routers.
+// wire-form path (decoded Path plus RawPath when the spellings differ, see
+// [wirepath.SetPath]). Used by Mount to adjust the path for sub-routers.
 func rewriteRequest(r *http.Request, rawPath string) *http.Request {
 	r2 := new(*r)
 	r2.URL = r.URL.Clone()
-	if err := setWirePath(r2.URL, rawPath); err != nil {
+	if err := wirepath.SetPath(r2.URL, rawPath); err != nil {
 		r2.URL.Path = rawPath
 		r2.URL.RawPath = ""
 	}
 	return r2
-}
-
-// setWirePath stores a wire-form (percent-encoded) path on u the way net/url
-// does when it parses a request target: Path holds the decoded form and
-// RawPath the original spelling only when the two differ, so
-// [url.URL.EscapedPath] returns raw again. raw may be canonical (a mount
-// remainder) — bytes that cannot appear literally in a request path are
-// escaped first, so the spelling survives net/url's validation. A malformed
-// escape is an error and leaves u unchanged.
-func setWirePath(u *url.URL, raw string) error {
-	raw = wirepath.Escape(raw)
-	decoded, err := url.PathUnescape(raw)
-	if err != nil {
-		return err
-	}
-	u.Path = decoded
-	u.RawPath = ""
-	if u.EscapedPath() != raw {
-		u.RawPath = raw
-	}
-	return nil
 }
 
 // mountInfo records a mounted prefix for route introspection. [App.Mount] adds

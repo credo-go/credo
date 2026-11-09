@@ -120,3 +120,55 @@ func TestCandidateEnd(t *testing.T) {
 		t.Errorf("CandidateEnd allocates %v times", n)
 	}
 }
+
+func TestMalformedEscape(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"/a/b", -1},
+		{"/a%2Fb", -1},
+		{"/a%2fb%25", -1},
+		{"/100%", 4},
+		{"/a%2", 2},
+		{"/a%zz", 2},
+		{"/a%2Fb%g1", 6},
+		{"%", 0},
+	}
+	for _, tt := range tests {
+		if got := MalformedEscape(tt.in); got != tt.want {
+			t.Errorf("MalformedEscape(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSetPath(t *testing.T) {
+	tests := []struct{ wire, path, raw string }{
+		{"/users/42", "/users/42", ""},
+		{"/files/a%2Fb", "/files/a/b", "/files/a%2Fb"},
+		{"/café", "/café", ""},
+		{"/a b", "/a b", ""},
+		{"/a%3Bb", "/a;b", "/a%3Bb"},
+		{"/100%25", "/100%", ""},
+	}
+	for _, tt := range tests {
+		u := &url.URL{Path: "/before", RawPath: ""}
+		if err := SetPath(u, tt.wire); err != nil {
+			t.Fatalf("SetPath(%q): %v", tt.wire, err)
+		}
+		if u.Path != tt.path || u.RawPath != tt.raw {
+			t.Errorf("SetPath(%q): Path=%q RawPath=%q, want %q %q", tt.wire, u.Path, u.RawPath, tt.path, tt.raw)
+		}
+		if got, want := Canonical(u.EscapedPath()), Canonical(Escape(tt.wire)); got != want {
+			t.Errorf("SetPath(%q): canonical %q, want %q", tt.wire, got, want)
+		}
+	}
+
+	u := &url.URL{Path: "/before/a/b", RawPath: "/before/a%2Fb"}
+	if err := SetPath(u, "/x%2"); err == nil {
+		t.Fatal("SetPath with a malformed escape: no error")
+	}
+	if u.Path != "/before/a/b" || u.RawPath != "/before/a%2Fb" {
+		t.Errorf("a failed SetPath changed the URL: Path=%q RawPath=%q", u.Path, u.RawPath)
+	}
+}

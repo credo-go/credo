@@ -152,43 +152,79 @@ func TestCheckNames(t *testing.T) {
 	}
 }
 
-func TestToRegexp(t *testing.T) {
+// TestMatcher pins that a Matcher matches a canonical wire path as the
+// router matches a route: literal text in canonical form, a parameter that
+// ends at its tail byte or the next slash with every escape one unit, a
+// constraint on the decoded value, and a catch-all over the rest.
+func TestMatcher(t *testing.T) {
 	tests := []struct {
-		pattern   string
-		input     string
-		wantMatch []string // nil = no match
-		wantNames []string
-		wantErr   bool
+		pattern string
+		input   string
+		want    []string // nil = no match
+		names   []string
 	}{
-		{pattern: "/old/{id}", input: "/old/42", wantMatch: []string{"/old/42", "42"}, wantNames: []string{"", "id"}},
-		{pattern: "/old/{id}", input: "/old/42/x", wantMatch: nil, wantNames: []string{"", "id"}},
-		{pattern: "/files/{path...}", input: "/files/a/b/c", wantMatch: []string{"/files/a/b/c", "a/b/c"}, wantNames: []string{"", "path"}},
-		{pattern: "/v{ver:[0-9]+}/{rest...}", input: "/v2/users", wantMatch: []string{"/v2/users", "2", "users"}, wantNames: []string{"", "ver", "rest"}},
-		{pattern: "/a.b/{x}", input: "/aXb/1", wantMatch: nil, wantNames: []string{"", "x"}},
-		{pattern: "/exact", input: "/exact", wantMatch: []string{"/exact"}, wantNames: []string{""}},
-		{pattern: "/bad/{id", wantErr: true},
-		{pattern: "/bad/{id:[}", wantErr: true},
-		{pattern: "/bad/{id}/x/{id}", wantErr: true},
+		{pattern: "/old/{id}", input: "/old/42", want: []string{"42"}, names: []string{"id"}},
+		{pattern: "/old/{id}", input: "/old/42/x", names: []string{"id"}},
+		{pattern: "/old/{id}", input: "/old/", names: []string{"id"}},
+		{pattern: "/files/{path...}", input: "/files/a/b/c", want: []string{"a/b/c"}, names: []string{"path"}},
+		{pattern: "/files/{path...}", input: "/files/", want: []string{""}, names: []string{"path"}},
+		{pattern: "/v{ver:[0-9]+}/{rest...}", input: "/v2/users", want: []string{"2", "users"}, names: []string{"ver", "rest"}},
+		{pattern: "/a.b/{x}", input: "/aXb/1", names: []string{"x"}},
+		{pattern: "/exact", input: "/exact", want: []string{}, names: nil},
+		{pattern: "/exact", input: "/exact/", names: nil},
+		// An escaped slash is data inside a segment.
+		{pattern: "/old/{id}", input: "/old/a%2Fb", want: []string{"a%2Fb"}, names: []string{"id"}},
+		{pattern: "/old/{a}/{b}", input: "/old/a%2Fb", names: []string{"a", "b"}},
+		{pattern: "/files/{path...}", input: "/files/a/b%2Fc", want: []string{"a/b%2Fc"}, names: []string{"path"}},
+		// A parameter ends at its tail byte, as in the router.
+		{pattern: "/{a}-{b}", input: "/x-y-z", want: []string{"x", "y-z"}, names: []string{"a", "b"}},
+		{pattern: "/{name}.json", input: "/a/b.json", names: []string{"name"}},
+		// An escape is one unit: "%2F" is not a "F" tail, "%3B" not a ";" tail.
+		{pattern: "/x/{a}F", input: "/x/b%2F", names: []string{"a"}},
+		{pattern: "/x/{a}F", input: "/x/b%2FF", want: []string{"b%2F"}, names: []string{"a"}},
+		{pattern: "/t/{id};v", input: "/t/a%3Bb;v", want: []string{"a%3Bb"}, names: []string{"id"}},
+		// A literal "%" is its "%25" unit, in text and as a tail.
+		{pattern: "/100%/{x}", input: "/100%25/1", want: []string{"1"}, names: []string{"x"}},
+		{pattern: "/{id}%done", input: "/a%2Fb%25done", want: []string{"a%2Fb"}, names: []string{"id"}},
+		// A regex parameter is one segment, its constraint checked on the
+		// whole decoded value.
+		{pattern: "/p/{v:a;b}", input: "/p/a%3Bb", want: []string{"a%3Bb"}, names: []string{"v"}},
+		{pattern: "/u/{id:[0-9]+}", input: "/u/12x", names: []string{"id"}},
+		{pattern: "/p/{rest:.+}", input: "/p/a/b", names: []string{"rest"}},
+		{pattern: "/p/{rest:.+}", input: "/p/a%2Fb", want: []string{"a%2Fb"}, names: []string{"rest"}},
+		{pattern: "/p/{v:a/b}", input: "/p/a%2Fb", want: []string{"a%2Fb"}, names: []string{"v"}},
+		// A capture that decodes to invalid UTF-8 is no match.
+		{pattern: "/old/{id}", input: "/old/%FF", names: []string{"id"}},
+		{pattern: "/files/{path...}", input: "/files/a/%FF", names: []string{"path"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.pattern, func(t *testing.T) {
-			re, names, err := ToRegexp(tt.pattern)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
-				return
-			}
+		t.Run(tt.pattern+" "+tt.input, func(t *testing.T) {
+			m, err := NewMatcher(tt.pattern)
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("NewMatcher: %v", err)
 			}
-			if !slices.Equal(names, tt.wantNames) {
-				t.Errorf("names = %v, want %v", names, tt.wantNames)
+			if !slices.Equal(m.Names(), tt.names) {
+				t.Errorf("names = %v, want %v", m.Names(), tt.names)
 			}
-			got := re.FindStringSubmatch(tt.input)
-			if !slices.Equal(got, tt.wantMatch) {
-				t.Errorf("match(%q) = %v, want %v", tt.input, got, tt.wantMatch)
+			got, ok := m.Match(tt.input)
+			if ok != (tt.want != nil) || !slices.Equal(got, tt.want) {
+				t.Errorf("Match(%q) = %q, %v; want %q", tt.input, got, ok, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewMatcher_Errors(t *testing.T) {
+	tests := []struct{ pattern, want string }{
+		{"/bad/{id", `pattern: unclosed parameter brace in "/bad/{id"`},
+		{"/bad/{id:[}", `pattern: unclosed parameter brace in "/bad/{id:[}"`},
+		{"/bad/{id}/x/{id}", `pattern: duplicate parameter name "id" in "/bad/{id}/x/{id}"`},
+		{"/a/{p...}/x", `pattern: text "/x" after the catch-all {p...} in "/a/{p...}/x": a catch-all takes the rest of the path, so end the pattern with it`},
+	}
+	for _, tt := range tests {
+		_, err := NewMatcher(tt.pattern)
+		if err == nil || err.Error() != tt.want {
+			t.Errorf("NewMatcher(%q) error = %v, want %q", tt.pattern, err, tt.want)
+		}
 	}
 }
