@@ -64,12 +64,14 @@
 //
 // # Strict Decoding
 //
-// [WithStrictDecoding] makes every typed decode reject unknown keys and
-// disables weak string-to-number/bool coercion (TextUnmarshaler and duration
-// strings keep working). It suits typed sources — config files and [LoadBytes]
-// documents — and pairs naturally with [WithoutProcessEnv] and
-// [WithoutDotenv]; string env overrides on typed fields do not decode under
-// strict mode. The default remains weak decoding.
+// Every typed decode is strict: a key that maps to no field of the target is
+// an error, and a value is not converted across kinds — a boolean into a
+// number, a number into a string, a scalar into a list. Strings parse into
+// the basic type of their target, so environment and .env overrides, which
+// are always strings, decode into int, bool, float64 and duration fields, as
+// they do into [encoding.TextUnmarshaler] targets. Each failure names its
+// full key path. [WithWeakDecoding] opts in to mapstructure's weak coercion,
+// under which unknown keys are ignored.
 //
 // # Custom Prefix
 //

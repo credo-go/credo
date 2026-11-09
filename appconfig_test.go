@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,25 +317,57 @@ func TestApp_MustGetConfig(t *testing.T) {
 	})
 }
 
-// TestNew_StrictConfigServerSection verifies that a WithStrictDecoding store
-// makes the framework's own "server" decode strict — an unknown server.* key
-// fails New — and pins that serverConfig covers every documented server.* key,
-// so a fully spelled-out server section still constructs.
+// TestNew_StrictConfigServerSection verifies that the default strict decoding
+// covers the framework's own "server" decode — an unknown server.* key or a
+// cross-kind value fails New, naming the key path and the opt-in, while
+// WithWeakDecoding accepts both — and pins that serverConfig covers every
+// documented server.* key, so a fully spelled-out server section still
+// constructs.
 func TestNew_StrictConfigServerSection(t *testing.T) {
-	strictRC := func(t *testing.T, doc string) *config.Config {
+	strictRC := func(t *testing.T, doc string, opts ...config.Option) *config.Config {
 		t.Helper()
-		rc, err := config.LoadBytes([]byte(doc), config.FormatJSON,
-			config.WithoutProcessEnv(), config.WithoutDotenv(), config.WithStrictDecoding())
+		opts = append([]config.Option{config.WithoutProcessEnv(), config.WithoutDotenv()}, opts...)
+		rc, err := config.LoadBytes([]byte(doc), config.FormatJSON, opts...)
 		if err != nil {
 			t.Fatalf("LoadBytes: %v", err)
 		}
 		return rc
 	}
 
-	t.Run("unknown server key fails New", func(t *testing.T) {
-		rc := strictRC(t, `{"server":{"port":8080,"prot":1}}`)
-		if _, err := credo.New(credo.WithRawConfig(rc)); err == nil {
-			t.Error("New with unknown server.* key under strict decoding: expected error, got nil")
+	for _, tt := range []struct{ name, doc, path string }{
+		{name: "unknown server key", doc: `{"server":{"port":8080,"prot":1}}`, path: `unknown key "server.prot"`},
+		{name: "cross-kind server value", doc: `{"server":{"port":true}}`, path: `key "server.port"`},
+	} {
+		t.Run(tt.name+" fails New", func(t *testing.T) {
+			_, err := credo.New(credo.WithRawConfig(strictRC(t, tt.doc)))
+			if err == nil {
+				t.Fatal("New: expected a strict decoding error, got nil")
+			}
+			for _, part := range []string{tt.path, "config.WithWeakDecoding()"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("New error %q does not contain %q", err, part)
+				}
+			}
+		})
+		t.Run(tt.name+" decodes weakly", func(t *testing.T) {
+			if _, err := credo.New(credo.WithRawConfig(strictRC(t, tt.doc, config.WithWeakDecoding()))); err != nil {
+				t.Errorf("New under WithWeakDecoding: %v", err)
+			}
+		})
+	}
+
+	t.Run("string override of a typed server key decodes", func(t *testing.T) {
+		t.Setenv("CREDO_SERVER__PORT", "9090")
+		rc, err := config.LoadBytes([]byte(`{"server":{"port":8080}}`), config.FormatJSON, config.WithoutDotenv())
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		app, err := credo.New(credo.WithRawConfig(rc))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if got := app.MustGetConfig[int]("server.port"); got != 9090 {
+			t.Errorf("server.port = %d, want 9090", got)
 		}
 	})
 
