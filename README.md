@@ -35,6 +35,7 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | Authentication (JWT / Basic / API key) | Beta |
 | Internationalization (`i18n`) | Beta |
 | Health checks | Beta |
+| Background workers + cron (`app.Workers()`) | Beta |
 | Data access — contracts (`store`) | Beta |
 | Data access — Bun SQL wrapper + migrations (`store/sqldb`) | Beta |
 | Pagination | Beta |
@@ -46,6 +47,8 @@ Credo is **Beta** overall. Shipped packages are usable for real development; the
 | pubsub (incl. in-process events) · grpc · openapi · admin server · CLI | Planned |
 
 ## Accepted Pre-v1 Changes
+
+**v0.25.0: a shorter composition root.** A bound store is an ordinary component: `app.ProvideValue(db)` alone pings it at start, reports it in `/ready`, with its latency, and shuts it down after its consumers, and `credo.OptionalReadiness()` reports a dependency without letting it gate readiness. The first `Resolve` finalizes the container. `Provide` takes its binding's type from the constructor, and an interface is bound with `Alias`. A WebSocket server declares its ingress tier, so `app.Manage(ws)` takes no option. Workers are registered through `app.Workers()` as a value, a run function or a constructor; the `worker` package is gone. Rate limiting moves to `middleware/ratelimit`, and `credo.Named` and `credo.Closer` are renamed `credo.ComponentName` and `credo.CloseOnShutdown`. The [migration guide](docs/guides/pre-v1-migration.md#v0250-at-a-glance) lists first what compiles unchanged but behaves differently.
 
 **v0.24.0: lifecycle components, sequential bootstrap and a seven-method DI surface.** Everything the App starts and stops is a component, stopped in two tiers after its consumers; registration panics on misuse and `Finalize` reports the whole graph; stores, the WebSocket server, i18n and workers run on the components. Earlier pre-v1 changes — bootstrap/DI, router parameter names, built-in HTTP features, URL round trips — shipped 2026-09-05. Every change is recorded in the [migration guide](docs/guides/pre-v1-migration.md), with [what an application keeps](docs/guides/pre-v1-migration.md#what-an-application-keeps-v0240) after v0.24.0, and in the ADRs and specs it links. The quick start and examples below use the shipped APIs, and the [example migration notes](examples/README.md) explain what changed in them.
 
@@ -185,6 +188,8 @@ if err := app.Run(); err != nil {             // 5. start, serve, drain
 | `Resolve[T]`, `ResolveAll[I]` (`MustResolve`, `MustResolveAll`) | Retrieve singletons; the first call finalizes the container, and its error is the graph's report when validation fails |
 | `credo.Component`, `credo.Starter`, `credo.Readier` | A value with `Shutdown` is a component the App stops after its consumers; `Start` and `Ready` on its binding's type are called in the start phase and by `/ready` |
 | `app.Manage(v)` | A component that is not a binding, such as a WebSocket server or a mounted child App |
+| `app.Workers()` | The App's worker registry: `Continuous` and `Scheduled` take a worker, a run function whose parameters the container supplies, or a constructor |
+| `credo.InfraFrom(ctx)` | The scoped `Infra` of a call the App makes on a component, whose logger writes `component=<name>` |
 | `app.OnStart`, `app.OnStop` | Leaf start and stop actions, run in their tier |
 | `app.Start(ctx)`, `testutil.Start(t, app)` | Run the start phase without a listener, for an external `http.Server` or a test |
 

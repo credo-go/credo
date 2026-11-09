@@ -398,7 +398,7 @@ func NewUserService(infra credo.Infra, repo *UserRepository) *UserService {
 }
 ```
 
-`credo.Infra` is injected automatically. Today it carries a service-scoped `Logger`; tracing and metrics carriers are planned for the observability release.
+`credo.Infra` is injected automatically. Today it carries a `Logger` scoped to the binding the constructor builds (`component=*app.UserService`); tracing and metrics carriers are planned for the observability release.
 
 A Credo application is built in one order — `New`, the registrations, `Run` — with `Resolve` in between when routes need a service from the container:
 

@@ -128,7 +128,7 @@ The resolver-produced key is never leaked after a miss. HTTP errors fall back to
 
 ## Custom ErrorRenderer
 
-Install a shape-only renderer once, before the app prepares to serve. The window stays open after `app.Finalize()`, so the renderer may be a method of a DI-resolved service; a second `UseErrorRenderer` call panics.
+Install a shape-only renderer once, before the app prepares to serve. The window stays open after the container is finalized — by the first `Resolve` or an explicit `app.Finalize()` — so the renderer may be a method of a DI-resolved service; a second `UseErrorRenderer` call panics.
 
 ```go
 app.UseErrorRenderer(func(ctx *credo.Context, info *credo.ErrorInfo) any {
