@@ -55,3 +55,46 @@ type appServer struct {
 	// buildServer. nil when the option was not used.
 	configureServer func(*http.Server)
 }
+
+// appRouting holds the routes: the default mux and the host-scoped ones, the
+// root group, the named routes, the mounts, the status handlers, the
+// trailing-slash redirect switch and the pre-routing tier. Registration writes
+// it during bootstrap; dispatch reads it once preparation has published the
+// handler.
+type appRouting struct {
+	// mux is the underlying radix-tree router.
+	mux *mux
+
+	// root is the root route group: empty prefix, default mux, no host
+	// scope. App's route-registration surface (HTTP verbs, Group, Static,
+	// File, SetMeta) delegates to it so registration logic — path joining,
+	// HEAD-twin wiring — lives in Group alone.
+	root *Group
+
+	// preRoutingMW holds the pre-routing tier: it runs on every request,
+	// before the match, the router's own 404 and 405 included.
+	preRoutingMW []Middleware
+
+	// hosts holds registered host patterns for domain-based routing.
+	// Empty when no host-specific routing is configured.
+	hosts []*hostEntry
+
+	// staticHosts maps exact host names to host entries for O(1) dispatch.
+	// Param and regex host patterns remain in hosts and use specificity order.
+	staticHosts map[string]*hostEntry
+
+	// namedRoutes maps route names to Route pointers.
+	namedRoutes map[string]*Route
+
+	// mounts records mounted prefixes (App.Mount) for route introspection.
+	// Appended only after a mount's radix registration succeeds.
+	mounts []mountInfo
+
+	// statusHandlers holds the app-level custom handlers set via
+	// StatusHandler. Dispatch consults the entries for 404 and 405 only.
+	statusHandlers map[int]Handler
+
+	// redirectTrailingSlash controls automatic trailing-slash redirects.
+	// Resolved once from config/option in New(); default true.
+	redirectTrailingSlash bool
+}
