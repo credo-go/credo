@@ -93,13 +93,12 @@ Registers a single GET route, with the router's HEAD twin, that serves the file 
 
 ### StaticRoute
 
-> **Current until v0.26.0 (R4):** the next block's `SetMeta` takes a string key and an `any` value, and `StaticRoute` has no `RemoveMeta`; with typed meta, `SetMeta` takes a `credo.Key[T]` and a `T`, and `RemoveMeta(key)` removes the static route's own value so that its group's shows through ([router spec](router.md#route-meta-system-goyave-inspired)).
-
 > **Current until v0.26.0 (R14):** the next block's `BuildURI` returns a `string`; it becomes `BuildURI(filePath ...string) (string, error)` ([below](#staticroute)).
 
 ```go
 func (sr *StaticRoute) Name(name string) *StaticRoute
-func (sr *StaticRoute) SetMeta(key string, val any) *StaticRoute
+func (sr *StaticRoute) SetMeta[T any](key Key[T], val T) *StaticRoute
+func (sr *StaticRoute) RemoveMeta[T any](key Key[T]) *StaticRoute
 func (sr *StaticRoute) Middleware(m ...Middleware) *StaticRoute
 func (sr *StaticRoute) BuildURI(filePath ...string) string
 ```
@@ -110,10 +109,11 @@ func (sr *StaticRoute) BuildURI(filePath ...string) string
 | --- | --- | --- |
 | `Name` | the catch-all route only | route names are unique; the exact-prefix route stays unnamed |
 | `SetMeta` | both GET routes and their HEAD twins | middleware reading meta sees the same value for both methods and both patterns |
+| `RemoveMeta` | both GET routes and their HEAD twins | removes the static route's own value, so that its group's shows through ([router spec](router.md#route-meta-system-goyave-inspired)) |
 | `Middleware` | both GET routes and their HEAD twins | HEAD runs the same chain as GET |
 | `BuildURI` | the registered prefix | the URL path of a file under it (below) |
 
-`Name`, `SetMeta` and `Middleware` panic once the App is prepared, like their `Route` counterparts.
+`Name`, `SetMeta`, `RemoveMeta` and `Middleware` panic once the App is prepared, like their `Route` counterparts.
 
 ```go
 sr := app.Static("/static", fsys)

@@ -19,12 +19,13 @@ The principal accessors are methods on `*credo.Context` (root package), not func
 ```go
 package credo
 
-// SetUser stores the authenticated user on the request, keyed by type T.
-// T is inferred, so the blessed call is ctx.SetUser(user).
+// SetUser stores the authenticated user on the request's context head, keyed
+// by type T. It adds one context node and copies no request.
+// T is inferred, so the blessed call is c.SetUser(user).
 func (c *Context) SetUser[T any](user T)
 
 // GetUser returns the user stored under type T and whether one was present.
-// The type argument is required: ctx.GetUser[*User]().
+// The type argument is required: c.GetUser[*User]().
 func (c *Context) GetUser[T any]() (T, bool)
 
 // RequireUser is GetUser plus a handler-ready error: ErrUnauthorized
@@ -34,12 +35,6 @@ func (c *Context) RequireUser[T any]() (T, error)
 // ErrUserMissing is the cause RequireUser wraps; errors.Is reports it.
 var ErrUserMissing error
 ```
-
-> **Current until v0.26.0 (R4):** the next paragraph's storage on the request, with its request copy per call.
-
-**Internal implementation**: `SetUser` stores the user on the request's `context.Context` via `context.WithValue` with an unexported generic `userKey[T] struct{}` key (defined in the root package). The generic type parameter eliminates runtime type assertions at the call site, and because the key itself is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds a `context.WithValue` node and replaces the request with a shallow copy (`Request.WithContext`). The backing store is private; the only public access path is these methods (there is no `context.Context`-based accessor).
-
-> **Pending v0.26.0 (R4):** the next paragraph replaces the paragraph above when R4 ships.
 
 **Internal implementation**: the accessors are shortcuts over a typed key of the root package's own, generic in the user type and unexported, set and read on the Context's head as every [typed key](context.md#context-head-and-typed-keys) is. Because the key is parameterized by T, every user type gets its own slot — a JWT user and an API-key service account can coexist in one request. Storing the same type again replaces the previous value. Retrieve with the same T that was stored: a value stored under a concrete type is not visible through an interface type parameter. The Context struct has no field for the user; until `SetUser` is called nothing is stored, and each call adds one node to the head and copies no request. A user set inside a scope — `middleware.Timeout`, a wrapped stdlib middleware, `c.Within` — is still the request's user after the scope returns, panics included. The key is private, so the only public access path is these methods; there is no `context.Context`-based accessor, and stdlib code cannot read or set the user, while the request a wrapped stdlib middleware passes on still carries it.
 
@@ -171,15 +166,15 @@ Register authentication on the routed tier with `app.Middleware`, on a group or 
 
 ```go
 func MyAuthMiddleware(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        token := ctx.Request().Header.Get("Authorization")
+    return func(c *credo.Context) error {
+        token := c.Request().Header.Get("Authorization")
         user, err := validateToken(token)
         if err != nil {
             return credo.ErrUnauthorized
         }
         // Attach the authenticated user to the request.
-        ctx.SetUser(user)
-        return next(ctx)
+        c.SetUser(user)
+        return next(c)
     }
 }
 ```
@@ -187,63 +182,28 @@ func MyAuthMiddleware(next credo.Handler) credo.Handler {
 ### Pattern 3: Handler User Access
 
 ```go
-func CreateOrder(ctx *credo.Context) error {
+func CreateOrder(c *credo.Context) error {
     // Type-safe — generic parameter, no assertion needed; 401 when absent
-    user, err := ctx.RequireUser[*User]()
+    user, err := c.RequireUser[*User]()
     if err != nil {
         return err
     }
 
     var input CreateOrderInput
-    if err := ctx.Request().BindBody(&input); err != nil {
+    if err := c.Request().BindBody(&input); err != nil {
         return err
     }
-    order, err := orderService.Create(ctx.Context(), user.TenantID, input)
+    order, err := orderService.Create(c.Context(), user.TenantID, input)
     if err != nil {
         return err
     }
-    return ctx.Response().JSON(201, order)
+    return c.Response().JSON(201, order)
 }
 ```
 
 ### Pattern 4: RBAC with Route Meta
 
 Auth middleware sets the user, RBAC middleware reads meta and checks permissions.
-
-> **Current until v0.26.0 (R4):** the next example, with its string meta key, `LookupMeta` and the type assertion on the value.
-
-```go
-// Route registration: authentication first, then authorization
-admin := app.Group("/v1/admin").
-    Middleware(auth.Middleware[*User](myAuth, nil), RequirePermission)
-
-admin.GET("/users", listUsers).SetMeta("permission", "admin.users.view")
-
-// RequirePermission authorizes against the route's "permission" meta.
-func RequirePermission(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        meta, ok := ctx.Route().LookupMeta("permission")
-        if !ok {
-            return next(ctx) // no permission required
-        }
-        perm, ok := meta.(string)
-        if !ok || perm == "" {
-            return credo.ErrForbidden // malformed meta fails closed
-        }
-
-        user, err := ctx.RequireUser[*User]()
-        if err != nil {
-            return err // 401
-        }
-        if !user.HasPermission(perm) {
-            return credo.ErrForbidden
-        }
-        return next(ctx)
-    }
-}
-```
-
-> **Pending v0.26.0 (R4):** the next example replaces the example above when R4 ships.
 
 ```go
 // Permission is the route meta key RequirePermission reads; its value type is checked at compile time.
@@ -283,15 +243,15 @@ func RequirePermission(next credo.Handler) credo.Handler {
 Some routes need the user if present but don't require it:
 
 ```go
-func ViewProduct(ctx *credo.Context) error {
+func ViewProduct(c *credo.Context) error {
     // User is optional — don't return error if missing
-    user, authenticated := ctx.GetUser[*User]()
+    user, authenticated := c.GetUser[*User]()
 
-    product := getProduct(ctx)
+    product := getProduct(c)
     if authenticated {
         product.IsFavorite = checkFavorite(user.ID, product.ID)
     }
-    return ctx.Response().JSON(200, product)
+    return c.Response().JSON(200, product)
 }
 ```
 

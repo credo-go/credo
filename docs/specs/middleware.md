@@ -32,9 +32,7 @@ Existing Go middleware (chi, gorilla, etc.) can be adapted via `WrapStdMiddlewar
 app.GlobalMiddleware(credo.WrapStdMiddleware(thirdPartyMiddleware))
 ```
 
-> **Pending v0.26.0 (R4):** the next paragraph's boundary is not implemented yet; until R4 ships, the adapter hands the middleware the embedded request, whose context does not carry the values set through `ctx.Set`, and a context the middleware derives does not reach `ctx.Context()`.
-
-The adapter hands the request on through `c.Request().Std()`, whose context is the Context's current head, and takes the context of the request the middleware passes on as the head of the inner chain. A value set before the middleware is read there with `Value` and its key, and a deadline or span the middleware adds is visible to the handler through `c.Context()`; when the middleware returns, the head reverts to the outer one and the values set inside are applied again over it. The contract excludes a middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. A middleware that passes on a context not derived from the request's — which drops the request's cancellation too — cuts the handlers after it off from the values set before it, through `c.Get` as through `Value`. The user's key stays unexported, so the middleware cannot read the user ([ADR-012](../adr/012-authentication-and-authorization.md)).
+The adapter hands the request on through `c.Request().Std()`, whose context is the Context's current head, and takes the context of the request the middleware passes on as the head of the inner chain. A value set before the middleware is read there with `Value` and its key, and a deadline or span the middleware adds is visible to the handler through `c.Context()`; when the middleware returns, the head reverts to the outer one and the values set inside are applied again over it, at the first read of the head after it. The contract excludes a middleware that runs the next handler on another goroutine, as `http.TimeoutHandler` does: the Context is not safe for concurrent use, and the goroutine would move the head while the outer layer reverts it. A middleware that passes on a context not derived from the request's — which drops the request's cancellation too — cuts the handlers after it off from the values set before it, through `c.Get` as through `Value`. The user's key stays unexported, so the middleware cannot read the user ([ADR-012](../adr/012-authentication-and-authorization.md)).
 
 Adapted middleware sees only `*http.Request` and `r.Context()`, never `*credo.Context`. A response it writes to the `ResponseWriter` by itself bypasses Credo's error pipeline; only responses produced by calling `next` flow back through centralized handling ([why](../adr/010-middleware-architecture.md#stdlib-adapter)).
 
@@ -46,10 +44,10 @@ What the chain writes through `Response` is counted by `Response` alone, so noth
 
 The request executor wraps the compiled user chain in a fixed order ([request execution](http-features.md#request-execution)). For middleware authors:
 
-- Global middleware already sees the request ID (`ctx.RequestID()`, empty when `UseRequestID` is not installed), the decoded body when `UseDecompress` applied, and writes through the compressing writer when `UseCompress` negotiated an encoding.
+- Global middleware already sees the request ID (`c.RequestID()`, empty when `UseRequestID` is not installed), the decoded body when `UseDecompress` applied, and writes through the compressing writer when `UseCompress` negotiated an encoding.
 - The access record is observed after the chain and cannot be altered or replaced by middleware; select it with `AccessLogConfig` and the `credo.MetaAccessLog` route meta.
 - Recovery has no per-group or per-route variant; a group that needs its own panic policy writes an ordinary middleware that recovers and returns an error.
-- Middleware that enriches the logger derives from `ctx.Logger()` through `ctx.AddLogAttrs`; a wholesale `ctx.SetLogger` replacement drops the request ID ([request_id sourcing](http-features.md#observability-contract)).
+- Middleware that enriches the logger derives from `c.Logger()` through `c.AddLogAttrs`; a wholesale `c.SetLogger` replacement drops the request ID ([request_id sourcing](http-features.md#observability-contract)).
 
 ## 3-Tier Model (Goyave-inspired)
 
@@ -79,7 +77,7 @@ Response
 
 ### Group Middleware Is Collected at Compile Time
 
-A route's chain is assembled when the App prepares to serve ([preparation](lifecycle.md#preparation)), by walking the route's group parent chain — the same model `LookupMeta` uses for metadata. Middleware added to a group after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
+A route's chain is assembled when the App prepares to serve ([preparation](lifecycle.md#preparation)), by walking the route's group parent chain — the same model the route's meta snapshot uses. Middleware added to a group after routes were registered or sub-groups created therefore still applies to them. Registration order determines middleware _order_ (parent groups before children, append order within a group), never _membership_. To exclude one route from a group middleware, register it on a sibling group or attach middleware per-route.
 
 ### Why Global Tier Matters
 
@@ -155,36 +153,6 @@ app.Middleware(middleware.ContractGuard()) // reads every route's meta; never ru
 
 Middleware can read Route Meta to change behavior per-route declaratively, instead of hardcoding path checks.
 
-> **Current until v0.26.0 (R4):** the next example and the paragraph after it, which key meta by string and read it with `LookupMeta`.
-
-```go
-// Auth middleware — checks Meta instead of path list
-func Auth(next credo.Handler) credo.Handler {
-    return func(ctx *credo.Context) error {
-        val, _ := ctx.Route().LookupMeta("auth")
-        if required, _ := val.(bool); required {
-            token := ctx.Request().Header.Get("Authorization")
-            if !validateToken(token) {
-                return credo.NewHTTPError(401, "unauthorized")
-            }
-        }
-        return next(ctx)
-    }
-}
-
-// Usage — declarative, not path-based
-api := app.Group("/api")
-api.SetMeta("auth", true)
-api.Middleware(Auth)
-
-api.GET("/users", listUsers)                          // authenticated
-api.GET("/health", healthCheck).SetMeta("auth", false) // not authenticated
-```
-
-`LookupMeta` returns the value and whether any scope set the key; the two-value type assertion treats a missing or non-bool value as `false` instead of panicking. `ctx.Route()` is nil until dispatch has matched a route — in global middleware before `next` runs and on the router's own 404/405 — so register meta-reading middleware on a group or route, as here, or guard the call with `ctx.HasRoute()` ([route meta](router.md#route-meta-system-goyave-inspired)).
-
-> **Pending v0.26.0 (R4):** the next example and paragraph replace the two above; until R4 ships, meta is keyed by string and read with `LookupMeta`.
-
 ```go
 var RequireAuth = credo.NewKey[bool]("auth")
 
@@ -206,27 +174,24 @@ api.GET("/users", listUsers)                               // authenticated
 api.GET("/health", healthCheck).SetMeta(RequireAuth, false) // not authenticated
 ```
 
-A meta key is a `credo.Key[T]` made by `credo.NewKey[T]`, the key type of request values too; `SetMeta` with a value of another type does not compile, and `GetMeta` returns `(T, bool)`, the zero value and false when no scope set the key. The key's name is for diagnostics; identity is the key value, so the keys of two packages never collide. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — and a route's `RemoveMeta` lets its group's value show through. `Group.SetMeta` returns its `*Group`, as `Route.SetMeta` does. `c.Route()` is nil until dispatch has matched a route — in `PreRouting` middleware before `next` runs and on the router's own 404/405 — so meta-reading middleware is registered on the routed tier, a group or a route.
+A meta key is a `credo.Key[T]` made by `credo.NewKey[T]`, the key type of request values too; `SetMeta` with a value of another type does not compile, and `GetMeta` returns `(T, bool)`, the zero value and false when no scope set the key. The key's name is for diagnostics; identity is the key value, so the keys of two packages never collide. A route's meta is resolved into a per-route snapshot when its chain is compiled — the route, then its groups, then the App — and a route's `RemoveMeta` lets its group's value show through. `SetMeta` and `RemoveMeta` on a group, a route and a static route return their receiver; the App's return nothing. `c.Route()` is nil until dispatch has matched a route — in `PreRouting` middleware before `next` runs and on the router's own 404/405 — so meta-reading middleware is registered on the routed tier, a group or a route.
 
 ### Framework Meta Keys
 
-These keys are read by framework features and framework middleware. Application middleware may also define its own convention keys — the `"auth"` key in the example above is one such user-defined key, not a framework key.
-
-> **Current until v0.26.0 (R4):** the next table's string keys and their accepted value types; from R4 each is a typed meta key, as the paragraph after the table states.
+These keys are read by framework features and framework middleware. Application middleware may also define its own convention keys — the `RequireAuth` key in the example above is one such user-defined key, not a framework key.
 
 | Key | Type | Used by |
 | --- | --- | --- |
-| `credo.MetaAccessLog` (`"credo.accesslog"`) | `bool` (`false` silences) | Access log feature (`app.UseAccessLog`) |
-| `middleware.MetaAccept` (`"accept"`) | `string` \| `[]string` | `ContractGuard` — 415 on Content-Type mismatch; a missing/empty header passes unless `ContractConfig.RequireContentType` is set and the request carries a body |
-| `middleware.MetaMaxBody` (`"max_body"`) | `int` \| `int32` \| `int64` (bytes) | `ContractGuard` — 413 over the per-route cap |
-| `middleware.MetaRequireHeaders` (`"require_headers"`) | `string` \| `[]string` | `ContractGuard` — 400 if a header is missing |
-| `middleware.MetaRequireQuery` (`"require_query"`) | `string` \| `[]string` | `ContractGuard` — 400 if a query param is missing |
-| `middleware.MetaAPIVersion` (`"api_version"`) | `string` \| `[]string` | `ContractGuard` — 400 on version mismatch |
-| `middleware.MetaScope` (`"scope"`) | `string` \| `[]string` | `ContractGuard` — 403 (requires `ScopeChecker`) |
+| `credo.MetaAccessLog` | `credo.Key[bool]` (`false` silences) | Access log feature (`app.UseAccessLog`) |
+| `credo.MetaRawResponse` | `credo.Key[bool]` (`true` marks a raw route) | Envelope-bypass diagnostic in debug mode (`app.UseSuccessRenderer`) |
+| `middleware.MetaAccept` | `credo.Key[[]string]` | `ContractGuard` — 415 on Content-Type mismatch; a missing/empty header passes unless `ContractConfig.RequireContentType` is set and the request carries a body |
+| `middleware.MetaMaxBody` | `credo.Key[int64]` (bytes) | `ContractGuard` — 413 over the per-route cap |
+| `middleware.MetaRequireHeaders` | `credo.Key[[]string]` | `ContractGuard` — 400 if a header is missing |
+| `middleware.MetaRequireQuery` | `credo.Key[[]string]` | `ContractGuard` — 400 if a query param is missing |
+| `middleware.MetaAPIVersion` | `credo.Key[[]string]` | `ContractGuard` — 400 on version mismatch |
+| `middleware.MetaScope` | `credo.Key[[]string]` | `ContractGuard` — 403 (requires `ScopeChecker`) |
 
-> **Pending v0.26.0 (R4):** until R4 ships, the keys are strings and the guard checks each value's type at request time, as the paragraphs below describe.
-
-`credo.MetaAccessLog`, `MetaAccept`, `MetaMaxBody`, `MetaRequireHeaders`, `MetaRequireQuery`, `MetaAPIVersion` and `MetaScope` keep their names and become typed meta keys, so a value of another type does not compile where today the guard rejects it at request time. The request ID moves from its string key to a typed one; `c.RequestID()` stays its accessor.
+A value of another type does not compile, so the guard never meets a contract it cannot read: a named type converts where the contract is declared (`[]string{string(scope)}`), and a byte count is an `int64`. The request ID's key stays unexported; `c.RequestID()` is its accessor.
 
 > **Current until v0.26.0 (R13):** the next paragraph; from R13 the guard goes on `app.Middleware`, a group or a route, and registered before routing it fails closed.
 
@@ -240,11 +205,7 @@ Register `ContractGuard` on the routed tier, `app.Middleware`, or on a group or 
 
 Each rejection renders its code's built-in message, with its value in `Details`: the rejected content type, which is client input, the header or query parameter the route requires, and the missing scope. No rejection carries a message key of its own ([ADR-009](../adr/009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
 
-> **Current until v0.26.0 (R4):** the next paragraph, the request-time type check that typed meta keys replace with the compiler's.
-
-`ContractGuard` matches these types exactly; a `[]any` whose elements are all strings is read like a `[]string`. A declared contract is never skipped: when the guard reaches a value of any other type — a named string type (`type Scope string`), `nil`, a `[]any` holding a non-string element, an unsigned or floating-point `MetaMaxBody` — it rejects the request with the generic 500 instead of calling the handler. The cause (route, meta key, the value's Go type and the fix) is the error's internal cause, so it appears once in the server-error log and never in the response. No reflection is involved, and the accepted set does not grow to named types: the declaration converts (`string(scope)`).
-
-A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `"*/*"` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. `nil` is not a contract value and lifts nothing.
+A route overrides a contract inherited from its group by setting the key itself. The values that require nothing are `[]string{}` for `MetaRequireHeaders`, `MetaRequireQuery` and `MetaScope`, `[]string{"*/*"}` for `MetaAccept` (every media type; `RequireContentType` still applies) and a negative `MetaMaxBody`. An empty `MetaAPIVersion` list accepts no version, so that contract can be replaced but not lifted. A `nil` list is an empty one. A route that drops its own value with `RemoveMeta` lets its group's contract show through.
 
 ## Config Struct Pattern (Echo-inspired)
 
@@ -269,12 +230,10 @@ app.GlobalMiddleware(middleware.CORS(middleware.CORSConfig{
 | `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
 | `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
-| `Timeout` | Echo | Request timeout through a cooperative context deadline that handlers observe via `ctx.Context()` |
+| `Timeout` | Echo | Request timeout through a cooperative context deadline that handlers observe via `c.Context()` |
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
-> **Pending v0.26.0 (R4):** until R4 ships, `Timeout` assigns `ctx.Request().Request` a request with the deadline's context and restores the earlier request when the handler returns, so a user set inside it is lost to the outer layers.
-
-**`Timeout` opens a scope.** `Timeout` sets its deadline with one call, `c.Within(ctx, next)`, on the request's own goroutine: the inner chain reads the deadline through `c.Context()` and `c.Request().Context()`, the head reverts to the outer one when `next` returns or panics, and a value set inside — a user, a tenant — is applied again over the outer head, so it reaches the outer layers, the error rendering and the observers. A middleware that assigns `c.Request().Request` a request with a new context no longer moves the head; in debug mode the Context reports it once per route.
+**`Timeout` opens a scope.** `Timeout` sets its deadline with one call, `c.Within(ctx, next)`, on the request's own goroutine: the inner chain reads the deadline through `c.Context()` and `c.Request().Context()`, the head reverts to the outer one when `next` returns or panics, and a value set inside — a user, a tenant — is applied again over the outer head, so it reaches the outer layers, the error rendering and the observers. A middleware that assigns `c.Request().Request` a request with a new context no longer moves the head; in debug mode the Context logs one warning per route for it.
 
 > **Pending v0.26.0 (R2):** until R2 ships, `Timeout` sets a message key of its own on its 503.
 

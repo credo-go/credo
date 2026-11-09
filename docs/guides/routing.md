@@ -504,7 +504,7 @@ Use app/global middleware when you want one measurement for the whole request.
 
 ## Introspection
 
-`Walk` takes a simple `(method, pattern)` callback and visits real routes only — mounts are skipped because the method/pattern shape cannot represent them. `WalkRoutes` (and the equivalent `app.Routes()`) hands you the full `RouteInfo`: the route `Name`, the resolved `Meta` (route ← group ← app), `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. Reach for `WalkRoutes`/`Routes` whenever you need anything beyond method and pattern, or you need mounts to appear.
+`Walk` takes a simple `(method, pattern)` callback and visits real routes only — mounts are skipped because the method/pattern shape cannot represent them. `WalkRoutes` (and the equivalent `app.Routes()`) hands you the full `RouteInfo`: the route `Name`, the resolved meta (route ← group ← app) through `ri.GetMeta(key)`, `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. Reach for `WalkRoutes`/`Routes` whenever you need anything beyond method and pattern, or you need mounts to appear.
 
 ```go
 credo.Walk(app, func(method, pattern string) error {
@@ -513,7 +513,8 @@ credo.Walk(app, func(method, pattern string) error {
 })
 
 credo.WalkRoutes(app, func(ri credo.RouteInfo) error {
-    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, ri.Meta)
+    perm, _ := ri.GetMeta(Permission) // Permission is a credo.Key[string]; a mount reports none
+    fmt.Println(ri.Kind, ri.Method, ri.Host, ri.Pattern, ri.Name, perm)
     return nil
 })
 ```

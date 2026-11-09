@@ -236,13 +236,15 @@ Sets `Content-Disposition: attachment` on all responses, prompting the browser t
 Static routes are full participants in Credo's middleware and route meta systems.
 
 ```go
+var Permission = credo.NewKey[string]("permission")
+
 admin := app.Group("/admin")
 admin.Static("/assets", adminFS).
-    SetMeta("permission", "admin.assets").
+    SetMeta(Permission, "admin.assets").
     Middleware(auth.Middleware[*User](authenticator, nil))
 ```
 
-`SetMeta` and `Middleware` apply to **both** internal GET routes (catch-all and exact match). Each GET route also has an auto-generated HEAD twin, and the underlying `Route.SetMeta` / `Route.Middleware` propagate to that twin — so HEAD requests run the same middleware chain and see the same route meta as GET. Auth, rate limiting, and other header-mutating middleware never get silently bypassed via HEAD.
+`SetMeta`, `RemoveMeta` and `Middleware` apply to **both** internal GET routes (catch-all and exact match). Each GET route also has an auto-generated HEAD twin, and the underlying `Route.SetMeta` / `Route.Middleware` propagate to that twin — so HEAD requests run the same middleware chain and see the same route meta as GET. Auth, rate limiting, and other header-mutating middleware never get silently bypassed via HEAD.
 
 This propagation is universal across the framework: `app.GET(...)`, `group.GET(...)`, `app.File(...)` and `group.File(...)` all create a HEAD twin that inherits configuration through the same mechanism. If you explicitly register a HEAD route for the same pattern, the auto-twin is silently skipped and middleware on the GET route does **not** leak to the explicit HEAD route — register middleware on each route as needed.
 
