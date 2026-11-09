@@ -263,19 +263,25 @@ func (a *Address) Validate() error {
 }
 
 type CreateUserInput struct {
-    Name    string  `json:"name"`
-    Address Address `json:"address"`
+    Name    string   `json:"name"`
+    Address Address  `json:"address"`
+    Billing *Address `json:"billing"` // optional object
 }
 
 func (c *CreateUserInput) Validate() error {
     return validation.ValidateStruct(c,
         validation.Field(&c.Name, validation.Required[string]()),
         validation.Field(&c.Address), // Address.Validate() called automatically
+        validation.Field(&c.Billing), // valid when omitted, validated when set
     )
 }
 ```
 
-When a field has no rules but implements `Validatable`, `ValidateStruct` auto-calls `Validate()` on it, enabling recursive nested validation.
+When a field has no rules but implements `Validatable`, `ValidateStruct` auto-calls `Validate()` on it, enabling recursive nested validation; its violations carry the field's name as their prefix (`address.city`, `billing.street`).
+
+- **A nil pointer or nil interface is valid**, and its `Validate` is not called: a request that omits an optional object passes, as in ozzo-validation, the engine's source. Presence is what `NotNil` and `Required` check. A field with rules runs its rules only, so a mandatory nested pointer takes `NotNil` in a `Field` of its own beside the rule-less one: `validation.Field(&c.Billing, validation.NotNil[Address]())`, then `validation.Field(&c.Billing)`.
+- **A struct field's `Validate` runs on the field itself**, through the field's own pointer, so what a pointer-receiver `Validate` normalizes (trimming, lower-casing) is kept in the bound value, as the bind target's own `Validate` does; no copy is made. A value-receiver `Validate` sees the field's value.
+- **A field with rules runs its rules only**; its `Validate`, if any, is not called after them.
 
 ## Error Format
 

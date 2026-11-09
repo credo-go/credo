@@ -61,6 +61,8 @@ validation.Field(&r.Name, rules...)
 
 A type that implements `validation.Validatable` (`Validate() error`) is validated by `BindBody()` and `BindQuery()` right after decoding. This is the "parse, don't validate" integration point ([ADR-008](008-context-design.md#parse-dont-validate)). The interface lives in package `validation`, which depends only on the standard library; the root package depends on it, not the reverse.
 
+A `Field` with no rules validates a nested field that implements `Validatable` by calling its `Validate`. A nil pointer or nil interface is valid and its `Validate` is not called, as in ozzo-validation, which returns before calling it: an optional object a request omits is valid, and presence is what `NotNil` and `Required` check. Calling `Validate` on a nil receiver would panic in any method that reads its fields, and the request pipeline would answer a well-formed request with a 500. A struct field's `Validate` runs through the field's own pointer, so what a pointer-receiver `Validate` normalizes is kept, as it is for the bind target itself; validating a copy would discard it. A field with rules runs its rules only. Whether it should also run its `Validate` once the rules pass, as ozzo-validation does, is a separate decision: it would change which violations a request reports.
+
 ### Topic-Based Rule Grouping
 
 Rules are grouped by topic (string, numeric, date, collection, file, common), one file per topic rather than one per rule, following Goyave's organization; the inventory is in the [validation spec](../specs/validation.md#built-in-rules-topic-based-grouping).
