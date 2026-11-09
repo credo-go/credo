@@ -180,7 +180,7 @@ func (lm *lifecycleManager) logLateReturn(name string, phase LifecyclePhase, beg
 		attrs = append(attrs, slog.Any("error", err))
 		level = slog.LevelError
 	}
-	lm.app.logger.LogAttrs(context.Background(), level,
+	lm.deps.logger.LogAttrs(context.Background(), level,
 		"credo: call returned after the deadline; result not reported", attrs...)
 }
 
@@ -188,7 +188,7 @@ func (lm *lifecycleManager) logLateReturn(name string, phase LifecyclePhase, beg
 // ok is false when the start was interrupted before the build completed; the
 // teardown then waits for the pending construction.
 func (lm *lifecycleManager) build(r *startRun, u *di.Unit) (value any, ok bool, err error) {
-	c := lm.app.container
+	c := lm.deps.container
 	if v, built := c.UnitValue(u); built {
 		return v, true, nil
 	}
@@ -214,7 +214,7 @@ func (lm *lifecycleManager) build(r *startRun, u *di.Unit) (value any, ok bool, 
 // the tier's start hooks FIFO. It stops at the first failure or at an
 // interrupt; on success it stores running, unless an interrupt came first.
 func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
-	c := lm.app.container
+	c := lm.deps.container
 	for _, s := range lm.frameworkSteps {
 		if r.isInterrupted() {
 			return startInterrupted
@@ -324,7 +324,7 @@ func (lm *lifecycleManager) startUnit(
 
 // invokeStart runs a start call, recovering a panic as a *DIPanicError.
 func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, fn func(context.Context) error) (err error) {
-	ctx = lm.app.withComponentInfra(ctx, u.Name())
+	ctx = lm.withComponentInfra(ctx, u.Name())
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := &di.PanicError{
@@ -333,7 +333,7 @@ func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, fn func
 				Value: recovered,
 				Stack: internalobserve.StackTrace(lifecycleStackSize),
 			}
-			lm.app.logger.LogAttrs(context.Background(), slog.LevelError, "credo: component Start panic",
+			lm.deps.logger.LogAttrs(context.Background(), slog.LevelError, "credo: component Start panic",
 				slog.String("component", u.Name()),
 				slog.Any("panic", recovered),
 				slog.String("stack", panicErr.Stack))
@@ -368,7 +368,7 @@ func (lm *lifecycleManager) endStart(r *startRun, outcome startOutcome, appStart
 		ctx, cancel = context.WithTimeout(context.Background(), lm.shutdownTimeout())
 		defer cancel()
 	} else {
-		lm.app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+		lm.deps.logger.LogAttrs(context.Background(), slog.LevelInfo,
 			"credo: start interrupted; rolling back what was built")
 	}
 	lm.state.Store(uint32(stateStopping))
@@ -405,7 +405,7 @@ func (lm *lifecycleManager) endStart(r *startRun, outcome startOutcome, appStart
 // after an interrupt cancelled its context. A requested shutdown is not a
 // start failure, so the error is not reported.
 func (lm *lifecycleManager) logInterruptedStart(name string, err error) {
-	lm.app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+	lm.deps.logger.LogAttrs(context.Background(), slog.LevelInfo,
 		"credo: start interrupted by a shutdown request",
 		slog.String("component", name), slog.Any("error", err))
 }
@@ -490,7 +490,7 @@ func (lm *lifecycleManager) runLifecycleHook(
 	index int,
 	fn func(ctx context.Context) error,
 ) (err error) {
-	ctx = lm.app.withComponentInfra(ctx, fmt.Sprintf("%s[%d]", kind, index))
+	ctx = lm.withComponentInfra(ctx, fmt.Sprintf("%s[%d]", kind, index))
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := &lifecycleHookPanicError{
@@ -500,7 +500,7 @@ func (lm *lifecycleManager) runLifecycleHook(
 				cause: internalobserve.PanicError(recovered),
 				stack: internalobserve.StackTrace(lifecycleStackSize),
 			}
-			lm.app.logger.LogAttrs(
+			lm.deps.logger.LogAttrs(
 				context.WithoutCancel(ctx),
 				slog.LevelError,
 				"credo: "+kind+" hook panic",
@@ -520,12 +520,12 @@ func (lm *lifecycleManager) runLifecycleHook(
 // credo.OptionalReadiness() option. No DI resolution happens per probe.
 func (lm *lifecycleManager) componentReadiness() []internalhealth.ReadinessCheck {
 	var checks []internalhealth.ReadinessCheck
-	for _, e := range lm.app.container.ReadinessEntries() {
+	for _, e := range lm.deps.container.ReadinessEntries() {
 		readier, ok := e.Value.(Readier)
 		if !ok {
 			continue
 		}
-		infra := lm.app.NewInfra(e.Name)
+		infra := lm.deps.newInfra(e.Name)
 		checks = append(checks, internalhealth.ReadinessCheck{
 			Name:     e.Name,
 			Optional: e.Optional,

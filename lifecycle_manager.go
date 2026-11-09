@@ -67,13 +67,13 @@ func (s appState) String() string {
 // hooks, and the drain in tiers shared by every Run* entry point, App.Start
 // and Shutdown.
 //
-// It is held by exactly one App and references it back through app for the
-// cross-cutting pieces it needs (the compiled handler, DI container, server
-// config, logger). The public Run/Start/Shutdown/State/Addr/OnStart/OnStop
-// methods on App stay thin delegates onto this engine.
+// It is held by exactly one App and takes what it needs from it as
+// lifecycleDeps at construction. The public
+// Run/Start/Shutdown/State/Addr/OnStart/OnStop methods on App stay thin
+// delegates onto this engine.
 type lifecycleManager struct {
-	// app is the owning application. Never nil for an App built by New.
-	app *App
+	// deps is what the manager takes from its App.
+	deps lifecycleDeps
 
 	// state tracks the lifecycle: building → starting → running → stopping → stopped.
 	state atomic.Uint32
@@ -126,6 +126,48 @@ type lifecycleManager struct {
 
 	// onStop holds the stop hooks, run LIFO before their tier's components.
 	onStop []stageHook
+}
+
+// lifecycleDeps is what the lifecycle manager takes from its App. New builds
+// it from the App's own groups; where the manager needs App behaviour (the
+// preparation, the server build, a reload, the scoped Infra) it holds a
+// function value.
+type lifecycleDeps struct {
+	// logger is the App's logger; never nil.
+	logger *slog.Logger
+
+	// container holds the components the manager starts and stops.
+	container *di.Container
+
+	// config is the App's configuration; a reload signal over one that
+	// cannot reload is ignored.
+	config RawConfig
+
+	// server is the App's server group: the configuration the server is
+	// built from, its timeouts and the reload-signal switch.
+	server *appServer
+
+	// reloadSlot is the App's reload slot, which the drain takes and keeps.
+	reloadSlot *reloadState
+
+	// prep is the App's preparation group, whose lock bootstrap shutdown takes
+	// to freeze registration.
+	prep *appPrep
+
+	// newInfra returns the scoped Infra of the component name.
+	newInfra func(name string) Infra
+
+	// prepare returns the App's preparation, running it on first call.
+	prepare func(entry string) *preparation
+
+	// newServer builds the *http.Server that serves the App.
+	newServer func() *http.Server
+
+	// features lists the enabled HTTP features for the start log.
+	features func() []string
+
+	// reload runs App.Reload for a reload signal.
+	reload func(ctx context.Context) error
 }
 
 // frameworkStep is start work a framework feature registered: a failure is
@@ -371,7 +413,7 @@ func (lm *lifecycleManager) signalLoop(
 // reported as incomplete and teardown proceeds with the expired context, the
 // same contract as an abandoned stop hook.
 func (lm *lifecycleManager) awaitReloadQuiescence(ctx context.Context) error {
-	token := lm.app.reload.token()
+	token := lm.deps.reloadSlot.token()
 	select {
 	case token <- struct{}{}:
 		return nil
@@ -381,7 +423,7 @@ func (lm *lifecycleManager) awaitReloadQuiescence(ctx context.Context) error {
 	case token <- struct{}{}:
 		return nil
 	case <-ctx.Done():
-		lm.app.logger.LogAttrs(context.Background(), slog.LevelError,
+		lm.deps.logger.LogAttrs(context.Background(), slog.LevelError,
 			"credo: reload still in flight at the shutdown deadline; proceeding with teardown",
 			slog.Any("error", ctx.Err()))
 		return fmt.Errorf("credo: shutdown: reload still in flight: %w", ctx.Err())
@@ -398,28 +440,28 @@ func (lm *lifecycleManager) awaitReloadQuiescence(ctx context.Context) error {
 // the same doctrine that keeps the channel subscribed through the drain — but
 // it is logged and ignored instead of triggering a reload.
 func (lm *lifecycleManager) handleReloadSignal(sig os.Signal) {
-	app := lm.app
-	if app.disableReloadSignals {
-		app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+	logger := lm.deps.logger
+	if lm.deps.server.disableReloadSignals {
+		logger.LogAttrs(context.Background(), slog.LevelInfo,
 			"credo: reload signal ignored (reload signals disabled)",
 			slog.String("signal", sig.String()))
 		return
 	}
 	// A configuration other than *config.Config cannot reload, so the signal
 	// is ignored as above, by the type Reload would reject.
-	if _, ok := app.rawConfig.(*config.Config); !ok {
-		app.logger.LogAttrs(context.Background(), slog.LevelInfo,
+	if _, ok := lm.deps.config.(*config.Config); !ok {
+		logger.LogAttrs(context.Background(), slog.LevelInfo,
 			"credo: reload signal ignored: the configuration cannot reload",
 			slog.String("signal", sig.String()),
-			slog.String("config_type", fmt.Sprint(reflect.TypeOf(app.rawConfig))))
+			slog.String("config_type", fmt.Sprint(reflect.TypeOf(lm.deps.config))))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), app.reloadTimeout())
+	ctx, cancel := context.WithTimeout(context.Background(), lm.deps.server.reloadTimeout())
 	defer cancel()
-	app.logger.LogAttrs(ctx, slog.LevelInfo, "credo: reload signal received",
+	logger.LogAttrs(ctx, slog.LevelInfo, "credo: reload signal received",
 		slog.String("signal", sig.String()))
-	if _, err := app.Reload(ctx); err != nil && !app.IsRunning() {
-		app.logger.LogAttrs(ctx, slog.LevelWarn, "credo: reload signal ignored",
+	if err := lm.deps.reload(ctx); err != nil && lm.currentState() != stateRunning {
+		logger.LogAttrs(ctx, slog.LevelWarn, "credo: reload signal ignored",
 			slog.String("signal", sig.String()), slog.String("error", err.Error()))
 	}
 }
@@ -463,8 +505,6 @@ func (lm *lifecycleManager) serve(
 	serveFn func(*http.Server, net.Listener) error,
 	redirectAddr string,
 ) error {
-	app := lm.app
-
 	// Phase 1: claim the start slot. Holding starting keeps a bootstrap
 	// Shutdown out while the App is prepared; a Shutdown now interrupts.
 	run, err := lm.claimStartSlot(label)
@@ -475,7 +515,7 @@ func (lm *lifecycleManager) serve(
 
 	// Phase 1b: prepare — implicit DI finalize, compile, publish. The result is
 	// stored once; a failure releases the slot but stays terminal.
-	p := app.prepare(label)
+	p := lm.deps.prepare(label)
 	if p == nil {
 		lm.abortClaim(run)
 		return fmt.Errorf("credo: %s: preparation rejected: app is shutting down", label)
@@ -495,7 +535,7 @@ func (lm *lifecycleManager) serve(
 	}
 
 	// Phase 3: build the server and open the session.
-	srv := buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
+	srv := lm.deps.newServer()
 	lm.openSession(srv)
 
 	// Phase 4: obtain the listener. Fail fast before the start walk so a listen
@@ -529,8 +569,8 @@ func (lm *lifecycleManager) serve(
 	}
 
 	// Phase 6: serve until something ends the session.
-	app.logger.Info("credo: server started",
-		"label", label, "addr", l.Addr().String(), "features", app.effectiveFeatures())
+	lm.deps.logger.Info("credo: server started",
+		"label", label, "addr", l.Addr().String(), "features", lm.deps.features())
 	return lm.awaitServe(ctx, label, srv, l, serveFn, redirectErrCh)
 }
 
@@ -632,8 +672,8 @@ func (lm *lifecycleManager) startRedirectListener(label, redirectAddr string, ma
 	_, httpsPort, _ := net.SplitHostPort(mainAddr.String())
 	rsrv := &http.Server{
 		Handler:           httpRedirectHandler(httpsPort),
-		ReadHeaderTimeout: lm.app.serverCfg.ReadHeaderTimeout,
-		ErrorLog:          newServerErrorLog(lm.app.Logger()),
+		ReadHeaderTimeout: lm.deps.server.serverCfg.ReadHeaderTimeout,
+		ErrorLog:          newServerErrorLog(lm.deps.logger),
 	}
 	lm.serverMu.Lock()
 	lm.redirectServer = rsrv
@@ -728,7 +768,7 @@ func (lm *lifecycleManager) initiateShutdown(ctx context.Context) error {
 // initiateBootstrapShutdown is the counterpart of claimStartSlot for an App
 // that was never run: the building → stopping CAS picks exactly one owner
 // between a concurrent start and Shutdown. At admission it closes HTTP
-// registration (app.frozen) and DI writes (container.Freeze, a validation-free
+// registration (frozen) and DI writes (container.Freeze, a validation-free
 // freeze that neither finalizes nor enters closing), waiting for any
 // preparation in flight so no handler is published afterwards. It then runs
 // the shared drain with no managed server. The bool reports whether the CAS
@@ -737,11 +777,11 @@ func (lm *lifecycleManager) initiateBootstrapShutdown(ctx context.Context) (bool
 	if !lm.state.CompareAndSwap(uint32(stateBuilding), uint32(stateStopping)) {
 		return false, nil
 	}
-	app := lm.app
-	app.prepMu.Lock()
-	app.frozen.Store(true)
-	app.container.Freeze()
-	app.prepMu.Unlock()
+	prep := lm.deps.prep
+	prep.prepMu.Lock()
+	prep.frozen.Store(true)
+	lm.deps.container.Freeze()
+	prep.prepMu.Unlock()
 	return true, lm.drain(ctx)
 }
 
@@ -791,10 +831,10 @@ func (lm *lifecycleManager) stopTiers(
 	report *lifecycleReport,
 	httpDrain func() error,
 ) (httpErr, reloadErr error) {
-	c := lm.app.container
+	c := lm.deps.container
 	if err := c.BeginTeardown(excluded, stuck); err != nil {
 		// The container was already torn down: nothing of it remains to stop.
-		lm.app.logger.LogAttrs(context.Background(), slog.LevelDebug, "credo: teardown already ran",
+		lm.deps.logger.LogAttrs(context.Background(), slog.LevelDebug, "credo: teardown already ran",
 			slog.Any("error", err))
 	}
 
@@ -838,10 +878,10 @@ func drainHTTPServers(ctx context.Context, redirectSrv, srv *http.Server) error 
 }
 
 // shutdownTimeout returns the configured graceful-shutdown budget, falling
-// back to the default if unset (e.g. a zero-value App in a test).
+// back to the default if unset.
 func (lm *lifecycleManager) shutdownTimeout() time.Duration {
-	if lm.app.serverCfg.ShutdownTimeout > 0 {
-		return lm.app.serverCfg.ShutdownTimeout
+	if t := lm.deps.server.serverCfg.ShutdownTimeout; t > 0 {
+		return t
 	}
 	return defaultShutdownTimeout
 }

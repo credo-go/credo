@@ -79,8 +79,8 @@ func InfraFrom(ctx context.Context) Infra {
 }
 
 // withComponentInfra returns ctx carrying the Infra of the component name.
-func (app *App) withComponentInfra(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, infraKey{}, app.NewInfra(name))
+func (lm *lifecycleManager) withComponentInfra(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, infraKey{}, lm.deps.newInfra(name))
 }
 
 // newInfra creates a fully initialized Infra with the given base logger.

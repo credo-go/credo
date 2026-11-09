@@ -7,7 +7,6 @@ package credo
 import (
 	"cmp"
 	"context"
-	"crypto/tls"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
@@ -15,73 +14,20 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
-	"sync"
-	"sync/atomic"
 
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
-	internalhealth "github.com/credo-go/credo/internal/health"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
 // App is the main Credo application. It holds the router, middleware stack,
 // error handler, and route registry.
 type App struct {
-	// container is the DI container for service registration and resolution.
-	container *di.Container
-
-	// workers holds the App's one worker registry, created on first use of
-	// App.Workers.
-	workers struct {
-		once     sync.Once
-		registry *Workers
-	}
-
 	// logger is the application-level logger, set via WithLogger.
 	// Used by framework internals (error handler, server lifecycle, i18n setup).
 	// Component-scoped loggers (Infra.Logger, component=<name>) are derived
 	// from this.
 	logger *slog.Logger
-
-	// mux is the underlying radix-tree router.
-	mux *mux
-
-	// errorRenderer shapes error response bodies, set via UseErrorRenderer.
-	// nil = default Credo JSON error envelope.
-	errorRenderer ErrorRenderer
-
-	// successRenderer formats successful responses sent via Context.Render,
-	// set via UseSuccessRenderer. nil = default JSON (no envelope). Raw
-	// Response helpers (JSON/XML/Text/Blob/...) never consult it.
-	successRenderer SuccessRenderer
-
-	// root is the root route group: empty prefix, default mux, no host
-	// scope. App's route-registration surface (HTTP verbs, Group, Static,
-	// File, SetMeta) delegates to it so registration logic — path joining,
-	// HEAD-twin wiring — lives in Group alone.
-	root *Group
-
-	// preRoutingMW holds the pre-routing tier: it runs on every request,
-	// before the match, the router's own 404 and 405 included.
-	preRoutingMW []Middleware
-
-	// foreignRequestReported records that the debug report of a replaced
-	// embedded request was made for a request no route matched.
-	foreignRequestReported atomic.Bool
-
-	// prep is the stored Finalize → compile → publish result shared by every
-	// serve path (see prepare). nil until the first preparation publishes.
-	prep atomic.Pointer[preparation]
-
-	// prepMu serialises preparation and bootstrap-shutdown admission so an
-	// unfinished preparation can never publish a handler after Shutdown won.
-	prepMu sync.Mutex
-
-	// frozen closes route/middleware/hook/renderer registration. It is set at
-	// preparation admission and at bootstrap-shutdown admission. Separate from
-	// state because ServeHTTP prepares (frozen) without entering the Running
-	// state — the user may manage their own *http.Server.
-	frozen atomic.Bool
 
 	// lifecycle owns the state machine, the start phase, the bound server and
 	// session context, the start and stop hooks, and the drain in tiers. The
@@ -89,141 +35,16 @@ type App struct {
 	// it.
 	lifecycle *lifecycleManager
 
-	// rawConfig holds the RawConfig passed via WithRawConfig option.
-	rawConfig RawConfig
-
 	// reload holds the slot serializing Reload (ADR-020).
 	reload reloadState
 
-	// serverCfg holds the server configuration (host, port, timeouts).
-	serverCfg serverConfig
-
-	// tlsConfig is the *tls.Config set via WithTLSConfig; it has the highest
-	// TLS precedence. nil means TLS comes from server.tls.* / WithTLSFiles
-	// (serverCfg.TLS) or, if those are empty too, the server serves plaintext.
-	// Resolved and cloned at preflight (see resolveTLSConfig).
-	tlsConfig *tls.Config
-
-	// tlsConfigSet records that WithTLSConfig was called (even with nil). It lets
-	// preflight reject an explicit WithTLSConfig(nil) as a fail-fast error rather
-	// than silently falling through to the lower-precedence file sources.
-	tlsConfigSet bool
-
-	// tlsFilesSet records that WithTLSFiles was called (even with empty paths).
-	// It lets preflight reject explicit empty paths as a fail-fast error rather
-	// than silently falling through to the server.tls.* config keys or plaintext.
-	tlsFilesSet bool
-
-	// tlsFiles serves the file-based key pair (WithTLSFiles / server.tls.*)
-	// through GetCertificate and rotates it when the files change on disk
-	// (see tls_rotation.go). Inactive when TLS comes from WithTLSConfig or the
-	// server is plaintext.
-	tlsFiles fileCertSource
-
-	// httpRedirectAddr, when non-empty, is the plaintext listen address for the
-	// HTTP→HTTPS redirect listener (set via WithHTTPRedirect). Requires TLS;
-	// applies to Run/RunContext only (not ServeContext).
-	httpRedirectAddr string
-
-	// i18n is the installed internationalization feature: the loaded bundle,
-	// the message-key resolver and the lazy locale detector. nil when i18n is
-	// inactive.
-	i18n *i18nFeature
-
-	// i18nRegistered records that UseI18n completed (an inactive conventional
-	// setup included) so a second call is rejected.
-	i18nRegistered bool
-
-	// modulesUsed records that UseModules was called so a second call is
-	// rejected.
-	modulesUsed bool
-
-	// healthEngine holds the health check engine (nil if UseHealth not called).
-	healthEngine *internalhealth.Engine
-
-	// healthProbes records that UseHealth registered at least one probe route.
-	// The engine alone is not enough: with both probes disabled it exists but
-	// nothing is mounted.
-	healthProbes bool
-
-	// healthExposeErrors includes check error strings in readiness responses.
-	// Set from HealthConfig.ExposeErrors; default false (errors are logged,
-	// not exposed to probe callers).
-	healthExposeErrors bool
-
-	// hosts holds registered host patterns for domain-based routing.
-	// Empty when no host-specific routing is configured.
-	hosts []*hostEntry
-
-	// staticHosts maps exact host names to host entries for O(1) dispatch.
-	// Param and regex host patterns remain in hosts and use specificity order.
-	staticHosts map[string]*hostEntry
-
-	// namedRoutes maps route names to Route pointers.
-	namedRoutes map[string]*Route
-
-	// mounts records mounted prefixes (App.Mount) for route introspection.
-	// Appended only after a mount's radix registration succeeds.
-	mounts []mountInfo
-
-	// statusHandlers holds the app-level custom handlers set via
-	// StatusHandler. Dispatch consults the entries for 404 and 405 only.
-	statusHandlers map[int]Handler
-
-	// redirectTrailingSlash controls automatic trailing-slash redirects.
-	// Resolved once from config/option in New(); default true.
-	redirectTrailingSlash bool
-
-	// recover is the panic recovery configuration; nil when WithoutRecover
-	// disabled recovery. Resolved from options in New.
-	recover *recoverFeature
-
-	// requestID, accessLog, compress and decompress are the HTTP features
-	// installed through the Use* methods; nil means the feature is off. They
-	// are written during sequential bootstrap and read by the request
-	// executor once preparation has published the handler.
-	requestID  *requestIDFeature
-	accessLog  *accessLogFeature
-	compress   *compressFeature
-	decompress *decompressFeature
-
-	// observers run after each request's final response, in registration
-	// order; the access log is among them when installed.
-	observers []Observer
-
-	// disableReloadSignals makes Run ignore (and log) reload signals instead
-	// of triggering App.Reload. Set via WithoutReloadSignals option.
-	disableReloadSignals bool
-
-	// debug enables development-mode warnings.
-	// Set via WithDebug option or server.debug config key.
-	debug bool
-
-	// strictBodies makes BindBody reject unknown JSON object members.
-	// Set via WithStrictBodies option or server.strict_bodies config key.
-	strictBodies bool
-
-	// multipartMaxMemory overrides the in-memory threshold BindBody passes to
-	// ParseMultipartForm; zero selects defaultMultipartMaxMemory. It has no
-	// option: tests lower it (export_test.go) to make small uploads spill to
-	// temporary files.
-	multipartMaxMemory int64
-
-	// jsonOpts is the response encoding profile: the framework default
-	// (see defaultJSONOptions) with any WithJSONOptions overrides applied
-	// after it. Read through App.jsonOptions, which is nil-safe.
-	jsonOpts jsonv2.Options
-
-	// errorJSONOpts is jsonOpts with deterministic ordering re-imposed, the
-	// profile of every framework error body; joined once at construction.
-	errorJSONOpts jsonv2.Options
-
-	// configureServer is the WithHTTPServer callback, applied at the end of
-	// buildServer. nil when the option was not used.
-	configureServer func(*http.Server)
-
-	// trustedProxies contains parsed CIDR ranges allowed to influence forwarded headers.
-	trustedProxies []netip.Prefix
+	appPrep
+	appRouting
+	appRequest
+	appFeatures
+	appHealth
+	appDI
+	appServer
 }
 
 // New creates a new App with the given options. When no RawConfig is provided,
@@ -345,31 +166,56 @@ func assembleApp(
 	trustedProxies []netip.Prefix,
 ) *App {
 	app := &App{
-		container:             c,
-		logger:                logger,
-		mux:                   newMux(),
-		staticHosts:           make(map[string]*hostEntry),
-		namedRoutes:           make(map[string]*Route),
-		rawConfig:             o.rawConfig,
-		serverCfg:             serverCfg,
-		tlsConfig:             o.tlsConfig.value,
-		tlsConfigSet:          o.tlsConfig.isSet,
-		tlsFilesSet:           o.tlsFiles.isSet,
-		httpRedirectAddr:      o.httpRedirectAddr,
-		redirectTrailingSlash: serverCfg.RedirectTrailingSlash == nil || *serverCfg.RedirectTrailingSlash,
-		disableReloadSignals:  o.disableReloadSignals,
-		debug:                 o.debug || serverCfg.Debug,
-		strictBodies:          o.strictBodies || serverCfg.StrictBodies,
-		configureServer:       o.configureServer,
-		jsonOpts:              jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
-		trustedProxies:        trustedProxies,
+		logger: logger,
+		appRouting: appRouting{
+			mux:                   newMux(),
+			staticHosts:           make(map[string]*hostEntry),
+			namedRoutes:           make(map[string]*Route),
+			redirectTrailingSlash: serverCfg.RedirectTrailingSlash == nil || *serverCfg.RedirectTrailingSlash,
+		},
+		appRequest: appRequest{
+			debug:          o.debug || serverCfg.Debug,
+			strictBodies:   o.strictBodies || serverCfg.StrictBodies,
+			jsonOpts:       jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
+			trustedProxies: trustedProxies,
+		},
+		appDI: appDI{
+			container: c,
+			rawConfig: o.rawConfig,
+		},
+		appServer: appServer{
+			serverCfg:            serverCfg,
+			tlsConfig:            o.tlsConfig.value,
+			tlsConfigSet:         o.tlsConfig.isSet,
+			tlsFilesSet:          o.tlsFiles.isSet,
+			httpRedirectAddr:     o.httpRedirectAddr,
+			disableReloadSignals: o.disableReloadSignals,
+			configureServer:      o.configureServer,
+		},
 	}
 	app.errorJSONOpts = jsonv2.JoinOptions(app.jsonOpts, jsonv2.Deterministic(true))
 	if !o.disableRecover {
 		app.recover = newRecoverFeature(o.recoverCfg)
 	}
 	app.root = &Group{registrar: app}
-	app.lifecycle = &lifecycleManager{app: app}
+	app.lifecycle = &lifecycleManager{deps: lifecycleDeps{
+		logger:     app.Logger(),
+		container:  c,
+		config:     app.rawConfig,
+		server:     &app.appServer,
+		reloadSlot: &app.reload,
+		prep:       &app.appPrep,
+		newInfra:   app.NewInfra,
+		prepare:    app.prepare,
+		newServer: func() *http.Server {
+			return buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
+		},
+		features: app.effectiveFeatures,
+		reload: func(ctx context.Context) error {
+			_, err := app.Reload(ctx)
+			return err
+		},
+	}}
 	return app
 }
 
