@@ -201,48 +201,56 @@ CREDO_ENV_FILE=/etc/myapp/.env ./myapp
 
 ## Typed Config + DI
 
-The primary pattern is to unmarshal config once at the module boundary, then inject the typed struct via DI. Field names map to snake_case config keys automatically (e.g. `MaxOpen` → `max_open`), so struct tags are optional — add a `credo:"..."` tag only when the key differs from the field's snake_case name:
+Name each section once, with a typed descriptor: its key and its type, `config.Section[T]("key")`. Every read of the section takes the descriptor, so the key is spelled in one place and business code receives the typed value through DI. Field names map to snake_case config keys automatically (e.g. `MaxOpen` → `max_open`), so struct tags are optional — add a `credo:"..."` tag only when the key differs from the field's snake_case name:
 
 ```go
-type DatabaseConfig struct {
-    Host    string
-    Port    int
-    MaxOpen int
+type AppConfig struct {
+    Name        string
+    SupportMail string
 }
 
+var AppSection = config.Section[AppConfig]("app")
+
 func main() {
-    // Load the configuration and hand it to the App.
-    cfg, err := config.Load()
-    if err != nil {
-        log.Fatal(err)
-    }
-    app, err := credo.New(credo.WithRawConfig(cfg))
+    app, err := credo.New()
     if err != nil {
         log.Fatal(err)
     }
 
-    // Unmarshal and register typed config.
-    var dbCfg DatabaseConfig
-    if err := cfg.Unmarshal("databases.default", &dbCfg); err != nil {
-        log.Fatal(err)
-    }
-    app.ProvideValue(&dbCfg)
+    // The section's value, decoded and validated when first resolved.
+    app.Provide(AppSection.Decode)
 
-    // Services receive *DatabaseConfig via constructor injection.
+    // Services receive AppConfig via constructor injection.
     app.Provide(NewMyService)
 }
 
-func NewMyService(infra credo.Infra, cfg *DatabaseConfig) *MyService {
+func NewMyService(infra credo.Infra, cfg AppConfig) *MyService {
     // cfg is fully typed — no string keys
     return &MyService{cfg: cfg}
 }
 ```
 
-String keys appear **once** at the module boundary. Beyond that, everything is typed and compile-time safe.
+`AppSection.Decode` is an ordinary constructor over the configuration the App registers, so a missing section or a failed `Validate()` is a constructor error at `Resolve` or at start that names the key, and a second binding of `AppConfig` panics at registration with the container's message.
 
-### Typed Getter Shorthand
+A section that only one constructor reads is decoded there and not bound. The database is what business code needs, so the constructor that opens it reads its section:
 
-`app.GetConfig[T](key)` reads one section of the App's configuration in a single call, the auto-loaded one included — resolving `RawConfig` would finalize the container and end registration, while the getter never does, so the getter is how registration code reads it. Its sibling `config.(*Config).Get[T]` does the same when you hold a `*config.Config` directly (for example the value returned by `config.Load`):
+```go
+var DatabaseSection = config.Section[sqldb.Config]("databases.default")
+
+app.Provide(func(rc credo.RawConfig) (*sqldb.DB, error) {
+    cfg, err := DatabaseSection.Decode(rc)
+    if err != nil {
+        return nil, err
+    }
+    return sqldb.Open(&cfg)
+})
+```
+
+The key appears **once**, in the descriptor. Beyond that, everything is typed and compile-time safe.
+
+### Reading a Section in the Composition Root
+
+`app.GetConfig(section)` reads one section of the App's configuration in a single call, the auto-loaded one included — resolving `RawConfig` would finalize the container and end registration, while `GetConfig` never does, so it is how registration code reads a section it needs itself. When you hold a `*config.Config` directly (for example the value returned by `config.Load`), the descriptor reads it: `AppSection.Decode(cfg)`.
 
 ```go
 app, err := credo.New()
@@ -250,15 +258,13 @@ if err != nil {
     log.Fatal(err)
 }
 
-// One call replaces var + Unmarshal.
-dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
+appCfg, err := app.GetConfig(AppSection) // T is inferred from the descriptor
 if err != nil {
     log.Fatal(err)
 }
-app.ProvideValue(&dbCfg)
 ```
 
-Use `MustGetConfig[T]` (or `cfg.MustGet[T]`) to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustResolve`. These getters are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed structs via DI.
+Use `app.MustGetConfig(AppSection)` to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustResolve`. A literal key keeps compiling, `app.GetConfig[AppConfig]("app")`, since the untyped constant converts to the descriptor. These are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed values via DI.
 
 ---
 
@@ -323,31 +329,34 @@ A custom `credo.WithRawConfig` store opts into all of this by implementing `conf
 
 ## Multi-Database Config
 
-For multiple databases, keep each config section separate and read them independently at the module boundary, during registration:
+For multiple databases, keep each config section separate. Both sections decode into `sqldb.Config`, so neither is bound: each is read by the constructor that opens its database, and the databases are what the container binds:
 
 ```go
-func setupDatabases(app *credo.App) error {
-    primaryCfg, err := app.GetConfig[sqldb.Config]("databases.primary")
-    if err != nil {
-        return err
-    }
-    analyticsCfg, err := app.GetConfig[sqldb.Config]("databases.analytics")
-    if err != nil {
-        return err
-    }
+var (
+    PrimarySection   = config.Section[sqldb.Config]("databases.primary")
+    AnalyticsSection = config.Section[sqldb.Config]("databases.analytics")
+)
 
+func setupDatabases(app *credo.App) {
     // Each database is bound under its own wrapper type and named for /ready
     // and the lifecycle; the binding alone pings it at start and reports it.
-    app.Provide(func() (PrimaryDB, error) {
-        db, err := sqldb.Open(&primaryCfg)
+    app.Provide(func(rc credo.RawConfig) (PrimaryDB, error) {
+        cfg, err := PrimarySection.Decode(rc)
+        if err != nil {
+            return PrimaryDB{}, err
+        }
+        db, err := sqldb.Open(&cfg)
         return PrimaryDB{db}, err
     }, credo.ComponentName("primary"))
 
-    app.Provide(func() (AnalyticsDB, error) {
-        db, err := sqldb.Open(&analyticsCfg)
+    app.Provide(func(rc credo.RawConfig) (AnalyticsDB, error) {
+        cfg, err := AnalyticsSection.Decode(rc)
+        if err != nil {
+            return AnalyticsDB{}, err
+        }
+        db, err := sqldb.Open(&cfg)
         return AnalyticsDB{db}, err
     }, credo.ComponentName("analytics"))
-    return nil
 }
 ```
 
@@ -378,7 +387,7 @@ Use one section per logical connection. The [Data Access Guide](data-access.md#m
 
 ## Validation
 
-If your config struct implements `Validate() error`, it is called automatically by `Unmarshal`:
+If your config struct implements `Validate() error`, it is called automatically by `Unmarshal`, and so by a section's `Decode`:
 
 ```go
 type DatabaseConfig struct {
@@ -523,7 +532,7 @@ Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your
 
 ### Databases — `databases.<name>`
 
-User-read during registration via `app.GetConfig[sqldb.Config]("databases.<name>")` (or `RawConfig.Unmarshal`).
+User-read through a section descriptor, `config.Section[sqldb.Config]("databases.<name>")`, decoded by the constructor that opens the database ([Multi-Database Config](#multi-database-config)).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |

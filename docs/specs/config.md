@@ -4,37 +4,19 @@
 
 > **Pending v0.26.0 (R14):** this spec is not yet split into its normative contract and current behaviour; until R14 ships, every section describes current behaviour.
 
-This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, the typed getters, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
+This spec owns the `config` package contract — sources and precedence, `.env` resolution, decoding, section descriptors, the store side of reload — and the root's config integration (`credo.New`, `WithRawConfig`, `GetConfig`). The App-level reload orchestration is in the [Lifecycle Spec](lifecycle.md#appreloadctx-contextcontext-error); usage examples and the config key reference are in the [Configuration Guide](../guides/configuration.md).
 
 ## Overview
 
 The `config/` package provides struct-centric configuration loading with a single-pass loader (map-merge utilities adapted from koanf). It exposes a high-level Credo API focused on type safety and developer ergonomics.
 
-> **Current until v0.26.0 (R5):** the next list, paragraph and diagram show a section read with `Unmarshal` and bound with `ProvideValue`; the section descriptor below replaces them.
-
-The primary pattern is:
-
-1. **`credo.New()`** — auto-loads config via `config.Load()`, or use `credo.WithRawConfig(rc)` for explicit control
-2. **`rc.Unmarshal("section", &typed)`** — typed config at module boundary
-3. **`app.ProvideValue(&typed)`** — register typed config in DI
-
-String keys appear **once**, at the module boundary; business code accesses config as typed structs via DI, and string keys in business code are an explicit anti-pattern. Examples: [Configuration Guide — Typed Config + DI](../guides/configuration.md#typed-config--di).
-
-```
-RawConfig ──Unmarshal──→ *DatabaseConfig ──DI──→ Service
-                ↑                                   ↑
-          string key (1x)                  typed (compile-time)
-```
-
-> **Pending v0.26.0 (R5):** the next list and paragraph replace the pattern above when R5 ships; until then a section is read with `Unmarshal` or `Get[T]` and bound with `ProvideValue` or a constructor of the application's own.
-
 The primary pattern is:
 
 1. **`credo.New()`** — auto-loads config via `config.Load()`, or use `credo.WithRawConfig(rc)` for explicit control
 2. **`var AppSection = config.Section[AppConfig]("app")`** — the section's key and type, named once
-3. **`app.Provide(AppSection.Decode)`** — the section bound in DI as a snapshot; `app.Provide(AppSection.Live)` binds a [live section](#live-sections)
+3. **`app.Provide(AppSection.Decode)`** — the section bound in DI as a snapshot
 
-The key appears **once**, in the descriptor; business code receives the section's typed value through its constructor, and string keys in business code are an explicit anti-pattern. [Section Descriptors](#section-descriptors--sectiont) states the contract.
+The key appears **once**, in the descriptor; business code receives the section's typed value through its constructor, and string keys in business code are an explicit anti-pattern. [Section Descriptors](#section-descriptors--sectiont) states the contract; examples: [Configuration Guide — Typed Config + DI](../guides/configuration.md#typed-config--di).
 
 ## Goals
 
@@ -122,21 +104,17 @@ Rationale: [ADR-005](../adr/005-configuration-architecture.md#env-entries-are-no
 
 ### config.Load() — Primary Entry Point
 
-> **Current until v0.26.0 (R5):** the second item's `cfg.Get[T](key)` and the third item's `Unmarshal`/`Get` name the getter that goes; with R5 a section is read with `section.Decode(cfg)`.
-
 ```go
 cfg, err := config.Load(opts...) // returns (*config.Config, error)
 ```
 
 - Loads all sources (files, `.env`, env vars) and merges them.
-- Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Use `cfg.Get[T](key)` for typed snapshot access, `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
-- Returns an error for an I/O failure, a parse error, conflicting options, an explicit file list none of whose files exists, a missing explicit `.env` file, or an unsupported file format ([Error Handling Contract](#error-handling-contract)). Never panics. A section's `Validate()` error is returned by `Unmarshal`/`Get`, not by `Load`. There is no `MustLoad`.
+- Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Read a section with its descriptor, `section.Decode(cfg)`, use `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
+- Returns an error for an I/O failure, a parse error, conflicting options, an explicit file list none of whose files exists, a missing explicit `.env` file, or an unsupported file format ([Error Handling Contract](#error-handling-contract)). Never panics. A section's `Validate()` error is returned by `Unmarshal` (and so by a section's `Decode`), not by `Load`. There is no `MustLoad`.
 - No package-global instance — each call produces an independent `Config`.
 - **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithWeakDecoding()`, `WithLogger(*slog.Logger)` (load-time warnings such as a missing optional explicit `.env`; default `slog.Default()`). `.env` path rules: [.env Resolution Policy](#env-resolution-policy).
 
 ### config.RawConfig Interface
-
-> **Current until v0.26.0 (R5):** the paragraph after the interface names the typed-snapshot getter `Get[T]`/`GetConfig[T]`; with R5 the typed reader is the [section descriptor](#section-descriptors--sectiont).
 
 Defined in the `config/` package and re-exported from the root as `credo.RawConfig` (type alias). This is the **only** config access interface:
 
@@ -148,7 +126,7 @@ type RawConfig interface {
 }
 ```
 
-Limited to 2 methods — no scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. The typed-snapshot getter `Get[T]`/`GetConfig[T]` (below) is a generic method on the concrete `*config.Config` and `*App`, not on this interface. Rationale and rejected alternatives: [ADR-005](../adr/005-configuration-architecture.md).
+Limited to 2 methods — no scalar getters (`GetString`/`GetInt`/`GetBool`), no `Get(key) any`. The typed reader is the [section descriptor](#section-descriptors--sectiont), whose `Decode` reads any `RawConfig`. Rationale and rejected alternatives: [ADR-005](../adr/005-configuration-architecture.md).
 
 Behavior contract:
 
@@ -213,9 +191,7 @@ l := s.limits.Load() // once per operation: one atomic load, a value no reload c
 
 ### credo.New() Config Integration
 
-> **Current until v0.26.0 (R5):** the first paragraph names the keyed `app.GetConfig[T](key)`; with R5 it takes the [section descriptor](#section-descriptors--sectiont).
-
-`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; the keyed `app.GetConfig[T](key)` (below) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
+`credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; `app.GetConfig(section)` ([below](#section-descriptors--sectiont)) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
 
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
@@ -236,39 +212,7 @@ Creates a Config from one raw document. Useful with `go:embed`.
 - `CREDO_ENV` selects no env-specific overlay: there is no file to derive one from.
 - The bytes are copied: `Reload`/`Stage` re-parse the same document and re-read only `.env` and the process environment.
 
-### Typed Snapshot Getter — Get[T] / GetConfig[T]
-
-> **Current until v0.26.0 (R5):** this section describes `Config.Get[T]` and `Config.MustGet[T]`, which go, and the keyed `App.GetConfig[T]`/`MustGetConfig[T]`, which take the descriptor; [Section Descriptors](#section-descriptors--sectiont) replaces it.
-
-A generic, one-call form of `Unmarshal` for reading a typed section at the composition root:
-
-```go
-cfg, err := config.Load(config.WithFiles("app.yaml"))
-// ...
-db, err := cfg.Get[DatabaseConfig]("database")   // (*config.Config).Get[T]
-port := cfg.MustGet[int]("server.port")           // MustGet panics on error
-
-// Or straight from the App, over its registered RawConfig:
-db, err = app.GetConfig[DatabaseConfig]("database")
-db = app.MustGetConfig[DatabaseConfig]("database")
-```
-
-| Method | Signature | On error |
-| --- | --- | --- |
-| `(*config.Config).Get[T]` | `(key string) (T, error)` | returns zero `T` + error |
-| `(*config.Config).MustGet[T]` | `(key string) T` | panics |
-| `(*App).GetConfig[T]` | `(key string) (T, error)` | returns zero `T` + error |
-| `(*App).MustGetConfig[T]` | `(key string) T` | panics |
-| `(*App).ConfigExists` | `(key string) bool` | — (mirrors `RawConfig.Exists`; a presence check during registration, before `Resolve` is available) |
-
-- `T` may be a struct, map, slice, or primitive — the same [decode rules](#decoding) and `Validate()` hook as `Unmarshal`.
-- `App.GetConfig` decodes through the registered `RawConfig.Unmarshal`, so it behaves identically for the auto-loaded `*config.Config` and any custom `WithRawConfig` implementation.
-- These are **bootstrap/composition-root** helpers: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request ([ADR-005](../adr/005-configuration-architecture.md#typed-snapshot-getter-gett--getconfigt)).
-- `MustGet`/`MustGetConfig` panic with the error `Get`/`GetConfig` would return.
-
 ### Section Descriptors — Section[T]
-
-> **Pending v0.26.0 (R5):** not implemented yet; a section is read by its key through `Unmarshal`, `Config.Get[T]` or `App.GetConfig[T]`.
 
 ```go
 var AppSection = config.Section[AppConfig]("app")
@@ -283,12 +227,12 @@ cfg := app.MustGetConfig(AppSection) // the same descriptor in the composition r
 | `Section[T].Decode` | `(src config.RawConfig) (T, error)` | returns zero `T` + error |
 | `(*App).GetConfig` | `(section config.Section[T]) (T, error)` | returns zero `T` + error |
 | `(*App).MustGetConfig` | `(section config.Section[T]) T` | panics, naming the key |
-| `(*App).ConfigExists` | `(key string) bool` | — (mirrors `RawConfig.Exists`) |
+| `(*App).ConfigExists` | `(key string) bool` | — (mirrors `RawConfig.Exists`; a presence check during registration, before `Resolve` is available) |
 
-- **`Decode`** decodes the section through `src.Unmarshal`, so the [decode rules](#decoding) and the [`Validate()` hook](#validatable-integration) apply; an empty key is an error. It lives in `config` and needs no root import, since `credo.RawConfig` is an alias of `config.RawConfig`.
+- **`Decode`** decodes the section through `src.Unmarshal`, so the [decode rules](#decoding) and the [`Validate()` hook](#validatable-integration) apply; `T` may be a struct, map, slice or primitive, and an empty key is an error. A failure is wrapped as `config: section "<key>": …`. It lives in `config` and needs no root import, since `credo.RawConfig` is an alias of `config.RawConfig`.
 - **Binding.** `Decode`'s method value is an ordinary constructor over the framework's `RawConfig` binding: `app.Provide(AppSection.Decode)` binds the section's `T`. A missing section or a failed validation is a constructor error at `Resolve` or at start that names the key, not a registration panic, and a second binding of one type panics with the container's message and its remedy ([container spec](container.md)). The bound value is a snapshot: a reload does not change it, and a section that must follow a reload is declared [live](#live-sections).
 - **Several sections of one type.** A section that only one constructor reads is decoded in that constructor and not bound: two databases whose sections both decode into `sqldb.Config` each call their own section's `Decode` where they are opened, and the databases are what the container binds. A section that business code receives is bound once, or under a type of its own.
-- **One reader per holder.** A `*config.Config` is read with `section.Decode(cfg)`; it has no getter of its own. `App.GetConfig` and `App.MustGetConfig` are for the composition root, which holds the App rather than its configuration: `app.GetConfig(AppSection)` infers `T`, and `app.GetConfig[AppConfig]("app")` compiles too, since the untyped constant converts to the descriptor. They decode through the registered `RawConfig`, so they behave alike for the auto-loaded `*config.Config` and a `WithRawConfig` implementation. `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request.
+- **One reader per holder.** A `*config.Config` is read with `section.Decode(cfg)`; it has no getter of its own. `App.GetConfig` and `App.MustGetConfig` are for the composition root, which holds the App rather than its configuration: `app.GetConfig(AppSection)` infers `T`, and `app.GetConfig[AppConfig]("app")` compiles too, since the untyped constant converts to the descriptor. They decode through the registered `RawConfig`, so they behave alike for the auto-loaded `*config.Config` and a `WithRawConfig` implementation. `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request ([ADR-005](../adr/005-configuration-architecture.md#a-section-is-named-once-configsectiont)). `MustGetConfig` panics with the error `GetConfig` would return.
 - **`testutil`'s empty configuration** honours the missing-key contract: its `Unmarshal` returns the not-found error a real `*config.Config` returns, and `Exists` stays false.
 
 ## Key Model & Env Normalization
@@ -433,8 +377,6 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Error Handling Contract
 
-> **Current until v0.26.0 (R5):** the "only `MustGet`/`MustGetConfig` panic" item names `MustGet`, which goes; with R5 only `MustGetConfig` panics.
-
 > **Current until v0.26.0 (R15):** the last item names `Reload()`/`Stage()`; with R15 a reload's load error is returned by `Reload(ctx)` with its result, and `Stage` is gone.
 
 - **Config File Error**: I/O or syntax error in JSON/YAML (only if found), including a YAML file with more than one document (`yaml: a config file holds one document; found another after the first`).
@@ -442,17 +384,14 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 - **Unsupported Format**: a config file whose extension, or a `LoadBytes` format, is neither JSON nor YAML (`unsupported format: …`).
 - **Conflicting Options**: `WithoutDotenv` + `WithDotenvPath`, rejected before any I/O.
 - **Explicit .env Error**: an explicit `.env` path (`WithDotenvPath` or `CREDO_ENV_FILE`) is missing (a Warn instead under `WithDotenvOptional()`) or unreadable, or a `.env` file fails to parse.
-- **Key Not Found**: `Unmarshal`/`Get` on a key that does not exist (`config: key "…" not found`).
+- **Key Not Found**: `Unmarshal`, or a section's `Decode`, on a key that does not exist (`config: key "…" not found`; through `Decode`, `config: section "…": config: key "…" not found`).
+- **Empty Section Key**: `Section[T].Decode` with an empty key (`config: Section.Decode: empty section key; …`).
 - **Empty Configuration**: a full-tree `Unmarshal("", &dst)` of an empty configuration (`config: configuration is empty`).
 - **Strict Decoding Refusal**: an unknown key (`config: unknown key "app.porrt": no field of the target decodes it; fix the configuration, or opt in to weak coercion with config.WithWeakDecoding()`) or a conversion across kinds (`config: key "app.port": …; strict decoding converts no value across kinds: …`) names the key path, the conversion refused, and `config.WithWeakDecoding()`.
 - **Type Conversion**: a string that does not parse as its target type (`config: key "server.port": …`), in either mode.
 - **Validation Error**: `dst.Validate()` returns a non-nil error after unmarshalling (`config: validation: …`).
-- All errors are returned, never panicked; only `MustGet`/`MustGetConfig` panic.
+- All errors are returned, never panicked; only `MustGetConfig` panics, with the error `GetConfig` would return, naming the key.
 - **Reload Error**: any load error during `Reload()`/`Stage()` is returned and the previous snapshot stays current.
-
-> **Pending v0.26.0 (R5):** not implemented yet; there is no section descriptor.
-
-- **Empty Section Key**: `Section[T].Decode` (and `Live`) with an empty key is an error. `MustGetConfig` panics with the error `GetConfig` would return, naming a missing key.
 
 > **Pending v0.26.0 (R15):** not implemented yet; a reload validates `OnConfigChange` subscribers and has no live sections.
 
@@ -466,11 +405,9 @@ Key lookup walks the nested map directly (`lookup`); there is no flattened key i
 
 ## Koanf Adaptation Scope
 
-> **Current until v0.26.0 (R5):** the second item names `Get[T]`; with R5 `Unmarshal` and a section's `Decode` decode typed values.
-
 `config/maps.go` derives from koanf's `maps/maps.go` (`unflatten`, `mergeMaps`, `copyMap`, `intfaceKeysToStrings`; attribution in [NOTICES](../../NOTICES)). Nothing else is adapted:
 
 - **Provider/parser architecture** (`providers/*`, `parsers/*`): the loader is single-pass, and file, `.env` and environment reading is Credo's own (`load.go`, `dotenv.go`). A single embedded document goes through `LoadBytes`; an `fs.FS` source with discovery and env-specific overlays is deferred. Remote (consul, etcd, vault) and CLI-flag providers are out of scope, and only JSON and YAML are supported.
-- **Scalar getters, `All()`, `KeyMap()`**: `Unmarshal` and `Get[T]` decode typed values, `Unmarshal("", &dst)` decodes the whole tree, and lookup walks the nested map (no flattened key index).
+- **Scalar getters, `All()`, `KeyMap()`**: `Unmarshal` and a section's `Decode` decode typed values, `Unmarshal("", &dst)` decodes the whole tree, and lookup walks the nested map (no flattened key index).
 - **`Set()`/`Delete()`**: no in-place mutation; reload re-loads the whole snapshot ([Reload](#reload--partial-reload-adr-020)).
 - **`StrictMerge`/`MergeStrict`**: merges are always loose.
