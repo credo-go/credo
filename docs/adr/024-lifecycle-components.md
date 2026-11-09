@@ -47,8 +47,6 @@ The [container spec](../specs/container.md#registration-options) states which bi
 
 ### What makes a value a component
 
-> **Pending v0.25.0 (W8):** until W8 ships, `middleware.NewRateLimiter` returns a `*RateLimiter` that implements `Component` and is handed to `app.Manage` to close its store, although its function form owns the same store without one.
-
 A value is a component when it owns something the App must release or prepare: a goroutine, a connection it opened, a buffer to flush, state it loads at start. Being middleware is a reason neither way: a middleware that owns such a thing is a component like any other value, and one that owns nothing is not made one so that every middleware looks alike. A rate limit owns nothing of that kind — its in-memory store runs no goroutine and sweeps expired buckets inline, so closing it would only release memory early, and a store passed in through its configuration stays its owner's component — so it is a plain middleware value ([ADR-010](010-middleware-architecture.md) records the rejected alternatives).
 
 ### Resource identity: one resource, one teardown

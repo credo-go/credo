@@ -24,7 +24,7 @@ For these components, Credo evolves the API independently from upstream, removes
 
 ### Wrap + pin — Components with fast evolution and high security pressure
 
-Components that implement specs/protocols, have high CVE pressure, and evolve rapidly are wrapped — for example the SQL ORM and migration engine (uptrace/bun, in `store/sqldb`), JWT parsing (golang-jwt/jwt/v5) and the WebSocket protocol engine (coder/websocket).
+Components that implement specs/protocols, have high CVE pressure, and evolve rapidly are wrapped — for example the SQL ORM and migration engine (uptrace/bun, in `store/sqldb`), JWT parsing (golang-jwt/jwt/v5), the WebSocket protocol engine (coder/websocket) and the rate limiter's store contract (sethvargo/go-limiter, in `middleware/ratelimit`, a package of its own so that only its users link it).
 
 For these components, Credo provides a thin adapter layer and pins the version. Upgrades arrive as reviewed version bumps (Dependabot pull requests) that pass the [wrapped-dependency upgrade gate](../../CONTRIBUTING.md#wrapped-dependency-upgrades). A planned package chooses its path when it is designed; tracing and metrics are to be wrapped ([ADR-014](014-observability.md)).
 

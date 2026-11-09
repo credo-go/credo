@@ -42,7 +42,7 @@ Trust model:
 Framework middleware uses the same helpers:
 
 - `middleware.Secure` uses `Request.Scheme()` for HSTS.
-- `middleware.RateLimit` uses `Request.RealIP()` as its default key.
+- `ratelimit.Middleware` (`middleware/ratelimit`) uses `Request.RealIP()` as its default key.
 - The access log uses `Request.RealIP()` for `remote_addr`.
 
 ## TLS Termination
