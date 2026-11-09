@@ -15,6 +15,24 @@ import (
 type SelectQuery struct {
 	raw   *bun.SelectQuery
 	state queryState
+	proof countProof
+}
+
+// countProof records, from the wrapper's own builder methods, what Count and
+// Page need to know to prove that Bun's native count returns the number of
+// rows the data query returns. The first culprit of each kind is kept for the
+// error message.
+type countProof struct {
+	escape     string // the first escape hatch: Apply, Unwrap, or a Relation callback
+	columnExpr string // the first raw ColumnExpr
+	having     string // the first Having
+	grouped    bool   // GroupExpr or Distinct
+}
+
+func (p *countProof) markEscape(culprit string) {
+	if p.escape == "" {
+		p.escape = culprit
+	}
 }
 
 // --- Builder methods (curated subset) ---
@@ -33,7 +51,14 @@ func (q *SelectQuery) Column(columns ...string) *SelectQuery {
 
 // ColumnExpr adds a raw expression to the SELECT clause. Use for
 // computed columns and aggregates that the model layer cannot express.
+//
+// Bun's count replaces the projection, so Count and Page cannot prove the
+// total of a query with a raw ColumnExpr unless it also carries GroupExpr or
+// Distinct; page such a query with [SelectQuery.PageWithCount].
 func (q *SelectQuery) ColumnExpr(query string, args ...any) *SelectQuery {
+	if q.proof.columnExpr == "" {
+		q.proof.columnExpr = query
+	}
 	q.raw = q.raw.ColumnExpr(query, args...)
 	return q
 }
@@ -122,50 +147,60 @@ func (q *SelectQuery) Offset(n int) *SelectQuery {
 //
 // A relation cannot be deferred to One, All, or Page: typed terminals require
 // a model-less query and return [ErrTypedTerminalModel] when a model is already
-// bound.
+// bound. A non-nil apply callback is an escape hatch: Count cannot prove the
+// total of a query built with one.
 func (q *SelectQuery) Relation(name string, apply ...func(*bun.SelectQuery) *bun.SelectQuery) *SelectQuery {
+	for _, fn := range apply {
+		if fn != nil {
+			q.proof.markEscape(fmt.Sprintf("a Relation(%q) callback", name))
+			break
+		}
+	}
 	q.raw = q.raw.Relation(name, apply...)
 	return q
 }
 
 // Distinct adds a DISTINCT clause.
 func (q *SelectQuery) Distinct() *SelectQuery {
+	q.proof.grouped = true
 	q.raw = q.raw.Distinct()
 	return q
 }
 
 // GroupExpr adds a GROUP BY expression.
 func (q *SelectQuery) GroupExpr(query string, args ...any) *SelectQuery {
+	q.proof.grouped = true
 	q.raw = q.raw.GroupExpr(query, args...)
 	return q
 }
 
-// Having adds a HAVING clause.
+// Having adds a HAVING clause. Count and Page cannot prove the total of a
+// query with Having unless it also carries GroupExpr or Distinct.
 func (q *SelectQuery) Having(query string, args ...any) *SelectQuery {
+	if q.proof.having == "" {
+		q.proof.having = query
+	}
 	q.raw = q.raw.Having(query, args...)
 	return q
 }
 
-// Clone returns a top-level query-builder fork while preserving execution
-// state that Bun's Clone omitted before v1.3.0: an explicit connection,
-// builder errors, WherePK fields, soft-delete flags, and CTE materialization
-// flags (v1.3.0 copies them itself). It follows Bun's sharing semantics for
-// nested values, including a bound destination and CTE or relation
-// subqueries; do not mutate or scan source and clone concurrently when they
-// share such values.
+// Clone returns a top-level query-builder fork through Bun's own Clone. It
+// follows Bun's sharing semantics for nested values, including a bound
+// destination and CTE or relation subqueries; do not mutate or scan source
+// and clone concurrently when they share such values.
 func (q *SelectQuery) Clone() *SelectQuery {
-	return q.cloneQuery()
-}
-
-func (q *SelectQuery) cloneQuery() *SelectQuery {
 	return &SelectQuery{
-		raw:   cloneBunSelectQuery(q.raw),
+		raw:   q.raw.Clone(),
 		state: q.state,
+		proof: q.proof,
 	}
 }
 
-// Conn sets an explicit connection, bypassing context TX injection.
+// Conn sets an explicit connection, bypassing context TX injection. Only a
+// connection set here is kept: one set inside an Apply callback is overridden
+// by transaction injection at the terminal.
 func (q *SelectQuery) Conn(db bun.IConn) *SelectQuery {
+	q.state.markConnSet()
 	q.raw = q.raw.Conn(db)
 	return q
 }
@@ -175,128 +210,109 @@ func (q *SelectQuery) Conn(db bun.IConn) *SelectQuery {
 // Apply delegates to Bun's native Apply for advanced builder methods
 // not in the curated proxy set. Nil functions are filtered out.
 // Interceptors (TX injection, error mapping) are preserved on terminal
-// methods.
+// methods; a connection set inside fn is overridden by TX injection, so use
+// [SelectQuery.Conn] for an explicit connection.
+//
+// The wrapper cannot see what fn changes, so Count and Page cannot prove the
+// total of a query built with Apply; page it with [SelectQuery.PageWithCount].
 func (q *SelectQuery) Apply(fns ...func(*bun.SelectQuery) *bun.SelectQuery) *SelectQuery {
+	if len(filterApply(fns...)) > 0 {
+		q.proof.markEscape("Apply")
+	}
 	q.raw = applyFiltered(q.raw, fns...)
 	return q
 }
 
-// ApplyQueryBuilder applies fn to Bun's shared [bun.QueryBuilder] — the
-// builder-only interface (Where, WhereOr, WhereGroup, WherePK,
-// WhereDeleted, WhereAllWithDeleted) common to select, update, and delete
-// queries. Unlike Apply, which is typed per query, this lets a single
-// predicate — tenant scoping, soft-delete filters, ownership checks — be
-// reused across all three query types instead of being duplicated per type.
-//
-// Conditions added through the builder land on this query, so the proxy's
-// terminal methods still apply TX injection and error mapping; interceptors
-// are preserved, exactly like Apply. A nil fn is a no-op.
-//
-// The bun.QueryBuilder passed to fn also exposes Unwrap() any as a terminal
-// escape; calling terminal methods on that unwrapped query bypasses Credo
-// interceptors — the same caveat as Unwrap.
-func (q *SelectQuery) ApplyQueryBuilder(fn func(bun.QueryBuilder) bun.QueryBuilder) *SelectQuery {
-	if fn == nil {
-		return q
-	}
-	q.raw = fn(q.raw.QueryBuilder()).Unwrap().(*bun.SelectQuery)
+// ApplyFilter runs fn on a [Filter] over this query's WHERE clause, so a single
+// predicate — tenant scoping, soft-delete filters, ownership checks — scopes a
+// select, an update, and a delete alike. fn adds predicates only, so a query
+// built with it keeps its automatic total in Count and Page. A nil fn is a
+// no-op.
+func (q *SelectQuery) ApplyFilter(fn func(*Filter)) *SelectQuery {
+	applyFilter(q.raw.QueryBuilder(), fn)
 	return q
 }
 
 // Unwrap returns the underlying *bun.SelectQuery for builder-only use.
 // Terminal methods on the unwrapped query bypass Credo interceptors
 // (TX injection, error mapping). Use Apply for the recommended escape
-// hatch that preserves interceptors.
+// hatch that preserves interceptors. The wrapper cannot see what is done to
+// the unwrapped query, so Count and Page cannot prove its total afterwards.
 func (q *SelectQuery) Unwrap() *bun.SelectQuery {
+	q.proof.markEscape("Unwrap")
 	return q.raw
 }
 
 // --- Terminal methods ---
 
-// prepareTerminal creates an execution snapshot and injects TX from context if
-// no explicit Conn was set. The snapshot preserves Bun state without mutating
-// the reusable receiver.
+// prepareTerminal creates an execution snapshot through Bun's Clone and
+// injects the TX from context unless Conn set an explicit connection. The
+// snapshot leaves the reusable receiver unchanged.
 func (q *SelectQuery) prepareTerminal(ctx context.Context) *bun.SelectQuery {
-	prepared := cloneBunSelectQuery(q.raw)
-	conn, err := bunSelectQueryConn(q.raw)
-	if err == nil && conn == nil {
-		prepared = prepared.Conn(q.state.conn(ctx))
-	}
-	return prepared
+	return prepareQuery(ctx, q.raw, q.state, (*bun.SelectQuery).Clone)
 }
 
-// countLogicalRows counts the rows produced by the complete SELECT projection
-// instead of asking Bun to replace that projection with count(*). The outer
-// query is what makes ungrouped aggregates, Distinct, and grouped results obey
-// one logical-result cardinality contract. model is used only by Page to bind
-// T's table on the private source snapshot.
-func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, error) {
-	if len(model) > 1 {
-		return 0, fmt.Errorf("sqldb: internal logical count accepts at most one model")
+// proveCount reports, before any I/O, whether Bun's native count over source
+// returns the number of rows the data query returns. source is the terminal's
+// snapshot, whose model is the one the data query would scan with.
+func (q *SelectQuery) proveCount(terminal string, source *bun.SelectQuery) error {
+	if q.proof.escape != "" {
+		return unsupportedCountError(
+			terminal,
+			"it was built with "+q.proof.escape+", whose changes the wrapper cannot see",
+		)
 	}
-	source := q.prepareTerminal(ctx)
-	if len(model) == 1 {
-		source = source.Model(model[0])
+	if hookType := beforeSelectHookType(source); hookType != "" {
+		return unsupportedCountError(
+			terminal,
+			"its model type "+hookType+" implements BeforeSelectHook, which Bun runs for the data query and not for its count",
+		)
 	}
-	if err := bunSelectQueryError(source); err != nil {
-		return 0, err
+	if q.proof.grouped {
+		return nil
 	}
-	if err := validateCountQueryShape(source); err != nil {
-		return 0, err
+	if q.proof.columnExpr != "" {
+		return unsupportedCountError(
+			terminal,
+			fmt.Sprintf(
+				"its raw ColumnExpr(%q) without GroupExpr or Distinct can change how many rows the projection returns, and Bun's count replaces the projection",
+				q.proof.columnExpr,
+			),
+		)
 	}
+	if q.proof.having != "" {
+		return unsupportedCountError(
+			terminal,
+			fmt.Sprintf(
+				"its Having(%q) without GroupExpr or Distinct filters a projection Bun's count replaces",
+				q.proof.having,
+			),
+		)
+	}
+	return nil
+}
 
-	// Bun's native Count bypasses model SELECT hooks. Page's data statement
-	// does not, so bypassing them here could make Total and Records represent
-	// different predicates or projections. Run the same hook lifecycle around
-	// the logical source on its private snapshot.
-	afterSelect, err := runBunSelectHooksBefore(ctx, source)
-	if err != nil {
-		return 0, err
+// beforeSelectHookType returns the model type of source when it implements
+// bun.BeforeSelectHook, as Bun resolves it for the data query, or "".
+func beforeSelectHookType(source *bun.SelectQuery) string {
+	tableModel, ok := source.GetModel().(bun.TableModel)
+	if !ok {
+		return ""
 	}
-	if queryErr := bunSelectQueryError(source); queryErr != nil {
-		return 0, queryErr
+	zero := tableModel.Table().ZeroIface
+	if _, ok := zero.(bun.BeforeSelectHook); ok {
+		return fmt.Sprintf("%T", zero)
 	}
-	if shapeErr := validateCountQueryShape(source); shapeErr != nil {
-		return 0, shapeErr
-	}
+	return ""
+}
 
-	countSource := cloneBunSelectQuery(source)
-	if queryErr := bunSelectQueryError(countSource); queryErr != nil {
-		return 0, queryErr
-	}
-	if prepareErr := prepareBunSelectCountSource(countSource); prepareErr != nil {
-		return 0, prepareErr
-	}
-	renderedSource, err := renderBunSelectCountSource(q.state.db.db.QueryGen(), countSource)
+// count runs Bun's native count on source, a proven terminal snapshot that
+// already carries the query's connection. Bun's count drops ORDER BY, LIMIT,
+// OFFSET and FOR, and runs no model hook.
+func (q *SelectQuery) count(ctx context.Context, source *bun.SelectQuery) (int, error) {
+	total, err := source.Count(ctx)
 	if err != nil {
-		return 0, err
-	}
-
-	conn, err := bunSelectQueryConn(countSource)
-	if err != nil {
-		return 0, err
-	}
-	outer := q.state.db.db.NewSelect().
-		TableExpr("(?) AS _credo_count_source", renderedSource)
-	if countSource.GetModel() != nil {
-		// Preserve QueryEvent.Model without binding the model table, relations,
-		// or soft-delete state to the synthetic outer query. All model-aware SQL
-		// lives in the complete policy-bearing source.
-		if modelErr := setBunSelectQueryEventModel(outer, countSource.GetModel()); modelErr != nil {
-			return 0, modelErr
-		}
-	}
-	if conn != nil {
-		outer = outer.Conn(conn)
-	}
-	total, err := outer.Count(ctx)
-	if err != nil {
-		return 0, wrapMySQLCountExecutionError(q.state.db.family, err)
-	}
-	if afterSelect != nil {
-		if hookErr := afterSelect.AfterSelect(ctx, countSource); hookErr != nil {
-			return 0, hookErr
-		}
+		return 0, q.state.db.mapError(ctx, wrapMySQLCountExecutionError(q.state.db.family, err))
 	}
 	if total > math.MaxInt || total < math.MinInt {
 		return 0, fmt.Errorf("sqldb: count: total %d does not fit in int", total)
@@ -305,9 +321,6 @@ func (q *SelectQuery) countLogicalRows(ctx context.Context, model ...any) (int, 
 }
 
 func (q *SelectQuery) validateTypedTerminal(terminal string) error {
-	if err := bunSelectQueryError(q.raw); err != nil {
-		return err
-	}
 	if q.raw.GetModel() != nil {
 		return typedTerminalModelError(terminal)
 	}
@@ -323,30 +336,27 @@ func (q *SelectQuery) Scan(ctx context.Context, dest ...any) error {
 	return q.state.db.mapError(ctx, q.prepareTerminal(ctx).Scan(ctx, dest...))
 }
 
-// Count executes the query and returns the count of matching logical result
-// rows. Credo counts an outer derived-table source, so ungrouped aggregate
-// projections, Group, Distinct, and Group+Having share the same cardinality
-// contract. Direct compound queries and HAVING without GROUP BY return
-// [ErrUnsupportedCountQuery] before execution. Driver errors are mapped to
-// store.Err* sentinels. Bun model SELECT hooks run around the logical count
-// source; a Page that reaches its data SELECT invokes them once for COUNT and
-// once for SELECT.
-// Count does not scan or mutate a bound model: successful AfterSelect hooks see
-// its pre-count value. MySQL validates the generated derived-table output names
-// during execution. ER_DUP_FIELDNAME (1060) from that logical COUNT is wrapped
-// with ErrUnsupportedCountQuery while retaining the driver cause; use unique
-// aliases to resolve colliding output names.
-// Relation callbacks may shape predicates/projections, but cannot replace the
-// model or add root ORDER/LIMIT/OFFSET/FOR or an unsupported count shape.
+// Count runs Bun's native count and returns the number of rows the query
+// returns without its LIMIT and OFFSET. Bun's count drops ORDER BY, LIMIT,
+// OFFSET and FOR, wraps a query with GroupExpr or Distinct so that it counts
+// groups or distinct tuples, and runs no model hook.
+//
+// Count runs only on a query the wrapper can prove: one built without Apply,
+// Unwrap or a Relation callback; whose model's type does not implement
+// bun.BeforeSelectHook; and that either carries GroupExpr or Distinct or has
+// no raw ColumnExpr and no Having. Every other query returns an error matching
+// [ErrUnsupportedCountQuery] before I/O, naming the rule and its culprit.
+//
+// The count runs on the query's own connection: the one set with Conn, else
+// the ambient transaction from ctx, else the pool. Driver errors are mapped to
+// store.Err* sentinels; on MySQL, ER_DUP_FIELDNAME (1060) from the count is
+// wrapped with ErrUnsupportedCountQuery while retaining the driver cause.
 func (q *SelectQuery) Count(ctx context.Context) (int, error) {
-	if err := bunSelectQueryError(q.raw); err != nil {
+	source := q.prepareTerminal(ctx)
+	if err := q.proveCount("Count", source); err != nil {
 		return 0, err
 	}
-	if err := validateCountQueryShape(q.raw); err != nil {
-		return 0, err
-	}
-	n, err := q.countLogicalRows(ctx)
-	return n, q.state.db.mapError(ctx, err)
+	return q.count(ctx, source)
 }
 
 // Exists executes the query and returns true if at least one row matches.
@@ -415,13 +425,29 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 	return out, q.state.db.mapError(ctx, err)
 }
 
-// Page runs COUNT + SELECT with LIMIT/OFFSET and assembles the result as a
-// *pagination.Page[T]. Like [SelectQuery.One] and [SelectQuery.All] it is a
-// typed terminal: T drives both the table and the scan destination, so the
-// query is built model-less and Page owns the result:
+// pageWindow copies req once and returns it with its offset. Page and
+// PageWithCount never default or clamp: a nil request, a non-positive Page or
+// PerPage, or an offset that does not fit in int returns an error matching
+// [pagination.ErrInvalidPageRequest] before any I/O.
+func pageWindow(terminal string, req *pagination.PageRequest) (pagination.PageRequest, int, error) {
+	if req == nil {
+		return pagination.PageRequest{}, 0, fmt.Errorf("%w: request must not be nil", pagination.ErrInvalidPageRequest)
+	}
+	request := *req
+	offset, err := request.Offset()
+	if err != nil {
+		return pagination.PageRequest{}, 0, fmt.Errorf("sqldb: %s: %w", terminal, err)
+	}
+	return request, offset, nil
+}
+
+// Page runs Bun's native count and the data query with LIMIT/OFFSET and
+// assembles the result as a *pagination.Page[T]. Like [SelectQuery.One] and
+// [SelectQuery.All] it is a typed terminal: T drives both the table and the
+// scan destination, so the query is built model-less and Page owns the result:
 //
 //	page, err := db.Select().
-//		Where("tenant_id = ?", tenantID).
+//		ApplyFilter(tenantScope(tenantID)).
 //		OrderExpr("created_at DESC").
 //		Page[User](ctx, req)            // (*pagination.Page[User], error)
 //
@@ -430,44 +456,34 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // [pagination.PageRequest.Normalize] (or NormalizeWithMax) first. Page itself
 // never defaults or clamps: it strictly requires positive Page and PerPage
 // values and an offset that fits in int. Nil, invalid, or overflowing requests
-// return an error matching
-// [pagination.ErrInvalidPageRequest] before COUNT or SELECT executes. Valid
-// custom PerPage values above pagination.MaxPerPage remain unchanged.
+// return an error matching [pagination.ErrInvalidPageRequest] before any I/O.
+// Valid custom PerPage values above pagination.MaxPerPage remain unchanged.
 //
 // The query must be model-less; a model bound through Select, Model, or Apply
-// returns [ErrTypedTerminalModel] before COUNT or SELECT executes. Use a bound
-// model with [SelectQuery.Scan] when relations or a custom destination are
-// required.
+// returns [ErrTypedTerminalModel] before any I/O. Use a bound model with
+// [SelectQuery.Scan] when relations or a custom destination are required.
 //
-// Total is the number of logical result rows before ordering and pagination.
-// An ungrouped aggregate projection counts as one row when it produces a row;
-// Distinct counts selected projection tuples; Group counts groups; Group with
-// Having counts the groups left after Having. Bun v1.3.0 cannot safely window
-// standalone Having or a direct UNION/INTERSECT/EXCEPT query, so those shapes
-// return [ErrUnsupportedCountQuery] before execution. Restructure compound
-// input behind an outer derived-table/CTE source and compose explicit
-// Count/Scan terminals when a custom source is required.
-// On MySQL, ER_DUP_FIELDNAME (1060) returned by the COUNT statement is wrapped
-// with ErrUnsupportedCountQuery after I/O while retaining the driver cause.
-// Bun model SELECT hooks run around each statement's private snapshot, so a
-// Page that reaches its data SELECT invokes the lifecycle once for COUNT and
-// once for SELECT; hook-added predicates and projections affect both Total and
-// Records.
-// Keep hooks deterministic: transaction isolation cannot make a volatile
-// projection or application-side hook choose the same result twice.
+// Total is the number of rows the data query returns without its LIMIT and
+// OFFSET, or an error, never another number. Page counts under the rule of
+// [SelectQuery.Count], with T as the model: a query the wrapper cannot prove,
+// including one whose T implements bun.BeforeSelectHook, returns an error
+// matching [ErrUnsupportedCountQuery] before any I/O; page it with
+// [SelectQuery.PageWithCount]. A query scoped through [SelectQuery.ApplyFilter]
+// keeps its automatic total.
 //
-// COUNT runs first; when it reports zero rows the SELECT is skipped and the
-// returned Page carries a non-nil empty Records slice with the requested page
-// and per-page preserved. COUNT and SELECT are separate statements, so under
-// concurrent writes the total and the page can drift. A normal Read Committed
-// transaction does not make the two statements share a snapshot; use an
-// isolation level with that guarantee when consistency is required. Both
-// statements use internal execution snapshots and join the ambient transaction
-// from ctx exactly like [SelectQuery.Scan], so the receiver is never mutated.
-// Credo does not start an implicit transaction: PostgreSQL and MySQL/InnoDB
-// callers normally select Repeatable Read on an outer [DB.InTxWith] call,
-// while SQLite callers use an explicit [DB.InTx] read transaction. Always pass
-// the callback's txCtx to Page; isolation support remains driver-specific.
+// The count runs first; when it reports zero rows the data query is skipped
+// and the returned Page carries a non-nil empty Records slice with the
+// requested page and per-page preserved. The count and the data query are
+// separate statements, so under concurrent writes the total and the page can
+// drift. A normal Read Committed transaction does not make the two statements
+// share a snapshot; use an isolation level with that guarantee when
+// consistency is required. Both statements run on the query's own connection
+// and join the ambient transaction from ctx exactly like [SelectQuery.Scan],
+// so the receiver is never mutated. Credo does not start an implicit
+// transaction: PostgreSQL and MySQL/InnoDB callers normally select Repeatable
+// Read on an outer [DB.InTxWith] call, while SQLite callers use an explicit
+// [DB.InTx] read transaction. Always pass the callback's txCtx to Page;
+// isolation support remains driver-specific.
 //
 // Page is the all-in-one terminal for flows that respond with the queried
 // type directly. When records need a model→DTO mapping, run Page[Model] and
@@ -483,44 +499,83 @@ func (q *SelectQuery) All[T any](ctx context.Context) ([]T, error) {
 // error handling and build the DTO page with pagination.NewPage, carrying
 // modelPage's Total, Page, and PerPage over.
 func (q *SelectQuery) Page[T any](ctx context.Context, req *pagination.PageRequest) (*pagination.Page[T], error) {
-	if req == nil {
-		return nil, fmt.Errorf("%w: request must not be nil", pagination.ErrInvalidPageRequest)
-	}
-	request := *req
-	offset, err := request.Offset()
+	request, offset, err := pageWindow("Page", req)
 	if err != nil {
-		return nil, fmt.Errorf("sqldb: Page: %w", err)
+		return nil, err
 	}
 	if terminalErr := q.validateTypedTerminal("Page"); terminalErr != nil {
 		return nil, terminalErr
 	}
-	if shapeErr := validateCountQueryShape(q.raw); shapeErr != nil {
-		return nil, shapeErr
-	}
 
-	// COUNT with T's table. T drives the table, so the query is built
-	// model-less and the COUNT injects the model on prepareTerminal's execution
-	// snapshot — the same snapshot path One/All use, so the receiver is never
-	// mutated.
-	// The model is a *[]T slice, not a (*T)(nil) scalar: bun strips the pointer
-	// in a slice element's type, so the table resolves for both a value T and a
-	// pointer T such as *Row. A (*T)(nil) scalar would build (**Row)(nil), which
-	// bun rejects — and this mirrors the slice model All uses for the SELECT.
+	// The count binds T's table on prepareTerminal's snapshot, the model the
+	// data query scans with, so the receiver is never mutated. The model is a
+	// *[]T slice, not a (*T)(nil) scalar: bun strips the pointer in a slice
+	// element's type, so the table resolves for both a value T and a pointer T
+	// such as *Row, mirroring the slice model All uses for the data query.
 	var model []T
-	total, err := q.countLogicalRows(ctx, &model)
+	source := q.prepareTerminal(ctx).Model(&model)
+	if proofErr := q.proveCount("Page", source); proofErr != nil {
+		return nil, proofErr
+	}
+	total, err := q.count(ctx, source)
 	if err != nil {
-		return nil, q.state.db.mapError(ctx, err)
+		return nil, err
 	}
 
-	// No rows — skip the SELECT, preserving the requested page/per-page.
+	// No rows — skip the data query, preserving the requested page/per-page.
 	if total == 0 {
 		return pagination.NewPage([]T{}, 0, request.Page, request.PerPage), nil
 	}
+	return q.pageRecords[T](ctx, request, offset, total)
+}
 
-	// SELECT on a private structural copy so Offset/Limit never leak back into
-	// the receiver. cloneQuery is deliberately internal here; Page does not
-	// depend on the public Clone API as a composition step.
-	records, err := q.cloneQuery().Offset(offset).Limit(request.PerPage).All[T](ctx)
+// PageWithCount pages the query with the caller's count, for a query whose
+// total Page cannot prove: one built with Apply, Unwrap or a Relation callback,
+// with a raw ColumnExpr or Having and neither GroupExpr nor Distinct, or whose
+// T implements bun.BeforeSelectHook. Another query's Count passes as it is:
+//
+//	page, err := db.Select().
+//		Apply(withReportColumns).
+//		OrderExpr("created_at DESC").
+//		PageWithCount[Report](ctx, req, db.Select((*Report)(nil)).ApplyFilter(scope).Count)
+//
+// PageWithCount validates req as [SelectQuery.Page] does, and requires a
+// model-less query, both before any I/O. It then runs count, and the data
+// query with the page's window, and builds the page with
+// [pagination.NewPage]: Total is the count's result, unchanged. An error from
+// count is returned as it is. The count's sort and lock clauses, its
+// connection and its consistency with the data query are the caller's.
+func (q *SelectQuery) PageWithCount[T any](
+	ctx context.Context,
+	req *pagination.PageRequest,
+	count func(context.Context) (int, error),
+) (*pagination.Page[T], error) {
+	request, offset, err := pageWindow("PageWithCount", req)
+	if err != nil {
+		return nil, err
+	}
+	if count == nil {
+		return nil, fmt.Errorf("sqldb: PageWithCount: count must not be nil; pass a function such as another query's Count")
+	}
+	if terminalErr := q.validateTypedTerminal("PageWithCount"); terminalErr != nil {
+		return nil, terminalErr
+	}
+	total, err := count(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.pageRecords[T](ctx, request, offset, total)
+}
+
+// pageRecords runs the data query on a private copy with the page's window,
+// so Offset and Limit never leak back into the receiver.
+func (q *SelectQuery) pageRecords[T any](
+	ctx context.Context,
+	request pagination.PageRequest,
+	offset int,
+	total int,
+) (*pagination.Page[T], error) {
+	records, err := q.Clone().Offset(offset).Limit(request.PerPage).All[T](ctx)
 	if err != nil {
 		return nil, err
 	}

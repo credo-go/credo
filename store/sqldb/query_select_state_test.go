@@ -370,8 +370,8 @@ func TestSelectQuery_SoftDeleteFlagsPreserved(t *testing.T) {
 	t.Run("WhereDeleted", func(t *testing.T) {
 		count, err := db.Select((*selectStateSoftUser)(nil)).
 			Where("name = ?", deleted.Name).
-			ApplyQueryBuilder(func(q bun.QueryBuilder) bun.QueryBuilder {
-				return q.WhereDeleted()
+			ApplyFilter(func(f *sqldb.Filter) {
+				f.WhereDeleted()
 			}).
 			Count(ctx)
 		if err != nil {
@@ -384,8 +384,8 @@ func TestSelectQuery_SoftDeleteFlagsPreserved(t *testing.T) {
 
 	t.Run("WhereAllWithDeleted", func(t *testing.T) {
 		count, err := db.Select((*selectStateSoftUser)(nil)).
-			ApplyQueryBuilder(func(q bun.QueryBuilder) bun.QueryBuilder {
-				return q.WhereAllWithDeleted()
+			ApplyFilter(func(f *sqldb.Filter) {
+				f.WhereAllWithDeleted()
 			}).
 			Count(ctx)
 		if err != nil {
@@ -439,10 +439,12 @@ func TestSelectQuery_ExplicitConnPreserved(t *testing.T) {
 		name      string
 		clone     bool
 		applyConn bool
+		want      string
 	}{
-		{name: "terminal snapshot"},
-		{name: "public Clone", clone: true},
-		{name: "Apply Conn", applyConn: true},
+		{name: "terminal snapshot", want: explicitUser.Name},
+		{name: "public Clone", clone: true, want: explicitUser.Name},
+		// A connection set inside Apply is overridden by injection.
+		{name: "Apply Conn", applyConn: true, want: defaultUser.Name},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var got User
@@ -460,8 +462,8 @@ func TestSelectQuery_ExplicitConnPreserved(t *testing.T) {
 			if err := query.Scan(ctx); err != nil {
 				t.Fatalf("explicit Conn Scan = %v", err)
 			}
-			if got.Name != explicitUser.Name {
-				t.Fatalf("explicit Conn returned %q, want %q", got.Name, explicitUser.Name)
+			if got.Name != tt.want {
+				t.Fatalf("Scan returned %q, want %q", got.Name, tt.want)
 			}
 		})
 	}
@@ -923,7 +925,10 @@ func TestSelectQuery_TypedTerminalsRejectPreboundModelWithoutQuery(t *testing.T)
 		}
 	})
 
-	t.Run("earlier builder error wins over model guard", func(t *testing.T) {
+	// The wrapper reads no Bun private state, so it cannot see a builder error
+	// before the terminal runs: the model guard reports first, still before
+	// any I/O.
+	t.Run("model guard reports before a builder error", func(t *testing.T) {
 		hook.Reset()
 		sentinel := errors.New("pre-bound builder sentinel")
 		var bound selectStateRelationUser
@@ -932,9 +937,7 @@ func TestSelectQuery_TypedTerminalsRejectPreboundModelWithoutQuery(t *testing.T)
 				return q.Err(sentinel)
 			}).
 			One[selectStateRelationUser](ctx)
-		if err != sentinel { //nolint:errorlint // Exact builder-error identity is the contract under test.
-			t.Fatalf("typed terminal error = %v, want exact earlier sentinel", err)
-		}
+		assertRejected(t, err)
 		if got.ID != 0 || got.Name != "" || got.Profile != nil || got.Orders != nil {
 			t.Errorf("One builder-error value = %+v, want zero value", got)
 		}

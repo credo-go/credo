@@ -88,7 +88,7 @@
 // The DB type exposes Select, Insert, Update, and Delete methods that
 // return proxy query builders. These proxies inject transactions from
 // context, map errors to store.Err* sentinels, and provide escape
-// hatches (Apply, ApplyQueryBuilder, Unwrap) for advanced usage.
+// hatches (Apply, Unwrap) for advanced usage.
 // Each builder accepts at most one optional model. Supplying more causes the
 // builder to record an error that its terminal returns without executing.
 // SelectQuery's curated Limit and Offset forward every value; zero and
@@ -98,10 +98,16 @@
 //	err := db.Select(&user).Where("id = ?", id).Scan(ctx)
 //	// err is already mapped: sql.ErrNoRows → store.ErrNotFound
 //
-// ApplyQueryBuilder surfaces Bun's shared bun.QueryBuilder so a single
-// WHERE predicate (tenant scoping, soft-delete filters, ownership checks)
-// can be reused across Select, Update, and Delete instead of being
-// duplicated per query type. Interceptors are preserved, like Apply.
+// ApplyFilter runs a func(*Filter) on the query's WHERE clause, so a single
+// predicate (tenant scoping, soft-delete filters, ownership checks) scopes
+// Select, Update, and Delete alike instead of being duplicated per query type.
+// Filter is Credo's type with the predicate methods only (Where, WhereOr,
+// WhereGroup, WherePK, WhereDeleted, WhereAllWithDeleted), so a select scoped
+// through it keeps its automatic total in Count and Page.
+//
+//	func tenantScope(id int64) func(*sqldb.Filter) {
+//	    return func(f *sqldb.Filter) { f.Where("tenant_id = ?", id) }
+//	}
 //
 // # Bun Visibility Policy
 //
@@ -110,21 +116,23 @@
 //
 //   - Transaction injection: terminal methods (Scan, Count, Exists, Exec)
 //     resolve the connection from the context at execution time, so code
-//     inside InTx/RunInTx transparently runs on the transaction. Select
-//     terminals use an internal execution snapshot that preserves the
-//     explicit connection, builder error, WherePK, soft-delete flags, and
-//     model/relation state, so the builder may be reused across executions
-//     and TX boundaries.
+//     inside InTx/RunInTx transparently runs on the transaction. Only a
+//     connection set with the wrapper's Conn is kept; one set inside an Apply
+//     callback is overridden by the injection. Select terminals run on an
+//     execution snapshot taken with Bun's own Clone, so the builder may be
+//     reused across executions and TX boundaries.
 //   - Error mapping: the same terminals pass driver errors through the
 //     store.Err* mapping before returning.
 //
-// Bun types therefore appear in proxy signatures (bun.IConn,
-// bun.QueryBuilder, Apply callbacks) by design. When the curated proxy
+// Bun types therefore appear in proxy signatures (bun.IConn, Apply callbacks)
+// by design. The wrapper reads and writes no Bun private state: it builds on
+// Bun's public API only, and the count conformance tests pin the Bun behaviour
+// Count and Page rely on. When the curated proxy
 // surface lacks something:
 //
-//   - Missing builder method: use Apply (per query type) or
-//     ApplyQueryBuilder (shared WHERE predicates). Both keep the
-//     terminal guarantees intact.
+//   - Missing builder method: use Apply (per query type) or ApplyFilter
+//     (shared WHERE predicates). Both keep the terminal guarantees intact;
+//     a select built with Apply pages with PageWithCount.
 //   - Missing terminal method: request an addition to the curated set —
 //     the guarantees live in the terminals, so they must be on the proxy.
 //   - Conn is the transaction-aware native Bun escape hatch. It returns the
@@ -134,9 +142,9 @@
 //     Bun objects they return get neither automatic TX injection nor error
 //     mapping.
 //
-// SelectQuery.Clone is the public, top-level builder-fork API. It preserves the
-// execution fields patched by Credo but is not a recursive object-graph copy:
-// a bound destination and nested CTE/relation query values may remain shared.
+// SelectQuery.Clone is the public, top-level builder-fork API. It forwards to
+// Bun's Clone and is not a recursive object-graph copy: a bound destination and
+// nested CTE/relation query values may remain shared.
 // Do not mutate or scan shared values concurrently through source and clone.
 //
 // # Transactions
@@ -183,7 +191,7 @@
 //
 // # Pagination
 //
-// SelectQuery.Page is the typed pagination terminal: it runs COUNT + a
+// SelectQuery.Page is the typed pagination terminal: it runs a count and a
 // LIMIT/OFFSET SELECT and returns a ready *pagination.Page[T]. Like One and
 // All it is a Form-A terminal, so T drives the table and destination and the
 // query is built model-less:
@@ -207,51 +215,50 @@
 // request. Page does not repeat that policy. Instead it copies req and strictly
 // validates the snapshot before touching the database: nil, non-positive Page
 // or PerPage, and native-int offset overflow return
-// pagination.ErrInvalidPageRequest before COUNT. The caller's request is never
+// pagination.ErrInvalidPageRequest before the count. The caller's request is never
 // mutated; a valid PerPage above the
 // package default cap (for example a custom normalized value of 100) remains
-// valid and is not clamped by the terminal. When COUNT reports zero rows, SELECT
-// is skipped and the page keeps the snapshot's page/per-page with a non-nil
+// valid and is not clamped by the terminal. When the count reports zero rows,
+// the data query is skipped and the page keeps the snapshot's page/per-page with a non-nil
 // empty slice.
 //
-// Total is complete logical projection-row cardinality before ordering and the
-// Page-owned window. Credo removes root ORDER/LIMIT/OFFSET/FOR and counts a
-// universal outer _credo_count_source: an ungrouped aggregate normally
-// contributes one row, Distinct counts selected projection tuples, Group counts
-// groups, and Group with Having counts groups left after Having. Count and Page
-// reject Having without Group and direct UNION/INTERSECT/EXCEPT roots with
-// ErrUnsupportedCountQuery before I/O. Advanced callers restructure those
-// shapes behind an outer derived table or CTE, compose an explicit count query
-// and data query, and build NewPage. MySQL validates derived-table output names
-// when the logical COUNT executes. If it returns ER_DUP_FIELDNAME (1060), Count
-// and Page wrap ErrUnsupportedCountQuery after I/O while preserving the driver
-// cause; unique aliases resolve collisions. Non-count MySQL 1060 errors remain
-// unchanged. The server error cannot identify which derived-table level failed,
-// so an indistinguishable 1060 from a caller-supplied nested source is wrapped
-// too. Driver causes are diagnostic and must not be rendered directly to HTTP.
-// Because the logical projection is evaluated by the count source, expensive or
-// volatile projections should use that explicit custom
-// composition. There is no custom-count strategy until two real consumers
-// require one, and Page never carries an unknown total. CursorPage is the
-// accepted working shape for forward keyset pagination; Slice is only a working
-// name for a future total-free offset result. Neither API is exported yet. Use
-// a stable ORDER BY with a unique tie-breaker for deterministic offset pages.
-// Relation callbacks are applied exactly once while rendering this private
-// source. Predicates/projections are allowed; replacing the model or adding
-// root ORDER/LIMIT/OFFSET/FOR or another unsupported shape fails before I/O.
+// Total is the number of rows the data query returns without its LIMIT and
+// OFFSET, or an error, never another number. Count and Page run Bun's native
+// count, which drops ORDER BY, LIMIT, OFFSET and FOR, counts groups or
+// distinct tuples for a query with GroupExpr or Distinct, and runs no model
+// hook. They run it only on a query the wrapper can prove: built without Apply,
+// Unwrap or a Relation callback; whose model's type does not implement
+// bun.BeforeSelectHook; and that either carries GroupExpr or Distinct or has no
+// raw ColumnExpr and no Having. Every other query returns an error matching
+// ErrUnsupportedCountQuery before I/O, naming the rule and its culprit, and the
+// caller pages it with PageWithCount and a count of its own; another query's
+// Count passes as it is:
 //
-// Logical Count runs BeforeSelect, BeforeAppendModel, and successful-query
-// AfterSelect on the private source. Page runs the hooks again when its data
-// SELECT executes, so hook-added predicates/projections affect Total and
-// Records. The outer count preserves QueryEvent.Model for observability while
-// soft-delete policy is applied only inside the source. Count never scans or
-// mutates a bound model, so AfterSelect observes its pre-count value. Hooks must
-// be deterministic: transaction isolation cannot stabilize a volatile
-// projection or application-side decision across the two statements.
+//	page, err := db.Select().
+//	    Apply(withReportColumns).
+//	    OrderExpr("created_at DESC, id DESC").
+//	    PageWithCount[Report](ctx, req, db.Select((*Report)(nil)).ApplyFilter(scope).Count)
 //
-// COUNT and SELECT use internal execution snapshots and join the ambient
-// transaction, but remain separate database statements. Page never starts an
-// implicit transaction. PostgreSQL Read Committed can observe statement-level
+// PageWithCount validates the request as Page does, runs the count and the data
+// query with the page's window, and builds the page with NewPage; the count's
+// sort and lock clauses are the caller's. A model whose type implements only
+// bun.BeforeAppendModelHook keeps its automatic total: on a SELECT Bun runs
+// that hook only for values already in the destination, Page scans into an
+// empty slice of its own, and the count runs no hook.
+//
+// MySQL validates the output names of the count's derived source when it
+// executes. If it returns ER_DUP_FIELDNAME (1060), Count and Page wrap
+// ErrUnsupportedCountQuery after I/O while preserving the driver cause; unique
+// aliases resolve collisions. Non-count MySQL 1060 errors remain unchanged.
+// Driver causes are diagnostic and must not be rendered directly to HTTP.
+// CursorPage is the accepted working shape for forward keyset pagination;
+// Slice is only a working name for a future total-free offset result. Neither
+// API is exported yet. Use a stable ORDER BY with a unique tie-breaker for
+// deterministic offset pages.
+//
+// The count and the data query use internal execution snapshots and join the
+// ambient transaction, but remain separate database statements. Page never
+// starts an implicit transaction. PostgreSQL Read Committed can observe statement-level
 // drift; PostgreSQL/InnoDB callers that require one snapshot establish a
 // read-only Repeatable Read outer transaction and pass its txCtx to Page.
 // SQLite keeps the first-read snapshot of a plain explicit InTx; WAL permits a
