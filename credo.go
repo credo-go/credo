@@ -134,6 +134,10 @@ type App struct {
 	// setup included) so a second call is rejected.
 	i18nRegistered bool
 
+	// modulesUsed records that UseModules was called so a second call is
+	// rejected.
+	modulesUsed bool
+
 	// healthEngine holds the health check engine (nil if UseHealth not called).
 	healthEngine *internalhealth.Engine
 

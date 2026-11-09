@@ -143,6 +143,85 @@ func TestWithOverride_PanicsWithoutBinding(t *testing.T) {
 	t.Fatal("WithOverride without a binding did not panic")
 }
 
+// usersModule provides the guide's user service over an aliased repository
+// and serves it on GET /users, resolving the service in its Handlers.
+type usersModule struct{ built, started *atomic.Int32 }
+
+func (m usersModule) Services(app *credo.App) {
+	app.Provide(func() *pgRepo { m.built.Add(1); return &pgRepo{built: m.built, started: m.started} })
+	app.Alias[userRepo, *pgRepo]()
+	app.Provide(func(r userRepo) *userService { return &userService{repo: r} })
+}
+
+func (usersModule) Handlers(app *credo.App) {
+	svc := app.MustResolve[*userService]()
+	app.GET("/users", func(c *credo.Context) error {
+		return c.Response().Text(http.StatusOK, svc.repo.Find())
+	})
+}
+
+// TestWithModules_OverrideReachesTheModulesHandlers: the override lands after
+// every module's services and before any module's handlers resolve, so the
+// handlers the module registered serve the fake.
+func TestWithModules_OverrideReachesTheModulesHandlers(t *testing.T) {
+	var built, started atomic.Int32
+	app := testutil.NewApp(t,
+		testutil.WithModules(usersModule{built: &built, started: &started}),
+		testutil.WithOverride[userRepo](fakeRepo{}),
+	)
+	testutil.Start(t, app)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "fake" {
+		t.Fatalf("GET /users = %d %q, want 200 \"fake\"", rec.Code, rec.Body.String())
+	}
+	if built.Load() != 0 || started.Load() != 0 {
+		t.Errorf("built %d, started %d; the overridden implementation must stay unbuilt", built.Load(),
+			started.Load())
+	}
+}
+
+// TestWithModules_OverrideInWiringBesideUseModulesPanics: without WithModules,
+// an override given beside a UseModules call in the wiring comes after the
+// module's handlers finalized the container.
+func TestWithModules_OverrideInWiringBesideUseModulesPanics(t *testing.T) {
+	var built, started atomic.Int32
+	defer func() {
+		msg := fmt.Sprint(recover())
+		if !strings.Contains(msg, "called after the container was finalized by MustResolve[*testutil_test.userService]") {
+			t.Fatalf("panic = %q, want the late-registration panic naming the module's resolve", msg)
+		}
+	}()
+	testutil.NewApp(t,
+		testutil.WithWiring(func(app *credo.App) {
+			app.UseModules(usersModule{built: &built, started: &started})
+		}),
+		testutil.WithOverride[userRepo](fakeRepo{}),
+	)
+	t.Fatal("an override after the module's handlers did not panic")
+}
+
+// TestWithModules_BesideUseModulesInWiringPanics: WithModules hands its
+// modules to UseModules after the wiring, so a UseModules in the wiring makes
+// it a second call.
+func TestWithModules_BesideUseModulesInWiringPanics(t *testing.T) {
+	var built, started atomic.Int32
+	defer func() {
+		msg := fmt.Sprint(recover())
+		want := "credo: App.UseModules called a second time; pass every module to one UseModules call"
+		if !strings.Contains(msg, want) {
+			t.Fatalf("panic = %q, want it to contain %q", msg, want)
+		}
+	}()
+	testutil.NewApp(t,
+		testutil.WithWiring(func(app *credo.App) {
+			app.UseModules(usersModule{built: &built, started: &started})
+		}),
+		testutil.WithModules(usersModule{built: &built, started: &started}),
+	)
+	t.Fatal("WithModules beside a UseModules in the wiring did not panic")
+}
+
 func TestWithWiring_AddsBinding(t *testing.T) {
 	app := testutil.NewApp(t, testutil.WithWiring(func(app *credo.App) {
 		app.ProvideValue[*greeter](&greeter{msg: "only"})

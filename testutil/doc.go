@@ -40,6 +40,27 @@
 // The override replaces the alias, and Finalize drops *PostgresRepo when
 // nothing else uses it, so the real repository is never built.
 //
+// # Testing modules
+//
+// An application split into [credo.Module] values is tested with
+// [WithModules], which hands the modules to [credo.App.UseModules] with one
+// more module last whose Services applies the [WithOverride] values. The
+// overrides land after every module's services and before any module's
+// handlers resolve, so the handlers a module registers are built with the
+// fake:
+//
+//	app := testutil.NewApp(t,
+//		testutil.WithModules(users.Module{}, billing.Module{}),
+//		testutil.WithOverride[billing.Gateway](fakeGateway),
+//	)
+//	rec := httptest.NewRecorder()
+//	app.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invoices", body))
+//
+// An override given beside a UseModules call in a [WithWiring] function would
+// come after the modules' handlers had finalized the container and panics; a
+// UseModules call in the wiring beside [WithModules] is a second call and
+// panics too.
+//
 // # Starting an App
 //
 // An App with something to start — a component with Start or Ready, a start

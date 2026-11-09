@@ -194,6 +194,94 @@ func main() {
 
 ---
 
+## Modules
+
+An application split into parts — a package per domain, each with its services and its handlers — gives each part a `credo.Module`, and the composition root passes every module to one `app.UseModules` call:
+
+```go
+// Module is a part of an application: its services, then its handlers.
+type Module interface {
+    Services(app *App) // Provide, ProvideValue, Manage, workers
+    Handlers(app *App) // routes and other entry points; may Resolve
+}
+```
+
+`UseModules` runs every module's `Services` in order, then every module's `Handlers`. The first `Resolve` inside a `Handlers` method therefore comes after every module has registered its services, so a module's handlers can resolve a service another module provides, whichever module comes first, and the implicit `Finalize` that `Resolve` triggers sees the whole graph:
+
+```go
+// users/module.go
+package users
+
+type Module struct{}
+
+func (Module) Services(app *credo.App) {
+    app.Provide(NewPgUserRepository)
+    app.Alias[UserRepository, *PgUserRepository]()
+    app.Provide(NewUserService)
+    app.Provide(NewUserController)
+}
+
+func (Module) Handlers(app *credo.App) {
+    users := app.MustResolve[*UserController]() // after every module's services
+    users.Routes(app.Group("/users"))
+}
+
+// Routes registers the controller's routes on its group.
+func (h *UserController) Routes(g *credo.Group) {
+    g.GET("/{id}", h.Show)
+}
+```
+
+```go
+// billing/module.go
+package billing
+
+type Module struct{}
+
+func (Module) Services(app *credo.App) {
+    app.Provide(NewStripeGateway)
+    app.Alias[PaymentGateway, *StripeGateway]()
+    app.Provide(NewInvoiceService) // takes *users.UserService from the users module
+    app.Provide(NewInvoiceController)
+}
+
+func (Module) Handlers(app *credo.App) {
+    app.MustResolve[*InvoiceController]().Routes(app.Group("/invoices"))
+}
+```
+
+```go
+// main.go: the composition root.
+func main() {
+    app, err := credo.New() // 1. configuration
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    db, err := sqldb.Open(dbConfig)
+    if err != nil {
+        log.Fatal(err)
+    }
+    app.ProvideValue(db) // shared infrastructure, before the modules
+    app.UseHealth()
+
+    app.UseModules(users.Module{}, billing.Module{}) // services of both, then handlers of both
+
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+The rules:
+
+- **Both methods are required.** A module with nothing for one phase leaves that method empty; a misspelled method is then a compile error, not a phase that silently never runs.
+- **`UseModules` is called once.** A second call would register its services after the first call's handlers had finalized the container, so it panics: pass every module to one call. A module composed of others calls their `Services` and `Handlers` from its own.
+- **Registrations belong in `Services`.** A `Provide`, a `Manage` or a worker registration from a `Handlers` method after a `Resolve` panics like every late registration, naming the call that finalized the container. Shared infrastructure registers before `UseModules`, or in a module of its own placed first.
+- **A controller's routes are a method its module's `Handlers` calls on a group.** There is no controller registration of its own: the module is the unit the application composes.
+
+---
+
 ## Constructors
 
 Credo supports two constructor shapes:
@@ -792,6 +880,25 @@ srv := httptest.NewServer(app)
 t.Cleanup(srv.Close) // drained before the components stop
 ```
 
+An application split into modules is tested with `testutil.WithModules`, which hands the modules to `UseModules` with one more module last, whose `Services` applies the test's overrides. The overrides land after every module's services and before any module's handlers resolve, so the routes a module registers are built with the fake:
+
+```go
+app := testutil.NewApp(t,
+    testutil.WithWiring(func(app *credo.App) {
+        app.ProvideValue(testDB) // what main registers before UseModules
+    }),
+    testutil.WithModules(users.Module{}, billing.Module{}),
+    testutil.WithOverride[billing.PaymentGateway](&FakeGateway{}),
+)
+testutil.Start(t, app)
+
+rec := httptest.NewRecorder()
+app.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invoices", body))
+// the invoice handler charged FakeGateway
+```
+
+The wiring runs before the modules. Calling `app.UseModules` yourself inside `WithWiring` does not combine with an override: the override would come after the modules' handlers had finalized the container and panic, and beside `WithModules` the call is a second `UseModules` call, which panics too.
+
 Good rule:
 
 - test behavior with direct construction
@@ -811,7 +918,7 @@ RawConfig should be unmarshaled into typed structs and registered with `ProvideV
 
 ### Resolving before the last registration
 
-The first resolving call ends registration, so a `Provide`, a `Manage` or a worker registration after it panics, naming that call and its line. Resolve after every registration, and read configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`: `GetConfig`, `ConfigExists` and `Has` never finalize.
+The first resolving call ends registration, so a `Provide`, a `Manage` or a worker registration after it panics, naming that call and its line. Resolve after every registration — across an application split into parts, [`UseModules`](#modules) keeps that order — and read configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`: `GetConfig`, `ConfigExists` and `Has` never finalize.
 
 ### Resolving inside stop hooks
 
@@ -843,6 +950,8 @@ For medium and large Credo applications, the default shape should be:
 6. mount features and register satellites — `UseI18n`, `UseHealth`, workers, `Manage`
 7. resolve top-level controllers/services — the first call validates the graph — and register the routes built from them
 8. `app.Run()`
+
+An application split into parts keeps the same order through [modules](#modules): steps 4–6 are each module's `Services`, step 7 its `Handlers`, and one `app.UseModules` call runs them.
 
 This keeps dependency graphs explicit, startup failures early, and runtime behavior simple.
 

@@ -591,8 +591,6 @@ There is no resolve-then-provide step: a DI or component registration after the 
 
 ### Modules
 
-> **Pending v0.26.0 (R8):** not implemented yet; an application split into parts keeps the documented order across its parts by hand, and there is no `Module`, `UseModules` or `testutil.WithModules`.
-
 An application split into parts follows the documented order through modules ([ADR-003](../adr/003-application-architecture.md#application-modules)). A module is a part of an application, its services, then its handlers:
 
 ```go

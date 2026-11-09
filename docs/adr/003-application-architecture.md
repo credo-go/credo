@@ -14,6 +14,8 @@ Credo's primary target is mid-to-large scale projects ([ADR-001](001-framework-i
 
 Additionally, Go's own tools (interfaces, package structure) already naturally support clean architecture. What the framework should do is facilitate this natural structure, not hinder it.
 
+A larger application is also split into parts — a package per domain, each with its services and its handlers. Registered from a function per part that takes `*credo.App`, a part that resolves its services to build its handlers finalizes the container, so a part registered after it can no longer register a service: the composition root would order every part's services before every part's handlers by hand, and a test's override, applied after that wiring, would come after the handlers had finalized the container and panic.
+
 ## Decision
 
 ### Clean Architecture: Default, Not Mandatory
@@ -51,8 +53,6 @@ app.GET("/ping", func(ctx *credo.Context) error {
 
 ### Application Modules
 
-> **Pending v0.26.0 (R8):** not implemented yet; an application split into parts registers each part's services and handlers from functions that take `*credo.App`, in an order the composition root keeps by hand.
-
 An application can be split into modules. A module is a part of an application, its services, then its handlers:
 
 ```go
@@ -75,10 +75,6 @@ Rejected alternatives:
 
 - _Collecting the modules and running them later_: at the App's preparation, a `MustResolve` in the composition root would finalize the container before any module had registered; at `Finalize`, the first `Resolve` would register routes as a side effect. Either moves registration panics away from the call that caused them.
 - _A registration interface of its own for controllers, with `app.Register(controllers...)`_: a second pattern for the composition `Module` expresses.
-
-**Problem.** An application split into parts registers each part from a function that takes `*credo.App`. A part that resolves its services to build its handlers finalizes the container, so a part registered after it can no longer register a service, and the composition root must order every part's services before every part's handlers by hand. A test's override, applied after that wiring, comes after the handlers have finalized the container and panics.
-
-**Removes.** Nothing: `Module`, `UseModules` and `testutil.WithModules` are additions. The planned controller registration, a registration interface with `app.Register(controllers...)`, is not built.
 
 ### The App Is the One Facade
 
