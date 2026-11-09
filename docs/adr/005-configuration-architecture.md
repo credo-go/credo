@@ -18,11 +18,13 @@ A naive approach (string key-based API like `GetString("db.host")`, `GetInt("ser
 
 Loading itself has failure modes of its own: ambient sources (a stray `.env` in the working directory, a `CREDO_*` variable in the process environment) silently change configuration and leak into tests, a misspelled key silently becomes a default value, and coercing a value across kinds masks a type error in a file whose values are already typed. Process environment and `.env` values are strings, though, so a decoder that refused every string for a typed field would refuse every override of one.
 
+Reading a section has failure modes too. When every read names the section's key and type itself — a constructor, the composition root, a test — a misspelled key or a mismatched type at one read surfaces only when that read runs, and two spellings of one read on two holders drift apart. A test configuration that accepts every key passes where the same wiring fails in production on a missing section.
+
 ## Decision
 
 ### Config = Typed Snapshot via DI
 
-Config is positioned as a "snapshot produced at startup," not as a "globally accessed service." `config.Load()` produces a `RawConfig`, modules call `Unmarshal` once at the boundary to create typed structs, then register them in DI. Business code receives typed config via constructors — string keys never appear beyond the module boundary.
+Config is positioned as a "snapshot produced at startup," not as a "globally accessed service." `config.Load()` produces a `RawConfig`; each section is named once, by a typed descriptor that decodes it at the boundary, and the typed value is bound in DI ([below](#a-section-is-named-once-configsectiont)). Business code receives typed config via constructors — string keys never appear beyond the module boundary.
 
 > **Current until v0.26.0 (R15):** the next paragraph names the `app.OnConfigChange[T]` subscription, which live sections replace.
 
@@ -36,27 +38,17 @@ Use of string keys in business code is documented as an **anti-pattern**.
 
 ### RawConfig: 2-Method Interface
 
-`RawConfig` is limited to `Unmarshal(key, &dst) error` + `Exists(key) bool`: no scalar getters, no `Get(key) any`. `Unmarshal` decodes primitives as well as structs, following the `encoding/json.Unmarshal` precedent, so a single value needs no wrapper struct. Two methods keep custom implementations (a `WithRawConfig` store) trivial; the ergonomic typed getter lives on the concrete types instead (below).
+`RawConfig` is limited to `Unmarshal(key, &dst) error` + `Exists(key) bool`: no scalar getters, no `Get(key) any`. `Unmarshal` decodes primitives as well as structs, following the `encoding/json.Unmarshal` precedent, so a single value needs no wrapper struct. Two methods keep custom implementations (a `WithRawConfig` store) trivial; the typed reader is the section descriptor (below), which reads any `RawConfig`.
 
 ### config.Load() Returns Error, Not Panic
 
-`config.Load()` performs I/O and returns `(*config.Config, error)` — the concrete type, which satisfies `RawConfig`. Each call produces an independent `Config`; there is no package-global instance. Load returns I/O, parse and option errors, and a section's `Validate()` error returns from `Unmarshal`/`Get`; neither panics, because config errors are expected operational outcomes and returning them is Go-idiomatic and assertable in tests.
+`config.Load()` performs I/O and returns `(*config.Config, error)` — the concrete type, which satisfies `RawConfig`. Each call produces an independent `Config`; there is no package-global instance. Load returns I/O, parse and option errors, and a section's `Validate()` error returns from `Unmarshal` and so from the section's `Decode`; neither panics, because config errors are expected operational outcomes and returning them is Go-idiomatic and assertable in tests.
 
 ### credo.New() Auto-Loads and Registers RawConfig
 
 `credo.New()` loads configuration through `config.Load()` when no `RawConfig` is given, so the zero-config path works out of the box; `credo.WithRawConfig(rc)` supplies a pre-loaded store and bypasses the auto-load. The `RawConfig` is always registered in the DI container. File selection belongs to the `config.Load` options (`config.WithFiles`, …): the root package deliberately does not duplicate them, so a missing `RawConfig` always means "use Credo's default discovery".
 
-### Typed Snapshot Getter: Get[T] / GetConfig[T]
-
-> **Current until v0.26.0 (R5):** the next paragraph describes `Config.Get[T]` and `Config.MustGet[T]`, which go, and the keyed `App.GetConfig[T]`, which takes the section descriptor; the [section descriptor](#a-section-is-named-once-configsectiont) replaces it.
-
-Go 1.27 concrete-type generic methods allow an ergonomic typed getter over `Unmarshal`: a generic `Get[T]` on `*config.Config` and `GetConfig[T]` on `*App`, each with a `Must` variant ([signatures](../specs/config.md#typed-snapshot-getter--gett--getconfigt)). It collapses the `var x T; rc.Unmarshal(key, &x)` two-step into one call that still returns the decode error.
-
-These are bootstrap/composition-root sugar, not a runtime service locator: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach `app.GetConfig` through the request, and typed structs still flow to business code via DI. The `Must` variants panic, matching `MustResolve` and the registration calls for fail-fast startup wiring. The getter lives on the concrete types rather than on `RawConfig` because a generic method cannot live on an interface.
-
 ### A Section Is Named Once: `config.Section[T]`
-
-> **Pending v0.26.0 (R5):** not implemented yet; a section is read by its key at each reader — `Unmarshal`, `Config.Get[T]`, `App.GetConfig[T]` — and bound through a constructor of the application's own or `ProvideValue`.
 
 A section's key and its type are named once, by a typed descriptor that every reader of the section takes:
 
@@ -73,13 +65,9 @@ cfg := app.MustGetConfig(AppSection) // the same descriptor in the composition r
 
 A section that only one constructor reads is decoded in that constructor and not bound: two databases whose sections both decode into `sqldb.Config` each call their own section's `Decode` where they are opened, and the databases are what the container binds. A section that business code receives is bound once, or under a type of its own.
 
-**One reader per holder.** `section.Decode(cfg)` reads a section from a `*config.Config`, so the configuration has no getter of its own. `App.GetConfig` and `App.MustGetConfig` stay for the composition root, which holds the App rather than its configuration, and take the descriptor: `app.GetConfig(AppSection)` infers `T`, and `app.GetConfig[AppConfig]("app")` keeps compiling, since the untyped constant converts. `testutil`'s empty configuration honours the missing-key contract: its `Unmarshal` returns the not-found error a real `*config.Config` returns, and `Exists` stays false.
+**One reader per holder.** `section.Decode(cfg)` reads a section from a `*config.Config`, so the configuration has no getter of its own. `App.GetConfig` and `App.MustGetConfig` stay for the composition root, which holds the App rather than its configuration, and take the descriptor: `app.GetConfig(AppSection)` infers `T`, and `app.GetConfig[AppConfig]("app")` keeps compiling, since the untyped constant converts. They are composition-root sugar, not a runtime service locator: `*credo.Context` has no `App()` accessor, so handlers and services cannot reach them through the request, and typed values still flow to business code via DI. `MustGetConfig` panics, matching `MustResolve` and the registration calls for fail-fast startup wiring. `testutil`'s empty configuration honours the missing-key contract: its `Unmarshal` returns the not-found error a real `*config.Config` returns, and `Exists` stays false.
 
 Rejected: an App method that binds a section, which `Provide` with `Decode` already does; a descriptor type that refuses a literal key, which would break every `GetConfig` call written with one, for a check decoding already makes; reporting unknown top-level keys by recording the sections a run decodes, which would flag a section first decoded after the start, one only another deployment reads and, under `WithPrefix("")`, every process variable; and configuration as an `Infra` field, which could carry only the untyped `RawConfig` and would put string keys into business code, the service locator ADR-004 rejects.
-
-**Problem.** A section's key and type are repeated at every read — `Unmarshal("app", &x)` in a constructor, `GetConfig[AppConfig]("app")` in the composition root, a subscription's key — so a misspelled key or a mismatched type at one read surfaces only when that read runs. Binding a section takes a hand-written constructor around `Unmarshal` or a `ProvideValue` of a value decoded in the composition root, and the configuration and the App each have a getter, two spellings of one read. `testutil`'s empty configuration accepts every key, so a test passes where the same wiring fails in production on a missing section.
-
-**Removes.** `Config.Get[T]` and `Config.MustGet[T]` (`cfg.Get[T]("app")` becomes `config.Section[T]("app").Decode(cfg)`); `testutil`'s empty configuration accepting any key; `App.GetConfig[T]` and `App.MustGetConfig[T]` keep compiling with a literal key and take the descriptor.
 
 ### RawConfig Defined in config/ Package
 
@@ -121,14 +109,14 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 ## Rejected Alternatives
 
-> **Current until v0.26.0 (R5):** the first, second and fourth rows name `Config.Get[T]` and `Config.MustGet[T]`, which go; with R5 their reasons name the section descriptor's `Decode` and `App.MustGetConfig`. The section descriptor's own rejections are in [its section](#a-section-is-named-once-configsectiont).
+The section descriptor's own rejections are in [its section](#a-section-is-named-once-configsectiont).
 
 | Alternative | Reason for rejection |
 | --- | --- |
-| Scalar getters (GetString/GetInt/GetBool) | Error-swallowing API, returns zero value, facilitates abuse. Distinct from the generic `Get[T]`, which returns `(T, error)` and decodes whole sections, not loose scalars |
-| `Get(key) any` | Type-unsafe, `.(int)` assertion risk, the generic `Get[T]`/Unmarshal is sufficient |
-| Whole-config `app.Config()` accessor | Returns the entire config object, encouraging runtime key-based access. The keyed `app.GetConfig[T]` stays composition-root-only, so typed config via DI remains the path into business code |
-| `MustLoad` (panic on load) | `config.Load` performs I/O; its error must be handled. `MustGet`/`MustGetConfig` panic only when decoding an already-loaded config |
+| Scalar getters (GetString/GetInt/GetBool) | Error-swallowing API, returns zero value, facilitates abuse. Distinct from a section's `Decode`, which returns `(T, error)` and decodes a whole section, not loose scalars |
+| `Get(key) any` | Type-unsafe, `.(int)` assertion risk, a section's `Decode` and `Unmarshal` are sufficient |
+| Whole-config `app.Config()` accessor | Returns the entire config object, encouraging runtime key-based access. `app.GetConfig(section)` stays composition-root-only, so typed config via DI remains the path into business code |
+| `MustLoad` (panic on load) | `config.Load` performs I/O; its error must be handled. `MustGetConfig` panics only when decoding an already-loaded config |
 | User-facing CoreConfig type | Server config is a framework-internal concern — user should not be forced to embed it |
 | Root `WithConfigFiles` option | Duplicates `config.Load(config.WithFiles(...))` and expands root API surface |
 | `WithoutAutoConfig` option | Weak practical need; `WithRawConfig` covers explicit control without adding another mode |
@@ -153,6 +141,6 @@ Config is not included in the `credo.Infra` struct (ADR-004). Rationale:
 
 - DI registration is required for each config section (minimal boilerplate)
 - RawConfig still exists — may appear as two APIs (mitigate: position as "bootstrap only," document accordingly)
-- Module authors must know the Unmarshal + DI registration pattern
+- Module authors must know the section descriptor and its `Decode` binding
 - Decoding relies on mapstructure: its string-to-basic-type hook and error texts (a type-mismatch error may quote the value) are part of the contract, and its weak coercion is under `WithWeakDecoding()`
 - Every typed view must cover its whole section, since a key no field decodes is an error
