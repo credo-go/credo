@@ -319,6 +319,12 @@ func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB)
 	}).Exec(ctx); insertErr != nil {
 		t.Fatalf("seed MySQL count-source fixture: %v", insertErr)
 	}
+	t.Cleanup(func() {
+		if _, deleteErr := db.Delete((*realDBItem)(nil)).Where("id = ?", 20).
+			Exec(context.WithoutCancel(ctx)); deleteErr != nil {
+			t.Errorf("delete MySQL count-source fixture: %v", deleteErr)
+		}
+	})
 
 	for _, mode := range []struct {
 		name      string
@@ -410,40 +416,53 @@ func testRealDBMySQLCountSource(t *testing.T, ctx context.Context, db *sqldb.DB)
 // testRealDBCountConnection pins that Count and Page count on the query's own
 // connection: inside a transaction an injected count sees the transaction's
 // uncommitted row, a count with an explicit pool connection does not, and a
-// connection set inside Apply is overridden by the injection.
+// connection set inside Apply is overridden by the injection. It shares the
+// items table with the other contract subtests, so it touches only rows whose
+// names carry its own prefix and deletes them when it ends.
 func testRealDBCountConnection(t *testing.T, ctx context.Context, db *sqldb.DB) {
 	t.Helper()
-	if _, deleteErr := db.Exec(ctx, "DELETE FROM "+realDBItemsTable); deleteErr != nil {
-		t.Fatalf("clear count-connection fixture: %v", deleteErr)
+	const prefix = "count-conn-"
+	deleteOwnRows := func(ctx context.Context) error {
+		_, err := db.Delete((*realDBItem)(nil)).Where("name LIKE ?", prefix+"%").Exec(ctx)
+		return err
 	}
-	if _, insertErr := db.Insert(&realDBItem{ID: 30, Name: "committed", RequiredValue: "present"}).
+	if deleteErr := deleteOwnRows(ctx); deleteErr != nil {
+		t.Fatalf("clear count-connection rows: %v", deleteErr)
+	}
+	t.Cleanup(func() {
+		if deleteErr := deleteOwnRows(context.WithoutCancel(ctx)); deleteErr != nil {
+			t.Errorf("delete count-connection rows: %v", deleteErr)
+		}
+	})
+	own := func(q *sqldb.SelectQuery) *sqldb.SelectQuery { return q.Where("name LIKE ?", prefix+"%") }
+	if _, insertErr := db.Insert(&realDBItem{ID: 30, Name: prefix + "committed", RequiredValue: "present"}).
 		Exec(ctx); insertErr != nil {
 		t.Fatalf("seed count-connection fixture: %v", insertErr)
 	}
 	rollback := errors.New("roll back")
 	txErr := db.InTx(ctx, func(txCtx context.Context) error {
-		if _, insertErr := db.Insert(&realDBItem{ID: 31, Name: "uncommitted", RequiredValue: "present"}).
+		if _, insertErr := db.Insert(&realDBItem{ID: 31, Name: prefix + "uncommitted", RequiredValue: "present"}).
 			Exec(txCtx); insertErr != nil {
 			return insertErr
 		}
-		injected, countErr := db.Select((*realDBItem)(nil)).Count(txCtx)
+		injected, countErr := own(db.Select((*realDBItem)(nil))).Count(txCtx)
 		if countErr != nil || injected != 2 {
 			t.Errorf("injected Count = %d, %v; want 2 with the uncommitted row", injected, countErr)
 		}
-		page, pageErr := db.Select().Page[realDBItem](txCtx, &pagination.PageRequest{Page: 1, PerPage: 10})
+		page, pageErr := own(db.Select()).Page[realDBItem](txCtx, &pagination.PageRequest{Page: 1, PerPage: 10})
 		if pageErr != nil || page.Total != 2 || len(page.Records) != 2 {
 			t.Errorf("injected Page = %+v, %v; want 2 with the uncommitted row", page, pageErr)
 		}
-		explicit, countErr := db.Select((*realDBItem)(nil)).Conn(db.Client()).Count(txCtx)
+		explicit, countErr := own(db.Select((*realDBItem)(nil))).Conn(db.Client()).Count(txCtx)
 		if countErr != nil || explicit != 1 {
 			t.Errorf("explicit-Conn Count = %d, %v; want 1 from the pool", explicit, countErr)
 		}
-		explicitPage, pageErr := db.Select().Conn(db.Client()).
+		explicitPage, pageErr := own(db.Select()).Conn(db.Client()).
 			Page[realDBItem](txCtx, &pagination.PageRequest{Page: 1, PerPage: 10})
 		if pageErr != nil || explicitPage.Total != 1 || len(explicitPage.Records) != 1 {
 			t.Errorf("explicit-Conn Page = %+v, %v; want 1 from the pool", explicitPage, pageErr)
 		}
-		overridden, allErr := db.Select().
+		overridden, allErr := own(db.Select()).
 			Apply(func(q *bun.SelectQuery) *bun.SelectQuery { return q.Conn(db.Client()) }).
 			All[realDBItem](txCtx)
 		if allErr != nil || len(overridden) != 2 {
