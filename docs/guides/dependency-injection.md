@@ -91,11 +91,14 @@ import (
     "net/http"
 
     "github.com/credo-go/credo"
+    "github.com/credo-go/credo/config"
 )
 
 type DatabaseConfig struct {
     DSN string
 }
+
+var DatabaseSection = config.Section[DatabaseConfig]("databases.default")
 
 type User struct {
     ID   string `json:"id"`
@@ -165,7 +168,7 @@ func main() {
     }
 
     // Configuration is read during registration: GetConfig never finalizes.
-    dbCfg, err := app.GetConfig[DatabaseConfig]("databases.default")
+    dbCfg, err := app.GetConfig(DatabaseSection)
     if err != nil {
         log.Fatal(err)
     }
@@ -914,11 +917,11 @@ Do not try to inject request ID, auth user, or transactions through DI. Use `*cr
 
 ### Putting config into `credo.Infra`
 
-RawConfig should be unmarshaled into typed structs and registered with `ProvideValue`.
+RawConfig should be decoded into typed structs through a section descriptor and bound with `app.Provide(DatabaseSection.Decode)`, or read with `app.GetConfig(DatabaseSection)` and registered with `ProvideValue`.
 
 ### Resolving before the last registration
 
-The first resolving call ends registration, so a `Provide`, a `Manage` or a worker registration after it panics, naming that call and its line. Resolve after every registration — across an application split into parts, [`UseModules`](#modules) keeps that order — and read configuration during registration with `app.GetConfig[T]` rather than resolving `credo.RawConfig`: `GetConfig`, `ConfigExists` and `Has` never finalize.
+The first resolving call ends registration, so a `Provide`, a `Manage` or a worker registration after it panics, naming that call and its line. Resolve after every registration — across an application split into parts, [`UseModules`](#modules) keeps that order — and read configuration during registration with `app.GetConfig(section)` rather than resolving `credo.RawConfig`: `GetConfig`, `ConfigExists` and `Has` never finalize.
 
 ### Resolving inside stop hooks
 

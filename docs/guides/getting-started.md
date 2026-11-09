@@ -81,7 +81,7 @@ Credo auto-discovers `config.json` / `config.yaml` in the working directory, mer
 }
 ```
 
-Access config by unmarshalling into typed structs at the module boundary. Field names map to snake_case config keys automatically, so struct tags are optional:
+Access config by decoding each section into a typed struct, named once with a typed descriptor: its key and its type, `config.Section[T]("key")`. Field names map to snake_case config keys automatically, so struct tags are optional:
 
 ```go
 type AppConfig struct {
@@ -89,17 +89,14 @@ type AppConfig struct {
     Debug bool
 }
 
-// Read it during registration: GetConfig never finalizes the container.
-cfg, err := app.GetConfig[AppConfig]("app")
-if err != nil {
-    log.Fatal(err)
-}
+var AppSection = config.Section[AppConfig]("app")
 
-// Register in DI so services can receive it.
-app.ProvideValue(&cfg)
+// Bind the section in DI so services can receive AppConfig. A missing or
+// invalid section fails at Resolve or at start, naming the key.
+app.Provide(AppSection.Decode)
 ```
 
-String keys appear once. After that, everything is typed.
+The key appears once, in the descriptor. After that, everything is typed. Registration code that needs the value itself reads it with `app.GetConfig(AppSection)`, which never finalizes the container.
 
 For explicit file selection, call `config.Load(config.WithFiles(...))` yourself and pass the result with `credo.WithRawConfig(raw)`. Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path.
 
