@@ -465,7 +465,7 @@ func TestAccessLog_RouteMetaOverridesGroup(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	// A silenced group with one route that re-enables logging at the route
-	// level. LookupMeta reads the route before its parents, so the route's
+	// level. GetMeta reads the route before its parents, so the route's
 	// true overrides the group's false.
 	app := mustNew(t, credo.WithLogger(logger))
 	app.UseAccessLog()
