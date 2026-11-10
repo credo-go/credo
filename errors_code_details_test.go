@@ -192,7 +192,7 @@ func TestHTTPError_DirectMarshal(t *testing.T) {
 func TestHandleError_ValidationErrorsTopLevelCode(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/test", func(ctx *credo.Context) error {
-		return validation.Errors{{Field: "name", Code: "required", Message: "cannot be blank"}}
+		return validation.Violations{{Field: "name", Code: "required", Message: "cannot be blank"}}
 	})
 
 	w := httptest.NewRecorder()

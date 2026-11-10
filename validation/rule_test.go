@@ -17,14 +17,14 @@ type alwaysPass[T any] struct{}
 
 func (r alwaysPass[T]) Validate(_ T) error { return nil }
 
-// alwaysFail is a Rule[T] that always returns a ValidationError.
+// alwaysFail is a Rule[T] that always returns a Violation.
 type alwaysFail[T any] struct {
 	code    string
 	message string
 }
 
 func (r alwaysFail[T]) Validate(_ T) error {
-	return &validation.ValidationError{Code: r.code, Message: r.message}
+	return &validation.Violation{Code: r.code, Message: r.message}
 }
 
 // --- ValidateStruct tests ---
@@ -56,9 +56,9 @@ func TestValidateStruct_SingleField_Fail(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))
@@ -85,9 +85,9 @@ func TestValidateStruct_MultipleFields(t *testing.T) {
 		validation.Field(&input.Age, alwaysFail[int]{code: "required", message: "is required"}),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 3 {
 		t.Fatalf("len = %d, want 3", len(errs))
@@ -133,9 +133,9 @@ func TestValidateStruct_CollectsAllErrors(t *testing.T) {
 		),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 2 {
 		t.Fatalf("len = %d, want 2", len(errs))
@@ -158,9 +158,9 @@ func TestValidateStruct_FieldNameFromJsonTag(t *testing.T) {
 		validation.Field(&input.FullName, alwaysFail[string]{code: "required", message: "is required"}),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if errs[0].Field != "full_name" {
 		t.Errorf("field = %q, want %q", errs[0].Field, "full_name")
@@ -177,9 +177,9 @@ func TestValidateStruct_FieldNameFallback(t *testing.T) {
 		validation.Field(&input.FullName, alwaysFail[string]{code: "required", message: "is required"}),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if errs[0].Field != "FullName" {
 		t.Errorf("field = %q, want %q", errs[0].Field, "FullName")
@@ -196,9 +196,9 @@ func TestValidateStruct_JsonTagOmitempty(t *testing.T) {
 		validation.Field(&input.Name, alwaysFail[string]{code: "required", message: "is required"}),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if errs[0].Field != "name" {
 		t.Errorf("field = %q, want %q", errs[0].Field, "name")
@@ -269,9 +269,9 @@ func TestValidateStruct_NestedValidatable(t *testing.T) {
 		validation.Field(&input.Address), // no rules → auto-call Validate()
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 
 	// Should have: name, address.street, address.city
@@ -302,7 +302,7 @@ func (a *readingAddress) Validate() error {
 		*a.calls++
 	}
 	if a.City == "" {
-		return validation.Errors{{Field: "city", Code: "required", Message: "is required"}}
+		return validation.Violations{{Field: "city", Code: "required", Message: "is required"}}
 	}
 	return nil
 }
@@ -324,7 +324,7 @@ type valueAddress struct {
 
 func (a valueAddress) Validate() error {
 	if a.City == "" {
-		return validation.Errors{{Field: "city", Code: "required", Message: "is required"}}
+		return validation.Violations{{Field: "city", Code: "required", Message: "is required"}}
 	}
 	return nil
 }
@@ -356,7 +356,7 @@ func TestValidateStruct_NestedPointerSetIsValidated(t *testing.T) {
 
 	err := validation.ValidateStruct(input, validation.Field(&input.Address))
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok || len(errs) != 1 || errs[0].Field != "address.city" || errs[0].Code != "required" {
 		t.Fatalf("err = %v, want one required violation on address.city", err)
 	}
@@ -393,7 +393,7 @@ func TestValidateStruct_NestedValueReceiver(t *testing.T) {
 		validation.Field(&input.Optional),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok || len(errs) != 2 {
 		t.Fatalf("err = %v, want two violations", err)
 	}
@@ -413,7 +413,7 @@ func TestValidateStruct_NestedRunsAfterTheFieldsRules(t *testing.T) {
 		err := validation.ValidateStruct(input,
 			validation.Field(&input.Address, validation.NotNil[readingAddress]()),
 		)
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok || len(errs) != 1 || errs[0].Field != "address.city" || errs[0].Code != "required" {
 			t.Fatalf("err = %v, want the nested required violation on address.city", err)
 		}
@@ -427,7 +427,7 @@ func TestValidateStruct_NestedRunsAfterTheFieldsRules(t *testing.T) {
 		err := validation.ValidateStruct(input,
 			validation.Field(&input.Address, validation.NotNil[readingAddress]()),
 		)
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "not_nil" {
 			t.Fatalf("err = %v, want only NotNil's violation on address", err)
 		}
@@ -439,7 +439,7 @@ func TestValidateStruct_NestedRunsAfterTheFieldsRules(t *testing.T) {
 		err := validation.ValidateStruct(input,
 			validation.Field(&input.Address, alwaysFail[*readingAddress]{code: "rule", message: "rule failed"}),
 		)
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "rule" {
 			t.Fatalf("err = %v, want only the rule's violation on address", err)
 		}
@@ -517,9 +517,9 @@ func TestJoinFieldPath(t *testing.T) {
 }
 
 func TestPrefixErrors_SingleError(t *testing.T) {
-	err := &validation.ValidationError{Field: "city", Code: "required", Message: "is required"}
+	err := &validation.Violation{Field: "city", Code: "required", Message: "is required"}
 
-	result, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", err))
+	result, ok := errors.AsType[validation.Violations](validation.ExportPrefixErrors("address", err))
 	if !ok || len(result) != 1 {
 		t.Fatalf("len = %d, want 1", len(result))
 	}
@@ -529,12 +529,12 @@ func TestPrefixErrors_SingleError(t *testing.T) {
 }
 
 func TestPrefixErrors_MultipleErrors(t *testing.T) {
-	err := validation.Errors{
+	err := validation.Violations{
 		{Field: "street", Code: "required", Message: "is required"},
 		{Field: "city", Code: "required", Message: "is required"},
 	}
 
-	result, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", err))
+	result, ok := errors.AsType[validation.Violations](validation.ExportPrefixErrors("address", err))
 	if !ok || len(result) != 2 {
 		t.Fatalf("len = %d, want 2", len(result))
 	}
@@ -552,26 +552,26 @@ func TestPrefixErrors_InternalErrorPassesThrough(t *testing.T) {
 	if got := validation.ExportPrefixErrors("address", internal); !errors.Is(got, internal) {
 		t.Fatalf("prefixErrors = %v, want the internal error unchanged", got)
 	}
-	if _, isViolation := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", internal)); isViolation {
+	if _, isViolation := errors.AsType[validation.Violations](validation.ExportPrefixErrors("address", internal)); isViolation {
 		t.Fatal("an internal error became a violation")
 	}
 	// The chain counts, as in the error pipeline: a wrapped validation
 	// failure is still client-visible.
-	wrapped := fmt.Errorf("lookup: %w", validation.NewError("code", "message"))
-	errs, ok := errors.AsType[validation.Errors](validation.ExportPrefixErrors("address", wrapped))
+	wrapped := fmt.Errorf("lookup: %w", validation.NewViolation("code", "message"))
+	errs, ok := errors.AsType[validation.Violations](validation.ExportPrefixErrors("address", wrapped))
 	if !ok || len(errs) != 1 || errs[0].Field != "address" || errs[0].Code != "code" {
 		t.Fatalf("prefixErrors(wrapped) = %+v, want one violation of address", errs)
 	}
 }
 
 func TestCollectErrors_KeepsParams(t *testing.T) {
-	original := &validation.ValidationError{
+	original := &validation.Violation{
 		Code:    "email",
 		Message: "must be a valid email address",
 		Params:  map[string]any{"format": "RFC 5322"},
 	}
 
-	var dst validation.Errors
+	var dst validation.Violations
 	if internal := validation.ExportCollectErrors(&dst, original, "email"); internal != nil {
 		t.Fatalf("collectErrors = %v, want nil", internal)
 	}
@@ -584,9 +584,9 @@ func TestCollectErrors_KeepsParams(t *testing.T) {
 }
 
 func TestNewError(t *testing.T) {
-	err := validation.NewError("country_code", "must be a 2-letter code")
+	err := validation.NewViolation("country_code", "must be a 2-letter code")
 	if err.Code != "country_code" || err.Message != "must be a 2-letter code" || err.Field != "" || err.Params != nil {
-		t.Fatalf("NewError = %+v", err)
+		t.Fatalf("NewViolation = %+v", err)
 	}
 }
 
@@ -620,9 +620,9 @@ func TestValidateStruct_EmbeddedStruct(t *testing.T) {
 		validation.Field(&input.Name, alwaysFail[string]{code: "required", message: "is required"}),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 2 {
 		t.Fatalf("len = %d, want 2", len(errs))
@@ -657,7 +657,7 @@ func TestValidateStruct_EmbeddedPointer(t *testing.T) {
 	err := validation.ValidateStruct(input,
 		validation.Field(&input.Name, alwaysFail[string]{code: "required", message: "is required"}),
 	)
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok || len(errs) != 1 {
 		t.Fatalf("err = %v, want one violation", err)
 	}
@@ -697,9 +697,9 @@ func TestValidateStruct_UnexportedEmbedded(t *testing.T) {
 		validation.Field(&input.Hidden, fail),
 		validation.Field(&input.Name, fail),
 	)
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("err = %v, want validation.Errors", err)
+		t.Fatalf("err = %v, want validation.Violations", err)
 	}
 	var got []string
 	for _, e := range errs {

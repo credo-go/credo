@@ -430,7 +430,7 @@ That fallback makes it safe to adopt i18n incrementally.
 
 ## Automatic Validation Translation
 
-Credo translates field-level validation messages automatically when a handler returns `validation.Errors`. The most common way this happens is through `BindBody()` or `BindQuery()`.
+Credo translates field-level validation messages automatically when a handler returns `validation.Violations`. The most common way this happens is through `BindBody()` or `BindQuery()`.
 
 ```go
 package main

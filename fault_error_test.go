@@ -106,7 +106,7 @@ func TestFaultError_ClassificationOrder(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"wraps validation errors", taken.WithInternal(validation.Errors{{Field: "domain", Code: "required", Message: "secret field"}}), 409, "tenant_domain_taken"},
+		{"wraps validation errors", taken.WithInternal(validation.Violations{{Field: "domain", Code: "required", Message: "secret field"}}), 409, "tenant_domain_taken"},
 		{"wraps a bind error", taken.WithInternal(&credo.BindError{Reason: credo.BindReasonSyntax}), 409, "tenant_domain_taken"},
 		{"wraps a store error", taken.WithInternal(store.Wrap(store.ErrAlreadyExists, errors.New("dup"))), 409, "tenant_domain_taken"},
 		{"wrapped by an HTTPError", credo.NewHTTPError(http.StatusBadRequest, "explicit").WithInternal(taken), 400, "explicit"},

@@ -392,7 +392,7 @@ func BenchmarkWireError(b *testing.B) {
 
 		b.Run(mode+"/Validation", func(b *testing.B) {
 			app := newWireBenchmarkApp(b, coreOnly)
-			errValidation := validation.Errors{
+			errValidation := validation.Violations{
 				{Field: "email", Code: "required", Message: "is required"},
 				{Field: "name", Code: "length", Message: "has invalid length", Params: map[string]any{"min": 2, "max": 100}},
 			}

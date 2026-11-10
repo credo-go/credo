@@ -20,7 +20,7 @@ func TestMin_Int_Valid(t *testing.T) {
 
 func TestMin_Int_Invalid(t *testing.T) {
 	err := validation.Min(18).Validate(17)
-	assertValidationError(t, err, "min", "must be at least 18")
+	assertViolation(t, err, "min", "must be at least 18")
 }
 
 func TestMin_Float64(t *testing.T) {
@@ -35,9 +35,9 @@ func TestMin_Float64(t *testing.T) {
 
 func TestMin_ErrorParams(t *testing.T) {
 	err := validation.Min(18).Validate(10)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Params["min"] != 18 {
 		t.Errorf("params[min] = %v, want 18", ve.Params["min"])
@@ -57,14 +57,14 @@ func TestMax_Valid(t *testing.T) {
 
 func TestMax_Invalid(t *testing.T) {
 	err := validation.Max(100).Validate(101)
-	assertValidationError(t, err, "max", "must be at most 100")
+	assertViolation(t, err, "max", "must be at most 100")
 }
 
 func TestMax_ErrorParams(t *testing.T) {
 	err := validation.Max(100).Validate(200)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Params["max"] != 100 {
 		t.Errorf("params[max] = %v, want 100", ve.Params["max"])
@@ -84,19 +84,19 @@ func TestBetween_Valid(t *testing.T) {
 
 func TestBetween_BelowMin(t *testing.T) {
 	err := validation.Between(1, 10).Validate(0)
-	assertValidationError(t, err, "between", "")
+	assertViolation(t, err, "between", "")
 }
 
 func TestBetween_AboveMax(t *testing.T) {
 	err := validation.Between(1, 10).Validate(11)
-	assertValidationError(t, err, "between", "")
+	assertViolation(t, err, "between", "")
 }
 
 func TestBetween_ErrorParams(t *testing.T) {
 	err := validation.Between(1, 10).Validate(0)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Params["min"] != 1 {
 		t.Errorf("params[min] = %v, want 1", ve.Params["min"])
@@ -132,9 +132,9 @@ func TestNumericRules_WithValidateStruct(t *testing.T) {
 		validation.Field(&input.Quantity, validation.Min(1)),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 3 {
 		t.Fatalf("len = %d, want 3", len(errs))

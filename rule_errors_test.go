@@ -71,7 +71,7 @@ func TestRuleError_InternalErrorIsA500(t *testing.T) {
 }
 
 func TestRuleError_ValidationErrorIsA422(t *testing.T) {
-	w, body, _ := serveRuleError(t, validation.NewError("country_code", "must be a 2-letter code"))
+	w, body, _ := serveRuleError(t, validation.NewViolation("country_code", "must be a 2-letter code"))
 
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", w.Code)
@@ -97,14 +97,14 @@ func TestRuleError_StoreUnavailableIsA503(t *testing.T) {
 }
 
 func TestHandleError_ExplicitStatusWinsOverWrappedValidation(t *testing.T) {
-	vErrs := validation.Errors{{Field: "tenant", Code: "taken", Message: "is taken"}}
+	vErrs := validation.Violations{{Field: "tenant", Code: "taken", Message: "is taken"}}
 	app := mustNew(t)
 	app.POST("/tenants", func(*credo.Context) error {
 		return credo.NewHTTPError(http.StatusConflict, "tenant_conflict").WithInternal(vErrs)
 	})
 	app.POST("/plain", func(*credo.Context) error { return vErrs })
 	app.POST("/single", func(*credo.Context) error {
-		return validation.NewError("taken", "is taken")
+		return validation.NewViolation("taken", "is taken")
 	})
 
 	cases := []struct {
@@ -134,7 +134,7 @@ func TestHandleError_ExplicitStatusWinsOverWrappedValidation(t *testing.T) {
 }
 
 func TestHandleError_RendererSeesWrappedValidationBehindExplicitStatus(t *testing.T) {
-	vErrs := validation.Errors{{Field: "tenant", Code: "taken", Message: "is taken"}}
+	vErrs := validation.Violations{{Field: "tenant", Code: "taken", Message: "is taken"}}
 	app := mustNew(t)
 	var seen error
 	app.UseErrorRenderer(func(_ *credo.Context, info *credo.ErrorInfo) any {
@@ -150,7 +150,7 @@ func TestHandleError_RendererSeesWrappedValidationBehindExplicitStatus(t *testin
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", w.Code)
 	}
-	if _, ok := errors.AsType[validation.Errors](seen); !ok {
+	if _, ok := errors.AsType[validation.Violations](seen); !ok {
 		t.Fatalf("ErrorInfo.Err = %v, want the wrapped validation errors reachable", seen)
 	}
 }

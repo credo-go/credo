@@ -107,7 +107,7 @@ func TestUseI18n_ValidationErrors_Turkish(t *testing.T) {
 	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "email", Code: "required", Message: "is required"},
 		}
 	})
@@ -175,7 +175,7 @@ func TestUseI18n_EnglishDefault(t *testing.T) {
 	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "email", Code: "required", Message: "is required"},
 		}
 	})
@@ -209,7 +209,7 @@ func TestUseI18n_CustomDetect(t *testing.T) {
 	})
 
 	app.POST("/test", func(ctx *credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "email", Code: "required", Message: "is required"},
 		}
 	})
@@ -395,7 +395,7 @@ func TestTranslateError_Immutability(t *testing.T) {
 		Default: "en",
 	})
 
-	original := validation.Errors{
+	original := validation.Violations{
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
@@ -551,7 +551,7 @@ func TestUseI18n_ProgrammaticMessagesAndFields(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.T("hello", map[string]any{"name": "Ada"}))
 	})
 	app.POST("/validate", func(*credo.Context) error {
-		return validation.Errors{{Field: "email", Code: "required", Message: "fallback"}}
+		return validation.Violations{{Field: "email", Code: "required", Message: "fallback"}}
 	})
 
 	startServing(t, app)
@@ -684,7 +684,7 @@ func TestUseI18n_MessageKeyResolverScopesAndExplicitKeys(t *testing.T) {
 	})
 	app.GET("/missing", func(*credo.Context) error { return credo.ErrNotFound })
 	app.POST("/validation", func(*credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "a", Code: "required", Message: "fallback"},
 			{Field: "b", Code: "required", MessageKey: "explicit.validation", Message: "fallback"},
 		}

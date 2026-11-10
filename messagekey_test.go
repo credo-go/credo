@@ -36,7 +36,7 @@ func TestMessageKey_IsANamedType(t *testing.T) {
 		reflect.TypeFor[credo.HTTPError](),
 		reflect.TypeFor[credo.ErrorInfo](),
 		reflect.TypeFor[credo.RenderInfo](),
-		reflect.TypeFor[validation.ValidationError](),
+		reflect.TypeFor[validation.Violation](),
 	} {
 		f, ok := typ.FieldByName("MessageKey")
 		if !ok || f.Type != key {
@@ -44,7 +44,7 @@ func TestMessageKey_IsANamedType(t *testing.T) {
 		}
 	}
 	// A validation key is a credo.MessageKey without a conversion.
-	var k credo.MessageKey = validation.ValidationError{MessageKey: "v.required"}.MessageKey
+	var k credo.MessageKey = validation.Violation{MessageKey: "v.required"}.MessageKey
 	if k != "v.required" {
 		t.Errorf("key = %q", k)
 	}
@@ -148,7 +148,7 @@ func TestNewHTTPError_StatusCodes(t *testing.T) {
 
 	app := mustNew(t)
 	app.POST("/v", func(*credo.Context) error {
-		return validation.Errors{{Field: "a", Code: "required", Message: "a is required"}}
+		return validation.Violations{{Field: "a", Code: "required", Message: "a is required"}}
 	})
 	app.POST("/b", func(c *credo.Context) error {
 		var v struct{ A int }

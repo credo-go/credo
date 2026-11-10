@@ -88,7 +88,7 @@ validation.Field(&c.Age, validation.Email())    // ✗ *int ≠ Rule[string]
 ```
 validation/
 ├── rule.go             Rule[T] interface, FieldRules, ValidateStruct, Field[T], Validatable
-├── errors.go           ValidationError, Errors (JSON marshaling, Unwrap), NewError
+├── errors.go           Violation, Violations (JSON marshaling, Unwrap), NewViolation
 ├── string_rules.go     Required[T], Email, URL, UUID, Regex, Length
 ├── numeric_rules.go    Min, Max, Between
 ├── collection_rules.go NotEmptySlice, NotEmptyMap, Each, When, NilSafe
@@ -114,7 +114,7 @@ v.ValidateStruct(c,
 
 ### Custom Rules
 
-A custom rule reports a client-visible failure with `validation.NewError(code, message string) *ValidationError`; the field path is filled in by `Field`, as for the built-in rules.
+A custom rule reports a client-visible failure with `validation.NewViolation(code, message string) *Violation`; the field path is filled in by `Field`, as for the built-in rules.
 
 ```go
 // Option 1: Implement Rule[T] interface
@@ -122,7 +122,7 @@ type CountryCode struct{}
 
 func (r CountryCode) Validate(value string) error {
     if !isValidCountryCode(value) {
-        return validation.NewError("country_code", "must be a valid country code")
+        return validation.NewViolation("country_code", "must be a valid country code")
     }
     return nil
 }
@@ -132,7 +132,7 @@ func (r CountryCode) Validate(value string) error {
 // Option 2: Inline with validation.By[T]()
 validation.Field(&c.Code, validation.By(func(code string) error {
     if len(code) != 2 {
-        return validation.NewError("country_code", "must be a 2-letter code")
+        return validation.NewViolation("country_code", "must be a 2-letter code")
     }
     return nil
 }))
@@ -140,11 +140,11 @@ validation.Field(&c.Code, validation.By(func(code string) error {
 
 ### Rule Errors
 
-The type of a rule's error decides whether the client sees it. The type is found the way the error pipeline finds it, through the error's chain, so a `*ValidationError` wrapped with `fmt.Errorf("…: %w", …)` is still a violation:
+The type of a rule's error decides whether the client sees it. The type is found the way the error pipeline finds it, through the error's chain, so a `*Violation` wrapped with `fmt.Errorf("…: %w", …)` is still a violation:
 
 | A rule returns | Validation | Response (default pipeline) |
 | --- | --- | --- |
-| `*ValidationError` or `validation.Errors` | continues; the error is a violation of the field | 422 `validation_failed`, the rule's code and message in `violations[]` |
+| `*Violation` or `validation.Violations` | continues; the error is a violation of the field | 422 `validation_failed`, the rule's code and message in `violations[]` |
 | any other error | stops at once; the error leaves `ValidateStruct`, `Validate` and `BindBody`/`BindQuery` unchanged | classified like any handler error ([ADR-009](../adr/009-handler-and-error-handling.md)): a plain error is a 500 with the default message, its text logged, not rendered; a fault keeps its mapped status (`store`'s unavailable kind → 503) |
 
 An internal error stops validation everywhere it can arise: `ValidateStruct` returns it without collecting the remaining fields, and nested `Validatable` fields, `Each`, `When` and `NilSafe` pass it on unchanged, so a rule's internal failure never turns into a violation at any depth. Rationale and the rejected alternative: [ADR-011](../adr/011-validation-strategy.md#rule-errors-client-messages-and-internal-failures).
@@ -336,8 +336,8 @@ An explicitly constructed `HTTPError` wins over validation errors wrapped inside
 // as credo.MessageKey.
 type MessageKey string
 
-// ValidationError represents a single field validation failure.
-type ValidationError struct {
+// Violation is one entry of an error response's violations list.
+type Violation struct {
     Field      string         `json:"field"`
     Code       string         `json:"code"`
     Message    string         `json:"message"`
@@ -345,25 +345,27 @@ type ValidationError struct {
     Params     map[string]any `json:"params,omitempty"` // sent to clients
 }
 
-func (e *ValidationError) Error() string
+func (e *Violation) Error() string
 
-// NewError builds a client-visible failure for a custom rule or a By function.
-func NewError(code, message string) *ValidationError
+// NewViolation builds a client-visible failure for a custom rule or a By function.
+func NewViolation(code, message string) *Violation
 
-// Errors is a collection of validation errors.
-type Errors []ValidationError
+// Violations is the list of violations a validation found.
+type Violations []Violation
 
-func (e Errors) Error() string  // implements error interface
-func (e Errors) MarshalJSON() ([]byte, error)
-func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error
-func (e Errors) Unwrap() []error
+func (e Violations) Error() string  // implements error interface
+func (e Violations) MarshalJSON() ([]byte, error)
+func (e Violations) MarshalJSONTo(enc *jsontext.Encoder) error
+func (e Violations) Unwrap() []error
 ```
 
-`ValidationError.MessageKey` has the type `MessageKey`, declared in this package, `type MessageKey string`, and aliased by the root as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type and a key computed as a `string` converts. A key is a catalog key, never text: a key the catalog lacks falls back to the rule's message, never to the key ([i18n spec](i18n.md#message-key-resolution)).
+The types are named for what they carry, the entries of the wire's `violations` array ([ADR-011](../adr/011-validation-strategy.md#error-format)): a `validation.Violation` is one of them, and the name stays true when the error pipeline puts a bind failure, which no rule produced, in the same type (`ErrorInfo.Violations`).
 
-`Code` is the stable rule identity. `MessageKey`, when present, is an exact catalog key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Errors.Unwrap` returns the individual failures, which lets `errors.As` find a single `*ValidationError` through any wrapping.
+`Violation.MessageKey` has the type `MessageKey`, declared in this package, `type MessageKey string`, and aliased by the root as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type and a key computed as a `string` converts. A key is a catalog key, never text: a key the catalog lacks falls back to the rule's message, never to the key ([i18n spec](i18n.md#message-key-resolution)).
 
-`Field` is the stable technical path on the wire, for frontend form-input matching, and names the field as the client sent it: the `json` name for a JSON body, the `form` name for a form or multipart body, and the `query` name for `BindQuery`, or the Go field name when the tag gives none. A field promoted from an embedded struct is named at the outer level, whether the struct's type is exported or not, and so is one promoted through an embedded pointer to an exported struct type, looked up in the pointee; an embedded pointer to an unexported struct type is skipped, as `encoding/json` and the binder skip it, so a rule on one of its fields reports an empty field. A nested field joins the names of its source with `.`, and a slice element adds `[i]` (`address.city`, `items[0].name`). The engine names a field by its `json` tag, since `Validate` takes no source; `BindBody` and `BindQuery` rename the violations the target's `Validate` returns, a `validation.Errors` or a `*ValidationError`, to the tags of the source they decoded, segment by segment along the target's type. A segment past an interface or a map key, a name no field has, and a violation inside an error `Validate` wraps keep the `json` names, and so does an XML body. The rename runs only when validation fails, and its tables are cached per type, so field-name reflection stays on the cold path. A violation's field is the key of the i18n field names, so a form or query field takes its source name there too.
+`Code` is the stable rule identity. `MessageKey`, when present, is an exact catalog key and is never serialized. `Params` provides template data and is sent to clients, so a custom rule never puts internal or sensitive values in it. `Violations.Unwrap` returns the individual failures, which lets `errors.As` find a single `*Violation` through any wrapping.
+
+`Field` is the stable technical path on the wire, for frontend form-input matching, and names the field as the client sent it: the `json` name for a JSON body, the `form` name for a form or multipart body, and the `query` name for `BindQuery`, or the Go field name when the tag gives none. A field promoted from an embedded struct is named at the outer level, whether the struct's type is exported or not, and so is one promoted through an embedded pointer to an exported struct type, looked up in the pointee; an embedded pointer to an unexported struct type is skipped, as `encoding/json` and the binder skip it, so a rule on one of its fields reports an empty field. A nested field joins the names of its source with `.`, and a slice element adds `[i]` (`address.city`, `items[0].name`). The engine names a field by its `json` tag, since `Validate` takes no source; `BindBody` and `BindQuery` rename the violations the target's `Validate` returns, a `validation.Violations` or a `*Violation`, to the tags of the source they decoded, segment by segment along the target's type. A segment past an interface or a map key, a name no field has, and a violation inside an error `Validate` wraps keep the `json` names, and so does an XML body. The rename runs only when validation fails, and its tables are cached per type, so field-name reflection stays on the cold path. A violation's field is the key of the i18n field names, so a form or query field takes its source name there too.
 
 Translation happens in the error pipeline, never in the validation engine, and never changes the wire `field`; see the i18n spec's [message-key resolution](i18n.md#message-key-resolution) and [field display names](i18n.md#validation-bind-and-fields).
 
@@ -371,5 +373,5 @@ Translation happens in the error pipeline, never in the validation engine, and n
 
 Rationale for programmatic-only rules, generic `Rule[T]`, pointer field references, auto-validation through `Validatable`, topic-based grouping and the absence of `ValidateBody`/`ValidateQuery` on Route is in [ADR-011](../adr/011-validation-strategy.md).
 
-- **i18n-ready `ValidationError`** — `Code` + `Params` fields enable translation without breaking changes. Default English messages work out of the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
+- **i18n-ready `Violation`** — `Code` + `Params` fields enable translation without breaking changes. Default English messages work out of the box. Translation strategy: [ADR-013](../adr/013-internationalization.md).
 - **No fluent builder** — `Rule[T]` is the substrate; helpers a fluent layer would make obsolete (such as a `RequiredField` shorthand) are not added ([ADR-011](../adr/011-validation-strategy.md#no-fluent-builder-deferred)).

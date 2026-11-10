@@ -21,8 +21,11 @@ import (
 // sources finds them.
 type MessageKey string
 
-// ValidationError represents a single field validation failure.
-type ValidationError struct {
+// Violation is one entry of an error response's violations list: a rule a
+// field's value broke. It is named for what it carries rather than for the
+// package, since the error pipeline reports a bind failure, a value the
+// binder could not read, in the same type.
+type Violation struct { //nolint:errname // Named for what it carries, the wire's "violations" (ADR-011).
 	// Field is the field path, e.g. "name", "address.city", "items[0]".
 	Field string `json:"field"`
 
@@ -46,19 +49,20 @@ type ValidationError struct {
 }
 
 // Error implements the error interface.
-func (e *ValidationError) Error() string {
+func (e *Violation) Error() string {
 	if e.Field != "" {
 		return e.Field + ": " + e.Message
 	}
 	return e.Message
 }
 
-// Errors is a collection of validation errors. It implements the error
-// interface and json.Marshaler for error-envelope integration.
-type Errors []ValidationError
+// Violations is the list of violations a validation found, the error
+// [ValidateStruct] returns. It implements the error interface and
+// json.Marshaler for error-envelope integration.
+type Violations []Violation //nolint:errname // Named for what it carries, the wire's "violations" (ADR-011).
 
 // Error implements the error interface. Returns a semicolon-separated summary.
-func (e Errors) Error() string {
+func (e Violations) Error() string {
 	if len(e) == 0 {
 		return ""
 	}
@@ -70,22 +74,22 @@ func (e Errors) Error() string {
 }
 
 // MarshalJSON implements json.Marshaler. Serializes as a JSON array.
-func (e Errors) MarshalJSON() ([]byte, error) {
+func (e Violations) MarshalJSON() ([]byte, error) {
 	// Marshal the underlying slice to avoid infinite recursion.
-	return json.Marshal([]ValidationError(e))
+	return json.Marshal([]Violation(e))
 }
 
 // MarshalJSONTo implements the encoding/json/v2 marshaler interface,
 // streaming the underlying slice without the intermediate []byte that
 // MarshalJSON would otherwise force on v2 encoders.
-func (e Errors) MarshalJSONTo(enc *jsontext.Encoder) error {
-	return jsonv2.MarshalEncode(enc, []ValidationError(e))
+func (e Violations) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return jsonv2.MarshalEncode(enc, []Violation(e))
 }
 
 // Unwrap returns the individual field errors, letting [errors.As] (and
 // errors.Is) descend from a validation result — possibly wrapped further
-// up the call chain — down to single *ValidationError values.
-func (e Errors) Unwrap() []error {
+// up the call chain — down to single *Violation values.
+func (e Violations) Unwrap() []error {
 	if len(e) == 0 {
 		return nil
 	}
@@ -96,23 +100,23 @@ func (e Errors) Unwrap() []error {
 	return out
 }
 
-// NewError returns a client-visible validation failure with the given rule
+// NewViolation returns a client-visible validation failure with the given rule
 // code and message, for a custom rule or an inline [By] function. The field
 // path is filled in by [Field], as for the built-in rules.
 //
-//	return validation.NewError("country_code", "must be a 2-letter code")
+//	return validation.NewViolation("country_code", "must be a 2-letter code")
 //
-// A rule error that is neither a *ValidationError nor [Errors] is internal:
+// A rule error that is neither a *Violation nor [Violations] is internal:
 // validation stops and the error is returned unchanged, so the error
 // pipeline classifies it like any handler error and its text never reaches
 // the client.
-func NewError(code, message string) *ValidationError {
-	return &ValidationError{Code: code, Message: message}
+func NewViolation(code, message string) *Violation {
+	return &Violation{Code: code, Message: message}
 }
 
-// newRuleError creates a ValidationError for a built-in rule.
-func newRuleError(code, message string, params map[string]any) *ValidationError {
-	return &ValidationError{
+// newRuleError creates a Violation for a built-in rule.
+func newRuleError(code, message string, params map[string]any) *Violation {
+	return &Violation{
 		Code:    code,
 		Message: message,
 		Params:  params,
@@ -120,12 +124,12 @@ func newRuleError(code, message string, params map[string]any) *ValidationError 
 }
 
 // prefixErrors prepends prefix to the Field of each failure in err, an
-// [Errors] or a single *ValidationError, and returns them as Errors. If the
+// [Violations] or a single *Violation, and returns them as Violations. If the
 // child field starts with "[", it concatenates without a dot separator (e.g.
 // "items" + "[0]" → "items[0]"). Any other error is internal and is returned
 // unchanged.
 func prefixErrors(prefix string, err error) error {
-	var result Errors
+	var result Violations
 	if internal := collectErrors(&result, err, prefix); internal != nil {
 		return internal
 	}
@@ -133,23 +137,23 @@ func prefixErrors(prefix string, err error) error {
 }
 
 // collectErrors appends the failures in err to dst, prefixing each Field with
-// fieldPath. It never mutates err: each element of an Errors slice is copied
+// fieldPath. It never mutates err: each element of a Violations slice is copied
 // before its Field is rewritten, so a rule that retains or shares the
 // returned slice is unaffected.
 //
 // The type of err decides its meaning, found the way the error pipeline
-// finds it, through the error's chain: [Errors] or a *ValidationError is a
+// finds it, through the error's chain: [Violations] or a *Violation is a
 // client-visible failure; any other error is internal, appends nothing and is
 // returned for the caller to stop validation with.
-func collectErrors(dst *Errors, err error, fieldPath string) error {
-	if errs, ok := errors.AsType[Errors](err); ok {
+func collectErrors(dst *Violations, err error, fieldPath string) error {
+	if errs, ok := errors.AsType[Violations](err); ok {
 		for _, ve := range errs {
 			ve.Field = joinFieldPath(fieldPath, ve.Field)
 			*dst = append(*dst, ve)
 		}
 		return nil
 	}
-	if e, ok := errors.AsType[*ValidationError](err); ok {
+	if e, ok := errors.AsType[*Violation](err); ok {
 		ve := *e
 		ve.Field = joinFieldPath(fieldPath, ve.Field)
 		*dst = append(*dst, ve)

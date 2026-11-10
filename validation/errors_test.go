@@ -10,7 +10,7 @@ import (
 )
 
 func TestErrors_Unwrap(t *testing.T) {
-	errs := validation.Errors{
+	errs := validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 		{Field: "age", Code: "min", Message: "too small"},
 	}
@@ -19,38 +19,38 @@ func TestErrors_Unwrap(t *testing.T) {
 	// validation result is wrapped further up the chain.
 	wrapped := fmt.Errorf("bind user: %w", errs)
 
-	ve, ok := errors.AsType[*validation.ValidationError](wrapped)
+	ve, ok := errors.AsType[*validation.Violation](wrapped)
 	if !ok {
-		t.Fatal("errors.AsType should find a *ValidationError through the wrap chain")
+		t.Fatal("errors.AsType should find a *Violation through the wrap chain")
 	}
 	if ve.Field != "name" {
 		t.Errorf("first unwrapped error field = %q, want %q", ve.Field, "name")
 	}
 
-	if got := validation.Errors(nil).Unwrap(); got != nil {
-		t.Errorf("empty Errors.Unwrap() = %v, want nil", got)
+	if got := validation.Violations(nil).Unwrap(); got != nil {
+		t.Errorf("empty Violations.Unwrap() = %v, want nil", got)
 	}
 }
 
-func TestValidationError_Error(t *testing.T) {
+func TestViolation_Error(t *testing.T) {
 	tests := []struct {
 		name string
-		err  validation.ValidationError
+		err  validation.Violation
 		want string
 	}{
 		{
 			name: "with field",
-			err:  validation.ValidationError{Field: "name", Code: "required", Message: "is required"},
+			err:  validation.Violation{Field: "name", Code: "required", Message: "is required"},
 			want: "name: is required",
 		},
 		{
 			name: "without field",
-			err:  validation.ValidationError{Code: "required", Message: "is required"},
+			err:  validation.Violation{Code: "required", Message: "is required"},
 			want: "is required",
 		},
 		{
 			name: "nested field path",
-			err:  validation.ValidationError{Field: "address.city", Code: "required", Message: "is required"},
+			err:  validation.Violation{Field: "address.city", Code: "required", Message: "is required"},
 			want: "address.city: is required",
 		},
 	}
@@ -67,19 +67,19 @@ func TestValidationError_Error(t *testing.T) {
 func TestErrors_Error(t *testing.T) {
 	tests := []struct {
 		name string
-		errs validation.Errors
+		errs validation.Violations
 		want string
 	}{
 		{
 			name: "single error",
-			errs: validation.Errors{
+			errs: validation.Violations{
 				{Field: "name", Code: "required", Message: "is required"},
 			},
 			want: "name: is required",
 		},
 		{
 			name: "multiple errors",
-			errs: validation.Errors{
+			errs: validation.Violations{
 				{Field: "name", Code: "required", Message: "is required"},
 				{Field: "email", Code: "email", Message: "must be a valid email address"},
 			},
@@ -87,7 +87,7 @@ func TestErrors_Error(t *testing.T) {
 		},
 		{
 			name: "empty errors",
-			errs: validation.Errors{},
+			errs: validation.Violations{},
 			want: "",
 		},
 	}
@@ -102,20 +102,20 @@ func TestErrors_Error(t *testing.T) {
 }
 
 func TestErrors_ImplementsError(t *testing.T) {
-	// Compile-time guarantee that Errors satisfies the error interface.
-	var _ error = validation.Errors{}
+	// Compile-time guarantee that Violations satisfies the error interface.
+	var _ error = validation.Violations{}
 
-	// At runtime, a populated Errors produces a non-empty message.
-	err := error(validation.Errors{
+	// At runtime, a populated Violations produces a non-empty message.
+	err := error(validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 	})
 	if err.Error() == "" {
-		t.Fatal("Errors.Error() should produce a non-empty message")
+		t.Fatal("Violations.Error() should produce a non-empty message")
 	}
 }
 
 func TestErrors_MarshalJSON(t *testing.T) {
-	errs := validation.Errors{
+	errs := validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 		{Field: "age", Code: "min", Message: "must be at least 18", Params: map[string]any{"min": 18}},
 	}
@@ -158,7 +158,7 @@ func TestErrors_MarshalJSON(t *testing.T) {
 }
 
 func TestErrors_MarshalJSON_Empty(t *testing.T) {
-	errs := validation.Errors{}
+	errs := validation.Violations{}
 
 	data, err := json.Marshal(errs)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestErrors_MarshalJSON_Empty(t *testing.T) {
 }
 
 func TestErrors_MarshalJSON_OmitsEmptyParams(t *testing.T) {
-	errs := validation.Errors{
+	errs := validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 	}
 
@@ -191,13 +191,13 @@ func TestErrors_MarshalJSON_OmitsEmptyParams(t *testing.T) {
 }
 
 func TestErrors_As(t *testing.T) {
-	err := error(validation.Errors{
+	err := error(validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 	})
 
-	ve, ok := errors.AsType[validation.Errors](err)
+	ve, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatal("errors.AsType should match validation.Errors")
+		t.Fatal("errors.AsType should match validation.Violations")
 	}
 	if len(ve) != 1 {
 		t.Errorf("len = %d, want 1", len(ve))
@@ -206,13 +206,13 @@ func TestErrors_As(t *testing.T) {
 
 func TestCollectErrors_DoesNotMutateSource(t *testing.T) {
 	// collectErrors must copy each element before prefixing its Field, so a rule
-	// that returns a retained or shared Errors slice is never corrupted.
-	src := validation.Errors{
+	// that returns a retained or shared Violations slice is never corrupted.
+	src := validation.Violations{
 		{Field: "name", Code: "required", Message: "is required"},
 		{Field: "age", Code: "min", Message: "too small"},
 	}
 
-	var dst validation.Errors
+	var dst validation.Violations
 	if internal := validation.ExportCollectErrors(&dst, src, "user"); internal != nil {
 		t.Fatalf("collectErrors = %v, want nil", internal)
 	}

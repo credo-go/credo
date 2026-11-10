@@ -47,7 +47,7 @@ func TestHandleError_HTTPError(t *testing.T) {
 func TestHandleError_ValidationErrors(t *testing.T) {
 	app := mustNew(t)
 	app.POST("/users", func(ctx *credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "name", Code: "required", Message: "name is required"},
 			{Field: "email", Code: "email", Message: "must be a valid email"},
 		}
@@ -570,7 +570,7 @@ func TestLogClientErrorCause(t *testing.T) {
 		{
 			name: "validation errors",
 			handler: func(*credo.Context) error {
-				return validation.Errors{{Field: "age", Code: "required", Message: "is required"}}
+				return validation.Violations{{Field: "age", Code: "required", Message: "is required"}}
 			},
 			status: http.StatusUnprocessableEntity,
 		},
@@ -1083,7 +1083,7 @@ func TestHandleError_RendererReceivesValidationErrors(t *testing.T) {
 	})
 
 	app.POST("/users", func(ctx *credo.Context) error {
-		return validation.Errors{
+		return validation.Violations{
 			{Field: "name", Code: "required", Message: "name is required"},
 		}
 	})

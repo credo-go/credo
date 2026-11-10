@@ -271,7 +271,7 @@ type ErrorBody struct {
 	// validation failures and document-scoped bind (body-contract) failures.
 	// A bind entry's Field may be empty when the violation concerns the whole
 	// body (for example a JSON syntax error).
-	Violations []validation.ValidationError `json:"violations,omitempty"`
+	Violations []validation.Violation `json:"violations,omitempty"`
 }
 
 // ProblemDetails represents an RFC 9457 Problem Details response. It is used
@@ -305,7 +305,7 @@ type ProblemDetails struct {
 
 	// Violations holds validation or binding rule violations (if any) as an
 	// extension member, matching the default envelope's vocabulary.
-	Violations []validation.ValidationError `json:"violations,omitempty"`
+	Violations []validation.Violation `json:"violations,omitempty"`
 }
 
 // NewProblemDetails creates a new ProblemDetails with the given status and title.
@@ -523,7 +523,7 @@ func writeRenderedError(ctx *Context, status int, body any) error {
 //  2. *fault.Error → status from its kind, its code and details; an
 //     undeclared kind or an invalid code fails closed to a generic 500. Like
 //     an HTTPError it wins over a validation or bind error it wraps.
-//  3. validation.Errors or a single *validation.ValidationError → 422
+//  3. validation.Violations or a single *validation.Violation → 422
 //     Unprocessable Entity with field violations
 //  4. *BindError → 400 Bad Request with a typed decode-reason violations entry
 //  5. any other fault.Provider → the status for its kind, with the kind as
@@ -563,16 +563,16 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 		return info
 	}
 
-	if ve, ok := errors.AsType[validation.Errors](err); ok {
+	if ve, ok := errors.AsType[validation.Violations](err); ok {
 		return app.validationErrorInfo(ctx, ve)
 	}
-	if ve, ok := errors.AsType[*validation.ValidationError](err); ok {
-		return app.validationErrorInfo(ctx, validation.Errors{*ve})
+	if ve, ok := errors.AsType[*validation.Violation](err); ok {
+		return app.validationErrorInfo(ctx, validation.Violations{*ve})
 	}
 
 	if be, ok := errors.AsType[*BindError](err); ok {
 		info := app.codedErrorInfo(ctx, http.StatusBadRequest, CodeBindFailed, "")
-		info.Violations = []validation.ValidationError{app.bindProblemError(ctx, be)}
+		info.Violations = []validation.Violation{app.bindProblemError(ctx, be)}
 		return info
 	}
 
@@ -591,9 +591,9 @@ func (app *App) classifyError(err error, ctx *Context) *ErrorInfo {
 }
 
 // validationErrorInfo is the 422 validation_failed classification.
-func (app *App) validationErrorInfo(ctx *Context, ve validation.Errors) *ErrorInfo {
+func (app *App) validationErrorInfo(ctx *Context, ve validation.Violations) *ErrorInfo {
 	info := app.codedErrorInfo(ctx, http.StatusUnprocessableEntity, CodeValidationFailed, "")
-	info.Violations = []validation.ValidationError(app.translateValidationErrors(ctx, ve))
+	info.Violations = []validation.Violation(app.translateValidationErrors(ctx, ve))
 	return info
 }
 
@@ -706,8 +706,8 @@ func (app *App) effectiveMessageKey(scope MessageScope, code string, explicitKey
 
 // translateValidationErrors resolves each validation error's exact key and
 // translates it when a bundle is active.
-func (app *App) translateValidationErrors(ctx *Context, ve validation.Errors) validation.Errors {
-	result := make(validation.Errors, len(ve))
+func (app *App) translateValidationErrors(ctx *Context, ve validation.Violations) validation.Violations {
+	result := make(validation.Violations, len(ve))
 	for i, e := range ve {
 		result[i] = e // copy
 		key, _ := app.effectiveMessageKey(MessageScopeValidation, e.Code, e.MessageKey)
@@ -743,9 +743,9 @@ func translateFieldMessage(bundle *internali18n.Bundle, lang, key string, params
 // default English) text, and Params the client-safe template variables.
 // Translation follows the validation pipeline with a scoped exact key; field
 // names are resolved via the bundle's field translations.
-func (app *App) bindProblemError(ctx *Context, be *BindError) validation.ValidationError {
+func (app *App) bindProblemError(ctx *Context, be *BindError) validation.Violation {
 	key, _ := app.effectiveMessageKey(MessageScopeBind, string(be.Reason), "")
-	ve := validation.ValidationError{
+	ve := validation.Violation{
 		Field:      be.Field,
 		Code:       string(be.Reason),
 		Message:    be.message(),

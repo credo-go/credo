@@ -14,8 +14,8 @@ func handler(c *credo.Context, name string) error {
 	_ = credo.NewHTTPError(400).WithMessageKey("app.undefined")
 	_ = credo.NewHTTPError(400).WithMessageKey(credo.MessageKey(name))
 	_ = c.Render(200, nil, credo.RenderMessageKey("render.undefined"))
-	_ = validation.ValidationError{Field: "name", Code: "required", MessageKey: "validation.required"}
-	_ = validation.ValidationError{Field: "name", Code: "required", MessageKey: "validation.undefined"}
+	_ = validation.Violation{Field: "name", Code: "required", MessageKey: "validation.required"}
+	_ = validation.Violation{Field: "name", Code: "required", MessageKey: "validation.undefined"}
 	var info credo.ErrorInfo
 	info.MessageKey = "problem.conflict"
 	return nil

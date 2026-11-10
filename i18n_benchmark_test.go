@@ -65,7 +65,7 @@ func BenchmarkUseI18n_T(b *testing.B) {
 
 func BenchmarkUseI18n_ValidationError(b *testing.B) {
 	app := newI18nBenchApp(b)
-	ve := validation.Errors{
+	ve := validation.Violations{
 		{Field: "email", Code: "required", Message: "is required"},
 		{Field: "name", Code: "required", Message: "is required"},
 	}
