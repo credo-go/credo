@@ -44,9 +44,9 @@ func TestDIDiagnostics_PublicTypes(t *testing.T) {
 	mustFinalize(t, app)
 
 	_, err := app.Resolve[*diPanicky]()
-	pe, ok := errors.AsType[*credo.DIPanicError](err)
-	if !ok || pe.Phase != credo.DIPanicConstruction || pe.Value != "boom" || pe.Stack == "" {
-		t.Fatalf("Resolve = %v, want a construction DIPanicError with value and stack", err)
+	pe, ok := errors.AsType[*credo.PanicError](err)
+	if !ok || pe.Phase != credo.PanicConstruction || pe.Value != "boom" || pe.Stack == "" {
+		t.Fatalf("Resolve = %v, want a construction PanicError with value and stack", err)
 	}
 	if _, err := app.Resolve[*diPanicky](); !errors.Is(err, pe) {
 		t.Fatalf("later Resolve = %v, want the same terminal failure", err)

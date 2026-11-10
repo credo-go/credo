@@ -91,7 +91,7 @@ func (app *App) Has[T any]() bool {
 // nothing has ([App.Finalize]) and records itself, with its site, as what
 // finalized it; a failed Finalize is that call's error, and every later
 // Resolve returns it. Constructors run at first resolution, exactly once,
-// and a constructor panic is returned as a [DIPanicError] to every caller.
+// and a constructor panic is returned as a [*PanicError] to every caller.
 // Once shutdown has begun, Resolve returns an error wrapping [ErrDIClosed].
 // Resolve is safe for concurrent use; concurrent first calls finalize once.
 //
@@ -109,7 +109,7 @@ func (app *App) Resolve[T any]() (T, error) {
 // MustResolve is like [App.Resolve] but panics on error: the whole Finalize
 // report when the implicit Finalize fails, or a constructor's failure. It is
 // primarily intended for bootstrap/composition-root code. A constructor panic
-// surfaces here as a panic whose value is the [DIPanicError], not the
+// surfaces here as a panic whose value is the [*PanicError], not the
 // original value.
 func (app *App) MustResolve[T any]() T {
 	v, err := resolveAs[T](app, "MustResolve")
@@ -143,7 +143,7 @@ func resolveAs[T any](app *App, call string) (T, error) {
 	app.container.SealOnResolve(func() di.Trigger { return callTrigger(call + "[" + t.String() + "]") })
 	v, err := app.container.Resolve[T]()
 	panicOnMisuse(err)
-	return v, err
+	return v, publicDIError(err)
 }
 
 // resolveAllAs is resolveAs for ResolveAll and MustResolveAll.
@@ -153,7 +153,7 @@ func resolveAllAs[T any](app *App, call string) ([]T, error) {
 	app.container.SealOnResolve(func() di.Trigger { return callTrigger(call + "[" + t.String() + "]") })
 	v, err := app.container.ResolveAll[T]()
 	panicOnMisuse(err)
-	return v, err
+	return v, publicDIError(err)
 }
 
 // panicOnMisuse panics with err when the container rejected a call because of
