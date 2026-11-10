@@ -98,33 +98,39 @@ var builtInMessages = map[string]string{
 // A key the catalog does not define is never rendered as text: it falls back
 // to step 3, and in debug mode the pipeline warns with the key, the code and
 // the route.
+//
+// HTTPError is not a wire shape: the response body is built from the
+// [ErrorInfo] the pipeline normalizes it into, so its fields name no JSON
+// member. Return it from a handler; do not marshal it.
 type HTTPError struct {
 	// Status is the HTTP status code.
-	Status int `json:"status"`
+	Status int
 
 	// Code is the stable machine-readable error code, rendered as the RFC
 	// 7807 "code" extension member. [NewHTTPError] always materializes it:
 	// either the explicit code argument or the frozen default for the status
 	// (for example 404 → "not_found", unknown 499 → "http_499"). It must
 	// satisfy the machine-code grammar ^[a-z0-9]+(_[a-z0-9]+)*$.
-	Code string `json:"code,omitempty"`
+	Code string
 
 	// MessageKey is an optional catalog key for the message; it never
 	// contributes to Code. Attach one with [HTTPError.WithMessageKey].
-	MessageKey MessageKey `json:"message_key,omitempty"`
+	MessageKey MessageKey
 
 	// Message is optional literal client text, rendered as is and never
 	// looked up; it wins over MessageKey. Attach it with
 	// [HTTPError.WithMessage]. Client input belongs in Details, not here.
-	Message string `json:"message,omitempty"`
+	Message string
 
 	// Details carries optional structured, client-safe detail rendered as the
 	// default error response's "details" member. It is encoded with the
 	// application's JSON profile; never place secrets or internal state here.
-	Details any `json:"-"`
+	Details any
 
 	// Internal is the underlying error. It is never exposed to the client;
 	// the error pipeline logs it, at Error for a 5xx status and at Debug below.
+	// Its tag is a guard, not a wire name: it keeps the error out of an
+	// HTTPError that is marshalled by mistake.
 	Internal error `json:"-"`
 }
 
