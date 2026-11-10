@@ -18,7 +18,7 @@ func TestRequired_String_Valid(t *testing.T) {
 
 func TestRequired_String_Zero(t *testing.T) {
 	err := validation.Required[string]().Validate("")
-	assertValidationError(t, err, "required", "is required")
+	assertViolation(t, err, "required", "is required")
 }
 
 func TestRequired_Int_Valid(t *testing.T) {
@@ -29,12 +29,12 @@ func TestRequired_Int_Valid(t *testing.T) {
 
 func TestRequired_Int_Zero(t *testing.T) {
 	err := validation.Required[int]().Validate(0)
-	assertValidationError(t, err, "required", "is required")
+	assertViolation(t, err, "required", "is required")
 }
 
 func TestRequired_Bool_False(t *testing.T) {
 	err := validation.Required[bool]().Validate(false)
-	assertValidationError(t, err, "required", "is required")
+	assertViolation(t, err, "required", "is required")
 }
 
 func TestRequired_Bool_True(t *testing.T) {
@@ -71,7 +71,7 @@ func TestEmail(t *testing.T) {
 				t.Errorf("expected error for %q, got nil", tt.email)
 			}
 			if !tt.valid && err != nil {
-				assertValidationError(t, err, "email", "")
+				assertViolation(t, err, "email", "")
 			}
 		})
 	}
@@ -103,7 +103,7 @@ func TestURL(t *testing.T) {
 				t.Errorf("expected error for %q, got nil", tt.url)
 			}
 			if !tt.valid && err != nil {
-				assertValidationError(t, err, "url", "")
+				assertViolation(t, err, "url", "")
 			}
 		})
 	}
@@ -214,9 +214,9 @@ func TestLength_ErrorParams(t *testing.T) {
 	rule := validation.Length(2, 100)
 	err := rule.Validate("a")
 
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "length" {
 		t.Errorf("code = %q, want %q", ve.Code, "length")
@@ -243,9 +243,9 @@ func TestStringRules_WithValidateStruct(t *testing.T) {
 		validation.Field(&input.Email, validation.Required[string](), validation.Email()),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 2 {
 		t.Fatalf("len = %d, want 2", len(errs))
@@ -265,14 +265,14 @@ func TestStringRules_WithValidateStruct(t *testing.T) {
 
 // --- Test helper ---
 
-func assertValidationError(t *testing.T, err error, wantCode, wantMessage string) {
+func assertViolation(t *testing.T, err error, wantCode, wantMessage string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+		t.Fatalf("expected *Violation, got %T: %v", err, err)
 	}
 	if wantCode != "" && ve.Code != wantCode {
 		t.Errorf("code = %q, want %q", ve.Code, wantCode)

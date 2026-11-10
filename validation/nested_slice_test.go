@@ -19,7 +19,7 @@ func (li *lineItem) Validate() error {
 		*li.calls++
 	}
 	if li.Name == "" {
-		return validation.Errors{{Field: "name", Code: "required", Message: "is required"}}
+		return validation.Violations{{Field: "name", Code: "required", Message: "is required"}}
 	}
 	return nil
 }
@@ -29,16 +29,16 @@ type lineItems []lineItem
 
 func (l lineItems) Validate() error {
 	if len(l) > 1 {
-		return validation.NewError("too_many", "at most one item")
+		return validation.NewViolation("too_many", "at most one item")
 	}
 	return nil
 }
 
 func violationFields(t *testing.T, err error) []string {
 	t.Helper()
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("err = %v (%T), want validation.Errors", err, err)
+		t.Fatalf("err = %v (%T), want validation.Violations", err, err)
 	}
 	fields := make([]string, len(errs))
 	for i, e := range errs {
@@ -112,7 +112,7 @@ func TestValidateStruct_SliceElementsAfterTheFieldsRules(t *testing.T) {
 				validation.Each[lineItem](alwaysFail[lineItem]{code: "each", message: "element failed"}),
 			),
 		)
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok || len(errs) != 2 {
 			t.Fatalf("err = %v, want the two Each violations only", err)
 		}
@@ -146,7 +146,7 @@ func TestValidateStruct_SliceTypeWithItsOwnValidate(t *testing.T) {
 
 	err := validation.ValidateStruct(input, validation.Field(&input.Items))
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok || len(errs) != 1 || errs[0].Field != "items" || errs[0].Code != "too_many" {
 		t.Fatalf("err = %v, want the slice type's own violation on items", err)
 	}
@@ -176,7 +176,7 @@ func TestValidateStruct_SliceElementInternalErrorStops(t *testing.T) {
 	if !errors.Is(err, errItemLookup) {
 		t.Fatalf("err = %v, want the element's internal error unchanged", err)
 	}
-	if _, ok := errors.AsType[validation.Errors](err); ok {
+	if _, ok := errors.AsType[validation.Violations](err); ok {
 		t.Fatalf("err = %v, an internal error must not become a violation", err)
 	}
 }

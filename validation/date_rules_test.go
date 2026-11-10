@@ -26,7 +26,7 @@ func TestDateBefore_Valid(t *testing.T) {
 func TestDateBefore_Invalid(t *testing.T) {
 	rule := validation.DateBefore(now)
 	err := rule.Validate(future)
-	assertValidationError(t, err, "date_before", "")
+	assertViolation(t, err, "date_before", "")
 }
 
 func TestDateBefore_Equal(t *testing.T) {
@@ -47,9 +47,9 @@ func TestDateBefore_Zero(t *testing.T) {
 func TestDateBefore_ErrorParams(t *testing.T) {
 	rule := validation.DateBefore(now)
 	err := rule.Validate(future)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	threshold, ok := ve.Params["threshold"].(time.Time)
 	if !ok {
@@ -72,7 +72,7 @@ func TestDateAfter_Valid(t *testing.T) {
 func TestDateAfter_Invalid(t *testing.T) {
 	rule := validation.DateAfter(now)
 	err := rule.Validate(past)
-	assertValidationError(t, err, "date_after", "")
+	assertViolation(t, err, "date_after", "")
 }
 
 func TestDateAfter_Equal(t *testing.T) {
@@ -106,9 +106,9 @@ func TestDateRules_CrossField(t *testing.T) {
 		validation.Field(&event.EndDate, validation.DateAfter(event.StartDate)),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))

@@ -183,7 +183,7 @@ type ErrorInfo struct {
     MessageKey MessageKey                   // catalog key before resolution; empty for a literal message
     Message    string                       // resolved message, including safe fallback
     Details    any                          // client-safe detail
-    Violations []validation.ValidationError // validation or bind violations
+    Violations []validation.Violation // validation or bind violations
 }
 
 // The default error envelope.
@@ -196,7 +196,7 @@ type ErrorBody struct {
     Code       string                       `json:"code"`
     Message    string                       `json:"message"`
     Details    any                          `json:"details,omitempty"`
-    Violations []validation.ValidationError `json:"violations,omitempty"`
+    Violations []validation.Violation `json:"violations,omitempty"`
 }
 ```
 

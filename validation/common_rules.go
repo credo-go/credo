@@ -3,14 +3,14 @@ package validation
 // By creates a [Rule] from an inline function. The type parameter T is
 // inferred from the function signature.
 //
-// The function reports a client-visible failure with a *ValidationError —
-// [NewError] builds one — or [Errors]. Any other error is internal: validation
+// The function reports a client-visible failure with a *Violation —
+// [NewViolation] builds one — or [Violations]. Any other error is internal: validation
 // stops and the error leaves Validate unchanged, so a lookup that could not
 // reach its database is a server failure, not invalid input.
 //
 //	validation.Field(&c.Code, validation.By(func(code string) error {
 //	    if len(code) != 2 {
-//	        return validation.NewError("country_code", "must be a 2-letter code")
+//	        return validation.NewViolation("country_code", "must be a 2-letter code")
 //	    }
 //	    return nil
 //	}))

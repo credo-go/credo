@@ -37,7 +37,7 @@ func ExportGetErrorFieldName(f reflect.StructField) string {
 }
 
 // ExportNewRuleError exposes newRuleError for testing.
-func ExportNewRuleError(code, message string, params map[string]any) *ValidationError {
+func ExportNewRuleError(code, message string, params map[string]any) *Violation {
 	return newRuleError(code, message, params)
 }
 
@@ -52,7 +52,7 @@ func ExportPrefixErrors(prefix string, err error) error {
 }
 
 // ExportCollectErrors exposes collectErrors for testing.
-func ExportCollectErrors(dst *Errors, err error, fieldPath string) error {
+func ExportCollectErrors(dst *Violations, err error, fieldPath string) error {
 	return collectErrors(dst, err, fieldPath)
 }
 

@@ -22,7 +22,7 @@ Detection is lazy and Context-based. `I18nConfig.Detect func(*Context) string` (
 
 `messages.json` contains message templates. `fields.json` maps exact technical field paths to display names. They stay separate because fields have different lookup/fallback semantics and should not require an artificial `field.` prefix.
 
-`ValidationError.Field` stays the stable technical path on the wire. The display name is injected only as template data (`{{.field}}`). Lookup uses the exact full path (`address.city`, `items[0]`). If the selected locale lacks a field name, Credo uses the raw path; it does not borrow the default language's field name and produce a mixed-language sentence.
+`Violation.Field` stays the stable technical path on the wire. The display name is injected only as template data (`{{.field}}`). Lookup uses the exact full path (`address.city`, `items[0]`). If the selected locale lacks a field name, Credo uses the raw path; it does not borrow the default language's field name and produce a mixed-language sentence.
 
 ### Programmatic default-language base
 

@@ -45,7 +45,7 @@ type eachRule[T any] struct {
 }
 
 func (r *eachRule[T]) Validate(value []T) error {
-	var allErrors Errors
+	var allErrors Violations
 	for i, elem := range value {
 		for _, rule := range r.rules {
 			if err := rule.Validate(elem); err != nil {
@@ -84,7 +84,7 @@ func (r *whenRule[T]) Validate(value T) error {
 	if !r.condition {
 		return nil
 	}
-	var allErrors Errors
+	var allErrors Violations
 	for _, rule := range r.rules {
 		if err := rule.Validate(value); err != nil {
 			if internal := collectErrors(&allErrors, err, ""); internal != nil {
@@ -119,7 +119,7 @@ func (r *nilSafeRule[T]) Validate(value *T) error {
 	if value == nil {
 		return nil
 	}
-	var allErrors Errors
+	var allErrors Violations
 	for _, rule := range r.rules {
 		if err := rule.Validate(*value); err != nil {
 			if internal := collectErrors(&allErrors, err, ""); internal != nil {

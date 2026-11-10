@@ -134,12 +134,12 @@ func (r *CreateTenantRequest) Validate() error {
 }
 
 // notReservedDomain is a custom rule. A client-visible failure is a
-// validation.NewError; any other error a rule returns is an internal (500)
+// validation.NewViolation; any other error a rule returns is an internal (500)
 // failure whose text is only logged.
 func notReservedDomain(domain string) error {
 	for _, suffix := range []string{".invalid", ".localhost", ".test"} {
 		if strings.HasSuffix(domain, suffix) {
-			return validation.NewError("domain_reserved", "must not use a reserved domain")
+			return validation.NewViolation("domain_reserved", "must not use a reserved domain")
 		}
 	}
 	return nil

@@ -145,7 +145,7 @@ func TestResponseJSON_LegacyMode(t *testing.T) {
 func TestErrorResponse_AlwaysDeterministic(t *testing.T) {
 	app := mustNew(t, credo.WithJSONOptions(jsonv2.Deterministic(false)))
 	app.GET("/boom", func(*credo.Context) error {
-		return validation.Errors{{
+		return validation.Violations{{
 			Field:   "age",
 			Code:    "between",
 			Message: "must be between 1 and 3",

@@ -24,7 +24,7 @@ func TestBy_Valid(t *testing.T) {
 func TestBy_Invalid(t *testing.T) {
 	rule := validation.By(func(s string) error {
 		if len(s) < 2 {
-			return validation.NewError("too_short", "too short")
+			return validation.NewViolation("too_short", "too short")
 		}
 		return nil
 	})
@@ -32,9 +32,9 @@ func TestBy_Invalid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "too_short" {
 		t.Errorf("code = %q, want %q", ve.Code, "too_short")
@@ -52,18 +52,18 @@ func TestBy_InternalErrorPassesThrough(t *testing.T) {
 	}
 }
 
-func TestBy_CustomValidationError(t *testing.T) {
+func TestBy_CustomViolation(t *testing.T) {
 	rule := validation.By(func(s string) error {
-		return &validation.ValidationError{
+		return &validation.Violation{
 			Code:    "country_code",
 			Message: "invalid country code",
 			Params:  map[string]any{"length": 2},
 		}
 	})
 	err := rule.Validate("XXX")
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "country_code" {
 		t.Errorf("code = %q, want %q", ve.Code, "country_code")
@@ -82,15 +82,15 @@ func TestBy_WithValidateStruct(t *testing.T) {
 	err := validation.ValidateStruct(input,
 		validation.Field(&input.Code, validation.By(func(s string) error {
 			if len(s) != 2 {
-				return validation.NewError("length", "must be exactly 2 characters")
+				return validation.NewViolation("length", "must be exactly 2 characters")
 			}
 			return nil
 		})),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if errs[0].Field != "code" || errs[0].Code != "length" {
 		t.Errorf("violation = %+v, want field code, code length", errs[0])
@@ -193,9 +193,9 @@ func TestIn_Invalid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "in" {
 		t.Errorf("code = %q, want %q", ve.Code, "in")
@@ -228,9 +228,9 @@ func TestNotNil_Nil(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "not_nil" {
 		t.Errorf("code = %q, want %q", ve.Code, "not_nil")

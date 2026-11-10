@@ -47,7 +47,7 @@ func resolvedLocaleContext(app *App, lang string) *Context {
 
 func TestTranslateValidationErrors_Turkish(t *testing.T) {
 	b := newTranslateTestBundle(t)
-	ve := validation.Errors{
+	ve := validation.Violations{
 		{Field: "email", Code: "required", Message: "is required"},
 		{Field: "name", Code: "required", Message: "is required"},
 	}
@@ -78,7 +78,7 @@ func TestTranslateValidationErrors_WithFieldInjection(t *testing.T) {
 	b, _ := internali18n.NewBundleFromString("en")
 	_, _ = b.LoadDirFSSource(fsys, ".")
 
-	ve := validation.Errors{
+	ve := validation.Violations{
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 
@@ -98,7 +98,7 @@ func TestTranslateValidationErrors_WithParams(t *testing.T) {
 	b, _ := internali18n.NewBundleFromString("en")
 	_, _ = b.LoadDirFSSource(fsys, ".")
 
-	ve := validation.Errors{
+	ve := validation.Violations{
 		{
 			Field:   "name",
 			Code:    "length",
@@ -118,7 +118,7 @@ func TestTranslateValidationErrors_WithParams(t *testing.T) {
 func TestTranslateValidationErrors_MissingTranslation(t *testing.T) {
 	b, _ := internali18n.NewBundleFromString("en")
 
-	ve := validation.Errors{
+	ve := validation.Violations{
 		{Field: "name", Code: "custom_rule", Message: "custom message"},
 	}
 
@@ -131,7 +131,7 @@ func TestTranslateValidationErrors_MissingTranslation(t *testing.T) {
 
 func TestTranslateValidationErrors_DoesNotMutateOriginal(t *testing.T) {
 	b := newTranslateTestBundle(t)
-	original := validation.Errors{
+	original := validation.Violations{
 		{Field: "email", Code: "required", Message: "is required"},
 	}
 

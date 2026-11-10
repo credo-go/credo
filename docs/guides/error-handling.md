@@ -127,12 +127,12 @@ The array is named `violations` because it carries two kinds of entries: field-s
 
 ### Rule errors: client messages and internal failures
 
-A custom rule tells the client what is wrong with a `*validation.ValidationError`, which `validation.NewError` builds; `Field` fills in the field path:
+A custom rule tells the client what is wrong with a `*validation.Violation`, which `validation.NewViolation` builds; `Field` fills in the field path:
 
 ```go
 validation.Field(&in.Country, validation.By(func(code string) error {
     if len(code) != 2 {
-        return validation.NewError("country_code", "must be a 2-letter code")
+        return validation.NewViolation("country_code", "must be a 2-letter code")
     }
     return nil
 }))
@@ -154,7 +154,7 @@ renders 409 `tenant_conflict`, not 422. The wrapped errors stay in `ErrorInfo.Er
 
 Credo does not invent `errors.`, `v.`, or `bind.` prefixes. An exact message key is selected in this order:
 
-1. explicit `HTTPError.MessageKey` or `ValidationError.MessageKey` (an `HTTPError` with a `Message` is not looked up);
+1. explicit `HTTPError.MessageKey` or `Violation.MessageKey` (an `HTTPError` with a `Message` is not looked up);
 2. `I18nConfig.ResolveMessageKey`;
 3. bare code/reason.
 

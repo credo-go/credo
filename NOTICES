@@ -164,7 +164,7 @@ Adapted in:
       rule.go          — ValidateStruct, Field[T], findStructField (offset-based
                          with sync.Map caching), getErrorFieldName, FieldRules
     Original Credo files (not adapted from ozzo):
-      errors.go        — ValidationError, Errors (RFC 7807 format)
+      errors.go        — Violation, Violations (RFC 7807 format)
       common_rules.go  — By[T], In[T], NotNil[T]
       string_rules.go  — Required[T], Email, URL, UUID, Regex, Length
       numeric_rules.go — Min[T], Max[T], Between[T]

@@ -63,7 +63,7 @@ func TestCheckMessageKeys_Reports(t *testing.T) {
 	want := []string{
 		app + `:14:45: message key "app.undefined" is not defined in the catalogs under testdata/messagekeys/locales`,
 		app + `:16:48: message key "render.undefined" is not defined in the catalogs under testdata/messagekeys/locales`,
-		app + `:18:78: message key "validation.undefined" is not defined in the catalogs under testdata/messagekeys/locales`,
+		app + `:18:72: message key "validation.undefined" is not defined in the catalogs under testdata/messagekeys/locales`,
 		keys + `:9:31: message key "keys.gone" is not defined in the catalogs under testdata/messagekeys/locales`,
 		app + `:15:62: message key expression "name" is not a literal, so the check cannot prove it is in the catalogs`,
 	}

@@ -59,9 +59,10 @@
 //
 // # Error Format
 //
-// Validation errors are returned as [Errors] ([]ValidationError), designed
-// for centralized error-envelope integration. Each error includes Field, Code,
-// Message, and optional Params for i18n template rendering.
+// Validation errors are returned as [Violations] ([]Violation), designed
+// for centralized error-envelope integration. Each [Violation] includes
+// Field, Code, Message, and optional Params for i18n template rendering. A
+// custom rule builds one with [NewViolation].
 //
 // # PATCH Support
 //

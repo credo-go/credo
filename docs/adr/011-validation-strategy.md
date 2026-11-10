@@ -81,15 +81,17 @@ Rules are grouped by topic (string, numeric, date, collection, file, common), on
 
 ### Error Format
 
-Validation errors return as `validation.Errors` (a slice of `ValidationError`), each with field name, rule code, message, optional exact message key, and params. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the [default error envelope](009-handler-and-error-handling.md#default-error-envelope). `Code` and `Params` let the error pipeline translate a message without changing the wire shape ([ADR-013](013-internationalization.md)).
+Validation errors return as `validation.Violations` (a slice of `Violation`), each with field name, rule code, message, optional exact message key, and params; a custom rule builds one with `validation.NewViolation`. The internal handler classifies these as 422 and passes normalized data to `ErrorRenderer`, or writes the [default error envelope](009-handler-and-error-handling.md#default-error-envelope). `Code` and `Params` let the error pipeline translate a message without changing the wire shape ([ADR-013](013-internationalization.md)).
 
 A violation's message key has the named type `validation.MessageKey`, `type MessageKey string`, which the root aliases as `credo.MessageKey`, so a violation's key and an `HTTPError`'s are one type; a key is a catalog key, never rendered as text ([ADR-009](009-handler-and-error-handling.md#one-error-channel-keys-messages-and-fault-codes)).
+
+**The types are named for what they carry.** The wire calls the entries `violations` ([ADR-009](009-handler-and-error-handling.md#default-error-envelope)), and the Go types say the same: `Violation`, `Violations`, `NewViolation`. Rejected: `ValidationError`, `Errors` and `NewError`. `validation.ValidationError` repeats its package, the stutter that kept `errors` out of the wire name; `validation.Errors` reads as the package's error list rather than as one failed validation; and the error pipeline carries a bind failure, which no validation rule produced, in the same type (`ErrorInfo.Violations`), so a name built on "validation error" is wrong for half of what the type holds.
 
 ### Rule Errors: Client Messages and Internal Failures
 
 A rule error has two possible meanings: a message meant for the client ("must be a 2-letter code") or a failure the client did not cause (a lookup inside a rule that could not reach its database). One channel cannot carry both: treating every rule error as a violation would put internal text, such as `pq: connection to 10.1.2.3:5432 refused`, into a 422 body sent to the client. The type of the returned error therefore decides its meaning:
 
-- **Client-visible.** A `*ValidationError` or a `validation.Errors` — `validation.NewError(code, message)` builds one — is a violation of the field the rule validates and renders as 422 `validation_failed`.
+- **Client-visible.** A `*Violation` or a `validation.Violations` — `validation.NewViolation(code, message)` builds one — is a violation of the field the rule validates and renders as 422 `validation_failed`.
 - **Internal.** Any other error stops validation and leaves `Validate`, and `BindBody`/`BindQuery`, unchanged, as it would leave a handler. The error pipeline classifies it like any other handler error ([ADR-009](009-handler-and-error-handling.md)): a plain error is a 500 whose text is logged, not rendered, and an error that carries a fault keeps its mapped status, so `store`'s unavailable kind is a 503.
 
 The [validation spec](../specs/validation.md#rule-errors) states the contract at every depth. This keeps the stateless boundary honest without policing it: a rule that does I/O anyway and fails reports a server failure, not invalid input.

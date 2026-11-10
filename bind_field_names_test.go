@@ -186,18 +186,18 @@ func TestSourceFieldPath(t *testing.T) {
 
 func TestSourceFieldNames_KeepsOtherErrorsAndTheEngineNames(t *testing.T) {
 	target := &sourceInput{}
-	single := &validation.ValidationError{Field: "minPrice", Code: "min"}
+	single := &validation.Violation{Field: "minPrice", Code: "min"}
 
 	got := credo.SourceFieldNames(single, target, "query")
-	ve, ok := got.(*validation.ValidationError) //nolint:errorlint // The rename returns a new top-level violation.
+	ve, ok := got.(*validation.Violation) //nolint:errorlint // The rename returns a new top-level violation.
 	if !ok || ve.Field != "min_price" {
-		t.Fatalf("SourceFieldNames(*ValidationError) = %v, want field min_price", got)
+		t.Fatalf("SourceFieldNames(*Violation) = %v, want field min_price", got)
 	}
 	if single.Field != "minPrice" {
 		t.Fatalf("the original violation was renamed in place: %q", single.Field)
 	}
 
-	errs := validation.Errors{{Field: "minPrice", Code: "min"}}
+	errs := validation.Violations{{Field: "minPrice", Code: "min"}}
 	if got := credo.SourceFieldNames(errs, target, "json"); !reflect.DeepEqual(got, errs) {
 		t.Fatalf("SourceFieldNames(json) = %v, want the engine's names", got)
 	}

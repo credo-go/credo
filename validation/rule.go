@@ -3,7 +3,7 @@
 //
 // The findStructField algorithm, getErrorFieldName logic, and ValidateStruct
 // orchestration are adapted from ozzo-validation's struct.go. Credo diverges
-// with generic Rule[T], offset-based caching, and []ValidationError errors.
+// with generic Rule[T], offset-based caching, and []Violation errors.
 
 package validation
 
@@ -68,8 +68,8 @@ func Field[T any](fieldPtr *T, rules ...Rule[T]) FieldRules {
 }
 
 // ValidateStruct validates a struct by running all field rules. Returns nil
-// if all validations pass, or [Errors] containing all failures. A rule error
-// that is neither a *ValidationError nor [Errors] is internal: validation
+// if all validations pass, or [Violations] containing all failures. A rule error
+// that is neither a *Violation nor [Violations] is internal: validation
 // stops at once and ValidateStruct returns that error unchanged.
 //
 // structPtr must be a non-nil pointer to a struct. Passing a nil pointer
@@ -86,7 +86,7 @@ func ValidateStruct(structPtr any, fields ...FieldRules) error {
 		panic("validation: ValidateStruct requires a pointer to a struct")
 	}
 
-	var allErrors Errors
+	var allErrors Violations
 	for _, f := range fields {
 		if err := f.validate(structPtr); err != nil {
 			if internal := collectErrors(&allErrors, err, ""); internal != nil {
@@ -106,7 +106,7 @@ func (f *fieldRules[T]) validate(structPtr any) error {
 
 	if len(f.rules) > 0 {
 		value := *f.ptr
-		var fieldErrors Errors
+		var fieldErrors Violations
 		for _, rule := range f.rules {
 			if err := rule.Validate(value); err != nil {
 				if internal := collectErrors(&fieldErrors, err, fieldName); internal != nil {
@@ -240,7 +240,7 @@ func validateNested[T any](fieldName string, fieldPtr *T) error {
 // validateElements validates each element of the slice or array rv, an
 // addressable value, by the element mode mode.
 func validateElements(fieldName string, rv reflect.Value, mode nestedMode) error {
-	var allErrors Errors
+	var allErrors Violations
 	for i := range rv.Len() {
 		ev := rv.Index(i)
 		var v Validatable

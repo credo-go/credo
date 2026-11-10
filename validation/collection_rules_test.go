@@ -38,9 +38,9 @@ func TestNotEmptySlice(t *testing.T) {
 
 func TestNotEmptySlice_ErrorCode(t *testing.T) {
 	err := validation.NotEmptySlice[int]().Validate(nil)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "not_empty" {
 		t.Errorf("code = %q, want %q", ve.Code, "not_empty")
@@ -75,9 +75,9 @@ func TestNotEmptyMap(t *testing.T) {
 
 func TestNotEmptyMap_ErrorCode(t *testing.T) {
 	err := validation.NotEmptyMap[string, string]().Validate(nil)
-	ve, ok := errors.AsType[*validation.ValidationError](err)
+	ve, ok := errors.AsType[*validation.Violation](err)
 	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+		t.Fatalf("expected *Violation, got %T", err)
 	}
 	if ve.Code != "not_empty" {
 		t.Errorf("code = %q, want %q", ve.Code, "not_empty")
@@ -95,9 +95,9 @@ func TestNotEmptySlice_InValidateStruct(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty Items")
 	}
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 || errs[0].Field != "items" {
 		t.Fatalf("errors = %v, want single error on field %q", errs, "items")
@@ -121,9 +121,9 @@ func TestEach_SomeInvalid(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	// "" fails Required, "a" fails Length
 	if len(errs) != 2 {
@@ -143,9 +143,9 @@ func TestEach_ErrorFieldPath(t *testing.T) {
 	rule := validation.Each(validation.Required[string]())
 	err := rule.Validate([]string{"ok", ""})
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))
@@ -167,9 +167,9 @@ func TestEach_WithValidateStruct(t *testing.T) {
 		)),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	// "" fails Required, "x" fails Length
 	if len(errs) != 2 {
@@ -214,9 +214,9 @@ func TestWhen_MultipleRules(t *testing.T) {
 	)
 	// "ab" passes Required but fails Length
 	err := rule.Validate("ab")
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))
@@ -241,9 +241,9 @@ func TestWhen_CrossFieldValidation(t *testing.T) {
 		),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))
@@ -279,9 +279,9 @@ func TestNilSafe_NonNil_Invalid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("len = %d, want 1", len(errs))
@@ -306,9 +306,9 @@ func TestNilSafe_PATCHUpdate(t *testing.T) {
 		validation.Field(&input.Email, validation.NilSafe(validation.Email())),
 	)
 
-	errs, ok := errors.AsType[validation.Errors](err)
+	errs, ok := errors.AsType[validation.Violations](err)
 	if !ok {
-		t.Fatalf("expected validation.Errors, got %T", err)
+		t.Fatalf("expected validation.Violations, got %T", err)
 	}
 	// Name is nil → skipped, Email is "bad" → fails
 	if len(errs) != 1 {

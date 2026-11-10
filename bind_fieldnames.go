@@ -34,7 +34,7 @@ type sourceFieldsKey struct {
 var sourceFieldsCache sync.Map
 
 // sourceFieldNames renames the fields of err's violations, when err is the
-// validation.Errors or *validation.ValidationError a target's Validate
+// validation.Violations or *validation.Violation a target's Validate
 // returned, from the json names the engine reports to the names the source
 // tag gives. tag "json" keeps the engine's names, and any other error is
 // returned unchanged.
@@ -44,14 +44,14 @@ func sourceFieldNames(err error, target any, tag string) error {
 	}
 	t := reflect.TypeOf(target)
 	switch e := err.(type) { //nolint:errorlint // Only the error Validate returned itself can be rebuilt with new names.
-	case validation.Errors:
-		out := make(validation.Errors, len(e))
+	case validation.Violations:
+		out := make(validation.Violations, len(e))
 		for i, ve := range e {
 			ve.Field = sourceFieldPath(t, ve.Field, tag)
 			out[i] = ve
 		}
 		return out
-	case *validation.ValidationError:
+	case *validation.Violation:
 		if e == nil {
 			return err
 		}

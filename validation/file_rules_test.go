@@ -45,7 +45,7 @@ func TestMaxFileSize(t *testing.T) {
 				t.Errorf("expected nil, got %v", err)
 			}
 			if !tt.valid {
-				assertValidationError(t, err, "max_file_size", "")
+				assertViolation(t, err, "max_file_size", "")
 			}
 		})
 	}
@@ -80,7 +80,7 @@ func TestAllowedMimeTypes(t *testing.T) {
 				t.Errorf("expected nil, got %v", err)
 			}
 			if !tt.valid {
-				assertValidationError(t, err, "allowed_mime_types", "")
+				assertViolation(t, err, "allowed_mime_types", "")
 			}
 		})
 	}
@@ -111,7 +111,7 @@ func TestAllowedExtensions(t *testing.T) {
 				t.Errorf("expected nil, got %v", err)
 			}
 			if !tt.valid {
-				assertValidationError(t, err, "allowed_extensions", "")
+				assertViolation(t, err, "allowed_extensions", "")
 			}
 		})
 	}
@@ -153,9 +153,9 @@ func TestFileRules_StructIntegration(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for missing file")
 		}
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok {
-			t.Fatalf("expected validation.Errors, got %T", err)
+			t.Fatalf("expected validation.Violations, got %T", err)
 		}
 		if errs[0].Field != "avatar" {
 			t.Errorf("field = %q, want %q", errs[0].Field, "avatar")
@@ -168,9 +168,9 @@ func TestFileRules_StructIntegration(t *testing.T) {
 	t.Run("oversize and wrong extension both reported", func(t *testing.T) {
 		f := &uploadForm{Avatar: fileHeader("a.gif", "image/gif", 2048)}
 		err := f.Validate()
-		errs, ok := errors.AsType[validation.Errors](err)
+		errs, ok := errors.AsType[validation.Violations](err)
 		if !ok {
-			t.Fatalf("expected validation.Errors, got %T: %v", err, err)
+			t.Fatalf("expected validation.Violations, got %T: %v", err, err)
 		}
 		if len(errs) != 2 {
 			t.Fatalf("expected 2 errors, got %d: %v", len(errs), errs)
