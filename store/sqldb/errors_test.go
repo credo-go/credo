@@ -33,15 +33,15 @@ func TestMapError_Baseline(t *testing.T) {
 		name      string
 		err       error
 		want      error
-		kind      store.Kind
+		kind      fault.Kind
 		transient bool
 	}{
-		{"no rows", sql.ErrNoRows, store.ErrNotFound, store.KindNotFound, false},
-		{"wrapped no rows", fmt.Errorf("repo: %w", sql.ErrNoRows), store.ErrNotFound, store.KindNotFound, false},
-		{"deadline", context.DeadlineExceeded, store.ErrTimeout, store.KindTimeout, true},
-		{"wrapped deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), store.ErrTimeout, store.KindTimeout, true},
-		{"bad connection", driver.ErrBadConn, store.ErrUnavailable, store.KindUnavailable, true},
-		{"closed sql connection", sql.ErrConnDone, store.ErrUnavailable, store.KindUnavailable, true},
+		{"no rows", sql.ErrNoRows, store.ErrNotFound, fault.KindNotFound, false},
+		{"wrapped no rows", fmt.Errorf("repo: %w", sql.ErrNoRows), store.ErrNotFound, fault.KindNotFound, false},
+		{"deadline", context.DeadlineExceeded, store.ErrTimeout, fault.KindTimeout, true},
+		{"wrapped deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), store.ErrTimeout, fault.KindTimeout, true},
+		{"bad connection", driver.ErrBadConn, store.ErrUnavailable, fault.KindUnavailable, true},
+		{"closed sql connection", sql.ErrConnDone, store.ErrUnavailable, fault.KindUnavailable, true},
 	}
 
 	for _, tt := range tests {
@@ -80,22 +80,22 @@ func TestMapError_PostgresSQLStateTable(t *testing.T) {
 	tests := []struct {
 		state     string
 		want      error
-		kind      store.Kind
+		kind      fault.Kind
 		transient bool
 	}{
-		{"23505", store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{"23502", store.ErrConstraint, store.KindConstraint, false},
-		{"23503", store.ErrConstraint, store.KindConstraint, false},
-		{"23514", store.ErrConstraint, store.KindConstraint, false},
-		{"23P01", store.ErrConstraint, store.KindConstraint, false},
-		{"40001", store.ErrSerialization, store.KindSerialization, true},
-		{"40P01", store.ErrDeadlock, store.KindDeadlock, true},
-		{"55P03", store.ErrContention, store.KindContention, true},
-		{"25006", store.ErrReadOnly, store.KindReadOnly, false},
-		{"08006", store.ErrUnavailable, store.KindUnavailable, true},
-		{"57P01", store.ErrUnavailable, store.KindUnavailable, true},
-		{"57P03", store.ErrUnavailable, store.KindUnavailable, true},
-		{"53300", store.ErrUnavailable, store.KindUnavailable, true},
+		{"23505", store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{"23502", store.ErrConstraint, fault.KindConstraint, false},
+		{"23503", store.ErrConstraint, fault.KindConstraint, false},
+		{"23514", store.ErrConstraint, fault.KindConstraint, false},
+		{"23P01", store.ErrConstraint, fault.KindConstraint, false},
+		{"40001", store.ErrSerialization, fault.KindSerialization, true},
+		{"40P01", store.ErrDeadlock, fault.KindDeadlock, true},
+		{"55P03", store.ErrContention, fault.KindContention, true},
+		{"25006", store.ErrReadOnly, fault.KindReadOnly, false},
+		{"08006", store.ErrUnavailable, fault.KindUnavailable, true},
+		{"57P01", store.ErrUnavailable, fault.KindUnavailable, true},
+		{"57P03", store.ErrUnavailable, fault.KindUnavailable, true},
+		{"53300", store.ErrUnavailable, fault.KindUnavailable, true},
 	}
 
 	for _, tt := range tests {
@@ -119,7 +119,7 @@ func TestMapError_PostgresQueryCanceledUsesContext(t *testing.T) {
 	t.Run("active statement timeout", func(t *testing.T) {
 		cause := &mockSQLStateError{state: "57014", msg: "canceling statement due to statement timeout"}
 		got := mapError(t.Context(), driverFamilyPostgres, cause)
-		assertMappedError(t, got, store.ErrTimeout, store.KindTimeout, "57014", true, cause)
+		assertMappedError(t, got, store.ErrTimeout, fault.KindTimeout, "57014", true, cause)
 	})
 
 	t.Run("canceled", func(t *testing.T) {
@@ -140,7 +140,7 @@ func TestMapError_PostgresQueryCanceledUsesContext(t *testing.T) {
 		defer cancel()
 		cause := &mockSQLStateError{state: "57014", msg: "query canceled"}
 		got := mapError(ctx, driverFamilyPostgres, cause)
-		assertMappedError(t, got, store.ErrTimeout, store.KindTimeout, "57014", true, cause)
+		assertMappedError(t, got, store.ErrTimeout, fault.KindTimeout, "57014", true, cause)
 		if !errors.Is(got, context.DeadlineExceeded) {
 			t.Fatal("deadline 57014 must preserve context deadline cause")
 		}
@@ -151,7 +151,7 @@ func TestMapError_PostgresQueryCanceledUsesContext(t *testing.T) {
 		cancel()
 		cause := &mockSQLStateError{state: "23505", msg: "unique violation"}
 		got := mapError(ctx, driverFamilyPostgres, cause)
-		assertMappedError(t, got, store.ErrAlreadyExists, store.KindAlreadyExists, "23505", false, cause)
+		assertMappedError(t, got, store.ErrAlreadyExists, fault.KindAlreadyExists, "23505", false, cause)
 	})
 }
 
@@ -167,7 +167,7 @@ func (e *mockPgCodeError) Code() string  { return e.code }
 func TestExtractSQLState_LibPQAndShapeValidation(t *testing.T) {
 	cause := &mockPgCodeError{code: "23505", msg: "pq: duplicate key"}
 	got := mapError(t.Context(), driverFamilyPostgres, cause)
-	assertMappedError(t, got, store.ErrAlreadyExists, store.KindAlreadyExists, "23505", false, cause)
+	assertMappedError(t, got, store.ErrAlreadyExists, fault.KindAlreadyExists, "23505", false, cause)
 
 	for _, code := range []string{"ECONNRESET", "404", "23505x", "2350", "23 05"} {
 		err := &mockPgCodeError{code: code, msg: "some failure"}
@@ -181,23 +181,23 @@ func TestMapError_MySQLNumberTable(t *testing.T) {
 	tests := []struct {
 		number    uint16
 		want      error
-		kind      store.Kind
+		kind      fault.Kind
 		transient bool
 	}{
-		{1022, store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{1062, store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{1048, store.ErrConstraint, store.KindConstraint, false},
-		{1216, store.ErrConstraint, store.KindConstraint, false},
-		{1217, store.ErrConstraint, store.KindConstraint, false},
-		{1451, store.ErrConstraint, store.KindConstraint, false},
-		{1452, store.ErrConstraint, store.KindConstraint, false},
-		{3819, store.ErrConstraint, store.KindConstraint, false},
-		{1213, store.ErrDeadlock, store.KindDeadlock, true},
-		{1205, store.ErrContention, store.KindContention, true},
-		{3572, store.ErrContention, store.KindContention, true},
-		{1792, store.ErrReadOnly, store.KindReadOnly, false},
-		{1836, store.ErrReadOnly, store.KindReadOnly, false},
-		{1040, store.ErrUnavailable, store.KindUnavailable, true},
+		{1022, store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{1062, store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{1048, store.ErrConstraint, fault.KindConstraint, false},
+		{1216, store.ErrConstraint, fault.KindConstraint, false},
+		{1217, store.ErrConstraint, fault.KindConstraint, false},
+		{1451, store.ErrConstraint, fault.KindConstraint, false},
+		{1452, store.ErrConstraint, fault.KindConstraint, false},
+		{3819, store.ErrConstraint, fault.KindConstraint, false},
+		{1213, store.ErrDeadlock, fault.KindDeadlock, true},
+		{1205, store.ErrContention, fault.KindContention, true},
+		{3572, store.ErrContention, fault.KindContention, true},
+		{1792, store.ErrReadOnly, fault.KindReadOnly, false},
+		{1836, store.ErrReadOnly, fault.KindReadOnly, false},
+		{1040, store.ErrUnavailable, fault.KindUnavailable, true},
 	}
 
 	for _, tt := range tests {
@@ -217,16 +217,16 @@ func TestMapError_MySQLNumberBeatsBroadSQLState(t *testing.T) {
 		state string
 		msg   string
 		want  error
-		kind  store.Kind
+		kind  fault.Kind
 		code  string
 	}{
-		{"23000", "Error 1062 (23000): Duplicate entry", store.ErrAlreadyExists, store.KindAlreadyExists, "1062"},
-		{"40001", "Error 1213 (40001): Deadlock found", store.ErrDeadlock, store.KindDeadlock, "1213"},
+		{"23000", "Error 1062 (23000): Duplicate entry", store.ErrAlreadyExists, fault.KindAlreadyExists, "1062"},
+		{"40001", "Error 1213 (40001): Deadlock found", store.ErrDeadlock, fault.KindDeadlock, "1213"},
 	}
 	for _, tt := range tests {
 		cause := &mockSQLStateError{state: tt.state, msg: tt.msg}
 		got := mapError(t.Context(), driverFamilyMySQL, cause)
-		assertMappedError(t, got, tt.want, tt.kind, tt.code, tt.kind == store.KindDeadlock, cause)
+		assertMappedError(t, got, tt.want, tt.kind, tt.code, tt.kind == fault.KindDeadlock, cause)
 	}
 }
 
@@ -396,27 +396,27 @@ func TestMapError_SQLiteCodeTable(t *testing.T) {
 	tests := []struct {
 		code      int
 		want      error
-		kind      store.Kind
+		kind      fault.Kind
 		transient bool
 	}{
-		{2067, store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{1555, store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{2579, store.ErrAlreadyExists, store.KindAlreadyExists, false},
-		{19, store.ErrConstraint, store.KindConstraint, false},
-		{275, store.ErrConstraint, store.KindConstraint, false},
-		{787, store.ErrConstraint, store.KindConstraint, false},
-		{1299, store.ErrConstraint, store.KindConstraint, false},
-		{517, store.ErrSerialization, store.KindSerialization, true},
-		{5, store.ErrContention, store.KindContention, true},
-		{261, store.ErrContention, store.KindContention, true},
-		{773, store.ErrContention, store.KindContention, true},
-		{6, store.ErrContention, store.KindContention, true},
-		{262, store.ErrContention, store.KindContention, true},
-		{518, store.ErrContention, store.KindContention, true},
-		{8, store.ErrReadOnly, store.KindReadOnly, false},
-		{1032, store.ErrReadOnly, store.KindReadOnly, false},
-		{10, store.ErrUnavailable, store.KindUnavailable, true},
-		{14, store.ErrUnavailable, store.KindUnavailable, true},
+		{2067, store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{1555, store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{2579, store.ErrAlreadyExists, fault.KindAlreadyExists, false},
+		{19, store.ErrConstraint, fault.KindConstraint, false},
+		{275, store.ErrConstraint, fault.KindConstraint, false},
+		{787, store.ErrConstraint, fault.KindConstraint, false},
+		{1299, store.ErrConstraint, fault.KindConstraint, false},
+		{517, store.ErrSerialization, fault.KindSerialization, true},
+		{5, store.ErrContention, fault.KindContention, true},
+		{261, store.ErrContention, fault.KindContention, true},
+		{773, store.ErrContention, fault.KindContention, true},
+		{6, store.ErrContention, fault.KindContention, true},
+		{262, store.ErrContention, fault.KindContention, true},
+		{518, store.ErrContention, fault.KindContention, true},
+		{8, store.ErrReadOnly, fault.KindReadOnly, false},
+		{1032, store.ErrReadOnly, fault.KindReadOnly, false},
+		{10, store.ErrUnavailable, fault.KindUnavailable, true},
+		{14, store.ErrUnavailable, fault.KindUnavailable, true},
 	}
 
 	for _, tt := range tests {
@@ -455,7 +455,7 @@ func TestMapError_SQLiteInterruptUsesContext(t *testing.T) {
 		defer cancel()
 		cause := &mockSQLiteError{code: 9}
 		got := mapError(ctx, driverFamilySQLite, cause)
-		assertMappedError(t, got, store.ErrTimeout, store.KindTimeout, "9", true, cause)
+		assertMappedError(t, got, store.ErrTimeout, fault.KindTimeout, "9", true, cause)
 		if !errors.Is(got, context.DeadlineExceeded) {
 			t.Fatal("deadline SQLITE_INTERRUPT must preserve context deadline cause")
 		}
@@ -504,7 +504,7 @@ func assertMappedError(
 	t *testing.T,
 	got error,
 	wantSentinel error,
-	wantKind store.Kind,
+	wantKind fault.Kind,
 	wantCode string,
 	wantTransient bool,
 	wantCause error,

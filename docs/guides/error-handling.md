@@ -98,7 +98,7 @@ func (h *TenantHandler) Create(c *credo.Context) error {
 }
 ```
 
-The response is 409, the status of `KindAlreadyExists`, with the code `tenant_domain_taken` and the details; the store error is the internal cause, logged and never rendered. `fault.New(kind)` without a code takes the kind as the code, and a store error the service returns unwrapped does the same: `already_exists`, `serialization` or `deadlock` rather than one `conflict` for every 409, so a client tells a duplicate from a failure a retry may clear. `WithDetails` and `WithInternal` return copies, so `errors.Is(err, ErrDomainTaken)` still matches.
+The response is 409, the status of `fault.KindAlreadyExists`, with the code `tenant_domain_taken` and the details; the store error is the internal cause, logged and never rendered. `fault.New(kind)` without a code takes the kind as the code, and a store error the service returns unwrapped does the same: `already_exists`, `serialization` or `deadlock` rather than one `conflict` for every 409, so a client tells a duplicate from a failure a retry may clear. `WithDetails` and `WithInternal` return copies, so `errors.Is(err, ErrDomainTaken)` still matches.
 
 Keep `HTTPError` for what only the HTTP boundary knows: a status the handler chooses, a message, a header-driven rejection.
 

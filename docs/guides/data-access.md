@@ -238,11 +238,11 @@ if errors.Is(err, store.ErrNotFound) {
 | Read-only transaction/server | `store.ErrReadOnly` |
 | Verified deadline/statement timeout | `store.ErrTimeout` |
 
-Mapped values are `*store.Error`: the original driver cause and code remain in the error chain, while Credo's default HTTP response sees only the semantic kind. Use `store.KindOf(err)` when a switch is clearer than several `errors.Is` checks. `store.IsTransient(err)` means only that the condition may clear; it does **not** mean replaying the statement, transaction callback, or external side effects is safe.
+Mapped values are `*store.Error`: the original driver cause and code remain in the error chain, while Credo's default HTTP response sees only the semantic kind. Use `store.KindOf(err)` when a switch is clearer than several `errors.Is` checks; the kinds it returns are the `fault` package's (`fault.KindNotFound`, `fault.KindConstraint`, …), the same values a domain error built with `fault.New` carries. `store.IsTransient(err)` means only that the condition may clear; it does **not** mean replaying the statement, transaction callback, or external side effects is safe.
 
 Classification is family-scoped and depends on the driver being recognized. PostgreSQL mapping is SQLSTATE-based and works with any driver exposing it (pgx, lib/pq); MySQL parses the strict server error envelope; SQLite code extraction recognizes the modernc, mattn, and ncruces drivers (matched structurally, so none becomes a Credo dependency). Errors from an unrecognized driver pass through unmapped — `errors.Is` branches against `store.Err*` silently stop matching — so verify mapping coverage before adopting a different driver.
 
-Each sentinel matches its own kind only: no alias names one twice, and no umbrella matches several. Code that needs a coarse conflict checks the conditions it means — `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention` — since they differ in whether a retry may help. `store.KindConflict` is a kind a custom adapter may return; `store.KindOf` reports it and it renders as 409.
+Each sentinel matches its own kind only: no alias names one twice, and no umbrella matches several. Code that needs a coarse conflict checks the conditions it means — `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention` — since they differ in whether a retry may help. `fault.KindConflict` is a kind a custom adapter may return; `store.KindOf` reports it and it renders as 409.
 
 ### NUL bytes in strings
 

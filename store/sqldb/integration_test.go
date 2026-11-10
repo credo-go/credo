@@ -16,6 +16,7 @@ import (
 
 	"github.com/uptrace/bun"
 
+	"github.com/credo-go/credo/fault"
 	"github.com/credo-go/credo/pagination"
 	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/store/sqldb"
@@ -597,8 +598,8 @@ func TestInsertQuery_Exec_Duplicate(t *testing.T) {
 	if !errors.Is(err, store.ErrAlreadyExists) {
 		t.Errorf("duplicate insert: err = %v, want ErrAlreadyExists", err)
 	}
-	if kind, ok := store.KindOf(err); !ok || kind != store.KindAlreadyExists {
-		t.Errorf("duplicate KindOf = (%q, %v), want (%q, true)", kind, ok, store.KindAlreadyExists)
+	if kind, ok := store.KindOf(err); !ok || kind != fault.KindAlreadyExists {
+		t.Errorf("duplicate KindOf = (%q, %v), want (%q, true)", kind, ok, fault.KindAlreadyExists)
 	}
 	if store.IsTransient(err) {
 		t.Error("duplicate constraint must not be transient")
@@ -632,8 +633,8 @@ func TestRaw_ErrorMapping_SQLiteConstraint(t *testing.T) {
 			if !errors.Is(err, store.ErrConstraint) {
 				t.Fatalf("Exec = %v, want ErrConstraint", err)
 			}
-			if kind, ok := store.KindOf(err); !ok || kind != store.KindConstraint {
-				t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, store.KindConstraint)
+			if kind, ok := store.KindOf(err); !ok || kind != fault.KindConstraint {
+				t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, fault.KindConstraint)
 			}
 			if store.IsTransient(err) {
 				t.Fatal("persistent SQLite constraint must not be transient")
@@ -677,8 +678,8 @@ func TestRaw_ErrorMapping_SQLiteContention(t *testing.T) {
 		if errors.Is(contentionErr, store.ErrTimeout) {
 			t.Fatal("SQLite busy/locked must not become a request timeout")
 		}
-		if kind, ok := store.KindOf(contentionErr); !ok || kind != store.KindContention {
-			t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, store.KindContention)
+		if kind, ok := store.KindOf(contentionErr); !ok || kind != fault.KindContention {
+			t.Fatalf("KindOf = (%q, %v), want (%q, true)", kind, ok, fault.KindContention)
 		}
 		if !store.IsTransient(contentionErr) {
 			t.Fatal("SQLite contention must be transient metadata")

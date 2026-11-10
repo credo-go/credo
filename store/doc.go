@@ -10,11 +10,13 @@
 //
 // # Universal Errors
 //
-// Store errors expose a transport-neutral semantic [Kind]. The default HTTP
-// policy and future protocol adapters consume that kind independently:
+// Store errors expose a transport-neutral semantic kind, a [fault.Kind]: the
+// kinds have one name each, in package fault, and this package declares no
+// copy of them. The default HTTP policy and future protocol adapters consume
+// that kind independently:
 //
 //	if kind, ok := store.KindOf(err); ok {
-//	    // branch on KindNotFound, KindConstraint, KindDeadlock, ...
+//	    // branch on fault.KindNotFound, fault.KindConstraint, fault.KindDeadlock, ...
 //	}
 //
 // [Error] retains diagnostic code/constraint/resource metadata and the

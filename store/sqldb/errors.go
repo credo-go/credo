@@ -14,7 +14,7 @@ import (
 )
 
 type errorClassification struct {
-	kind      store.Kind
+	kind      fault.Kind
 	transient bool
 }
 
@@ -49,21 +49,21 @@ func mapError(ctx context.Context, family driverFamily, err error) error {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return wrapMappedError(
-			errorClassification{kind: store.KindTimeout, transient: true},
+			errorClassification{kind: fault.KindTimeout, transient: true},
 			"",
 			err,
 		)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return wrapMappedError(
-			errorClassification{kind: store.KindNotFound},
+			errorClassification{kind: fault.KindNotFound},
 			"",
 			err,
 		)
 	}
 	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) {
 		return wrapMappedError(
-			errorClassification{kind: store.KindUnavailable, transient: true},
+			errorClassification{kind: fault.KindUnavailable, transient: true},
 			"",
 			err,
 		)
@@ -199,24 +199,24 @@ func isSQLState(code string) bool {
 func mapSQLState(code string) (errorClassification, bool) {
 	switch code {
 	case "23505":
-		return errorClassification{kind: store.KindAlreadyExists}, true
+		return errorClassification{kind: fault.KindAlreadyExists}, true
 	case "40001":
-		return errorClassification{kind: store.KindSerialization, transient: true}, true
+		return errorClassification{kind: fault.KindSerialization, transient: true}, true
 	case "40P01":
-		return errorClassification{kind: store.KindDeadlock, transient: true}, true
+		return errorClassification{kind: fault.KindDeadlock, transient: true}, true
 	case "55P03":
-		return errorClassification{kind: store.KindContention, transient: true}, true
+		return errorClassification{kind: fault.KindContention, transient: true}, true
 	case "25006":
-		return errorClassification{kind: store.KindReadOnly}, true
+		return errorClassification{kind: fault.KindReadOnly}, true
 	case "57P01", "57P02", "57P03", "53300":
-		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+		return errorClassification{kind: fault.KindUnavailable, transient: true}, true
 	}
 
 	if strings.HasPrefix(code, "23") {
-		return errorClassification{kind: store.KindConstraint}, true
+		return errorClassification{kind: fault.KindConstraint}, true
 	}
 	if strings.HasPrefix(code, "08") {
-		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+		return errorClassification{kind: fault.KindUnavailable, transient: true}, true
 	}
 	return errorClassification{}, false
 }
@@ -228,7 +228,7 @@ func mapPostgresQueryCanceled(ctx context.Context, code string, err error) error
 		return joinContextCause(context.Canceled, err)
 	case errors.Is(ctxErr, context.DeadlineExceeded):
 		return wrapMappedError(
-			errorClassification{kind: store.KindTimeout, transient: true},
+			errorClassification{kind: fault.KindTimeout, transient: true},
 			code,
 			joinContextCause(context.DeadlineExceeded, err),
 		)
@@ -239,7 +239,7 @@ func mapPostgresQueryCanceled(ctx context.Context, code string, err error) error
 	// never applied to arbitrary application errors.
 	if strings.Contains(strings.ToLower(err.Error()), "statement timeout") {
 		return wrapMappedError(
-			errorClassification{kind: store.KindTimeout, transient: true},
+			errorClassification{kind: fault.KindTimeout, transient: true},
 			code,
 			err,
 		)
@@ -301,17 +301,17 @@ func parseMySQLErrNum(message string) uint16 {
 func mapMySQLErrNum(number uint16) (errorClassification, bool) {
 	switch number {
 	case 1022, 1062:
-		return errorClassification{kind: store.KindAlreadyExists}, true
+		return errorClassification{kind: fault.KindAlreadyExists}, true
 	case 1048, 1216, 1217, 1451, 1452, 3819:
-		return errorClassification{kind: store.KindConstraint}, true
+		return errorClassification{kind: fault.KindConstraint}, true
 	case 1213:
-		return errorClassification{kind: store.KindDeadlock, transient: true}, true
+		return errorClassification{kind: fault.KindDeadlock, transient: true}, true
 	case 1205, 3572:
-		return errorClassification{kind: store.KindContention, transient: true}, true
+		return errorClassification{kind: fault.KindContention, transient: true}, true
 	case 1792, 1836:
-		return errorClassification{kind: store.KindReadOnly}, true
+		return errorClassification{kind: fault.KindReadOnly}, true
 	case 1040:
-		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+		return errorClassification{kind: fault.KindUnavailable, transient: true}, true
 	default:
 		return errorClassification{}, false
 	}
@@ -459,25 +459,25 @@ func primarySQLiteCode(code int) int {
 func mapSQLiteCode(code int) (errorClassification, bool) {
 	switch code {
 	case sqliteConstraintUnique, sqliteConstraintPrimaryKey, sqliteConstraintRowID:
-		return errorClassification{kind: store.KindAlreadyExists}, true
+		return errorClassification{kind: fault.KindAlreadyExists}, true
 	case sqliteConstraintCheck, sqliteConstraintForeignKey, sqliteConstraintNotNull:
-		return errorClassification{kind: store.KindConstraint}, true
+		return errorClassification{kind: fault.KindConstraint}, true
 	case sqliteBusySnapshot:
-		return errorClassification{kind: store.KindSerialization, transient: true}, true
+		return errorClassification{kind: fault.KindSerialization, transient: true}, true
 	case sqliteBusy, sqliteBusyRecovery, sqliteBusyTimeout,
 		sqliteLocked, sqliteLockedSharedCache, sqliteLockedVirtualTable:
-		return errorClassification{kind: store.KindContention, transient: true}, true
+		return errorClassification{kind: fault.KindContention, transient: true}, true
 	case sqliteReadOnlyRollback, sqliteReadOnlyDirectory:
-		return errorClassification{kind: store.KindReadOnly}, true
+		return errorClassification{kind: fault.KindReadOnly}, true
 	}
 
 	switch primarySQLiteCode(code) {
 	case sqliteConstraint:
-		return errorClassification{kind: store.KindConstraint}, true
+		return errorClassification{kind: fault.KindConstraint}, true
 	case sqliteReadOnly:
-		return errorClassification{kind: store.KindReadOnly}, true
+		return errorClassification{kind: fault.KindReadOnly}, true
 	case sqliteIOError, sqliteCantOpen:
-		return errorClassification{kind: store.KindUnavailable, transient: true}, true
+		return errorClassification{kind: fault.KindUnavailable, transient: true}, true
 	default:
 		return errorClassification{}, false
 	}
@@ -490,7 +490,7 @@ func mapSQLiteInterrupt(ctx context.Context, code int, err error) error {
 		return joinContextCause(context.Canceled, err)
 	case errors.Is(ctxErr, context.DeadlineExceeded):
 		return wrapMappedError(
-			errorClassification{kind: store.KindTimeout, transient: true},
+			errorClassification{kind: fault.KindTimeout, transient: true},
 			strconv.Itoa(code),
 			joinContextCause(context.DeadlineExceeded, err),
 		)
@@ -514,7 +514,7 @@ func joinContextCause(contextErr error, driverErr error) error {
 }
 
 func wrapMappedError(classification errorClassification, code string, cause error) error {
-	if classification.kind == store.KindUnknown {
+	if classification.kind == fault.KindUnknown {
 		return cause
 	}
 	return &store.Error{

@@ -14,7 +14,7 @@ const nulStringValue = "nul\x00x"
 
 // assertNULStringFailsClosed runs insert, which must try to persist
 // nulStringValue, and checks the contract shared by SQLite and PostgreSQL:
-// the statement fails, the error carries no store.Kind, and count sees no
+// the statement fails, the error carries no fault.Kind, and count sees no
 // row. The error text is Bun's and the database's and is not asserted.
 func assertNULStringFailsClosed(
 	t *testing.T,

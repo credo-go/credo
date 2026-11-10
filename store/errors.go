@@ -7,26 +7,6 @@ import (
 	"github.com/credo-go/credo/fault"
 )
 
-// Kind is the transport-neutral semantic category of a store error.
-type Kind = fault.Kind
-
-// Store error kinds. They are aliases of the shared transport-neutral kinds
-// so Credo's HTTP policy and future gRPC policy can classify them without
-// importing store and creating a package cycle.
-const (
-	KindUnknown       Kind = fault.KindUnknown
-	KindNotFound      Kind = fault.KindNotFound
-	KindAlreadyExists Kind = fault.KindAlreadyExists
-	KindConstraint    Kind = fault.KindConstraint
-	KindSerialization Kind = fault.KindSerialization
-	KindDeadlock      Kind = fault.KindDeadlock
-	KindContention    Kind = fault.KindContention
-	KindConflict      Kind = fault.KindConflict
-	KindTimeout       Kind = fault.KindTimeout
-	KindUnavailable   Kind = fault.KindUnavailable
-	KindReadOnly      Kind = fault.KindReadOnly
-)
-
 // Error is a structured, transport-neutral data-access error.
 //
 // Code, Constraint, Resource, and Cause are internal diagnostic metadata. The
@@ -34,7 +14,7 @@ const (
 // Transient describes whether the condition may clear; it does not guarantee
 // that replaying the operation or transaction is safe.
 type Error struct {
-	Kind       Kind
+	Kind       fault.Kind
 	Op         string
 	Resource   string
 	Constraint string
@@ -70,9 +50,9 @@ func (e *Error) FaultKind() fault.Kind {
 	return e.Kind
 }
 
-func (e *Error) storeKind() Kind {
+func (e *Error) storeKind() fault.Kind {
 	if e == nil {
-		return KindUnknown
+		return fault.KindUnknown
 	}
 	return e.Kind
 }
@@ -88,13 +68,13 @@ func (e *Error) Is(target error) bool {
 }
 
 type kindError struct {
-	kind    Kind
+	kind    fault.Kind
 	message string
 }
 
 func (e *kindError) Error() string         { return e.message }
 func (e *kindError) FaultKind() fault.Kind { return e.kind }
-func (e *kindError) storeKind() Kind       { return e.kind }
+func (e *kindError) storeKind() fault.Kind { return e.kind }
 func (e *kindError) Is(target error) bool {
 	targetKind, ok := directStoreKind(target)
 	return ok && e.kind == targetKind
@@ -103,43 +83,44 @@ func (e *kindError) Is(target error) bool {
 // Sentinel errors for data access operations.
 var (
 	// ErrNotFound indicates that the requested record does not exist.
-	ErrNotFound error = newKindError(KindNotFound, "store: record not found")
+	ErrNotFound error = newKindError(fault.KindNotFound, "store: record not found")
 
 	// ErrAlreadyExists indicates a unique or primary-key violation.
-	ErrAlreadyExists error = newKindError(KindAlreadyExists, "store: duplicate record")
+	ErrAlreadyExists error = newKindError(fault.KindAlreadyExists, "store: duplicate record")
 
 	// ErrConstraint indicates a persistent integrity constraint violation other
 	// than a duplicate, such as foreign-key, not-null, or check failure.
-	ErrConstraint error = newKindError(KindConstraint, "store: constraint violation")
+	ErrConstraint error = newKindError(fault.KindConstraint, "store: constraint violation")
 
 	// ErrSerialization indicates that transaction serialization failed.
-	ErrSerialization error = newKindError(KindSerialization, "store: serialization failure")
+	ErrSerialization error = newKindError(fault.KindSerialization, "store: serialization failure")
 
 	// ErrDeadlock indicates that the database detected a deadlock.
-	ErrDeadlock error = newKindError(KindDeadlock, "store: deadlock")
+	ErrDeadlock error = newKindError(fault.KindDeadlock, "store: deadlock")
 
 	// ErrContention indicates a transient lock/busy conflict whose safe retry
 	// scope is not implied by this sentinel.
-	ErrContention error = newKindError(KindContention, "store: contention")
+	ErrContention error = newKindError(fault.KindContention, "store: contention")
 
 	// ErrTimeout indicates that a database operation exceeded a verified
 	// deadline or statement timeout.
-	ErrTimeout error = newKindError(KindTimeout, "store: timeout")
+	ErrTimeout error = newKindError(fault.KindTimeout, "store: timeout")
 
 	// ErrUnavailable indicates that a database connection or service is
 	// temporarily unavailable.
-	ErrUnavailable error = newKindError(KindUnavailable, "store: unavailable")
+	ErrUnavailable error = newKindError(fault.KindUnavailable, "store: unavailable")
 
 	// ErrReadOnly indicates that a write was attempted against a read-only
 	// transaction or server.
-	ErrReadOnly error = newKindError(KindReadOnly, "store: read-only")
+	ErrReadOnly error = newKindError(fault.KindReadOnly, "store: read-only")
 )
 
-// KindOf finds the first recognized store Kind in err's unwrap/join tree.
-func KindOf(err error) (Kind, bool) {
+// KindOf finds the first recognized store kind in err's unwrap/join tree. The
+// kinds are package fault's ([fault.KindNotFound] and the rest).
+func KindOf(err error) (fault.Kind, bool) {
 	provider, ok := firstStoreProvider(err)
 	if !ok {
-		return KindUnknown, false
+		return fault.KindUnknown, false
 	}
 	kind := provider.storeKind()
 	return kind, true
@@ -180,21 +161,21 @@ func Wrap(kind error, cause error) error {
 	}
 }
 
-func newKindError(kind Kind, message string) *kindError {
+func newKindError(kind fault.Kind, message string) *kindError {
 	return &kindError{kind: kind, message: message}
 }
 
 type storeKindProvider interface {
 	error
-	storeKind() Kind
+	storeKind() fault.Kind
 }
 
-func directStoreKind(err error) (Kind, bool) {
+func directStoreKind(err error) (fault.Kind, bool) {
 	// Wrap's compatibility no-op depends on the outer error itself already being
 	// classified; a nested provider must not satisfy this check.
 	provider, ok := err.(storeKindProvider) //nolint:errorlint
 	if !ok || isNilStoreProvider(provider) || !isStoreKind(provider.storeKind()) {
-		return KindUnknown, false
+		return fault.KindUnknown, false
 	}
 	return provider.storeKind(), true
 }
@@ -231,54 +212,54 @@ func isNilStoreProvider(provider storeKindProvider) bool {
 	}
 }
 
-func isStoreKind(kind Kind) bool {
+func isStoreKind(kind fault.Kind) bool {
 	switch kind {
-	case KindNotFound,
-		KindAlreadyExists,
-		KindConstraint,
-		KindSerialization,
-		KindDeadlock,
-		KindContention,
-		KindConflict,
-		KindTimeout,
-		KindUnavailable,
-		KindReadOnly:
+	case fault.KindNotFound,
+		fault.KindAlreadyExists,
+		fault.KindConstraint,
+		fault.KindSerialization,
+		fault.KindDeadlock,
+		fault.KindContention,
+		fault.KindConflict,
+		fault.KindTimeout,
+		fault.KindUnavailable,
+		fault.KindReadOnly:
 		return true
 	default:
 		return false
 	}
 }
 
-func defaultTransient(kind Kind) bool {
+func defaultTransient(kind fault.Kind) bool {
 	switch kind {
-	case KindSerialization, KindDeadlock, KindContention, KindTimeout, KindUnavailable:
+	case fault.KindSerialization, fault.KindDeadlock, fault.KindContention, fault.KindTimeout, fault.KindUnavailable:
 		return true
 	default:
 		return false
 	}
 }
 
-func kindMessage(kind Kind) string {
+func kindMessage(kind fault.Kind) string {
 	switch kind {
-	case KindNotFound:
+	case fault.KindNotFound:
 		return "store: record not found"
-	case KindAlreadyExists:
+	case fault.KindAlreadyExists:
 		return "store: duplicate record"
-	case KindConstraint:
+	case fault.KindConstraint:
 		return "store: constraint violation"
-	case KindSerialization:
+	case fault.KindSerialization:
 		return "store: serialization failure"
-	case KindDeadlock:
+	case fault.KindDeadlock:
 		return "store: deadlock"
-	case KindContention:
+	case fault.KindContention:
 		return "store: contention"
-	case KindConflict:
+	case fault.KindConflict:
 		return "store: conflict"
-	case KindTimeout:
+	case fault.KindTimeout:
 		return "store: timeout"
-	case KindUnavailable:
+	case fault.KindUnavailable:
 		return "store: unavailable"
-	case KindReadOnly:
+	case fault.KindReadOnly:
 		return "store: read-only"
 	default:
 		return "store: unknown error"

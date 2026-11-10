@@ -218,7 +218,7 @@ func TestHandleError_UnknownSemanticFaultFailsClosed(t *testing.T) {
 func TestHandleError_StructuredStoreMetadataDoesNotLeak(t *testing.T) {
 	cause := errors.New("duplicate key secret@example.com")
 	structured := &store.Error{
-		Kind:       store.KindConstraint,
+		Kind:       fault.KindConstraint,
 		Resource:   "users",
 		Constraint: "users_email_key",
 		Code:       "23505",

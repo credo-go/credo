@@ -17,6 +17,7 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
 
+	"github.com/credo-go/credo/fault"
 	"github.com/credo-go/credo/pagination"
 	"github.com/credo-go/credo/store"
 	"github.com/credo-go/credo/store/sqldb"
@@ -214,7 +215,7 @@ func testRealDBErrorMapping(
 		t,
 		duplicateErr,
 		store.ErrAlreadyExists,
-		store.KindAlreadyExists,
+		fault.KindAlreadyExists,
 		driver,
 		duplicateCode,
 	)
@@ -227,7 +228,7 @@ func testRealDBErrorMapping(
 		t,
 		constraintErr,
 		store.ErrConstraint,
-		store.KindConstraint,
+		fault.KindConstraint,
 		driver,
 		constraintCode,
 	)
@@ -250,7 +251,7 @@ func assertRealDBMappedError(
 	t *testing.T,
 	got error,
 	exact error,
-	wantKind store.Kind,
+	wantKind fault.Kind,
 	driver string,
 	wantCode string,
 ) {

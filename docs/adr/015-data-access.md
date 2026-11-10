@@ -36,7 +36,7 @@ Applications that need a different ORM (GORM, sqlx, sqlc) bind their client dire
 
 ### Semantic Error Types
 
-The stdlib-only `fault` leaf package defines transport-neutral `Kind` values and a `Provider` interface. Both root HTTP policy and `store` import that leaf, and `store` imports nothing else, so neither the root nor `store` imports the other. `store.Kind` aliases `fault.Kind` for application-facing data-access code.
+The stdlib-only `fault` leaf package defines transport-neutral `Kind` values and a `Provider` interface. Both root HTTP policy and `store` import that leaf, and `store` imports nothing else, so neither the root nor `store` imports the other. Each kind has one name: `store` and `store/sqldb` use `fault.Kind` and its constants, and `store` declares no alias of the type or of a constant. Rejected: a `store.Kind` alias with a `store.Kind…` constant for each kind, so that data-access code names a kind without importing `fault`. The copy was one-to-one, so every kind had two spellings that a reader had to learn were one value, an application that maps a store error to a domain fault (`fault.New(fault.KindAlreadyExists, …)`) imports `fault` anyway, and a kind added to `fault` would exist under one name until the copy followed. It is the rule of [One API per operation](#one-api-per-operation), applied to a name.
 
 `store.Error` carries the kind together with structured diagnostics — operation, resource, constraint, driver code, a transient flag and the cause — that never reach the wire: the default error renderer serializes none of them. Exact sentinels distinguish not-found, already-exists, persistent constraint, serialization, deadlock, lock/busy contention, timeout, unavailable, and read-only conditions, so callers branch on the condition rather than on a coarse conflict. The [store spec](../specs/store.md#semantic-errors) lists the struct, the sentinels and their default statuses.
 
@@ -77,7 +77,7 @@ Each data-access operation has one exported spelling before v1 freezes the surfa
 
 - **One transaction scope API.** The `TxScope` methods — `WithTx`, `GetTx`, `RequireTx` and `Conn`, whose `T` the scope fixes — are the one transaction API, and `sqldb` uses it. No free function keyed by the type alone exists beside them: separate call sites could choose different concrete or interface forms of one transaction, and a type-only key cannot isolate two logical connections that share `T`.
 - **One way to run a transaction.** `db.InTx(ctx, fn)` and `db.InTxWith(ctx, opts, fn)` put the operation on the database the caller holds, and no free function runs a transaction beside them.
-- **The exact sentinels are the error contract.** No alias names a sentinel twice, and no umbrella sentinel matches several kinds: each sentinel matches its own kind only. `KindConflict` is a kind an adapter may return, which `store.KindOf` reports and the root maps to 409; no sentinel stands for it, and none of the constraint and concurrency sentinels matches it.
+- **The exact sentinels are the error contract.** No alias names a sentinel twice, and no umbrella sentinel matches several kinds: each sentinel matches its own kind only. `fault.KindConflict` is a kind an adapter may return, which `store.KindOf` reports and the root maps to 409; no sentinel stands for it, and none of the constraint and concurrency sentinels matches it.
 
 Kept: `store.Health`, the type `sqldb`'s `Health` returns and its `Ready` reads ([A Database Is a Component](#a-database-is-a-component)).
 
