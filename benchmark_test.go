@@ -66,11 +66,12 @@ type benchPayload struct {
 
 func mustNewBench(b *testing.B, opts ...credo.Option) *credo.App {
 	b.Helper()
-	// Benchmarks keep the default-on observability pipeline (request ID +
-	// access log) in the measurement, but format log lines into io.Discard:
-	// terminal I/O would otherwise dominate every number. slog.DiscardHandler
-	// is deliberately NOT used — its disabled levels would skip the attribute
-	// formatting work that real deployments pay.
+	// The App logs through a text handler on io.Discard: a record a benchmark
+	// causes is formatted, as a deployment formats it, and terminal I/O stays
+	// out of every number. slog.DiscardHandler is deliberately NOT used — its
+	// disabled levels would skip that formatting. The helper installs no
+	// feature: request ID and access log are off unless the benchmark calls
+	// UseRequestID or UseAccessLog itself.
 	app, err := credo.New(append(
 		[]credo.Option{credo.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))},
 		opts...)...)

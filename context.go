@@ -190,7 +190,8 @@ func (c *Context) baseLogger() *slog.Logger {
 // cannot detect this; if you must start from a fresh logger, re-attach the
 // ID via [Context.RequestID].
 //
-// The logger is cleared automatically when the request completes.
+// A Context is one allocation per request and is not reused, so the
+// replacement does not reach another request.
 func (c *Context) SetLogger(l *slog.Logger) {
 	c.logger = l
 }
