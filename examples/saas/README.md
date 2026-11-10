@@ -6,7 +6,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 
 `run()` in main.go follows the [documented bootstrap order](../../docs/specs/container.md#documented-order), one numbered comment per step:
 
-1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, the live `log` section and the logger whose level it sets, `credo.New(credo.WithRawConfig(rawCfg), …)`.
+1. **Configuration** — `config.Load`, the typed `app` and `databases.default` sections, and `credo.New(credo.WithRawConfig(rawCfg), …)`, which builds the logger from the framework's `log` section.
 2. **Bindings** — the store, opened from the `databases.default` section as `sqldb.Open` opens a database and bound with `app.ProvideValue(tenantStore, credo.ComponentName("tenants-db"))`, the typed `app` section, and the constructor of `TenantService`, which takes `credo.Infra` first.
 3. **Feature mounts and satellite registrations** — `UseRequestID`, `UseAccessLog`, `UseCompress`, `UseI18n` with a programmatic catalog, `UseHealth`, a scheduled worker registered through its constructor, `NewUsageReporter`, which also takes `credo.Infra` first, the WebSocket server handed to `app.Manage(ws)`, and the `OnStart` and `OnStop` hooks.
 4. **`Finalize`** — an optional early check: the graph is validated and its error handled before anything is built; without it, the first `Resolve` would finalize the container.
@@ -20,7 +20,7 @@ Run `go run .` from this directory to use its bundled configuration. The example
 - **WebSocket.** `websocket.New()` is an ingress component by its type, so `app.Manage(ws)` takes no option; `GET /ws/echo` echoes every message.
 - **Localization.** `UseI18n` takes a programmatic English catalog: error codes, validation codes and field display names are exact keys, and `c.T` translates the admin greeting.
 - **Validation and errors.** `CreateTenantRequest.Validate` uses programmatic rules and one custom rule that returns `validation.NewViolation`; failures render in the default error envelope with field-level `violations`.
-- **Reload.** The `log` section is live: its `OnChange` sets the `slog.LevelVar`, so changing `log.level` and sending SIGHUP switches the level in place. `app` stays static, so a reload that changes `app.name` reports it as needing a restart.
+- **Logging and reload.** The example builds no logger: `log.level` and `log.format` in config.yaml select the App's logger, JSON records on stderr here, and `app.Logger()` returns it. The framework holds the section live, so changing either key and sending SIGHUP applies it in place, with no `OnChange` in the application. `app` stays static, so a reload that changes `app.name` reports it as needing a restart.
 
 ## Pre-v1 migration
 

@@ -68,7 +68,7 @@ infra.Logger = appLogger.With("component", "*users.Service")
 infra.Logger = appLogger.With("component", "primary")
 ```
 
-`appLogger` is the App's logger — the one `credo.WithLogger` configures, else the framework default — captured at `credo.New`; a `*slog.Logger` binding in the container is never consulted. `*users.Service` and `*orders.Service` therefore stay apart, and a component's records from its constructor and the lifecycle's records about it share one key and value. For code outside the DI container — middleware factories, startup helpers, manually created workers — `app.NewInfra(name)` returns an Infra whose Logger is scoped with `component=name`; it is nil-safe, falling back to the framework default logger when the App has no logger configured:
+`appLogger` is the App's logger — the one `credo.WithLogger` configures, else the one built from the `log` section, else the framework default — captured at `credo.New`; a `*slog.Logger` binding in the container is never consulted. `*users.Service` and `*orders.Service` therefore stay apart, and a component's records from its constructor and the lifecycle's records about it share one key and value. For code outside the DI container — middleware factories, startup helpers, manually created workers — `app.NewInfra(name)` returns an Infra whose Logger is scoped with `component=name`; it is nil-safe, falling back to the framework default logger when the App has no logger configured:
 
 ```go
 rbacMW := rbac.NewMiddleware(app.NewInfra("rbac")) // logs component=rbac

@@ -69,9 +69,19 @@ type App struct {
 // the environment. With WithRawConfig New loads nothing and writes no record;
 // an application that loads explicitly logs cfg.Sources() itself.
 //
-// New returns an error if configuration loading fails or the server settings
-// contain invalid values (negative timeouts, an invalid port). An option only
-// records configuration and cannot fail by itself.
+// Without WithLogger, New builds the App's logger from the "log" section when
+// the configuration has one: log.level (debug, info, warn, error; info by
+// default) and log.format (text, json; text by default), written to stderr.
+// The section is the framework's and is decoded strictly, so an application
+// section of that name fails New until it is renamed. A reload applies a new
+// level and a new format to the logger and to every logger derived from it.
+// With WithLogger the section is not read. Without the section the logger is
+// the framework default, a text handler on stderr at Info.
+//
+// New returns an error if configuration loading fails, or the server or log
+// settings contain invalid values (negative timeouts, an invalid port, an
+// unknown log level). An option only records configuration and cannot fail
+// by itself.
 //
 // Usage:
 //
@@ -91,10 +101,16 @@ func New(opts ...Option) (*App, error) {
 	if err = loadRawConfig(&o); err != nil {
 		return nil, err
 	}
-	// The record of the automatic load comes before the first read of the
+	// The record of the automatic load comes before any other read of the
 	// configuration, so a New that fails on a setting has already named the
-	// files the setting came from.
-	baseInfra := newInfra(o.logger)
+	// files the setting came from; when the setting is the logger's own, the
+	// record goes to the framework default logger.
+	logger, err := resolveLogger(&o)
+	if err != nil {
+		logAutoLoad(defaultLogger, o.autoLoaded)
+		return nil, err
+	}
+	baseInfra := newInfra(logger)
 	logAutoLoad(baseInfra.Logger, o.autoLoaded)
 	serverCfg, err := resolveServerConfig(&o)
 	if err != nil {

@@ -44,6 +44,23 @@ Use of string keys in business code is documented as an **anti-pattern**.
 
 **The automatic load says what it read.** An application that passes only options still takes `config.json`, `.yaml` or `.yml`, a `.env` and the `CREDO_*` environment as input, whether or not its author knows of them, and a file left in the working directory changes `server.*`. `New` therefore writes one record at construction that names the files found, the `.env` file read and the environment prefix, and never a key or a value. The loader keeps that list and `*config.Config` exposes it as `Sources()`, so an application that loads explicitly logs the same record; `New` with `WithRawConfig` loads nothing and writes none. The record is written at Info when a file or a `.env` was read and at Debug when the load found only the environment: a file on disk is the input an author may not know of, while the environment is read by every start and would put a line of no news into every log. Rejected: Info always, for that reason, and Debug always, which hides the record in the default logger, where the case it exists for goes unseen.
 
+### The Default Logger Is Configured: the `log` Section
+
+Without `credo.WithLogger`, `New` builds the App's logger from the top-level `log` section when the configuration has one: `log.level` (`debug`, `info`, `warn`, `error`; `info` when unset) and `log.format` (`text`, `json`; `text` when unset), written to stderr. A service that wants JSON records in production and a level it can raise during an incident is the ordinary case, and before the section it had to load the configuration ahead of `New`, declare a section of its own and wire a `slog.LevelVar` to it by hand. Without the section the logger is the framework default, a text handler on stderr at Info, so a configuration that says nothing about logging behaves as before.
+
+`WithLogger` stays the whole-source override, as `WithTLSConfig` is for TLS: when it is set the section is not read, neither decoded nor validated, so an application that builds its own logger may keep a section named `log` for it. The section is the framework's and is decoded like `server`, strictly under the default policy: an application section of that name with other keys fails `New`, and the error says whose section it is and the two ways out, renaming the application's section or passing the logger. The values are matched without regard to case, so `CREDO_LOG__LEVEL=DEBUG` reads as the file's `debug` does.
+
+The section is live. A `*config.Config` holds it as a live section ([ADR-020](020-reload-and-partial-config-reload.md#a-section-is-a-snapshot-unless-it-is-declared-live)), and a reload applies both keys to the logger and to every logger derived from it: the level through one `slog.LevelVar`, the format by swapping the handler behind one atomic load, with the attributes and groups of a derived logger replayed on the new handler. A reload with an unknown level or format is aborted like any live section that fails validation, and the logger keeps what it had. A `RawConfig` of another type cannot reload, and the section is decoded once.
+
+The section is read when present, as `server` is, and that fixes three cases a reload can meet. A section emptied to `log:` is present with no keys, and the defaults apply. A section removed from the sources aborts the reload, because a live section that was read must still be there. A section absent at start and added later is not live, so the reload reports its keys as needing a restart and the logger does not change. A deployment that means to change the level at runtime therefore writes the section from the start.
+
+Rejected:
+
+- **`server.log`:** it collides with no application section, but `server` is static and a section has one nature, so the level could not follow a reload.
+- **A level alone, with the format left to `WithLogger`:** the format is the other half of the same need, and an application that only wants JSON records would still build a logger and lose the configured level.
+- **An output key (`log.output`, a file path):** where a process writes its log belongs to the supervisor or the container runtime, and a file brings rotation with it. An application that needs another writer passes its logger.
+- **Reading the section beside `WithLogger`, to set the level of the given logger:** the framework cannot set the level of a handler it did not build.
+
 ### A Section Is Named Once: `config.Section[T]`
 
 A section's key and its type are named once, by a typed descriptor that every reader of the section takes:

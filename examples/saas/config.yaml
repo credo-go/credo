@@ -80,12 +80,14 @@ databases:
   #   ssl_mode: "require"
 
 # ---------------------------------------------------------------------------
-# Logging [user-read, live]
-# A live section: main.go reads it with LogSection.Live, and a reload
-# (SIGHUP / app.Reload) that changes log.level switches the level in place.
+# Logging [framework-read, live]
+# The framework's section: credo.New builds the App's logger from it, on
+# stderr, unless a logger is passed with credo.WithLogger. A reload
+# (SIGHUP / app.Reload) applies a new level and a new format in place.
 # ---------------------------------------------------------------------------
 log:
   level: "info"                        # debug | info | warn | error
+  format: "json"                       # text | json
 
 # ---------------------------------------------------------------------------
 # Application [user-read]

@@ -2,7 +2,8 @@
 //
 // run() follows the documented bootstrap order, every satellite included:
 //
-//  1. Configuration: config.Load, typed sections, the logger and credo.New
+//  1. Configuration: config.Load, typed sections and credo.New, which
+//     builds the logger from the "log" section
 //  2. Bindings: the opened store as a value, typed config, and the
 //     constructors, Infra first
 //  3. Feature mounts and satellite registrations: request features, i18n,
@@ -14,9 +15,11 @@
 // Features shown:
 //   - Configuration loading (config.Load with YAML + .env + env overrides)
 //   - Typed config at the module boundary, injected via DI
-//   - Configuration reload: the "log" section is live, so a SIGHUP
-//     (systemctl reload) or app.Reload swaps the log level in place, while a
-//     change to the static "app" section is reported as needing a restart
+//   - The framework's "log" section: log.level and log.format select the
+//     App's logger, with no logger built here
+//   - Configuration reload: a SIGHUP (systemctl reload) or app.Reload applies
+//     a new log.level and log.format in place, while a change to the static
+//     "app" section is reported as needing a restart
 //   - Framework HTTP features (recovery on by default; request ID, access
 //     log and compression enabled explicitly) plus pre-routing CORS and secure
 //     headers middleware
@@ -40,9 +43,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -68,15 +69,6 @@ type AppConfig struct {
 	Environment string
 	Debug       bool
 }
-
-// LogConfig is the live "log" section. slog.Level decodes from its text form
-// ("debug", "info", "warn", "error").
-type LogConfig struct {
-	Level slog.Level
-}
-
-// LogSection declares the "log" section; run reads it live.
-var LogSection = config.Section[LogConfig]("log")
 
 // DatabaseConfig holds database connection settings. Field names map to
 // snake_case config keys automatically (e.g. MaxOpen → "max_open",
@@ -445,10 +437,13 @@ func requireRole(role string) credo.Middleware {
 
 func run() error {
 	// 1. Configuration. Load the YAML/JSON file + .env + env vars, read the
-	// application's typed sections at the module boundary, build the logger
-	// and create the App. The log level is a live section: it lives in a
-	// slog.LevelVar that the section's OnChange sets, so a config reload
-	// (SIGHUP / app.Reload) changes it without a restart.
+	// application's typed sections at the module boundary and create the
+	// App. The logger is the framework's: credo.New builds it from the "log"
+	// section (log.level, log.format) and holds the section live, so a
+	// config reload (SIGHUP / app.Reload) applies a new level and a new
+	// format without a restart. An application that needs another handler
+	// passes its own logger with credo.WithLogger, and the section is then
+	// not read.
 	rawCfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
@@ -463,22 +458,14 @@ func run() error {
 		return fmt.Errorf("unmarshal database config: %w", err)
 	}
 
-	logCfg, err := LogSection.Live(rawCfg)
-	if err != nil {
-		return err
-	}
-	var logLevel slog.LevelVar
-	logLevel.Set(logCfg.Load().Level)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel}))
-
 	app, err := credo.New(
 		credo.WithRawConfig(rawCfg),
-		credo.WithLogger(logger),
 		credo.WithShutdownTimeout(15*time.Second),
 	)
 	if err != nil {
 		return fmt.Errorf("credo.New: %w", err)
 	}
+	logger := app.Logger()
 
 	// 2. Bindings. The store is opened here, as sqldb.Open would open a
 	// database, and bound as a value: its type plans the ping at start, the
@@ -515,16 +502,11 @@ func run() error {
 	ws := websocket.New()
 	app.Manage(ws)
 
-	// Hooks. The live "log" section's OnChange keeps the slog.LevelVar in
-	// step: change log.level in the config file and `systemctl reload`
-	// (SIGHUP) or app.Reload switches the level in place. The new value is
-	// decoded, validated and published before this runs; "app" stays static,
-	// so a reload that changes app.name reports a restart.
-	logCfg.OnChange(func(_ context.Context, _, next LogConfig) error {
-		logLevel.Set(next.Level)
-		logger.Info("log level reloaded", "level", next.Level.String())
-		return nil
-	})
+	// Hooks. Nothing here follows the "log" section: change log.level or
+	// log.format in the config file and `systemctl reload` (SIGHUP) or
+	// app.Reload applies it to this logger and to every logger derived from
+	// it. "app" stays static, so a reload that changes app.name reports a
+	// restart.
 	app.OnStart(func(context.Context) error {
 		logger.Info("application started", "app", appCfg.Name, "addr", app.Addr().String())
 		return nil

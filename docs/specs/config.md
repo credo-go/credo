@@ -192,11 +192,29 @@ The result is the same value `App.Reload` returns; its JSON form is what an admi
 
 `credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; `app.GetConfig(section)` ([below](#section-descriptors--sectiont)) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
 
-The automatic load is recorded. `New` writes one record, `credo: configuration loaded automatically`, whose `sources` group is the loaded Config's [`Sources`](#sources--what-a-load-read): the files found, the `.env` file read and the environment prefix, never a key or a value. It is written at Info when a file or a `.env` was read and at Debug when the load found only the environment, to the App's logger (`WithLogger`, else the framework default), before `New` reads any setting, so a `New` that fails on a setting has already named the files. `New` with `WithRawConfig` writes no record, whatever the `RawConfig` is.
+The automatic load is recorded. `New` writes one record, `credo: configuration loaded automatically`, whose `sources` group is the loaded Config's [`Sources`](#sources--what-a-load-read): the files found, the `.env` file read and the environment prefix, never a key or a value. It is written at Info when a file or a `.env` was read and at Debug when the load found only the environment, to the App's logger (`WithLogger`, else the one the [`log` section](#the-log-section) selects, else the framework default), before `New` reads any other setting, so a `New` that fails on a setting has already named the files; when the setting that fails is the `log` section's own, the record goes to the framework default logger. `New` with `WithRawConfig` writes no record, whatever the `RawConfig` is.
 
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
 The framework reads its own settings from the `server` section when present (listen address, timeouts, header and body limits, trailing-slash redirect, debug mode, strict bodies, trusted proxies, TLS files); the key list with types, defaults and reloadability is in the [Configuration Guide](../guides/configuration.md#server--server). An explicit `With*` option replaces its key: `WithAddr` (host and port), `WithShutdownTimeout`, `WithReloadTimeout`, `WithMaxBodyBytes`, `WithRedirectTrailingSlash`, `WithTrustedProxies`, and `WithTLSFiles` (cert and key as one pair). `WithDebug` and `WithStrictBodies` are OR'd with `server.debug` and `server.strict_bodies`.
+
+#### The `log` section
+
+Without `credo.WithLogger`, `New` builds the App's logger from the `log` section when the configuration has the key ([ADR-005](../adr/005-configuration-architecture.md#the-default-logger-is-configured-the-log-section)):
+
+| Key | Values | Default | Reload |
+| --- | --- | --- | --- |
+| `log.level` | `debug`, `info`, `warn`, `error` | `info` | applied |
+| `log.format` | `text`, `json` | `text` | applied |
+
+- **Output.** stderr, as the framework default logger writes. The handlers are `slog.NewTextHandler` and `slog.NewJSONHandler` with no other option.
+- **Values.** Matched without regard to case; an unset or empty key takes its default. Any other value fails `New`: `credo: invalid log config: … log.level "verbose" is not a log level; use debug, info, warn or error; "log" is the framework's section, with the keys log.level and log.format: rename an application section of that name, or pass the logger with credo.WithLogger, which leaves the section unread`.
+- **Strict.** The section is decoded through its descriptor, under the configuration's decoding policy, so an unknown `log.*` key fails `New` with the same ending. An application section named `log` is such a case; `WithWeakDecoding` ignores the unknown keys instead.
+- **`WithLogger` wins.** With `WithLogger` the section is not read: not decoded, not validated and not held live, so it stays free for the application.
+- **Absent.** Without the key the logger is the framework default, a text handler on stderr at Info.
+- **Reload.** On a `*config.Config` the section is a [live section](#live-sections) the framework holds, so it is reported in `replaced` and a second read of it must be live too. A reload sets the level and, when the format changed, swaps the handler; both reach every logger derived from the App's (`Logger.With`, `WithGroup`, a component's scoped `Infra.Logger`, a request's logger), whose attributes and groups are replayed on the new handler. A record is written whole by one handler. An invalid value aborts the reload, and the logger keeps what it had.
+- **The section comes or goes.** Emptied to `log:`, the section is present and its defaults apply. Removed from every source, it aborts the reload (`live section "log" … not found`), as any live section does. Absent at start and added by a reload, it is not live: the reload reports its keys in `restart_required`, and the logger does not change.
+- **Another `RawConfig`.** A `RawConfig` that is not a `*config.Config` cannot reload; the section is decoded once, and its values are validated by `New`.
 
 ### config.LoadBytes() — Embedded Config
 
