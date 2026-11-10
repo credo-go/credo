@@ -20,11 +20,20 @@ import (
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
-// App is the main Credo application. It holds the router, middleware stack,
-// error handler, and route registry.
+// App is a Credo application: the value [New] returns, which the application
+// registers into during bootstrap and then runs. It holds the routes and
+// their groups, the middleware tiers ([App.PreRouting] before the match,
+// [App.Middleware] after it), the built-in HTTP features installed through
+// its Use methods, the dependency injection container with the
+// configuration, the health checks, the workers, and the HTTP server with
+// its lifecycle.
+//
+// It holds no error handler to replace: an error that a handler or a
+// middleware returns goes through the framework's error pipeline, and
+// [App.UseErrorRenderer] shapes the body the pipeline writes.
 type App struct {
 	// logger is the application-level logger, set via WithLogger.
-	// Used by framework internals (error handler, server lifecycle, i18n setup).
+	// Used by framework internals (error pipeline, server lifecycle, i18n setup).
 	// Component-scoped loggers (Infra.Logger, component=<name>) are derived
 	// from this.
 	logger *slog.Logger
