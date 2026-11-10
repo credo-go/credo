@@ -77,6 +77,13 @@
 //     [App.AddLivenessCheck], [App.AddReadinessCheck]).
 //   - A noun accessor returns the App's one registry of a subsystem that
 //     takes many registrations (e.g. [App.Workers]).
+//   - On the App, a group and a route, a noun that takes arguments registers
+//     the thing it names, as the route methods do ([App.GET], [App.Static]):
+//     [App.PreRouting] and [App.Middleware] register middleware,
+//     [App.StatusHandler] the handler of a status code, and [Route.Name] a
+//     route's name. It is a registration, so it belongs to bootstrap and
+//     panics once the App is prepared; its arguments tell it from a noun
+//     accessor, which takes none.
 //
 // Panic recovery is on by default; request IDs, access logging, response
 // compression and request decompression are explicit ([App.UseRequestID],
