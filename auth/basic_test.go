@@ -88,7 +88,7 @@ func TestBasicErrorHandler_AddsChallengeHeader(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/secure", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(http.StatusOK)
-	}).Middleware(auth.Middleware[string](basicAuth, auth.BasicErrorHandler(basicAuth.Realm())))
+	}).Middleware(auth.Middleware[string](basicAuth, auth.Config{ErrorHandler: auth.BasicErrorHandler(basicAuth.Realm())}))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/secure", nil)

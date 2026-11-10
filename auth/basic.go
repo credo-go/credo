@@ -91,12 +91,14 @@ func BasicChallenge(realm string) string {
 	return "Basic realm=" + strconv.Quote(realm)
 }
 
-// BasicErrorHandler returns an ErrorFunc that adds a Basic challenge header
-// before returning 401 Unauthorized.
-func BasicErrorHandler(realm string) ErrorFunc {
+// BasicErrorHandler returns a [Config.ErrorHandler] that adds a Basic
+// challenge header before returning 401 Unauthorized:
+//
+//	auth.Middleware[User](a, auth.Config{ErrorHandler: auth.BasicErrorHandler(a.Realm())})
+func BasicErrorHandler(realm string) func(ctx *credo.Context, err error) error {
 	challenge := BasicChallenge(realm)
 
-	return func(err error, ctx *credo.Context) error {
+	return func(ctx *credo.Context, err error) error {
 		ctx.Response().Header().Set("WWW-Authenticate", challenge)
 		return credo.ErrUnauthorized.WithInternal(err)
 	}

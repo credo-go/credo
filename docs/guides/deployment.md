@@ -231,7 +231,7 @@ Two more rules: the server's lifecycle methods (`Serve`, `ServeTLS`, `Shutdown`,
 When the runtime cannot send `SIGHUP`, or when you want the reload's result to be the exit status of the operation, expose `app.Reload` behind an authenticated admin route. `Reload` is safe to call from a handler: it is serialized, runs only while the server is running, and returns what it did — `config.ReloadResult` — beside the joined errors of what failed.
 
 ```go
-admin := app.Group("/admin").Middleware(auth.Middleware(adminAuth, nil))
+admin := app.Group("/admin").Middleware(auth.Middleware(adminAuth))
 
 admin.POST("/reload", func(c *credo.Context) error {
     res, err := app.Reload(c.Context())

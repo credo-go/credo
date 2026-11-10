@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/credo-go/credo"
@@ -42,7 +43,7 @@ func TestMiddleware_AuthSuccess(t *testing.T) {
 		}
 		captured = u
 		return ctx.Response().NoContent(200)
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
+	}).Middleware(auth.Middleware[*testUser](authenticator))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
@@ -66,7 +67,7 @@ func TestMiddleware_AuthFailure_DefaultError(t *testing.T) {
 	app.GET("/", func(ctx *credo.Context) error {
 		handlerCalled = true
 		return ctx.Response().NoContent(200)
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
+	}).Middleware(auth.Middleware[*testUser](authenticator))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
@@ -86,7 +87,7 @@ func TestMiddleware_AuthFailure_CustomError(t *testing.T) {
 	}
 
 	var capturedErr error
-	onError := func(err error, ctx *credo.Context) error {
+	onError := func(ctx *credo.Context, err error) error {
 		capturedErr = err
 		return ctx.Response().JSON(403, map[string]string{"error": "forbidden"})
 	}
@@ -94,7 +95,7 @@ func TestMiddleware_AuthFailure_CustomError(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
-	}).Middleware(auth.Middleware[*testUser](authenticator, onError))
+	}).Middleware(auth.Middleware[*testUser](authenticator, auth.Config{ErrorHandler: onError}))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
@@ -113,10 +114,10 @@ func TestMiddleware_AuthFailure_CustomErrorReturnsNil_UsesDefaultUnauthorized(t 
 	authenticator := &mockAuthenticator[*testUser]{err: authErr}
 
 	onErrorCalled := false
-	onError := func(err error, ctx *credo.Context) error {
+	onError := func(ctx *credo.Context, err error) error {
 		onErrorCalled = true
 		if !errors.Is(err, authErr) {
-			t.Errorf("expected onError err to wrap authErr, got %v", err)
+			t.Errorf("expected the ErrorHandler's err to wrap authErr, got %v", err)
 		}
 		return nil
 	}
@@ -125,14 +126,14 @@ func TestMiddleware_AuthFailure_CustomErrorReturnsNil_UsesDefaultUnauthorized(t 
 	app.GET("/", func(ctx *credo.Context) error {
 		t.Fatal("handler should not be called")
 		return nil
-	}).Middleware(auth.Middleware[*testUser](authenticator, onError))
+	}).Middleware(auth.Middleware[*testUser](authenticator, auth.Config{ErrorHandler: onError}))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
 	app.ServeHTTP(w, r)
 
 	if !onErrorCalled {
-		t.Fatal("expected onError to be called")
+		t.Fatal("expected the ErrorHandler to be called")
 	}
 	if w.Code != 401 {
 		t.Errorf("status = %d, want 401", w.Code)
@@ -153,7 +154,7 @@ func TestMiddleware_UserAccessibleInHandler(t *testing.T) {
 			"id":   u.ID,
 			"name": u.Name,
 		})
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
+	}).Middleware(auth.Middleware[*testUser](authenticator))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/profile", nil)
@@ -172,7 +173,7 @@ func TestMiddleware_IntegrationWithApp(t *testing.T) {
 
 	// Apply middleware at group level
 	g := app.Group("/api")
-	g.Middleware(auth.Middleware[*testUser](authenticator, nil))
+	g.Middleware(auth.Middleware[*testUser](authenticator))
 	g.GET("/me", func(ctx *credo.Context) error {
 		u, ok := ctx.GetUser[*testUser]()
 		if !ok {
@@ -208,7 +209,7 @@ func TestMiddleware_PrincipalViaContextMethod(t *testing.T) {
 		}
 		return ctx.Response().NoContent(200)
 	}).Middleware(auth.Middleware[*testUser](
-		&mockAuthenticator[*testUser]{user: user}, nil,
+		&mockAuthenticator[*testUser]{user: user},
 	))
 
 	w := httptest.NewRecorder()
@@ -227,7 +228,7 @@ func TestMiddleware_ErrorWrapsInternal(t *testing.T) {
 	app.GET("/", func(ctx *credo.Context) error {
 		t.Fatal("handler should not be called")
 		return nil
-	}).Middleware(auth.Middleware[*testUser](authenticator, nil))
+	}).Middleware(auth.Middleware[*testUser](authenticator))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
@@ -236,6 +237,52 @@ func TestMiddleware_ErrorWrapsInternal(t *testing.T) {
 	// Framework classifies *HTTPError internally → 401 response.
 	if w.Code != 401 {
 		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+// A zero Config field selects its default: with no config, with the zero
+// config and with an ErrorHandler that returns nil, a failed authentication
+// is the default 401 and never reaches the handler. The handler takes the
+// context first and receives the authenticator's error.
+func TestMiddleware_ConfigDefaults(t *testing.T) {
+	authErr := errors.New("bad creds")
+
+	tests := []struct {
+		name string
+		cfg  []auth.Config
+	}{
+		{"no config", nil},
+		{"zero config", []auth.Config{{}}},
+		{"ErrorHandler returns nil", []auth.Config{{
+			ErrorHandler: func(ctx *credo.Context, err error) error {
+				if ctx == nil || ctx.Request() == nil {
+					t.Error("ErrorHandler got no request context")
+				}
+				if !errors.Is(err, authErr) {
+					t.Errorf("ErrorHandler err = %v, want the authenticator's error", err)
+				}
+				return nil
+			},
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.GET("/", func(ctx *credo.Context) error {
+				t.Error("handler reached after a failed authentication")
+				return nil
+			}).Middleware(auth.Middleware[*testUser](&mockAuthenticator[*testUser]{err: authErr}, tt.cfg...))
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", w.Code)
+			}
+			if body := w.Body.String(); !strings.Contains(body, `"unauthorized"`) || strings.Contains(body, "bad creds") {
+				t.Errorf("body = %s, want the code unauthorized and no cause", body)
+			}
+		})
 	}
 }
 

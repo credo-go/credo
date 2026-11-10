@@ -170,7 +170,7 @@ func TestServerHandlerRouterMiddlewareAndAuthIntegration(t *testing.T) {
 		}
 		return nil
 	})).Middleware(
-		auth.Middleware[string](handlerTestAuthenticator{}, nil),
+		auth.Middleware[string](handlerTestAuthenticator{}),
 		mark("route"),
 	)
 

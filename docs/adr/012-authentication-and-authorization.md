@@ -18,7 +18,7 @@ The principal is a fact about the request: a user an authentication middleware s
 
 The authenticated principal is reached through generic `*credo.Context` methods — `SetUser` (type inferred), `GetUser[T]` and `RequireUser[T]` — a first-class part of the Context model, alongside `RequestID()`, `Route()`, and `Logger()`. They work with any user type: the application defines what a "user" is. The signatures and the error `RequireUser` returns are in the [auth spec](../specs/auth.md#user-accessors-generic-context-methods).
 
-The `auth` package holds the authentication _strategy_ (`Authenticator[T]`, `Middleware[T]`, `ErrorFunc`) and the API-key and Basic authenticators, in a package of its own rather than in the general-purpose `middleware/` package; only the typed user slot — the primitive — lives on the root Context. The dependency direction is `auth → root` (no cycle).
+The `auth` package holds the authentication _strategy_ (`Authenticator[T]`, `Middleware[T]`, `Config`) and the API-key and Basic authenticators, in a package of its own rather than in the general-purpose `middleware/` package; only the typed user slot — the primitive — lives on the root Context. The dependency direction is `auth → root` (no cycle).
 
 ### No Built-in User Type on Context
 
@@ -44,7 +44,9 @@ Authentication strategies implement `Authenticator[T]`, a single-method interfac
 
 ### Middleware Factory
 
-`auth.Middleware[T](authenticator, onError)` turns an authenticator into a `credo.Middleware`: on success it stores the user with `c.SetUser`, on failure it returns the error to render. Applications need different failure responses (another status or code, a `WWW-Authenticate` challenge), so the choice is an `ErrorFunc` callback rather than a subtype; without one, or when it returns nil, the failure is a 401 whose cause is logged, never rendered. The authenticator is a convenience, not a requirement: custom middleware can call `c.SetUser` directly. The [auth spec](../specs/auth.md#errorfunc-authentication-failure-callback) states the failure contract.
+`auth.Middleware[T](authenticator, cfg ...auth.Config)` turns an authenticator into a `credo.Middleware`: on success it stores the user with `c.SetUser`, on failure it returns the error to render. Applications need different failure responses (another status or code, a `WWW-Authenticate` challenge), so the choice is a callback rather than a subtype: `Config.ErrorHandler`, a `func(*credo.Context, error) error`. Without one, or when it returns nil, the failure is a 401 whose cause is logged, never rendered. The authenticator is a convenience, not a requirement: custom middleware can call `c.SetUser` directly. The [auth spec](../specs/auth.md#config-the-authentication-failure-callback) states the failure contract.
+
+The callback is a field of an optional config struct, with the name and the signature `TimeoutConfig` and `CSRFConfig` give theirs, under the [configuration-struct convention](010-middleware-architecture.md#config-struct-pattern). Rejected: a required positional callback that takes the error first, `Middleware(a, onError)` with `func(error, *credo.Context) error`. Most applications want the default 401, so the common call would end in a `nil` that says nothing; a second option would have no place to go but another positional argument; and it would be the one callback in the framework whose context is not its first parameter.
 
 ### Built-in Authenticators
 
@@ -81,5 +83,5 @@ An authorization middleware registered on the group or route reads the value wit
 - Callers must handle `ErrUserMissing` when auth middleware did not run or the user type mismatches
 - The principal is reachable only where a `*credo.Context` exists (handlers, Credo middleware); stdlib middleware adapted via `WrapStdMiddleware` cannot read or set it ([ADR-010](010-middleware-architecture.md#stdlib-adapter))
 - `SetUser` is not allocation-free: it adds one `context.WithValue` node over the request's context
-- By default every authentication failure is a 401, including an infrastructure failure an authenticator reports (a validator's database error, a JWKS outage from `Advanced.KeyFunc`); an application that wants a 5xx maps it in its `ErrorFunc`
+- By default every authentication failure is a 401, including an infrastructure failure an authenticator reports (a validator's database error, a JWKS outage from `Advanced.KeyFunc`); an application that wants a 5xx maps it in its `ErrorHandler`
 - Permission values are application strings under a typed key: the compiler checks the key's type, not the permission names

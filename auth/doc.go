@@ -28,12 +28,16 @@
 //
 // Create middleware from any Authenticator:
 //
-//	app.Middleware(auth.Middleware[*User](myAuth, nil)) // every route, mounts included
+//	app.Middleware(auth.Middleware[*User](myAuth)) // every route, mounts included
 //
-// For custom auth failure handling, provide an ErrorFunc:
+// A failed authentication is a 401 by default. To decide the failure response,
+// pass a [Config] with an ErrorHandler; like every callback in the framework
+// it takes the context first:
 //
-//	auth.Middleware[*User](myAuth, func(err error, c *credo.Context) error {
-//	    return c.Response().JSON(401, map[string]string{"error": err.Error()})
+//	auth.Middleware[*User](myAuth, auth.Config{
+//	    ErrorHandler: func(c *credo.Context, err error) error {
+//	        return credo.NewHTTPError(http.StatusUnauthorized, "session_expired").WithInternal(err)
+//	    },
 //	})
 //
 // # Built-in Authenticators
