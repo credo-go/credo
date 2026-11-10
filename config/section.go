@@ -54,6 +54,25 @@ func (s Section[T]) Decode(src RawConfig) (T, error) {
 	return s.decode(src)
 }
 
+// Exists reports whether the section is present in src, through src's
+// Exists. It answers the question an optional section raises before anything
+// is decoded: whether to register what the section configures.
+//
+//	if CacheSection.Exists(cfg) {
+//	    // register the cache module
+//	}
+//
+// Exists decodes nothing, so a section that is present and invalid still
+// reports true and fails where it is decoded, and it records no read: a
+// section may be probed and then read as static or as live. An empty key
+// names no section and reports false.
+func (s Section[T]) Exists(src RawConfig) bool {
+	if s == "" {
+		return false
+	}
+	return src.Exists(string(s))
+}
+
 // decode decodes and validates the section from src, naming the key in a
 // failure.
 func (s Section[T]) decode(src RawConfig) (T, error) {

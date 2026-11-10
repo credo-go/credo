@@ -90,7 +90,7 @@ func TestImplicitFinalize_ProbesLeaveTheContainerOpen(t *testing.T) {
 	app := newTriggerApp(t)
 	_ = app.Has[*trigDep]()
 	_, _ = app.GetConfig[string]("server.host")
-	_ = app.ConfigExists("server.host")
+	_ = app.ConfigExists[string]("server.host")
 	app.Provide(func() *trigLate { return &trigLate{} }) // the container is still open
 	if _, err := app.Resolve[*trigLate](); err != nil {
 		t.Fatalf("Resolve after the probes: %v", err)

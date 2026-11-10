@@ -51,6 +51,23 @@ app:
 	// config: section "missing": config: key "missing" not found
 }
 
+// An optional section is probed with its descriptor before it is decoded.
+func ExampleSection_Exists() {
+	cfg, err := config.LoadBytes([]byte(`{"app": {"name": "checkout"}}`), config.FormatJSON, hermetic...)
+	if err != nil {
+		panic(err)
+	}
+
+	type CacheConfig struct{ TTL string }
+	var CacheSection = config.Section[CacheConfig]("cache")
+
+	fmt.Println(AppSection.Exists(cfg))
+	fmt.Println(CacheSection.Exists(cfg))
+	// Output:
+	// true
+	// false
+}
+
 // Decoding is strict by default: an unknown key and a conversion across kinds
 // fail with the key path and the opt-in; a string parses as its target type.
 func ExampleWithWeakDecoding() {

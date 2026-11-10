@@ -379,7 +379,7 @@ func TestWithConfig_IsHermetic(t *testing.T) {
 			}
 		}
 		for _, key := range []string{"app.extra", "app.secret"} {
-			if app.ConfigExists(key) {
+			if app.ConfigExists(config.Section[string](key)) {
 				got, _ := app.GetConfig(config.Section[string](key))
 				t.Errorf("%s = %q came from outside the test", key, got)
 			}
