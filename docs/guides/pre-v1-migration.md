@@ -12,6 +12,19 @@ These changes are on `main` and not yet in a release.
 | A catch-all in a `Mount` prefix, or in a group prefix under `Static` | Registration panics: the mount or static route captures the path below its prefix itself |
 | `middleware.ContractConfig{RequireContentType: true}`, or a `MetaAccept` contract that let a body without a `Content-Type` pass | Drop the field: the contract answers 415 to such a body by default, and `ContractConfig{AllowMissingContentType: true}` lets it pass |
 | `UseHealth` with `Enabled` false, followed by a second `UseHealth` | The second call panics: call `UseHealth` once, with the `Enabled` value the deployment wants; checks registered after a disabled call are accepted and never run |
+| `middleware.Secure(middleware.SecureConfig{…})` relying on a header it left out being off | A field left out keeps its default: set `DisableContentTypeNosniff: true` or `DisableXFrameOptions: true` to keep `nosniff` or `X-Frame-Options` off |
+| `SecureConfig{ContentTypeNosniff: "nosniff"}` | Delete the field: the header is sent by default |
+| `SecureConfig{ContentTypeNosniff: ""}` in a config meant to send no `nosniff` | `SecureConfig{DisableContentTypeNosniff: true}` |
+| `middleware.Secure()` relying on `X-XSS-Protection: 1; mode=block` | `SecureConfig{XSSProtection: "1; mode=block"}`; browsers no longer act on the header |
+| `cfg := middleware.DefaultXConfig(); cfg.F = v; middleware.X(cfg)` (`Contract`, `CORS`, `CSRF`, `Rewrite`, `Secure`, `Timeout`) | `middleware.X(middleware.XConfig{F: v})` |
+| `Skipper: middleware.DefaultSkipper` | Delete the field: a nil `Skipper` skips no request |
+| `ratelimit.DefaultConfig()`, `httpclient.DefaultRetryConfig()` | `ratelimit.Config{}`, `httpclient.RetryConfig{}`, with the fields to change |
+| `auth.Middleware[T](a, nil)` | `auth.Middleware[T](a)` |
+| `auth.Middleware[T](a, func(err error, c *credo.Context) error { … })` | `auth.Middleware[T](a, auth.Config{ErrorHandler: func(c *credo.Context, err error) error { … }})` |
+| `auth.Middleware[T](a, auth.BasicErrorHandler(realm))` | `auth.Middleware[T](a, auth.Config{ErrorHandler: auth.BasicErrorHandler(realm)})` |
+| `auth.ErrorFunc` | `func(*credo.Context, error) error` |
+| `store.Kind`, `store.KindNotFound` and the other `store.Kind*` constants | The same name in `fault`: `fault.Kind`, `fault.KindNotFound`, … |
+| `validation.ValidationError`, `validation.Errors`, `validation.NewError(code, message)` | `validation.Violation`, `validation.Violations`, `validation.NewViolation(code, message)`, in `errors.AsType` targets as well |
 
 ## v0.26.0 at a glance
 
@@ -392,7 +405,7 @@ Each row is a compile error, or a log key or message the compiler cannot see, wi
 | A raw handle and a wrapper that embeds it, registered in different tiers | One tier for both, or a wrapper that holds the handle in a named field |
 | `middleware.NewRateLimiter(cfg).Middleware()`, `middleware.RateLimit(cfg)` | `ratelimit.Middleware(cfg)`, in `github.com/credo-go/credo/middleware/ratelimit`; one value attached to several routes spends one budget |
 | `middleware.RateLimitConfig` | `ratelimit.Config`, whose `Skipper` keeps the type `middleware.Skipper` |
-| `middleware.DefaultRateLimitConfig()` | `ratelimit.DefaultConfig()` |
+| `middleware.DefaultRateLimitConfig()` | `ratelimit.Config{}`: the zero `Config` selects every default |
 | `app.Manage(limiter)` of a `*middleware.RateLimiter` | Nothing: delete the call with the variable it named; the rate limiter is not a component |
 
 ### What an application keeps (v0.25.0)
@@ -409,7 +422,7 @@ Each row is a compile error, or a log key or message the compiler cannot see, wi
 
 The compiler finds every removed or renamed call. These changes it does not find — code that builds as before and behaves differently — so look for them before anything else:
 
-- **Rule errors are internal unless they are violations.** A validation rule that returns a plain error — `errors.New` in a `validation.By` function, a database error from a lookup — now yields a 500 with the text only in the log (a fault keeps its status, `store`'s unavailable kind a 503), not a 422 violation; a client message is `validation.NewError(code, message)`. An `HTTPError` you construct wins over validation errors it wraps: `NewHTTPError(409, …).WithInternal(vErrs)` renders 409. A `Validate` that returns one `*validation.ValidationError` renders 422 instead of 500 ([Error handling](#error-handling)).
+- **Rule errors are internal unless they are violations.** A validation rule that returns a plain error — `errors.New` in a `validation.By` function, a database error from a lookup — now yields a 500 with the text only in the log (a fault keeps its status, `store`'s unavailable kind a 503), not a 422 violation; a client message is `validation.NewViolation(code, message)`. An `HTTPError` you construct wins over validation errors it wraps: `NewHTTPError(409, …).WithInternal(vErrs)` renders 409. A `Validate` that returns one `*validation.ValidationError` renders 422 instead of 500 ([Error handling](#error-handling)).
 - **Ignored registration errors are panics now.** `Provide`, `ProvideValue`, `Alias`, `BindMany` and `UseI18n` return nothing; a call whose error was discarded compiles and now panics on misuse at its line. `Resolve` before `Finalize` panics instead of returning an error ([Sequential bootstrap](#sequential-bootstrap)).
 - **`OnStart`'s context ends with the hook.** A goroutine launched from a hook on its context stops as soon as the hook returns; background work becomes a component or a worker ([Lifecycle components](#lifecycle-components)).
 - **A shutdown during startup interrupts the start.** The running `Start` sees its context cancelled, nothing further starts, what was built is rolled back, and `Run` returns nil after a clean rollback.
@@ -540,7 +553,7 @@ Every change here is a compile error, so the compiler finds each call site:
 | `credo.NewHTTPError(409, "tenant_conflict").WithInternal(vErrs)` rendered 422 `validation_failed`, because classification looked for validation errors anywhere in the chain first | An explicitly constructed `HTTPError` decides the status: it renders 409 `tenant_conflict`, and the wrapped errors stay in `ErrorInfo.Err`. Validation errors that no `HTTPError` wraps still render as 422 |
 | A `Validate` method that returned a single `*validation.ValidationError` (not `validation.Errors`) rendered a 500 | It renders 422 `validation_failed` with one violation |
 
-Migration: search for `validation.By(` and for `Validate(value` methods of custom rules, and turn each `errors.New`/`fmt.Errorf` that carries a message for the client into `validation.NewError("<code>", "<message>")`, choosing a lowercase snake-case code; keep returning a plain error where the failure is the server's. A client or test that expected 422 `invalid` for such a message now sees the new code. Search for `WithInternal(` around validation errors: the status you constructed is now the one sent.
+Migration: search for `validation.By(` and for `Validate(value` methods of custom rules, and turn each `errors.New`/`fmt.Errorf` that carries a message for the client into `validation.NewViolation("<code>", "<message>")`, choosing a lowercase snake-case code; keep returning a plain error where the failure is the server's. A client or test that expected 422 `invalid` for such a message now sees the new code. Search for `WithInternal(` around validation errors: the status you constructed is now the one sent.
 
 ## Built-in HTTP features
 

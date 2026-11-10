@@ -55,7 +55,7 @@ The delivery plan for this work was folded into [ADR-024](docs/adr/024-lifecycle
 - [x] Stores, health, WebSocket and i18n on the kernel (`store.Register[R]`, `/ready` without per-request resolution, `websocket.New`, `UseI18n` without an error) (2026-10-08)
 - [x] Workers as components (`Supervisor`, `Continuous`/`Scheduled` and their provided forms, per-kind configuration) (2026-10-08)
 - [x] The DI surface — seven methods (`Provide`, `ProvideValue`, `Alias`, `BindMany`, `Has`, `Resolve`, `ResolveAll`) and `Finalize`, plus the resolve twins `MustResolve`/`MustResolveAll`; protected bindings (`ProvideProtectedValue`, `ProtectBinding`), `AdoptValue`, `CanProvideValue`, `Replace`/`MustReplace` and the `Must*` registration twins deleted (2026-10-08)
-- [x] A rule error that is not a `*ValidationError` is internal; an explicit status wins over a wrapped validation error; `validation.NewError` builds the client-visible one (2026-10-08)
+- [x] A rule error that is not a `*Violation` is internal; an explicit status wins over a wrapped validation error; `validation.NewViolation` builds the client-visible one (2026-10-08)
 - [x] `StatusHandler` panics for any code but 404 and 405 (2026-10-08)
 - [x] Examples, guides and the release
 
@@ -256,7 +256,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `collection_rules.go` — Each, When, NilSafe
   - [x] `date_rules.go` — DateBefore, DateAfter
   - [x] `common_rules.go` — In, NotNil, By (inline custom)
-- [x] `ValidationError` struct with `Code` + `Params` fields (i18n-ready)
+- [x] `Violation` struct with `Code` + `Params` fields (i18n-ready)
 - [x] Compact default error envelope with RFC 9457 opt-in (`Violations` integration; nested `error` object since v0.14.0)
 - [x] `validation/doc.go`
 - [x] Tests per rule group + integration tests (86 tests, -race clean)
@@ -356,8 +356,8 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] `(*credo.Context).GetUser[T]()` — retrieve user with generic type safety
 - [x] `(*credo.Context).RequireUser[T]()` — retrieve or return `credo.ErrUnauthorized` wrapping `credo.ErrUserMissing`
 - [x] `Authenticator[T]` interface: `Authenticate(r *http.Request) (T, error)`
-- [x] `ErrorFunc` type for custom auth failure responses
-- [x] `auth.Middleware[T](authenticator, onError)` — middleware factory, calls `ctx.SetUser`
+- [x] `auth.Config.ErrorHandler` for custom auth failure responses
+- [x] `auth.Middleware[T](authenticator, cfg ...auth.Config)` — middleware factory, calls `ctx.SetUser`
 - [x] `auth/doc.go`
 - [x] Tests: accessor unit tests (root `user_test.go`) + middleware factory + integration
 
@@ -384,7 +384,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 
 **Phase 3.3a — Core Package** (`store/`):
 
-- [x] Semantic store error model: transport-neutral `fault.Kind`/`store.Kind`, structured `store.Error`, exact sentinels (`AlreadyExists`, `Constraint`, `Serialization`, `Deadlock`, `Contention`, `Timeout`, `Unavailable`, `ReadOnly`), deprecated `ErrDuplicate` alias, and deprecated `ErrConflict` umbrella
+- [x] Semantic store error model: transport-neutral `fault.Kind`, structured `store.Error`, exact sentinels (`AlreadyExists`, `Constraint`, `Serialization`, `Deadlock`, `Contention`, `Timeout`, `Unavailable`, `ReadOnly`), deprecated `ErrDuplicate` alias, and deprecated `ErrConflict` umbrella
 - [x] `Lifecycle` interface (Ping, Shutdown, Health); resource identity through the root's `credo.ResourceIdentifier` (`ResourceIdentity() any`, v0.24.0; `store.LifecycleIdentityProvider` before)
 - [x] `Health` / `HealthStatus` types
 - [x] `Register[R](app, opts...)` (v0.24.0) — names an existing binding of `R` as a store: no I/O and no value at the call, misuse panics, a missing binding fails `Finalize`, the ping runs in the start phase and its readiness probe is built once there; the binding stays an ordinary one that `credo.Override()` replaces. The former `Registry`/`HealthAll` facade, the identity ledger and the protected binding are removed
