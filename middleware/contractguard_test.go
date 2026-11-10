@@ -349,9 +349,7 @@ func TestContractGuard_MissingContentType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := middleware.DefaultContractConfig()
-			cfg.AllowMissingContentType = tt.allow
-			app, g := contractGroup(t, cfg)
+			app, g := contractGroup(t, middleware.ContractConfig{AllowMissingContentType: tt.allow})
 			var route *credo.Route
 			if tt.method == http.MethodGet {
 				route = g.GET("/x", contractOK)

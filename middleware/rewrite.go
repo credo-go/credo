@@ -70,17 +70,11 @@ type compiledRule struct {
 // RewriteConfig defines configuration for the [Rewrite] middleware.
 type RewriteConfig struct {
 	// Skipper skips rewriting for matching requests.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// Rules are evaluated in order; the first match wins.
 	Rules []RewriteRule
-}
-
-// DefaultRewriteConfig returns the default Rewrite middleware config: no
-// Skipper and no rules (a rule list is required). Each call returns a fresh
-// value, so callers cannot mutate the package-wide defaults.
-func DefaultRewriteConfig() RewriteConfig {
-	return RewriteConfig{Skipper: DefaultSkipper}
 }
 
 // Rewrite returns middleware that rewrites URL paths before dispatch.
@@ -101,7 +95,7 @@ func DefaultRewriteConfig() RewriteConfig {
 // malformed escape, which only a Regexp group that splits an escape
 // produces, returns an error.
 func Rewrite(cfg ...RewriteConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultRewriteConfig(), normalizeRewriteConfig)
+	config := resolveConfig(cfg, normalizeRewriteConfig)
 	compiled := compileRules(config.Rules)
 
 	return func(next credo.Handler) credo.Handler {
@@ -122,7 +116,7 @@ func normalizeRewriteConfig(cfg RewriteConfig) RewriteConfig {
 		panic("credo: middleware.Rewrite requires at least one rule")
 	}
 	if cfg.Skipper == nil {
-		cfg.Skipper = DefaultSkipper
+		cfg.Skipper = neverSkip
 	}
 	return cfg
 }

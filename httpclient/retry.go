@@ -11,8 +11,8 @@ import (
 )
 
 // RetryConfig configures the retry transport (see [WithRetry] and
-// [NewRetryTransport]). Zero-valued fields fall back to the corresponding
-// [DefaultRetryConfig] values.
+// [NewRetryTransport]). A zero field selects its default, so passing no
+// config is the same as passing the zero value.
 type RetryConfig struct {
 	// MaxAttempts is the total number of attempts including the first.
 	// Default 3 (one initial attempt plus two retries).
@@ -32,17 +32,12 @@ type RetryConfig struct {
 	RetryIf func(req *http.Request, resp *http.Response, err error) bool
 }
 
-// DefaultRetryConfig returns the configuration used by [WithRetry] and
-// [NewRetryTransport] when no config is supplied. Each call returns a
-// fresh value, so callers cannot mutate the package-wide defaults.
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		MaxAttempts: 3,
-		MinDelay:    100 * time.Millisecond,
-		MaxDelay:    2 * time.Second,
-		RetryIf:     DefaultRetryIf,
-	}
-}
+// The values the zero fields of a [RetryConfig] select.
+const (
+	defaultRetryMaxAttempts = 3
+	defaultRetryMinDelay    = 100 * time.Millisecond
+	defaultRetryMaxDelay    = 2 * time.Second
+)
 
 // DefaultRetryIf reports whether a request should be retried:
 // idempotent method AND (transport error OR 5xx response), never after
@@ -70,9 +65,10 @@ func DefaultRetryIf(req *http.Request, resp *http.Response, err error) bool {
 	return resp != nil && resp.StatusCode >= 500
 }
 
-// NewRetryTransport wraps base with retry-with-backoff behavior. Zero args
-// use [DefaultRetryConfig]; zero-valued config fields fall back to their
-// defaults.
+// NewRetryTransport wraps base with retry-with-backoff behavior. A zero
+// field of the config selects its default, and no config is the zero value:
+// three attempts, a first backoff ceiling of 100ms capped at 2s, and
+// [DefaultRetryIf].
 //
 // Backoff between attempts is full-jitter exponential: a uniformly random
 // duration in [0, min(MaxDelay, MinDelay·2^(attempt-1))). Waits abort
@@ -92,7 +88,7 @@ func DefaultRetryIf(req *http.Request, resp *http.Response, err error) bool {
 //
 // A nil base defaults to [http.DefaultTransport].
 func NewRetryTransport(base http.RoundTripper, cfg ...RetryConfig) http.RoundTripper {
-	config := DefaultRetryConfig()
+	var config RetryConfig
 	if len(cfg) > 0 {
 		config = cfg[0]
 	}
@@ -104,15 +100,14 @@ func NewRetryTransport(base http.RoundTripper, cfg ...RetryConfig) http.RoundTri
 }
 
 func normalizeRetryConfig(config RetryConfig) RetryConfig {
-	defaults := DefaultRetryConfig()
 	if config.MaxAttempts <= 0 {
-		config.MaxAttempts = defaults.MaxAttempts
+		config.MaxAttempts = defaultRetryMaxAttempts
 	}
 	if config.MinDelay <= 0 {
-		config.MinDelay = defaults.MinDelay
+		config.MinDelay = defaultRetryMinDelay
 	}
 	if config.MaxDelay <= 0 {
-		config.MaxDelay = defaults.MaxDelay
+		config.MaxDelay = defaultRetryMaxDelay
 	}
 	if config.RetryIf == nil {
 		config.RetryIf = DefaultRetryIf

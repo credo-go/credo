@@ -12,9 +12,11 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// TimeoutConfig defines configuration for Timeout middleware.
+// TimeoutConfig defines configuration for Timeout middleware. A zero field
+// selects its default.
 type TimeoutConfig struct {
 	// Skipper defines a function to skip middleware.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// Timeout defines request context timeout.
@@ -22,16 +24,9 @@ type TimeoutConfig struct {
 	Timeout time.Duration
 
 	// ErrorHandler maps downstream errors after timeout wrapping.
+	// Default: context.DeadlineExceeded becomes 503 request_timeout and
+	// every other error is returned unchanged.
 	ErrorHandler func(ctx *credo.Context, err error) error
-}
-
-// DefaultTimeoutConfig returns the default Timeout middleware config.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultTimeoutConfig() TimeoutConfig {
-	return TimeoutConfig{
-		Skipper: DefaultSkipper,
-	}
 }
 
 // Timeout returns request timeout middleware.
@@ -49,7 +44,7 @@ func DefaultTimeoutConfig() TimeoutConfig {
 // c.Context() to blocking work (database queries, outbound requests) so
 // it actually aborts on deadline.
 func Timeout(cfg ...TimeoutConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultTimeoutConfig(), normalizeTimeoutConfig)
+	config := resolveConfig(cfg, normalizeTimeoutConfig)
 
 	return func(next credo.Handler) credo.Handler {
 		return func(c *credo.Context) error {
@@ -68,7 +63,7 @@ func Timeout(cfg ...TimeoutConfig) credo.Middleware {
 
 func normalizeTimeoutConfig(config TimeoutConfig) TimeoutConfig {
 	if config.Skipper == nil {
-		config.Skipper = DefaultSkipper
+		config.Skipper = neverSkip
 	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = defaultTimeoutErrorHandler

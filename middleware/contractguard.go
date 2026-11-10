@@ -74,9 +74,11 @@ var (
 	MetaScope = credo.NewKey[[]string]("scope")
 )
 
-// ContractConfig configures the [ContractGuard] middleware.
+// ContractConfig configures the [ContractGuard] middleware. A zero field
+// selects its default.
 type ContractConfig struct {
 	// Skipper defines a function to skip the middleware for a request.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// ScopeChecker enforces the MetaScope contract. It receives the request
@@ -106,16 +108,6 @@ type ContractConfig struct {
 	CustomChecks []func(ctx *credo.Context) error
 }
 
-// DefaultContractConfig returns the default [ContractGuard] configuration.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultContractConfig() ContractConfig {
-	return ContractConfig{
-		Skipper:          DefaultSkipper,
-		APIVersionHeader: "X-API-Version",
-	}
-}
-
 // errContractNoRoute is the guard's answer to a request without a route.
 var errContractNoRoute = errors.New("contractguard: no route is matched, so no contract can be checked: " +
 	"the guard is registered with App.PreRouting, which runs before the match; " +
@@ -139,7 +131,7 @@ var errContractNoRoute = errors.New("contractguard: no route is matched, so no c
 // Each contract maps a route meta key to an HTTP rejection: see the Meta*
 // keys for the value types and status codes.
 func ContractGuard(cfg ...ContractConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultContractConfig(), normalizeContractConfig)
+	config := resolveConfig(cfg, normalizeContractConfig)
 	var reported atomic.Bool
 
 	return func(next credo.Handler) credo.Handler {
@@ -197,10 +189,10 @@ func ContractGuard(cfg ...ContractConfig) credo.Middleware {
 
 func normalizeContractConfig(c ContractConfig) ContractConfig {
 	if c.Skipper == nil {
-		c.Skipper = DefaultSkipper
+		c.Skipper = neverSkip
 	}
 	if c.APIVersionHeader == "" {
-		c.APIVersionHeader = DefaultContractConfig().APIVersionHeader
+		c.APIVersionHeader = "X-API-Version"
 	}
 	return c
 }

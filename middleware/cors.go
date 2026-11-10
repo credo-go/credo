@@ -17,9 +17,11 @@ import (
 
 const methodQuery = "QUERY"
 
-// CORSConfig defines configuration for CORS middleware.
+// CORSConfig defines configuration for CORS middleware. A zero field selects
+// its default.
 type CORSConfig struct {
 	// Skipper defines a function to skip middleware.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// AllowOrigins defines allowed origins. Each entry is either "*" (allow
@@ -64,28 +66,11 @@ type originMatcher struct {
 	patterns []internalorigin.Pattern
 }
 
-// DefaultCORSConfig returns the default CORS middleware config.
-// Each call returns a fresh value (including fresh slices), so callers
-// cannot mutate the package-wide defaults.
-func DefaultCORSConfig() CORSConfig {
-	return CORSConfig{
-		Skipper:      DefaultSkipper,
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{
-			http.MethodGet,
-			http.MethodHead,
-			http.MethodPut,
-			http.MethodPatch,
-			http.MethodPost,
-			http.MethodDelete,
-			methodQuery,
-		},
-	}
-}
-
-// CORS returns CORS middleware.
+// CORS returns CORS middleware. With no config, or with a config that leaves
+// them out, every origin is allowed and a preflight allows GET, HEAD, PUT,
+// PATCH, POST, DELETE and QUERY.
 func CORS(cfg ...CORSConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultCORSConfig(), normalizeCORSConfig)
+	config := resolveConfig(cfg, normalizeCORSConfig)
 
 	matcher := compileOriginMatcher(config.AllowOrigins)
 
@@ -165,13 +150,21 @@ func normalizeCORSConfig(config CORSConfig) CORSConfig {
 	config.ExposeHeaders = slices.Clone(config.ExposeHeaders)
 
 	if config.Skipper == nil {
-		config.Skipper = DefaultSkipper
+		config.Skipper = neverSkip
 	}
 	if len(config.AllowOrigins) == 0 && config.AllowOriginFunc == nil {
 		config.AllowOrigins = []string{"*"}
 	}
 	if len(config.AllowMethods) == 0 {
-		config.AllowMethods = DefaultCORSConfig().AllowMethods
+		config.AllowMethods = []string{
+			http.MethodGet,
+			http.MethodHead,
+			http.MethodPut,
+			http.MethodPatch,
+			http.MethodPost,
+			http.MethodDelete,
+			methodQuery,
+		}
 	}
 
 	return config

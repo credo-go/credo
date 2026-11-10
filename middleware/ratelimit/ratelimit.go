@@ -21,9 +21,11 @@ const (
 	maxUnixNano              = uint64(1<<63 - 1)
 )
 
-// Config defines configuration for the rate-limiting [Middleware].
+// Config defines configuration for the rate-limiting [Middleware]. A zero
+// field selects its default.
 type Config struct {
 	// Skipper defines a function to skip middleware.
+	// Default: no request is skipped.
 	Skipper middleware.Skipper
 
 	// Store is the backing limiter store. A store passed in stays its
@@ -47,22 +49,19 @@ type Config struct {
 	// InternalErrorHandler handles internal limiter/key errors (key
 	// extraction failure, store failure). Over-limit responses go through
 	// DeniedHandler instead.
+	// Default: 500, with the error attached as the internal error.
 	InternalErrorHandler func(ctx *credo.Context, err error) error
 
 	// DeniedHandler handles over-limit responses.
+	// Default: 429.
 	DeniedHandler func(ctx *credo.Context, limit, remaining uint64, reset time.Time) error
 }
 
-// DefaultConfig returns the default rate-limiting [Middleware] config.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultConfig() Config {
-	return Config{
-		Skipper:  middleware.DefaultSkipper,
-		Tokens:   60,
-		Interval: time.Minute,
-	}
-}
+// The limits a zero Tokens and a zero Interval select.
+const (
+	defaultTokens   = 60
+	defaultInterval = time.Minute
+)
 
 // Middleware returns token-bucket rate-limiting middleware, keyed by client IP
 // unless Config.KeyFunc says otherwise.
@@ -76,7 +75,7 @@ func DefaultConfig() Config {
 // the middleware. A store passed in through Config.Store stays its owner's to
 // close.
 func Middleware(cfg ...Config) credo.Middleware {
-	config := DefaultConfig()
+	var config Config
 	if len(cfg) > 0 {
 		config = cfg[0]
 	}
@@ -126,15 +125,14 @@ func buildMiddleware(config Config) credo.Middleware {
 }
 
 func normalizeConfig(config Config) Config {
-	defaults := DefaultConfig()
 	if config.Skipper == nil {
-		config.Skipper = defaults.Skipper
+		config.Skipper = neverSkip
 	}
 	if config.Tokens == 0 {
-		config.Tokens = defaults.Tokens
+		config.Tokens = defaultTokens
 	}
 	if config.Interval <= 0 {
-		config.Interval = defaults.Interval
+		config.Interval = defaultInterval
 	}
 	if config.KeyFunc == nil {
 		config.KeyFunc = keyFromContext
@@ -144,6 +142,11 @@ func normalizeConfig(config Config) Config {
 	}
 
 	return config
+}
+
+// neverSkip is the Skipper a nil Config.Skipper selects.
+func neverSkip(*credo.Context) bool {
+	return false
 }
 
 func defaultErrorHandler(_ *credo.Context, err error) error {

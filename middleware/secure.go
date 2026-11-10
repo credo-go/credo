@@ -9,21 +9,39 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// SecureConfig defines configuration for Secure middleware.
+// SecureConfig defines configuration for Secure middleware. A zero field
+// selects its default: a config that sets one field keeps the defaults of the
+// others, so the two headers that are sent by default, X-Content-Type-Options
+// and X-Frame-Options, are turned off only by their Disable fields.
 type SecureConfig struct {
 	// Skipper defines a function to skip middleware.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// XSSProtection sets the X-XSS-Protection header value.
+	// Default: the header is not sent. Browsers have removed the XSS
+	// auditor it controlled; an application that still wants to switch the
+	// auditor off in an old browser sets "0".
 	XSSProtection string
 
-	// ContentTypeNosniff sets the X-Content-Type-Options header value.
-	ContentTypeNosniff string
+	// DisableContentTypeNosniff stops the middleware from sending
+	// "X-Content-Type-Options: nosniff", the header's one value.
+	// Default: the header is sent.
+	DisableContentTypeNosniff bool
 
 	// XFrameOptions sets the X-Frame-Options header value.
+	// Default: "SAMEORIGIN".
 	XFrameOptions string
 
+	// DisableXFrameOptions stops the middleware from sending
+	// X-Frame-Options, for an application whose Content-Security-Policy
+	// decides framing with frame-ancestors. When it is set, XFrameOptions
+	// is not read.
+	// Default: the header is sent.
+	DisableXFrameOptions bool
+
 	// HSTSMaxAge sets Strict-Transport-Security max-age in seconds.
+	// Default: the header is not sent.
 	HSTSMaxAge int
 
 	// HSTSExcludeSubdomains disables includeSubDomains in HSTS.
@@ -33,30 +51,23 @@ type SecureConfig struct {
 	HSTSPreloadEnabled bool
 
 	// ContentSecurityPolicy sets CSP or CSP-Report-Only header value.
+	// Default: the header is not sent.
 	ContentSecurityPolicy string
 
 	// CSPReportOnly uses Content-Security-Policy-Report-Only header.
 	CSPReportOnly bool
 
 	// ReferrerPolicy sets the Referrer-Policy header value.
+	// Default: the header is not sent.
 	ReferrerPolicy string
 }
 
-// DefaultSecureConfig returns the default Secure middleware config.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultSecureConfig() SecureConfig {
-	return SecureConfig{
-		Skipper:            DefaultSkipper,
-		XSSProtection:      "1; mode=block",
-		ContentTypeNosniff: "nosniff",
-		XFrameOptions:      "SAMEORIGIN",
-	}
-}
-
-// Secure returns middleware that sets common security headers.
+// Secure returns middleware that sets common security headers. With no
+// config, or with a config that leaves them out, it sends
+// "X-Content-Type-Options: nosniff" and "X-Frame-Options: SAMEORIGIN"; every
+// other header is sent only when its field is set.
 func Secure(cfg ...SecureConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultSecureConfig(), normalizeSecureConfig)
+	config := resolveConfig(cfg, normalizeSecureConfig)
 
 	// Pre-compute the HSTS header value (config is immutable after this point).
 	var hstsValue string
@@ -82,10 +93,10 @@ func Secure(cfg ...SecureConfig) credo.Middleware {
 			if config.XSSProtection != "" {
 				headers.Set("X-XSS-Protection", config.XSSProtection)
 			}
-			if config.ContentTypeNosniff != "" {
-				headers.Set("X-Content-Type-Options", config.ContentTypeNosniff)
+			if !config.DisableContentTypeNosniff {
+				headers.Set("X-Content-Type-Options", "nosniff")
 			}
-			if config.XFrameOptions != "" {
+			if !config.DisableXFrameOptions {
 				headers.Set("X-Frame-Options", config.XFrameOptions)
 			}
 
@@ -112,7 +123,10 @@ func Secure(cfg ...SecureConfig) credo.Middleware {
 
 func normalizeSecureConfig(config SecureConfig) SecureConfig {
 	if config.Skipper == nil {
-		config.Skipper = DefaultSkipper
+		config.Skipper = neverSkip
+	}
+	if config.XFrameOptions == "" {
+		config.XFrameOptions = "SAMEORIGIN"
 	}
 	return config
 }
