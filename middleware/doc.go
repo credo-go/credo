@@ -28,7 +28,18 @@
 // envelopes and panic responses included — and cannot be applied per route or
 // per group. Handlers read the current request ID via c.RequestID().
 //
-// Most middleware in this package expose a [Skipper] for selective application.
+// # Config Structs
+//
+// A configurable middleware takes at most one config struct, and one rule
+// reads all of them: a zero field selects its default. Passing no config is
+// passing the zero value, and a config that sets one field keeps the defaults
+// of the others, so Secure(SecureConfig{HSTSMaxAge: 31536000}) still sends
+// the two headers Secure() sends. Turning off something that is on by default
+// takes an explicit field, such as [SecureConfig.DisableXFrameOptions]. Each
+// field's godoc names its default.
+//
+// Every config carries a [Skipper] for selective application; left nil, it
+// skips no request.
 //
 // # Recommended Middleware Order
 //

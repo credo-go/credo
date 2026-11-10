@@ -270,14 +270,16 @@ Always propagate the error unless you have a specific reason to swallow it. Cred
 
 Middleware with options uses an optional config parameter:
 
-- `Middleware()` — creates the middleware with sensible defaults
-- `Middleware(cfg)` — creates the middleware with custom options
+- `Middleware()` — creates the middleware with its defaults
+- `Middleware(cfg)` — creates the middleware with the fields you set; **a field you leave out keeps its default**
+
+One rule reads every config struct: a zero field selects its default. Passing a config never drops the defaults of the fields it does not mention, so there is no `DefaultXConfig()` to start from; write the struct literal with the fields you want to change. Turning off something that is on by default takes an explicit field, such as `SecureConfig.DisableXFrameOptions`.
 
 ```go
-// Default config
+// The defaults
 app.PreRouting(middleware.CORS())
 
-// Custom config
+// Four fields set; every other field keeps its default
 app.PreRouting(middleware.CORS(middleware.CORSConfig{
     AllowOrigins: []string{"https://example.com", "https://app.example.com"},
     AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
@@ -549,18 +551,16 @@ QUERY is safe under RFC 10008, but it is not a CORS-safelisted method. Cross-ori
 
 ### Secure
 
-Sets common security headers: `X-XSS-Protection`, `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, `Content-Security-Policy`, and `Referrer-Policy`.
+Sets common security headers. Two are sent by default, `X-Content-Type-Options: nosniff` and `X-Frame-Options: SAMEORIGIN`; `Strict-Transport-Security`, `Content-Security-Policy`, `Referrer-Policy` and `X-XSS-Protection` are sent when you set their fields.
 
 ```go
 app.PreRouting(middleware.Secure())
 ```
 
-Full configuration:
+A config keeps the defaults of the fields it leaves out, so this one still sends `nosniff`:
 
 ```go
 app.PreRouting(middleware.Secure(middleware.SecureConfig{
-    XSSProtection:         "1; mode=block",
-    ContentTypeNosniff:    "nosniff",
     XFrameOptions:         "DENY",
     HSTSMaxAge:            31536000,
     HSTSPreloadEnabled:    true,
@@ -571,13 +571,25 @@ app.PreRouting(middleware.Secure(middleware.SecureConfig{
 }))
 ```
 
+The two default headers are turned off by name. `DisableXFrameOptions` is for an application whose `Content-Security-Policy` decides framing with `frame-ancestors`, which browsers prefer over `X-Frame-Options`:
+
+```go
+app.PreRouting(middleware.Secure(middleware.SecureConfig{
+    ContentSecurityPolicy: "default-src 'self'; frame-ancestors 'none'",
+    DisableXFrameOptions:  true,
+    // DisableContentTypeNosniff: true, // stops X-Content-Type-Options: nosniff
+}))
+```
+
+`X-XSS-Protection` is not sent by default: browsers removed the XSS auditor it controlled. Set `XSSProtection: "0"` if you still want to switch the auditor off in an old browser.
+
 #### HSTS (Strict-Transport-Security)
 
 HSTS tells browsers to use HTTPS for all future requests to your domain. It is **opt-in and never enabled automatically** — the framework sets the header only when you give `HSTSMaxAge` a non-zero value. The header is also sent **only over HTTPS** (guarded by `c.Request().Scheme()`), per RFC 6797; it is never emitted on a plaintext response.
 
 ```go
-// Enable HSTS only — set HSTSMaxAge; the other Secure headers stay off because
-// the zero-value config does not apply the X-XSS/nosniff/frame defaults.
+// Enable HSTS — set HSTSMaxAge. The two default headers, nosniff and
+// X-Frame-Options: SAMEORIGIN, are still sent: a field left out keeps its default.
 app.PreRouting(middleware.Secure(middleware.SecureConfig{
     HSTSMaxAge:            31536000, // 1 year, in seconds
     HSTSExcludeSubdomains: false,    // includeSubDomains on (the default)
@@ -715,12 +727,9 @@ func MyMiddleware(cfg ...MyConfig) credo.Middleware {
     if len(cfg) > 0 {
         conf = cfg[0]
     }
-    if conf.Skipper == nil {
-        conf.Skipper = middleware.DefaultSkipper
-    }
     return func(next credo.Handler) credo.Handler {
         return func(c *credo.Context) error {
-            if conf.Skipper(c) {
+            if conf.Skipper != nil && conf.Skipper(c) { // a nil Skipper skips no request
                 return next(c)
             }
             // ... middleware logic ...
@@ -1061,9 +1070,8 @@ func main() {
     // PreRouting middleware, which covers the router's 404 and 405 too:
     app.PreRouting(
         middleware.Secure(middleware.SecureConfig{
-            HSTSMaxAge:         31536000,
-            ContentTypeNosniff: "nosniff",
-            XFrameOptions:      "DENY",
+            HSTSMaxAge:    31536000,
+            XFrameOptions: "DENY",
         }),
         middleware.CORS(middleware.CORSConfig{
             AllowOrigins:     []string{"https://example.com"},

@@ -140,13 +140,20 @@ Each rejection renders its code's built-in message, with its value in `Details`:
 
 ## Config Struct Pattern (Echo-inspired)
 
-Each constructor takes `cfg ...XConfig`: no argument selects `DefaultXConfig()`, one argument customizes.
+Each constructor takes `cfg ...XConfig`, at most one. One rule covers every config struct in `middleware` and `middleware/ratelimit`, and `httpclient.RetryConfig` beside them: **a zero field selects its default.**
+
+- No argument is the zero config: `Secure()` and `Secure(SecureConfig{})` build the same middleware.
+- A config that sets one field keeps the defaults of the others. `Secure(SecureConfig{HSTSMaxAge: 31536000})` adds HSTS to the two headers `Secure()` sends.
+- Turning a default off takes an explicit value. A header or behaviour that is on by default has a `Disable…` field (`SecureConfig.DisableContentTypeNosniff`, `DisableXFrameOptions`), since a zero value cannot say "off".
+- A `Skipper` left nil skips no request.
+
+There is no `DefaultXConfig()` constructor and no exported default `Skipper`: under the rule each would be a second spelling of the zero value. A field's default is documented on the field.
 
 ```go
-// Default config
+// The defaults
 app.PreRouting(middleware.CORS())
 
-// Custom config
+// Two fields set; every other field keeps its default
 app.PreRouting(middleware.CORS(middleware.CORSConfig{
     AllowOrigins: []string{"https://example.com"},
     AllowMethods: []string{"GET", "POST"},
@@ -155,6 +162,16 @@ app.PreRouting(middleware.CORS(middleware.CORSConfig{
 
 Runnable as `ExampleCORS`.
 
+| Config | What a zero field selects |
+| --- | --- |
+| `CORSConfig` | `AllowOrigins` `["*"]` (unless `AllowOriginFunc` is set); `AllowMethods` GET, HEAD, PUT, PATCH, POST, DELETE, QUERY; `AllowHeaders` echoes the request's; no credentials, no exposed headers, no `Access-Control-Max-Age` |
+| `CSRFConfig` | no trusted origins and no bypass patterns; `ErrorHandler` answers 403 with the detector's reason as the internal error |
+| `SecureConfig` | `X-Content-Type-Options: nosniff` and `X-Frame-Options: SAMEORIGIN` are sent; every other header is not ([Secure](#secure)) |
+| `TimeoutConfig` | `Timeout` 0 sets no deadline; `ErrorHandler` maps `context.DeadlineExceeded` to 503 `request_timeout` |
+| `ContractConfig` | `APIVersionHeader` `X-API-Version`; no `ScopeChecker` (a declared scope is denied); a body without a `Content-Type` is refused; no custom checks |
+| `RewriteConfig` | none beside `Skipper`: `Rules` is required |
+| `ratelimit.Config` | `Tokens` 60; `Interval` one minute; an in-memory `Store`; `KeyFunc` the client IP; `InternalErrorHandler` 500; `DeniedHandler` 429 |
+
 ## Middleware Catalog
 
 | Middleware | Source | Description |
@@ -162,7 +179,7 @@ Runnable as `ExampleCORS`.
 | `Rewrite` | Credo | Pre-dispatch path rewriting with Credo route syntax |
 | `CORS` | Echo | Cross-Origin Resource Sharing; `AllowOrigins` uses the strict origin grammar shared with `websocket` (exact origin or one left-most wildcard label; invalid entries panic at construction) |
 | `CSRF` | stdlib wrap | Cross-origin request rejection via `net/http.CrossOriginProtection` (Sec-Fetch-Site based, no tokens) |
-| `Secure` | Echo | Security headers (HSTS, CSP, X-Frame). HSTS uses `Request.Scheme()` |
+| `Secure` | Echo | Security headers: `nosniff` and `X-Frame-Options` by default, HSTS, CSP and `Referrer-Policy` when set ([Secure](#secure)) |
 | `Timeout` | Echo | Request timeout through a cooperative context deadline that handlers observe via `c.Context()` |
 | `ContractGuard` | Credo | Declarative per-route request contracts (Content-Type, body size, required headers/query, API version, scope) read from route meta |
 
@@ -172,11 +189,34 @@ Runnable as `ExampleCORS`.
 
 Rate limiting is `ratelimit.Middleware` in its own package, [`middleware/ratelimit`](#rate-limiting-middlewareratelimit) (go-limiter; the default key is `Request.RealIP()`). Authentication is `auth.Middleware[T]` with the `auth` package's authenticators (Basic, API key, JWT); see the [auth spec](auth.md).
 
+### Secure
+
+```go
+func Secure(cfg ...SecureConfig) credo.Middleware
+
+type SecureConfig struct {
+    Skipper                   Skipper
+    XSSProtection             string // X-XSS-Protection; default: not sent
+    DisableContentTypeNosniff bool   // default: X-Content-Type-Options: nosniff is sent
+    XFrameOptions             string // X-Frame-Options; default "SAMEORIGIN"
+    DisableXFrameOptions      bool   // default: X-Frame-Options is sent
+    HSTSMaxAge                int    // Strict-Transport-Security max-age in seconds; default: not sent
+    HSTSExcludeSubdomains     bool   // default: includeSubDomains
+    HSTSPreloadEnabled        bool   // default: no preload token
+    ContentSecurityPolicy     string // default: not sent
+    CSPReportOnly             bool   // Content-Security-Policy-Report-Only instead
+    ReferrerPolicy            string // default: not sent
+}
+```
+
+- **Two headers are on by default**, with or without a config: `X-Content-Type-Options: nosniff` and `X-Frame-Options: SAMEORIGIN`. Each goes only with its `Disable…` field. `nosniff` is the header's one value, so it has a switch and no string; `X-Frame-Options` keeps its string for `DENY`, and `DisableXFrameOptions` is for an application whose `Content-Security-Policy` decides framing with `frame-ancestors`. When `DisableXFrameOptions` is set, `XFrameOptions` is not read.
+- **`X-XSS-Protection` is not sent by default.** Browsers removed the XSS auditor the header controlled, so it protects nothing in a current browser. The field stays for an application that wants to send `0` to an old browser.
+- **HSTS** is sent only when `HSTSMaxAge` is non-zero, and only on a request whose `Request.Scheme()` is `https` (RFC 6797); behind a proxy that needs `WithTrustedProxies`.
+
 ### Rewrite
 
 ```go
 func Rewrite(cfg ...RewriteConfig) credo.Middleware
-func DefaultRewriteConfig() RewriteConfig
 
 type RewriteConfig struct {
     Skipper Skipper
@@ -208,7 +248,7 @@ type RewriteRule struct {
 - `Host` is an optional exact host filter. Matching is case-insensitive, with request ports stripped before comparison.
 - If `To` contains a query string, it replaces the current query string.
 - If `To` does not contain a query string and `PreserveQuery` is true, the original query string is preserved.
-- `Rewrite()` panics when `Rules` is empty (a rule list is required); `DefaultRewriteConfig()` therefore carries no rules.
+- `Rewrite()` panics when `Rules` is empty: a rule list is required, so the zero config is not a valid one.
 
 **Placement:**
 
@@ -263,7 +303,6 @@ CSRF and CORS are complementary: CORS governs whether a browser may _read_ a cro
 package ratelimit // github.com/credo-go/credo/middleware/ratelimit
 
 func Middleware(cfg ...Config) credo.Middleware
-func DefaultConfig() Config
 
 type Config struct {
     Skipper              middleware.Skipper
@@ -271,18 +310,18 @@ type Config struct {
     Tokens               uint64        // default 60
     Interval             time.Duration // default 1 minute
     KeyFunc              func(ctx *credo.Context) (string, error) // default: Request.RealIP()
-    InternalErrorHandler func(ctx *credo.Context, err error) error
-    DeniedHandler        func(ctx *credo.Context, limit, remaining uint64, reset time.Time) error
+    InternalErrorHandler func(ctx *credo.Context, err error) error // default: 500
+    DeniedHandler        func(ctx *credo.Context, limit, remaining uint64, reset time.Time) error // default: 429
 }
 ```
 
-Token-bucket rate limiting over go-limiter lives in a package of its own, so that importing `middleware` — for `CORS`, say — does not link go-limiter: the dependency graph of `middleware` contains no go-limiter package. The package stays in the root module. Its example, one budget shared by two routes, runs as `ratelimit.ExampleMiddleware`. `Middleware` follows the configuration-struct convention (zero arguments for the defaults, one to customize) and the naming of `auth.Middleware`; `Config.Skipper` keeps the type `middleware.Skipper`.
+Token-bucket rate limiting over go-limiter lives in a package of its own, so that importing `middleware` — for `CORS`, say — does not link go-limiter: the dependency graph of `middleware` contains no go-limiter package. The package stays in the root module. Its example, one budget shared by two routes, runs as `ratelimit.ExampleMiddleware`. `Middleware` follows the [configuration-struct convention](#config-struct-pattern-echo-inspired) (a zero field selects its default, and no argument is the zero config) and the naming of `auth.Middleware`; `Config.Skipper` keeps the type `middleware.Skipper`.
 
 | `middleware` before | `middleware/ratelimit` |
 | --- | --- |
 | `RateLimit(cfg...)` | `Middleware(cfg...)` |
 | `RateLimitConfig` | `Config` |
-| `DefaultRateLimitConfig()` | `DefaultConfig()` |
+| `DefaultRateLimitConfig()` | none: the zero `Config` selects every default |
 | `NewRateLimiter(cfg)`; `RateLimiter` with `Middleware`, `Close` and `Shutdown` | none: `Middleware(cfg...)` is the one constructor |
 
 **One budget per value.** The middleware `Middleware` returns shares its store across every route it is attached to: one value attached to two routes spends one budget, and two calls build two budgets.

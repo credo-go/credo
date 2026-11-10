@@ -42,20 +42,18 @@ type Option func(*options)
 
 func WithTimeout(d time.Duration) Option          // http.Client.Timeout (total, incl. all retries)
 func WithBaseTransport(rt http.RoundTripper) Option // innermost transport; default: cloned http.DefaultTransport
-func WithRetry(cfg ...RetryConfig) Option         // zero args = DefaultRetryConfig
+func WithRetry(cfg ...RetryConfig) Option         // zero args = the zero RetryConfig
 func WithLogging(logger *slog.Logger) Option      // per-attempt slog lines; nil logger panics
 func WithTracePropagation() Option                // W3C traceparent injection
 
+// A zero field selects its default, so a config that sets one field keeps
+// the others, and no config is the zero value.
 type RetryConfig struct {
     MaxAttempts int           // total attempts incl. the first; default 3
     MinDelay    time.Duration // first backoff ceiling; default 100ms
     MaxDelay    time.Duration // backoff cap; default 2s
     RetryIf     func(req *http.Request, resp *http.Response, err error) bool // default DefaultRetryIf
 }
-
-// DefaultRetryConfig returns a fresh copy of the defaults; zero-valued
-// RetryConfig fields fall back to them.
-func DefaultRetryConfig() RetryConfig
 
 // DefaultRetryIf reports whether a request should be retried:
 // idempotent method AND (transport error OR 5xx response),

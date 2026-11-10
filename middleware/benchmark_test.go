@@ -13,10 +13,8 @@ import (
 func BenchmarkSecure(b *testing.B) {
 	app := mustNewBench(b, credo.WithTrustedProxies("10.0.0.0/8"))
 	app.PreRouting(middleware.Secure(middleware.SecureConfig{
-		XSSProtection:      "1; mode=block",
-		ContentTypeNosniff: "nosniff",
-		XFrameOptions:      "SAMEORIGIN",
-		HSTSMaxAge:         31536000,
+		XSSProtection: "1; mode=block",
+		HSTSMaxAge:    31536000,
 	}))
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(http.StatusOK, "ok")

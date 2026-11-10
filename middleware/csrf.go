@@ -6,9 +6,11 @@ import (
 	"github.com/credo-go/credo"
 )
 
-// CSRFConfig defines configuration for the CSRF middleware.
+// CSRFConfig defines configuration for the CSRF middleware. A zero field
+// selects its default.
 type CSRFConfig struct {
 	// Skipper defines a function to skip middleware.
+	// Default: no request is skipped.
 	Skipper Skipper
 
 	// TrustedOrigins lists origins whose cross-origin requests are allowed.
@@ -33,15 +35,6 @@ type CSRFConfig struct {
 	// Default: 403 *credo.HTTPError with the reason attached as internal
 	// error (logged, never exposed to the client).
 	ErrorHandler func(ctx *credo.Context, err error) error
-}
-
-// DefaultCSRFConfig returns the default CSRF middleware config.
-// Each call returns a fresh value, so callers cannot mutate the
-// package-wide defaults.
-func DefaultCSRFConfig() CSRFConfig {
-	return CSRFConfig{
-		Skipper: DefaultSkipper,
-	}
 }
 
 // CSRF returns middleware that rejects non-safe cross-origin browser
@@ -90,7 +83,7 @@ func DefaultCSRFConfig() CSRFConfig {
 // conflicts with another — middleware construction is startup configuration
 // (see the credo package's "Panics and Errors" section).
 func CSRF(cfg ...CSRFConfig) credo.Middleware {
-	config := resolveConfig(cfg, DefaultCSRFConfig(), normalizeCSRFConfig)
+	config := resolveConfig(cfg, normalizeCSRFConfig)
 
 	protection := http.NewCrossOriginProtection()
 	for _, origin := range config.TrustedOrigins {
@@ -127,7 +120,7 @@ func CSRF(cfg ...CSRFConfig) credo.Middleware {
 
 func normalizeCSRFConfig(config CSRFConfig) CSRFConfig {
 	if config.Skipper == nil {
-		config.Skipper = DefaultSkipper
+		config.Skipper = neverSkip
 	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = func(_ *credo.Context, err error) error {

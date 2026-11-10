@@ -220,3 +220,73 @@ func TestMiddleware_SharedAcrossRoutesSpendsOneBudget(t *testing.T) {
 		t.Fatalf("status = %d, want 200 from a second Middleware's own budget", w.Code)
 	}
 }
+
+// A zero field selects its default, so a config that sets one field keeps the
+// others: the default limit of 60 per minute, the client IP as the key, the
+// plain 429, and a nil Skipper that skips no request.
+func TestMiddleware_PartialConfigKeepsOtherDefaults(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       ratelimit.Config
+		wantLimit string
+		// wantResetWithin bounds how far ahead the first response's reset may be.
+		wantResetWithin time.Duration
+	}{
+		{"Tokens only keeps the one-minute interval", ratelimit.Config{Tokens: 1}, "1", time.Minute},
+		{"Interval only keeps the 60 tokens", ratelimit.Config{Interval: time.Hour}, "60", time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.GET("/", func(ctx *credo.Context) error {
+				return ctx.Response().NoContent(http.StatusOK)
+			}).Middleware(ratelimit.Middleware(tt.cfg))
+
+			before := time.Now()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "203.0.113.42:8080"
+			app.ServeHTTP(w, r)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			if got := w.Header().Get("X-RateLimit-Limit"); got != tt.wantLimit {
+				t.Errorf("X-RateLimit-Limit = %q, want %q", got, tt.wantLimit)
+			}
+			reset, err := time.Parse(time.RFC1123, w.Header().Get("X-RateLimit-Reset"))
+			if err != nil {
+				t.Fatalf("X-RateLimit-Reset: %v", err)
+			}
+			// The header has one-second resolution.
+			if ahead := reset.Sub(before); ahead > tt.wantResetWithin+time.Second || ahead < tt.wantResetWithin-2*time.Second {
+				t.Errorf("reset is %v ahead, want about %v", ahead, tt.wantResetWithin)
+			}
+		})
+	}
+
+	t.Run("Tokens only keys by client IP and denies with 429", func(t *testing.T) {
+		app := mustNew(t)
+		app.GET("/", func(ctx *credo.Context) error {
+			return ctx.Response().NoContent(http.StatusOK)
+		}).Middleware(ratelimit.Middleware(ratelimit.Config{Tokens: 1}))
+
+		steps := []struct {
+			remote string
+			want   int
+		}{
+			{"203.0.113.10:1", http.StatusOK},
+			{"203.0.113.11:1", http.StatusOK},
+			{"203.0.113.10:2", http.StatusTooManyRequests},
+		}
+		for i, step := range steps {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = step.remote
+			app.ServeHTTP(w, r)
+			if w.Code != step.want {
+				t.Fatalf("request %d from %s: status = %d, want %d", i+1, step.remote, w.Code, step.want)
+			}
+		}
+	})
+}

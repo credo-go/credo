@@ -70,7 +70,9 @@ Middleware reads route metadata declaratively instead of being configured per ro
 
 ### Config Struct Pattern
 
-Configurable middleware takes `cfg ...Config`: no argument selects the defaults, one argument customizes ([example](../specs/middleware.md#config-struct-pattern-echo-inspired)). Framework features follow the same shape at registration: `app.UseAccessLog()` for defaults, `app.UseAccessLog(credo.AccessLogConfig{...})` for customization, at most one config.
+Configurable middleware takes `cfg ...Config`, at most one, and one rule reads every config struct: **a zero field selects its default** ([the rule and each config's defaults](../specs/middleware.md#config-struct-pattern-echo-inspired)). No argument is the zero config, a config that sets one field keeps the defaults of the others, and turning off something that is on by default takes an explicit field, an inverted bool such as `SecureConfig.DisableContentTypeNosniff`, as `RecoverConfig.DisableStackTrace` is. The rule covers `middleware`, `middleware/ratelimit` and `httpclient.RetryConfig`. Framework features follow the same shape at registration: `app.UseAccessLog()` for defaults, `app.UseAccessLog(credo.AccessLogConfig{...})` for customization, at most one config.
+
+Rejected: a config that, once passed, replaces the defaults, with a `DefaultXConfig()` constructor to start from. Under that rule `Secure(SecureConfig{HSTSMaxAge: 31536000})` stops sending `X-Content-Type-Options` and `X-Frame-Options`: adding one header removes two protective ones, and nothing at the call shows it. The safe call would be to fetch the defaults and mutate them, which a struct literal, the form every example and every reader reaches for, does not do. With zero fields filled, the constructor is a second spelling of the zero value, and so is an exported default `Skipper`; neither exists. The price is that a zero value cannot mean "off" for a default that is on, which is what the `Disable…` fields pay.
 
 ### Stdlib Adapter
 
@@ -159,7 +161,7 @@ The attribute is a permanent diagnostic, in keeping with observable-by-default. 
 
 **Not a component.** A value is a component when it owns something the App must release or prepare — a goroutine, a connection it opened, a buffer to flush, state it loads at start ([ADR-024](024-lifecycle-components.md)); being middleware is a reason neither way. The default in-memory store runs no goroutine — expired buckets are swept inline during `Take` — so it holds nothing the drain must stop, and a `Shutdown` would only release its memory early. The in-memory store keeps `Close`, which go-limiter's `limiter.Store` interface requires. A store the application passes in through `Config.Store` stays its owner's: when it holds a connection or a goroutine, the application registers it as a component of its own, and the middleware never closes it.
 
-**Its own package.** Rate limiting is the one built-in middleware that imports a third-party module: inside `middleware`, a build that imports the package for `CORS` alone would link go-limiter and need its `go.sum` entry. In `middleware/ratelimit` only its users compile it, and a test keeps go-limiter out of the dependency graph of `middleware`. The package keeps the configuration-struct convention and follows `auth.Middleware`'s naming: `Middleware(cfg ...Config)`, `Config` and `DefaultConfig()`, with `Config.Skipper` keeping the type `middleware.Skipper`. It stays in the root module: a module of its own waits for a consumer that cannot resolve a version conflict or must keep go-limiter out of its module graph.
+**Its own package.** Rate limiting is the one built-in middleware that imports a third-party module: inside `middleware`, a build that imports the package for `CORS` alone would link go-limiter and need its `go.sum` entry. In `middleware/ratelimit` only its users compile it, and a test keeps go-limiter out of the dependency graph of `middleware`. The package keeps the configuration-struct convention and follows `auth.Middleware`'s naming, `Middleware(cfg ...Config)` and `Config`, with `Config.Skipper` keeping the type `middleware.Skipper`. It stays in the root module: a module of its own waits for a consumer that cannot resolve a version conflict or must keep go-limiter out of its module graph.
 
 Rejected:
 
@@ -180,7 +182,7 @@ Activating or parameterizing middleware from configuration files — framework-r
 - Single type — no confusion about which middleware type to use
 - Precompiled chains — zero allocation on hot path
 - Meta-driven — declarative, no per-route middleware wiring
-- Config struct pattern — readable, discoverable options via `Middleware(cfg ...Config)`
+- Config struct pattern — readable, discoverable options via `Middleware(cfg ...Config)`, read by one rule: a zero field selects its default
 - Stdlib interop via WrapStdMiddleware
 - One authoritative access record and one recovery layer, observed after error rendering and compression, with one public path per feature
 - One record of the final response, `*Exchange`, for the access log and every other observer

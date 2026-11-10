@@ -31,10 +31,11 @@ func WithBaseTransport(rt http.RoundTripper) Option {
 	return func(o *options) { o.base = rt }
 }
 
-// WithRetry enables retry with full-jitter exponential backoff. Zero args
-// use [DefaultRetryConfig]. See [NewRetryTransport] for the semantics.
+// WithRetry enables retry with full-jitter exponential backoff. A zero field
+// of the config selects its default, and no config is the zero value. See
+// [NewRetryTransport] for the defaults and the semantics.
 func WithRetry(cfg ...RetryConfig) Option {
-	config := DefaultRetryConfig()
+	var config RetryConfig
 	if len(cfg) > 0 {
 		config = cfg[0]
 	}
