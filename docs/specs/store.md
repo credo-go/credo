@@ -18,11 +18,11 @@ This spec owns the data access contracts: semantic errors, `Health`, transaction
 
 ### Semantic Errors
 
-The stdlib-only `fault` package owns transport-neutral kinds and the provider contract. `store.Kind` aliases `fault.Kind`; root HTTP policy imports only the leaf package, and `store` imports only `fault`, so neither the root nor `store` imports the other.
+The stdlib-only `fault` package owns transport-neutral kinds and the provider contract. Each kind has one name, `fault.Kind…`: `store` declares no `Kind` type and no kind constants of its own, and `store.Error.Kind`, `store.KindOf` and the `sqldb` adapter use `fault.Kind`. Root HTTP policy imports only the leaf package, and `store` imports only `fault`, so neither the root nor `store` imports the other.
 
 ```go
 type Error struct {
-    Kind       Kind
+    Kind       fault.Kind
     Op         string
     Resource   string
     Constraint string
@@ -31,8 +31,8 @@ type Error struct {
     Cause      error
 }
 
-// KindOf finds the first store Kind in err's unwrap/join tree.
-func KindOf(err error) (Kind, bool)
+// KindOf finds the first store kind in err's unwrap/join tree.
+func KindOf(err error) (fault.Kind, bool)
 func IsTransient(err error) bool
 
 // Wrap classifies cause with a store sentinel's kind as a *Error whose
@@ -45,17 +45,17 @@ func Wrap(kind error, cause error) error
 
 | Exact sentinel | Kind | Transient default | Root HTTP default |
 | --- | --- | --: | --: |
-| `ErrNotFound` | `KindNotFound` | no | 404 |
-| `ErrAlreadyExists` | `KindAlreadyExists` | no | 409 |
-| `ErrConstraint` | `KindConstraint` | no | 409 |
-| `ErrSerialization` | `KindSerialization` | yes | 409 |
-| `ErrDeadlock` | `KindDeadlock` | yes | 409 |
-| `ErrContention` | `KindContention` | yes | 409 |
-| `ErrTimeout` | `KindTimeout` | yes | 504 |
-| `ErrUnavailable` | `KindUnavailable` | yes | 503 |
-| `ErrReadOnly` | `KindReadOnly` | no | 503 |
+| `ErrNotFound` | `fault.KindNotFound` | no | 404 |
+| `ErrAlreadyExists` | `fault.KindAlreadyExists` | no | 409 |
+| `ErrConstraint` | `fault.KindConstraint` | no | 409 |
+| `ErrSerialization` | `fault.KindSerialization` | yes | 409 |
+| `ErrDeadlock` | `fault.KindDeadlock` | yes | 409 |
+| `ErrContention` | `fault.KindContention` | yes | 409 |
+| `ErrTimeout` | `fault.KindTimeout` | yes | 504 |
+| `ErrUnavailable` | `fault.KindUnavailable` | yes | 503 |
+| `ErrReadOnly` | `fault.KindReadOnly` | no | 503 |
 
-The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that needs a coarse conflict checks the sentinels of the conditions it means: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
+The exact sentinels are the whole error contract: no alias names one of them twice, and no umbrella sentinel matches several kinds. `fault.KindConflict` stays a kind an adapter may return, which `KindOf` reports and the root maps to 409; no sentinel of the table stands for it. A caller that needs a coarse conflict checks the sentinels of the conditions it means: `ErrConstraint`, `ErrSerialization`, `ErrDeadlock` or `ErrContention`.
 
 A store error reaches the client through its kind alone: the root reads `FaultKind` and maps the kind to the table's status, and no store type has an `HTTPStatus` method. A fault without an explicit code renders its kind as its code — `not_found`, `already_exists`, `constraint`, `serialization`, `deadlock`, `contention`, `conflict`, `timeout`, `unavailable`, `read_only` — so a client tells a duplicate from a serialization or deadlock failure; the statuses do not change. `Error.Code` is the driver's code, a diagnostic that is never rendered.
 

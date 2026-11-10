@@ -51,7 +51,7 @@ func TestSentinelErrors_StatusIsTheKindOnly(t *testing.T) {
 	}{
 		{"ErrNotFound", store.ErrNotFound, fault.KindNotFound},
 		{"ErrAlreadyExists", store.ErrAlreadyExists, fault.KindAlreadyExists},
-		{"KindConflict", &store.Error{Kind: store.KindConflict}, fault.KindConflict},
+		{"KindConflict", &store.Error{Kind: fault.KindConflict}, fault.KindConflict},
 		{"ErrTimeout", store.ErrTimeout, fault.KindTimeout},
 		{"ErrReadOnly", store.ErrReadOnly, fault.KindReadOnly},
 		{"Error", store.Wrap(store.ErrConstraint, errors.New("driver")), fault.KindConstraint},
@@ -87,7 +87,7 @@ func TestSentinelErrors_ErrorMessage(t *testing.T) {
 	}{
 		{store.ErrNotFound, "store: record not found"},
 		{store.ErrAlreadyExists, "store: duplicate record"},
-		{&store.Error{Kind: store.KindConflict}, "store: conflict"},
+		{&store.Error{Kind: fault.KindConflict}, "store: conflict"},
 		{store.ErrTimeout, "store: timeout"},
 		{store.ErrReadOnly, "store: read-only"},
 	}
@@ -110,18 +110,18 @@ func TestSentinelErrors_NotEqual(t *testing.T) {
 func TestSentinelErrors_SemanticKinds(t *testing.T) {
 	tests := []struct {
 		err  error
-		want store.Kind
+		want fault.Kind
 	}{
-		{store.ErrNotFound, store.KindNotFound},
-		{store.ErrAlreadyExists, store.KindAlreadyExists},
-		{store.ErrConstraint, store.KindConstraint},
-		{store.ErrSerialization, store.KindSerialization},
-		{store.ErrDeadlock, store.KindDeadlock},
-		{store.ErrContention, store.KindContention},
-		{&store.Error{Kind: store.KindConflict}, store.KindConflict},
-		{store.ErrTimeout, store.KindTimeout},
-		{store.ErrUnavailable, store.KindUnavailable},
-		{store.ErrReadOnly, store.KindReadOnly},
+		{store.ErrNotFound, fault.KindNotFound},
+		{store.ErrAlreadyExists, fault.KindAlreadyExists},
+		{store.ErrConstraint, fault.KindConstraint},
+		{store.ErrSerialization, fault.KindSerialization},
+		{store.ErrDeadlock, fault.KindDeadlock},
+		{store.ErrContention, fault.KindContention},
+		{&store.Error{Kind: fault.KindConflict}, fault.KindConflict},
+		{store.ErrTimeout, fault.KindTimeout},
+		{store.ErrUnavailable, fault.KindUnavailable},
+		{store.ErrReadOnly, fault.KindReadOnly},
 	}
 
 	for _, tt := range tests {
@@ -139,9 +139,9 @@ func TestSentinelErrors_SemanticKinds(t *testing.T) {
 // matches no constraint or concurrency sentinel, and none of them matches a
 // conflict.
 func TestKindConflict_IsAKindNotAnUmbrella(t *testing.T) {
-	conflict := &store.Error{Kind: store.KindConflict, Cause: errors.New("driver conflict")}
-	if got, ok := store.KindOf(fmt.Errorf("repo: %w", conflict)); !ok || got != store.KindConflict {
-		t.Fatalf("KindOf(conflict) = (%q, %v), want (%q, true)", got, ok, store.KindConflict)
+	conflict := &store.Error{Kind: fault.KindConflict, Cause: errors.New("driver conflict")}
+	if got, ok := store.KindOf(fmt.Errorf("repo: %w", conflict)); !ok || got != fault.KindConflict {
+		t.Fatalf("KindOf(conflict) = (%q, %v), want (%q, true)", got, ok, fault.KindConflict)
 	}
 	for _, sentinel := range []error{
 		store.ErrAlreadyExists,
@@ -190,7 +190,7 @@ func TestIsTransient_DoesNotImplyRetrySafety(t *testing.T) {
 func TestError_PreservesStructuredMetadataAndCause(t *testing.T) {
 	cause := errors.New("driver detail")
 	err := &store.Error{
-		Kind:       store.KindConstraint,
+		Kind:       fault.KindConstraint,
 		Op:         "insert",
 		Resource:   "users",
 		Constraint: "users_org_id_fkey",
@@ -205,8 +205,8 @@ func TestError_PreservesStructuredMetadataAndCause(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatal("structured error must unwrap to the original cause")
 	}
-	if got, ok := store.KindOf(err); !ok || got != store.KindConstraint {
-		t.Fatalf("KindOf(structured) = (%q, %v), want (%q, true)", got, ok, store.KindConstraint)
+	if got, ok := store.KindOf(err); !ok || got != fault.KindConstraint {
+		t.Fatalf("KindOf(structured) = (%q, %v), want (%q, true)", got, ok, fault.KindConstraint)
 	}
 	if err.Error() != cause.Error() {
 		t.Fatalf("Error() = %q, want cause message %q", err.Error(), cause.Error())
@@ -216,7 +216,7 @@ func TestError_PreservesStructuredMetadataAndCause(t *testing.T) {
 func TestKindOf_SkipsOuterNonStoreFault(t *testing.T) {
 	err := &outerFaultError{kind: fault.KindUnavailable, cause: store.ErrConstraint}
 
-	if got, ok := store.KindOf(err); !ok || got != store.KindConstraint {
+	if got, ok := store.KindOf(err); !ok || got != fault.KindConstraint {
 		t.Fatalf("store.KindOf = (%q, %v), want inner store constraint", got, ok)
 	}
 	if got, ok := fault.KindOf(err); !ok || got != fault.KindUnavailable {
@@ -227,7 +227,7 @@ func TestKindOf_SkipsOuterNonStoreFault(t *testing.T) {
 func TestIsTransient_TypedNilStructuredError(t *testing.T) {
 	var structured *store.Error
 	err := errors.Join(structured, store.ErrDeadlock)
-	if got, ok := store.KindOf(err); !ok || got != store.KindDeadlock {
+	if got, ok := store.KindOf(err); !ok || got != fault.KindDeadlock {
 		t.Fatalf("KindOf(typed nil + deadlock) = (%q, %v), want deadlock", got, ok)
 	}
 	if !store.IsTransient(err) {
@@ -237,12 +237,12 @@ func TestIsTransient_TypedNilStructuredError(t *testing.T) {
 
 func TestKindOfAndIsTransient_UseSamePrimaryStoreError(t *testing.T) {
 	serialization := &store.Error{
-		Kind:      store.KindSerialization,
+		Kind:      fault.KindSerialization,
 		Transient: true,
 		Cause:     errors.New("serialization"),
 	}
 	err := errors.Join(store.ErrConstraint, serialization)
-	if got, ok := store.KindOf(err); !ok || got != store.KindConstraint {
+	if got, ok := store.KindOf(err); !ok || got != fault.KindConstraint {
 		t.Fatalf("KindOf = (%q, %v), want first constraint", got, ok)
 	}
 	if store.IsTransient(err) {
@@ -250,7 +250,7 @@ func TestKindOfAndIsTransient_UseSamePrimaryStoreError(t *testing.T) {
 	}
 
 	reversed := errors.Join(serialization, store.ErrConstraint)
-	if got, ok := store.KindOf(reversed); !ok || got != store.KindSerialization {
+	if got, ok := store.KindOf(reversed); !ok || got != fault.KindSerialization {
 		t.Fatalf("KindOf(reversed) = (%q, %v), want first serialization", got, ok)
 	}
 	if !store.IsTransient(reversed) {

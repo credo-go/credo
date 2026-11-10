@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/credo-go/credo/fault"
 	"github.com/credo-go/credo/store"
 )
 
@@ -93,8 +94,8 @@ func TestFormatMigrationUnlockResult_PreservesDeadlineAndDriverCause(t *testing.
 	}
 
 	mapped := (*DB)(nil).mapMigrationUnlockError(t.Context(), err)
-	if got, ok := store.KindOf(mapped); !ok || got != store.KindTimeout {
-		t.Fatalf("mapped kind = %q, %t, want %q, true", got, ok, store.KindTimeout)
+	if got, ok := store.KindOf(mapped); !ok || got != fault.KindTimeout {
+		t.Fatalf("mapped kind = %q, %t, want %q, true", got, ok, fault.KindTimeout)
 	}
 	if !errors.Is(mapped, context.DeadlineExceeded) || !errors.Is(mapped, driverErr) {
 		t.Fatalf("mapped error = %v, want deadline and driver causes", mapped)

@@ -8,7 +8,7 @@ import (
 
 	"github.com/uptrace/bun/migrate"
 
-	"github.com/credo-go/credo/store"
+	"github.com/credo-go/credo/fault"
 )
 
 const defaultMigrationUnlockTimeout = 5 * time.Second
@@ -159,7 +159,7 @@ func migrationUnlockTimeoutError(timeout time.Duration) error {
 func (db *DB) mapMigrationUnlockError(parent context.Context, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return wrapMappedError(
-			errorClassification{kind: store.KindTimeout, transient: true},
+			errorClassification{kind: fault.KindTimeout, transient: true},
 			"",
 			err,
 		)
