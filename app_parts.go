@@ -187,18 +187,25 @@ type appRequest struct {
 	trustedProxies []netip.Prefix
 }
 
-// appHealth holds the health feature: the check engine, whether a probe route
-// was registered, and whether readiness responses expose check errors.
-// UseHealth writes it during bootstrap; the probe handlers read it.
+// appHealth holds the health feature: the check engine, whether UseHealth was
+// called, whether a probe route was registered, and whether readiness
+// responses expose check errors. New creates the engine, AddLivenessCheck and
+// AddReadinessCheck fill it, UseHealth writes the rest during bootstrap, and
+// the probe handlers read it.
 type appHealth struct {
-	// healthEngine holds the health check engine (nil if UseHealth not called).
-	// A UseHealth with Enabled false creates it too: it is the record of the
-	// call, and it collects the checks that no route will run.
+	// healthEngine collects the health checks from construction on, so a
+	// check is accepted whether or not UseHealth has been called yet. It runs
+	// them only for a probe route, which UseHealth mounts.
 	healthEngine *internalhealth.Engine
 
+	// healthMounted records that UseHealth was called, a call with Disabled
+	// set included: a second call panics, and the start does not warn about
+	// checks that no endpoint runs.
+	healthMounted bool
+
 	// healthProbes records that UseHealth registered at least one probe route.
-	// The engine alone is not enough: with health disabled, or with both
-	// probes off, it exists but nothing is mounted.
+	// healthMounted alone is not enough: with health disabled, or with both
+	// probes off, nothing is mounted.
 	healthProbes bool
 
 	// healthExposeErrors includes check error strings in readiness responses.

@@ -105,7 +105,7 @@ func TestReadinessHandler_DrainingIgnoresOptionalEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.UseHealth()
-	app.AddReadinessCheck("cache", HealthCheckFunc(func(context.Context) error { return nil }), OptionalReadiness())
+	app.AddReadinessCheck("cache", func(context.Context) error { return nil }, OptionalReadiness())
 	app.lifecycle.draining.Store(true)
 	w := httptest.NewRecorder()
 	if err := app.readinessHandler(NewContext(w, httptest.NewRequest(http.MethodGet, "/ready", nil))); err != nil {

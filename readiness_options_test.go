@@ -174,7 +174,7 @@ func TestOptionalReadiness_PanicsWithoutAnEntry(t *testing.T) {
 // option is shown down and logged while /ready answers 200 degraded; the
 // same check without it answers 503; another option panics, naming it.
 func TestAddReadinessCheck_OptionalReadiness(t *testing.T) {
-	failing := credo.HealthCheckFunc(func(context.Context) error { return errors.New("api unreachable") })
+	failing := func(context.Context) error { return errors.New("api unreachable") }
 	for _, optional := range []bool{true, false} {
 		logger, logs := newTestLogger(t)
 		app := mustNew(t, credo.WithLogger(logger))
@@ -233,10 +233,10 @@ func TestReadiness_EveryEntryCarriesLatency(t *testing.T) {
 		app.ProvideValue(&slowReady{d: 300 * time.Millisecond})
 		app.ProvideValue(&slowReadyB{}, credo.ComponentName("stuck"))
 		app.UseHealth(credo.HealthConfig{CheckTimeout: time.Second})
-		app.AddReadinessCheck("named", credo.HealthCheckFunc(func(context.Context) error {
+		app.AddReadinessCheck("named", func(context.Context) error {
 			time.Sleep(200 * time.Millisecond)
 			return nil
-		}))
+		})
 		startServing(t, app)
 		body := getReady(t, app)
 		for name, want := range map[string]string{"*credo_test.slowReady": "300ms", "named": "200ms", "stuck": "1s"} {

@@ -85,7 +85,7 @@ func Example_bootstrapOrder() {
 	orders := app.MustResolve[*exampleOrders]()
 	app.GET("/orders", orders.List)
 	payments := app.MustResolve[*examplePayments]()
-	app.AddReadinessCheck("payments", credo.HealthCheckFunc(payments.Ping))
+	app.AddReadinessCheck("payments", payments.Ping)
 
 	// 5. Run. Here a start hook asks the running App for its routes and then
 	// stops it, so the example ends.

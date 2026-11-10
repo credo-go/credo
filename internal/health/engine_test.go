@@ -289,3 +289,46 @@ func TestEngine_ContextCancellation(t *testing.T) {
 		t.Errorf("check status = %q, want %q", checks[0].Status, "down")
 	}
 }
+
+// The root creates the engine before the endpoints are configured, so the
+// timeout a later SetTimeout gives applies to checks that were already added.
+func TestEngine_SetTimeout_AppliesToChecksAddedBefore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := NewEngine(5 * time.Second)
+		block := func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		e.AddLiveness("slow", block)
+		e.AddReadiness("slow", block, false)
+		e.SetTimeout(50 * time.Millisecond)
+
+		for name, check := range map[string]func() (string, []CheckResult){
+			"liveness":  func() (string, []CheckResult) { return e.CheckLiveness(t.Context()) },
+			"readiness": func() (string, []CheckResult) { return e.CheckReadiness(t.Context(), nil) },
+		} {
+			began := time.Now()
+			status, checks := check()
+			if status != "down" || len(checks) != 1 {
+				t.Fatalf("%s = (%q, %d checks), want (down, 1)", name, status, len(checks))
+			}
+			if elapsed := time.Since(began); elapsed != 50*time.Millisecond {
+				t.Errorf("%s returned after %v, want the 50ms set by SetTimeout", name, elapsed)
+			}
+		}
+	})
+}
+
+func TestEngine_Counts(t *testing.T) {
+	e := NewEngine(time.Second)
+	if l, r := e.Counts(); l != 0 || r != 0 {
+		t.Fatalf("Counts() = (%d, %d), want (0, 0)", l, r)
+	}
+	ok := func(context.Context) error { return nil }
+	e.AddLiveness("disk", ok)
+	e.AddReadiness("database", ok, false)
+	e.AddReadiness("cache", ok, true)
+	if l, r := e.Counts(); l != 1 || r != 2 {
+		t.Errorf("Counts() = (%d, %d), want (1, 2)", l, r)
+	}
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/credo-go/credo/config"
 	"github.com/credo-go/credo/internal/di"
+	internalhealth "github.com/credo-go/credo/internal/health"
 	internalproxy "github.com/credo-go/credo/internal/proxy"
 )
 
@@ -237,6 +238,9 @@ func assembleApp(
 			jsonOpts:       jsonv2.JoinOptions(append([]jsonv2.Options{defaultJSONOptions}, o.jsonOptions...)...),
 			trustedProxies: trustedProxies,
 		},
+		appHealth: appHealth{
+			healthEngine: internalhealth.NewEngine(defaultHealthCheckTimeout),
+		},
 		appDI: appDI{
 			container: c,
 			rawConfig: o.rawConfig,
@@ -268,7 +272,8 @@ func assembleApp(
 		newServer: func() *http.Server {
 			return buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
 		},
-		features: app.effectiveFeatures,
+		features:     app.effectiveFeatures,
+		startNotices: app.warnUnmountedHealthChecks,
 		reload: func(ctx context.Context) error {
 			_, err := app.Reload(ctx)
 			return err
