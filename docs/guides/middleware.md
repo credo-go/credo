@@ -1061,8 +1061,9 @@ func main() {
     // PreRouting middleware, which covers the router's 404 and 405 too:
     app.PreRouting(
         middleware.Secure(middleware.SecureConfig{
-            HSTSMaxAge:    31536000,
-            XFrameOptions: "DENY",
+            HSTSMaxAge:         31536000,
+            ContentTypeNosniff: "nosniff",
+            XFrameOptions:      "DENY",
         }),
         middleware.CORS(middleware.CORSConfig{
             AllowOrigins:     []string{"https://example.com"},
