@@ -130,7 +130,7 @@ func (c *Config) Reload(ctx context.Context) (ReloadResult, error) {
 	}
 
 	c.mu.Lock()
-	c.data, c.files, c.overrides = fresh.data, fresh.files, fresh.overrides
+	c.data, c.files, c.overrides, c.read = fresh.data, fresh.files, fresh.overrides, fresh.read
 	if prev != nil {
 		st.gen.Store(&generation{vals: vals})
 	}

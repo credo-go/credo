@@ -209,6 +209,7 @@ func TestCompress_AccessLogCountsCompressedBytes(t *testing.T) {
 	body := strings.Repeat("compressible text ", 200)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.UseCompress()
 	app.GET("/", func(ctx *credo.Context) error {
@@ -237,6 +238,7 @@ func TestCompress_AccessLogCountsUncompressedPassthrough(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.UseCompress()
 	app.GET("/", func(ctx *credo.Context) error {

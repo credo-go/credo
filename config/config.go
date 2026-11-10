@@ -59,7 +59,7 @@ type Config struct {
 
 // configState is the pointer-backed state shared by every copy of a Config.
 type configState struct {
-	mu   sync.RWMutex // guards data, files and overrides; a tree is never mutated after load
+	mu   sync.RWMutex // guards data, files, overrides and read; a tree is never mutated after load
 	data map[string]any
 	opts options
 	src  source // how the tree was built, replayed by Reload
@@ -69,6 +69,9 @@ type configState struct {
 	// sources set to the source's name.
 	files     map[string]any
 	overrides map[string]string
+
+	// read names the inputs the tree was built from ([Config.Sources]).
+	read Sources
 
 	// start and startFiles are data and files as the first load built them:
 	// a reload reports the changes since the start that no live section

@@ -88,6 +88,7 @@ func TestRequestID_EnrichesLogger(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseRequestID()
 	app.GET("/", func(ctx *credo.Context) error {
 		ctx.Logger().Info("handler called")

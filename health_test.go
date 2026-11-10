@@ -179,6 +179,7 @@ func TestUseHealth_DefaultSilencesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseHealth()
 
 	for _, path := range []string{"/health", "/ready"} {
@@ -199,6 +200,7 @@ func TestUseHealth_DefaultSilencesHeadProbes(t *testing.T) {
 	// SetMeta on the GET route propagates to its auto-generated HEAD twin, so
 	// HEAD probes must be silenced too.
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseHealth()
 
 	for _, path := range []string{"/health", "/ready"} {
@@ -238,6 +240,7 @@ func TestUseHealth_GroupDefaultSilencesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	g := app.Group("/sys")
 	app.UseHealth(credo.HealthConfig{Group: g})
 

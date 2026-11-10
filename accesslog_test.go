@@ -28,6 +28,7 @@ func TestAccessLog_Logs200(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "hello")
@@ -66,6 +67,7 @@ func TestAccessLog_UsesRealIP(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger), credo.WithTrustedProxies("10.0.0.0/8"))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "hello")
@@ -103,6 +105,7 @@ func TestAccessLog_LogLevel(t *testing.T) {
 			logger, buf := newTestLogger(t)
 
 			app := mustNew(t, credo.WithLogger(logger))
+			buf.Reset() // drop the record of the automatic configuration load
 			app.UseAccessLog()
 			status := tt.status
 			app.GET("/", func(ctx *credo.Context) error {
@@ -132,6 +135,7 @@ func TestAccessLog_404(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/exists", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
@@ -158,6 +162,7 @@ func TestAccessLog_405(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/test", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
@@ -317,6 +322,7 @@ func TestAccessLog_IncludesRequestID(t *testing.T) {
 
 	// Both RequestID and AccessLog installed.
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseRequestID()
 	app.UseAccessLog()
 	app.GET("/", func(ctx *credo.Context) error {
@@ -345,6 +351,7 @@ func TestAccessLog_OffByDefault(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})
@@ -362,6 +369,7 @@ func TestAccessLog_NothingInstalled(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().Text(200, "ok")
 	})
@@ -387,6 +395,7 @@ func TestAccessLog_WithoutRequestIDFeature(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
@@ -414,6 +423,7 @@ func TestAccessLog_MetaSilencesRoute(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/silent", func(ctx *credo.Context) error {
 		return ctx.Response().NoContent(200)
@@ -444,6 +454,7 @@ func TestAccessLog_MetaSilencesGroup(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	g := app.Group("/internal")
 	g.SetMeta(credo.MetaAccessLog, false)
@@ -486,6 +497,7 @@ func TestAccessLog_StaticRouteMetaSilences(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	fsys := fstest.MapFS{
 		"app.js": {Data: []byte("console.log('x')")},
@@ -506,6 +518,7 @@ func TestAccessLog_SkipperOption(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog(credo.AccessLogConfig{
 		Skipper: func(ctx *credo.Context) bool {
 			return ctx.Request().URL.Path == "/skip"
@@ -586,6 +599,7 @@ func TestAccessLog_MinLevel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, buf := newTestLogger(t)
 			app := mustNew(t, credo.WithLogger(logger))
+			buf.Reset() // drop the record of the automatic configuration load
 			app.UseAccessLog(credo.AccessLogConfig{
 				MinLevel: tt.level,
 			})
@@ -607,6 +621,7 @@ func TestAccessLog_LevelVarRuntimeUpdate(t *testing.T) {
 	level.Set(slog.LevelWarn)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog(credo.AccessLogConfig{
 		MinLevel: &level,
 	})
@@ -708,6 +723,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var handled atomic.Bool
 		app := mustNew(t, credo.WithLogger(logger))
+		buf.Reset() // drop the record of the automatic configuration load
 		app.UseAccessLog(credo.AccessLogConfig{
 			ResultFilter: func(*credo.Exchange) bool {
 				return false
@@ -731,6 +747,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var calls atomic.Int32
 		app := mustNew(t, credo.WithLogger(logger))
+		buf.Reset() // drop the record of the automatic configuration load
 		app.UseAccessLog(credo.AccessLogConfig{
 			MinLevel: slog.LevelWarn,
 			ResultFilter: func(*credo.Exchange) bool {
@@ -755,6 +772,7 @@ func TestAccessLog_ResultFilterOrdering(t *testing.T) {
 		logger, buf := newTestLogger(t)
 		var calls atomic.Int32
 		app := mustNew(t, credo.WithLogger(logger))
+		buf.Reset() // drop the record of the automatic configuration load
 		app.UseAccessLog(credo.AccessLogConfig{
 			ResultFilter: func(*credo.Exchange) bool {
 				calls.Add(1)

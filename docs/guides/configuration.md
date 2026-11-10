@@ -21,6 +21,14 @@ if err != nil {
 
 This discovers `config.json`, `config.yaml`, or `config.yml` in the working directory, loads `.env` if present (all entries), and applies `CREDO_*` environment variables.
 
+Because these inputs are read whether or not you wrote them, `credo.New()` logs what it found: one record naming the files, the `.env` file and the environment prefix, and never a key or a value.
+
+```text
+level=INFO msg="credo: configuration loaded automatically" sources.files=[/srv/app/config.yaml] sources.dotenv=/srv/app/.env sources.process_env=true sources.env_prefix=CREDO_
+```
+
+The record is written at Info when a file or a `.env` was read, and at Debug when the load found only the environment. If a setting has a value you did not expect, this line tells you which file to open; a `config.json` left behind in the working directory shows up here.
+
 ### Explicit File
 
 Credo does not expose root-level file options such as `credo.WithConfigFiles`. When you want explicit file control, load config yourself and pass the result to `credo.New`:
@@ -34,6 +42,14 @@ app, err := credo.New(credo.WithRawConfig(rawCfg))
 ```
 
 Passing `WithRawConfig` bypasses `credo.New()`'s auto-load path. The provided `RawConfig` is registered in DI as-is, while framework server settings are still read from its `"server"` section when present.
+
+`credo.New()` writes no load record on this path, since it loaded nothing. Log the same record yourself from the Config you loaded:
+
+```go
+logger.Info("configuration loaded", "sources", rawCfg.Sources())
+```
+
+`Sources()` lists the files found (absolute paths, in merge order), the `.env` file read and the environment prefix. An application that wants no bootstrap input at all passes a `RawConfig` of its own: a `config.Load` with `WithFiles()`, `WithoutDotenv()` and `WithoutProcessEnv()` ([Hermetic Config](#hermetic-config)), or `config.LoadBytes` with an embedded document.
 
 ### go:embed
 
@@ -116,7 +132,7 @@ rawCfg, err := config.Load(config.WithWeakDecoding())
 
 ### Logging the Config
 
-`*config.Config` and its dereferenced copies format as metadata only (`config.Config(N keys, values redacted)`) through `%v`, `%+v`, `%#v`, and as an slog attribute, so passing the store to a log line, a panic message, or a debug dump can never leak a secret or a key name. To inspect values, decode the section into a typed struct and log the fields you mean to expose.
+`*config.Config` and its dereferenced copies format as metadata only (`config.Config(N keys, values redacted)`) through `%v`, `%+v`, `%#v`, and as an slog attribute, so passing the store to a log line, a panic message, or a debug dump can never leak a secret or a key name. To inspect values, decode the section into a typed struct and log the fields you mean to expose. To log where the configuration came from, pass `cfg.Sources()`, which names files and the environment prefix and holds no key and no value.
 
 ---
 

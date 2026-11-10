@@ -61,6 +61,14 @@ type App struct {
 // RawConfig in DI. Passing WithRawConfig bypasses auto-load and registers the
 // given RawConfig instead.
 //
+// The automatic load reads what it finds in the working directory and the
+// environment, so New records what it read: one log record naming the
+// configuration files found, the .env file read and the environment prefix
+// ([config.Sources]), and never a key or a value. The record is written at
+// Info when a file or a .env was read and at Debug when the load found only
+// the environment. With WithRawConfig New loads nothing and writes no record;
+// an application that loads explicitly logs cfg.Sources() itself.
+//
 // New returns an error if configuration loading fails or the server settings
 // contain invalid values (negative timeouts, an invalid port). An option only
 // records configuration and cannot fail by itself.
@@ -83,6 +91,11 @@ func New(opts ...Option) (*App, error) {
 	if err = loadRawConfig(&o); err != nil {
 		return nil, err
 	}
+	// The record of the automatic load comes before the first read of the
+	// configuration, so a New that fails on a setting has already named the
+	// files the setting came from.
+	baseInfra := newInfra(o.logger)
+	logAutoLoad(baseInfra.Logger, o.autoLoaded)
 	serverCfg, err := resolveServerConfig(&o)
 	if err != nil {
 		return nil, err
@@ -91,7 +104,6 @@ func New(opts ...Option) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credo: invalid trusted proxies: %w", err)
 	}
-	baseInfra := newInfra(o.logger)
 	c := buildContainer(o.rawConfig, baseInfra)
 	return assembleApp(&o, serverCfg, c, baseInfra.Logger, trustedProxies), nil
 }
@@ -117,7 +129,28 @@ func loadRawConfig(o *appOptions) error {
 		return fmt.Errorf("credo: auto-load config: %w", err)
 	}
 	o.rawConfig = rc
+	o.autoLoaded = rc
 	return nil
+}
+
+// autoLoadRecord is the record New writes about the automatic load.
+const autoLoadRecord = "credo: configuration loaded automatically"
+
+// logAutoLoad records what the automatic load read: the files found, the
+// .env file and the environment prefix, never a value. A file on disk is
+// what an application's author may not know of, so it is reported at Info;
+// a load that found only the environment is reported at Debug. loaded is nil
+// when the application passed its own RawConfig, and nothing is written.
+func logAutoLoad(logger *slog.Logger, loaded *config.Config) {
+	if loaded == nil {
+		return
+	}
+	sources := loaded.Sources()
+	level := slog.LevelDebug
+	if sources.FromFile() {
+		level = slog.LevelInfo
+	}
+	logger.LogAttrs(context.Background(), level, autoLoadRecord, slog.Any("sources", sources))
 }
 
 // serverSection is the framework's own section. It is read through its

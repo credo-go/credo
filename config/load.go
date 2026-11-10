@@ -124,7 +124,10 @@ func (c *Config) populate(dotenv map[string]string) error {
 	c.mergeDotenv(dotenv)
 	if !c.opts.noProcessEnv {
 		c.mergeEnv(os.Environ())
+		c.read.ProcessEnv = true
+		c.read.EnvPrefix = c.opts.prefix
 	}
+	c.read.Document = c.src.format
 	return nil
 }
 
@@ -257,6 +260,7 @@ func (c *Config) tryLoadFile(f string) (bool, error) {
 		return false, fmt.Errorf("%s: %w", f, err)
 	}
 	c.merge(m)
+	c.read.Files = append(c.read.Files, absPath(f))
 	return true, nil
 }
 
@@ -329,6 +333,7 @@ func (c *Config) readDotenv() (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	c.read.Dotenv = absPath(path)
 	return pairs, nil
 }
 
