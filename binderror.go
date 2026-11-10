@@ -35,7 +35,9 @@ const (
 	BindReasonEmptyBody BindErrorReason = "empty_body"
 
 	// BindReasonTrailingData reports extra content after the first JSON
-	// value in the request body. BindBody accepts exactly one JSON value.
+	// value in the request body, or after the root element of an XML body
+	// other than white space, comments and processing instructions. BindBody
+	// accepts exactly one JSON value or one XML document.
 	BindReasonTrailingData BindErrorReason = "trailing_data"
 
 	// BindReasonDuplicateField reports a JSON object member that appears
@@ -80,6 +82,10 @@ type BindError struct {
 	// Internal is the underlying decoder error. It is logged at debug level
 	// (credo: client error) and never exposed to the client.
 	Internal error
+
+	// xmlBody marks a body-level failure of an XML body, whose default
+	// message names an XML document where a JSON body's names a JSON value.
+	xmlBody bool
 }
 
 // Error implements the error interface.
@@ -122,6 +128,9 @@ func (e *BindError) message() string {
 	case BindReasonEmptyBody:
 		return "request body is empty"
 	case BindReasonTrailingData:
+		if e.xmlBody {
+			return "request body must contain a single XML document"
+		}
 		return "request body must contain a single JSON value"
 	case BindReasonDuplicateField:
 		return "must appear only once"

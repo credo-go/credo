@@ -401,9 +401,19 @@ JSON bodies are decoded with `encoding/json/v2` under strict semantics:
 - **Object members must be unique** — a repeated member fails the bind with reason `duplicate_field`. Because member matching is case-insensitive (see below), a case-variant repeat (`{"name":…,"Name":…}`) is also rejected.
 - **Member matching stays case-insensitive** — v1-compatible matching is preserved via `MatchCaseInsensitiveNames`, so existing clients sending `{"Name":…}` for a `name`-tagged field keep working (v2's case-sensitive default would silently leave the field empty).
 - **`time.Duration` fields decode as integer nanoseconds** — `BindBody` enables `FormatDurationAsNano` (json/v2 has no default Duration representation; [ADR-021](../adr/021-json-output-profile.md) gives the background): `{"timeout": 5000000000}` binds 5s, a string fails with `type_mismatch`. For human-readable durations (`"5s"`) declare a named type implementing `encoding.TextUnmarshaler`.
-- **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input. Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a _known_ member is reported as `duplicate_field`, while a repeated _unknown_ member fails as `unknown_field` on its first occurrence.
+- **Unknown members are ignored by default, rejected under strict bodies** — `credo.WithStrictBodies()` or `server.strict_bodies: true` makes a member that maps to no target field fail the bind with reason `unknown_field` and the member's path (`address.zipp`). The switch is app-wide (one posture per service; no per-call option) and affects JSON only — XML and form decoders keep ignoring extra input ([XML bodies](#xml-bodies)). Case-insensitive matching runs before the unknown decision, so `{"Name":…}` still binds to `name`; a repeat of a _known_ member is reported as `duplicate_field`, while a repeated _unknown_ member fails as `unknown_field` on its first occurrence.
 
-Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. XML and form bodies keep their single-pass decoder semantics.
+Together these close the parser-discrepancy class of payloads (`{"a":1}{"a":2}`, `{"a":1,"a":2}`, `{"a":1}junk`) where a security layer and the application could read different values. Form bodies keep their single-pass decoder semantics; an XML body's contract is below.
+
+#### XML bodies
+
+An `application/xml` or `text/xml` body is decoded with `encoding/xml` into the target's `xml` struct tags. The binder decides three things the decoder leaves open:
+
+- **Exactly one document per request** — after the root element only white space (space, tab, carriage return, line feed), comments and processing instructions may remain, which is what XML's grammar allows there. Anything else fails the bind with reason `trailing_data`: a second element, text, a directive such as `<!DOCTYPE …>`, or markup that does not parse. This is the XML form of the one-value rule above, and it closes the same class of payload (`<order>…</order><order>…</order>`).
+- **A repeated element keeps `encoding/xml`'s meaning** — repetition is how XML spells a list, so it is never a `duplicate_field` failure. Every occurrence is appended to a slice field, and for a field of another kind the last occurrence sets the value.
+- **Unknown input is ignored in both modes** — an element or attribute the target has no field for is skipped, under `WithStrictBodies` too. Strict bodies decide JSON members only.
+
+The prolog (`<?xml version="1.0"?>`) and anything else before the root element are read as `encoding/xml` reads them. An empty body fails with `empty_body`, and a document that does not parse, or whose root element is not the one the target names, fails with `syntax`. A body that passes the size limit after its root element is a 413, as everywhere else.
 
 #### Decode error model
 
@@ -415,7 +425,7 @@ Decode failures are typed. `BindBody`/`BindQuery` return `*credo.BindError` carr
 | `type_mismatch` | value type does not match the target field (`expected` param set, JSON offset known) |
 | `invalid_value` | value of the right shape failed semantic conversion (`encoding.TextUnmarshaler`, time parse, numeric overflow) |
 | `empty_body` | request body absent or empty |
-| `trailing_data` | content after the first JSON value |
+| `trailing_data` | content after the first JSON value, or after an XML body's root element (white space, comments and processing instructions excepted) |
 | `duplicate_field` | JSON object member appears more than once (including case-variant repeats) |
 | `unknown_field` | JSON object member maps to no target field — strict bodies only (`WithStrictBodies` / `server.strict_bodies`) |
 
