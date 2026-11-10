@@ -188,3 +188,17 @@ func ExampleConfig_String() {
 	// config.Config(1 keys, values redacted)
 	// config.Config(1 keys, values redacted)
 }
+
+// Sources names what a load read: paths and the environment prefix, never a
+// key or a value, so it is safe to log.
+func ExampleConfig_Sources() {
+	cfg, err := config.LoadBytes([]byte(`{"db": {"password": "s3cret"}}`), config.FormatJSON, hermetic...)
+	if err != nil {
+		panic(err)
+	}
+	src := cfg.Sources()
+	fmt.Printf("document=%s files=%d dotenv=%q process_env=%v from_file=%v\n",
+		src.Document, len(src.Files), src.Dotenv, src.ProcessEnv, src.FromFile())
+	// Output:
+	// document=json files=0 dotenv="" process_env=false from_file=false
+}

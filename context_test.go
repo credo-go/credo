@@ -19,6 +19,7 @@ func TestContext_SetLogger(t *testing.T) {
 	logger, buf := newTestLogger(t)
 
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 
 	var hasBefore, hasAfter []bool
 	app.PreRouting(func(next credo.Handler) credo.Handler {
@@ -64,6 +65,7 @@ func TestContext_AddLogAttrs(t *testing.T) {
 	// With the request ID feature installed, AddLogAttrs derives from the
 	// already-enriched logger, so request_id must survive.
 	app := mustNew(t, credo.WithLogger(logger))
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseRequestID()
 
 	app.PreRouting(func(next credo.Handler) credo.Handler {

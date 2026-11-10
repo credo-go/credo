@@ -112,6 +112,7 @@ cfg, err := config.Load(opts...) // returns (*config.Config, error)
 - Returns `*config.Config` — the concrete type, which satisfies `credo.RawConfig`. Read a section with its descriptor, `section.Decode(cfg)`, use `cfg.Unmarshal(key, &dst)` for the low-level form, or pass `cfg` straight to `credo.WithRawConfig`.
 - Returns an error for an I/O failure, a parse error, conflicting options, an explicit file list none of whose files exists, a missing explicit `.env` file, or an unsupported file format ([Error Handling Contract](#error-handling-contract)). Never panics. A section's `Validate()` error is returned by `Unmarshal` (and so by a section's `Decode`), not by `Load`. There is no `MustLoad`.
 - No package-global instance — each call produces an independent `Config`.
+- `cfg.Sources()` names what the load read ([Sources](#sources--what-a-load-read)).
 - **Options**: `WithFiles(paths...)`, `WithPrefix(prefix)`, `WithDotenvPath(path)`, `WithDotenvOptional()`, `WithoutProcessEnv()`, `WithoutDotenv()`, `WithWeakDecoding()`, `WithLogger(*slog.Logger)` (load-time warnings such as a missing optional explicit `.env`; default `slog.Default()`). `.env` path rules: [.env Resolution Policy](#env-resolution-policy).
 
 ### config.RawConfig Interface
@@ -191,6 +192,8 @@ The result is the same value `App.Reload` returns; its JSON form is what an admi
 
 `credo.New()` automatically loads configuration via `config.Load()` when no explicit `RawConfig` is provided. Use `credo.WithRawConfig(rawCfg)` to pass a pre-loaded config (e.g., from `config.LoadBytes()` with embedded data). Passing `WithRawConfig` bypasses auto-load entirely; the provided `RawConfig` is registered in the DI container as-is. Server config is framework-internal (no user-facing `CoreConfig`). There is no whole-config `app.Config()` accessor; `app.GetConfig(section)` ([below](#section-descriptors--sectiont)) covers composition-root reads, and typed config still flows to business code via DI. See [ADR-005](../adr/005-configuration-architecture.md#credonew-auto-loads-and-registers-rawconfig).
 
+The automatic load is recorded. `New` writes one record, `credo: configuration loaded automatically`, whose `sources` group is the loaded Config's [`Sources`](#sources--what-a-load-read): the files found, the `.env` file read and the environment prefix, never a key or a value. It is written at Info when a file or a `.env` was read and at Debug when the load found only the environment, to the App's logger (`WithLogger`, else the framework default), before `New` reads any setting, so a `New` that fails on a setting has already named the files. `New` with `WithRawConfig` writes no record, whatever the `RawConfig` is.
+
 Root `credo.New` intentionally does not expose `WithConfigFiles` or `WithoutAutoConfig` options. File selection belongs to `config.Load` (`config.WithFiles`, `config.WithDotenvPath`, etc.). Explicit applications load config first, then pass it with `credo.WithRawConfig`.
 
 The framework reads its own settings from the `server` section when present (listen address, timeouts, header and body limits, trailing-slash redirect, debug mode, strict bodies, trusted proxies, TLS files); the key list with types, defaults and reloadability is in the [Configuration Guide](../guides/configuration.md#server--server). An explicit `With*` option replaces its key: `WithAddr` (host and port), `WithShutdownTimeout`, `WithReloadTimeout`, `WithMaxBodyBytes`, `WithRedirectTrailingSlash`, `WithTrustedProxies`, and `WithTLSFiles` (cert and key as one pair). `WithDebug` and `WithStrictBodies` are OR'd with `server.debug` and `server.strict_bodies`.
@@ -207,6 +210,32 @@ Creates a Config from one raw document. Useful with `go:embed`.
 - The document is parsed first, so a malformed document fails before any `.env` I/O. The `.env` and process-environment layers then merge on top with the same rules and options as `Load`.
 - `CREDO_ENV` selects no env-specific overlay: there is no file to derive one from.
 - The bytes are copied: `Reload(ctx)` re-parses the same document and re-reads only `.env` and the process environment.
+
+### Sources — What a Load Read
+
+```go
+type Sources struct {
+    Files      []string // files found and merged, in merge order, absolute paths
+    Document   string   // LoadBytes: the document's format; empty for Load
+    Dotenv     string   // absolute path of the .env file read; empty when none
+    ProcessEnv bool     // false under WithoutProcessEnv
+    EnvPrefix  string   // prefix of the variables merged
+}
+
+func (c *Config) Sources() Sources
+func (s Sources) FromFile() bool
+func (s Sources) LogValue() slog.Value
+```
+
+`Sources` names the inputs the Config's current tree was built from and holds no key and no value, so it is safe to log. `Files` lists only the candidates that exist, base files before the files of the effective `CREDO_ENV`, as the loader merged them; a path is absolute, so the record names the working directory it was resolved against. `Dotenv` is the file actually read: empty when the default `.env` does not exist, when an optional explicit one is missing, and under `WithoutDotenv`. With `ProcessEnv` true an empty `EnvPrefix` means every variable was merged. `FromFile` reports whether a file on disk was a source, a configuration file or a `.env`.
+
+As an slog attribute a `Sources` is a group of `files`, `dotenv` and `process_env`, with `document` for a `LoadBytes` Config and `env_prefix` when the process environment was read; `files` is an empty list and `dotenv` an empty string when none was read, so the record always answers both. A reload that publishes replaces the sources with what it read. An application that loads explicitly writes the record `credo.New` writes for its own load:
+
+```go
+cfg, err := config.Load(config.WithFiles("app.yaml"))
+// ...
+logger.Info("configuration loaded", "sources", cfg.Sources())
+```
 
 ### Section Descriptors — Section[T]
 
@@ -388,7 +417,7 @@ A config file, and a `LoadBytes` document, holds one value: JSON rejects trailin
 
 ## Redacted Formatting
 
-`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the reload result's doctrine (key paths only, never values, safe to log). A dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`. Runnable as `ExampleConfig_String`.
+`*Config` implements `String()`, `GoString()`, and `slog.LogValuer` with a metadata-only description (`config.Config(N keys, values redacted)`): formatting a Config with `%v`/`%s`/`%+v`/`%#v` or logging it as an slog attribute can never leak values or key names. This mirrors the reload result's doctrine (key paths only, never values, safe to log). A dereferenced copy (`*cfg`) is redacted exactly like the pointer; a nil `*Config` formats as fmt's usual `<nil>`. Runnable as `ExampleConfig_String`. What a Config may say about itself beyond the key count is where it came from: [`Sources`](#sources--what-a-load-read) names files and the environment prefix under the same doctrine.
 
 ## Current Behaviour
 

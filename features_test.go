@@ -97,6 +97,7 @@ func TestFeatures_InstallOrderIrrelevant(t *testing.T) {
 		t.Helper()
 		logger, buf := newTestLogger(t)
 		app := mustNew(t, credo.WithLogger(logger))
+		buf.Reset() // drop the record of the automatic configuration load
 		install(app)
 		var mwBody string
 		app.PreRouting(func(next credo.Handler) credo.Handler {
@@ -235,6 +236,7 @@ func TestAccessLog_ResultFilterPanic(t *testing.T) {
 func TestRecover_DisabledStillObservesAccessLog(t *testing.T) {
 	logger, buf := newTestLogger(t)
 	app := mustNew(t, credo.WithLogger(logger), credo.WithoutRecover())
+	buf.Reset() // drop the record of the automatic configuration load
 	app.UseAccessLog()
 	app.GET("/", func(*credo.Context) error { panic("boom") })
 

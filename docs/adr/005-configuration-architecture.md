@@ -42,6 +42,8 @@ Use of string keys in business code is documented as an **anti-pattern**.
 
 `credo.New()` loads configuration through `config.Load()` when no `RawConfig` is given, so the zero-config path works out of the box; `credo.WithRawConfig(rc)` supplies a pre-loaded store and bypasses the auto-load. The `RawConfig` is always registered in the DI container. File selection belongs to the `config.Load` options (`config.WithFiles`, …): the root package deliberately does not duplicate them, so a missing `RawConfig` always means "use Credo's default discovery".
 
+**The automatic load says what it read.** An application that passes only options still takes `config.json`, `.yaml` or `.yml`, a `.env` and the `CREDO_*` environment as input, whether or not its author knows of them, and a file left in the working directory changes `server.*`. `New` therefore writes one record at construction that names the files found, the `.env` file read and the environment prefix, and never a key or a value. The loader keeps that list and `*config.Config` exposes it as `Sources()`, so an application that loads explicitly logs the same record; `New` with `WithRawConfig` loads nothing and writes none. The record is written at Info when a file or a `.env` was read and at Debug when the load found only the environment: a file on disk is the input an author may not know of, while the environment is read by every start and would put a line of no news into every log. Rejected: Info always, for that reason, and Debug always, which hides the record in the default logger, where the case it exists for goes unseen.
+
 ### A Section Is Named Once: `config.Section[T]`
 
 A section's key and its type are named once, by a typed descriptor that every reader of the section takes:
@@ -111,7 +113,7 @@ The section descriptor's own rejections are in [its section](#a-section-is-named
 | `MustLoad` (panic on load) | `config.Load` performs I/O; its error must be handled. `MustGetConfig` panics only when decoding an already-loaded config |
 | User-facing CoreConfig type | Server config is a framework-internal concern — user should not be forced to embed it |
 | Root `WithConfigFiles` option | Duplicates `config.Load(config.WithFiles(...))` and expands root API surface |
-| `WithoutAutoConfig` option | Weak practical need; `WithRawConfig` covers explicit control without adding another mode |
+| `WithoutAutoConfig` option | Weak practical need; `WithRawConfig` covers explicit control without adding another mode. An application that wants no bootstrap input passes a `RawConfig` of its own, and the record of the automatic load covers the need to see what was read |
 | ASP.NET `IOptions<T>` pattern | Extra abstraction layer, simple DI is sufficient in Go |
 | Global config instance | Makes multi-instance tests harder, independent Apps conflict |
 | First-found-wins file discovery | An env-specific file would have to repeat every base key; cascade merge lets each layer carry only what it changes |

@@ -136,6 +136,7 @@ type listenAddr struct {
 // appOptions collects all App construction options.
 type appOptions struct {
 	rawConfig            RawConfig
+	autoLoaded           *config.Config // the Config New loaded by itself; nil with WithRawConfig
 	logger               *slog.Logger
 	disableRecover       bool
 	recoverCfg           RecoverConfig
