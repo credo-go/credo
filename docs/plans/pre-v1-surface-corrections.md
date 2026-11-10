@@ -25,22 +25,22 @@ Progress is tracked by the boxes below.
 
 ## Part A: Fixes and tests
 
-- [ ] **A1. A disabled health endpoint accepts checks.**
+- [x] **A1. A disabled health endpoint accepts checks.**
   - **Problem:** `UseHealth(HealthConfig{Enabled: new(false)})` returns before it creates the engine, so a later `AddLivenessCheck` or `AddReadinessCheck` panics with `credo: UseHealth() must be called before AddReadinessCheck`. The message is false, and a second `UseHealth` after a disabled one is not refused. An application that maps a configuration key to `Enabled` and registers a check fails at registration in the deployment that turns health off.
   - **Fix:** record the registration before the early return. Checks are accepted and never served, and a second `UseHealth` panics as it does after an enabled one.
   - **Tests:** a check registered after a disabled `UseHealth` does not panic and both endpoints answer 404; a second `UseHealth` panics.
-  - **Docs:** the health spec; CHANGELOG under Fixed. C3 removes the cause; this fix does not wait for it.
-- [ ] **A2. The middleware guide's complete example sends `nosniff`.**
+  - **Docs:** the health spec; CHANGELOG under Fixed, and as **BREAKING (behavior)** for the second call, which the spec had accepted. C3 removes the cause; this fix does not wait for it.
+- [x] **A2. The middleware guide's complete example sends `nosniff`.**
   - **Problem:** the example passes `SecureConfig{HSTSMaxAge: 31536000, XFrameOptions: "DENY"}`, and a `SecureConfig` that is passed drops the defaults of the fields it leaves out, so the example serves without `X-Content-Type-Options`.
   - **Fix:** add `ContentTypeNosniff: "nosniff"` to the example. D1 removes the cause and then takes the line out again.
-- [ ] **A3. Stale godoc.** `WithLogger` says access and request logging are on by default; the access log is `app.UseAccessLog()`. The `App` type's doc describes a middleware stack and an error handler it no longer holds. `Context.RequestID` names a request ID middleware; the feature is `app.UseRequestID()`.
-- [ ] **A4. A request with another method to a static prefix.**
+- [x] **A3. Stale godoc.** `WithLogger` says access and request logging are on by default; the access log is `app.UseAccessLog()`. The `App` type's doc describes a middleware stack and an error handler it no longer holds. `Context.RequestID` names a request ID middleware; the feature is `app.UseRequestID()`.
+- [x] **A4. A request with another method to a static prefix.**
   - **Problem:** `Static` registers two routes, the prefix itself and `prefix/{_static...}`, and the pair has to answer as one route. The test for a request with another method covers the catch-all route only.
   - **Fix:** a test that a `POST` to the prefix itself is a 405 with `Allow`, with and without SPA mode, on the App and on a group. If the test fails, the fix is in this commit.
-- [ ] **A5. The verb convention names noun registrations.**
+- [x] **A5. The verb convention names noun registrations.**
   - **Problem:** the documented verbs (`With`, `Use`, `Set`, `On`, `Add`, a noun accessor) do not cover a registration named by a noun: `Middleware`, `PreRouting`, `StatusHandler`, `Name`.
   - **Fix:** one rule added where the convention is written: the root `doc.go`, ADR-023, `CLAUDE.md` and `AGENTS.md`. No rename.
-- [ ] **A6. `TODO.md` reflects what shipped.**
+- [x] **A6. `TODO.md` reflects what shipped.**
   - **Problem:** five open boxes describe work that is done in whole or in part, and three deferred boxes cite a document that no longer mentions them.
   - **Fix:** no code changes.
     - Checked: the duplicate-route diagnostics (the panic names the call site of both registrations); "Detect duplicate route patterns" under registration-time route validation (a duplicate panics at registration); `example_test.go` for the root package and `config` (both have their examples).
