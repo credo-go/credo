@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -143,7 +145,7 @@ func TestRouteInfo_OneViewForEveryReader(t *testing.T) {
 }
 
 // TestRouteInfo_NoRouteIsTheZeroView: where no route matched — pre-routing
-// middleware and a custom 404 handler — HasRoute is false and Route is the
+// middleware and the custom 404 and 405 handlers — HasRoute is false and Route is the
 // zero RouteInfo: empty fields, no meta, and URL generation that fails with
 // an error naming what is missing and where a usable view comes from.
 func TestRouteInfo_NoRouteIsTheZeroView(t *testing.T) {
@@ -161,8 +163,8 @@ func TestRouteInfo_NoRouteIsTheZeroView(t *testing.T) {
 	}
 
 	var (
-		preHas, notFoundHas, observedHas bool
-		preView, notFoundView, observed  credo.RouteInfo
+		preHas, notFoundHas, notAllowedHas, observedHas bool
+		preView, notFoundView, notAllowedView, observed credo.RouteInfo
 	)
 	observedHas = true
 	app := mustNew(t)
@@ -177,11 +179,17 @@ func TestRouteInfo_NoRouteIsTheZeroView(t *testing.T) {
 		notFoundHas, notFoundView = c.HasRoute(), c.Route()
 		return credo.ErrNotFound
 	})
+	notAllowedHas = true
+	app.StatusHandler(http.StatusMethodNotAllowed, func(c *credo.Context) error {
+		notAllowedHas, notAllowedView = c.HasRoute(), c.Route()
+		return credo.ErrMethodNotAllowed
+	})
 	app.AddObserver(observerFunc(func(ex *credo.Exchange) {
 		observed = ex.Route()
 		observedHas = observed.Pattern != "" || observed.Kind != ""
 	}))
-	app.GET("/known", func(c *credo.Context) error { return c.Response().NoContent(http.StatusNoContent) })
+	app.GET("/known", func(c *credo.Context) error { return c.Response().NoContent(http.StatusNoContent) }).
+		SetMeta(keyViewScope, "route")
 
 	if w := serveView(app, http.MethodGet, "/unknown"); w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
@@ -189,6 +197,15 @@ func TestRouteInfo_NoRouteIsTheZeroView(t *testing.T) {
 	check(t, "pre-routing middleware", preHas, preView)
 	check(t, "custom 404 handler", notFoundHas, notFoundView)
 	check(t, "observer of a 404", observedHas, observed)
+
+	// A 405 has a pattern that matched and no route that serves the method:
+	// the view is the zero one, not that of the GET route beside it.
+	observedHas = true
+	if w := serveView(app, http.MethodPost, "/known"); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	check(t, "custom 405 handler", notAllowedHas, notAllowedView)
+	check(t, "observer of a 405", observedHas, observed)
 
 	if _, ok := app.GetRoute("no.such.name"); ok {
 		t.Error(`GetRoute("no.such.name") reported a route`)
@@ -395,5 +412,203 @@ func TestRouteInfo_RoutesOwnsMethods(t *testing.T) {
 	serveView(app, http.MethodGet, "/legacy/x")
 	if !slices.Equal(fromRequest, want) {
 		t.Errorf("a request read Methods = %v after a caller wrote to a Routes() result, want %v", fromRequest, want)
+	}
+}
+
+// TestRouteInfo_BuildURLIsAReference: for a host-scoped route BuildURL
+// returns a network-path reference, which net/url parses to the host and the
+// path and resolves against a base to an absolute URL; host parameters are
+// consumed before path parameters, and a route without a host returns what
+// BuildURI returns.
+func TestRouteInfo_BuildURLIsAReference(t *testing.T) {
+	ok := func(c *credo.Context) error { return c.Response().NoContent(http.StatusNoContent) }
+	tests := []struct {
+		name          string
+		host, pattern string
+		params        []string
+		want          string
+		wantHost      string
+		wantPath      string
+		wantRawPath   string
+	}{
+		{
+			name: "a static host", host: "api.example.com", pattern: "/users/{id}", params: []string{"42"},
+			want: "//api.example.com/users/42", wantHost: "api.example.com", wantPath: "/users/42",
+		},
+		{
+			name: "host parameters first, then path parameters", host: "{region}.{tenant}.myapp.com", pattern: "/data/{id}",
+			params: []string{"us-east", "acme", "99"},
+			want:   "//us-east.acme.myapp.com/data/99", wantHost: "us-east.acme.myapp.com", wantPath: "/data/99",
+		},
+		{
+			name: "a host parameter and no path parameter", host: "{tenant}.myapp.com", pattern: "/health", params: []string{"acme"},
+			want: "//acme.myapp.com/health", wantHost: "acme.myapp.com", wantPath: "/health",
+		},
+		{
+			name: "an escaped path value", host: "{tenant}.myapp.com", pattern: "/files/{name}", params: []string{"acme", "a/b"},
+			want: "//acme.myapp.com/files/a%2Fb", wantHost: "acme.myapp.com", wantPath: "/files/a/b", wantRawPath: "/files/a%2Fb",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.Host(tt.host).GET(tt.pattern, ok).Name("r")
+			route, _ := app.GetRoute("r")
+
+			ref, err := route.BuildURL(tt.params...)
+			if err != nil || ref != tt.want {
+				t.Fatalf("BuildURL = %q, %v; want %q", ref, err, tt.want)
+			}
+			u, err := url.Parse(ref)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", ref, err)
+			}
+			if u.Scheme != "" || u.Host != tt.wantHost || u.Path != tt.wantPath || u.RawPath != tt.wantRawPath {
+				t.Errorf("parsed %q = scheme %q, host %q, path %q, raw path %q; want no scheme, %q, %q, %q",
+					ref, u.Scheme, u.Host, u.Path, u.RawPath, tt.wantHost, tt.wantPath, tt.wantRawPath)
+			}
+			base, _ := url.Parse("https://www.example.org/a/b?q=1")
+			if abs := base.ResolveReference(u).String(); abs != "https:"+tt.want {
+				t.Errorf("resolved against an https page = %q, want %q", abs, "https:"+tt.want)
+			}
+
+			// BuildURI of the same route is the path alone.
+			uri, err := route.BuildURI(tt.params[len(tt.params)-strings.Count(tt.pattern, "{"):]...)
+			if err != nil || "//"+tt.wantHost+uri != tt.want {
+				t.Errorf("BuildURI = %q, %v; want the path of %q", uri, err, tt.want)
+			}
+		})
+	}
+
+	t.Run("a route without a host returns what BuildURI returns", func(t *testing.T) {
+		app := mustNew(t)
+		app.GET("/users/{id}/files/{path...}", ok).Name("r")
+		route, _ := app.GetRoute("r")
+		for _, params := range [][]string{{"42", "a/b c.txt"}, {"7", ""}} {
+			uri, uriErr := route.BuildURI(params...)
+			ref, refErr := route.BuildURL(params...)
+			if uriErr != nil || refErr != nil || ref != uri || strings.HasPrefix(ref, "//") {
+				t.Errorf("BuildURL(%q) = %q, %v; BuildURI = %q, %v; want the same path", params, ref, refErr, uri, uriErr)
+			}
+		}
+	})
+}
+
+// TestRouteInfo_BuildRejectsAPathReadAsAHost: a result without a host never
+// begins with "//", which a client reads as a host. BuildURI, and BuildURL
+// of a route without a host, return an error that names the method called,
+// what was built and the remedy; BuildURL of a host-scoped route writes the
+// host, so there the path stays a path.
+func TestRouteInfo_BuildRejectsAPathReadAsAHost(t *testing.T) {
+	ok := func(c *credo.Context) error { return c.Response().NoContent(http.StatusNoContent) }
+	tests := []struct {
+		name    string
+		pattern string
+		params  []string
+		built   string
+	}{
+		{"a root catch-all given a value that begins with a slash", "/{path...}", []string{"/evil.example/x"}, "//evil.example/x"},
+		{"a pattern that begins with two slashes", "//{id}", []string{"evil.example"}, "//evil.example"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.GET(tt.pattern, ok).Name("r")
+			route, _ := app.GetRoute("r")
+			for _, build := range []struct {
+				method string
+				call   func(...string) (string, error)
+			}{{"BuildURI", route.BuildURI}, {"BuildURL", route.BuildURL}} {
+				got, err := build.call(tt.params...)
+				if err == nil || got != "" {
+					t.Fatalf("%s(%q) = %q, %v; want an error and no result", build.method, tt.params, got, err)
+				}
+				for _, want := range []string{
+					"credo: " + build.method + " " + strconv.Quote(tt.pattern) + ": ",       // the method called and the route
+					"the path built, " + strconv.Quote(tt.built) + `, begins with "//"`,     // what failed
+					"is read as a host, not as a path",                                      // why
+					`pass a value that does not begin with "/" for a catch-all at the root`, // the remedy
+				} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("%s error = %q, want it to contain %q", build.method, err, want)
+					}
+				}
+			}
+		})
+	}
+
+	t.Run("a root catch-all given a value without a leading slash", func(t *testing.T) {
+		app := mustNew(t)
+		app.GET("/{path...}", ok).Name("r")
+		route, _ := app.GetRoute("r")
+		for _, value := range []string{"evil.example/x", "a//b", ""} {
+			want := "/" + value
+			if uri, err := route.BuildURI(value); err != nil || uri != want {
+				t.Errorf("BuildURI(%q) = %q, %v; want %q", value, uri, err, want)
+			}
+			if ref, err := route.BuildURL(value); err != nil || ref != want {
+				t.Errorf("BuildURL(%q) = %q, %v; want %q", value, ref, err, want)
+			}
+		}
+	})
+
+	t.Run("a host-scoped route keeps such a path a path", func(t *testing.T) {
+		app := mustNew(t)
+		app.Host("{tenant}.myapp.com").GET("/{path...}", ok).Name("r")
+		route, _ := app.GetRoute("r")
+
+		ref, err := route.BuildURL("acme", "/evil.example/x")
+		if err != nil || ref != "//acme.myapp.com//evil.example/x" {
+			t.Fatalf("BuildURL = %q, %v; want the host and then the path", ref, err)
+		}
+		u, err := url.Parse(ref)
+		if err != nil || u.Host != "acme.myapp.com" || u.Path != "//evil.example/x" {
+			t.Errorf("parsed %q = host %q, path %q, %v; want acme.myapp.com and //evil.example/x", ref, u.Host, u.Path, err)
+		}
+		// The path alone has no host in front of it, and is refused.
+		if uri, err := route.BuildURI("/evil.example/x"); err == nil {
+			t.Errorf("BuildURI = %q, want an error for a path that begins with //", uri)
+		}
+	})
+}
+
+// TestRouteInfo_BuildErrorsNameTheMethodCalled: every error of BuildURL names
+// BuildURL, for a route without a host as for a host-scoped one, and every
+// error of BuildURI names BuildURI.
+func TestRouteInfo_BuildErrorsNameTheMethodCalled(t *testing.T) {
+	ok := func(c *credo.Context) error { return c.Response().NoContent(http.StatusNoContent) }
+	app := mustNew(t)
+	app.GET("/u/{id:[0-9]+}", ok).Name("plain")
+	app.Host("{tenant}.myapp.com").GET("/u/{id:[0-9]+}", ok).Name("hosted")
+	app.Host("*.wild.io").GET("/u/{id}", ok).Name("wild")
+	plain, _ := app.GetRoute("plain")
+	hosted, _ := app.GetRoute("hosted")
+	wild, _ := app.GetRoute("wild")
+
+	tests := []struct {
+		name   string
+		call   func(...string) (string, error)
+		params []string
+		want   string
+	}{
+		{"BuildURI, missing", plain.BuildURI, nil, `credo: BuildURI "/u/{id:[0-9]+}": missing parameter "id"`},
+		{"BuildURI, extra", plain.BuildURI, []string{"1", "2"}, `credo: BuildURI "/u/{id:[0-9]+}": 1 extra parameter(s)`},
+		{"BuildURI, constraint", plain.BuildURI, []string{"x"}, `credo: BuildURI "/u/{id:[0-9]+}": value "x" for parameter "id" does not match constraint "[0-9]+"`},
+		{"BuildURL without a host, missing", plain.BuildURL, nil, `credo: BuildURL "/u/{id:[0-9]+}": missing parameter "id"`},
+		{"BuildURL without a host, extra", plain.BuildURL, []string{"1", "2"}, `credo: BuildURL "/u/{id:[0-9]+}": 1 extra parameter(s)`},
+		{"BuildURL without a host, constraint", plain.BuildURL, []string{"x"}, `credo: BuildURL "/u/{id:[0-9]+}": value "x" for parameter "id" does not match constraint "[0-9]+"`},
+		{"BuildURL with a host, missing host value", hosted.BuildURL, nil, `credo: BuildURL host "{tenant}.myapp.com": `},
+		{"BuildURL with a host, missing path value", hosted.BuildURL, []string{"acme"}, `credo: BuildURL path "/u/{id:[0-9]+}": missing parameter "id"`},
+		{"BuildURL with a host, extra", hosted.BuildURL, []string{"acme", "1", "2"}, `credo: BuildURL "{tenant}.myapp.com"/u/{id:[0-9]+}: 1 extra parameter(s)`},
+		{"BuildURL with a wildcard host", wild.BuildURL, []string{"1"}, `credo: BuildURL host "*.wild.io": wildcard host patterns cannot generate concrete URLs`},
+		{"BuildURI of a host-scoped route", hosted.BuildURI, nil, `credo: BuildURI "/u/{id:[0-9]+}": missing parameter "id"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.call(tt.params...)
+			if err == nil || got != "" || !strings.HasPrefix(err.Error(), tt.want) {
+				t.Errorf("= %q, %v; want an error that begins with %q", got, err, tt.want)
+			}
+		})
 	}
 }

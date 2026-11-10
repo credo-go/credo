@@ -348,6 +348,19 @@ The wildcard must be the leftmost complete label and may appear only once. Patte
 
 `*` and `*.io` are allowed, but they are broad patterns and are usually best reserved for local development or carefully controlled environments.
 
+A path cannot address a host-scoped route, so its `RouteInfo` builds a reference that carries the host. `BuildURL` fills the host parameters first, then the path parameters, and returns a network-path reference, which is valid as it stands in a `Location` header or a link and takes the scheme of the request or page it is resolved against:
+
+```go
+app.Host("{tenant}.acme.io").GET("/users/{id}", showUser).Name("tenant.user")
+
+user, _ := app.GetRoute("tenant.user")
+ref, _ := user.BuildURL("north", "42") // "//north.acme.io/users/42"
+abs := "https:" + ref                  // "https://north.acme.io/users/42", when an absolute URL is needed
+uri, _ := user.BuildURI("42")          // "/users/42": the path alone
+```
+
+For a route without a host, `BuildURL` returns what `BuildURI` returns.
+
 Wildcard host patterns are matching-only. `BuildURL` cannot turn `*.acme.io` into a concrete host; use `{tenant}.acme.io` when URL generation needs a subdomain value. Host values fill one label each and are validated (letters, digits, hyphens and underscores, plus the label's constraint) rather than percent-encoded; path values are escaped per segment as described under [Encoded Values](#encoded-values).
 
 ### Matching Rules

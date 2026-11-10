@@ -81,7 +81,8 @@ func ExampleNewKey() {
 }
 
 // A named route builds its URL from decoded parameter values, escaping each
-// path value for one segment; a host-scoped route fills its host first.
+// path value for one segment. A host-scoped route fills its host first, and
+// BuildURL returns the reference that carries the host.
 func ExampleRouteInfo_BuildURI() {
 	app := newExampleApp()
 	app.GET("/products/{id}", exText("product")).Name("product.show")
@@ -92,13 +93,14 @@ func ExampleRouteInfo_BuildURI() {
 	fmt.Println(uri)
 	uri, _ = route.BuildURI("a/b")
 	fmt.Println(uri)
-	url, _ := route.BuildURL("42") // a default route: the same as BuildURI
-	fmt.Println(url)
+	ref, _ := route.BuildURL("42") // a route without a host: the same as BuildURI
+	fmt.Println(ref)
 	fmt.Printf("%q\n", route.Host)
 
 	tenant, _ := app.GetRoute("tenant.product.show")
-	url, _ = tenant.BuildURL("acme", "42")
-	fmt.Println(url)
+	ref, _ = tenant.BuildURL("acme", "42")
+	fmt.Println(ref)
+	fmt.Println("https:" + ref) // an absolute URL: prefix the scheme
 
 	_, err := route.BuildURI("42", "extra")
 	fmt.Println(err != nil)
@@ -107,7 +109,8 @@ func ExampleRouteInfo_BuildURI() {
 	// /products/a%2Fb
 	// /products/42
 	// ""
-	// acme.myapp.com/products/42
+	// //acme.myapp.com/products/42
+	// https://acme.myapp.com/products/42
 	// true
 }
 

@@ -84,6 +84,15 @@ The meta methods share one shape. `SetMeta` and `RemoveMeta` on `Route`, `Static
 
 Named routes generate URLs (`RouteInfo.BuildURI`, `RouteInfo.BuildURL`) instead of hard-coding paths; a duplicate name panics at registration. Generation is intentionally strict: a missing, extra or invalid value is an error, never a URL with a placeholder left in or an input silently dropped. Wildcard host patterns such as `*.example.com` match only and cannot generate a concrete host; a named host parameter serves when generation needs the subdomain. Rules and errors: [router spec](../specs/router.md#named-routes--url-generation-goyave-inspired).
 
+**`BuildURL` returns a reference, not a bare host and path.** A path alone cannot address a host-scoped route, so `BuildURL` carries the host: it returns the network-path reference `//acme.myapp.com/users/42` (RFC 3986 §4.2), which is valid as it stands in a `Location` header or a link and takes the scheme of what it is resolved against. A caller that needs an absolute URL prefixes the scheme it knows. For a route without a host it returns what `BuildURI` returns. Rejected:
+
+- _The host joined to the path_ (`acme.myapp.com/users/42`): it is not a URL, and a client resolves it as a relative path below the current one.
+- _`BuildURL(scheme string, params ...string)`_: it asks every caller for a scheme where a reference would do, and the route does not know whether TLS ends at the application or in front of it.
+
+**A path that would read as a host is an error.** With `//host/path` as the form that carries a host, a result without a host must never begin with `//`: `/{path...}` given the value `/evil.example/x` would build `//evil.example/x`, which a client reads as the host `evil.example`, and a result that is documented as valid in a `Location` header would then be an open redirect built from a parameter value. `BuildURI`, and `BuildURL` of a route without a host, return an error when the path they built begins with `//` — the catch-all at the root with a value that begins with `/`, and a pattern that itself begins with `//`. Such a path cannot be written as a reference without a scheme and a host. `BuildURL` of a host-scoped route is unaffected: the host is written, so `//host//x` is the host and the path `//x`. Rejected:
+
+- _Returning the path as built_: the caller would have to know that one shape of value turns a path into a host, and check for it at every redirect.
+
 ### Route Groups
 
 Groups share a prefix and inherit their parent's middleware and metadata ([router spec](../specs/router.md#route-groups-and-sub-routers)).

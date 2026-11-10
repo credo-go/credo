@@ -378,7 +378,7 @@ func TestURLRoundTrip_HostLabelValidation(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/users/{id}", h)
 		u, err := route.View().BuildURL("acme-1", "a/b")
-		if err != nil || u != "acme-1.myapp.com/users/a%2Fb" {
+		if err != nil || u != "//acme-1.myapp.com/users/a%2Fb" {
 			t.Fatalf("BuildURL = %q, %v", u, err)
 		}
 	})
@@ -396,7 +396,7 @@ func TestURLRoundTrip_HostLabelValidation(t *testing.T) {
 	t.Run("host constraint is validated", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{org:[a-z]+}.myapp.com").GET("/x", h)
-		if u, err := route.View().BuildURL("acme"); err != nil || u != "acme.myapp.com/x" {
+		if u, err := route.View().BuildURL("acme"); err != nil || u != "//acme.myapp.com/x" {
 			t.Fatalf("BuildURL(acme) = %q, %v", u, err)
 		}
 		if _, err := route.View().BuildURL("ACME1"); err == nil || !strings.Contains(err.Error(), "host constraint") {
