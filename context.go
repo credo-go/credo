@@ -283,6 +283,10 @@ func (c *Context) resolveLocale() string {
 // configured or the key is not found, the key itself is returned.
 // Optional data map provides template variables for the message.
 //
+// A key the active catalog does not define is returned as the text, and in
+// debug mode ([WithDebug]) the miss is logged as a warning with the key, the
+// locale and the route.
+//
 // T always renders the message's Other plural form; for count-based plural
 // selection use [Context.TPlural].
 func (c *Context) T(key string, data ...map[string]any) string {
@@ -296,6 +300,7 @@ func (c *Context) T(key string, data ...map[string]any) string {
 	if s, ok := c.app.i18n.bundle.TranslateForLang(c.resolveLocale(), key, d); ok {
 		return s
 	}
+	c.app.noteTranslationMiss(c, key)
 	return key
 }
 
@@ -309,8 +314,8 @@ func (c *Context) T(key string, data ...map[string]any) string {
 //	c.TPlural("items", 5) // "5 items"
 //
 // If i18n is not configured or the key is not found, the key itself is
-// returned. When count cannot be interpreted as a number, the Other form
-// is rendered.
+// returned, and a miss is logged in debug mode as [Context.T] logs it. When
+// count cannot be interpreted as a number, the Other form is rendered.
 func (c *Context) TPlural(key string, count any, data ...map[string]any) string {
 	if c.app == nil || c.app.i18n == nil {
 		return key
@@ -322,6 +327,7 @@ func (c *Context) TPlural(key string, count any, data ...map[string]any) string 
 	if s, ok := c.app.i18n.bundle.TranslatePluralForLang(c.resolveLocale(), key, count, d); ok {
 		return s
 	}
+	c.app.noteTranslationMiss(c, key)
 	return key
 }
 

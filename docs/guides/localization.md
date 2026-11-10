@@ -426,6 +426,14 @@ Behavior summary:
 
 That fallback makes it safe to adopt i18n incrementally.
 
+A key that shows up in a response is easy to miss in review, so run with `credo.WithDebug()` while you develop: every `c.T` or `c.TPlural` call whose key is in neither the request's locale nor the default one logs a warning that names the key, the locale and the route.
+
+```text
+level=WARN msg="credo: translation key is not in the catalog; the key is returned as the text: add the key to the catalog or correct it at the call" key=messages.dashboard_titel locale=tr route="GET /dashboard"
+```
+
+The warning is written in debug mode only, and only while i18n is active; the key is returned either way.
+
 ---
 
 ## Automatic Validation Translation
@@ -625,7 +633,7 @@ Check the following:
 
 1. `UseI18n(...)` was called during startup
 2. locale files actually exist under the directory you configured
-3. the key exists in `messages.json`
+3. the key exists in `messages.json`; with `credo.WithDebug()` a missing key logs a warning with the key, the locale and the route
 4. the request resolved to the locale you expect
 5. for `DirFS`, you passed the correct filesystem root, often via `fs.Sub(...)`
 
