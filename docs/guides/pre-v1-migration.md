@@ -11,6 +11,7 @@ These changes are on `main` and not yet in a release.
 | A route with text after a catch-all (`GET /a/{p...}/x`), which never matched and answered 405 | Registration panics: end the pattern with the catch-all (`/a/{p...}`) and read the rest from its capture |
 | A catch-all in a `Mount` prefix, or in a group prefix under `Static` | Registration panics: the mount or static route captures the path below its prefix itself |
 | `middleware.ContractConfig{RequireContentType: true}`, or a `MetaAccept` contract that let a body without a `Content-Type` pass | Drop the field: the contract answers 415 to such a body by default, and `ContractConfig{AllowMissingContentType: true}` lets it pass |
+| `UseHealth` with `Enabled` false, followed by a second `UseHealth` | The second call panics: call `UseHealth` once, with the `Enabled` value the deployment wants; checks registered after a disabled call are accepted and never run |
 
 ## v0.26.0 at a glance
 
