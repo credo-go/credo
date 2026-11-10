@@ -71,7 +71,7 @@ Unknown members are **ignored by default** and **rejected under an app-wide opt-
 
 ### Logger
 
-`c.Logger()` returns a request-scoped `*slog.Logger`. The request ID feature (`app.UseRequestID`) and `c.AddLogAttrs` enrich it. Fallback chain: request logger → app logger (from `WithLogger`) → the framework default logger (a text handler on stderr).
+`c.Logger()` returns a request-scoped `*slog.Logger`. The request ID feature (`app.UseRequestID`) and `c.AddLogAttrs` enrich it. Fallback chain: request logger → app logger (from `WithLogger`, else the `log` section) → the framework default logger (a text handler on stderr).
 
 ### Request Context Access
 

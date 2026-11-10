@@ -117,7 +117,7 @@ The App's implementation, by contrast, is divided into internal parts, with no A
 
 `credo.Infra` is a fixed struct defined by the framework; applications cannot add fields. It carries the component-scoped Logger. Metrics and tracing are deferred to the observability release, which decides whether and how they reach `Infra` ([ADR-014](014-observability.md)); the keyed-literal guard (`_ struct{}`) is deliberate, so that adding fields does not break existing `credo.Infra{Logger: ...}` literals.
 
-When a constructor has a parameter of type `credo.Infra`, at any position, the container produces it instead of resolving a registration: a framework provider builds it from the App's logger (`credo.WithLogger`, else the framework default stderr logger), scoped with a `component=<name>` attribute naming the binding the constructor builds ([One Key Names an Application Part](#one-key-names-an-application-part)). A constructor without such a parameter is pure constructor injection; the developer chooses per service, and `Infra` goes first by convention, like `context.Context`. The [container spec](../specs/container.md#credoinfra-----explicit-infrastructure-carrier) gives the struct, the detection rule and examples.
+When a constructor has a parameter of type `credo.Infra`, at any position, the container produces it instead of resolving a registration: a framework provider builds it from the App's logger (`credo.WithLogger`, else the one built from the `log` section, else the framework default stderr logger), scoped with a `component=<name>` attribute naming the binding the constructor builds ([One Key Names an Application Part](#one-key-names-an-application-part)). A constructor without such a parameter is pure constructor injection; the developer chooses per service, and `Infra` goes first by convention, like `context.Context`. The [container spec](../specs/container.md#credoinfra-----explicit-infrastructure-carrier) gives the struct, the detection rule and examples.
 
 ### The Context Carrier for Framework Modules
 
@@ -150,7 +150,7 @@ Rejected:
 | **Fixed struct, not extensible** | Fields are known, no field-scan/tag needed |
 | **In the root package** | `Infra` is referenceable without importing the DI package, which keeps the dependency graph clean |
 | **Always available** | Like `context.Context` — no need to register, container knows how to produce it |
-| **Default fallback** | If no logger is configured with `credo.WithLogger`, the framework default logger is used — no panic |
+| **Default fallback** | If no logger is configured with `credo.WithLogger` or the `log` section, the framework default logger is used — no panic |
 | **Scoped Logger** | Each service gets a logger scoped with its own name |
 | **First parameter convention** | Like Go's `context.Context` convention, Infra is placed first by convention; the container still detects it at any parameter position |
 | **Config not included** | Config is a separate concern — distributed via DI as typed struct (ADR-005) |

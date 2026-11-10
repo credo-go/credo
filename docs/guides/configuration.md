@@ -116,7 +116,7 @@ config: unknown key "server.prot": no field of the target decodes it; fix the co
 
 A value is not converted across kinds: a boolean into a number, a number into a string or a scalar into a slice is an error that names the key and `config.WithWeakDecoding()`. Strings still parse by their target type, so environment and `.env` overrides keep working: `CREDO_SERVER__PORT=9090` decodes into an `int`, `"true"` into a `bool`, `"5s"` into a `time.Duration`, and an `encoding.TextUnmarshaler` field from its text. JSON numbers decode into int fields.
 
-The policy applies to every decode from that store: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own `server` section read in `credo.New`, so a typo under `server.*` fails startup. Every struct that decodes a section must therefore cover all of that section's keys, full-tree decodes included (a config with a `server` section needs a `Server` field on a full-tree target).
+The policy applies to every decode from that store: `Unmarshal`, a section's `Decode`, the decoding of a reload's candidate, and the framework's own `server` and `log` sections read in `credo.New`, so a typo under `server.*` or `log.*` fails startup. Every struct that decodes a section must therefore cover all of that section's keys, full-tree decodes included (a config with a `server` section needs a `Server` field on a full-tree target).
 
 A full-tree decode (`rawCfg.Unmarshal("", &cfg)`) is where this bites first. `.env` entries are read with no prefix, so every entry in `.env` lands in the tree beside the framework's `server` keys, and the target must cover each one. Decode the sections you own instead (`config.Section[AppConfig]("app").Decode(rawCfg)`), give the target fields for those keys, or load with `config.WithoutDotenv()`. An unknown key that a `.env` entry or an environment variable set names its source:
 
@@ -331,27 +331,34 @@ func (t *Throttle) Allow(key string) bool {
 }
 ```
 
-State derived from a live section — a limiter, a compiled pattern, a log level — follows it through `OnChange`, which runs after the reload has published the new value:
+State derived from a live section — a limiter, a compiled pattern — follows it through `OnChange`, which runs after the reload has published the new value:
 
 ```go
-type LogConfig struct {
-    Level slog.Level
+type RedactConfig struct {
+    Pattern string // a regular expression
 }
 
-var LogSection = config.Section[LogConfig]("log")
+func (c RedactConfig) Validate() error {
+    _, err := regexp.Compile(c.Pattern)
+    return err
+}
+
+var RedactSection = config.Section[RedactConfig]("redact")
 
 // In the composition root, over the *config.Config handed to credo.WithRawConfig.
-logCfg, err := LogSection.Live(rawCfg)
+redactCfg, err := RedactSection.Live(rawCfg)
 if err != nil {
     log.Fatal(err)
 }
-var level slog.LevelVar
-level.Set(logCfg.Load().Level)
-logCfg.OnChange(func(ctx context.Context, prev, next LogConfig) error {
-    level.Set(next.Level)
+var pattern atomic.Pointer[regexp.Regexp]
+pattern.Store(regexp.MustCompile(redactCfg.Load().Pattern))
+redactCfg.OnChange(func(ctx context.Context, prev, next RedactConfig) error {
+    pattern.Store(regexp.MustCompile(next.Pattern)) // Validate has accepted it
     return nil
 })
 ```
+
+The log level and format need none of this: they are the framework's [`log` section](#logging--log), which a reload applies by itself.
 
 The rules that make this safe:
 
@@ -359,7 +366,7 @@ The rules that make this safe:
 - **One generation.** The snapshot and the changed sections are published together: once a `Load` returns a reload's value for one section, later `Load` calls return that reload's values or newer ones. Two `Load` calls can still straddle a reload, so values that must agree within one operation belong to one section.
 - **Callbacks run in order and never roll back.** `OnChange` callbacks run in registration order for the sections the reload changed, with the reload's context. An error or a panic is joined into the error `Reload` returns, the later callbacks still run, and none is skipped when the context has ended.
 - **What the type does not enforce.** Call `Load` in each operation rather than once at construction; derive state in `OnChange` rather than from a value read once; and treat a value's slices and maps as read-only, since every `Load` of one reload shares them.
-- **One nature per section.** A section is static (`Decode`, `GetConfig`, `MustGetConfig`, and the framework's own `server` section) or live (`Live`) within one configuration, and a read of the other nature fails, naming both reads: `config: section "limits" is read both as static, by …, and as live, by …`. A section nested in another, or one containing it, counts as the same section, so put the keys that need a restart and the keys a reload applies in separate sections. A raw `Unmarshal` with a string key is outside that check.
+- **One nature per section.** A section is static (`Decode`, `GetConfig`, `MustGetConfig`, and the framework's own `server` section) or live (`Live`, and the framework's own `log` section) within one configuration, and a read of the other nature fails, naming both reads: `config: section "limits" is read both as static, by …, and as live, by …`. A section nested in another, or one containing it, counts as the same section, so put the keys that need a restart and the keys a reload applies in separate sections. A raw `Unmarshal` with a string key is outside that check.
 - **Changes outside a live section are reported, never applied.** Every key that differs from the value the start read and that no live section covers is reported on every reload until it reverts — never its value — and so is a file key that `.env` or the process environment keeps.
 
 `app.Reload` returns what it did beside its error, and logs it (`credo: reload complete` at Info, the restart keys at Warn):
@@ -583,6 +590,27 @@ Consumed automatically by `credo.New()`. The **Reloadable** column says what a [
 | `trusted_proxies` | []string | `[]` | restart | CIDR ranges allowed to influence forwarded headers for `Request.Scheme()` and `Request.RealIP()` |
 | `tls.cert_file` | string | `""` | restart (the file itself rotates when it changes) | PEM certificate file for HTTPS |
 | `tls.key_file` | string | `""` | restart (the file itself rotates when it changes) | PEM private key file for HTTPS |
+
+### Logging — `log`
+
+Consumed automatically by `credo.New()` when no logger is passed with `credo.WithLogger`. The section selects the App's logger, written to stderr, and a [reload](#reloading-configuration) applies both keys to it and to every logger derived from it.
+
+| Key | Type | Default | Reloadable | Description |
+| --- | --- | --- | --- | --- |
+| `level` | string | `info` | yes | Lowest level written: `debug`, `info`, `warn` or `error` |
+| `format` | string | `text` | yes | Handler: `text` or `json` |
+
+```yaml
+log:
+  level: info
+  format: json
+```
+
+The values are matched without regard to case, so `CREDO_LOG__LEVEL=DEBUG` overrides the file. Three things to know:
+
+- **The name is the framework's.** An application section called `log` with other keys fails `credo.New()` with the unknown key. Rename it, or build the logger yourself and pass it with `credo.WithLogger`: the section is then not read at all.
+- **Write the section from the start if you mean to reload it.** A `log` section that first appears in a reload is reported in `restart_required` and changes nothing, and removing the section from a running service aborts the reload. To go back to the defaults, leave the key with no value under it (`log:`).
+- **Anything else takes `WithLogger`.** Another writer, a source location, attribute rewriting or a handler of your own is a logger you build; the level and format keys do not apply to it.
 
 Sections the application reads itself (`databases.*`, `i18n`, `auth.*`, and your own) are reloadable exactly when the application declares them live with `Section.Live`; a section bound through `Decode` is restart-only, and a reload reports its changed keys.
 
