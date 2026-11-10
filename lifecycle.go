@@ -6,12 +6,45 @@ import (
 	"net"
 )
 
-// State returns the current lifecycle state as a string.
-func (app *App) State() string {
-	return app.lifecycle.currentState().String()
+// State is a lifecycle state of an App, as [App.State] reports it. An App is
+// single-use and moves forward through the states: building, starting,
+// running, stopping, stopped. The one step back is a start that fails before
+// anything was started, which returns from starting to building.
+//
+// The constants' values are the state names in lower case, so a State
+// compares with a string literal and prints as one.
+type State string
+
+const (
+	// StateBuilding is the initial state: registration is open and nothing
+	// has started. Shutdown in this state is bootstrap teardown.
+	StateBuilding State = "building"
+
+	// StateStarting is the start phase: preparation, the listener bind under
+	// managed serving, then the start walk. A shutdown request interrupts it.
+	StateStarting State = "starting"
+
+	// StateRunning means the start walk succeeded. Under managed serving the
+	// server is accepting; after [App.Start] the App's owner serves it.
+	StateRunning State = "running"
+
+	// StateStopping means the drain in tiers, or the rollback of a failed or
+	// interrupted start, is running.
+	StateStopping State = "stopping"
+
+	// StateStopped is the terminal state: the App has fully stopped and
+	// cannot run again.
+	StateStopped State = "stopped"
+)
+
+// State returns the current lifecycle state. It is a snapshot: another
+// goroutine may move the App on before the caller acts on it. [App.IsRunning]
+// asks the question most callers have.
+func (app *App) State() State {
+	return app.lifecycle.currentState().public()
 }
 
-// IsRunning reports whether the server is in the running state.
+// IsRunning reports whether the App is in [StateRunning].
 func (app *App) IsRunning() bool {
 	return app.lifecycle.currentState() == stateRunning
 }
