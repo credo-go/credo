@@ -94,6 +94,73 @@ func TestApp_InitialState(t *testing.T) {
 	}
 }
 
+// State is a string type whose constants carry the state names, so the
+// result compares with a constant and with a literal, and converts to the
+// string that error text and logs use.
+func TestState_ConstantsCarryTheStateNames(t *testing.T) {
+	tests := []struct {
+		state credo.State
+		want  string
+	}{
+		{credo.StateBuilding, "building"},
+		{credo.StateStarting, "starting"},
+		{credo.StateRunning, "running"},
+		{credo.StateStopping, "stopping"},
+		{credo.StateStopped, "stopped"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if string(tt.state) != tt.want {
+				t.Errorf("string(State) = %q, want %q", string(tt.state), tt.want)
+			}
+			if got := fmt.Sprint(tt.state); got != tt.want {
+				t.Errorf("printed State = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// App.State returns the typed state at each point of a start and a shutdown.
+func TestApp_State_IsTyped(t *testing.T) {
+	// The parameters are a credo.State, so each call pins the result's type.
+	check := func(when string, got, want credo.State) {
+		t.Helper()
+		if got != want {
+			t.Errorf("State() %s = %q, want %q", when, got, want)
+		}
+	}
+
+	app := mustNew(t)
+	check("before the start", app.State(), credo.StateBuilding)
+
+	var inStart, inStop credo.State
+	app.OnStart(func(context.Context) error {
+		inStart = app.State()
+		return nil
+	})
+	app.OnStop(func(context.Context) error {
+		inStop = app.State()
+		return nil
+	})
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	check("in a start hook", inStart, credo.StateStarting)
+	check("after Start", app.State(), credo.StateRunning)
+	if !app.IsRunning() {
+		t.Error("IsRunning() = false in StateRunning")
+	}
+
+	if err := app.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() = %v", err)
+	}
+	check("in a stop hook", inStop, credo.StateStopping)
+	check("after Shutdown", app.State(), credo.StateStopped)
+	if app.IsRunning() {
+		t.Error("IsRunning() = true in StateStopped")
+	}
+}
+
 func TestApp_ServeHTTP_DoesNotChangeState(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/ping", func(ctx *credo.Context) error {

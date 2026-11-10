@@ -78,9 +78,19 @@ The panic is the treatment a stored preparation error already gets: serving a ha
 
 ## API
 
-### `app.State() string`
+### `app.State() State`
 
-Returns the current lifecycle state as a human-readable string.
+Returns the current lifecycle state as a `credo.State`, a string type with one constant per state:
+
+| Constant | Value |
+| --- | --- |
+| `StateBuilding` | `building` |
+| `StateStarting` | `starting` |
+| `StateRunning` | `running` |
+| `StateStopping` | `stopping` |
+| `StateStopped` | `stopped` |
+
+The values are the state names used throughout this spec, in error text and in logs, so a `State` compares with a string literal (`app.State() == "stopped"`) and prints as one; code that stores the result in a `string` converts it. The result is a snapshot: another goroutine may move the App on before the caller acts on it.
 
 ### `app.IsRunning() bool`
 

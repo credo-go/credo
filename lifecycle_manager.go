@@ -21,7 +21,9 @@ import (
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
-// appState represents the lifecycle state of an App.
+// appState is the lifecycle state as the state machine stores it: an ordered
+// number, so that an atomic load and a comparison (state >= stateStopping)
+// decide a transition. [State] is its exported form.
 type appState uint32
 
 const (
@@ -44,22 +46,28 @@ const (
 	stateStopped
 )
 
-// String returns a human-readable name for the state.
-func (s appState) String() string {
+// public returns the exported State of s.
+func (s appState) public() State {
 	switch s {
 	case stateBuilding:
-		return "building"
+		return StateBuilding
 	case stateStarting:
-		return "starting"
+		return StateStarting
 	case stateRunning:
-		return "running"
+		return StateRunning
 	case stateStopping:
-		return "stopping"
+		return StateStopping
 	case stateStopped:
-		return "stopped"
+		return StateStopped
 	default:
 		return "unknown"
 	}
+}
+
+// String returns the state's name, the value of its exported State, for
+// error text and logs.
+func (s appState) String() string {
+	return string(s.public())
 }
 
 // lifecycleManager owns the App's lifecycle: the state machine, the start
