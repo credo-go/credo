@@ -763,3 +763,94 @@ func startErr(t *testing.T, app *credo.App) error {
 	t.Cleanup(func() { _ = app.Shutdown(context.WithoutCancel(t.Context())) })
 	return app.Start(t.Context())
 }
+
+// translationMissWarning is the debug-mode record of a T or TPlural miss: it
+// names what failed (the key is not in the catalog, so the key is the text)
+// and the remedy (add the key or correct the call).
+const translationMissWarning = "credo: translation key is not in the catalog; the key is returned as the text: add the key to the catalog or correct it at the call"
+
+// TestTranslationMiss_DebugWarns: a key the active catalog does not define is
+// still returned as the text, and in debug mode T and TPlural log one warning
+// per miss with the key, the locale and the route.
+func TestTranslationMiss_DebugWarns(t *testing.T) {
+	cases := []struct {
+		name      string
+		translate func(*credo.Context) string
+		key       string
+	}{
+		{"T", func(c *credo.Context) string { return c.T("orders.title") }, "orders.title"},
+		{"T with data", func(c *credo.Context) string {
+			return c.T("orders.greeting", map[string]any{"name": "Ada"})
+		}, "orders.greeting"},
+		{"TPlural", func(c *credo.Context) string { return c.TPlural("orders.count", 3) }, "orders.count"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, buf := newTestLogger(t)
+			app := mustNew(t, credo.WithLogger(logger), credo.WithDebug())
+			app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS(), Default: "en"})
+			app.GET("/orders/{id}", func(c *credo.Context) error {
+				return c.Response().Text(200, tc.translate(c))
+			})
+			startServing(t, app)
+			buf.Reset()
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/orders/7", nil)
+			r.Header.Set("Accept-Language", "tr")
+			app.ServeHTTP(w, r)
+			if w.Body.String() != tc.key {
+				t.Fatalf("body = %q, want the key %q: a miss still returns the key", w.Body.String(), tc.key)
+			}
+			warn := logLine(t, buf, translationMissWarning)
+			if warn["level"] != "WARN" || warn["key"] != tc.key || warn["locale"] != "tr" || warn["route"] != "GET /orders/{id}" {
+				t.Fatalf("warning = %v, want level WARN, key %q, locale tr and the route", warn, tc.key)
+			}
+			if n := strings.Count(buf.String(), "is not in the catalog"); n != 1 {
+				t.Fatalf("%d warnings for one miss, want 1:\n%s", n, buf.String())
+			}
+		})
+	}
+}
+
+// TestTranslationMiss_NoWarning: a key the catalog defines, a miss outside
+// debug mode and a call with i18n inactive log nothing.
+func TestTranslationMiss_NoWarning(t *testing.T) {
+	cases := []struct {
+		name  string
+		debug bool
+		i18n  bool
+		key   string
+		want  string
+	}{
+		{"hit in debug mode", true, true, "not_found", "Not found"},
+		{"miss outside debug mode", false, true, "orders.title", "orders.title"},
+		{"i18n inactive in debug mode", true, false, "orders.title", "orders.title"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, buf := newTestLogger(t)
+			opts := []credo.Option{credo.WithLogger(logger)}
+			if tc.debug {
+				opts = append(opts, credo.WithDebug())
+			}
+			app := mustNew(t, opts...)
+			if tc.i18n {
+				app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS(), Default: "en"})
+			}
+			app.GET("/x", func(c *credo.Context) error {
+				return c.Response().Text(200, c.T(tc.key)+"|"+c.TPlural(tc.key, 2))
+			})
+			startServing(t, app)
+
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+			if want := tc.want + "|" + tc.want; w.Body.String() != want {
+				t.Fatalf("body = %q, want %q", w.Body.String(), want)
+			}
+			if strings.Contains(buf.String(), "is not in the catalog") {
+				t.Fatalf("warned: %s", buf.String())
+			}
+		})
+	}
+}

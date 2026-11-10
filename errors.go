@@ -678,6 +678,18 @@ func (app *App) noteCatalogMiss(ctx *Context, key MessageKey, code string) {
 		slog.String("key", string(key)), slog.String("code", code), slog.String("route", routeLabel(ctx.route)))
 }
 
+// noteTranslationMiss warns in debug mode that [Context.T] or
+// [Context.TPlural] found no message for the key in the active catalog, so
+// the key went into the response as the text.
+func (app *App) noteTranslationMiss(ctx *Context, key string) {
+	if !app.debug {
+		return
+	}
+	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,
+		"credo: translation key is not in the catalog; the key is returned as the text: add the key to the catalog or correct it at the call",
+		slog.String("key", key), slog.String("locale", ctx.locale), slog.String("route", routeLabel(ctx.route)))
+}
+
 // routeLabel names a route in a diagnostic: its method and pattern, its
 // pattern alone for a mount, empty without a route.
 func routeLabel(r *Route) string {
