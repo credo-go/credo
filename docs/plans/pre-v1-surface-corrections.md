@@ -6,7 +6,7 @@ This plan corrects the public surface before v1 freezes it. It covers five deliv
 - **Part B**: additions.
 - **Part C**: breaking changes in the root package.
 - **Part D**: breaking changes in `middleware`, `validation`, `auth` and `store`.
-- **Part E**: a spike on resource ownership and, if it passes, the change.
+- **Part E**: resource ownership: a spike, the decision taken on it, and the change.
 
 **What decides a change.** Credo is in beta, and the applications that exist are a small sample of what it is for. An API is not removed because nothing calls it yet. A name goes only when it is wrong or misleading as implemented, when it is a second name for one concept, or when a recorded decision already replaces it; a feature that is needed and implemented wrongly is fixed, not deleted.
 
@@ -16,7 +16,7 @@ Progress is tracked by the boxes below.
 
 **Rules for every item.**
 
-- An item's **Decided** line states a choice that is settled, with the alternative it rejects; the ADR the item writes records both. The one decision still open is Part E's (E2), which is taken on the spike's evidence.
+- An item's **Decided** line states a choice that is settled, with the alternative it rejects; the ADR the item writes records both. Part E's decision (E2) was taken on the spike's evidence.
 - A break gets a CHANGELOG entry under its own **BREAKING** heading in the short form ([CONTRIBUTING](../../CONTRIBUTING.md#changelog-and-release-notes)) and a row in the Unreleased section of the [migration guide](../guides/pre-v1-migration.md).
 - An item updates the ADR and spec it names, the guides and `examples/` that use the changed API, and the quick reference in `CLAUDE.md`.
 - Every error and panic an item adds or changes names what failed and the remedy, and the test that triggers it asserts both.
@@ -75,13 +75,6 @@ Progress is tracked by the boxes below.
   - **Check first:** write the three tests and record what happens today.
   - **Decided:** content after the root element other than white space, comments and processing instructions is refused with the trailing-data reason, as a JSON body's is; a repeated element keeps `encoding/xml`'s meaning, since repetition is how XML spells a slice; unknown elements are ignored in both modes, and the contract says so.
   - **Docs:** ADR-008, with the reason XML stays (feeds and sitemaps on the way out; banking, e-invoicing and SAML bodies on the way in), and the context spec. CHANGELOG as **BREAKING (behavior)**: an XML body with content after its root element is refused.
-- [ ] **B5. Debug mode names a binding with `Close` that the App does not close.**
-  - **Problem:** `Close` is never discovered: a binding whose type has one is closed only with `credo.CloseOnShutdown()` (ADR-024). A binding that needed the option and lacks it stays open at shutdown, and nothing says so.
-  - **Fix:** with `WithDebug()`, the start logs one warning for each binding whose type shows one of the three `Close` shapes, is not a component and is not borrowed. The warning names the binding and both remedies: `credo.CloseOnShutdown()` when the App should close it, `credo.Borrowed()` when the caller does.
-  - **Not changed:** what the App closes. Discovery stays rejected, for ADR-024's reason: the method is too common to mean that the App owns the value.
-  - **Check first:** that `credo.Borrowed()` is accepted on a `ProvideValue` binding that is not a component, and silences the warning there; what silences it for a binding a constructor builds, which takes no `Borrowed()`; and that a binding sharing its resource with a registration that has a teardown is not warned about.
-  - **Tests:** each `Close` shape warns once, naming the binding and both options; no warning with `CloseOnShutdown()`, with `Borrowed()`, for a component, or without debug mode.
-  - **Docs:** the container spec and ADR-024, the dependency-injection guide; CHANGELOG under Added. The box in `TODO.md` is checked.
 
 ## Part C: The root package
 
@@ -162,7 +155,7 @@ Any number of registrations may hold one resource — one pointer under two bind
 
 The rule covers a resource the App does something for: a start, a readiness entry or a teardown. A value with no lifecycle raises no ownership question and is bound under as many types as the application likes, with no declaration, as today.
 
-- [ ] **E1. Spike.** A branch that is never merged. It implements the refusal behind the existing tests and runs each scenario below; the output is a table of scenario, today's behaviour, the behaviour under the rule, and what the application writes.
+- [x] **E1. Spike.** A branch that is never merged. It implements the refusal behind the existing tests and runs each scenario below; the output is a table of scenario, today's behaviour, the behaviour under the rule, and what the application writes.
   - A wrapper bound beside the handle it embeds.
   - One pointer with a lifecycle under two bindings.
   - An interface view returned by an adapter's constructor.
@@ -170,14 +163,24 @@ The rule covers a resource the App does something for: a start, a readiness entr
   - `parent.Manage(child)`.
   - One pointer with no lifecycle under several interface bindings, where the concrete type is never bound: accepted with no declaration. `Alias` needs its target registered, so a rule without this scope would force that application to bind the concrete type.
   - One pointer with `Close` under two bindings, one of which carries `credo.CloseOnShutdown()`.
-- [ ] **E2. Decision.** The rule is accepted only if it holds in every scenario and deletes more rules than it adds. The decision settles:
-  - whether the view marker is `credo.Borrowed()`, which today means "start and shutdown are the caller's", or an option of its own;
-  - whether a binding beside a `CloseOnShutdown()` owner is a plain holder or a view;
-  - what a value built by a constructor does when it turns out to hold an owned resource, since its identity is known only when the start walk builds it.
-
-  If the rule fails, ADR-024 gains the alternative with the scenario that defeated it, and E3 is dropped.
+- [x] **E2. Decision.** The rule is accepted: it holds in the seven scenarios and removes eleven rules and nine messages for four of each.
+  - **Decided:**
+    - *The view marker is an option of its own,* `credo.View()`, accepted on `Provide` and `ProvideValue`; an interface view of a bound type is still an `Alias`. Rejected: `credo.Borrowed()` as the marker. A borrowed registration followed by a wrapper that forgot the marker would make the wrapper the owner, and the App would start and shut down the value its caller said it keeps; the options a borrowed registration may carry would also depend on registrations made after it.
+    - *A registration claims a resource when the App would do something through it:* its value has `Shutdown`, or it carries `credo.CloseOnShutdown()` or `credo.Borrowed()`. The first claim owns the resource, and a later claim is refused unless it is a view. A registration that claims nothing beside an owner, such as a second binding of a value with `Close` beside the one that carries `CloseOnShutdown()`, is a plain holder and declares nothing. Rejected: requiring a view there, which puts the refusal on the earlier of two calls and asks a declaration of every struct that forwards an identity.
+    - *A value a constructor builds that is not a binding* (a worker's, a `Manage` constructor's) and that holds an owned resource fails the start. The error names the registration, the built type, the owner and the remedy: the method expression when the constructor returned the binding's own value, a named field when it returned a wrapper. Rejected: keeping the deferral, under which a worker that embeds a bound handle and has a `Shutdown` of its own starts and that `Shutdown` is never called. A worker registration gains no way to declare its value a view.
+    - *A view that no registration owns* is refused at the end of the start walk when its value has `Shutdown`; without the check the resource is never started and never shut down.
+  - **Accepted costs:** a worker that embeds a bound handle only for its methods moves the handle to a named field, a shape ADR-024 names as supported; a view that nothing plans, such as an adapter binding built on first use, is refused at its first `Resolve` and not at `Finalize`.
 - [ ] **E3. Implementation.** One owner per resource; the entry's options (`ComponentName`, `OptionalReadiness`, the tier) are the owner's alone. Deleted: the selection of a holder of record, the deferral rule, the agreement checks and the borrowed exemption. Kept: identity detection, `ResourceIdentifier`, one teardown and one readiness entry per resource.
-  - **Docs:** ADR-024, the container and lifecycle specs, the dependency-injection guide. Release notes, first: a second undeclared registration of a resource with a lifecycle now fails.
+  - **The view:** `credo.View()` takes none of `Ingress`, `ComponentName`, `OptionalReadiness`, `CloseOnShutdown` and `Borrowed`, checked at the call, and may be registered before or after its owner. A view depends on its owner, so a consumer of the view starts after the owner, and `Finalize`'s check of an internal component on an ingress one follows that edge.
+  - **Tests:** the seven scenarios of E1, declared and undeclared, in either order; a view with an option panics at the call; a view with no owner fails the start; a worker constructor and a `Manage` constructor over an owned resource fail the start with each remedy.
+  - **Docs:** ADR-024, with the supported shape of a worker that embeds a bound handle rewritten, the container and lifecycle specs, the dependency-injection guide. Release notes, first: a second undeclared registration of a resource with a lifecycle now fails.
+- [ ] **E4. Debug mode names a binding with `Close` that the App does not close.** It follows E3, because the remedy for a binding that looks at another registration's resource is the view E3 adds.
+  - **Problem:** `Close` is never discovered: a binding whose type has one is closed only with `credo.CloseOnShutdown()` (ADR-024). A binding that needed the option and lacks it stays open at shutdown, and nothing says so.
+  - **Fix:** with `WithDebug()`, one warning for each binding whose type shows one of the three `Close` shapes and that neither claims a resource nor is a view. The warning names the binding and its remedies: `credo.CloseOnShutdown()` when the App should close it, `credo.View()` when another registration owns what it holds, and `credo.Borrowed()` on a `ProvideValue` binding when the caller closes it.
+  - **Settled before the code:** when a binding a constructor builds lazily is checked, by its type at the start or when its value is first built and its identity is known; and what a constructor's binding writes when its `Close` releases nothing, since `Provide` refuses `Borrowed()`.
+  - **Not changed:** what the App closes. Discovery stays rejected, for ADR-024's reason: the method is too common to mean that the App owns the value.
+  - **Tests:** each `Close` shape warns once, naming the binding and its remedies; no warning with `CloseOnShutdown()`, with `Borrowed()`, for a view, for a component, or without debug mode.
+  - **Docs:** the container spec and ADR-024, the dependency-injection guide; CHANGELOG under Added. The box in `TODO.md` is checked.
 
 ## Not in this plan
 
