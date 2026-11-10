@@ -222,6 +222,86 @@ func TestStatic_SPA_POSTNotFallback(t *testing.T) {
 	}
 }
 
+// Static registers two routes, the prefix itself and the catch-all under it,
+// and the pair answers as one route. A request with a method neither serves
+// gets the router's 405 on the prefix as it does on a path under it, with the
+// same Allow header, and SPA mode does not turn it into the index.
+func TestStatic_OtherMethodOnPrefix_Is405(t *testing.T) {
+	tests := []struct {
+		name     string
+		register func(app *credo.App, cfg credo.StaticConfig)
+		prefix   string // the path of the exact-prefix route
+		under    string // a path the catch-all route matches
+	}{
+		{
+			name:     "app",
+			register: func(app *credo.App, cfg credo.StaticConfig) { app.Static("/static", testFS(), cfg) },
+			prefix:   "/static",
+			under:    "/static/app.js",
+		},
+		{
+			name:     "app root prefix",
+			register: func(app *credo.App, cfg credo.StaticConfig) { app.Static("/", testFS(), cfg) },
+			prefix:   "/",
+			under:    "/app.js",
+		},
+		{
+			name: "group",
+			register: func(app *credo.App, cfg credo.StaticConfig) {
+				app.Group("/assets").Static("/files", testFS(), cfg)
+			},
+			prefix: "/assets/files",
+			under:  "/assets/files/app.js",
+		},
+		{
+			name: "group prefix",
+			register: func(app *credo.App, cfg credo.StaticConfig) {
+				app.Group("/assets").Static("/", testFS(), cfg)
+			},
+			prefix: "/assets",
+			under:  "/assets/app.js",
+		},
+	}
+	modes := []struct {
+		name string
+		cfg  credo.StaticConfig
+	}{
+		{"plain", credo.StaticConfig{}},
+		{"spa", credo.StaticConfig{SPA: true}},
+	}
+	const wantAllow = "GET, HEAD"
+
+	for _, tt := range tests {
+		for _, mode := range modes {
+			t.Run(tt.name+"/"+mode.name, func(t *testing.T) {
+				app := mustNew(t)
+				tt.register(app, mode.cfg)
+
+				// The prefix serves the index to GET, so the 405 below is the
+				// router's answer for the method and not a missing route.
+				if w := serve(t, app, "GET", tt.prefix); w.Code != http.StatusOK {
+					t.Fatalf("GET %s = %d, want 200", tt.prefix, w.Code)
+				}
+
+				for _, method := range []string{"POST", "PUT", "DELETE"} {
+					for _, path := range []string{tt.prefix, tt.under} {
+						w := serve(t, app, method, path)
+						if w.Code != http.StatusMethodNotAllowed {
+							t.Errorf("%s %s = %d, want 405", method, path, w.Code)
+						}
+						if got := w.Header().Get("Allow"); got != wantAllow {
+							t.Errorf("%s %s: Allow = %q, want %q", method, path, got, wantAllow)
+						}
+						if strings.Contains(w.Body.String(), "<html>") {
+							t.Errorf("%s %s served a file: %q", method, path, w.Body.String())
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 // --- Static: Browse mode ---
 
 func TestStatic_Browse_DirectoryListing(t *testing.T) {
