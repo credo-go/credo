@@ -143,6 +143,8 @@ app.ProvideValue(searchClient, credo.OptionalReadiness())                    // 
 app.AddReadinessCheck("billing-api", billingPing, credo.OptionalReadiness()) // an application check
 ```
 
+A check is registered before `app.UseHealth()` or after it: checks are collected, and `UseHealth` mounts the endpoints that run them. A deployment that must not serve the probes sets `HealthConfig.Disabled` from its configuration and leaves every registration in place; the checks are then accepted and never run. An App that has checks and never calls `UseHealth` logs one warning at start, naming how many checks no endpoint runs.
+
 `credo.OptionalReadiness()` changes readiness only: an unreachable database whose readiness is optional still fails the start, because its `Start` pings it. A database whose outage must not stop the start is opened with `sqldb.WithOptionalStart()` as well; its `Start` then logs the failed ping at Warn and returns nil, and the pool connects once the server is back:
 
 ```go

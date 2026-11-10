@@ -23,48 +23,52 @@ Readiness also answers 200 with the status `degraded` when every gating entry is
 func (app *App) UseHealth(cfgs ...HealthConfig)
 
 type HealthConfig struct {
-    Enabled       *bool
-    Liveness      *bool
-    Readiness     *bool
-    LivenessPath  string
-    ReadinessPath string
-    CheckTimeout  time.Duration
-    ExposeErrors  bool
-    Group         *Group
-    LogRequests   bool
+    Disabled         bool
+    DisableLiveness  bool
+    DisableReadiness bool
+    LivenessPath     string
+    ReadinessPath    string
+    CheckTimeout     time.Duration
+    ExposeErrors     bool
+    Group            *Group
+    LogRequests      bool
 }
 ```
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `Enabled` | nil = true | `false` registers no route. The call still takes the registration: a second `UseHealth` panics, and `AddLivenessCheck`/`AddReadinessCheck` accept checks, validated as usual, that are never run |
-| `Liveness` | nil = true | `false` leaves the liveness route unregistered; liveness checks can still be added |
-| `Readiness` | nil = true | `false` leaves the readiness route unregistered; readiness checks can still be added |
+| `Disabled` | false | `true` mounts no route. The call still takes the registration: a second `UseHealth` panics, and the checks, validated as usual, are never run |
+| `DisableLiveness` | false | `true` leaves the liveness route unmounted; liveness checks are still accepted and never run |
+| `DisableReadiness` | false | `true` leaves the readiness route unmounted; readiness checks are still accepted and never run |
 | `LivenessPath` | `/health` | Path of the liveness route, relative to `Group` when set |
 | `ReadinessPath` | `/ready` | Path of the readiness route, relative to `Group` when set |
 | `CheckTimeout` | 5s (zero or negative selects it) | The per-check deadline ([Check execution](#check-execution)) |
 | `ExposeErrors` | false | A failing readiness entry carries an `error` member with its cause text; by default the response carries only the status and the cause goes to the log |
-| `Group` | nil = app root | The routes are registered on this group and inherit its prefix and middleware; a group of another App panics |
+| `Group` | nil = app root | The routes are registered on this group and inherit its prefix and middleware; a group of another App panics, whatever the three switches say |
 | `LogRequests` | false | The value of the `MetaAccessLog` route meta on both routes and their HEAD twins: probe traffic is silent in the access log by default, and `true` re-enables it even under a group that silenced access logging, because a route-level value overrides its group's ([HTTP features](http-features.md#observability-contract)) |
 
-`*bool` toggles distinguish "not set" (the default) from an explicit false.
+The zero value mounts both endpoints at their default paths. Each switch is a plain `bool` named for what it turns off, so the zero value is the default and an application maps a configuration key to a switch directly.
 
-`UseHealth` takes zero configs for the defaults or one config, performs no I/O and returns nothing. It panics when called a second time (`credo: UseHealth already called`), whether or not either call set `Enabled` to false, after preparation or shutdown (`credo: App.UseHealth called after app was compiled or shut down`), or with a `Group` of another App. Its order relative to components and workers does not matter: readiness reads what the start phase built. The [startup feature list](http-features.md#startup-visibility) shows `health` when at least one probe route is registered.
+`UseHealth` mounts the endpoints and collects nothing: the checks are registered with `AddLivenessCheck` and `AddReadinessCheck`, before the call or after it ([Checks](#checks)). It takes zero configs for the defaults or one config, performs no I/O and returns nothing. It panics when called a second time (`credo: UseHealth already called`), whether or not either call set `Disabled`; after preparation or shutdown (`credo: App.UseHealth called after app was compiled or shut down`); or with a `Group` of another App. The `Group` is checked before the switches are read, so the mistake shows in the deployment that turns health off as well:
+
+```text
+credo: UseHealth: HealthConfig.Group belongs to a different App; pass a group created on this App, or leave Group nil to mount the endpoints on the app root
+```
+
+Its order relative to checks, components and workers does not matter: an endpoint runs the checks that are registered when a request arrives, and readiness reads what the start phase built. The [startup feature list](http-features.md#startup-visibility) shows `health` when at least one probe route is registered.
 
 ## Checks
 
 ```go
-type HealthChecker interface {
-    Check(ctx context.Context) error // nil = healthy
-}
-
-type HealthCheckFunc func(ctx context.Context) error
-
-func (app *App) AddLivenessCheck(name string, checker HealthChecker)
-func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...RegistrationOption)
+func (app *App) AddLivenessCheck(name string, check func(context.Context) error)
+func (app *App) AddReadinessCheck(name string, check func(context.Context) error, opts ...RegistrationOption)
 ```
 
-- Both panic when `UseHealth` has not been called, when `checker` is nil, or when the name is invalid or duplicates another check of the same kind. A `UseHealth` with `Enabled` false counts as the call: the checks registered after it are accepted and, with no route mounted, never run, so an application that maps a configuration key to `Enabled` registers its checks unconditionally.
+- A check is a function, the contract of a component's `Ready(ctx) error`. A value with a `Check` method is registered as its method value: `app.AddReadinessCheck("payments", client.Check)`.
+- Checks are collected whenever they are registered: before `UseHealth`, after it, or on an App that never calls it. `UseHealth` mounts the endpoints that run them, so whether a check is valid never depends on call order.
+- A check whose endpoint is not mounted is accepted and never run: any check under `Disabled`, a liveness check under `DisableLiveness`, a readiness check under `DisableReadiness`. An application that maps a configuration key to one of the switches registers its checks unconditionally.
+- An App that has checks and never called `UseHealth` logs one record at Warn when it enters running: `credo: health checks are registered but UseHealth was never called, so no endpoint runs them; call app.UseHealth() to mount /health and /ready`, with the counts in the attributes `checks`, `liveness` and `readiness`. A `UseHealth` call with `Disabled` set is a decision and is not warned about.
+- Both panic when `check` is nil (`credo: AddReadinessCheck: the check function of "payments" is nil; pass a func(context.Context) error`), or when the name is invalid or duplicates another check of the same kind.
 - A name must be non-empty, without leading or trailing whitespace, without control characters, and must not start with the reserved `credo.` prefix. Names are never normalized, so duplicate detection is an exact comparison. A `credo.ComponentName` name follows the same rules, and a bound database's entry carries its component's name ([store spec](store.md#lifecycle-of-a-bound-database)).
 - A nil error is up; any error is down.
 - With no liveness checks, liveness is up: a responding server proves the process alive.
@@ -89,7 +93,7 @@ func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...Re
 | Source | Entry name | Probe built | Up when |
 | --- | --- | --- | --- |
 | Components' `Ready` | The component's name: its `credo.ComponentName` name, else its binding's type (`*sqldb.DB`); `worker:<name>` for a worker | Once, when the App enters running, from the values the start walk built — after `Finalize`, so after every override | `Ready(ctx)` returns nil |
-| Application checks | The `AddReadinessCheck` name | At the call | `Check(ctx)` returns nil |
+| Application checks | The `AddReadinessCheck` name | At the call | The check function returns nil |
 
 - A component contributes when its registration plans a readiness entry: its type — the binding's type, or the type handed to `app.Manage` — shows `Ready` (`credo.Readier`), and it is a component or borrowed. A bound database is such a component ([store spec](store.md#lifecycle-of-a-bound-database)); a borrowed value's `Ready` contributes although the App neither starts nor stops it.
 - **One resource, one entry.** The checks are built one per resource, not one per unit that answers `Ready`: a raw handle and a wrapper that embeds it give one entry, the resource's holder of record's ([lifecycle spec](lifecycle.md)), whose `Ready` is asked. The registrations that hold the resource agree on `credo.OptionalReadiness()` and on a `credo.ComponentName` name; the entry carries that name, else the holder of record's type name.

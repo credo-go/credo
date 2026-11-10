@@ -150,12 +150,12 @@ func TestStartLine_HealthNeedsAProbeRoute(t *testing.T) {
 		listed bool
 	}{
 		{"not called", func(*credo.App) {}, false},
-		{"disabled", func(a *credo.App) { a.UseHealth(credo.HealthConfig{Enabled: new(false)}) }, false},
+		{"disabled", func(a *credo.App) { a.UseHealth(credo.HealthConfig{Disabled: true}) }, false},
 		{"both probes off", func(a *credo.App) {
-			a.UseHealth(credo.HealthConfig{Liveness: new(false), Readiness: new(false)})
+			a.UseHealth(credo.HealthConfig{DisableLiveness: true, DisableReadiness: true})
 		}, false},
-		{"liveness only", func(a *credo.App) { a.UseHealth(credo.HealthConfig{Readiness: new(false)}) }, true},
-		{"readiness only", func(a *credo.App) { a.UseHealth(credo.HealthConfig{Liveness: new(false)}) }, true},
+		{"liveness only", func(a *credo.App) { a.UseHealth(credo.HealthConfig{DisableReadiness: true}) }, true},
+		{"readiness only", func(a *credo.App) { a.UseHealth(credo.HealthConfig{DisableLiveness: true}) }, true},
 		{"defaults", func(a *credo.App) { a.UseHealth() }, true},
 	}
 	for _, tt := range tests {

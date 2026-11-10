@@ -95,7 +95,7 @@ func TestWorkersReadiness_ReportedOnReadyEndpoint(t *testing.T) {
 func TestWorkersReadiness_NameCollisionFailsClosed(t *testing.T) {
 	app := mustNew(t, credo.WithLogger(slog.New(slog.DiscardHandler)))
 	app.UseHealth()
-	app.AddReadinessCheck("worker:dup", credo.HealthCheckFunc(func(context.Context) error { return nil }))
+	app.AddReadinessCheck("worker:dup", func(context.Context) error { return nil })
 	app.Workers().Continuous("dup", workerFunc(func(ctx context.Context) error {
 		<-ctx.Done()
 		return nil

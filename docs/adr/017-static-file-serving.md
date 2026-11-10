@@ -36,7 +36,7 @@ Every auto-generated HEAD twin receives its GET route's middleware and meta, so 
 
 ### StaticConfig
 
-Every boolean field defaults to `false` and is a plain `bool`, not `*bool`: the zero values are the desired defaults. The `*bool` pattern is reserved for nil-means-true toggles such as `HealthConfig.Enabled`.
+Every boolean field defaults to `false` and is a plain `bool`, not `*bool`: the zero values are the desired defaults. A switch that is on by default is spelled the same way, as a plain bool named for what it turns off (`HealthConfig.Disabled`, [ADR-016](016-health-checks.md#healthconfig)), so no config struct needs a pointer to tell "not set" from false.
 
 ### Cache-Control
 

@@ -2,31 +2,29 @@ package credo
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	internalhealth "github.com/credo-go/credo/internal/health"
 )
 
-// HealthConfig configures the health check endpoints.
+// HealthConfig configures the health check endpoints. Its zero value mounts
+// both endpoints at their default paths; each switch turns a default off.
 type HealthConfig struct {
-	// Enabled controls whether health endpoints are registered.
-	// nil (default) = true.
-	//
-	// False registers no route, and the call still counts as the App's
-	// UseHealth: a second UseHealth panics, and AddLivenessCheck and
-	// AddReadinessCheck accept checks that are never run. An application can
-	// therefore map a configuration key to Enabled and keep its check
-	// registrations unconditional.
-	Enabled *bool
+	// Disabled mounts no endpoint. The call still counts as the App's
+	// UseHealth, so an application can map a configuration key to Disabled
+	// and keep its UseHealth call and its check registrations unconditional:
+	// the checks are accepted and never run.
+	Disabled bool
 
-	// Liveness controls whether the liveness endpoint is registered.
-	// nil (default) = true.
-	Liveness *bool
+	// DisableLiveness leaves the liveness endpoint unmounted. Liveness checks
+	// are still accepted and never run.
+	DisableLiveness bool
 
-	// Readiness controls whether the readiness endpoint is registered.
-	// nil (default) = true.
-	Readiness *bool
+	// DisableReadiness leaves the readiness endpoint unmounted. Readiness
+	// checks are still accepted and never run.
+	DisableReadiness bool
 
 	// LivenessPath is the path for the liveness endpoint. Default: "/health".
 	LivenessPath string
@@ -62,33 +60,37 @@ type HealthConfig struct {
 	LogRequests bool
 }
 
-// HealthChecker checks the health of a dependency or subsystem.
-type HealthChecker interface {
-	Check(ctx context.Context) error // nil = healthy
-}
+// defaultHealthCheckTimeout is the per-check deadline when
+// HealthConfig.CheckTimeout is not set.
+const defaultHealthCheckTimeout = 5 * time.Second
 
-// HealthCheckFunc adapts a plain function to HealthChecker.
-type HealthCheckFunc func(ctx context.Context) error
-
-// Check implements HealthChecker.
-func (f HealthCheckFunc) Check(ctx context.Context) error { return f(ctx) }
-
-// UseHealth initializes health check endpoints on the application.
-// With no arguments, it registers both /health (liveness) and /ready (readiness).
+// UseHealth mounts the health check endpoints on the application.
+// With no arguments, it mounts both /health (liveness) and /ready (readiness).
+// The endpoints run the checks added with [App.AddLivenessCheck] and
+// [App.AddReadinessCheck], whether a check was added before this call or
+// after it.
 //
 // UseHealth performs no I/O — it only registers in-process state — and misuse
 // panics like every other registration API. Panics if called more than once,
-// a call with Enabled false included; if called after compile; or if
-// cfg.Group belongs to a different App.
+// a call with Disabled set included; if called after compile; or if cfg.Group
+// belongs to a different App, whether or not Disabled is set.
 func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.checkFrozen("App.UseHealth")
-	if app.healthEngine != nil {
+	if app.healthMounted {
 		panic("credo: UseHealth already called")
 	}
 
 	var cfg HealthConfig
 	if len(cfgs) > 0 {
 		cfg = cfgs[0]
+	}
+
+	// The Group is checked before the Disabled switch: a group of another App
+	// is a mistake in every deployment, not only in the one that turns health
+	// on.
+	if cfg.Group != nil && cfg.Group.registrar != routeRegistrar(app) {
+		panic("credo: UseHealth: HealthConfig.Group belongs to a different App; " +
+			"pass a group created on this App, or leave Group nil to mount the endpoints on the app root")
 	}
 
 	// Apply defaults.
@@ -99,23 +101,15 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 		cfg.ReadinessPath = "/ready"
 	}
 	if cfg.CheckTimeout <= 0 {
-		cfg.CheckTimeout = 5 * time.Second
+		cfg.CheckTimeout = defaultHealthCheckTimeout
 	}
 
-	// The engine is the record that UseHealth was called, so it is created
-	// before the Enabled test: a disabled call refuses a second UseHealth and
-	// accepts checks like an enabled one. With no route mounted, nothing ever
-	// runs them.
-	app.healthEngine = internalhealth.NewEngine(cfg.CheckTimeout)
+	app.healthMounted = true
+	app.healthEngine.SetTimeout(cfg.CheckTimeout)
 	app.healthExposeErrors = cfg.ExposeErrors
 
-	if cfg.Enabled != nil && !*cfg.Enabled {
+	if cfg.Disabled {
 		return
-	}
-
-	// Validate Group belongs to this app.
-	if cfg.Group != nil && cfg.Group.registrar != routeRegistrar(app) {
-		panic("credo: UseHealth: Group belongs to a different App")
 	}
 
 	// Register endpoints on the specified group or app root.
@@ -126,59 +120,82 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 		return app.GET(path, h)
 	}
 
-	livenessEnabled := cfg.Liveness == nil || *cfg.Liveness
-	readinessEnabled := cfg.Readiness == nil || *cfg.Readiness
-
 	// Silence probe access logging by default; LogRequests re-enables it. The
 	// meta is always set (not only when false) so an explicit true overrides a
 	// silenced parent group — GetMeta reads the route before its parents.
 	// SetMeta propagates to the auto-generated HEAD twin, so HEAD probes follow
 	// the same rule as GET.
-	if livenessEnabled {
+	if !cfg.DisableLiveness {
 		registerGET(cfg.LivenessPath, app.livenessHandler).
 			Name("credo.health").
 			SetMeta(MetaAccessLog, cfg.LogRequests)
 	}
-	if readinessEnabled {
+	if !cfg.DisableReadiness {
 		registerGET(cfg.ReadinessPath, app.readinessHandler).
 			Name("credo.ready").
 			SetMeta(MetaAccessLog, cfg.LogRequests)
 	}
-	app.healthProbes = livenessEnabled || readinessEnabled
+	app.healthProbes = !cfg.DisableLiveness || !cfg.DisableReadiness
 }
 
-// AddLivenessCheck registers a named liveness check. After a UseHealth whose
-// config sets Enabled to false the check is accepted and never run.
-// Panics if [App.UseHealth] has not been called first, checker is nil, or name
-// is empty, padded with whitespace, contains control characters, uses the
-// reserved "credo." prefix, or duplicates another liveness check.
-func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
-	if app.healthEngine == nil {
-		panic("credo: UseHealth() must be called before AddLivenessCheck")
+// AddLivenessCheck registers a named liveness check: a function that returns
+// nil while the process is healthy. A value with a Check method is passed as
+// its method value, v.Check.
+//
+// A check is collected whenever it is registered, before [App.UseHealth] or
+// after it; UseHealth mounts the endpoint that runs it. A check whose
+// endpoint is not mounted is accepted and never run, and an App that starts
+// without having called UseHealth logs one warning naming how many checks
+// no endpoint runs.
+//
+// Panics if check is nil, or name is empty, padded with whitespace, contains
+// control characters, uses the reserved "credo." prefix, or duplicates
+// another liveness check.
+func (app *App) AddLivenessCheck(name string, check func(context.Context) error) {
+	if check == nil {
+		panic(fmt.Sprintf("credo: AddLivenessCheck: the check function of %q is nil; pass a func(context.Context) error", name))
 	}
-	if checker == nil {
-		panic("credo: AddLivenessCheck: checker must not be nil")
-	}
-	app.healthEngine.AddLiveness(name, checker.Check)
+	app.healthEngine.AddLiveness(name, check)
 }
 
-// AddReadinessCheck registers a named readiness check. [OptionalReadiness],
-// its one option, reports the check in /ready without letting it gate
-// readiness: a check of a cache or of a third-party API. After a UseHealth
-// whose config sets Enabled to false the check is accepted and never run.
-// Panics if [App.UseHealth] has not been called first, checker is nil, an
-// option other than [OptionalReadiness] is given, or name is empty, padded
-// with whitespace, contains control characters, uses the reserved "credo."
-// prefix, or duplicates another readiness check.
-func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...RegistrationOption) {
-	if app.healthEngine == nil {
-		panic("credo: UseHealth() must be called before AddReadinessCheck")
-	}
+// AddReadinessCheck registers a named readiness check: a function that
+// returns nil while what it watches is available. A value with a Check method
+// is passed as its method value, v.Check. [OptionalReadiness], its one
+// option, reports the check in /ready without letting it gate readiness: a
+// check of a cache or of a third-party API.
+//
+// A check is collected whenever it is registered, before [App.UseHealth] or
+// after it; UseHealth mounts the endpoint that runs it. A check whose
+// endpoint is not mounted is accepted and never run, and an App that starts
+// without having called UseHealth logs one warning naming how many checks
+// no endpoint runs.
+//
+// Panics if check is nil, an option other than [OptionalReadiness] is given,
+// or name is empty, padded with whitespace, contains control characters, uses
+// the reserved "credo." prefix, or duplicates another readiness check.
+func (app *App) AddReadinessCheck(name string, check func(context.Context) error, opts ...RegistrationOption) {
 	o := registrationOptions("App.AddReadinessCheck", opts, optOptionalReadiness)
-	if checker == nil {
-		panic("credo: AddReadinessCheck: checker must not be nil")
+	if check == nil {
+		panic(fmt.Sprintf("credo: AddReadinessCheck: the check function of %q is nil; pass a func(context.Context) error", name))
 	}
-	app.healthEngine.AddReadiness(name, checker.Check, o.OptionalReadiness)
+	app.healthEngine.AddReadiness(name, check, o.OptionalReadiness)
+}
+
+// warnUnmountedHealthChecks logs one warning when checks are registered on
+// an App that never called UseHealth: no endpoint runs them. A UseHealth call
+// with Disabled set is a decision and is not warned about. The start calls it
+// once the App has entered running.
+func (app *App) warnUnmountedHealthChecks() {
+	if app.healthMounted {
+		return
+	}
+	liveness, readiness := app.healthEngine.Counts()
+	if liveness+readiness == 0 {
+		return
+	}
+	app.logger.Warn("credo: health checks are registered but UseHealth was never called, so no endpoint runs them; "+
+		"call app.UseHealth() to mount /health and /ready",
+		"checks", liveness+readiness, "liveness", liveness, "readiness", readiness)
 }
 
 // contributedReadinessFunc returns the readiness contributions: one per

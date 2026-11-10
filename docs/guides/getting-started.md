@@ -507,15 +507,17 @@ This registers `GET /health` (liveness) and `GET /ready` (readiness).
 ```go
 app.UseHealth()
 
-app.AddLivenessCheck("disk", credo.HealthCheckFunc(func(ctx context.Context) error {
+app.AddLivenessCheck("disk", func(ctx context.Context) error {
     // return non-nil to signal "down"
     return checkDiskSpace()
-}))
+})
 
-app.AddReadinessCheck("cache", credo.HealthCheckFunc(func(ctx context.Context) error {
+app.AddReadinessCheck("cache", func(ctx context.Context) error {
     return cache.Ping(ctx)
-}))
+})
 ```
+
+A check is a `func(context.Context) error`; a value with a `Check` method is passed as `client.Check`. Checks are collected whenever they are registered, so a module can add its check before the composition root calls `UseHealth`, or after. An App that has checks and never calls `UseHealth` still starts, and logs one warning that no endpoint runs them.
 
 ### Configuration
 
@@ -540,12 +542,15 @@ app.UseHealth(credo.HealthConfig{
 })
 ```
 
-Toggle endpoints individually:
+Turn an endpoint off, or both. The zero value mounts both, and each switch is a plain `bool`:
 
 ```go
 app.UseHealth(credo.HealthConfig{
-    Liveness:  boolPtr(true),   // nil = true (default)
-    Readiness: boolPtr(false),  // disable /ready
+    DisableReadiness: true, // mount /health only
+})
+
+app.UseHealth(credo.HealthConfig{
+    Disabled: !cfg.Probes, // a configuration key decides; the checks stay registered and are never run
 })
 ```
 

@@ -353,6 +353,7 @@ func (lm *lifecycleManager) enterRunning(r *startRun) startOutcome {
 	lm.started.Store(true)
 	lm.state.Store(uint32(stateRunning))
 	lm.finishRun(r, nil)
+	lm.deps.startNotices()
 	return startOK
 }
 

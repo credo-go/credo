@@ -667,7 +667,7 @@ workers.Continuous("order-consumer", NewOrderConsumer, credo.ContinuousConfig{
     Restart: credo.RestartPolicy{Limit: 5}, // with unlimited restarts it never fails
 })
 
-app.AddLivenessCheck("order-consumer", credo.HealthCheckFunc(func(context.Context) error {
+app.AddLivenessCheck("order-consumer", func(context.Context) error {
     info, ok := workers.Lookup("order-consumer")
     switch {
     case !ok:
@@ -676,7 +676,7 @@ app.AddLivenessCheck("order-consumer", credo.HealthCheckFunc(func(context.Contex
         return fmt.Errorf("worker %q failed: %s", info.Name, info.LastError)
     }
     return nil
-}))
+})
 ```
 
 The check fails when the worker is failed **or when `Lookup` does not know the name** — a renamed or forgotten registration is a mistake to report, never a pass. `/health` then answers 503 and the orchestrator restarts the container. Know the cost first: when the failure comes from a dependency every replica shares — the database, the broker — every replica's worker fails, every liveness probe fails, and the orchestrator restarts every replica at once, which cannot fix the dependency and adds a restart storm to its outage. Tie liveness only to failures a restart repairs, and give the worker a restart budget that outlasts a dependency's ordinary blips.

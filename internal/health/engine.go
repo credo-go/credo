@@ -60,6 +60,21 @@ func NewEngine(timeout time.Duration) *Engine {
 	return &Engine{timeout: timeout}
 }
 
+// SetTimeout replaces the per-check timeout. The root sets it when the
+// endpoints are mounted, which may come after the first check is added.
+func (e *Engine) SetTimeout(timeout time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.timeout = timeout
+}
+
+// Counts returns the number of registered liveness and readiness checks.
+func (e *Engine) Counts() (liveness, readiness int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.liveness), len(e.readiness)
+}
+
 // AddLiveness registers a named liveness check. It panics on an invalid or
 // duplicate name; the root registration API documents these panics.
 func (e *Engine) AddLiveness(name string, fn func(context.Context) error) {
@@ -113,9 +128,9 @@ func titleWord(value string) string {
 // aggregate status ("up" or "down") and individual results.
 // No checks registered = "up" (the server responding proves it is alive).
 func (e *Engine) CheckLiveness(ctx context.Context) (string, []CheckResult) {
-	named := e.snapshotLiveness()
+	named, timeout := e.snapshotLiveness()
 	scheduled := scheduleNamedChecks(named)
-	results := checkResults(runChecks(ctx, scheduled, e.timeout))
+	results := checkResults(runChecks(ctx, scheduled, timeout))
 	return aggregateStatus(results), results
 }
 
@@ -125,7 +140,7 @@ func (e *Engine) CheckLiveness(ctx context.Context) (string, []CheckResult) {
 // "down" when a gating check fails, else "degraded" when an optional one
 // does, else "up".
 func (e *Engine) CheckReadiness(ctx context.Context, contributedFn ReadinessFunc) (string, []CheckResult) {
-	named := e.snapshotReadiness()
+	named, timeout := e.snapshotReadiness()
 	scheduled := scheduleNamedChecks(named)
 	namedNames := make(map[string]struct{}, len(named))
 	for _, check := range named {
@@ -166,21 +181,21 @@ func (e *Engine) CheckReadiness(ctx context.Context, contributedFn ReadinessFunc
 		})
 	}
 
-	checks := checkResults(runChecks(ctx, scheduled, e.timeout))
+	checks := checkResults(runChecks(ctx, scheduled, timeout))
 	checks = append(checks, configFailures...)
 	return readinessStatus(checks), checks
 }
 
-func (e *Engine) snapshotLiveness() []namedCheck {
+func (e *Engine) snapshotLiveness() ([]namedCheck, time.Duration) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return slices.Clone(e.liveness)
+	return slices.Clone(e.liveness), e.timeout
 }
 
-func (e *Engine) snapshotReadiness() []namedCheck {
+func (e *Engine) snapshotReadiness() ([]namedCheck, time.Duration) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return slices.Clone(e.readiness)
+	return slices.Clone(e.readiness), e.timeout
 }
 
 func scheduleNamedChecks(checks []namedCheck) []scheduledCheck {

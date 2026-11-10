@@ -166,6 +166,10 @@ type lifecycleDeps struct {
 	// features lists the enabled HTTP features for the start log.
 	features func() []string
 
+	// startNotices logs what a start has to say about registrations that
+	// take no effect, once the App has entered running.
+	startNotices func()
+
 	// reload runs App.Reload for a reload signal.
 	reload func(ctx context.Context) error
 }
