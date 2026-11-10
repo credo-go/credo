@@ -758,6 +758,10 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [ ] A `WithDebug` hint naming a binding whose type shows a `Close` shape and is not a component (it is closed only with `credo.CloseOnShutdown()`) — [Container Spec](docs/specs/container.md)
 - [ ] A per-module tracer or meter override, should the observability release add such fields to `credo.Infra` — [ADR-004](docs/adr/004-dependency-injection-and-infra.md)
 - [ ] `connection_id` in an access record written to a dedicated access logger, which waits for an `Attrs` option of the access log; `request_id` links the access record and the WebSocket connection logs meanwhile — [ADR-019](docs/adr/019-websocket-integration-and-drain.md)
+- [ ] A component in general whose failed `Start` does not fail the start, which needs a reconnect contract; `sqldb.WithOptionalStart()` covers the database — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
+- [ ] A component that reports `degraded` itself, through a typed error from `Ready` or a status method beside it — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
+- [ ] A readiness ping on a connection outside the pool, which would separate "busy" from "unreachable" — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
+- [ ] Worker additions, each until something needs it: a kind that runs once at start, a policy by which a terminal failure stops the App, a lock hook for scheduled runs, a per-run logger — [ADR-023](docs/adr/023-worker-system.md#rejected-alternatives)
 
 ### Documentation
 
