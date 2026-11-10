@@ -71,7 +71,7 @@ Origin checking prevents a malicious page from opening a credentialed cross-site
 
 ```go
 app.GET("/events", ws.Handler(eventsHandler)).Middleware(
-    auth.Middleware[User](sessionAuthenticator, nil),
+    auth.Middleware[User](sessionAuthenticator),
 )
 ```
 

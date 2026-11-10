@@ -562,7 +562,7 @@ func run() error {
 	jwtAuth := newJWTAuthenticator()
 	authenticated := app.Group("/api/v1")
 	authenticated.Middleware(
-		auth.Middleware[User](jwtAuth, nil),
+		auth.Middleware[User](jwtAuth),
 	)
 
 	authenticated.GET("/me", meHandler).Name("user.me")

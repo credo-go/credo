@@ -57,31 +57,47 @@ The interface is intentionally minimal — a single method that takes an `*http.
 - API key check (read X-API-Key header, query database)
 - mTLS (read TLS peer certificate)
 
-### ErrorFunc (authentication failure callback)
+### Config (the authentication failure callback)
 
 ```go
-// ErrorFunc is called when authentication fails. It receives the
-// error from the Authenticator and should return an appropriate
-// HTTP error (or nil to use the default 401 response).
-type ErrorFunc func(err error, ctx *credo.Context) error
+// Config configures Middleware. A zero field selects its default.
+type Config struct {
+    // ErrorHandler maps a failed authentication to the error the middleware
+    // returns. It receives the error from the Authenticator.
+    // Default, and when it returns nil: 401 with that error as the cause.
+    ErrorHandler func(ctx *credo.Context, err error) error
+}
 ```
 
-An `ErrorFunc` returns the error to render; it may set response headers first, as `BasicErrorHandler` sets `WWW-Authenticate`. When `onError` is nil or returns nil, the middleware returns `credo.ErrUnauthorized` with the authenticator's error as its internal cause (logged, never rendered). An `ErrorFunc` must not write the response itself: the middleware still returns an error, and the error pipeline, finding the response committed, logs `credo: error after response committed` at Warn for every rejected request.
+`Config` follows the [configuration-struct convention](middleware.md#config-struct-pattern-echo-inspired) of the built-in middleware: at most one, and a zero field selects its default. `ErrorHandler` has the field name and the signature of `TimeoutConfig.ErrorHandler` and `CSRFConfig.ErrorHandler`, the context first, as every callback in the framework takes it.
 
-Every error from `Authenticate` takes this path, including an infrastructure failure: a database error that an API-key or Basic validator returns through its `err` result, or a JWKS outage that `Advanced.KeyFunc` returns. The built-in authenticators wrap it in their `…Invalid` sentinel, and the default `ErrUnauthorized` wraps that, so the client receives 401 — an explicit `HTTPError` wins classification even over a wrapped fault such as `store`'s unavailable kind ([ADR-009](../adr/009-handler-and-error-handling.md#an-explicit-status-wins)). An application that wants a 5xx for such a failure detects it in its `ErrorFunc` and returns an error with no `HTTPError` in its chain (the authenticator's error itself, for example), which the pipeline classifies like a handler error: a fault keeps its mapped status, a plain error is a 500.
+An `ErrorHandler` returns the error to render; it may set response headers first, as `BasicErrorHandler` sets `WWW-Authenticate`. Without one, or when it returns nil, the middleware returns `credo.ErrUnauthorized` with the authenticator's error as its internal cause (logged, never rendered): a failed authentication never reaches the route's handler. An `ErrorHandler` must not write the response itself: the middleware still returns an error, and the error pipeline, finding the response committed, logs `credo: error after response committed` at Warn for every rejected request.
+
+Every error from `Authenticate` takes this path, including an infrastructure failure: a database error that an API-key or Basic validator returns through its `err` result, or a JWKS outage that `Advanced.KeyFunc` returns. The built-in authenticators wrap it in their `…Invalid` sentinel, and the default `ErrUnauthorized` wraps that, so the client receives 401 — an explicit `HTTPError` wins classification even over a wrapped fault such as `store`'s unavailable kind ([ADR-009](../adr/009-handler-and-error-handling.md#an-explicit-status-wins)). An application that wants a 5xx for such a failure detects it in its `ErrorHandler` and returns an error with no `HTTPError` in its chain (the authenticator's error itself, for example), which the pipeline classifies like a handler error: a fault keeps its mapped status, a plain error is a 500.
 
 ### Middleware Factory
 
 ```go
 // Middleware creates a credo.Middleware that authenticates requests
 // using the given Authenticator. On success, the user is stored on
-// the request via SetUser. On failure, onError is called
-// (or ErrUnauthorized if onError is nil / returns nil).
+// the request via SetUser. On failure, it returns what
+// Config.ErrorHandler returns (ErrUnauthorized without one, or when
+// it returns nil).
 // Panics if a is nil.
-func Middleware[T any](a Authenticator[T], onError ErrorFunc) credo.Middleware
+func Middleware[T any](a Authenticator[T], cfg ...Config) credo.Middleware
 ```
 
 **Returns**: `credo.Middleware` (`func(credo.Handler) credo.Handler`). A nil authenticator is a wiring error and panics at construction.
+
+```go
+app.Middleware(auth.Middleware[*User](myAuth)) // a failure is a 401
+
+app.Middleware(auth.Middleware[*User](myAuth, auth.Config{
+    ErrorHandler: func(c *credo.Context, err error) error {
+        return credo.NewHTTPError(http.StatusUnauthorized, "session_expired").WithInternal(err)
+    },
+}))
+```
 
 ### Built-in Authenticators
 
@@ -95,7 +111,7 @@ Each constructor returns an error when its required input is missing; each `Auth
 
 - A `Prefix` matches case-insensitively and must be followed by a space or tab; every value of a repeated header is tried, and surrounding whitespace is trimmed.
 - The API-key and Basic validators (`APIKeyValidator[T]`, `BasicValidator[T]`) return `(user T, ok bool, err error)`: `ok == false` yields the `…Invalid` sentinel, and a non-nil `err` yields the sentinel wrapping `err`.
-- `NewBasicAuthenticator` sends no challenge by itself: pass `BasicErrorHandler(a.Realm())` as the middleware's `ErrorFunc` to set `WWW-Authenticate: Basic realm="…"` (`BasicChallenge(realm)` builds the value; an empty realm is `Restricted`).
+- `NewBasicAuthenticator` sends no challenge by itself: pass `auth.Config{ErrorHandler: BasicErrorHandler(a.Realm())}` to the middleware to set `WWW-Authenticate: Basic realm="…"` (`BasicChallenge(realm)` builds the value; an empty realm is `Restricted`).
 - `SecureCompare(x, y string) bool` compares a received credential with a known plaintext secret in constant time, hiding both content and length. Stored passwords are verified with a password hash (bcrypt, argon2id) instead.
 
 ### JWT in `auth/jwtauth`
@@ -138,7 +154,7 @@ func (a *MyAuthenticator) Authenticate(r *http.Request) (*User, error) {
 }
 
 // Registration
-api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth, nil))
+api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth))
 ```
 
 Register authentication on the routed tier with `app.Middleware`, on a group or on a route. The routed tier runs after the match on every route registered through the App, mounts included, so authentication there answers 401 for a mounted path, and it never runs for the router's own 404 and 405. Middleware registered with `app.PreRouting` runs before routing, for requests that match no route too: authentication there answers an unauthenticated request for an unknown path with 401 instead of 404, and `c.Route()` is nil there ([middleware spec](middleware.md)).
@@ -192,7 +208,7 @@ var Permission = credo.NewKey[string]("permission")
 
 // Route registration: authentication first, then authorization
 admin := app.Group("/v1/admin").
-    Middleware(auth.Middleware[*User](myAuth, nil), RequirePermission)
+    Middleware(auth.Middleware[*User](myAuth), RequirePermission)
 
 admin.GET("/users", listUsers).SetMeta(Permission, "admin.users.view")
 
@@ -238,6 +254,6 @@ func ViewProduct(c *credo.Context) error {
 
 ## Design Decisions
 
-The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorFunc` callback, RBAC via route meta, the separate `auth` package, the two-tier `jwtauth.Config` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
+The rationale is in [ADR-012](../adr/012-authentication-and-authorization.md): generic accessors on `*credo.Context` with a per-type key and no `context.Context` accessor, the `Authenticator[T]` strategy interface and its optional use, the `ErrorHandler` callback in `auth.Config`, RBAC via route meta, the separate `auth` package, the two-tier `jwtauth.Config` and `SecureCompare`. Stdlib middleware adapted via `WrapStdMiddleware` cannot set or read the principal ([ADR-010](../adr/010-middleware-architecture.md#stdlib-adapter)).
 
 The JWT authenticator's own package, `auth/jwtauth`, and its name: [ADR-012](../adr/012-authentication-and-authorization.md#jwt-in-its-own-package).

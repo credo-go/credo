@@ -16,5 +16,5 @@ func TestMiddleware_NilAuthenticatorPanics(t *testing.T) {
 			t.Fatalf("panic = %v, want %q", got, want)
 		}
 	}()
-	auth.Middleware[any](nil, nil)
+	auth.Middleware[any](nil)
 }

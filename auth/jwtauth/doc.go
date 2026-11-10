@@ -12,7 +12,7 @@
 //	    },
 //	})
 //	if err != nil { ... }
-//	app.Middleware(auth.Middleware[User](a, nil))
+//	app.Middleware(auth.Middleware[User](a))
 //
 // The name is not jwt, golang-jwt's package name, which code that configures
 // [Config.Advanced] imports beside it.

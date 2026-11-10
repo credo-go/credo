@@ -241,7 +241,7 @@ var Permission = credo.NewKey[string]("permission")
 admin := app.Group("/admin")
 admin.Static("/assets", adminFS).
     SetMeta(Permission, "admin.assets").
-    Middleware(auth.Middleware[*User](authenticator, nil))
+    Middleware(auth.Middleware[*User](authenticator))
 ```
 
 `SetMeta`, `RemoveMeta` and `Middleware` apply to **both** internal GET routes (catch-all and exact match). Each GET route also has an auto-generated HEAD twin, and the underlying `Route.SetMeta` / `Route.Middleware` propagate to that twin — so HEAD requests run the same middleware chain and see the same route meta as GET. Auth, rate limiting, and other header-mutating middleware never get silently bypassed via HEAD.

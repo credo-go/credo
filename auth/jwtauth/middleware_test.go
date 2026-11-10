@@ -32,7 +32,7 @@ func TestAuthenticator_WithAuthMiddleware(t *testing.T) {
 	app.GET("/me", func(c *credo.Context) error {
 		user, _ := c.GetUser[string]()
 		return c.Response().Text(200, user)
-	}).Middleware(auth.Middleware[string](a, nil))
+	}).Middleware(auth.Middleware[string](a))
 
 	r := httptest.NewRequest("GET", "/me", nil)
 	r.Header.Set("Authorization", "Bearer "+mustSignJWT(t, secret, jwt.MapClaims{"sub": "user-7"}))
