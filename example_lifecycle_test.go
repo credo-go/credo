@@ -185,7 +185,7 @@ type exObserver struct{}
 
 func (exObserver) Observe(ex *credo.Exchange) {
 	t, _ := ex.Get(Tenant)
-	fmt.Println(ex.Method(), ex.Route(), ex.Status(), ex.ErrorCode(), ex.RequestID(), t.Name)
+	fmt.Println(ex.Method(), ex.Route().Pattern, ex.Status(), ex.ErrorCode(), ex.RequestID(), t.Name)
 }
 
 // Observers see the final response — an error envelope included — with the

@@ -99,7 +99,7 @@ func (app *App) compileRoutes(m *mux) {
 		}
 		rh.compiled = compiled
 		rh.handler = nil
-		rh.route.resolveMeta()
+		rh.route.seal()
 	}
 }
 
@@ -300,6 +300,7 @@ func (app *App) addRoute(method, pattern string, h Handler, g *Group) *Route {
 	}
 
 	rh := &routeHandler{route: route, handler: h, srcLoc: callerLocation()}
+	route.srcLoc = rh.srcLoc
 	m := g.mux
 	if m == nil {
 		m = app.mux
@@ -351,6 +352,7 @@ func (app *App) addHeadRoute(pattern string, h Handler, g *Group) *Route {
 	}
 
 	rh := &routeHandler{route: route, handler: headHandler, srcLoc: callerLocation()}
+	route.srcLoc = rh.srcLoc
 	m := g.mux
 	if m == nil {
 		m = app.mux
@@ -418,9 +420,10 @@ func (w *discardBodyWriter) Unwrap() http.ResponseWriter {
 // (CONNECT is a proxy mechanism; TRACE enables cross-site tracing).
 // Requests using them receive 405 Method Not Allowed.
 //
-// A mount is a route: a request it matches carries a [Route] whose pattern
-// is the mount's prefix, with the App's meta and no name or method, so
-// [Context.HasRoute] is true for it and its access record names the prefix.
+// A mount is a route: a request it matches has a [RouteInfo] of kind mount
+// whose pattern is the mount's prefix, with the App's meta and no name or
+// method, so [Context.HasRoute] is true for it and its access record names
+// the prefix.
 // The route carries none of the prefix's parameters: they reach the mounted
 // handler as path values, so a routed middleware on a parametric mount reads
 // none through [Request.RouteParam].
@@ -519,7 +522,8 @@ func (app *App) Mount(pattern string, handler http.Handler) {
 	// Record the mount for introspection only after both registrations
 	// succeed, so a duplicate or conflicting Mount panic leaves no stale entry.
 	// The prefix is the same cleaned value the exact match was registered on.
-	app.mounts = append(app.mounts, mountInfo{route: route, registeredAt: callerLocation()})
+	route.srcLoc = callerLocation()
+	app.mounts = append(app.mounts, route)
 }
 
 // mountLeaf is the leaf of a mount's chain: the QUERY content-type check a
@@ -709,23 +713,13 @@ func rewriteRequest(r *http.Request, rawPath string) *http.Request {
 	return r2
 }
 
-// mountInfo records a mounted prefix for route introspection. [App.Mount] adds
-// an entry only after the radix registration succeeds, so a registration panic
-// (duplicate or conflicting mount) leaves no stale introspection entry. There
-// is no host field: Group.Mount does not exist, so mounts are always
-// default-scope.
-type mountInfo struct {
-	route        *Route // the mount's route; its pattern is the cleaned prefix
-	registeredAt sourceLocation
-}
-
 // mountForwardedMethods returns the sorted set of HTTP methods a mount answers:
 // every standard method except CONNECT and TRACE. CONNECT is reserved for proxy
 // tunnels and TRACE echoes requests back (cross-site tracing exposure) —
 // neither should reach a mounted sub-handler implicitly. A fresh slice is
 // returned on each call, and it is the single source of truth shared by
-// mountRoutes (registration) and [App.Routes] (introspection), so the two can
-// never drift.
+// mountRoutes (registration) and a mount's [RouteInfo] (introspection), so
+// the two can never drift.
 func mountForwardedMethods() []string {
 	return []string{
 		http.MethodDelete,

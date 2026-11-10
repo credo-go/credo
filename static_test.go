@@ -917,9 +917,12 @@ func TestStaticRoute_Name(t *testing.T) {
 	sr := app.Static("/assets", testFS())
 	sr.Name("assets")
 
-	route := app.GetRoute("assets")
-	if route == nil {
+	route, ok := app.GetRoute("assets")
+	if !ok {
 		t.Fatal("named route 'assets' not found")
+	}
+	if route.Pattern != "/assets/{_static...}" || route.Method != "GET" {
+		t.Errorf("GetRoute(assets) = %s %s, want the catch-all GET route", route.Method, route.Pattern)
 	}
 }
 

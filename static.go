@@ -150,7 +150,7 @@ type StaticRoute struct {
 // Name sets the route name on the primary (catch-all) route only.
 // Route names must be unique; the exact-match route remains unnamed.
 // Use [StaticRoute.BuildURI] for URL generation instead of
-// [Route.BuildURI], which requires the catch-all parameter explicitly.
+// [RouteInfo.BuildURI], which requires the catch-all parameter explicitly.
 //
 // Must be called before the server starts; panics if called after compile.
 func (sr *StaticRoute) Name(name string) *StaticRoute {

@@ -13,7 +13,7 @@ import (
 
 // Contract meta keys. Set them on a route, a group or the App with SetMeta;
 // ContractGuard reads them — the route's value, else its groups', else the
-// App's, through [credo.Route.GetMeta] — and enforces the matching request
+// App's, through [credo.RouteInfo.GetMeta] — and enforces the matching request
 // contract before the handler runs. Each key's value type is checked at
 // compile time:
 //

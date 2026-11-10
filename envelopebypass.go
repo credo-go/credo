@@ -30,13 +30,14 @@ func (app *App) warnEnvelopeBypass(ctx *Context) {
 		return
 	}
 	attrs := []slog.Attr{slog.String("path", ctx.Request().URL.Path)}
-	if rt := ctx.Route(); rt != nil {
+	if ctx.HasRoute() {
+		rt := ctx.Route()
 		if raw, _ := rt.GetMeta(MetaRawResponse); raw {
 			return
 		}
-		attrs = append(attrs, slog.String("route", rt.GetPattern()))
-		if name := rt.GetName(); name != "" {
-			attrs = append(attrs, slog.String("route_name", name))
+		attrs = append(attrs, slog.String("route", rt.Pattern))
+		if rt.Name != "" {
+			attrs = append(attrs, slog.String("route_name", rt.Name))
 		}
 	}
 	ctx.Logger().LogAttrs(ctx.Request().Context(), slog.LevelWarn,

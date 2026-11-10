@@ -298,7 +298,7 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 			{"a?b#c", "/one/a%3Fb%23c"},
 		}
 		for _, tt := range tests {
-			uri, err := route.BuildURI(tt.value)
+			uri, err := route.View().BuildURI(tt.value)
 			if err != nil || uri != tt.want {
 				t.Fatalf("BuildURI(%q) = %q, %v; want %q", tt.value, uri, err, tt.want)
 			}
@@ -314,7 +314,7 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 	t.Run("empty value is rejected", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/one/{v}", h)
-		if _, err := route.BuildURI(""); err == nil || !strings.Contains(err.Error(), "empty value") {
+		if _, err := route.View().BuildURI(""); err == nil || !strings.Contains(err.Error(), "empty value") {
 			t.Fatalf("BuildURI(\"\") error = %v, want empty value", err)
 		}
 	})
@@ -322,7 +322,7 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 	t.Run("empty catch-all value routes back", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/files/{v...}", h)
-		uri, err := route.BuildURI("")
+		uri, err := route.View().BuildURI("")
 		if err != nil || uri != "/files/" {
 			t.Fatalf("BuildURI(\"\") = %q, %v; want /files/", uri, err)
 		}
@@ -336,13 +336,13 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 	t.Run("constraint is validated", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/num/{id:[0-9]+}", h)
-		if uri, err := route.BuildURI("42"); err != nil || uri != "/num/42" {
+		if uri, err := route.View().BuildURI("42"); err != nil || uri != "/num/42" {
 			t.Fatalf("BuildURI(42) = %q, %v", uri, err)
 		}
-		if _, err := route.BuildURI("x1"); err == nil || !strings.Contains(err.Error(), "does not match constraint") {
+		if _, err := route.View().BuildURI("x1"); err == nil || !strings.Contains(err.Error(), "does not match constraint") {
 			t.Fatalf("BuildURI(x1) error = %v, want constraint failure", err)
 		}
-		if _, err := route.BuildURI("1/2"); err == nil {
+		if _, err := route.View().BuildURI("1/2"); err == nil {
 			t.Fatal("BuildURI(1/2) should fail the constraint")
 		}
 	})
@@ -350,7 +350,7 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 	t.Run("catch-all keeps separators and escapes segments", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/files/{v...}", h)
-		uri, err := route.BuildURI("a/b c/ç")
+		uri, err := route.View().BuildURI("a/b c/ç")
 		if err != nil || uri != "/files/a/b%20c/%C3%A7" {
 			t.Fatalf("BuildURI = %q, %v", uri, err)
 		}
@@ -364,7 +364,7 @@ func TestURLRoundTrip_Generation(t *testing.T) {
 	t.Run("static text is written verbatim", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/rel/{y:[0-9]{4}}-{m:[0-9]{2}}/x", h)
-		uri, err := route.BuildURI("2024", "09")
+		uri, err := route.View().BuildURI("2024", "09")
 		if err != nil || uri != "/rel/2024-09/x" {
 			t.Fatalf("BuildURI = %q, %v", uri, err)
 		}
@@ -377,7 +377,7 @@ func TestURLRoundTrip_HostLabelValidation(t *testing.T) {
 	t.Run("valid label", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/users/{id}", h)
-		u, err := route.BuildURL("acme-1", "a/b")
+		u, err := route.View().BuildURL("acme-1", "a/b")
 		if err != nil || u != "acme-1.myapp.com/users/a%2Fb" {
 			t.Fatalf("BuildURL = %q, %v", u, err)
 		}
@@ -387,7 +387,7 @@ func TestURLRoundTrip_HostLabelValidation(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/users/{id}", h)
 		for _, bad := range []string{"", "a.b", "a/b", "ac me", "%41"} {
-			if _, err := route.BuildURL(bad, "1"); err == nil {
+			if _, err := route.View().BuildURL(bad, "1"); err == nil {
 				t.Fatalf("BuildURL(%q) should fail", bad)
 			}
 		}
@@ -396,10 +396,10 @@ func TestURLRoundTrip_HostLabelValidation(t *testing.T) {
 	t.Run("host constraint is validated", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{org:[a-z]+}.myapp.com").GET("/x", h)
-		if u, err := route.BuildURL("acme"); err != nil || u != "acme.myapp.com/x" {
+		if u, err := route.View().BuildURL("acme"); err != nil || u != "acme.myapp.com/x" {
 			t.Fatalf("BuildURL(acme) = %q, %v", u, err)
 		}
-		if _, err := route.BuildURL("ACME1"); err == nil || !strings.Contains(err.Error(), "host constraint") {
+		if _, err := route.View().BuildURL("ACME1"); err == nil || !strings.Contains(err.Error(), "host constraint") {
 			t.Fatalf("BuildURL(ACME1) error = %v, want host constraint failure", err)
 		}
 	})

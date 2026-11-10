@@ -696,6 +696,14 @@ func (app *App) noteTranslationMiss(ctx *Context, key string) {
 		slog.String("key", key), slog.String("locale", ctx.locale), slog.String("route", routeLabel(ctx.route)))
 }
 
+// routePattern returns the pattern of a matched route, or "" without one.
+func routePattern(r *Route) string {
+	if r == nil {
+		return ""
+	}
+	return r.pattern
+}
+
 // routeLabel names a route in a diagnostic: its method and pattern, its
 // pattern alone for a mount, empty without a route.
 func routeLabel(r *Route) string {

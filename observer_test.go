@@ -30,7 +30,7 @@ type exchangeSnapshot struct {
 func snapshotOf(ex *credo.Exchange) exchangeSnapshot {
 	return exchangeSnapshot{
 		Method: ex.Method(), Path: ex.Path(), OriginalPath: ex.OriginalPath(),
-		Route: ex.Route(), RouteName: ex.RouteName(),
+		Route: ex.Route().Pattern, RouteName: ex.Route().Name,
 		RemoteAddr: ex.RemoteAddr(), UserAgent: ex.UserAgent(), RequestID: ex.RequestID(),
 		ErrorCode: ex.ErrorCode(), Status: ex.Status(), Bytes: ex.Bytes(), Duration: ex.Duration(),
 		PanicRecovered: ex.PanicRecovered(),

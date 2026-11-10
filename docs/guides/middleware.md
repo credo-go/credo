@@ -399,7 +399,7 @@ The access log is one observer of the final response. `app.AddObserver(o)` adds 
 type latency struct{ hist *Histogram } // a histogram of your metrics library
 
 func (l latency) Observe(ex *credo.Exchange) {
-    l.hist.Record(ex.Context(), ex.Duration(), ex.Route(), ex.Status())
+    l.hist.Record(ex.Context(), ex.Duration(), ex.Route().Pattern, ex.Status())
 }
 
 app.AddObserver(latency{hist: h})
@@ -956,28 +956,33 @@ The mount's prefix parameters reach the mounted handler as path values of its re
 
 Custom status handlers registered via `app.StatusHandler()` execute when no route matches (404) or no route serves the method (405); those are the only two codes it accepts, and any other code panics at registration. In this context:
 
-- `c.Route()` is **nil** — there is no matched route.
+- `c.HasRoute()` is **false** and `c.Route()` is the zero `RouteInfo` — there is no matched route, so every `GetMeta` reports "not set".
 - Group and route middleware have not run (no route to attach them to).
 - Only framework features and `PreRouting` middleware are active; the routed tier does not run.
 
-Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers. Use `c.HasRoute()` to guard against nil before calling `c.Route()` methods — this prevents nil pointer panics in middleware that may run on both matched and unmatched request paths:
+Do not assume route-level auth, RBAC checks, or Meta lookups are available inside custom 404/405 handlers.
+
+A guard that enforces route meta belongs on the routed tier — `app.Middleware`, a group or a route — where a route is always matched. Registered with `app.PreRouting` it runs before the match, on every request, and there the zero `RouteInfo` reads every key as "not set": a guard that takes "not set" for "nothing required" would pass every request. So the guard checks `c.HasRoute()` first and fails closed without a route, which turns a wrong registration into an error on the first request instead of an open door:
 
 ```go
-// Safe: guard with HasRoute before accessing Route methods.
+// Safe: without a route the guard refuses, it does not pass.
 func RequirePermission(next credo.Handler) credo.Handler {
     return func(c *credo.Context) error {
         if !c.HasRoute() {
-            return next(c) // no route matched (404/405 path)
+            return errors.New("authz: no route is matched, so no permission can be checked; " +
+                "register RequirePermission with app.Middleware, on a group or on a route")
         }
         perm, ok := c.Route().GetMeta(Permission)
         if !ok {
-            return next(c)
+            return next(c) // the matched route requires no permission
         }
         // ... check perm ...
         return next(c)
     }
 }
 ```
+
+The returned error is answered as a 500 through the error pipeline and logged, as `middleware.ContractGuard` does for the same mistake.
 
 ### Rewrite Ordering Affects Auth Decisions
 

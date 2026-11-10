@@ -180,7 +180,7 @@ func TestCompress_SkipperSeesOriginalRequest(t *testing.T) {
 	app.UseCompress(credo.CompressConfig{
 		Skipper: func(ctx *credo.Context) bool {
 			seenPath = ctx.Request().URL.Path
-			return ctx.Route() != nil // route is never matched yet
+			return ctx.HasRoute() // route is never matched yet
 		},
 	})
 	app.PreRouting(middleware.Rewrite(middleware.RewriteConfig{Rules: []middleware.RewriteRule{{From: "/legacy", To: "/new"}}}))

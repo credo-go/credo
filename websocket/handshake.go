@@ -114,12 +114,10 @@ func (s *Server) acceptConn(ctx *credo.Context, selectedProtocol string) (*conne
 		return nil, credo.NewHTTPError(http.StatusNotImplemented).WithInternal(resolveErr)
 	}
 	connectionID := rand.Text()
-	route := ""
-	if matched := ctx.Route(); matched != nil {
-		route = matched.GetName()
-		if route == "" {
-			route = matched.GetPattern()
-		}
+	matched := ctx.Route()
+	route := matched.Name
+	if route == "" {
+		route = matched.Pattern
 	}
 	logger := s.connectionLogger(ctx, connectionID)
 

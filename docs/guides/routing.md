@@ -112,20 +112,25 @@ app.GET("/docs/{path...}", serveDoc)      // GET /docs/a%2Fb/c -> "a/b/c"
 
 Do not decode `RouteParam` values again: a second `PathUnescape` would turn `%2F` data into a slash. A parameter is always one segment — `{name}.json` does not match `/a/b.json` — so use `{name...}` when a value may span segments. An encoded unreserved delimiter is the delimiter: `2024%2D09` and `2024-09` are the same URI, so a value can never contain an unreserved byte that follows its parameter in the pattern. Reserved characters keep their escape (RFC 3986 §2.2): `/t/a%3Bb;v` gives `{id};v` the value `a;b`, and `/lit/a%3Bb` does not match static `/lit/a;b`. A value that decodes to invalid UTF-8 (`%FF`) fails with 400 `invalid_path_encoding`; a malformed escape such as `%zz` is rejected by net/http before Credo sees it. A `middleware.Rewrite` target is wire form too, so `To: "/files/a%2Fb"` reaches the handler as `a/b`.
 
-URL generation is the mirror image: pass decoded values and let `BuildURI` escape them per segment; static text comes out in its wire spelling. A value that could not route back — invalid UTF-8, or one containing its parameter's delimiter (`a.b` for `{name}.json`) — is an error.
+URL generation is the mirror image: name the route, look it up with `app.GetRoute`, pass decoded values and let `BuildURI` escape them per segment; static text comes out in its wire spelling. A value that could not route back — invalid UTF-8, or one containing its parameter's delimiter (`a.b` for `{name}.json`) — is an error.
 
 ```go
-route := app.GET("/files/{name}", h).Name("file.show")
-uri, _ := route.BuildURI("a/b")   // "/files/a%2Fb"
-uri, _ = route.BuildURI("café")   // "/files/caf%C3%A9"
-_, err := route.BuildURI("")      // error: empty value for parameter "name"
+app.GET("/files/{name}", h).Name("file.show")
+file, _ := app.GetRoute("file.show") // the route's RouteInfo; false for an unknown name
+uri, _ := file.BuildURI("a/b")       // "/files/a%2Fb"
+uri, _ = file.BuildURI("café")       // "/files/caf%C3%A9"
+_, err := file.BuildURI("")          // error: empty value for parameter "name"
 
-files := app.GET("/files/{path...}", serveFile)
-uri, _ = files.BuildURI("")       // "/files/": a catch-all matches an empty rest
+app.GET("/docs/{path...}", serveDoc).Name("docs")
+docs, _ := app.GetRoute("docs")
+uri, _ = docs.BuildURI("")           // "/docs/": a catch-all matches an empty rest
 
-order := app.GET("/orders/{id:[0-9]+}", getOrder)
-_, err = order.BuildURI("x1")     // error: does not match constraint "[0-9]+"
+app.GET("/orders/{id:[0-9]+}", getOrder).Name("order.show")
+order, _ := app.GetRoute("order.show")
+_, err = order.BuildURI("x1")        // error: does not match constraint "[0-9]+"
 ```
+
+`app.GET` returns a `*credo.Route`, the handle that configures the route — `Name`, `SetMeta`, `Middleware` — before the App starts. Reading a route, and building its URLs, goes through its `credo.RouteInfo`: `app.GetRoute(name)` here, `c.Route()` in a handler or a middleware for the route the request matched, and `app.Routes()` for all of them ([Introspection](#introspection)).
 
 #### Route Parameters Are Not File Names
 
@@ -470,7 +475,7 @@ The access log (`app.UseAccessLog`) records both.
 
 ## Introspection
 
-`app.Routes()` returns every route and every mount as a `RouteInfo`: the `Method` and `Pattern`, the route `Name`, the resolved meta (route ← group ← app) through `ri.GetMeta(key)`, `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. A loop that wants routes only skips the mounts:
+`app.Routes()` returns every route and every mount as a `RouteInfo`, the same view `c.Route()` gives a request and `app.GetRoute(name)` gives a name: the `Method` and `Pattern`, the route `Name`, the resolved meta (route ← group ← app) through `ri.GetMeta(key)`, `Kind` (route vs. mount), `Host`, `AutoHead` (true for the auto-generated HEAD twin of a GET), and — for a mount — its cleaned prefix plus the forwarded method set in `Methods`. A loop that wants routes only skips the mounts:
 
 ```go
 for _, ri := range app.Routes() {

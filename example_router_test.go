@@ -82,21 +82,22 @@ func ExampleNewKey() {
 
 // A named route builds its URL from decoded parameter values, escaping each
 // path value for one segment; a host-scoped route fills its host first.
-func ExampleRoute_BuildURI() {
+func ExampleRouteInfo_BuildURI() {
 	app := newExampleApp()
 	app.GET("/products/{id}", exText("product")).Name("product.show")
 	app.Host("{tenant}.myapp.com").GET("/products/{id}", exText("product")).Name("tenant.product.show")
 
-	route := app.GetRoute("product.show")
+	route, _ := app.GetRoute("product.show")
 	uri, _ := route.BuildURI("42")
 	fmt.Println(uri)
 	uri, _ = route.BuildURI("a/b")
 	fmt.Println(uri)
 	url, _ := route.BuildURL("42") // a default route: the same as BuildURI
 	fmt.Println(url)
-	fmt.Printf("%q\n", route.GetHost())
+	fmt.Printf("%q\n", route.Host)
 
-	url, _ = app.GetRoute("tenant.product.show").BuildURL("acme", "42")
+	tenant, _ := app.GetRoute("tenant.product.show")
+	url, _ = tenant.BuildURL("acme", "42")
 	fmt.Println(url)
 
 	_, err := route.BuildURI("42", "extra")
