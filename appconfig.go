@@ -236,10 +236,15 @@ func (app *App) MustGetConfig[T any](section config.Section[T]) T {
 	return v
 }
 
-// WithLogger sets the application-level logger. Each component receives a
-// scoped copy with a "component" attribute. If not set, the framework default
-// logger (a text handler writing to stderr) is used, so access and request
-// logging are on by default without any configuration.
+// WithLogger sets the application-level logger: the framework writes its own
+// records through it, [Context.Logger] derives from it, and each component
+// receives a scoped copy with a "component" attribute. If not set, the
+// framework default logger (a text handler writing to stderr) is used, so
+// those records are visible without any configuration.
+//
+// The logger alone writes no record per request. The access log is installed
+// with [App.UseAccessLog] and the request_id attribute of the request-scoped
+// logger with [App.UseRequestID]; both are off by default.
 func WithLogger(l *slog.Logger) Option {
 	return func(o *appOptions) { o.logger = l }
 }

@@ -148,8 +148,11 @@ func (c *Context) HasRoute() bool {
 	return c.route != nil
 }
 
-// Logger returns the request-scoped logger. Falls back through the chain:
-// request logger → app logger → nop logger.
+// Logger returns the request-scoped logger: the one set by the request ID
+// feature ([App.UseRequestID]), [Context.SetLogger] or [Context.AddLogAttrs],
+// else the App's logger ([WithLogger]). A Context built with [NewContext] has
+// no App and falls back to the framework default logger, a text handler
+// writing to stderr. Logger never returns nil.
 func (c *Context) Logger() *slog.Logger {
 	if c.logger == nil && c.pendingLogAttrID != "" {
 		// Deferred request ID enrichment (see pendingLogAttrID): pay the
@@ -223,8 +226,10 @@ func (c *Context) HasRequestLogger() bool {
 	return c.logger != nil || c.pendingLogAttrID != ""
 }
 
-// RequestID returns the current request ID.
-// It returns an empty string when request ID middleware is not active.
+// RequestID returns the current request ID. It returns an empty string
+// unless the request ID feature is installed with [App.UseRequestID]: the
+// feature is off by default, and without it no ID is generated or read from
+// the request.
 func (c *Context) RequestID() string {
 	id, _ := c.Get(requestIDKey)
 	return id
