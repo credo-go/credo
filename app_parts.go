@@ -192,11 +192,13 @@ type appRequest struct {
 // UseHealth writes it during bootstrap; the probe handlers read it.
 type appHealth struct {
 	// healthEngine holds the health check engine (nil if UseHealth not called).
+	// A UseHealth with Enabled false creates it too: it is the record of the
+	// call, and it collects the checks that no route will run.
 	healthEngine *internalhealth.Engine
 
 	// healthProbes records that UseHealth registered at least one probe route.
-	// The engine alone is not enough: with both probes disabled it exists but
-	// nothing is mounted.
+	// The engine alone is not enough: with health disabled, or with both
+	// probes off, it exists but nothing is mounted.
 	healthProbes bool
 
 	// healthExposeErrors includes check error strings in readiness responses.

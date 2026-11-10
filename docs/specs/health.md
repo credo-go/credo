@@ -37,7 +37,7 @@ type HealthConfig struct {
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `Enabled` | nil = true | `false` registers nothing — no routes and no engine — and does not take the registration: a later `UseHealth` call is accepted, and `AddLivenessCheck`/`AddReadinessCheck` panic as if `UseHealth` had not been called |
+| `Enabled` | nil = true | `false` registers no route. The call still takes the registration: a second `UseHealth` panics, and `AddLivenessCheck`/`AddReadinessCheck` accept checks, validated as usual, that are never run |
 | `Liveness` | nil = true | `false` leaves the liveness route unregistered; liveness checks can still be added |
 | `Readiness` | nil = true | `false` leaves the readiness route unregistered; readiness checks can still be added |
 | `LivenessPath` | `/health` | Path of the liveness route, relative to `Group` when set |
@@ -49,7 +49,7 @@ type HealthConfig struct {
 
 `*bool` toggles distinguish "not set" (the default) from an explicit false.
 
-`UseHealth` takes zero configs for the defaults or one config, performs no I/O and returns nothing. It panics when called a second time (`credo: UseHealth already called`), after preparation or shutdown (`credo: App.UseHealth called after app was compiled or shut down`), or with a `Group` of another App. Its order relative to components and workers does not matter: readiness reads what the start phase built. The [startup feature list](http-features.md#startup-visibility) shows `health` when at least one probe route is registered.
+`UseHealth` takes zero configs for the defaults or one config, performs no I/O and returns nothing. It panics when called a second time (`credo: UseHealth already called`), whether or not either call set `Enabled` to false, after preparation or shutdown (`credo: App.UseHealth called after app was compiled or shut down`), or with a `Group` of another App. Its order relative to components and workers does not matter: readiness reads what the start phase built. The [startup feature list](http-features.md#startup-visibility) shows `health` when at least one probe route is registered.
 
 ## Checks
 
@@ -64,7 +64,7 @@ func (app *App) AddLivenessCheck(name string, checker HealthChecker)
 func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...RegistrationOption)
 ```
 
-- Both panic when `UseHealth` has not registered the engine, when `checker` is nil, or when the name is invalid or duplicates another check of the same kind.
+- Both panic when `UseHealth` has not been called, when `checker` is nil, or when the name is invalid or duplicates another check of the same kind. A `UseHealth` with `Enabled` false counts as the call: the checks registered after it are accepted and, with no route mounted, never run, so an application that maps a configuration key to `Enabled` registers its checks unconditionally.
 - A name must be non-empty, without leading or trailing whitespace, without control characters, and must not start with the reserved `credo.` prefix. Names are never normalized, so duplicate detection is an exact comparison. A `credo.ComponentName` name follows the same rules, and a bound database's entry carries its component's name ([store spec](store.md#lifecycle-of-a-bound-database)).
 - A nil error is up; any error is down.
 - With no liveness checks, liveness is up: a responding server proves the process alive.

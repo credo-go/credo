@@ -12,6 +12,12 @@ import (
 type HealthConfig struct {
 	// Enabled controls whether health endpoints are registered.
 	// nil (default) = true.
+	//
+	// False registers no route, and the call still counts as the App's
+	// UseHealth: a second UseHealth panics, and AddLivenessCheck and
+	// AddReadinessCheck accept checks that are never run. An application can
+	// therefore map a configuration key to Enabled and keep its check
+	// registrations unconditional.
 	Enabled *bool
 
 	// Liveness controls whether the liveness endpoint is registered.
@@ -72,7 +78,8 @@ func (f HealthCheckFunc) Check(ctx context.Context) error { return f(ctx) }
 //
 // UseHealth performs no I/O — it only registers in-process state — and misuse
 // panics like every other registration API. Panics if called more than once,
-// if called after compile, or if cfg.Group belongs to a different App.
+// a call with Enabled false included; if called after compile; or if
+// cfg.Group belongs to a different App.
 func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.checkFrozen("App.UseHealth")
 	if app.healthEngine != nil {
@@ -85,9 +92,6 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 	}
 
 	// Apply defaults.
-	if cfg.Enabled != nil && !*cfg.Enabled {
-		return
-	}
 	if cfg.LivenessPath == "" {
 		cfg.LivenessPath = "/health"
 	}
@@ -98,8 +102,16 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 		cfg.CheckTimeout = 5 * time.Second
 	}
 
+	// The engine is the record that UseHealth was called, so it is created
+	// before the Enabled test: a disabled call refuses a second UseHealth and
+	// accepts checks like an enabled one. With no route mounted, nothing ever
+	// runs them.
 	app.healthEngine = internalhealth.NewEngine(cfg.CheckTimeout)
 	app.healthExposeErrors = cfg.ExposeErrors
+
+	if cfg.Enabled != nil && !*cfg.Enabled {
+		return
+	}
 
 	// Validate Group belongs to this app.
 	if cfg.Group != nil && cfg.Group.registrar != routeRegistrar(app) {
@@ -135,7 +147,8 @@ func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.healthProbes = livenessEnabled || readinessEnabled
 }
 
-// AddLivenessCheck registers a named liveness check.
+// AddLivenessCheck registers a named liveness check. After a UseHealth whose
+// config sets Enabled to false the check is accepted and never run.
 // Panics if [App.UseHealth] has not been called first, checker is nil, or name
 // is empty, padded with whitespace, contains control characters, uses the
 // reserved "credo." prefix, or duplicates another liveness check.
@@ -151,10 +164,11 @@ func (app *App) AddLivenessCheck(name string, checker HealthChecker) {
 
 // AddReadinessCheck registers a named readiness check. [OptionalReadiness],
 // its one option, reports the check in /ready without letting it gate
-// readiness: a check of a cache or of a third-party API. Panics if
-// [App.UseHealth] has not been called first, checker is nil, an option other
-// than [OptionalReadiness] is given, or name is empty, padded with
-// whitespace, contains control characters, uses the reserved "credo."
+// readiness: a check of a cache or of a third-party API. After a UseHealth
+// whose config sets Enabled to false the check is accepted and never run.
+// Panics if [App.UseHealth] has not been called first, checker is nil, an
+// option other than [OptionalReadiness] is given, or name is empty, padded
+// with whitespace, contains control characters, uses the reserved "credo."
 // prefix, or duplicates another readiness check.
 func (app *App) AddReadinessCheck(name string, checker HealthChecker, opts ...RegistrationOption) {
 	if app.healthEngine == nil {

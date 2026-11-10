@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,11 +63,75 @@ func TestUseHealth_Disabled(t *testing.T) {
 	app := mustNew(t)
 	app.UseHealth(credo.HealthConfig{Enabled: new(false)})
 
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/health", nil)
-	app.ServeHTTP(w, r)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("/health status = %d, want %d (disabled)", w.Code, http.StatusNotFound)
+	for _, path := range []string{"/health", "/ready"} {
+		w := httptest.NewRecorder()
+		app.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want %d (disabled)", path, w.Code, http.StatusNotFound)
+		}
+	}
+}
+
+// A disabled UseHealth is still the App's UseHealth call, so an application
+// that maps a configuration key to Enabled keeps its check registrations
+// unconditional: they are accepted, and with no route mounted they never run.
+func TestUseHealth_Disabled_AcceptsChecksAndServesNone(t *testing.T) {
+	app := mustNew(t)
+	app.UseHealth(credo.HealthConfig{Enabled: new(false)})
+
+	var runs atomic.Int32
+	check := credo.HealthCheckFunc(func(context.Context) error {
+		runs.Add(1)
+		return errors.New("down")
+	})
+	app.AddLivenessCheck("disk", check)
+	app.AddReadinessCheck("database", check)
+	app.AddReadinessCheck("cache", check, credo.OptionalReadiness())
+
+	for _, method := range []string{"GET", "HEAD"} {
+		for _, path := range []string{"/health", "/ready"} {
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest(method, path, nil))
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s %s status = %d, want %d (disabled)", method, path, w.Code, http.StatusNotFound)
+			}
+		}
+	}
+	if got := runs.Load(); got != 0 {
+		t.Errorf("checks ran %d times, want 0: a disabled UseHealth serves no check", got)
+	}
+}
+
+// The checks registered after a disabled UseHealth are validated like any
+// others, so a mistake in one shows in every deployment and not only in the
+// one that turns health on.
+func TestUseHealth_Disabled_ChecksAreStillValidated(t *testing.T) {
+	check := credo.HealthCheckFunc(func(context.Context) error { return nil })
+	tests := []struct {
+		name     string
+		register func(*credo.App)
+		want     string
+	}{
+		{"nil liveness checker", func(a *credo.App) { a.AddLivenessCheck("disk", nil) },
+			"credo: AddLivenessCheck: checker must not be nil"},
+		{"nil readiness checker", func(a *credo.App) { a.AddReadinessCheck("database", nil) },
+			"credo: AddReadinessCheck: checker must not be nil"},
+		{"duplicate readiness name", func(a *credo.App) {
+			a.AddReadinessCheck("database", check)
+			a.AddReadinessCheck("database", check)
+		}, "duplicate readiness check"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.UseHealth(credo.HealthConfig{Enabled: new(false)})
+			defer func() {
+				if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), tt.want) {
+					t.Errorf("panic = %v, want it to contain %q", r, tt.want)
+				}
+			}()
+			tt.register(app)
+		})
 	}
 }
 
@@ -508,20 +573,38 @@ func TestAddReadinessCheck_NoUseHealth_Panics(t *testing.T) {
 	app.AddReadinessCheck("x", credo.HealthCheckFunc(func(context.Context) error { return nil }))
 }
 
+// UseHealth is called once per App. A call with Enabled false takes the
+// registration like any other, so the second call is refused whichever of the
+// two is disabled.
 func TestUseHealth_DoubleCall_Panics(t *testing.T) {
-	app := mustNew(t)
-	app.UseHealth()
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on second UseHealth call")
-		}
-		msg, ok := r.(string)
-		if !ok || msg != "credo: UseHealth already called" {
-			t.Errorf("panic = %v, want %q", r, "credo: UseHealth already called")
-		}
-	}()
-	app.UseHealth()
+	enabled := credo.HealthConfig{}
+	disabled := credo.HealthConfig{Enabled: new(false)}
+	tests := []struct {
+		name          string
+		first, second credo.HealthConfig
+	}{
+		{"enabled then enabled", enabled, enabled},
+		{"enabled then disabled", enabled, disabled},
+		{"disabled then enabled", disabled, enabled},
+		{"disabled then disabled", disabled, disabled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := mustNew(t)
+			app.UseHealth(tt.first)
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic on second UseHealth call")
+				}
+				msg, ok := r.(string)
+				if !ok || msg != "credo: UseHealth already called" {
+					t.Errorf("panic = %v, want %q", r, "credo: UseHealth already called")
+				}
+			}()
+			app.UseHealth(tt.second)
+		})
+	}
 }
 
 func TestAddLivenessCheck_NilChecker_Panics(t *testing.T) {
