@@ -133,7 +133,7 @@ Progress is tracked by the boxes below.
 
 ## Part D: Packages
 
-- [ ] **D1. One rule for config structs: a zero field selects its default.**
+- [x] **D1. One rule for config structs: a zero field selects its default.**
   - **Problem:** the middleware spec says a config that is passed replaces the defaults. In the code every normalizer already fills its zero fields — `CORS`, `CSRF`, `ContractGuard`, `Rewrite`, `Timeout`, `ratelimit` and `httpclient`'s retry — except `Secure`, whose three header fields are defaulted only when no config is passed. `Secure(SecureConfig{HSTSMaxAge: 31536000})` therefore sends neither `X-Content-Type-Options` nor `X-Frame-Options`.
   - **Fix:**
     - `Secure` fills its zero fields like the others, and the spec states the one rule: a zero field selects its default, and turning a default off takes an explicit value.
@@ -143,15 +143,15 @@ Progress is tracked by the boxes below.
   - **Decided:** `ratelimit.DefaultConfig` and `httpclient.DefaultRetryConfig` go with them, since both configs already follow the rule; `httpclient.DefaultRetryIf` stays, as the function a custom `RetryIf` composes with.
   - **Tests:** each middleware with a partial config keeps its other defaults; the two `Disable` fields; no `X-XSS-Protection` unless set. A2's line comes out of the guide.
   - **Docs:** ADR-010, the middleware and httpclient specs, the middleware guide. Release notes, first: a `SecureConfig` that relied on a field left out being off now sends that header.
-- [ ] **D2. `validation`'s error types are named for what they carry.**
+- [x] **D2. `validation`'s error types are named for what they carry.**
   - **Problem:** the wire name is `violations`, chosen in ADR-009 because `errors` stutters; the Go types stutter the same way (`validation.ValidationError`, `validation.Errors`), and a bind failure travels in the same type without being a validation error.
   - **Fix:** `ValidationError` becomes `Violation`, `Errors` becomes `Violations`, `NewError` becomes `NewViolation`. No behaviour changes.
   - **Docs:** ADR-011 and ADR-009, the validation spec and guide, the error-handling guide.
-- [ ] **D3. `auth.Middleware` takes a config; its callback takes the context first.**
+- [x] **D3. `auth.Middleware` takes a config; its callback takes the context first.**
   - **Problem:** `auth.ErrorFunc` is `func(err error, ctx *credo.Context) error`, and `auth.Middleware(a, onError)` takes it as a required positional argument, so the common call is `auth.Middleware[User](a, nil)`. Every other callback in the framework takes the context first, and every other middleware takes an optional config struct.
   - **Fix:** `auth.Middleware[T](a, cfg ...auth.Config)` with `Config.ErrorHandler func(*credo.Context, error) error`, the field name and signature `TimeoutConfig` and `CSRFConfig` use. `ErrorFunc` goes.
   - **Docs:** ADR-012 (the callback over a subtype stands; its position changes), the auth spec, the examples.
-- [ ] **D4. One name for each error kind.**
+- [x] **D4. One name for each error kind.**
   - **Problem:** `store.Kind` and its eleven `Kind*` constants are a one-to-one copy of `fault.Kind` and its constants.
   - **Fix:** `store` and `store/sqldb` use `fault.Kind*`; the aliases go. `store.Error`, the sentinels and the classifiers are unchanged.
   - **Docs:** ADR-015, the store spec and the data-access guide.

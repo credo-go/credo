@@ -14,11 +14,21 @@ The `v0.1.0` section records the initial public development baseline; it was not
 
 ## [Unreleased]
 
+### Added
+
+- `SecureConfig.DisableXFrameOptions` turns `X-Frame-Options` off, for an application whose `Content-Security-Policy` sets `frame-ancestors`.
+
 ### Changed
 
 - **BREAKING (behavior): text after a catch-all panics at registration.** A pattern such as `/a/{p...}/x` can never match; it now panics with the message `middleware.Rewrite` gives such a pattern, and so does a catch-all in a `Mount` or `Static` prefix.
 - **BREAKING: `ContractGuard` requires a Content-Type on a body by default.** A body-carrying request without one fails a `MetaAccept` contract with 415; `ContractConfig.AllowMissingContentType` lets it pass, and `RequireContentType` is removed.
 - **BREAKING (behavior): a `UseHealth` with `Enabled` false is the App's `UseHealth` call.** A second `UseHealth` after it panics, where it was accepted.
+- **BREAKING (behavior): `middleware.Secure` fills the zero fields of a config it is given.** A `SecureConfig` that sets some fields still sends `X-Content-Type-Options: nosniff` and `X-Frame-Options: SAMEORIGIN`, where it sent neither. `DisableContentTypeNosniff` and `DisableXFrameOptions` turn them off, and the `ContentTypeNosniff` string is removed.
+- **BREAKING (behavior): `middleware.Secure` sends no `X-XSS-Protection` by default.** Set `SecureConfig.XSSProtection` to send it.
+- **BREAKING: a zero config field selects its default, and the `Default*Config` constructors are removed.** `DefaultContractConfig`, `DefaultCORSConfig`, `DefaultCSRFConfig`, `DefaultRewriteConfig`, `DefaultSecureConfig`, `DefaultTimeoutConfig` and `DefaultSkipper` leave `middleware`, with `ratelimit.DefaultConfig` and `httpclient.DefaultRetryConfig`: the zero config is the default one, and a nil `Skipper` skips no request.
+- **BREAKING: `auth.Middleware[T](a, cfg ...auth.Config)` replaces `auth.Middleware[T](a, onError)`.** The failure callback is `Config.ErrorHandler`, a `func(*credo.Context, error) error` with the context first, and `auth.ErrorFunc` is removed.
+- **BREAKING: `store.Kind` and the `store.Kind*` constants are removed.** Use `fault.Kind` and `fault.Kind*`, which they aliased; `store.Error.Kind` and `store.KindOf` have that type.
+- **BREAKING: `validation.ValidationError`, `validation.Errors` and `validation.NewError` are renamed `validation.Violation`, `validation.Violations` and `validation.NewViolation`,** after the wire's `violations`. No behavior changes.
 - A strict unknown-key error names the `.env` entry or environment variable that set the key.
 - A SIGHUP under `Run` over a configuration that cannot reload is logged at Info as ignored, with the signal and the configuration's type, instead of being dropped.
 
