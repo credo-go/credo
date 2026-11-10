@@ -448,7 +448,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Typed store health cause (`Health.Cause`, JSON-excluded), operator logging, default response masking, and explicit `ExposeErrors` opt-in
 - [x] Store status allowlist and fail-closed custom/store name-collision handling
 - [x] Store registration/Registry typed-nil hardening
-- [ ] Optional/critical stores and bounded low-cardinality tags (separate API decision)
+- [ ] Bounded low-cardinality tags on a readiness entry (separate API decision); a store that does not gate readiness shipped as `credo.OptionalReadiness()` in v0.25.0
 - [x] Lifecycle ownership and Registry/seam atomicity hardening: direct `Lifecycle` is framework-owned; separate handle requires explicit caller-owned opt-out; default identity is the top-level Lifecycle and semantic wrappers explicitly forward `ResourceIdentity`; equal tokens cannot repeat inside the Register ledger; raw DI duplication is unsupported; failure leaves no visible entry/value; interface access uses `Alias`
 - [x] `HealthConfig` with `*bool` toggles, custom paths, check timeout
 - [x] `/health` (liveness) + `/ready` (readiness) handlers via `app.UseHealth()`
@@ -723,10 +723,10 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 - [ ] **Registration-time route validation** (`app.ValidateRoutes()` or auto-run before `app.Run()`):
   - [ ] Routes with `Scope` meta must have auth middleware registered
   - [ ] Routes with `Accept` meta must have ContractGuard middleware
-  - [ ] Detect duplicate route patterns / conflicting registrations
+  - [x] Detect duplicate route patterns / conflicting registrations — a duplicate or a structural conflict panics at registration
   - [ ] Warn on routes without any middleware (optional strict mode)
   - **Param conflict policy (router minor, 2026-09-05)**: endpoint-specific names are allowed; duplicate method+shape and structural regex conflicts remain registration errors.
-  - [ ] **Duplicate route diagnostics** (decision closed — strict stays): radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. A lenient/debug warning mode is rejected — it would legitimize silent route shadowing, which breaks named-route, route-meta, and middleware resolution. Only diagnostic _quality_ may still improve (clearer message, both conflicting locations, source position); the fail-loud behavior never changes.
+  - [x] **Duplicate route diagnostics** (decision closed — strict stays): radix returns `DuplicateRouteError`; mux keeps strict fail-fast panic. A lenient/debug warning mode is rejected — it would legitimize silent route shadowing, which breaks named-route, route-meta, and middleware resolution. The panic names the pattern the route is already registered as and the call site of both registrations; the fail-loud behavior never changes.
 
 ### Performance Budgets
 
@@ -747,17 +747,16 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 
 - [x] ~~**RequestScoped middleware**~~: Removed — RequestScoped lifecycle rejected in favor of context+middleware
 - [x] Static file serving — [ADR-017](docs/adr/017-static-file-serving.md), [Spec](docs/specs/static.md)
-- [ ] BuildProxyURL — [ADR-007](docs/adr/007-router-and-routing.md), deferred to Phase 3+
-- [ ] Optional `.Validate()` on Route — [Router Spec](docs/specs/router.md), deferred (add if demand warrants)
+- [ ] `BuildProxyURL` — deferred; no ADR or spec records it
+- [ ] Optional `.Validate()` on Route — deferred (add if demand warrants); no spec records it
 - [ ] `embed.FS` config provider — [Config Spec](docs/specs/config.md), deferred beyond Phase 1.5
 - [x] Interface alias `Alias[I,T]()` for DI — implemented
-- [ ] `app.Container()` ergonomic sugar — [Container Spec](docs/specs/container.md), deferred
 - [x] `Has[T]()` probe API — registration check without singleton construction (2026-09-05, DI minor)
 - [ ] `cache/` contracts (in-memory + Redis) — consider together with Redis store contracts (Phase 3.3c); demand-driven, no commitment yet
 - [ ] Fluent validation builder — the language prerequisite is met (generic methods, [golang/go#77273](https://github.com/golang/go/issues/77273), landed with the repo's Go 1.27 floor, 2026-06); still deferred by choice; the programmatic `Rule[T]` API remains the substrate
 - [ ] A `WithDebug` hint naming a binding whose type shows a `Close` shape and is not a component (it is closed only with `credo.CloseOnShutdown()`) — [Container Spec](docs/specs/container.md)
 - [ ] A per-module tracer or meter override, should the observability release add such fields to `credo.Infra` — [ADR-004](docs/adr/004-dependency-injection-and-infra.md)
-- [ ] `connection_id` in an access record written to a dedicated access logger, which waits for an `Attrs` option of the access log; `request_id` links the access record and the WebSocket connection logs meanwhile — [ADR-019](docs/adr/019-websocket-integration-and-drain.md)
+- [ ] `connection_id` in an access record written to a dedicated access logger: `AccessLogConfig.Attrs` can add it, and what is missing is a way for a connection's identifier to reach the `Exchange`; `request_id` links the access record and the WebSocket connection logs meanwhile — [ADR-019](docs/adr/019-websocket-integration-and-drain.md)
 - [ ] A component in general whose failed `Start` does not fail the start, which needs a reconnect contract; `sqldb.WithOptionalStart()` covers the database — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
 - [ ] A component that reports `degraded` itself, through a typed error from `Ready` or a status method beside it — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
 - [ ] A readiness ping on a connection outside the pool, which would separate "busy" from "unreachable" — [ADR-016](docs/adr/016-health-checks.md#optional-readiness)
@@ -766,7 +765,7 @@ SSE is a separate deferred transport; it is not folded into the WebSocket packag
 ### Documentation
 
 - [x] `doc.go` for every package (include maturity label)
-- [ ] `example_test.go` for core packages (root, middleware, config) — middleware and testutil ship examples; root and config still missing
+- [x] `example_test.go` for core packages (root, middleware, config) — the root package, `config`, `middleware`, `testutil` and `websocket` ship examples
 - [x] Architecture decisions and specifications indexed: [ADR index](docs/adr/README.md), [spec index](docs/specs/README.md)
 - [x] `docs/guides/quick-start.md` — superseded by [`getting-started.md`](docs/guides/getting-started.md), which opens with a minimal "Hello, Credo" quickstart before the full walkthrough
 - [x] Write guide: Infra injection model (Model 1) — covered by [`docs/guides/dependency-injection.md`](docs/guides/dependency-injection.md)
