@@ -17,6 +17,10 @@ The `v0.1.0` section records the initial public development baseline; it was not
 ### Added
 
 - `SecureConfig.DisableXFrameOptions` turns `X-Frame-Options` off, for an application whose `Content-Security-Policy` sets `frame-ancestors`.
+- A framework `log` section: `log.level` (`debug`, `info`, `warn`, `error`) and `log.format` (`text`, `json`) select the App's logger when none is passed with `WithLogger`. A reload applies both to the logger and to every logger derived from it.
+- `credo.New` records what its automatic configuration load read: the files found, the `.env` file and the environment prefix, never a key or a value. The record is at Info when a file was read and at Debug otherwise, so a test that counts the records of the App's logger at Debug sees one more.
+- `config.Sources` and `(*config.Config).Sources()`, the same list for an application that loads explicitly.
+- `Context.T` and `Context.TPlural` warn in debug mode when the key is not in the catalog, naming the key, the locale and the route.
 
 ### Changed
 
@@ -29,6 +33,8 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **BREAKING: `auth.Middleware[T](a, cfg ...auth.Config)` replaces `auth.Middleware[T](a, onError)`.** The failure callback is `Config.ErrorHandler`, a `func(*credo.Context, error) error` with the context first, and `auth.ErrorFunc` is removed.
 - **BREAKING: `store.Kind` and the `store.Kind*` constants are removed.** Use `fault.Kind` and `fault.Kind*`, which they aliased; `store.Error.Kind` and `store.KindOf` have that type.
 - **BREAKING: `validation.ValidationError`, `validation.Errors` and `validation.NewError` are renamed `validation.Violation`, `validation.Violations` and `validation.NewViolation`,** after the wire's `violations`. No behavior changes.
+- **BREAKING: `log` is a framework section, decoded strictly.** An application section of that name with other keys fails `credo.New`, naming the unknown key: rename it, or pass the logger with `credo.WithLogger`, which leaves the section unread.
+- **BREAKING (behavior): an XML request body with content after its root element is refused** with 400 `trailing_data`; white space, comments and processing instructions are still accepted. A body that passes the size limit after its root element is a 413.
 - A strict unknown-key error names the `.env` entry or environment variable that set the key.
 - A SIGHUP under `Run` over a configuration that cannot reload is logged at Info as ignored, with the signal and the configuration's type, instead of being dropped.
 
