@@ -250,6 +250,16 @@ func (r *Request) query() url.Values {
 // repeat) fails with [BindReasonDuplicateField]. Member names keep v1's
 // case-insensitive matching against struct fields.
 //
+// XML bodies are decoded with encoding/xml, and exactly one document is
+// accepted: after the root element only white space, comments and
+// processing instructions may remain, and anything else (a second element,
+// text, a directive, malformed markup) fails the bind with
+// [BindReasonTrailingData]. A repeated element keeps encoding/xml's meaning,
+// since repetition is how XML spells a list: every occurrence is appended to
+// a slice field, and the last one sets a field of another kind. An element
+// or attribute the target has no field for is ignored, under
+// [WithStrictBodies] too: strict bodies decide JSON members only.
+//
 // If target implements [validation.Validatable], Validate() is called
 // automatically after successful decoding ("parse, don't validate"). A
 // violation names its field as the client sent it: by the json tag for a JSON
@@ -324,8 +334,15 @@ func (r *Request) BindBody(target any) error {
 		}
 
 	case "application/xml", "text/xml":
-		if err := xml.NewDecoder(r.Body).Decode(target); err != nil {
+		dec := xml.NewDecoder(r.Body)
+		if err := dec.Decode(target); err != nil {
 			return xmlBindError(err)
+		}
+		// Enforce a single document per body, as the JSON branch enforces a
+		// single value: Decode returns at the root's end element and leaves
+		// the rest of the body unread.
+		if err := xmlTrailingData(dec); err != nil {
+			return err
 		}
 
 	case "application/x-www-form-urlencoded":
@@ -453,6 +470,60 @@ func xmlBindError(err error) error {
 		return &BindError{Reason: BindReasonEmptyBody, Internal: err}
 	}
 	return &BindError{Reason: BindReasonSyntax, Internal: err}
+}
+
+// xmlTrailingData reads what follows the root element of an XML body that
+// dec has decoded and refuses anything a document may not end with. XML's
+// Misc production allows white space, comments and processing instructions
+// there; a second element, character data, a directive and markup that does
+// not parse are trailing data (or 413 for a body-size overrun).
+func xmlTrailingData(dec *xml.Decoder) error {
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			if he, ok := maxBytesHTTPError(err); ok {
+				return he
+			}
+			return &BindError{Reason: BindReasonTrailingData, Internal: err, xmlBody: true}
+		}
+		var found string
+		switch t := tok.(type) {
+		case xml.Comment, xml.ProcInst:
+			continue
+		case xml.CharData:
+			if isXMLSpace(t) {
+				continue
+			}
+			found = "character data"
+		case xml.StartElement:
+			found = "the element <" + t.Name.Local + ">"
+		case xml.Directive:
+			found = "a directive"
+		default:
+			found = "markup"
+		}
+		return &BindError{
+			Reason:   BindReasonTrailingData,
+			Internal: errors.New("credo: bind: the XML body has " + found + " after its root element"),
+			xmlBody:  true,
+		}
+	}
+}
+
+// isXMLSpace reports whether b is XML white space only: space, tab, carriage
+// return and line feed (the S production).
+func isXMLSpace(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // formBindError maps a form/multipart parse failure to a typed [BindError]
