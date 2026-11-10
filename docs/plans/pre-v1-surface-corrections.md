@@ -49,18 +49,18 @@ Progress is tracked by the boxes below.
 
 ## Part B: Additions
 
-- [ ] **B1. `T` and `TPlural` warn in debug mode when a key is missing.**
+- [x] **B1. `T` and `TPlural` warn in debug mode when a key is missing.**
   - **Problem:** a miss returns the key and leaves no trace in the log.
   - **Fix:** the key is still returned, and debug mode logs a warning with the key, the locale and the route, in the shape of the error pipeline's warning for a missing message key.
   - **Not changed:** what a miss returns. The result goes into a field of a response the application builds, where an empty string would blank the field without a trace and a key is seen at once. The error pipeline can refuse to render a key because it has other text to fall back on; `T` has none.
   - **Docs:** the i18n spec and the localization guide; CHANGELOG under Added.
-- [ ] **B2. `New` reports what the automatic load read.**
+- [x] **B2. `New` reports what the automatic load read.**
   - **Problem:** `credo.New` without `WithRawConfig` reads `config.json`, `.yaml` or `.yml`, a `.env` and the `CREDO_*` environment and logs nothing about it. An application that passes only options takes these inputs whether or not its author knows of them, and a file left in the working directory changes `server.*` without a trace.
   - **Fix:** one record at construction naming the files found, whether a `.env` was read and from which path, and the environment prefix; never a value. The loader keeps the list of sources it read and `*config.Config` exposes it, so an application that loads explicitly can log the same record. `New` with `WithRawConfig` writes no record.
   - **Decided:** the record is written at Info when a file or a `.env` was read, and at Debug when the load found only the environment.
   - **Not changed:** ADR-005's rejection of a `WithoutAutoConfig` option. An application that wants no bootstrap input passes a `RawConfig` of its own.
   - **Docs:** ADR-005, the config spec and the configuration guide; CHANGELOG under Added.
-- [ ] **B3. A framework `log` section.**
+- [x] **B3. A framework `log` section.**
   - **Problem:** the default logger is a text handler on stderr at the default level, and no configuration key changes it. An application that wants JSON records or a configured level has to build a logger itself, or load the configuration before `New` to read a section of its own, with a `slog.LevelVar` it rewires by hand on reload, as `examples/saas` does.
   - **Fix:** `New` builds the default logger from `log.level` (`debug`, `info`, `warn`, `error`) and `log.format` (`text`, `json`). `WithLogger` stays the whole-source override, as `WithTLSConfig` is for TLS: when it is set, the section is not read.
   - **Decided:**
@@ -70,7 +70,7 @@ Progress is tracked by the boxes below.
   - **Check first:** how the framework reads `server` from a `RawConfig` that is not a `*config.Config`. `log` follows the same path; a configuration that cannot hold a live section gets the section decoded once.
   - **Tests:** each level and format; an unknown level fails `New`; a reload changes the level and the format; `WithLogger` wins; an unknown `log.*` key fails `New`.
   - **Docs:** ADR-005 and ADR-014, the config spec, the configuration guide's key table, `examples/saas`, which drops its own wiring. CHANGELOG as **BREAKING** and under Added.
-- [ ] **B4. XML binding has a written contract.**
+- [x] **B4. XML binding has a written contract.**
   - **Problem:** an XML body is decoded with `xml.NewDecoder(body).Decode(target)`. A decode failure becomes a `BindError`, but nothing says what the binder does with content after the root element, with a repeated element, or with an unknown element under `WithStrictBodies`, each of which the JSON branch decides.
   - **Check first:** write the three tests and record what happens today.
   - **Decided:** content after the root element other than white space, comments and processing instructions is refused with the trailing-data reason, as a JSON body's is; a repeated element keeps `encoding/xml`'s meaning, since repetition is how XML spells a slice; unknown elements are ignored in both modes, and the contract says so.
