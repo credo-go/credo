@@ -28,7 +28,7 @@ app.Workers().Continuous("order-consumer", consumer)
 app.Workers().Scheduled("session-cleanup", "0 */6 * * *", cleanup)
 ```
 
-The call site states the contract aloud: a reader who sees a finite function passed to `Continuous` has a reason to stop. The schedule is a required positional argument, so a scheduled worker without a schedule cannot be written. Each method takes its own configuration type, so a setting of the other kind is a compile error, and no cross-kind validation exists. A third kind later is one configuration type and its two registration methods, not another column in a matrix. The method names follow Credo's registration vocabulary, which names the thing being registered (`app.GET`, `app.Static`, `app.Host`).
+The call site states the contract aloud: a reader who sees a finite function passed to `Continuous` has a reason to stop. The schedule is a required positional argument, so a scheduled worker without a schedule cannot be written. Each method takes its own configuration type, so a setting of the other kind is a compile error, and no cross-kind validation exists. A third kind later is one configuration type and its two registration methods, not another column in a matrix. The method names follow Credo's registration vocabulary: on the App, a group, a route and the worker registry, a noun that takes arguments registers the thing it names (`app.GET`, `app.Static`, `app.Host`, and likewise `app.Middleware`, `app.PreRouting`, `app.StatusHandler` and `Route.Name`). Such a method is a registration, so it belongs to bootstrap and panics on a late call, and its arguments tell it from a noun accessor such as `app.Workers()`, which takes none and returns a registry.
 
 ### Workers are a subsystem of the App, in the root package
 
