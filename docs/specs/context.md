@@ -33,8 +33,8 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context // without an A
 // Accessors
 func (c *Context) Request() *Request
 func (c *Context) Response() *Response
-func (c *Context) Route() *Route            // nil when no route matched (404/405)
-func (c *Context) HasRoute() bool           // true when a route matched; guard for Route() calls
+func (c *Context) Route() RouteInfo         // the matched route's view; the zero RouteInfo when no route matched (404/405)
+func (c *Context) HasRoute() bool           // true when a route matched; tells a route from the zero view
 func (c *Context) Logger() *slog.Logger    // c.logger → app.logger → framework default (stderr)
 func (c *Context) SetLogger(*slog.Logger)  // replace logger wholesale; derive from Logger() or enrichment (request_id) is silently lost
 func (c *Context) AddLogAttrs(args ...any) // add attrs, deriving from Logger() — preferred over SetLogger for enrichment

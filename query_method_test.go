@@ -179,7 +179,7 @@ func TestQUERY_MethodSemantics(t *testing.T) {
 		return ctx.Response().NoContent(http.StatusNoContent)
 	}).Name("search.query")
 
-	uri, err := route.BuildURI("users")
+	uri, err := route.View().BuildURI("users")
 	if err != nil {
 		t.Fatalf("BuildURI: %v", err)
 	}

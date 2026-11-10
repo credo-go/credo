@@ -86,8 +86,14 @@ type appRouting struct {
 	preRoutingMW []Middleware
 
 	// hosts holds registered host patterns for domain-based routing.
-	// Empty when no host-specific routing is configured.
+	// Empty when no host-specific routing is configured. compile sorts it
+	// in place, by specificity.
 	hosts []*hostEntry
+
+	// hostMuxes holds the mux of every host pattern in registration order.
+	// compile never writes it, so App.Routes reads it, not hosts, and is
+	// safe while another goroutine prepares the App.
+	hostMuxes []*mux
 
 	// staticHosts maps exact host names to host entries for O(1) dispatch.
 	// Param and regex host patterns remain in hosts and use specificity order.
@@ -98,7 +104,7 @@ type appRouting struct {
 
 	// mounts records mounted prefixes (App.Mount) for route introspection.
 	// Appended only after a mount's radix registration succeeds.
-	mounts []mountInfo
+	mounts []*Route
 
 	// statusHandlers holds the app-level custom handlers set via
 	// StatusHandler. Dispatch consults the entries for 404 and 405 only.

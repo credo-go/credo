@@ -157,7 +157,7 @@ func (a *MyAuthenticator) Authenticate(r *http.Request) (*User, error) {
 api := app.Group("/api").Middleware(auth.Middleware[*User](myAuth))
 ```
 
-Register authentication on the routed tier with `app.Middleware`, on a group or on a route. The routed tier runs after the match on every route registered through the App, mounts included, so authentication there answers 401 for a mounted path, and it never runs for the router's own 404 and 405. Middleware registered with `app.PreRouting` runs before routing, for requests that match no route too: authentication there answers an unauthenticated request for an unknown path with 401 instead of 404, and `c.Route()` is nil there ([middleware spec](middleware.md)).
+Register authentication on the routed tier with `app.Middleware`, on a group or on a route. The routed tier runs after the match on every route registered through the App, mounts included, so authentication there answers 401 for a mounted path, and it never runs for the router's own 404 and 405. Middleware registered with `app.PreRouting` runs before routing, for requests that match no route too: authentication there answers an unauthenticated request for an unknown path with 401 instead of 404, and no route is matched there: `c.HasRoute()` is false and `c.Route()` is the zero `RouteInfo`, whose `GetMeta` reports every key as not set ([middleware spec](middleware.md)).
 
 ### Pattern 2: Custom Middleware (full control)
 

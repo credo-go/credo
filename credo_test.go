@@ -123,9 +123,12 @@ func TestApp_NamedRoutes(t *testing.T) {
 		return ctx.Response().Text(200, "ok")
 	}).Name("product.show")
 
-	route := app.GetRoute("product.show")
-	if route == nil {
+	route, ok := app.GetRoute("product.show")
+	if !ok {
 		t.Fatal("expected to find route 'product.show'")
+	}
+	if route.Name != "product.show" || route.Method != "GET" || route.Pattern != "/products/{id}" {
+		t.Errorf("GetRoute = %s %s named %q, want GET /products/{id} named product.show", route.Method, route.Pattern, route.Name)
 	}
 
 	uri, err := route.BuildURI("42")
@@ -141,14 +144,14 @@ func TestApp_NamedRoutes_Rename(t *testing.T) {
 	app := mustNew(t)
 	route := app.GET("/x", func(ctx *credo.Context) error { return nil }).Name("a").Name("b")
 
-	if app.GetRoute("a") != nil {
-		t.Error("old name 'a' should be deregistered after rename")
+	if got, ok := app.GetRoute("a"); ok || got.Pattern != "" {
+		t.Errorf("GetRoute of the old name 'a' = %+v, %v; want the zero RouteInfo and false after rename", got, ok)
 	}
-	if app.GetRoute("b") != route {
+	if got, ok := app.GetRoute("b"); !ok || got.Pattern != "/x" {
 		t.Error("new name 'b' should resolve to the route")
 	}
-	if route.GetName() != "b" {
-		t.Errorf("route.GetName() = %q, want %q", route.GetName(), "b")
+	if name := route.View().Name; name != "b" {
+		t.Errorf("the route's name = %q, want %q", name, "b")
 	}
 }
 
@@ -174,14 +177,17 @@ func TestApp_NamedRoutes_RenameConflict_PreservesOldName(t *testing.T) {
 			t.Fatal("expected panic for duplicate route name")
 		}
 
-		if app.GetRoute("first") != first {
+		if got, ok := app.GetRoute("first"); !ok || got.Pattern != "/a" {
 			t.Error("old name should remain registered after failed rename")
 		}
-		if app.GetRoute("second") != second {
+		if got, ok := app.GetRoute("second"); !ok || got.Pattern != "/b" {
 			t.Error("existing conflicting name should still point to original route")
 		}
-		if first.GetName() != "first" {
-			t.Errorf("first.GetName() = %q, want %q", first.GetName(), "first")
+		if name := first.View().Name; name != "first" {
+			t.Errorf("the first route's name = %q, want %q", name, "first")
+		}
+		if name := second.View().Name; name != "second" {
+			t.Errorf("the second route's name = %q, want %q", name, "second")
 		}
 	}()
 
@@ -192,20 +198,20 @@ func TestApp_NamedRoutes_ClearName(t *testing.T) {
 	app := mustNew(t)
 	route := app.GET("/a", func(ctx *credo.Context) error { return nil }).Name("myRoute")
 
-	if app.GetRoute("myRoute") != route {
+	if got, ok := app.GetRoute("myRoute"); !ok || got.Pattern != "/a" {
 		t.Fatal("route should be registered under 'myRoute'")
 	}
 
 	// Clearing the name should deregister without registering "".
 	route.Name("")
 
-	if route.GetName() != "" {
-		t.Errorf("route.GetName() = %q, want empty", route.GetName())
+	if name := route.View().Name; name != "" {
+		t.Errorf("the route's name = %q, want empty", name)
 	}
-	if app.GetRoute("myRoute") != nil {
+	if _, ok := app.GetRoute("myRoute"); ok {
 		t.Error("old name 'myRoute' should be deregistered")
 	}
-	if app.GetRoute("") != nil {
+	if _, ok := app.GetRoute(""); ok {
 		t.Error("empty string should NOT be registered as a route name")
 	}
 }
@@ -219,7 +225,7 @@ func TestApp_NamedRoutes_ClearName_NoPanicOnSecondClear(t *testing.T) {
 	r1.Name("")
 	r2.Name("")
 
-	if app.GetRoute("") != nil {
+	if _, ok := app.GetRoute(""); ok {
 		t.Error("empty string should NOT be registered")
 	}
 }
@@ -1409,8 +1415,8 @@ func TestRouting_EndpointOwnedParamNames(t *testing.T) {
 	}
 
 	// BuildURI reads names from the selected route's own pattern.
-	timeline := app.GetRoute("customer-timeline")
-	if timeline == nil {
+	timeline, ok := app.GetRoute("customer-timeline")
+	if !ok {
 		t.Fatal("named route customer-timeline not found")
 	}
 	if uri, err := timeline.BuildURI("7"); err != nil || uri != "/v1/crm/customers/7/timeline" {
@@ -2357,7 +2363,7 @@ func TestBuildURI_RegexQuantifier(t *testing.T) {
 		return nil
 	})
 
-	uri, err := route.BuildURI("42", "7")
+	uri, err := route.View().BuildURI("42", "7")
 	if err != nil {
 		t.Fatalf("BuildURI returned error: %v", err)
 	}
@@ -2521,7 +2527,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("default route equals BuildURI", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/users/{id}", h)
-		u, err := route.BuildURL("42")
+		u, err := route.View().BuildURL("42")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2533,7 +2539,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("default route no params", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/health", h)
-		u, err := route.BuildURL()
+		u, err := route.View().BuildURL()
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2545,7 +2551,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("host-scoped static host", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("api.example.com").GET("/users/{id}", h)
-		u, err := route.BuildURL("42")
+		u, err := route.View().BuildURL("42")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2557,7 +2563,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("host-scoped with host param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/users/{id}", h)
-		u, err := route.BuildURL("acme", "42")
+		u, err := route.View().BuildURL("acme", "42")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2569,7 +2575,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("host-scoped with regex host param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{org:[a-z]+}.api.com").GET("/items", h)
-		u, err := route.BuildURL("acme")
+		u, err := route.View().BuildURL("acme")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2581,7 +2587,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("host-scoped multiple host params", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{region}.{tenant}.myapp.com").GET("/data/{id}", h)
-		u, err := route.BuildURL("us-east", "acme", "99")
+		u, err := route.View().BuildURL("us-east", "acme", "99")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2593,7 +2599,7 @@ func TestRoute_BuildURL(t *testing.T) {
 	t.Run("host-scoped no path params", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/health", h)
-		u, err := route.BuildURL("acme")
+		u, err := route.View().BuildURL("acme")
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
@@ -2609,7 +2615,7 @@ func TestRoute_BuildURLParameterErrors(t *testing.T) {
 	t.Run("BuildURI missing param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/users/{id}", h)
-		if _, err := route.BuildURI(); err == nil {
+		if _, err := route.View().BuildURI(); err == nil {
 			t.Fatal("BuildURI should reject missing params")
 		}
 	})
@@ -2617,7 +2623,7 @@ func TestRoute_BuildURLParameterErrors(t *testing.T) {
 	t.Run("BuildURI extra param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.GET("/health", h)
-		if _, err := route.BuildURI("extra"); err == nil {
+		if _, err := route.View().BuildURI("extra"); err == nil {
 			t.Fatal("BuildURI should reject extra params")
 		}
 	})
@@ -2625,7 +2631,7 @@ func TestRoute_BuildURLParameterErrors(t *testing.T) {
 	t.Run("BuildURL missing host param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("{tenant}.myapp.com").GET("/users/{id}", h)
-		if _, err := route.BuildURL("42"); err == nil {
+		if _, err := route.View().BuildURL("42"); err == nil {
 			t.Fatal("BuildURL should reject missing host/path params")
 		}
 	})
@@ -2633,7 +2639,7 @@ func TestRoute_BuildURLParameterErrors(t *testing.T) {
 	t.Run("BuildURL extra param", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("api.example.com").GET("/health", h)
-		if _, err := route.BuildURL("extra"); err == nil {
+		if _, err := route.View().BuildURL("extra"); err == nil {
 			t.Fatal("BuildURL should reject extra params")
 		}
 	})
@@ -2641,7 +2647,7 @@ func TestRoute_BuildURLParameterErrors(t *testing.T) {
 	t.Run("BuildURL wildcard host", func(t *testing.T) {
 		app := mustNew(t)
 		route := app.Host("*.myapp.com").GET("/health", h)
-		if _, err := route.BuildURL(); err == nil {
+		if _, err := route.View().BuildURL(); err == nil {
 			t.Fatal("BuildURL should reject wildcard hosts")
 		}
 	})
@@ -3056,12 +3062,12 @@ func TestHost_NamedRoutes(t *testing.T) {
 		return ctx.Response().Text(200, "ok")
 	}).Name("api.user")
 
-	route := app.GetRoute("api.user")
-	if route == nil {
+	route, ok := app.GetRoute("api.user")
+	if !ok {
 		t.Fatal("expected named route 'api.user'")
 	}
-	if route.GetHost() != "api.example.com" {
-		t.Errorf("GetHost() = %q, want 'api.example.com'", route.GetHost())
+	if route.Host != "api.example.com" {
+		t.Errorf("Host = %q, want 'api.example.com'", route.Host)
 	}
 }
 

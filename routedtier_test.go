@@ -33,7 +33,7 @@ func (tr *tierTrace) routed() credo.Middleware {
 			step := "routed:no-route"
 			if c.HasRoute() {
 				v, _ := c.Route().GetMeta(keyTier)
-				step = "routed:" + c.Route().GetPattern() + ":" + v
+				step = "routed:" + c.Route().Pattern + ":" + v
 			}
 			tr.steps = append(tr.steps, step)
 			return next(c)
@@ -141,7 +141,7 @@ func TestMount_IsARoute(t *testing.T) {
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.DiscardHandler),
 		ResultFilter: func(ex *credo.Exchange) bool {
-			entries = append(entries, ex.Route())
+			entries = append(entries, ex.Route().Pattern)
 			return false
 		},
 	})
@@ -150,7 +150,7 @@ func TestMount_IsARoute(t *testing.T) {
 	app.Middleware(func(next credo.Handler) credo.Handler {
 		return func(c *credo.Context) error {
 			hasRoute = c.HasRoute()
-			method = c.Route().GetMethod()
+			method = c.Route().Method
 			meta, _ = c.Route().GetMeta(keyTier)
 			return next(c)
 		}

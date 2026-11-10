@@ -5,12 +5,16 @@ package credo
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
 
-// Route represents a registered route with its handler, metadata,
-// and fluent configuration methods.
+// Route is the handle a registration returns: it names the route, sets its
+// meta and adds its middleware, all before the App starts. It is the write
+// side only. What a route is — its method, pattern, host, name and resolved
+// meta — is read from its [RouteInfo], which [Context.Route],
+// [Exchange.Route], [App.GetRoute] and [App.Routes] return.
 type Route struct {
 	// method is the HTTP method (e.g., "GET").
 	method string
@@ -31,11 +35,22 @@ type Route struct {
 	// meta holds this route's own metadata, by key identity.
 	meta map[*keyID]any
 
-	// metaSnap is the route's resolved metadata (route ← groups ← App),
-	// taken when its chain is compiled; metaResolved reports that it was, so
-	// a request-time GetMeta reads the snapshot instead of walking the chain.
-	metaSnap     map[*keyID]any
-	metaResolved bool
+	// info is the route's read view, with its resolved metadata (route ←
+	// groups ← App), built once when its chain is compiled. Every request
+	// the route matches returns it by value, so reading the route allocates
+	// nothing. A request reads it without synchronization: dispatch reaches a
+	// route only through the published preparation, which is stored after
+	// every route was sealed.
+	info RouteInfo
+
+	// sealed reports that info was built. It is what a reader outside a
+	// request — App.GetRoute, App.Routes — loads before it touches info, so
+	// that such a call is safe while another goroutine prepares the App.
+	sealed atomic.Bool
+
+	// srcLoc is the user call site that registered the route, for
+	// RouteInfo.RegisteredAt.
+	srcLoc sourceLocation
 
 	// parent is the owning group: meta resolution and group-middleware
 	// collection, both at compile time.
@@ -72,7 +87,7 @@ type Route struct {
 	autoHead bool
 
 	// tmplOnce lazily parses pattern and hostPattern into the generation
-	// templates used by BuildURI/BuildURL; parsing compiles the regex
+	// templates used by buildURI/buildURL; parsing compiles the regex
 	// constraints once per route instead of once per call.
 	tmplOnce sync.Once
 	tmpl     *pathTemplate
@@ -174,49 +189,18 @@ func (r *Route) Middleware(m ...Middleware) *Route {
 	return r
 }
 
-// GetName returns the route name.
-func (r *Route) GetName() string {
-	return r.name
-}
-
-// GetMethod returns the HTTP method. It is empty for a mount's route, which
-// answers every forwarded method.
-func (r *Route) GetMethod() string {
-	return r.method
-}
-
-// GetPattern returns the URL pattern; for a mount's route, the mount's
-// prefix.
-func (r *Route) GetPattern() string {
-	return r.pattern
-}
-
-// GetHost returns the host pattern for host-scoped routes.
-// Returns an empty string for routes on the default mux.
-func (r *Route) GetHost() string {
-	return r.hostPattern
-}
-
 // GetMeta returns the value of a meta key for this route and reports whether
 // one was set: the route's own value, else its group's, then the outer
 // groups', then the App's. The value has the key's type:
 //
-//	scopes, ok := c.Route().GetMeta(RequiredScopes) // scopes is a []Scope
+//	reports := app.GET("/reports", h).SetMeta(RequiredScopes, []Scope{"reports:read"})
+//	scopes, ok := reports.GetMeta(RequiredScopes) // scopes is a []Scope
 //
-// Once the App is prepared, the route's resolved meta is a snapshot taken
-// when its chain was compiled, so a request-time lookup does not walk the
-// groups. GetMeta panics for a zero Key.
+// It reads what registration has set so far. A request reads the same value
+// from the route's view, c.Route().GetMeta(key) ([RouteInfo.GetMeta]).
+// GetMeta panics for a zero Key.
 func (r *Route) GetMeta[T any](key Key[T]) (T, bool) {
-	id := key.mustID("Route.GetMeta")
-	var (
-		v  any
-		ok bool
-	)
-	if r.metaResolved {
-		v, ok = r.metaSnap[id]
-	} else {
-		v, ok = r.lookupMeta(id)
-	}
+	v, ok := r.lookupMeta(key.mustID("Route.GetMeta"))
 	t, _ := v.(T)
 	return t, ok
 }
@@ -232,13 +216,6 @@ func (r *Route) lookupMeta(id *keyID) (any, bool) {
 		}
 	}
 	return nil, false
-}
-
-// resolveMeta takes the route's meta snapshot. It runs when the route's
-// chain is compiled, after registration was frozen.
-func (r *Route) resolveMeta() {
-	r.metaSnap = r.resolveAllMeta()
-	r.metaResolved = true
 }
 
 // resolveAllMeta returns the route's fully resolved metadata, merging the
@@ -282,22 +259,59 @@ func (r *Route) resolveAllMeta() map[*keyID]any {
 	return result
 }
 
-// BuildURI generates a URI from the route pattern by replacing named
-// parameters with the provided values in order. Values are decoded parameter
-// values, exactly what [Request.RouteParam] reports for the generated URI:
-// each is checked against its regex constraint and percent-encoded for one
-// path segment with [url.PathEscape], so "a/b" for a single-segment parameter
-// yields "a%2Fb" while a catch-all value keeps its slashes as separators and
-// escapes each segment. Static text of the pattern is written verbatim.
-//
-// It returns an error when a value is missing, empty for a single-segment
-// parameter, fails its constraint, when too many values are provided, or when
-// the route pattern is malformed. An empty catch-all value is valid: the
-// catch-all matches an empty rest, so "/files/{path...}" with "" builds
-// "/files/".
-//
-//	uri, err := route.BuildURI("42") // "/users/42"
-func (r *Route) BuildURI(params ...string) (string, error) {
+// view returns the read view of a route a request matched: the one built
+// when its chain was compiled, copied, with no allocation and no
+// synchronization (see the info field). Its Methods slice is the cached one.
+func (r *Route) view() RouteInfo {
+	return r.info
+}
+
+// snapshot returns the route's read view to a caller outside a request, at
+// any time relative to preparation: the sealed view once there is one, and
+// before that a view built from the route's live fields, which registration
+// can still change. Neither branch reads a field that compile writes without
+// the sealed load ordering the two, so the call is safe while another
+// goroutine prepares the App. The caller owns the Methods slice.
+func (r *Route) snapshot() RouteInfo {
+	if !r.sealed.Load() {
+		return r.buildView()
+	}
+	ri := r.info
+	ri.Methods = slices.Clone(ri.Methods)
+	return ri
+}
+
+// buildView builds the route's read view from its fields, resolving its
+// meta through its groups to the App.
+func (r *Route) buildView() RouteInfo {
+	ri := RouteInfo{
+		Pattern:      r.pattern,
+		Host:         r.hostPattern,
+		Kind:         RouteKindRoute,
+		RegisteredAt: r.srcLoc.String(),
+		route:        r,
+	}
+	if r.mount {
+		ri.Kind = RouteKindMount
+		ri.Methods = mountForwardedMethods()
+	} else {
+		ri.Method = r.method
+		ri.Name = r.name
+		ri.AutoHead = r.autoHead
+	}
+	ri.meta = r.resolveAllMeta()
+	return ri
+}
+
+// seal builds the route's read view, with its meta snapshot. It runs when
+// the route's chain is compiled, after registration was frozen.
+func (r *Route) seal() {
+	r.info = r.buildView()
+	r.sealed.Store(true)
+}
+
+// buildURI is [RouteInfo.BuildURI].
+func (r *Route) buildURI(params ...string) (string, error) {
 	tmpl, _, err := r.templates()
 	if err != nil {
 		return "", fmt.Errorf("credo: BuildURI %q: %w", r.pattern, err)
@@ -312,27 +326,10 @@ func (r *Route) BuildURI(params ...string) (string, error) {
 	return uri, nil
 }
 
-// BuildURL generates a full URL by combining the route's host pattern and
-// path pattern, replacing parameters with the provided values in order.
-// Host pattern parameters are consumed first, then path parameters. A host
-// value fills exactly one label: it must be non-empty, consist of letters,
-// digits, hyphens and underscores, and satisfy the label's regex constraint;
-// host labels are never percent-encoded. Path values follow [Route.BuildURI].
-// It returns an error when a value is missing or invalid, when too many values
-// are provided, or when either pattern is malformed. Wildcard host patterns
-// cannot generate concrete URLs and return an error.
-//
-// For host-scoped routes:
-//
-//	// Host: {tenant}.myapp.com, Path: /users/{id}
-//	url, err := route.BuildURL("acme", "42") // "acme.myapp.com/users/42"
-//
-// For default (non-host-scoped) routes, BuildURL is equivalent to [Route.BuildURI]:
-//
-//	url, err := route.BuildURL("42") // "/users/42"
-func (r *Route) BuildURL(params ...string) (string, error) {
+// buildURL is [RouteInfo.BuildURL].
+func (r *Route) buildURL(params ...string) (string, error) {
 	if r.hostPattern == "" {
-		return r.BuildURI(params...)
+		return r.buildURI(params...)
 	}
 	if hostPatternHasWildcard(r.hostPattern) {
 		return "", fmt.Errorf("credo: BuildURL host %q: wildcard host patterns cannot generate concrete URLs", r.hostPattern)

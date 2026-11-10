@@ -904,11 +904,11 @@ func TestContext_Redirect(t *testing.T) {
 func TestContext_RouteAccess(t *testing.T) {
 	app := mustNew(t)
 	app.GET("/test", func(ctx *credo.Context) error {
-		route := ctx.Route()
-		if route == nil {
+		if !ctx.HasRoute() {
 			return ctx.Response().Text(500, "no route")
 		}
-		return ctx.Response().Text(200, "method="+route.GetMethod()+" pattern="+route.GetPattern())
+		route := ctx.Route()
+		return ctx.Response().Text(200, "method="+route.Method+" pattern="+route.Pattern)
 	}).Name("test")
 
 	w := httptest.NewRecorder()

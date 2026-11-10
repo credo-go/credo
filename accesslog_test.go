@@ -898,7 +898,7 @@ func TestAccessLog_ResultFilterObservesLoggerFilteredResponse(t *testing.T) {
 	app.UseAccessLog(credo.AccessLogConfig{
 		ResultFilter: func(ex *credo.Exchange) bool {
 			calls.Add(1)
-			if ex.Status() != 200 || ex.Route() != "/" {
+			if ex.Status() != 200 || ex.Route().Pattern != "/" {
 				t.Errorf("filter exchange = %+v, want status 200 on route /", snapshotOf(ex))
 			}
 			return true

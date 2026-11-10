@@ -420,6 +420,7 @@ func (app *App) Host(pattern string) *Group {
 		mux:       m,
 	}
 	app.hosts = append(app.hosts, entry)
+	app.hostMuxes = append(app.hostMuxes, m)
 	if isStaticHostEntry(entry) {
 		app.staticHosts[normalized] = entry
 	}
@@ -482,25 +483,30 @@ func (app *App) RemoveMeta[T any](key Key[T]) {
 	app.root.RemoveMeta(key)
 }
 
-// Routes returns introspection data for every registered route across the
-// default mux and all host-scoped muxes, plus one entry per [App.Mount] prefix.
-// See [RouteInfo] for the per-entry fields, including the route Name, the
-// resolved meta ([RouteInfo.GetMeta]), and a mount's forwarded method set.
+// Routes returns the [RouteInfo] of every registered route across the
+// default mux and all host-scoped muxes, plus one per [App.Mount] prefix: the
+// same view [Context.Route] gives a request the route matched. See
+// [RouteInfo] for the fields, including the route Name, the resolved meta
+// ([RouteInfo.GetMeta]), and a mount's forwarded method set.
 //
 // The result is a deterministic total order — sorted by (Host, Pattern, Method,
 // Kind), independent of registration order and host compile-sort state — so
 // route/permission catalogs and golden-file tests stay stable. The returned
-// slice is freshly allocated; the caller owns it.
+// slice is freshly allocated, and the caller owns it and the Methods slice of
+// each entry.
 //
-// Routes reads live *Route fields (Name, metadata) without locking, so it must
-// not run concurrently with route registration or configuration (Name, SetMeta,
-// Mount). It is a post-wiring (or post-freeze) operation.
+// Routes is safe to call at any time relative to preparation: while another
+// goroutine makes the first ServeHTTP call or runs the App, and afterwards.
+// Before registration is frozen it reads live *Route fields (Name, metadata)
+// without locking, so it must not run concurrently with route registration
+// or configuration (Name, SetMeta, Mount, Host). It is a post-wiring
+// operation.
 func (app *App) Routes() []RouteInfo {
 	routes := app.mux.Routes()
 	count := len(routes) + len(app.mounts)
-	hostRoutes := make([][]RouteInfo, 0, len(app.hosts))
-	for _, h := range app.hosts {
-		hostView := h.mux.Routes()
+	hostRoutes := make([][]RouteInfo, 0, len(app.hostMuxes))
+	for _, m := range app.hostMuxes {
+		hostView := m.Routes()
 		hostRoutes = append(hostRoutes, hostView)
 		count += len(hostView)
 	}
@@ -511,13 +517,7 @@ func (app *App) Routes() []RouteInfo {
 		out = append(out, hostView...)
 	}
 	for _, m := range app.mounts {
-		out = append(out, RouteInfo{
-			Kind:         RouteKindMount,
-			Pattern:      m.route.pattern,
-			Methods:      mountForwardedMethods(),
-			RegisteredAt: m.registeredAt.String(),
-			meta:         m.route.resolveAllMeta(),
-		})
+		out = append(out, m.snapshot())
 	}
 
 	// Total order independent of registration order, host compile-sort state,
@@ -539,9 +539,23 @@ func compareRouteInfo(a, b RouteInfo) int {
 
 // --- Named Routes ---
 
-// GetRoute returns a named route by name.
-func (app *App) GetRoute(name string) *Route {
-	return app.namedRoutes[name]
+// GetRoute returns the [RouteInfo] of the route named name and reports
+// whether a route has that name. It is the lookup URL generation starts
+// from:
+//
+//	user, ok := app.GetRoute("user.show")
+//	uri, err := user.BuildURI("42") // "/users/42"
+//
+// Without such a route it returns the zero RouteInfo and false.
+//
+// GetRoute is safe to call at any time relative to preparation, as
+// [App.Routes] is, and not concurrently with route registration.
+func (app *App) GetRoute(name string) (RouteInfo, bool) {
+	route, ok := app.namedRoutes[name]
+	if !ok {
+		return RouteInfo{}, false
+	}
+	return route.snapshot(), true
 }
 
 // deregisterName removes a named route from the registry.

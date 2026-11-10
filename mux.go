@@ -26,23 +26,38 @@ const (
 	RouteKindMount RouteKind = "mount"
 )
 
-// RouteInfo holds introspection data about a registered route or mount.
+// RouteInfo is the read view of a registered route or mount: what it is, and
+// the URLs it generates. There is one view of a route, and every reader gets
+// it: [Context.Route] and [Exchange.Route] for the route a request matched,
+// [App.GetRoute] for a named route, and [App.Routes] for all of them. Its
+// counterpart is [*Route], the handle a registration returns, which
+// configures the route and is not readable at request time.
 //
 // A normal route (Kind == RouteKindRoute) carries a single Method and a nil
 // Methods. A mount (Kind == RouteKindMount) leaves Method empty and lists its
 // sorted forwarded method set in Methods, because one mount answers every
 // forwarded method at its prefix.
 //
-// [RouteInfo.GetMeta] reads the fully resolved route metadata (route ← group
-// ← app; a mount's is the App's), taken when the RouteInfo was built. The values are read-only by
-// convention — mutating a slice, map, or pointer read from it mutates the
-// live route metadata.
+// The zero RouteInfo describes no route. It is what [Context.Route] and
+// [Exchange.Route] return for a request no route matched: every field is
+// empty, Kind included, GetMeta reports false, and BuildURI and BuildURL
+// return an error.
+//
+// A RouteInfo is a value. The view of a prepared App is built once, when the
+// route's chain is compiled, and copied to each reader. Its meta values are
+// shared and read-only by convention — mutating a slice, map, or pointer read
+// from GetMeta mutates the live route. The Methods slice of a view that
+// [App.Routes] or [App.GetRoute] returned is the caller's; the one of a view
+// that [Context.Route] or [Exchange.Route] returned is shared with every
+// other request and must not be modified.
 type RouteInfo struct {
 	// Method is the HTTP method of a normal route; empty for a mount (see Methods).
 	Method string
 
 	// Methods is the sorted set of forwarded HTTP methods for a mount
-	// (CONNECT and TRACE excluded); nil for a normal route.
+	// (CONNECT and TRACE excluded); nil for a normal route. In a view read
+	// from a request ([Context.Route], [Exchange.Route]) the slice is shared
+	// and must not be modified.
 	Methods []string
 
 	// Pattern is the user-facing URL pattern; for a mount it is the cleaned
@@ -56,6 +71,7 @@ type RouteInfo struct {
 	Name string
 
 	// Kind reports whether this entry describes a normal route or a mount.
+	// It is empty for the zero RouteInfo.
 	Kind RouteKind
 
 	// AutoHead reports whether this is an auto-generated HEAD twin of a GET route.
@@ -68,16 +84,81 @@ type RouteInfo struct {
 
 	// meta is the resolved metadata GetMeta reads; nil if none.
 	meta map[*keyID]any
+
+	// route is the route the view describes, for URL generation; nil for the
+	// zero RouteInfo.
+	route *Route
 }
 
 // GetMeta returns the route's resolved value of a meta key — the route's own,
-// else its groups', else the App's — and reports whether one was set, as
-// [Route.GetMeta] does; a mount reports the App's. GetMeta panics for a zero
-// Key.
+// else its groups', else the App's — and reports whether one was set; a mount
+// reports the App's. The value has the key's type:
+//
+//	scopes, ok := c.Route().GetMeta(RequiredScopes) // scopes is a []Scope
+//
+// The zero RouteInfo reports false for every key, so a middleware that
+// enforces route meta checks [Context.HasRoute] first. GetMeta panics for a
+// zero Key.
 func (ri RouteInfo) GetMeta[T any](key Key[T]) (T, bool) {
 	v, ok := ri.meta[key.mustID("RouteInfo.GetMeta")]
 	t, _ := v.(T)
 	return t, ok
+}
+
+// BuildURI generates a URI from the route pattern by replacing named
+// parameters with the provided values in order. Values are decoded parameter
+// values, exactly what [Request.RouteParam] reports for the generated URI:
+// each is checked against its regex constraint and percent-encoded for one
+// path segment with [url.PathEscape], so "a/b" for a single-segment parameter
+// yields "a%2Fb" while a catch-all value keeps its slashes as separators and
+// escapes each segment. Static text of the pattern is written verbatim.
+//
+// It returns an error when a value is missing, empty for a single-segment
+// parameter, fails its constraint, when too many values are provided, when
+// the route pattern is malformed, or when the RouteInfo is the zero value. An
+// empty catch-all value is valid: the catch-all matches an empty rest, so
+// "/files/{path...}" with "" builds "/files/".
+//
+//	user, _ := app.GetRoute("user.show")
+//	uri, err := user.BuildURI("42") // "/users/42"
+func (ri RouteInfo) BuildURI(params ...string) (string, error) {
+	if ri.route == nil {
+		return "", errNoRouteToBuild("BuildURI")
+	}
+	return ri.route.buildURI(params...)
+}
+
+// BuildURL generates a full URL by combining the route's host pattern and
+// path pattern, replacing parameters with the provided values in order.
+// Host pattern parameters are consumed first, then path parameters. A host
+// value fills exactly one label: it must be non-empty, consist of letters,
+// digits, hyphens and underscores, and satisfy the label's regex constraint;
+// host labels are never percent-encoded. Path values follow
+// [RouteInfo.BuildURI]. It returns an error when a value is missing or
+// invalid, when too many values are provided, when either pattern is
+// malformed, or when the RouteInfo is the zero value. Wildcard host patterns
+// cannot generate concrete URLs and return an error.
+//
+// For host-scoped routes:
+//
+//	// Host: {tenant}.myapp.com, Path: /users/{id}
+//	url, err := user.BuildURL("acme", "42") // "acme.myapp.com/users/42"
+//
+// For default (non-host-scoped) routes, BuildURL is equivalent to
+// [RouteInfo.BuildURI]:
+//
+//	url, err := user.BuildURL("42") // "/users/42"
+func (ri RouteInfo) BuildURL(params ...string) (string, error) {
+	if ri.route == nil {
+		return "", errNoRouteToBuild("BuildURL")
+	}
+	return ri.route.buildURL(params...)
+}
+
+// errNoRouteToBuild is the error of URL generation on the zero RouteInfo.
+func errNoRouteToBuild(method string) error {
+	return fmt.Errorf("credo: %s: the RouteInfo describes no route, so there is no pattern to build from; "+
+		"use one that App.GetRoute or App.Routes returned, or Context.Route of a request for which HasRoute is true", method)
 }
 
 // routeEntry is a stored route registration. RouteInfo is derived from it
@@ -253,14 +334,15 @@ func routeInfoHost(rh *routeHandler) string {
 	return ""
 }
 
-// Routes returns introspection data for every normal route in this mux, in
-// registration order. Mount payloads are skipped here — [App.Routes] surfaces
-// a single RouteInfo per mount from a separate registry. The returned slice is
-// freshly allocated; the caller owns it.
+// Routes returns the view of every normal route in this mux, in registration
+// order. Mount payloads are skipped here — [App.Routes] surfaces one RouteInfo
+// per mount from a separate registry. The returned slice is freshly
+// allocated; the caller owns it.
 //
-// Routes reads live *Route fields (Name, metadata) without locking them, so it
-// must not run concurrently with route registration or configuration (Name,
-// SetMeta, Mount). Introspection is a post-wiring (or post-freeze) operation.
+// Routes is safe to call while another goroutine prepares the App. Before
+// registration is frozen it reads live *Route fields (Name, metadata) without
+// locking them, so it must not run concurrently with route registration or
+// configuration (Name, SetMeta, Mount).
 func (mx *mux) Routes() []RouteInfo {
 	entries := mx.store.snapshot()
 	out := make([]RouteInfo, 0, len(entries))
@@ -270,16 +352,7 @@ func (mx *mux) Routes() []RouteInfo {
 			// Mounted handler — surfaced separately by App.Routes.
 			continue
 		}
-		out = append(out, RouteInfo{
-			Method:       e.method,
-			Pattern:      e.pattern,
-			Host:         route.hostPattern,
-			Name:         route.name,
-			meta:         route.resolveAllMeta(),
-			Kind:         RouteKindRoute,
-			AutoHead:     route.autoHead,
-			RegisteredAt: e.rh.srcLoc.String(),
-		})
+		out = append(out, route.snapshot())
 	}
 	return out
 }

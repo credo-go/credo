@@ -45,7 +45,7 @@ func TestURLRoundTrip_StaticTextCanonicalForm(t *testing.T) {
 	}
 
 	// Generation writes static text in its wire spelling and the result routes.
-	uri, err := route.BuildURI("42")
+	uri, err := route.View().BuildURI("42")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,26 +105,26 @@ func TestURLRoundTrip_GenerationRejectsNonRoundTrippingValues(t *testing.T) {
 		return ctx.Response().Text(http.StatusOK, ctx.Request().RouteParam("id"))
 	})
 
-	if _, err := tail.BuildURI("a.b"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "."`) {
+	if _, err := tail.View().BuildURI("a.b"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "."`) {
 		t.Fatalf("BuildURI(\"a.b\") error = %v, want delimiter rejection", err)
 	}
-	if uri, err := tail.BuildURI("ab"); err != nil || uri != "/files/ab.json" {
+	if uri, err := tail.View().BuildURI("ab"); err != nil || uri != "/files/ab.json" {
 		t.Fatalf("BuildURI(\"ab\") = %q, %v", uri, err)
 	}
-	if _, err := dash.BuildURI("x-y", "z"); err == nil {
+	if _, err := dash.View().BuildURI("x-y", "z"); err == nil {
 		t.Fatal("BuildURI with a dash in a dash-delimited value should fail")
 	}
-	if uri, err := dash.BuildURI("x", "y-z"); err != nil || uri != "/v/x-y-z" {
+	if uri, err := dash.View().BuildURI("x", "y-z"); err != nil || uri != "/v/x-y-z" {
 		t.Fatalf("BuildURI last parameter may contain the dash: %q, %v", uri, err)
 	}
 	for _, r := range []*credo.Route{plain, nested} {
-		if _, err := r.BuildURI(string([]byte{0xff})); err == nil || !strings.Contains(err.Error(), "not valid UTF-8") {
+		if _, err := r.View().BuildURI(string([]byte{0xff})); err == nil || !strings.Contains(err.Error(), "not valid UTF-8") {
 			t.Fatalf("BuildURI(invalid UTF-8) error = %v, want UTF-8 rejection", err)
 		}
 	}
 	// A slash-delimited parameter still accepts a slash: it is escaped and
 	// stays data.
-	uri, err := nested.BuildURI("a/b")
+	uri, err := nested.View().BuildURI("a/b")
 	if err != nil || uri != "/dir/a%2Fb/x" {
 		t.Fatalf("BuildURI(\"a/b\") = %q, %v", uri, err)
 	}

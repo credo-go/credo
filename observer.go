@@ -54,24 +54,14 @@ func (ex *Exchange) Path() string { return ex.c.request.Request.URL.Path }
 // OriginalPath returns the path the client sent, before any rewrite.
 func (ex *Exchange) OriginalPath() string { return ex.c.OriginalPath() }
 
-// Route returns the matched route's registered pattern, for example
-// "/v1/jobs/{job_id}", or "" when no route matched (404/405). A request a
-// mount matched has the mount's pattern.
-func (ex *Exchange) Route() string {
-	if r := ex.c.route; r != nil {
-		return r.GetPattern()
-	}
-	return ""
-}
-
-// RouteName returns the matched route's name, or "" when the route has none
-// or no route matched.
-func (ex *Exchange) RouteName() string {
-	if r := ex.c.route; r != nil {
-		return r.GetName()
-	}
-	return ""
-}
+// Route returns the [RouteInfo] of the matched route, the view
+// [Context.Route] returns: Pattern is the registered pattern, for example
+// "/v1/jobs/{job_id}", which is the label of bounded cardinality a metric
+// wants, and Name is the route's name. A request a mount matched has the
+// mount's view, whose Methods slice is shared and must not be modified. When
+// no route matched (404/405) it is the zero RouteInfo, whose Pattern and Name
+// are "".
+func (ex *Exchange) Route() RouteInfo { return ex.c.Route() }
 
 // RemoteAddr returns the client address, as [Request.RealIP] reports it.
 func (ex *Exchange) RemoteAddr() string { return ex.c.request.RealIP() }

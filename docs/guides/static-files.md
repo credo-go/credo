@@ -260,7 +260,7 @@ uri, err = sr.BuildURI("a b.png")      // "/assets/a%20b.png"
 uri, err = sr.BuildURI("")             // "/assets/": the prefix with its trailing slash
 ```
 
-Use `StaticRoute.BuildURI` for clean URLs. It escapes each segment of the file path, so the URL serves the file it names, and returns an error naming the path for one no URL can represent: invalid UTF-8, or a `.` or `..` segment. `Route.BuildURI` on the underlying catch-all route requires the `_static` parameter explicitly.
+Use `StaticRoute.BuildURI` for clean URLs. It escapes each segment of the file path, so the URL serves the file it names, and returns an error naming the path for one no URL can represent: invalid UTF-8, or a `.` or `..` segment. `BuildURI` on the `RouteInfo` of the underlying catch-all route (`app.GetRoute(name)`) requires the `_static` parameter explicitly.
 
 ---
 

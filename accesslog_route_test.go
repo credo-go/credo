@@ -46,7 +46,7 @@ func TestAccessLog_ResultFilterSeesRoutePattern(t *testing.T) {
 	app.UseAccessLog(credo.AccessLogConfig{
 		Logger: slog.New(slog.NewJSONHandler(&buf, nil)),
 		ResultFilter: func(ex *credo.Exchange) bool {
-			seen = ex.Route()
+			seen = ex.Route().Pattern
 			return true
 		},
 	})

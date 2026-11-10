@@ -124,13 +124,14 @@ uri, err = sr.BuildURI("")             // "/static/": the prefix with its traili
 _, err = sr.BuildURI("../secret.txt")  // error: the segment ".." is a dot-segment
 ```
 
-`BuildURI` takes one slash-separated file path, relative to the prefix, and escapes each of its segments for the URL, so the URL it returns serves the file it names. It returns an error, naming the path and the reason, for a path it cannot represent: invalid UTF-8, which the router answers with 400, or a `.` or `..` segment, which a client removes before it sends the request, so that the URL would name another file or leave the prefix. An empty file path returns the prefix with its trailing slash. It is the static counterpart of `Route.BuildURI`, which returns an error for a value it cannot route back.
+`BuildURI` takes one slash-separated file path, relative to the prefix, and escapes each of its segments for the URL, so the URL it returns serves the file it names. It returns an error, naming the path and the reason, for a path it cannot represent: invalid UTF-8, which the router answers with 400, or a `.` or `..` segment, which a client removes before it sends the request, so that the URL would name another file or leave the prefix. An empty file path returns the prefix with its trailing slash. It is the static counterpart of `RouteInfo.BuildURI`, which returns an error for a value it cannot route back.
 
 Leading slashes of the file path are dropped; under the root prefix `"/"` the results are `/css/app.css` and `/`. `BuildURI` joins the prefix as registered and substitutes no parameters. Under a parametric group prefix it therefore returns pattern text (`/t/{tenant}/files/css/app.css`), not a routable URL. Name the static route and build from the catch-all instead, which fills the parameters in order and escapes each segment:
 
 ```go
 app.Group("/t/{tenant}").Static("/files", fsys).Name("files")
-uri, err := app.GetRoute("files").BuildURI("acme", "css/app.css") // "/t/acme/files/css/app.css"
+files, _ := app.GetRoute("files")
+uri, err := files.BuildURI("acme", "css/app.css") // "/t/acme/files/css/app.css"
 ```
 
 ## Internal Behavior

@@ -84,14 +84,25 @@ route.RemoveMeta(key Key[T]) *Route // removes the route's own value
 static.SetMeta(key Key[T], val T) *StaticRoute
 static.RemoveMeta(key Key[T]) *StaticRoute
 
-// On Route — read at request time, from the route's snapshot
-route.GetMeta(key Key[T]) (T, bool) // route, then its groups, then the App
+// On RouteInfo — the view c.Route(), Exchange.Route(), app.GetRoute and app.Routes return
+info.GetMeta(key Key[T]) (T, bool) // route, then its groups, then the App; a mount reports the App's
 
-// On RouteInfo — read from introspection, the same resolution
-info.GetMeta(key Key[T]) (T, bool) // a mount reports the App's
+// On Route — the registration handle, reading what has been set so far
+route.GetMeta(key Key[T]) (T, bool)
 ```
 
-`c.Route()` is set once dispatch has matched a route, a mount included ([Sub-router Mounting](#sub-router-mounting)). Middleware added with `app.Middleware` runs after the match on every route of the App and reads its meta; `c.Route()` is nil in `PreRouting` middleware before `next` runs, on the router's own 404/405 and in status handlers. Register meta-reading middleware with `app.Middleware`, on a group or on a route, or guard the call with `c.HasRoute()`.
+`c.Route()` returns the matched route's `RouteInfo` once dispatch has matched a route, a mount included ([Sub-router Mounting](#sub-router-mounting)). Middleware added with `app.Middleware` runs after the match on every route of the App and reads its meta. In `PreRouting` middleware before `next` runs, on the router's own 404/405 and in status handlers there is no route: `c.HasRoute()` is false and `c.Route()` is the zero `RouteInfo`, whose `GetMeta` reports false for every key. Register meta-reading middleware with `app.Middleware`, on a group or on a route, and have a guard that enforces meta check `c.HasRoute()` first, so that it fails closed.
+
+### The Route Handle and the Route View
+
+| | `*Route` | `RouteInfo` |
+| --- | --- | --- |
+| Obtained from | a registration: `app.GET(...)`, `group.POST(...)` | `c.Route()`, `Exchange.Route()`, `app.GetRoute(name)`, `app.Routes()` |
+| For | configuring the route before the App starts | reading the route, at any time |
+| Offers | `Name`, `SetMeta`, `RemoveMeta`, `Middleware`, `GetMeta` | `Method`, `Methods`, `Pattern`, `Host`, `Name`, `Kind`, `AutoHead`, `RegisteredAt`, `GetMeta`, `BuildURI`, `BuildURL` |
+| After the App is prepared | its setters panic | built once per route and returned by value; a request allocates nothing for it |
+
+The four readers return equal values for one route. Where no route matched, `c.Route()` and `Exchange.Route()` return the zero `RouteInfo` — empty fields, an empty `Kind`, no meta — and its `BuildURI` and `BuildURL` return an error; `app.GetRoute` returns it with `false` for a name no route has.
 
 ### Named Routes + URL Generation (Goyave-inspired)
 
@@ -99,17 +110,18 @@ info.GetMeta(key Key[T]) (T, bool) // a mount reports the App's
 app.GET("/products/{id}", handler).Name("product.show")
 
 // URL generation
-route := app.GetRoute("product.show")
+route, ok := app.GetRoute("product.show") // a RouteInfo; ok is false for an unknown name
 uri, err := route.BuildURI("42") // → "/products/42"
 url, err := route.BuildURL("42") // → "/products/42" (default route, same as BuildURI)
-route.GetHost() // → "" for default routes, host pattern for host-scoped routes
+route.Host // → "" for default routes, host pattern for host-scoped routes
 
 // Host-scoped: host params consumed first, then path params
 // app.Host("{tenant}.myapp.com").GET("/products/{id}", handler).Name("tenant.product.show")
-url, err = app.GetRoute("tenant.product.show").BuildURL("acme", "42") // → "acme.myapp.com/products/42"
+tenant, _ := app.GetRoute("tenant.product.show")
+url, err = tenant.BuildURL("acme", "42") // → "acme.myapp.com/products/42"
 ```
 
-Runnable as `ExampleRoute_BuildURI`.
+Runnable as `ExampleRouteInfo_BuildURI`.
 
 Names are unique per App, host-scoped routes included; a duplicate panics at the `Name` call. `BuildURL` auto-fills the host from the route's host pattern. Host parameters are consumed first, then path parameters. For default (non-host-scoped) routes, `BuildURL` is equivalent to `BuildURI`. Values are decoded parameter values, exactly what `RouteParam` reports for the generated URI: each path value is checked against its regex constraint and percent-encoded for one segment with `url.PathEscape` (`a/b` becomes `a%2Fb`, `ç` becomes `%C3%A7`, `+` stays `+`), a catch-all value keeps its slashes as separators and escapes each segment, and static pattern text is written in its wire spelling (`/café/{id}` generates `/caf%C3%A9/42`). A value that could not route back is an error: it must be valid UTF-8 (the router answers `%FF` with 400) and its wire spelling must not show the byte that delimits its parameter in the pattern, checked in the canonical form where matching cuts (`a.b` for `{name}.json` would be cut at the first `.`, since `%2E` and `.` spell the same URI; `a;b` for `{id};v` is written `a%3Bb` and routes back, since matching keeps that reserved escape; `a=b` for `{k}={v}` cannot, since `=` stays literal; `a%b` for `{id}%done` cannot, since its `%25` is the delimiter unit); a slash-delimited value may contain a slash, which is escaped as data. Host values fill one label each: they must be non-empty, consist of letters, digits, hyphens and underscores, satisfy the label's constraint, and are never percent-encoded. Both methods return an error when a value is missing, empty, not valid UTF-8, contains its delimiter, fails its constraint or is not a valid host label, when extra parameters are provided, or when the stored pattern is malformed. Round trips preserve values, not the client's spelling of percent-encoded octets (see [Encoded Parameter Values](#encoded-parameter-values)). Wildcard host patterns such as `*.example.com` cannot generate concrete URLs; use `{tenant}.example.com` when URL generation needs a subdomain value.
 
@@ -198,7 +210,7 @@ app.Mount("/admin", adminMux)
 
 Runnable as `ExampleApp_Mount`, with the path handoff and a parametric prefix below.
 
-**A mount is a route.** A request a `Mount` matches carries a `*Route` of kind mount — the mount's prefix as its pattern, the App's meta, no name and no method — so `c.HasRoute()` is true for it and `c.Route().GetMeta` reads the App's meta. The mounted handler runs inside the routed tier, after `PreRouting` middleware and the framework features, through a chain compiled as a route's is, so authentication added with `app.Middleware` answers 401 for a mounted path as for any route. A mount belongs to no group and has no route value of its own, so group and route middleware do not apply to it; a mounted sub-application that needs a protection only some of the App's routes have enforces it internally. The access record of a mounted request names the mount's pattern, and the mount's introspection entry reports the App's meta. The prefix's parameters reach the mounted handler as path values (below); the mount's route carries none, so a routed middleware on a parametric mount reads none through `c.Request().RouteParam`. The QUERY `Content-Type` check runs at the end of a mount's chain, as at a route's, so `PreRouting` and routed middleware run before its 415.
+**A mount is a route.** A request a `Mount` matches has a `RouteInfo` of kind mount — the mount's prefix as its pattern, the App's meta, no name and no method — so `c.HasRoute()` is true for it and `c.Route().GetMeta` reads the App's meta. The mounted handler runs inside the routed tier, after `PreRouting` middleware and the framework features, through a chain compiled as a route's is, so authentication added with `app.Middleware` answers 401 for a mounted path as for any route. A mount belongs to no group and has no route value of its own, so group and route middleware do not apply to it; a mounted sub-application that needs a protection only some of the App's routes have enforces it internally. The access record of a mounted request names the mount's pattern, and the mount's introspection entry reports the App's meta. The prefix's parameters reach the mounted handler as path values (below); the mount's route carries none, so a routed middleware on a parametric mount reads none through `c.Request().RouteParam`. The QUERY `Content-Type` check runs at the end of a mount's chain, as at a route's, so `PreRouting` and routed middleware run before its 415.
 
 **Path handoff:** the child receives the remainder below the prefix spelled for the wire — `URL.Path` decoded and `URL.RawPath` set when the two spellings differ — so `/admin/a%2Fb` reaches the child as `/a%2Fb` (`EscapedPath`), never as `/a/b`, `/admin/a%3Bb` as `/a%3Bb` (a reserved escape is handed on as spelled), a prefix such as `/été` is matched in its canonical form, and a nested Credo app decodes its own captures once. The prefix followed by a slash is the child's root, like the bare prefix: `/admin/` and `/admin` both reach the child as `/`. A root mount (`Mount("/", h)`) forwards the whole path space, the bare `/` included.
 
@@ -320,8 +332,8 @@ The split-before-decode and no-double-decode rules follow [RFC 3986 §2.4](https
 // App implements http.Handler
 app.ServeHTTP(w, r)
 
-// Named route lookup
-app.GetRoute(name string) *Route
+// Named route lookup: the route's view, and whether a route has the name
+app.GetRoute(name string) (RouteInfo, bool)
 
 // Route introspection: every route and every mount
 for _, ri := range app.Routes() {
@@ -334,7 +346,7 @@ for _, ri := range app.Routes() {
 
 Runnable as `ExampleApp_Routes`.
 
-`app.Routes()` is the one introspection call. It covers the default mux and all host-scoped muxes and returns the full `RouteInfo`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), read with `GetMeta(key)` — a mount reports the App's, and values are read-only by convention; no call enumerates a route's meta, since a typed key is reachable only through the value that declares it; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden; a caller that wants routes only skips them in its loop, as above. The output is a deterministic total order `(Host, Pattern, Method, Kind)`; introspection reads live route state, so call it after wiring is complete, not concurrently with route registration. No routing type of `internal/radix` is exported.
+`app.Routes()` is the one introspection call. It covers the default mux and all host-scoped muxes and returns each route's `RouteInfo`, the view a request reads through `c.Route()`: `Method` for a normal route, or — for a mount — an empty `Method` and the sorted forwarded method set (every standard method except CONNECT/TRACE) in `Methods`; the `Pattern` (for a mount, its cleaned prefix); the `Host` pattern (empty for the default mux); the route `Name`; the resolved meta (route ← group ← app), read with `GetMeta(key)` — a mount reports the App's, and values are read-only by convention; no call enumerates a route's meta, since a typed key is reachable only through the value that declares it; `Kind` (`RouteKindRoute` or `RouteKindMount`); `AutoHead` (true for an auto-generated HEAD twin, false for an explicit HEAD); and `RegisteredAt`, the user call site (`file:line`) that registered the route or mount, or empty when it could not be captured. Mounts appear as a single `RouteKindMount` entry with the cleaned prefix (`/admin/` and `/admin` both normalize to `/admin`, `/` stays `/`) — the internal catch-all and method fan-out are hidden; a caller that wants routes only skips them in its loop, as above. The output is a deterministic total order `(Host, Pattern, Method, Kind)`; before the App is prepared introspection reads live route state, so call it after wiring is complete, not concurrently with route registration. No routing type of `internal/radix` is exported.
 
 ## Design Decisions
 

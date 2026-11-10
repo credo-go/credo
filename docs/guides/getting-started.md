@@ -178,6 +178,9 @@ app.GET("/files/{path...}", func(c *credo.Context) error {
 
 ```go
 app.GET("/users/{id}", getUser).Name("users.show")
+
+user, _ := app.GetRoute("users.show")
+uri, err := user.BuildURI("42") // "/users/42"
 ```
 
 ### Route Groups

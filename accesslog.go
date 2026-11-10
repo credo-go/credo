@@ -32,7 +32,7 @@ func accessLogSilenced(ctx *Context) bool {
 	if ctx.route == nil {
 		return false
 	}
-	enabled, ok := ctx.route.GetMeta(MetaAccessLog)
+	enabled, ok := ctx.route.info.GetMeta(MetaAccessLog)
 	return ok && !enabled
 }
 
@@ -188,7 +188,7 @@ func (f *accessLogFeature) Observe(ex *Exchange) {
 		Method:       r.Method,
 		Path:         r.URL.Path,
 		OriginalPath: c.OriginalPath(),
-		Route:        ex.Route(),
+		Route:        routePattern(c.route),
 		Status:       status,
 		Bytes:        ex.bytes,
 		Duration:     ex.duration,

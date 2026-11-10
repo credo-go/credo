@@ -126,11 +126,21 @@ func (c *Context) Response() *Response {
 	return &c.response
 }
 
-// Route returns the matched Route (for accessing Meta, Name, BuildURI).
-// Returns nil when no route matched (e.g., inside custom 404/405 handlers).
-// Use [Context.HasRoute] to guard against nil before calling Route methods.
-func (c *Context) Route() *Route {
-	return c.route
+// Route returns the [RouteInfo] of the route the request matched: its
+// method, pattern, host and name, its resolved meta and its URL generation.
+// The view is built once per route and returned by value, so the call
+// allocates nothing. A mount's Methods slice is therefore shared with every
+// other request and must not be modified.
+//
+// When no route matched — in [App.PreRouting] middleware, and inside custom
+// 404/405 status handlers — it returns the zero RouteInfo, whose fields are
+// empty and whose GetMeta reports false. [Context.HasRoute] tells the two
+// apart.
+func (c *Context) Route() RouteInfo {
+	if c.route == nil {
+		return RouteInfo{}
+	}
+	return c.route.view()
 }
 
 // HasRoute reports whether a route matched for this request; a request a

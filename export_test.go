@@ -1,6 +1,10 @@
 package credo
 
-import "io"
+import (
+	"io"
+	"reflect"
+	"slices"
+)
 
 // SetMultipartMaxMemory lowers the in-memory threshold BindBody uses when it
 // parses a multipart form on app's requests, so that a test upload of a few
@@ -22,4 +26,18 @@ func SetLogSectionOutput(w io.Writer) (restore func()) {
 	prev := logSectionOutput
 	logSectionOutput = w
 	return func() { logSectionOutput = prev }
+}
+
+// View returns the route's read view, the [RouteInfo] that [App.GetRoute]
+// returns for a named route, so a test can generate URLs from a route it did
+// not name.
+func (r *Route) View() RouteInfo { return r.snapshot() }
+
+// SameRouteView reports whether a and b are the same view of one route: equal
+// fields, the same resolved meta and the same route behind them.
+func SameRouteView(a, b RouteInfo) bool {
+	return a.Method == b.Method && slices.Equal(a.Methods, b.Methods) &&
+		a.Pattern == b.Pattern && a.Host == b.Host && a.Name == b.Name &&
+		a.Kind == b.Kind && a.AutoHead == b.AutoHead && a.RegisteredAt == b.RegisteredAt &&
+		a.route == b.route && reflect.DeepEqual(a.meta, b.meta)
 }

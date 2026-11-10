@@ -68,7 +68,7 @@ func TestURLRoundTrip_ReservedCharactersKeepTheirEncoding(t *testing.T) {
 
 	// Generation escapes a reserved delimiter that url.PathEscape encodes
 	// (";"), so the value routes back; one it leaves literal ("=") cannot.
-	uri, err := tail.BuildURI("a;b")
+	uri, err := tail.View().BuildURI("a;b")
 	if err != nil || uri != "/t/a%3Bb;v" {
 		t.Fatalf("BuildURI(\"a;b\") = %q, %v", uri, err)
 	}
@@ -77,10 +77,10 @@ func TestURLRoundTrip_ReservedCharactersKeepTheirEncoding(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.String() != "a;b" {
 		t.Fatalf("GET %s = %d %q", uri, w.Code, w.Body.String())
 	}
-	if _, err := kv.BuildURI("a=b", "c"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "="`) {
+	if _, err := kv.View().BuildURI("a=b", "c"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "="`) {
 		t.Fatalf("BuildURI(\"a=b\") error = %v, want delimiter rejection", err)
 	}
-	if uri, err := kv.BuildURI("a", "b=c"); err != nil || uri != "/kv/a=b=c" {
+	if uri, err := kv.View().BuildURI("a", "b=c"); err != nil || uri != "/kv/a=b=c" {
 		t.Fatalf("BuildURI(\"a\", \"b=c\") = %q, %v", uri, err)
 	}
 }
@@ -112,7 +112,7 @@ func TestURLRoundTrip_PercentDelimiter(t *testing.T) {
 		}
 	}
 
-	uri, err := route.BuildURI("/")
+	uri, err := route.View().BuildURI("/")
 	if err != nil || uri != "/x/%2F%25done" {
 		t.Fatalf("BuildURI(\"/\") = %q, %v", uri, err)
 	}
@@ -121,7 +121,7 @@ func TestURLRoundTrip_PercentDelimiter(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.String() != "/" {
 		t.Fatalf("GET %s = %d %q, want 200 \"/\"", uri, w.Code, w.Body.String())
 	}
-	if _, err := route.BuildURI("a%b"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "%"`) {
+	if _, err := route.View().BuildURI("a%b"); err == nil || !strings.Contains(err.Error(), `contains its delimiter "%"`) {
 		t.Fatalf("BuildURI(\"a%%b\") error = %v, want delimiter rejection", err)
 	}
 }
