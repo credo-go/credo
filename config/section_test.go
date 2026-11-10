@@ -109,3 +109,74 @@ func TestSectionDecodeCustomRawConfig(t *testing.T) {
 		t.Errorf("port = %d, want 7", got)
 	}
 }
+
+func TestSectionExists(t *testing.T) {
+	c := loadSectionDoc(t, `{"database":{"host":"db","port":5432},"app":{"name":""},"flag":false}`)
+
+	tests := []struct {
+		name string
+		got  bool
+		want bool
+	}{
+		{"a present section", config.Section[sectionDB]("database").Exists(c), true},
+		{"a present leaf", config.Section[int]("database.port").Exists(c), true},
+		{"a present leaf holding a zero value", config.Section[bool]("flag").Exists(c), true},
+		{"a missing section", config.Section[sectionDB]("cache").Exists(c), false},
+		{"a missing leaf of a present section", config.Section[string]("database.user").Exists(c), false},
+		// Exists decodes nothing: the section fails validation where it is
+		// decoded, and is present all the same.
+		{"a present section that fails validation", config.Section[sectionApp]("app").Exists(c), true},
+		{"a present section named with another type", config.Section[int]("database").Exists(c), true},
+		{"an empty key", config.Section[sectionDB]("").Exists(c), false},
+		{"a custom RawConfig, present", config.Section[int]("port").Exists(customRaw{}), true},
+		{"a custom RawConfig, missing", config.Section[int]("host").Exists(customRaw{}), false},
+		{"a custom RawConfig, empty key", config.Section[int]("").Exists(wholeTreeRaw{}), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("Exists = %v, want %v", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+// wholeTreeRaw reports every key present, the empty one included, as a
+// RawConfig that treats "" as the whole tree would.
+type wholeTreeRaw struct{}
+
+func (wholeTreeRaw) Unmarshal(string, any) error { return nil }
+func (wholeTreeRaw) Exists(string) bool          { return true }
+
+// Exists records no read, so a section that was probed is read as static or
+// as live afterwards, and a section that was read either way is still probed.
+func TestSectionExists_RecordsNoRead(t *testing.T) {
+	const doc = `{"database":{"host":"db","port":5432}}`
+	section := config.Section[sectionDB]("database")
+
+	t.Run("probed, then read as live", func(t *testing.T) {
+		c := loadSectionDoc(t, doc)
+		if !section.Exists(c) {
+			t.Fatal("Exists = false, want true")
+		}
+		if _, err := section.Live(c); err != nil {
+			t.Fatalf("Live after Exists: %v", err)
+		}
+		if !section.Exists(c) {
+			t.Error("Exists after Live = false, want true")
+		}
+	})
+
+	t.Run("probed, then read as static", func(t *testing.T) {
+		c := loadSectionDoc(t, doc)
+		if !section.Exists(c) {
+			t.Fatal("Exists = false, want true")
+		}
+		if _, err := section.Decode(c); err != nil {
+			t.Fatalf("Decode after Exists: %v", err)
+		}
+		if !section.Exists(c) {
+			t.Error("Exists after Decode = false, want true")
+		}
+	})
+}

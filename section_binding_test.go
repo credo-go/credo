@@ -112,6 +112,39 @@ func TestSection_StartFailsOnInvalidSection(t *testing.T) {
 	}
 }
 
+// TestApp_ConfigExists: the App probes an optional section through the
+// descriptor GetConfig reads it with, or through a literal key with the type
+// given, and the probe decodes nothing.
+func TestApp_ConfigExists(t *testing.T) {
+	// The limits section is present and fails its validation.
+	app := sectionApp(t, `{"limits":{"rps":0}}`)
+
+	tests := []struct {
+		name string
+		got  bool
+		want bool
+	}{
+		{"the descriptor of a present section", app.ConfigExists(limitsSection), true},
+		{"a literal key with the type given", app.ConfigExists[limitsConfig]("limits"), true},
+		{"a present leaf", app.ConfigExists[int]("limits.rps"), true},
+		{"a missing section", app.ConfigExists[limitsConfig]("cache"), false},
+		{"an empty key", app.ConfigExists[limitsConfig](""), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("ConfigExists = %v, want %v", tt.got, tt.want)
+			}
+		})
+	}
+
+	// The probe did not decode: the read that follows reports the invalid
+	// section, and the container is still open for it.
+	if _, err := app.GetConfig(limitsSection); err == nil || !strings.Contains(err.Error(), "rps must be positive") {
+		t.Errorf("GetConfig after ConfigExists = %v, want the validation error", err)
+	}
+}
+
 // limitsComponent has start work, so the start phase constructs it.
 type limitsComponent struct{ cfg limitsConfig }
 
@@ -122,8 +155,8 @@ func (*limitsComponent) Start(context.Context) error { return nil }
 // the not-found error a loaded *config.Config returns.
 func TestSection_TestutilEmptyConfig(t *testing.T) {
 	app := testutil.NewApp(t)
-	if app.ConfigExists("limits") {
-		t.Error("ConfigExists(limits) = true on the empty configuration")
+	if app.ConfigExists(limitsSection) {
+		t.Error("ConfigExists(limitsSection) = true on the empty configuration")
 	}
 	_, err := app.GetConfig(limitsSection)
 	if err == nil || !strings.Contains(err.Error(), `config: key "limits" not found`) {

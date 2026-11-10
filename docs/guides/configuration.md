@@ -286,6 +286,17 @@ if err != nil {
 }
 ```
 
+An optional section is probed with the same descriptor before it is read. `app.ConfigExists(section)` reports whether the section is present, decodes nothing and never finalizes the container, so registration code can decide what to register; with a `*config.Config` in hand, the descriptor answers: `CacheSection.Exists(cfg)`.
+
+```go
+var CacheSection = config.Section[CacheConfig]("cache")
+
+if app.ConfigExists(CacheSection) {
+    cache := app.MustGetConfig(CacheSection)
+    // register the cache module
+}
+```
+
 Use `app.MustGetConfig(AppSection)` to panic on a missing or invalid required section — fail-fast startup wiring, mirroring `MustResolve`. A literal key keeps compiling, `app.GetConfig[AppConfig]("app")`, since the untyped constant converts to the descriptor. These are composition-root sugar: a handler has no `App` accessor, so config reading stays out of business code, and services still receive typed values via DI.
 
 ---

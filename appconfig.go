@@ -217,13 +217,24 @@ func (app *App) GetConfig[T any](section config.Section[T]) (T, error) {
 	return section.Decode(app.rawConfig)
 }
 
-// ConfigExists reports whether key is present in the application's
-// [RawConfig], mirroring [RawConfig.Exists]. Like [App.GetConfig] it is a
-// bootstrap helper that reads configuration directly, so framework modules
-// and composition roots can consult optional sections during registration:
-// unlike [App.Resolve], it never finalizes the container.
-func (app *App) ConfigExists(key string) bool {
-	return app.rawConfig.Exists(key)
+// ConfigExists reports whether section is present in the application's
+// [RawConfig], with [config.Section.Exists]. It takes the descriptor
+// [App.GetConfig] takes, so an optional section is probed and read through
+// one name:
+//
+//	if app.ConfigExists(CacheSection) {
+//	    cache := app.MustGetConfig(CacheSection)
+//	    // register the cache module
+//	}
+//
+//	app.ConfigExists[CacheConfig]("cache") // the untyped key converts
+//
+// Like [App.GetConfig] it is a bootstrap helper that reads configuration
+// directly, so a module or a composition root can consult an optional
+// section during registration: unlike [App.Resolve], it never finalizes the
+// container. It decodes nothing and records no read of the section.
+func (app *App) ConfigExists[T any](section config.Section[T]) bool {
+	return section.Exists(app.rawConfig)
 }
 
 // MustGetConfig is like [App.GetConfig] but panics on error. It suits
