@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -310,18 +311,32 @@ func (r *Route) seal() {
 	r.sealed.Store(true)
 }
 
-// buildURI is [RouteInfo.BuildURI].
-func (r *Route) buildURI(params ...string) (string, error) {
+// buildURI is [RouteInfo.BuildURI], and [RouteInfo.BuildURL] of a route
+// without a host; method is the one the caller called, which every error
+// names.
+//
+// The result stands alone as a reference, so it must not begin with "//": a
+// client reads such a reference as a host and a path (RFC 3986, section 4.2),
+// which is the form BuildURL returns for a host-scoped route. A catch-all at
+// the root given a value that begins with "/", and a pattern that itself
+// begins with "//", would build one; both are an error.
+func (r *Route) buildURI(method string, params ...string) (string, error) {
 	tmpl, _, err := r.templates()
 	if err != nil {
-		return "", fmt.Errorf("credo: BuildURI %q: %w", r.pattern, err)
+		return "", fmt.Errorf("credo: %s %q: %w", method, r.pattern, err)
 	}
 	uri, consumed, err := tmpl.build(params)
 	if err != nil {
-		return "", fmt.Errorf("credo: BuildURI %q: %w", r.pattern, err)
+		return "", fmt.Errorf("credo: %s %q: %w", method, r.pattern, err)
 	}
 	if consumed < len(params) {
-		return "", fmt.Errorf("credo: BuildURI %q: %d extra parameter(s)", r.pattern, len(params)-consumed)
+		return "", fmt.Errorf("credo: %s %q: %d extra parameter(s)", method, r.pattern, len(params)-consumed)
+	}
+	if strings.HasPrefix(uri, "//") {
+		return "", fmt.Errorf("credo: %s %q: the path built, %q, begins with \"//\", and a reference that begins with \"//\" "+
+			"is read as a host, not as a path (RFC 3986, section 4.2); pass a value that does not begin with \"/\" "+
+			"for a catch-all at the root — a path that begins with \"//\" cannot be written as a reference without a scheme and a host",
+			method, r.pattern, uri)
 	}
 	return uri, nil
 }
@@ -329,7 +344,7 @@ func (r *Route) buildURI(params ...string) (string, error) {
 // buildURL is [RouteInfo.BuildURL].
 func (r *Route) buildURL(params ...string) (string, error) {
 	if r.hostPattern == "" {
-		return r.buildURI(params...)
+		return r.buildURI("BuildURL", params...)
 	}
 	if hostPatternHasWildcard(r.hostPattern) {
 		return "", fmt.Errorf("credo: BuildURL host %q: wildcard host patterns cannot generate concrete URLs", r.hostPattern)
@@ -350,7 +365,9 @@ func (r *Route) buildURL(params ...string) (string, error) {
 	if consumed < len(params) {
 		return "", fmt.Errorf("credo: BuildURL %q%s: %d extra parameter(s)", r.hostPattern, r.pattern, len(params)-consumed)
 	}
-	return host + uri, nil
+	// The host is written, so a path that begins with "//" stays a path:
+	// "//host" + "//x" is the host "host" and the path "//x".
+	return "//" + host + uri, nil
 }
 
 // templates returns the route's cached generation templates, parsing the

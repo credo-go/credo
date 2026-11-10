@@ -2555,8 +2555,8 @@ func TestRoute_BuildURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
-		if u != "api.example.com/users/42" {
-			t.Errorf("BuildURL = %q, want %q", u, "api.example.com/users/42")
+		if u != "//api.example.com/users/42" {
+			t.Errorf("BuildURL = %q, want %q", u, "//api.example.com/users/42")
 		}
 	})
 
@@ -2567,8 +2567,8 @@ func TestRoute_BuildURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
-		if u != "acme.myapp.com/users/42" {
-			t.Errorf("BuildURL = %q, want %q", u, "acme.myapp.com/users/42")
+		if u != "//acme.myapp.com/users/42" {
+			t.Errorf("BuildURL = %q, want %q", u, "//acme.myapp.com/users/42")
 		}
 	})
 
@@ -2579,8 +2579,8 @@ func TestRoute_BuildURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
-		if u != "acme.api.com/items" {
-			t.Errorf("BuildURL = %q, want %q", u, "acme.api.com/items")
+		if u != "//acme.api.com/items" {
+			t.Errorf("BuildURL = %q, want %q", u, "//acme.api.com/items")
 		}
 	})
 
@@ -2591,8 +2591,8 @@ func TestRoute_BuildURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
-		if u != "us-east.acme.myapp.com/data/99" {
-			t.Errorf("BuildURL = %q, want %q", u, "us-east.acme.myapp.com/data/99")
+		if u != "//us-east.acme.myapp.com/data/99" {
+			t.Errorf("BuildURL = %q, want %q", u, "//us-east.acme.myapp.com/data/99")
 		}
 	})
 
@@ -2603,8 +2603,8 @@ func TestRoute_BuildURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildURL returned error: %v", err)
 		}
-		if u != "acme.myapp.com/health" {
-			t.Errorf("BuildURL = %q, want %q", u, "acme.myapp.com/health")
+		if u != "//acme.myapp.com/health" {
+			t.Errorf("BuildURL = %q, want %q", u, "//acme.myapp.com/health")
 		}
 	})
 }

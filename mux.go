@@ -119,17 +119,28 @@ func (ri RouteInfo) GetMeta[T any](key Key[T]) (T, bool) {
 // empty catch-all value is valid: the catch-all matches an empty rest, so
 // "/files/{path...}" with "" builds "/files/".
 //
+// The result is a path that stands alone as a reference, in a Location header
+// or a link, so BuildURI also returns an error when the path it built begins
+// with "//": a client reads such a reference as a host and a path, not as a
+// path. Only a catch-all at the root given a value that begins with "/"
+// ("/{path...}" with "/x") and a pattern that itself begins with "//" build
+// one.
+//
 //	user, _ := app.GetRoute("user.show")
 //	uri, err := user.BuildURI("42") // "/users/42"
 func (ri RouteInfo) BuildURI(params ...string) (string, error) {
 	if ri.route == nil {
 		return "", errNoRouteToBuild("BuildURI")
 	}
-	return ri.route.buildURI(params...)
+	return ri.route.buildURI("BuildURI", params...)
 }
 
-// BuildURL generates a full URL by combining the route's host pattern and
-// path pattern, replacing parameters with the provided values in order.
+// BuildURL generates a reference to the route that carries its host: for a
+// host-scoped route, the network-path reference "//host/path" of RFC 3986
+// section 4.2, which is valid as it stands in a Location header or a link and
+// takes the scheme of the page or request it is resolved against. A caller
+// that needs an absolute URL prefixes the scheme it knows, "https:" + ref.
+//
 // Host pattern parameters are consumed first, then path parameters. A host
 // value fills exactly one label: it must be non-empty, consist of letters,
 // digits, hyphens and underscores, and satisfy the label's regex constraint;
@@ -142,12 +153,13 @@ func (ri RouteInfo) BuildURI(params ...string) (string, error) {
 // For host-scoped routes:
 //
 //	// Host: {tenant}.myapp.com, Path: /users/{id}
-//	url, err := user.BuildURL("acme", "42") // "acme.myapp.com/users/42"
+//	ref, err := user.BuildURL("acme", "42") // "//acme.myapp.com/users/42"
 //
-// For default (non-host-scoped) routes, BuildURL is equivalent to
-// [RouteInfo.BuildURI]:
+// A route without a host has no host to carry, and BuildURL returns what
+// [RouteInfo.BuildURI] returns, with the same error for a path that begins
+// with "//"; every error names BuildURL:
 //
-//	url, err := user.BuildURL("42") // "/users/42"
+//	ref, err := user.BuildURL("42") // "/users/42"
 func (ri RouteInfo) BuildURL(params ...string) (string, error) {
 	if ri.route == nil {
 		return "", errNoRouteToBuild("BuildURL")
