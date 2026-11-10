@@ -357,8 +357,8 @@ func TestWorkersForms_ConstructionFailureFailsStart(t *testing.T) {
 					t.Errorf("App.Start() = %v\nwant it to contain %q", err, want)
 				}
 				if tc.outcome == credo.OutcomePanicked {
-					if _, ok := errors.AsType[*credo.DIPanicError](err); !ok {
-						t.Errorf("App.Start() = %v, want the constructor panic kept as *credo.DIPanicError", err)
+					if _, ok := errors.AsType[*credo.PanicError](err); !ok {
+						t.Errorf("App.Start() = %v, want the constructor panic kept as *credo.PanicError", err)
 					}
 				}
 				if dep.started.Load() != 1 || dep.shutdowns.Load() != 1 {

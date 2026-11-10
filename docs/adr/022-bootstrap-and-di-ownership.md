@@ -42,7 +42,12 @@ Rejected:
 
 ### Terminal construction
 
-Construction completes once per singleton with one result — value, error or panic — shared by every waiter and never retried automatically. A panic is recovered on the goroutine that ran the constructor and returned as `*credo.DIPanicError`, with the type, the phase, the original value and the stack captured where it panicked; it unwraps an error-valued panic, and `MustResolve` panics with that error as its payload.
+Construction completes once per singleton with one result — value, error or panic — shared by every waiter and never retried automatically. A panic is recovered on the goroutine that ran the constructor and returned as `*credo.PanicError`, with the type, the phase, the original value and the stack captured where it panicked; it unwraps an error-valued panic, and `MustResolve` panics with that error as its payload.
+
+**The panic error is a root type.** `credo.PanicError{Type, Phase, Value, Stack}` and its `credo.PanicPhase` are defined in the root package, and the container's own panic error is converted wherever an error of the container reaches the caller: the error `Resolve` and `ResolveAll` return, the value `MustResolve` and `MustResolveAll` panic with, and each entry of a `LifecycleError`. The error of the type that panicked is the `*credo.PanicError` itself, the same pointer for every caller; the error of a type that depends on it keeps the container's text and chain and yields the `*credo.PanicError` to `errors.As` and `errors.Is`. The name carries no `DI` prefix, because the same error reports a panic in a component's `Start`, `Shutdown` or `Close`, which is not dependency injection. Rejected:
+
+- **Root aliases of the container's types** (`DIPanicError = di.PanicError`): an alias's documentation lives at the internal type, where a reader of the root package cannot follow it — the reason [ADR-023](023-worker-system.md) defines the worker types in the root.
+- **Folding the phase into `LifecyclePhase`:** that type has two values, start and shutdown, and a panic has four — construction, start, shutdown and late cleanup. Folding would lose which of them a panic came from, or add two values no `LifecycleEntry` carries.
 
 ### Closing begins at the internal tier
 

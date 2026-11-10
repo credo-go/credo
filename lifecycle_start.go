@@ -322,7 +322,8 @@ func (lm *lifecycleManager) startUnit(
 	return startOK
 }
 
-// invokeStart runs a start call, recovering a panic as a *DIPanicError.
+// invokeStart runs a start call, recovering a panic as the container's
+// panic error, which the report converts into a *PanicError.
 func (lm *lifecycleManager) invokeStart(ctx context.Context, u *di.Unit, fn func(context.Context) error) (err error) {
 	ctx = lm.withComponentInfra(ctx, u.Name())
 	defer func() {
@@ -414,6 +415,10 @@ func (lm *lifecycleManager) logInterruptedStart(name string, err error) {
 // outcomeOf classifies a call's error.
 func outcomeOf(err error) LifecycleOutcome {
 	if _, ok := errors.AsType[*di.PanicError](err); ok {
+		return OutcomePanicked
+	}
+	if _, ok := errors.AsType[*PanicError](err); ok {
+		// A mounted App's report, already in its root form.
 		return OutcomePanicked
 	}
 	if _, ok := errors.AsType[*lifecycleHookPanicError](err); ok {

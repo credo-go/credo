@@ -28,8 +28,9 @@ type LifecycleOutcome string
 const (
 	// OutcomeFailed: the call returned an error (in Err).
 	OutcomeFailed LifecycleOutcome = "failed"
-	// OutcomePanicked: the call panicked; Err is a *DIPanicError for a
-	// component.
+	// OutcomePanicked: the call panicked. For a component Err is a
+	// *PanicError, or wraps one when the constructor of something it depends
+	// on panicked; obtain it with errors.AsType.
 	OutcomePanicked LifecycleOutcome = "panicked"
 	// OutcomeAbandoned: the call had not returned at the deadline, or the
 	// deadline ended before its turn. A component still running keeps the
@@ -131,7 +132,11 @@ type lifecycleReport struct {
 	cause   error
 }
 
+// add records an entry. Its error is converted here, the one place every
+// entry passes, so a LifecycleError carries the root's *PanicError and never
+// the container's.
 func (r *lifecycleReport) add(e LifecycleEntry) {
+	e.Err = publicDIError(e.Err)
 	r.mu.Lock()
 	r.entries = append(r.entries, e)
 	r.mu.Unlock()

@@ -395,16 +395,16 @@ func TestComponents_AbandonedShutdownKeepsDependenciesOpen(t *testing.T) {
 }
 
 // TestComponents_PanicsAreTheComponentsErrors: a panicking Start fails the
-// start phase and a panicking Shutdown is reported, both as *DIPanicError.
+// start phase and a panicking Shutdown is reported, both as *PanicError.
 func TestComponents_PanicsAreTheComponentsErrors(t *testing.T) {
 	t.Run("start", func(t *testing.T) {
 		app := mustNew(t)
 		app.ProvideValue[*partA](&partA{&part{name: "a", j: &journal{}, startPanic: true}})
 		err := callRecovering(t, "App.Start", func() error { return app.Start(t.Context()) })
 		e := lifecycleEntry(t, err, "*credo_test.partA")
-		pe, ok := errors.AsType[*credo.DIPanicError](e.Err)
-		if e.Outcome != credo.OutcomePanicked || !ok || pe.Phase != credo.DIPanicStart || pe.Stack == "" {
-			t.Errorf("entry = %+v, want a start DIPanicError with a stack", e)
+		pe, ok := errors.AsType[*credo.PanicError](e.Err)
+		if e.Outcome != credo.OutcomePanicked || !ok || pe.Phase != credo.PanicStart || pe.Stack == "" {
+			t.Errorf("entry = %+v, want a start PanicError with a stack", e)
 		}
 	})
 	t.Run("shutdown", func(t *testing.T) {
@@ -415,9 +415,9 @@ func TestComponents_PanicsAreTheComponentsErrors(t *testing.T) {
 		startComponents(t, app)
 		err := callRecovering(t, "Shutdown", func() error { return shutdownApp(t, app, 2*time.Second) })
 		e := lifecycleEntry(t, err, "*credo_test.partB")
-		pe, ok := errors.AsType[*credo.DIPanicError](e.Err)
-		if e.Outcome != credo.OutcomePanicked || !ok || pe.Phase != credo.DIPanicShutdown {
-			t.Errorf("entry = %+v, want a shutdown DIPanicError", e)
+		pe, ok := errors.AsType[*credo.PanicError](e.Err)
+		if e.Outcome != credo.OutcomePanicked || !ok || pe.Phase != credo.PanicShutdown {
+			t.Errorf("entry = %+v, want a shutdown PanicError", e)
 		}
 		if j.count("stop:a") != 1 {
 			t.Error("a panicking Shutdown skipped the next component")

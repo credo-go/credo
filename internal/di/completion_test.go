@@ -158,3 +158,22 @@ func TestShutdown_ConstructionFailuresAreDiagnosticsOnly(t *testing.T) {
 		t.Fatalf("Shutdown = %v, want nil for construction-failed registrations", err)
 	}
 }
+
+// Surface converts once: the root package builds its exported panic error
+// through it, so every caller of one panic holds one value.
+func TestPanicError_SurfaceConvertsOnce(t *testing.T) {
+	pe := &di.PanicError{Phase: di.PhaseConstruction, Value: "boom"}
+	calls := 0
+	convert := func(got *di.PanicError) error {
+		calls++
+		if got != pe {
+			t.Errorf("convert received %p, want the PanicError %p", got, pe)
+		}
+		return errors.New("surfaced")
+	}
+	first := pe.Surface(convert)
+	second := pe.Surface(convert)
+	if calls != 1 || first == nil || first != second { //nolint:errorlint // Identity is what is asserted.
+		t.Errorf("Surface ran convert %d times and returned %v then %v, want one conversion and one value", calls, first, second)
+	}
+}

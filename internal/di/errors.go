@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -92,11 +93,28 @@ type PanicError struct {
 	Value any
 	// Stack is the stack trace captured on the panicking goroutine.
 	Stack string
+
+	// surfaceOnce guards surfaced, the error Surface returns.
+	surfaceOnce sync.Once
+	surfaced    error
 }
 
-// Error describes the phase, type and panic value.
+// Surface returns the error that stands for e outside the container: the one
+// convert builds on the first call, and that same error on every later call.
+// The root package defines the exported panic error and converts through
+// here, so every caller that receives one panic receives one value, as every
+// resolver of one singleton receives one *PanicError.
+func (e *PanicError) Surface(convert func(*PanicError) error) error {
+	e.surfaceOnce.Do(func() { e.surfaced = convert(e) })
+	return e.surfaced
+}
+
+// Error describes the phase, type and panic value. The text is the one the
+// root package's PanicError prints, prefix included, so a log record of the
+// container, the error of a dependent that wraps this one, and the error a
+// caller holds all show one text for one panic.
 func (e *PanicError) Error() string {
-	return fmt.Sprintf("di: panic during %s of %s: %v", e.Phase, e.Type, e.Value)
+	return fmt.Sprintf("credo: panic during %s of %s: %v", e.Phase, e.Type, e.Value)
 }
 
 // Unwrap returns the panic value when it is an error, else nil.
