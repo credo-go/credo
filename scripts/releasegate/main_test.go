@@ -400,6 +400,29 @@ func TestCandidateEnvironmentIsolatesGoCaches(t *testing.T) {
 	}
 }
 
+func TestCandidateEnvironmentFetchesOnlyCredoDirectly(t *testing.T) {
+	t.Setenv("GOPROXY", "direct")
+	// GOPRIVATE is the default of GONOPROXY and GONOSUMDB: "*" would fetch
+	// every module directly and check none against the checksum database.
+	t.Setenv("GOPRIVATE", "*")
+	t.Setenv("GOSUMDB", "off")
+
+	env := candidateEnvironment(t.TempDir(), "file:///candidate")
+	want := map[string]string{
+		// No direct fallback: a Credo module that GONOPROXY missed must fail
+		// to resolve, not reach the clone after a proxy miss.
+		"GOPROXY":   "https://proxy.golang.org",
+		"GONOPROXY": "github.com/credo-go/credo*",
+		"GONOSUMDB": "github.com/credo-go/credo*",
+		"GOSUMDB":   "sum.golang.org",
+	}
+	for _, name := range []string{"GOPROXY", "GONOPROXY", "GONOSUMDB", "GOSUMDB"} {
+		if got := mustOutputWithEnv(t, "", env, "go", "env", name); got != want[name] {
+			t.Errorf("%s = %q, want %q", name, got, want[name])
+		}
+	}
+}
+
 func TestTidySQLDBModule(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not available")

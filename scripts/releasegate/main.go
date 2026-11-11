@@ -442,10 +442,25 @@ func repositoryGitEnv(repo string) []string {
 	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(repo)}
 }
 
+// candidateEnvironment is the environment of the synthetic consumer's go
+// commands. Credo's modules resolve only from the temporary clone: git
+// rewrites the repository URL to it, GONOPROXY makes the go command fetch them
+// directly and never through the proxy, and GONOSUMDB exempts them from the
+// checksum database, which cannot know the clone's versions. Every other
+// module comes from the module proxy and is checked against the checksum
+// database, so the gate reaches the Go module mirror and checksum database
+// and no third-party module's own host. Rejected alternatives: GOPROXY=direct
+// fetched every module from its own host, so one unreachable vanity host
+// failed the gate; a direct fallback after the proxy would resolve a Credo
+// module that GONOPROXY stopped matching from the clone once the proxy missed
+// it, so the loss would show only when the proxy held a published copy of the
+// requested version and the gate checked that copy instead of the candidate.
 func candidateEnvironment(tmp, repoURL string) []string {
 	return []string{
-		"GOPROXY=direct",
+		"GOPROXY=https://proxy.golang.org",
+		"GONOPROXY=github.com/credo-go/credo*",
 		"GONOSUMDB=github.com/credo-go/credo*",
+		"GOSUMDB=sum.golang.org",
 		"GOMODCACHE=" + filepath.Join(tmp, "gomodcache"),
 		"GOCACHE=" + filepath.Join(tmp, "gocache"),
 		"GOWORK=off",
