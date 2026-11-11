@@ -46,6 +46,10 @@ refactor(middleware): simplify chain composition
    - **How** to test it
 5. At least one maintainer review and green required checks are needed before the squash-merge into `main`.
 
+## Removing an API
+
+An API is not removed because nothing calls it yet: Credo is in beta, and the applications that exist are a small sample of what it is for. A name goes only when it is wrong or misleading as implemented, when it is a second name for one concept, or when a recorded decision replaces it, and the ADR that removes it says which. A feature that is needed and implemented wrongly is fixed, not deleted.
+
 ## Performance Changes
 
 A change made for performance carries its evidence. Run the relevant benchmarks on the base commit and on the change with `go test -run '^$' -bench <name> -count=10 -benchmem`, compare the two outputs with `benchstat` (`go run golang.org/x/perf/cmd/benchstat@latest old.txt new.txt`) and put the table in the PR body. There is no CI benchmark job because shared runners are too noisy; the PR table is the record. Existing tests stay unchanged unless one pins the old cost.

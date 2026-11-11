@@ -145,7 +145,7 @@ Routes and their middleware chains are compiled once, during the App's preparati
 
 ### Trailing Slash Redirect
 
-When no route matches but the path with its trailing slash toggled does, the router redirects to that path (301 for GET and HEAD, 308 otherwise, so the method is preserved) instead of answering 404. It is on by default ([router spec](../specs/router.md#trailing-slash-redirect)).
+When no route matches but the path with its trailing slash toggled does, the router redirects to that path (301 for GET and HEAD, 308 otherwise, so the method is preserved) instead of answering 404. It is on by default ([router spec](../specs/router.md#trailing-slash-redirect)). `server.redirect_trailing_slash` turns it off, and `credo.WithRedirectTrailingSlash(bool)` overrides that key in either direction, as `WithAddr` overrides the address: the option takes a bool because a `Without` option could not turn the redirect on over a `false` in a file. The `Without*` form is for a default-on switch with no configuration key, such as `WithoutRecover` and `WithoutReloadSignals` ([ADR-010](010-middleware-architecture.md#built-in-http-feature-configuration-criterion)).
 
 **Alternatives considered:**
 
