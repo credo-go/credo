@@ -2,6 +2,7 @@ package credo
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 )
@@ -135,6 +136,32 @@ func (app *App) Logger() *slog.Logger {
 		return defaultLogger
 	}
 	return app.logger
+}
+
+// warnUnclosedBindings warns in debug mode, once the drain has begun, of
+// each binding whose value has a Close the App never calls: its type shows
+// Close() error, Close() or Close(ctx) error, it claims nothing — no
+// Shutdown, no [CloseOnShutdown], no [Borrowed] — it is not a [View], and no
+// registration owns its resource. Close is never discovered (ADR-024), so
+// such a binding stays open at shutdown; the warning names it and the
+// remedies, one record per binding, carrying component=<name>.
+func (app *App) warnUnclosedBindings() {
+	if !app.debug {
+		return
+	}
+	for _, b := range app.container.UnclosedBindings() {
+		remedies := "credo.CloseOnShutdown() when the App should close it or its Close releases nothing, or " +
+			"credo.View() when another registration owns what it holds"
+		if b.ValueBinding {
+			remedies = "credo.CloseOnShutdown() when the App should close it or its Close releases nothing, " +
+				"credo.View() when another registration owns what it holds, or credo.Borrowed() when the caller " +
+				"closes it"
+		}
+		app.logger.LogAttrs(context.Background(), slog.LevelWarn,
+			fmt.Sprintf("credo: %s has %s, and the App does not close it at shutdown; give it %s", b.Registration,
+				b.Close, remedies),
+			slog.String("component", b.Name))
+	}
 }
 
 // IsDebug reports whether the application is running in debug mode.
