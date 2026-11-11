@@ -126,7 +126,8 @@ func (app *App) UseAccessLog(cfgs ...AccessLogConfig) {
 	}
 	app.installFeature("App.UseAccessLog", func() {
 		if app.accessLog != nil {
-			panic("credo: App.UseAccessLog called twice")
+			panic("credo: App.UseAccessLog called twice; " +
+				"call it once with one AccessLogConfig, and register any other observer of the final response with AddObserver")
 		}
 		app.accessLog = f
 		app.observers = append(app.observers, f)

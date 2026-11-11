@@ -118,7 +118,8 @@ type i18nFeature struct {
 func (app *App) UseI18n(cfgs ...I18nConfig) {
 	app.checkFrozen("App.UseI18n")
 	if app.i18nRegistered {
-		panic("credo: App.UseI18n called twice")
+		panic("credo: App.UseI18n called twice; " +
+			"call it once with one I18nConfig, whose Dir or DirFS and Messages hold every catalog")
 	}
 	cfg := oneConfig("App.UseI18n", cfgs)
 	dirExplicit := cfg.Dir != ""

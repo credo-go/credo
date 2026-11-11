@@ -94,7 +94,8 @@ func (app *App) UseErrorRenderer(r ErrorRenderer) {
 	}
 	app.installFeature("App.UseErrorRenderer", func() {
 		if app.errorRenderer != nil {
-			panic("credo: App.UseErrorRenderer called twice")
+			panic("credo: App.UseErrorRenderer called twice; " +
+				"install one renderer, and branch inside it on the request or the ErrorInfo where bodies differ")
 		}
 		app.errorRenderer = r
 	})
@@ -120,7 +121,8 @@ func (app *App) UseSuccessRenderer(r SuccessRenderer) {
 	}
 	app.installFeature("App.UseSuccessRenderer", func() {
 		if app.successRenderer != nil {
-			panic("credo: App.UseSuccessRenderer called twice")
+			panic("credo: App.UseSuccessRenderer called twice; " +
+				"install one renderer, and branch inside it on the request or the RenderInfo where bodies differ")
 		}
 		app.successRenderer = r
 	})

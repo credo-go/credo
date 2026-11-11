@@ -79,7 +79,8 @@ func (app *App) UseDecompress(cfgs ...DecompressConfig) {
 	}
 	app.installFeature("App.UseDecompress", func() {
 		if app.decompress != nil {
-			panic("credo: App.UseDecompress called twice")
+			panic("credo: App.UseDecompress called twice; " +
+				"call it once with one DecompressConfig, whose Skipper chooses the requests it decompresses")
 		}
 		app.decompress = f
 	})
