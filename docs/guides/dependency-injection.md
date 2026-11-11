@@ -377,6 +377,14 @@ app.ProvideValue(PrimaryDB{db}, credo.View())                           // db's 
 
 Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, a `credo.ComponentName` name the health-name rules refuse or that another component has, `credo.Ingress()` or `credo.ComponentName` on a binding that is not a component, `credo.OptionalReadiness()` on a registration that plans no readiness entry (a type without `Ready`, or one that is neither a component nor borrowed), `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, any of `credo.Ingress()`, `credo.ComponentName`, `credo.OptionalReadiness()`, `credo.CloseOnShutdown()` and `credo.Borrowed()` beside `credo.View()`, since a view's resource is its owner's, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
 
+In debug mode (`credo.WithDebug()` or `server.debug: true`) the App names each binding whose `Close` it leaves open. When shutdown begins, before anything stops, it logs one warning per built binding whose type shows `Close() error`, `Close()` or `Close(ctx) error` and which claims nothing — its value has no `Shutdown`, and it carries neither `credo.CloseOnShutdown()` nor `credo.Borrowed()` — is not a view, and holds a resource no registration owns. The record carries `component=<binding name>`:
+
+```text
+credo: the ProvideValue binding of *search.Client has Close() error, and the App does not close it at shutdown; give it credo.CloseOnShutdown() when the App should close it or its Close releases nothing, credo.View() when another registration owns what it holds, or credo.Borrowed() when the caller closes it
+```
+
+`credo.CloseOnShutdown()` also fits a `Close` that releases nothing, which the App then calls once after the binding's consumers; a `Provide` binding's warning leaves out `credo.Borrowed()`, which only `ProvideValue` accepts. A binding whose type does not show `Close` — an interface of the methods its consumers call — is never named, so binding a value under such a type says that nothing in the App closes it. A plain holder beside the registration that owns its resource, a binding never built and a binding an override replaced are not named either.
+
 ### Replacing a binding
 
 A binding is replaced at registration, before the container is finalized, with `credo.Override()` on `Provide` or `ProvideValue` — in a composition root that swaps one implementation for another, or in a module that lets the application substitute a default:

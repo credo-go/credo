@@ -272,8 +272,9 @@ func assembleApp(
 		newServer: func() *http.Server {
 			return buildServer(app.serverCfg, app, app.Logger(), app.configureServer)
 		},
-		features:     app.effectiveFeatures,
-		startNotices: app.warnUnmountedHealthChecks,
+		features:        app.effectiveFeatures,
+		startNotices:    app.warnUnmountedHealthChecks,
+		teardownNotices: app.warnUnclosedBindings,
 		reload: func(ctx context.Context) error {
 			_, err := app.Reload(ctx)
 			return err

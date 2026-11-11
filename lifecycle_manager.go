@@ -178,6 +178,11 @@ type lifecycleDeps struct {
 	// take no effect, once the App has entered running.
 	startNotices func()
 
+	// teardownNotices logs what the drain has to say about the values the
+	// App leaves open, once the container's teardown has begun and before
+	// anything stops.
+	teardownNotices func()
+
 	// reload runs App.Reload for a reload signal.
 	reload func(ctx context.Context) error
 }
@@ -848,6 +853,8 @@ func (lm *lifecycleManager) stopTiers(
 		// The container was already torn down: nothing of it remains to stop.
 		lm.deps.logger.LogAttrs(context.Background(), slog.LevelDebug, "credo: teardown already ran",
 			slog.Any("error", err))
+	} else {
+		lm.deps.teardownNotices()
 	}
 
 	var wg sync.WaitGroup
