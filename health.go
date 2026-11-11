@@ -77,7 +77,8 @@ const defaultHealthCheckTimeout = 5 * time.Second
 func (app *App) UseHealth(cfgs ...HealthConfig) {
 	app.checkFrozen("App.UseHealth")
 	if app.healthMounted {
-		panic("credo: UseHealth already called")
+		panic("credo: App.UseHealth called twice; call it once with one HealthConfig, and register checks " +
+			"with AddLivenessCheck and AddReadinessCheck, before or after it")
 	}
 
 	var cfg HealthConfig
