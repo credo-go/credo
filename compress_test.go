@@ -295,7 +295,9 @@ func TestUseCompress_Misuse(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseCompress()
-		expectPanic(t, "called twice", func() { app.UseCompress() })
+		const want = "credo: App.UseCompress called twice; call it once with one CompressConfig, " +
+			"whose Skipper and Types choose what is compressed"
+		expectPanic(t, want, func() { app.UseCompress() })
 	})
 	t.Run("two configs", func(t *testing.T) {
 		app := mustNew(t)

@@ -154,8 +154,9 @@ func TestUseRequestID_Misuse(t *testing.T) {
 		app := mustNew(t)
 		app.UseRequestID()
 		defer func() {
-			if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "called twice") {
-				t.Fatalf("panic = %v, want called twice", r)
+			const want = "credo: App.UseRequestID called twice; call it once with one RequestIDConfig"
+			if r := recover(); r == nil || fmt.Sprint(r) != want {
+				t.Fatalf("panic = %v, want %q", r, want)
 			}
 		}()
 		app.UseRequestID()

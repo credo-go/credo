@@ -103,7 +103,8 @@ func (app *App) UseCompress(cfgs ...CompressConfig) {
 	f.exactTypes, f.wildcardTypes = buildCompressibleTypes(types)
 	app.installFeature("App.UseCompress", func() {
 		if app.compress != nil {
-			panic("credo: App.UseCompress called twice")
+			panic("credo: App.UseCompress called twice; " +
+				"call it once with one CompressConfig, whose Skipper and Types choose what is compressed")
 		}
 		app.compress = f
 	})

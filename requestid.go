@@ -75,7 +75,7 @@ func (app *App) UseRequestID(cfgs ...RequestIDConfig) {
 	}
 	app.installFeature("App.UseRequestID", func() {
 		if app.requestID != nil {
-			panic("credo: App.UseRequestID called twice")
+			panic("credo: App.UseRequestID called twice; call it once with one RequestIDConfig")
 		}
 		app.requestID = f
 	})

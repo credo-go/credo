@@ -31,7 +31,9 @@ func TestUseErrorRenderer_Misuse(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
-		expectPanicContaining(t, "App.UseErrorRenderer called twice", func() {
+		const want = "credo: App.UseErrorRenderer called twice; install one renderer, " +
+			"and branch inside it on the request or the ErrorInfo where bodies differ"
+		expectPanicContaining(t, want, func() {
 			app.UseErrorRenderer(credo.RFC9457ErrorRenderer())
 		})
 	})
@@ -53,7 +55,9 @@ func TestUseSuccessRenderer_Misuse(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseSuccessRenderer(renderer)
-		expectPanicContaining(t, "App.UseSuccessRenderer called twice", func() {
+		const want = "credo: App.UseSuccessRenderer called twice; install one renderer, " +
+			"and branch inside it on the request or the RenderInfo where bodies differ"
+		expectPanicContaining(t, want, func() {
 			app.UseSuccessRenderer(renderer)
 		})
 	})
@@ -63,7 +67,9 @@ func TestUseAccessLog_Misuse(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseAccessLog()
-		expectPanicContaining(t, "App.UseAccessLog called twice", func() { app.UseAccessLog() })
+		const want = "credo: App.UseAccessLog called twice; call it once with one AccessLogConfig, " +
+			"and register any other observer of the final response with AddObserver"
+		expectPanicContaining(t, want, func() { app.UseAccessLog() })
 	})
 	t.Run("two configs", func(t *testing.T) {
 		app := mustNew(t)
@@ -514,18 +520,21 @@ func TestI18n_InactiveBundleNeverDetects(t *testing.T) {
 
 func filepath_nonexistent() string { return "nonexistent_locales_for_lazy_test/" }
 
+const i18nTwice = "credo: App.UseI18n called twice; call it once with one I18nConfig, " +
+	"whose Dir or DirFS and Messages hold every catalog"
+
 func TestUseI18n_TwicePanics(t *testing.T) {
 	t.Run("active", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
-		expectPanicContaining(t, "App.UseI18n called twice", func() {
+		expectPanicContaining(t, i18nTwice, func() {
 			app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 		})
 	})
 	t.Run("conventional discovery consumes the slot", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseI18n()
-		expectPanicContaining(t, "App.UseI18n called twice", func() {
+		expectPanicContaining(t, i18nTwice, func() {
 			app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS()})
 		})
 	})

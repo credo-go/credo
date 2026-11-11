@@ -270,7 +270,9 @@ func TestUseDecompress_Misuse(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		app := mustNew(t)
 		app.UseDecompress()
-		expectPanic(t, "called twice", func() { app.UseDecompress() })
+		const want = "credo: App.UseDecompress called twice; call it once with one DecompressConfig, " +
+			"whose Skipper chooses the requests it decompresses"
+		expectPanic(t, want, func() { app.UseDecompress() })
 	})
 	t.Run("after shutdown", func(t *testing.T) {
 		app := mustNew(t)
