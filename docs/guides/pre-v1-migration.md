@@ -11,7 +11,7 @@ These changes are on `main` and not yet in a release.
 | A route with text after a catch-all (`GET /a/{p...}/x`), which never matched and answered 405 | Registration panics: end the pattern with the catch-all (`/a/{p...}`) and read the rest from its capture |
 | A catch-all in a `Mount` prefix, or in a group prefix under `Static` | Registration panics: the mount or static route captures the path below its prefix itself |
 | `middleware.ContractConfig{RequireContentType: true}`, or a `MetaAccept` contract that let a body without a `Content-Type` pass | Drop the field: the contract answers 415 to such a body by default, and `ContractConfig{AllowMissingContentType: true}` lets it pass |
-| `UseHealth` with `Enabled` false, followed by a second `UseHealth` | The second call panics: call `UseHealth` once, with the `Enabled` value the deployment wants; checks registered after a disabled call are accepted and never run |
+| `UseHealth` with `Enabled` false, followed by a second `UseHealth` | The second call panics: call `UseHealth` once, with `Disabled` set as the deployment wants; checks registered before or after a disabled call are accepted and never run |
 | `middleware.Secure(middleware.SecureConfig{…})` relying on a header it left out being off | A field left out keeps its default: set `DisableContentTypeNosniff: true` or `DisableXFrameOptions: true` to keep `nosniff` or `X-Frame-Options` off |
 | `SecureConfig{ContentTypeNosniff: "nosniff"}` | Delete the field: the header is sent by default |
 | `SecureConfig{ContentTypeNosniff: ""}` in a config meant to send no `nosniff` | `SecureConfig{DisableContentTypeNosniff: true}` |
@@ -28,6 +28,28 @@ These changes are on `main` and not yet in a release.
 | An application section named `log`, read by the application | Rename the section, or keep it and pass the logger with `credo.WithLogger`. If the section only set a level or chose JSON, delete the wiring: `log.level` and `log.format` do it, and a reload applies them |
 | A `.env` entry named `LOG` or `LOG__…`, which `.env` loading maps to the `log` section without a prefix | Rename the entry, unless it sets `log.level` or `log.format` |
 | An XML body with content after its root element was bound and the rest ignored | `BindBody` answers 400 with the `trailing_data` reason: send one document per request |
+| `HealthConfig{Enabled: new(false)}` | `HealthConfig{Disabled: true}` |
+| `HealthConfig{Liveness: new(false)}`, `HealthConfig{Readiness: new(false)}` | `HealthConfig{DisableLiveness: true}`, `HealthConfig{DisableReadiness: true}` |
+| `app.AddReadinessCheck("db", checker)` with `checker` a `credo.HealthChecker` | `app.AddReadinessCheck("db", checker.Check)`, or a `func(ctx context.Context) error`; the same for `AddLivenessCheck` |
+| `app.UseHealth()` placed before every `AddLivenessCheck` and `AddReadinessCheck` | Any order; an App with checks and no `UseHealth` warns when it starts |
+| `app.State() == "running"` | `app.State() == credo.StateRunning`; a comparison with a literal still compiles, and a `string` is `string(app.State())` |
+| `app.ConfigExists("cache")` | `app.ConfigExists(CacheSection)`, or `app.ConfigExists[CacheConfig]("cache")` for a literal key |
+| `errors.AsType[*credo.DIPanicError](err)`, `credo.DIPanicPhase` | `errors.AsType[*credo.PanicError](err)`, `credo.PanicPhase` |
+| `credo.DIPanicConstruction`, `DIPanicStart`, `DIPanicShutdown`, `DIPanicLateCleanup` | `credo.PanicConstruction`, `PanicStart`, `PanicShutdown`, `PanicLateCleanup` |
+| `pe.Phase.String()` on a panic error | `string(pe.Phase)` |
+| A match on `"di: panic during"` in an error text or a log | `errors.AsType[*credo.PanicError](err)` for an error; `"credo: panic during"` for a log line |
+| `json.Marshal(httpErr)` giving `{"status":…,"code":…}` | Return the error from the handler; for a body of your own, read `credo.ErrorInfo` in an `ErrorRenderer` |
+| `if r := c.Route(); r != nil { … }` | `if c.HasRoute() { r := c.Route(); … }` |
+| A guard that calls `c.Route().GetMeta(key)` without a `HasRoute` check | Add `if !c.HasRoute() { return <an error> }` first and register the guard with `app.Middleware`: without a route the read is "not set", where it panicked on the nil route |
+| `c.Route().GetPattern()`, `GetName()`, `GetMethod()`, `GetHost()` | `c.Route().Pattern`, `.Name`, `.Method`, `.Host` |
+| `ex.Route()` as the pattern, `ex.RouteName()` | `ex.Route().Pattern`, `ex.Route().Name` |
+| `route := app.GetRoute("user.show")`, then `route == nil` | `route, ok := app.GetRoute("user.show")`, then `!ok` |
+| `r := app.GET("/users/{id}", h)`, then `r.BuildURI("42")` | `app.GET("/users/{id}", h).Name("user.show")`, then `user, _ := app.GetRoute("user.show")` and `user.BuildURI("42")` |
+| `"https://" + url` with `url` from `BuildURL` of a host-scoped route | `"https:" + ref`: the result is `//host/path`, valid as it stands in a `Location` header or a link |
+| `BuildURI("/a/b")` on `/{path...}`, which returned `//a/b` | Pass the value without its leading slash (`"a/b"` builds `/a/b`): a path that begins with `//` is an error |
+| `c.T(key)`, `c.TPlural(key, n)` with `key` a `string` variable | `c.T(credo.MessageKey(key))`; declare the variable, field or parameter as `credo.MessageKey` where the key comes from. A literal key is unchanged |
+| `c.T("prefix." + code)` | `c.T(credo.MessageKey("prefix." + code))` |
+| A `testutil.CheckMessageKeys` test that passed | It may fail for an undefined key in a `T` or `TPlural` call, a key family with no catalog key, or a key passed to `T` as a variable: add the key, or write the call in a form the check reads |
 
 ## v0.26.0 at a glance
 
@@ -474,7 +496,7 @@ Complete dependency registrations, store/worker setup and overrides before an ex
 | Replace / MustReplace | `credo.Override()` on `Provide` or `ProvideValue` before `Finalize`, or `testutil.WithOverride` in tests ([DI surface](#di-surface)) |
 | Resolve from a drain hook | Resolve during bootstrap and capture the dependency in the hook closure |
 
-Do not recover a constructor panic to retry resolution: the container stores a typed terminal failure. MustResolve still panics on error, with `*credo.DIPanicError` as its payload. Closing/closed resolution matches `credo.ErrDIClosed`; teardown failure is inspectable as `*credo.LifecycleError` (`*credo.DIShutdownError` before v0.24.0) through App-level error joins. Only construction finishing after the shutdown context ends gets the separate bounded late cleanup; ordinary `Shutdown` calls share the drain deadline.
+Do not recover a constructor panic to retry resolution: the container stores a typed terminal failure. MustResolve still panics on error, with `*credo.PanicError` as its payload. Closing/closed resolution matches `credo.ErrDIClosed`; teardown failure is inspectable as `*credo.LifecycleError` (`*credo.DIShutdownError` before v0.24.0) through App-level error joins. Only construction finishing after the shutdown context ends gets the separate bounded late cleanup; ordinary `Shutdown` calls share the drain deadline.
 
 Building-state Shutdown provides cleanup even after a failed Finalize. It does not drain an externally owned http.Server. Owners of such servers must stop admission and complete the HTTP drain before `App.Shutdown`. Stopped ServeHTTP returns the framework's default 503 envelope without custom renderers, i18n callbacks or DI access; it does not restart App.
 

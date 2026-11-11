@@ -73,7 +73,7 @@ Shipped in v0.21.0. The delivery plan for this work was folded into [ADR-023](do
 The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap-and-di-ownership.md), the [router spec](docs/specs/router.md), the [HTTP features spec](docs/specs/http-features.md) and the [migration guide](docs/guides/pre-v1-migration.md) and deleted on 2026-09-06; nothing scheduled remains. These boxes are the sole progress tracker.
 
 - [x] Promote accepted DI/router/HTTP contracts to ADR/spec, README and example migration notes (2026-09-05)
-- [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/DIPanicError and fixed five-second late cleanup
+- [x] Close G1/G2 (2026-09-05): AdoptValue (removed in v0.24.0), Registry-constructor rejection, ErrDIClosed/DIShutdownError/PanicError and fixed five-second late cleanup
 - [x] P1–P3 DI minor (2026-09-05): shared preparation/shutdown gate, integration migration, phase/ownership APIs, factory removal, canonical dependency scheduler, terminal completion and immutable teardown report
 - [x] P4 router minor (2026-09-05): endpoint-owned path parameter names; strict duplicate/structural conflicts retained
 - [x] Close G4a–G4c (2026-09-05): WithRecoverConfig, inactive-i18n registration, lazy Detect(\*Context), pre-Global decompression, final access measurements and callback failure policy
@@ -108,7 +108,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Implement `http.Handler` interface on `App`
 - [x] **Fluent Route API** (Goyave): HTTP method registrations return `*Route` for chaining
 - [x] **Route Meta system** (Goyave): `SetMeta(key, val)` / `LookupMeta(key)` with parent chain inheritance (typed keys and `GetMeta(key)` since v0.26.0, R4)
-- [x] **Named Routes** (Goyave): `route.Name("x")` + strict `BuildURI(params...)` / `BuildURL(params...)`
+- [x] **Named Routes** (Goyave): `route.Name("x")` + strict `BuildURI(params...)` / `BuildURL(params...)` on the route's `RouteInfo`
 - [x] **StatusHandler** (Goyave): App-level handlers for the router's own 404 and 405 (no other code is consulted)
 - [x] **3-tier middleware** (Goyave): Global / Group / Route levels
 - [x] **HEAD auto-handling**: GET routes automatically respond to HEAD (body discarded)
@@ -132,7 +132,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `RouteParams()`, `QueryParam()` (no `FormValue()` — see [ADR-008](docs/adr/008-context-design.md)); `RouteParam(name)` single-value shortcut avoids retaining the framework-owned params map
   - [x] `Request()`, `Response()`, `Set()`, `Get()`
   - [x] `NoContent()`, `Redirect()`
-  - [x] `Route()` — access matched `*Route` (for Meta, Name, BuildURI)
+  - [x] `Route()` — the matched route's `RouteInfo` (Meta, Name, BuildURI)
 - [x] Implement `context.go` as struct (inspired by Echo, [ADR-008](docs/adr/008-context-design.md))
 - [x] Define `App` struct with `New()` constructor
   - [x] HTTP method registrations return `*Route` (fluent API)
@@ -209,7 +209,7 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
   - [x] `app.Has[T]()` — the one non-resolving presence probe; never constructs, reserves nothing
   - [x] `credo.Override()` on `Provide`/`ProvideValue` — replaces an earlier binding before `Finalize`; the replaced value never becomes the App's (v0.24.0; it replaced `app.Replace[T]`/`MustReplace`)
   - [x] v0.24.0: the surface is seven methods and `Finalize`; `CanProvideValue`, `ProvideProtectedValue`/`ProtectBinding`, `AdoptValue` and the `Must*` registration twins removed, since nothing framework-owned is bound in the container
-- [x] `app.Resolve[T]()` — retrieve instance (admitted only after `Finalize`; terminal per-singleton completion, `DIPanicError` on constructor panic, `ErrDIClosed` once teardown begins)
+- [x] `app.Resolve[T]()` — retrieve instance (admitted only after `Finalize`; terminal per-singleton completion, `PanicError` on constructor panic, `ErrDIClosed` once teardown begins)
 - [x] `app.MustResolve[T]()` — panics if not found
 - [x] Lifecycle support: `Singleton` (only — RequestScoped removed)
 - [x] `Alias[I, T]()` — interface-to-concrete type alias
@@ -450,9 +450,9 @@ The delivery plan for this work was folded into [ADR-022](docs/adr/022-bootstrap
 - [x] Store registration/Registry typed-nil hardening
 - [ ] Bounded low-cardinality tags on a readiness entry (separate API decision); a store that does not gate readiness shipped as `credo.OptionalReadiness()` in v0.25.0
 - [x] Lifecycle ownership and Registry/seam atomicity hardening: direct `Lifecycle` is framework-owned; separate handle requires explicit caller-owned opt-out; default identity is the top-level Lifecycle and semantic wrappers explicitly forward `ResourceIdentity`; equal tokens cannot repeat inside the Register ledger; raw DI duplication is unsupported; failure leaves no visible entry/value; interface access uses `Alias`
-- [x] `HealthConfig` with `*bool` toggles, custom paths, check timeout
+- [x] `HealthConfig` with plain bool switches (`Disabled`, `DisableLiveness`, `DisableReadiness`), custom paths, check timeout
 - [x] `/health` (liveness) + `/ready` (readiness) handlers via `app.UseHealth()`
-- [x] `AddLivenessCheck` / `AddReadinessCheck` with `HealthChecker` interface
+- [x] `AddLivenessCheck` / `AddReadinessCheck` taking a `func(context.Context) error`, in any order relative to `UseHealth`
 - [x] Store health integration ~~via `SetHealthStoreFunc` callback~~ via `internal/health.StoreFunc` DI seam (2026-06-11)
 - [x] K8s probe compatible JSON responses (200/503)
 - [x] Engine tests (`health_engine_test.go`)
