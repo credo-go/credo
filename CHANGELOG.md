@@ -59,6 +59,7 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **BREAKING (behavior): a binding whose interface hides its value's `Start`, `Ready` or ingress tier is refused whatever else holds the resource.** `app.ProvideValue[Querier](db)` panics before `app.ProvideValue(db)` and after it, where it was accepted after it: declare it a view with `credo.View()`, or bind the interface with `app.Alias`.
 - **BREAKING (behavior): a `Provide` whose `credo.ComponentName` name another component has panics at the call,** where it failed the start.
 - Health checks are collected in any order: `AddLivenessCheck` and `AddReadinessCheck` are accepted before `UseHealth`, after it, and beside a `UseHealth` that mounts no endpoint, where they never run.
+- The panic of a second call of a `Use*` feature names the remedy: one call with one config, one renderer for `UseErrorRenderer` and `UseSuccessRenderer`, `AddObserver` for another observer beside the access log, and for `UseHealth` checks registered with `AddLivenessCheck` and `AddReadinessCheck`, before or after it.
 - A strict unknown-key error names the `.env` entry or environment variable that set the key.
 - A SIGHUP under `Run` over a configuration that cannot reload is logged at Info as ignored, with the signal and the configuration's type, instead of being dropped.
 

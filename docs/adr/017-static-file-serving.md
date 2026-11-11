@@ -68,6 +68,7 @@ Path safety has two layers with separate jobs. The sanitizer is lexical and runs
 
 - **Document a `Mount` + `http.FileServerFS` recipe.** Minimal framework work, but a mount carries no route meta and no route or group middleware, and the file server answers its own plain-text errors outside the error pipeline, so auth integration and consistent error responses are lost.
 - **Middleware-based serving (the Fiber pattern).** Flexible, but middleware that serves files short-circuits the handler chain, which leaves the semantics of route meta and per-route middleware unclear.
+- **A `static` package.** [ADR-002](002-code-acquisition-strategy.md#what-lives-in-the-root-package) places a value the application builds and hands to the App in a package, and a package could register the same two routes through the ordinary verbs, with the engine already in `internal/static`. Static serving is a routing verb, though, and routing lives in the root: the package would have to rebuild `StaticRoute` to keep one call registering both routes with one middleware, and the move would relocate the feature's names without correcting anything. The one call is what keeps the pair answering as one route — a request with another method to the prefix or below it is a 405 with `Allow` — where two registrations written by hand drift apart.
 
 ## Consequences
 

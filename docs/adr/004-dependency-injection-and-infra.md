@@ -66,6 +66,8 @@ Handing a value to DI and handing over its teardown are separate decisions: a re
 
 `credo.Override()` is strict rather than an upsert, so an override that no longer matches the wiring fails instead of adding a binding nothing resolves while the test runs against the real dependency, and an accidental double registration still panics ([container spec](../specs/container.md#registration-options)).
 
+One option type serves every call that takes options — `Provide`, `ProvideValue`, `Alias`, `Manage`, `OnStart`, `OnStop` and `AddReadinessCheck` — and each call accepts its own subset, checked when it runs: an option the call does not accept panics, naming the options it does. Rejected: a type per call, which would move the check into the compiler at the price of more exported types, more surface rather than less.
+
 A teardown that is not a `Close` — a client's `Disconnect(ctx)`, a `Drain` that returns at once and must be waited for — belongs to a wrapper type that embeds the client and implements `Shutdown`, registered as the binding; its constructor's parameters give the teardown's own dependencies their edges, and `sqldb.DB` wraps Bun this way. No API is added for it: [ADR-024](024-lifecycle-components.md#rejected-alternatives) rejects a teardown-function option and [defers](024-lifecycle-components.md#consequences) a constructor that returns its own cleanup function.
 
 ### Several Instances of One Type
@@ -165,6 +167,7 @@ Rejected:
 | Struct tag injection (`credo:"inject"`) | Tag typos not caught at compile time, visual noise, field-scan reflection |
 | Setter injection (`SetLogger`, `SetTracer`) | Object returned from constructor is half-initialized, lifecycle problem, implicit |
 | Pure constructor params (each infra separate) | One parameter per infrastructure dependency in every constructor is verbose; `Infra` groups them into one |
+| A scoped `*slog.Logger` parameter in place of `Infra`, since the carrier holds one field | `Infra` forces keyed literals, so a field added later is additive for every constructor, while a carrier removed and needed again after v1 would break every constructor that takes a logger; a container that produced `*slog.Logger` by itself would take that type away from the application's own bindings; and the carrier pays on the day a second piece of infrastructure arrives, which the observability release decides ([ADR-014](014-observability.md)) |
 | Container as separate public package | The API is a method of the App, the lifecycle runs on the DI graph, a package would export the framework-parameter hook, DI is already optional, and the root links only its allowlist (DI Stays in the Core) |
 | RequestScoped lifecycle | Go's `context.Context` + middleware pattern provides sufficient request-scoped dependency management without DI container complexity |
 | Hybrid embed (struct with embedded `credo.Infra` + resolved fields) | Reflective field population hides application boundaries. The Infra parameter beside visible constructor parameters is clearer and sufficient |
