@@ -722,9 +722,10 @@ func TestUseHealth_DoubleCall_Panics(t *testing.T) {
 				if r == nil {
 					t.Fatal("expected panic on second UseHealth call")
 				}
-				msg, ok := r.(string)
-				if !ok || msg != "credo: UseHealth already called" {
-					t.Errorf("panic = %v, want %q", r, "credo: UseHealth already called")
+				const want = "credo: App.UseHealth called twice; call it once with one HealthConfig, " +
+					"and register checks with AddLivenessCheck and AddReadinessCheck, before or after it"
+				if msg, ok := r.(string); !ok || msg != want {
+					t.Errorf("panic = %v, want %q", r, want)
 				}
 			}()
 			app.UseHealth(tt.second)
