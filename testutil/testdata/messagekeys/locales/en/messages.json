@@ -2,5 +2,7 @@
   "tenant.taken": "This domain is taken.",
   "user.created": "User created.",
   "validation.required": "{{.field}} is required.",
-  "problem.conflict": "Conflict."
+  "problem.conflict": "Conflict.",
+  "status.active": "Active.",
+  "status.suspended": "Suspended."
 }

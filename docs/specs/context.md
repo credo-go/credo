@@ -44,8 +44,8 @@ func (c *Context) OriginalPath() string    // client path before any rewriting
 
 // Locale and translation — resolved on first use and memoized for the request
 func (c *Context) Locale() string // "" without UseI18n
-func (c *Context) T(key string, data ...map[string]any) string
-func (c *Context) TPlural(key string, count any, data ...map[string]any) string
+func (c *Context) T(key MessageKey, data ...map[string]any) string
+func (c *Context) TPlural(key MessageKey, count any, data ...map[string]any) string
 
 // Authenticated user — one slot per type T
 func (c *Context) SetUser[T any](user T)
@@ -200,7 +200,7 @@ type ErrorBody struct {
 }
 ```
 
-A message key has its own named string type, `credo.MessageKey`, an alias of `validation.MessageKey`, so a violation's key has it too: `RenderMessageKey(key MessageKey)`, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey` take it, as `HTTPError.WithMessageKey` does. A key is a catalog key only, never rendered as text and never carrying client input: a key the catalog lacks falls back to the built-in message for the code and then to the status text, and in debug mode the pipeline warns with the key, the code and the route. Literal client text is set with `HTTPError.WithMessage`, which is never looked up and wins over a key; `ErrorInfo.MessageKey` is then empty. A key computed as a `string` converts to `MessageKey`; a `string` variable passed without a conversion does not compile ([ADR-009](../adr/009-handler-and-error-handling.md)).
+A message key has its own named string type, `credo.MessageKey`, an alias of `validation.MessageKey`, so a violation's key has it too: `RenderMessageKey(key MessageKey)`, `RenderInfo.MessageKey` and `ErrorInfo.MessageKey` take it, as `HTTPError.WithMessageKey`, `Context.T` and `Context.TPlural` do. A key is a catalog key only, never rendered as text and never carrying client input: a key the catalog lacks falls back to the built-in message for the code and then to the status text, and in debug mode the pipeline warns with the key, the code and the route. Literal client text is set with `HTTPError.WithMessage`, which is never looked up and wins over a key; `ErrorInfo.MessageKey` is then empty. A key computed as a `string` converts to `MessageKey`; a `string` variable passed without a conversion does not compile ([ADR-009](../adr/009-handler-and-error-handling.md)).
 
 `Render` is the opt-in success-envelope seam: with a `SuccessRenderer` installed via `app.UseSuccessRenderer`, the renderer receives `RenderInfo` and returns the body shape; the framework owns the write — status, application JSON profile, and the bodiless-status rule apply centrally. A nil return writes `Data` plain; a renderer that commits the response itself keeps full control (return value ignored); a renderer panic hits built-in recovery like any handler panic. With no renderer installed, `Render` falls back to plain `Response.JSON` and imposes no envelope. The raw helpers above are never routed through the renderer, so webhooks, health probes, and third-party-dictated shapes always bypass it.
 
