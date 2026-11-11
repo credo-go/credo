@@ -188,7 +188,7 @@ Example:
   "validation.max": "must be at most {{.max}}",
   "validation.between": "must be between {{.min}} and {{.max}}",
   "request.type_mismatch": "must be of type {{.expected}}",
-  "request.trailing_data": "request body must contain a single JSON value",
+  "request.trailing_data": "request body must contain a single value",
   "problem.bad_request": "Bad request",
   "problem.unauthorized": "Unauthorized",
   "problem.forbidden": "Forbidden",
