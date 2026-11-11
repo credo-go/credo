@@ -362,6 +362,7 @@ app.Provide(NewOrderConsumer, credo.Ingress())                          // stops
 app.ProvideValue[*pgxpool.Pool](sharedPool, credo.Borrowed())           // the caller starts and closes it
 app.ProvideValue[*search.Client](searchClient, credo.CloseOnShutdown()) // the App calls Close
 app.ProvideValue[UserRepository](fakeRepo, credo.Override())            // replaces the earlier binding
+app.ProvideValue(PrimaryDB{db}, credo.View())                           // db's binding owns the resource
 ```
 
 | Option | Accepted by | Effect |
@@ -372,8 +373,9 @@ app.ProvideValue[UserRepository](fakeRepo, credo.Override())            // repla
 | `credo.Override()` | `Provide`, `ProvideValue`, `Alias` | Replaces an earlier binding of the same type, or an alias of it, before the container is finalized; on `Alias`, points the interface at another type |
 | `credo.ComponentName(name)` | `Provide`, `ProvideValue`, `Manage` | Names the component in logs, `/ready` and lifecycle errors (default: its type, such as `*sqldb.DB`); it is not a DI key |
 | `credo.OptionalReadiness()` | `Provide`, `ProvideValue`, `Manage` | Reports the component in `/ready` without letting it gate readiness: a failing entry shows `down`, and `/ready` answers 200 `degraded` while every gating entry is up. `Start` and `Shutdown` are unchanged |
+| `credo.View()` | `Provide`, `ProvideValue` | Declares the binding a view of a resource another registration owns, such as a wrapper beside the handle it embeds: the App starts it, asks it and shuts it down through the owner alone ([Wrappers and resource identity](#wrappers-and-resource-identity)) |
 
-Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, a `credo.ComponentName` name the health-name rules refuse or that another component has, `credo.Ingress()` or `credo.ComponentName` on a binding that is not a component, `credo.OptionalReadiness()` on a registration that plans no readiness entry (a type without `Ready`, or one that is neither a component nor borrowed), `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
+Each option is checked at the call, and misuse panics there: an option the call does not accept, a zero or repeated option, a `credo.ComponentName` name the health-name rules refuse or that another component has, `credo.Ingress()` or `credo.ComponentName` on a binding that is not a component, `credo.OptionalReadiness()` on a registration that plans no readiness entry (a type without `Ready`, or one that is neither a component nor borrowed), `credo.CloseOnShutdown()` on a type without one of the three `Close` methods, on a type that already has `Shutdown` or beside `credo.Borrowed()`, any of `credo.Ingress()`, `credo.ComponentName`, `credo.OptionalReadiness()`, `credo.CloseOnShutdown()` and `credo.Borrowed()` beside `credo.View()`, since a view's resource is its owner's, and `credo.Override()` without an earlier one — so an override that no longer matches the wiring fails instead of adding a binding nothing resolves. `Close` is never discovered without `credo.CloseOnShutdown()`: the method is too common to mean that the App owns the value. The value an override replaces never becomes the App's; whoever built it releases it.
 
 ### Replacing a binding
 
@@ -447,7 +449,7 @@ app.Provide(NewKafkaPublisher)
 app.Alias[OrderEvents, *KafkaPublisher]()
 ```
 
-Were `NewKafkaPublisher` declared to return `OrderEvents` instead, the binding would be the interface, which hides the publisher's `Start` and `Ready`, and the start would fail once the publisher is built, naming that remedy; `ProvideValue[OrderEvents](publisher)` panics at the call for the same reason. The refusal holds only when no other registration of the same resource plans the hidden method: after `app.ProvideValue(publisher)`, a second `app.ProvideValue[OrderEvents](publisher)` is accepted, since the first binding starts it. A type with `Start` and without `Shutdown` is not a component and is never started.
+Were `NewKafkaPublisher` declared to return `OrderEvents` instead, the binding would be the interface, which hides the publisher's `Start` and `Ready`, and the start would fail once the publisher is built, naming that remedy; `ProvideValue[OrderEvents](publisher)` panics at the call for the same reason. A second binding of the same publisher says that the first owns it: `app.ProvideValue[OrderEvents](publisher, credo.View())` after `app.ProvideValue(publisher)` is accepted, in either order, and the App starts the publisher through the first ([Wrappers and resource identity](#wrappers-and-resource-identity)); `Alias` says the same in one call. A type with `Start` and without `Shutdown` is not a component and is never started.
 
 An alias is a binding of its interface: a direct binding of `OrderEvents` after the `Alias` panics as a duplicate unless it carries `credo.Override()`, which replaces the alias — what `testutil.WithOverride[OrderEvents](fake)` does in a test. `Alias[OrderEvents, *FakePublisher](credo.Override())` points the interface at another registered type. When nothing else reaches the type an overridden alias pointed at, `Finalize` drops it, so the real publisher is never built or started.
 
@@ -521,9 +523,25 @@ Bind each wrapper once, named with `app.ProvideValue(PrimaryDB{primary}, credo.C
 
 ### Wrappers and resource identity
 
-A wrapper and the handle it wraps can be one resource held through two bindings, and one resource has one teardown. The App keys components by **resource identity**: the token a value's `ResourceIdentity() any` method returns (`credo.ResourceIdentifier`); without the method, a comparable value — a pointer, or a struct over one — is its own identity. Values that share an identity are started once and shut down once, when the last holder retires, so the consumers of every holder stop first: one pointer under several bindings, a wrapper and the handle it embeds, two wrappers over one handle.
+A wrapper and the handle it wraps can be one resource held through two bindings, and one resource has one owner. The App keys components by **resource identity**: the token a value's `ResourceIdentity() any` method returns (`credo.ResourceIdentifier`); without the method, a comparable value — a pointer, or a struct over one — is its own identity. Values that share an identity are one resource: one pointer under several bindings, a wrapper and the handle it embeds, two wrappers over one handle.
 
-- **A wrapper that embeds a handle which identifies itself inherits that identity.** `*sqldb.DB` returns itself from `ResourceIdentity()`, so `PrimaryDB{db}` and `db` are one database: bound both ways, it is closed once, after the consumers of both. Two wrappers over two handles are two databases, each closed once.
+**One registration owns a resource, and the others are views.** The first registration that claims a resource owns it — its value has `Shutdown`, or it carries `credo.CloseOnShutdown()` or `credo.Borrowed()` — and the App starts the resource, asks its `Ready` and shuts it down through that registration alone, under its name, its options and its tier, after the consumers of every registration that holds it. A second registration that holds the resource says so: an interface over a bound type is an `Alias`, and any other view — a wrapper, an interface bound with `ProvideValue`, an adapter constructor's interface — carries `credo.View()`:
+
+```go
+app.ProvideValue(db, credo.ComponentName("primary"))                // owns the database
+app.ProvideValue(PrimaryDB{db}, credo.View())                       // started, asked and closed through db
+app.Provide(func(db *sqldb.DB) Querier { return db }, credo.View()) // an adapter's interface
+```
+
+A view's owner exists before the view's value. An owner handed in — `ProvideValue`, or a value handed to `Manage` — may be registered before the view or after it, since every value handed in exists before anything is built; an owner a constructor builds needs the view built from it, an `Alias` or a constructor that takes the owner's binding, as the adapter above takes `*sqldb.DB`. A consumer of a view starts after the owner and stops before it. A view takes none of the options that shape the resource — `credo.Ingress()`, `credo.ComponentName`, `credo.OptionalReadiness()`, `credo.CloseOnShutdown()`, `credo.Borrowed()` — and panics at the call with one: give the option to the owner. A second registration that claims the resource without declaring itself is refused, naming the owner and the remedies — at the call for `ProvideValue` and `Manage`, at the start for a value a constructor builds, and at the first `Resolve` for an adapter that nothing builds earlier:
+
+```text
+credo: App.ProvideValue[app.PrimaryDB]: app.PrimaryDB holds the resource that the ProvideValue binding of *sqldb.DB owns, and a resource has one owner; declare app.PrimaryDB a view: give credo.View() to its registration, or, when app.PrimaryDB releases state of its own, hold the *sqldb.DB in a named field of app.PrimaryDB, so that it is a resource of its own
+```
+
+A view whose value has `Shutdown` and whose resource no registration owns once that value exists is refused, since nothing would start that resource or shut it down: `Finalize` refuses a view bound with `ProvideValue` that no value handed in owns, and a view a constructor builds fails its build. A value a constructor builds that claims a resource a view already holds fails its build too, since the view came first. Each names the remedies: give the owner as a value, derive the view from the owner's binding, or drop `credo.View()`. A registration that claims nothing needs no declaration: a pointer with no `Shutdown` is bound under as many interfaces as you like, and a second binding of a value with `Close` beside the one that carries `credo.CloseOnShutdown()` is a plain holder.
+
+- **A wrapper that embeds a handle which identifies itself inherits that identity.** `*sqldb.DB` returns itself from `ResourceIdentity()`, so `PrimaryDB{db}` and `db` are one database: with the wrapper bound as a view, it is closed once, after the consumers of both. Two wrappers over two handles are two databases, each closed once.
 - **A wrapper over a handle that does not identify itself forwards the identity with one method.** Without it, the wrapper value would be a resource of its own:
 
   ```go
@@ -535,8 +553,8 @@ A wrapper and the handle it wraps can be one resource held through two bindings,
   app.ProvideValue[ProductIndex](ProductIndex{client})
   ```
 
-  The client is closed once, after the consumers of `*search.Client` and of `ProductIndex`.
-- **A wrapper that releases state of its own shares nothing.** Only a value without state of its own to release may share an identity, because the App runs one teardown for the resource, and Go cannot tell a `Shutdown` that a wrapper inherits from one it declares. Such a wrapper holds the handle in a named field, so it neither inherits the handle's identity nor its methods; its own `Shutdown` releases its state and the handle, which is then the wrapper's alone:
+  The client is closed once, after the consumers of `*search.Client` and of `ProductIndex`. `ProductIndex` claims nothing — its type has no `Shutdown`, and it carries no `credo.CloseOnShutdown()` — so it needs no `credo.View()`, though it accepts one.
+- **A wrapper that releases state of its own shares nothing.** Only a value without state of its own to release may share an identity, because the App runs the owner's teardown alone, and Go cannot tell a `Shutdown` that a wrapper inherits from one it declares. Such a wrapper holds the handle in a named field, so it neither inherits the handle's identity nor its methods; its own `Shutdown` releases its state and the handle, which is then the wrapper's alone:
 
   ```go
   type ReportingDB struct {
@@ -549,34 +567,25 @@ A wrapper and the handle it wraps can be one resource held through two bindings,
   }
   ```
 
-The holders of one resource that have a teardown agree on its kind: `Shutdown`, or `Close` through `credo.CloseOnShutdown()`. A client bound with `credo.CloseOnShutdown()` beside a holder whose teardown is `Shutdown` is refused — the later `ProvideValue` panics when both values are given, and otherwise the construction of the holder built later fails — with both bindings and both remedies named: drop `credo.CloseOnShutdown()`, or bind the holder that has `Shutdown` under a type that shows `Close` and not `Shutdown`, with `credo.CloseOnShutdown()`. A holder without a teardown, such as `ProductIndex` above, takes no part in the choice, and the resource still waits for its consumers. A resource handed to `app.Manage` that a `ProvideValue` binding already holds, or handed to `Manage` twice, panics; a `ResourceIdentity()` that panics or returns nil or a non-comparable token panics at `ProvideValue` and `Manage` and fails a constructor's construction.
-
-**The registration holds the resource.** The teardown and the `/ready` entry of a resource belong to its **holder of record**: the first registration that holds it — a binding, or a value handed to `app.Manage`, one that is a component by its type preferred (its type shows `Shutdown`, or it carries `credo.CloseOnShutdown()`) — whatever order the holders are built in. A value that a constructor builds without becoming a binding — the value of a worker's constructor, or of a constructor handed to `app.Manage` — claims nothing. When it holds a resource a registration holds too, such as a wrapper that embeds a bound `*sqldb.DB`, it defers to that registration: it adds no `/ready` entry of its own and never runs the teardown, so the database keeps the binding's entry, with its name and its options, and the binding's teardown, after the consumers of both, even when the constructor was registered first. Without such a registration, its first holder is the holder of record.
-
-**The registrations of one resource agree on it.** One resource has one teardown, which runs in one tier, and one `/ready` entry, so the bindings and `Manage` values that hold it agree on what shapes them:
-
-- **The tier.** A raw handle bound internal beside a wrapper that embeds it bound with `credo.Ingress()` is refused, naming both registrations, their tiers and the remedies — at the later `ProvideValue` or `Manage` call when both values are handed in, and at the start when a binding's constructor builds one of them. A value that defers takes no part. Give them one tier, or hold the handle in a named field. A borrowed resource is exempt, since the App neither starts nor tears it down.
-- **The entry's options.** `credo.OptionalReadiness()` is on every registration that plans an entry for the resource or on none, and the names `credo.ComponentName` gives are one name, which the entry and the teardown carry. A borrowed resource is checked too, since `/ready` reports it.
-- **A value that defers takes no options.** A constructor handed to `Manage` with `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()` whose value defers fails the start, since the value has no entry and no teardown of its own for the option to shape; give the option to the handle's binding instead.
-
-A wrapper with readiness of its own — one that overrides the `Ready` it embeds — holds the handle in a named field, like `ReportingDB` above, so that it is a resource of its own with an entry of its own. Embedded, the wrapper and the handle are one resource with one entry, and only one of the two `Ready` methods is asked.
+A wrapper with readiness of its own — one that overrides the `Ready` it embeds — holds the handle in a named field, like `ReportingDB` above, so that it is a resource of its own with an entry of its own; embedded, the wrapper is a view, and only the owner's `Ready` is asked. A `ResourceIdentity()` that panics or returns nil or a non-comparable token panics at `ProvideValue` and `Manage` and fails a constructor's construction.
 
 ### What each registration form claims
 
-A call site does not show what a registration takes over: `app.Manage(v)` claims the teardown of what `v` holds, while `app.Manage(func() T { return v })` claims nothing a registration already holds. A registration that claims a resource is a candidate for its holder of record, which gives the resource its `/ready` entry and runs its teardown; one that claims nothing defers to such a registration when there is one.
+A call site does not show when a registration claims: a value handed in claims what it holds at the call, while a value a constructor builds claims what it holds once it is built. The first claim owns the resource, and a later one is refused unless the registration is a view; of two constructors, the first whose value is built claims first. A view's owner exists before the view's value. A value that a constructor builds without becoming a binding — a worker constructor's, or one from a constructor handed to `app.Manage` — cannot be a view, so it never holds a resource another registration owns.
 
 | Registration | A binding | What it claims |
 | --- | --- | --- |
-| `app.ProvideValue(v)` | yes | What `v` holds: its readiness entry and its teardown, after the consumers of every holder. Refused beside a `Manage` of the same resource |
-| `app.Provide(NewT)` | yes | What the value `NewT` builds holds: its readiness entry and its teardown |
-| `app.ProvideValue(v, credo.Borrowed())` | yes | Its readiness entry only: the App neither starts nor tears the value down, through this binding or any other holder |
-| `app.Manage(v)` | no | What `v` holds, as `ProvideValue` does. Refused beside a `ProvideValue` binding or another `Manage` of the same resource |
-| `app.Manage(NewT)` | no | Nothing a registration holds: the value it builds defers to the binding or `Manage` value that holds the same resource, and takes no `credo.ComponentName`, `credo.Ingress()` or `credo.OptionalReadiness()`. Holding a resource no registration holds, it is that resource's holder of record |
+| `app.ProvideValue(v)` | yes | What `v` holds, at the call: its start, its readiness entry and its teardown, after the consumers of every registration that holds it |
+| `app.Provide(NewT)` | yes | What the value `NewT` builds holds, once it is built. Refused at its build when a view of that resource already exists and nothing owns it |
+| `app.ProvideValue(v, credo.Borrowed())` | yes | What `v` holds, for its caller: its readiness entry only, since the App neither starts nor tears the value down, through this binding or any view of it |
+| `app.ProvideValue(v, credo.View())`, `app.Provide(NewT, credo.View())` | yes | Nothing: the resource is its owner's, which exists before the view's value — a value handed in, or for a constructor's view the binding it is built from — and the view depends on the owner |
+| `app.Manage(v)` | no | What `v` holds, as `ProvideValue` does. Refused beside a binding or another `Manage` value that owns the same resource |
+| `app.Manage(NewT)` | no | What the value it builds holds. Refused at the start when another registration owns it: drop the `Manage` call when `NewT` returns the binding's value, or hold the handle in a named field when it returns a wrapper |
 | `app.Workers().Continuous(name, w)`, a worker value | no | Nothing: the App runs `w` in the loop `worker:<name>` and never calls its `Shutdown` |
 | `app.Workers().Continuous(name, fn)`, a run function | no | Nothing: it builds no value, and its parameters are the bindings' |
-| `app.Workers().Continuous(name, NewW)`, a worker constructor | no | What `app.Manage(NewT)` claims: its value, `worker-value:<name>`, defers to a registration that holds the same resource, and is torn down after its loop |
+| `app.Workers().Continuous(name, NewW)`, a worker constructor | no | What `app.Manage(NewT)` claims: its value, `worker-value:<name>`, is torn down after its loop. Refused at the start when another registration owns what it holds: register the run function, the method expression `(*W).Run`, in place of a constructor that returns the binding's value, or hold the handle in a named field of the worker |
 
-`Scheduled` claims what `Continuous` does in each form. A worker that other code uses is therefore bound with `Provide` and registered through the method expression of its `Run`, `(*OutboxRelay).Run`, so that the binding keeps its readiness entry, its options and its teardown ([Worker Guide](worker.md)).
+`Scheduled` claims what `Continuous` does in each form. A worker that other code uses is therefore bound with `Provide` and registered through the method expression of its `Run`, `(*OutboxRelay).Run`, so that the binding keeps its readiness entry, its options and its teardown, and a worker that uses a bound database holds it in a named field ([Worker Guide](worker.md)).
 
 For the full multi-database pattern, see the [Data Access Guide](data-access.md).
 
@@ -786,9 +795,9 @@ No dependency crosses the tiers backwards: an internal component that depends on
 
 ### A value whose binding's type does not show `Shutdown`
 
-Ownership, not the view consumers take, decides the teardown. A value the App owns whose `Shutdown` only the built value has — bound as an interface without the method, say — is still a component and is shut down after its consumers. Because `Finalize` cannot see it, it is internal, and if it depends on an ingress component its construction fails with the path and the remedies. Its `Start` and `Ready` are planned from the binding's type, so a binding whose type hides them is refused unless another registration of the same resource plans them: provide the concrete type and `Alias` the interface ([Interface Wiring with `Alias`](#interface-wiring-with-alias)). A binding whose type shows `Start` but hides the `Shutdown` its value has is a component, and the App starts it. To keep the teardown of a value you built with yourself, bind it with `app.ProvideValue[T](v, credo.Borrowed())`.
+Ownership, not the view consumers take, decides the teardown. A value the App owns whose `Shutdown` only the built value has — bound as an interface without the method, say — is still a component and is shut down after its consumers. Because `Finalize` cannot see it, it is internal, and if it depends on an ingress component its construction fails with the path and the remedies. Its `Start` and `Ready` are planned from the binding's type, so a binding whose type hides them is refused unless it is a view of a resource another registration owns: provide the concrete type and `Alias` the interface, or give the binding `credo.View()` ([Interface Wiring with `Alias`](#interface-wiring-with-alias)). A binding whose type shows `Start` but hides the `Shutdown` its value has is a component, and the App starts it. To keep the teardown of a value you built with yourself, bind it with `app.ProvideValue[T](v, credo.Borrowed())`.
 
-A value that a constructor builds over a borrowed resource stays the caller's as well, even when it has `Shutdown`, unless its binding carries `credo.CloseOnShutdown()`. A teardown that is neither `Shutdown` nor a `Close` — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges.
+A wrapper that a constructor builds over a borrowed resource stays the caller's as well when its binding is a view, `app.Provide(NewWrapper, credo.View())`; without the option, a wrapper that has `Shutdown` claims the resource the borrowed binding owns and is refused. A teardown that is neither `Shutdown` nor a `Close` — a client's `Disconnect(ctx)`, a `Drain` that must be waited for — belongs to a type that embeds the client and implements `Shutdown`, registered as the binding itself, so its constructor's parameters give the teardown's own dependencies their edges.
 
 ### Components that are not bindings, and hooks
 

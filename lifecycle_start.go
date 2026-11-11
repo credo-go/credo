@@ -211,8 +211,9 @@ func (lm *lifecycleManager) build(r *startRun, u *di.Unit) (value any, ok bool, 
 
 // startWalk runs the start walk: per tier, internal then ingress, it builds
 // each planned component in dependency order and calls its Start, then runs
-// the tier's start hooks FIFO. It stops at the first failure or at an
-// interrupt; on success it stores running, unless an interrupt came first.
+// the tier's start hooks FIFO, then refuses a view whose resource no
+// registration owns. It stops at the first failure or at an interrupt; on
+// success it stores running, unless an interrupt came first.
 func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 	c := lm.deps.container
 	for _, s := range lm.frameworkSteps {
@@ -242,7 +243,7 @@ func (lm *lifecycleManager) startWalk(r *startRun) startOutcome {
 				return startFailed
 			}
 			starter, ok := v.(Starter)
-			if !ok || !c.ClaimStart(u) {
+			if !ok || !c.CallsStart(u) {
 				continue
 			}
 			if outcome := lm.startUnit(r, u, tier, starter.Start, true); outcome != startOK {
@@ -521,8 +522,8 @@ func (lm *lifecycleManager) runLifecycleHook(
 }
 
 // componentReadiness builds the readiness checks of the resources whose
-// holders answer Ready, once, from the values the start walk built: one per
-// resource, its holder of record's, under the resource's name and with its
+// owners answer Ready, once, from the values the start walk built: one per
+// resource, its owner's, under the owner's name and with its
 // credo.OptionalReadiness() option. No DI resolution happens per probe.
 func (lm *lifecycleManager) componentReadiness() []internalhealth.ReadinessCheck {
 	var checks []internalhealth.ReadinessCheck

@@ -45,6 +45,10 @@ type Options struct {
 	// CloseOnShutdown makes a binding whose type has a Close method a
 	// component the App closes after its consumers.
 	CloseOnShutdown bool
+	// View declares a binding a view of a resource another registration
+	// owns: it plans nothing and claims nothing, and the App starts the
+	// resource, reports it and tears it down through its owner alone.
+	View bool
 	// Override replaces an earlier binding of the same type.
 	Override bool
 	// Name is the credo.ComponentName name of a component: a managed one or
@@ -138,27 +142,24 @@ type Unit struct {
 	// managed constructor returns.
 	t    reflect.Type
 	name string
-	// nameGiven marks a name given with credo.ComponentName, which the
-	// registrations of one resource agree on.
+	// nameGiven marks a name given with credo.ComponentName.
 	nameGiven bool
 
 	// managed marks a unit that is not a binding: a value or constructor
 	// handed to Manage, or a unit a worker registration adds. Nothing
 	// resolves it.
 	managed bool
-	// claimant marks a value handed to Manage, the one managed unit that
-	// claims what it holds. A value a constructor builds — one handed to
-	// Manage, or a worker's — claims nothing: it defers to a registration of
-	// its resource (holderOfRecord).
-	claimant bool
+	// handedIn marks a value handed to Manage, as opposed to a constructor
+	// handed to Manage or to a worker registration.
+	handedIn bool
 	// prov and entry belong to a managed unit; a binding's live in
 	// Container.registrations and Container.singletons.
 	prov  provider
 	entry *singletonEntry
 	// valueBinding marks a binding made with a value (ProvideValue).
 	valueBinding bool
-	// ingressGiven marks credo.Ingress() given on a Manage call, which a
-	// value that defers refuses.
+	// ingressGiven marks credo.Ingress() given on the registration, as
+	// opposed to a tier its type declares.
 	ingressGiven bool
 	// worker is the registration call of the worker whose constructor builds
 	// the unit's value; empty for every other unit. See Options.Worker.
@@ -174,8 +175,11 @@ type Unit struct {
 	tier      Tier
 	closer    closeKind
 	borrowed  bool
-	starts    bool
-	readies   bool
+	// view marks a binding given credo.View(): it plans nothing, has no
+	// teardown and claims nothing.
+	view    bool
+	starts  bool
+	readies bool
 	// optional reports the unit's readiness entry without letting it gate.
 	optional bool
 	// ingressRemedy names how to declare the unit ingress; see
@@ -187,8 +191,8 @@ type Unit struct {
 	key any
 }
 
-// Name is the unit's name in reports: the credo.ComponentName name of the
-// unit or of another registration of its resource, otherwise its type.
+// Name is the unit's name in reports: its credo.ComponentName name,
+// otherwise its type.
 func (u *Unit) Name() string { return u.name }
 
 // Type is the binding type, or the type of a managed value or constructor
@@ -213,11 +217,6 @@ func (u *Unit) Readies() bool { return u.readies }
 // Manage, or a worker registration added it.
 func (u *Unit) Managed() bool { return u.managed }
 
-// registration reports whether the unit is a registration of its value — a
-// binding, or a value handed to Manage — rather than a value a constructor
-// that is not a binding builds.
-func (u *Unit) registration() bool { return !u.managed || u.claimant }
-
 // label names the unit in a misuse or conflict message, in the
 // application's terms: the call that added it.
 func (u *Unit) label() string {
@@ -236,6 +235,10 @@ func (u *Unit) label() string {
 // component, its tier, and whether the App starts it and asks it for
 // readiness. It returns the reason an option cannot apply, or "".
 func planUnit(u *Unit, o Options) string {
+	u.ingressGiven = o.Ingress
+	if o.View {
+		return planView(u, o)
+	}
 	showsShutdown := u.t.Implements(shutdownerType)
 	if o.CloseOnShutdown {
 		switch {
@@ -289,11 +292,42 @@ func planUnit(u *Unit, o Options) string {
 	return ""
 }
 
+// planView plans a binding given credo.View(): nothing. The tier, the name,
+// the readiness entry and the teardown of a resource are its owner's alone,
+// so a view takes no option that would shape them. It returns the reason
+// the view cannot apply, or "".
+func planView(u *Unit, o Options) string {
+	var given []string
+	for _, opt := range []struct {
+		on   bool
+		name string
+	}{
+		{o.Ingress, "credo.Ingress()"},
+		{o.Name != "", "credo.ComponentName"},
+		{o.OptionalReadiness, "credo.OptionalReadiness()"},
+		{o.CloseOnShutdown, "credo.CloseOnShutdown()"},
+		{o.Borrowed, "credo.Borrowed()"},
+	} {
+		if opt.on {
+			given = append(given, opt.name)
+		}
+	}
+	if len(given) > 0 {
+		return fmt.Sprintf("credo.View() declares %s a view of a resource another registration owns, and the "+
+			"tier, the name, the readiness entry and the teardown of a resource are its owner's alone; give %s "+
+			"to the owner's registration, or drop credo.View()", u.t, joinAnd(given))
+	}
+	u.view = true
+	u.tier = TierInternal
+	return ""
+}
+
 // RunsCapabilities reports whether the App calls the Start and Ready the
 // unit plans on value, its built value: the unit is a component or
 // borrowed, or the value has a Shutdown the binding's type hides. A value of
 // a type that shows only Start or Ready, with no Shutdown, is not a
-// component, and nothing is called on it.
+// component, and nothing is called on it; neither is anything called on a
+// view, whose resource is its owner's.
 func (u *Unit) RunsCapabilities(value any) bool {
 	return u.component || u.borrowed || u.teardownOf(value) == teardownShutdown
 }
@@ -325,10 +359,10 @@ func closeShape(t reflect.Type) closeKind {
 
 // teardownOf is how holder u releases its resource once its value is
 // built: through credo.CloseOnShutdown(), through a Shutdown its value has, or not at
-// all. A borrowed holder has no teardown.
+// all. A borrowed holder and a view have no teardown.
 func (u *Unit) teardownOf(value any) teardownKind {
 	switch {
-	case u.borrowed:
+	case u.borrowed || u.view:
 		return teardownNone
 	case u.closer != closeNone:
 		return teardownClose
@@ -339,19 +373,12 @@ func (u *Unit) teardownOf(value any) teardownKind {
 	return teardownNone
 }
 
-// claims reports whether holder u claims its resource's teardown: a
-// credo.CloseOnShutdown() binding, a value bound with a teardown, or a value
-// handed to Manage. A Shutdown found on a value a constructor built is no
-// claim, and neither is a constructor handed to Manage or to a worker
-// registration.
+// claims reports whether holder u claims the resource its value holds: the
+// App would do something through it — a teardown, through a Shutdown its
+// value has or credo.CloseOnShutdown(), or, borrowed, a readiness entry for
+// what its caller starts and stops. A view claims nothing.
 func (u *Unit) claims(value any) bool {
-	if u.borrowed {
-		return false
-	}
-	if u.claimant || u.closer != closeNone {
-		return true
-	}
-	return u.valueBinding && u.teardownOf(value) != teardownNone
+	return !u.view && (u.borrowed || u.teardownOf(value) != teardownNone)
 }
 
 // foundOnValue reports whether u became a component only through its built
@@ -379,29 +406,19 @@ func (u *Unit) close(ctx context.Context, value any) error {
 	return nil
 }
 
-// hiddenCapabilityErrorLocked refuses a component whose binding's type hides
-// its value's Start, Ready or declared ingress tier: the plan is taken from
-// the type, so the App would never call them or would place the value in
-// the internal tier. A borrowed value is its caller's to start, a value
-// that is not a component has nothing the App would call, and a capability
-// another holder of the same resource plans is called through that holder.
-// c.mu must be held.
-func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, hasToken bool) error {
+// hiddenCapabilityError refuses a component whose binding's type hides its
+// value's Start, Ready or declared ingress tier: the plan is taken from the
+// type, so the App would never call them or would place the value in the
+// internal tier. A borrowed value is its caller's to start, a view's
+// resource is its owner's, and a value that is not a component has nothing
+// the App would call.
+func hiddenCapabilityError(u *Unit, value any) error {
 	if value == nil || u.teardownOf(value) == teardownNone {
 		return nil
 	}
 	_, starts := value.(starter)
 	_, readies := value.(readier)
 	_, ingress := value.(ingressComponent)
-	if hasToken {
-		for _, h := range c.resources[token] {
-			if h != u && !h.borrowed {
-				starts = starts && !h.starts
-				readies = readies && !h.readies
-				ingress = ingress && h.tier != TierIngress
-			}
-		}
-	}
 	if (!starts || u.starts) && (!readies || u.readies) && (!ingress || u.tier == TierIngress) {
 		return nil
 	}
@@ -420,8 +437,8 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 	case u.valueBinding:
 		return fmt.Errorf("the binding's type %s hides %s of its value, a %s, and the App plans Start, "+
 			"Ready and the ingress tier only from the binding's type; bind the value as %s and the interface with "+
-			"app.Alias[%s, %s](), or give credo.Borrowed() when the caller starts and stops it",
-			u.t, methods, vt, vt, u.t, vt)
+			"app.Alias[%s, %s](), or give credo.View() when another registration owns the value, or "+
+			"credo.Borrowed() when the caller starts and stops it", u.t, methods, vt, vt, u.t, vt)
 	case u.worker != "":
 		return fmt.Errorf("the constructor of %s returns a %s, whose %s its result type %s hides, and the "+
 			"App plans Start, Ready and the ingress tier only from that type; declare the constructor to "+
@@ -433,7 +450,8 @@ func (c *Container) hiddenCapabilityErrorLocked(u *Unit, value any, token any, h
 	default:
 		return fmt.Errorf("the constructor of %s returns a %s, whose %s the binding's type hides, and the "+
 			"App plans Start, Ready and the ingress tier only from the binding's type; declare the constructor "+
-			"to return %s and bind %s with app.Alias[%s, %s]()", u.t, vt, methods, vt, u.t, u.t, vt)
+			"to return %s and bind %s with app.Alias[%s, %s](), or give credo.View() when another registration "+
+			"owns the value", u.t, vt, methods, vt, u.t, u.t, vt)
 	}
 }
 

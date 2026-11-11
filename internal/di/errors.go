@@ -157,8 +157,8 @@ const (
 	// context ended and received the separate best-effort cleanup attempt; its
 	// outcome is logged, not reported.
 	ShutdownLateCleanup ShutdownState = "late_cleanup"
-	// ShutdownShared: another holder of the same resource ran its teardown,
-	// or is the one to run it.
+	// ShutdownShared: the owner of the same resource ran its teardown, or is
+	// the one to run it.
 	ShutdownShared ShutdownState = "shared"
 	// ShutdownStartFailed: the component's Start failed; it released what it
 	// had opened and is never shut down.

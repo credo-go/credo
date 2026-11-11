@@ -199,7 +199,7 @@ func (app *App) warnUnmountedHealthChecks() {
 }
 
 // contributedReadinessFunc returns the readiness contributions: one per
-// resource whose holder answers Ready — a worker with a readiness condition
+// resource whose owner answers Ready — a worker with a readiness condition
 // among them — built once by the start walk, so a readiness request resolves
 // nothing. It returns nil before the App has started or when there are none.
 func (app *App) contributedReadinessFunc() internalhealth.ReadinessFunc {

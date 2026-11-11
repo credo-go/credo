@@ -51,18 +51,18 @@ func (r *counted) check(t *testing.T, starts, stops int32) {
 }
 
 // TestComponents_SharedResourceStartsOnce pins one start per resource: the
-// holders that share an identity are started once, as they are shut down
-// once.
+// views of a resource are started with it, through its owner, once, as they
+// are shut down once.
 func TestComponents_SharedResourceStartsOnce(t *testing.T) {
 	cases := []struct {
 		name string
 		bind func(app *credo.App)
 	}{
 		{"same pointer under a second type", func(app *credo.App) {
-			app.Provide(func(r *counted) countedView { return r })
+			app.Provide(func(r *counted) countedView { return r }, credo.View())
 		}},
 		{"wrapper that embeds the resource", func(app *credo.App) {
-			app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} })
+			app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} }, credo.View())
 		}},
 	}
 	for _, tc := range cases {
@@ -81,12 +81,12 @@ func TestComponents_SharedResourceStartsOnce(t *testing.T) {
 }
 
 // TestComponents_BorrowedResourceIsNeverStarted pins that a borrowed
-// resource is the caller's to start as well as to stop, through every holder.
+// resource is the caller's to start as well as to stop, through every view.
 func TestComponents_BorrowedResourceIsNeverStarted(t *testing.T) {
 	app := mustNew(t)
 	r := &counted{}
 	app.ProvideValue(r, credo.Borrowed())
-	app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} })
+	app.Provide(func(r *counted) countedWrapper { return countedWrapper{r} }, credo.View())
 	startComponents(t, app)
 	if err := shutdownApp(t, app, time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -111,8 +111,8 @@ func (u *countedUser) Shutdown(context.Context) error {
 
 type publisher interface{ Publish() }
 
-// TestComponents_SharedResourceKeepsDependencyOrder pins a holder that
-// obtains the resource through one of its consumers: the holder's route to
+// TestComponents_SharedResourceKeepsDependencyOrder pins a view that
+// obtains the resource through one of its consumers: the view's route to
 // the resource is no reason to keep that consumer open, so the consumer
 // stops first and the resource once, after it.
 func TestComponents_SharedResourceKeepsDependencyOrder(t *testing.T) {
@@ -127,7 +127,7 @@ func TestComponents_SharedResourceKeepsDependencyOrder(t *testing.T) {
 	})
 	// The interface view is the resource itself, reached through its
 	// consumer; it has no state or teardown of its own.
-	app.Provide(func(u *countedUser) publisher { return u.r })
+	app.Provide(func(u *countedUser) publisher { return u.r }, credo.View())
 	if err := app.Finalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func (c *borrowedConn) Close() error {
 type connCloser interface{ Close() error }
 
 // TestComponents_ConflictingHolderIsNotReleased pins the other side: a value
-// refused because it shares a resource whose holders disagree is that
+// refused because it claims a resource another registration owns is that
 // resource, owned elsewhere, so the App does not release it.
 func TestComponents_ConflictingHolderIsNotReleased(t *testing.T) {
 	app := mustNew(t)
@@ -200,8 +200,12 @@ func TestComponents_ConflictingHolderIsNotReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := app.Resolve[connCloser]()
-	if err == nil || !strings.Contains(err.Error(), "disagree on its owner") {
-		t.Fatalf("Resolve() = %v, want the owner conflict", err)
+	const want = "credo_test.connCloser holds the resource that the ProvideValue binding of " +
+		"*credo_test.borrowedConn owns for its caller (credo.Borrowed()), and a resource has one owner; declare " +
+		"credo_test.connCloser a view: bind it with app.Alias[credo_test.connCloser, *credo_test.borrowedConn](), " +
+		"or give credo.View() to its registration in place of credo.CloseOnShutdown(), which only the owner takes"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Resolve() = %v\nwant it to contain %q", err, want)
 	}
 	if err := shutdownApp(t, app, time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
@@ -211,8 +215,8 @@ func TestComponents_ConflictingHolderIsNotReleased(t *testing.T) {
 	}
 }
 
-// groupedPool and groupedService are two resources, each held through a
-// second view, where a holder of the pool reaches it through the service.
+// groupedPool and groupedService are two resources, each with a view, where
+// the view of the pool reaches it through the service.
 type groupedPool struct{ stops atomic.Int32 }
 
 func (p *groupedPool) Shutdown(context.Context) error { p.stops.Add(1); return nil }
@@ -236,10 +240,10 @@ func (*groupedService) ServeGrouped() {}
 
 type groupedServiceView interface{ ServeGrouped() }
 
-// TestComponents_SharedGroupsKeepARealDependency pins that only a holder's
+// TestComponents_SharedGroupsKeepARealDependency pins that only a view's
 // route to its resource is dropped from the drain order: the service's own
-// dependency on the pool holds, whichever is registered first, although a
-// holder of the pool reaches it through the service.
+// dependency on the pool holds, whichever is registered first, although the
+// view of the pool reaches it through the service.
 func TestComponents_SharedGroupsKeepARealDependency(t *testing.T) {
 	for _, serviceFirst := range []bool{true, false} {
 		name := "pool registered first"
@@ -261,8 +265,8 @@ func TestComponents_SharedGroupsKeepARealDependency(t *testing.T) {
 			if !serviceFirst {
 				registerService()
 			}
-			app.Provide(func(s *groupedService) groupedServiceView { return s })
-			app.Provide(func(s *groupedService) groupedPublisher { return s.pool })
+			app.Provide(func(s *groupedService) groupedServiceView { return s }, credo.View())
+			app.Provide(func(s *groupedService) groupedPublisher { return s.pool }, credo.View())
 			if err := app.Finalize(); err != nil {
 				t.Fatal(err)
 			}

@@ -49,9 +49,7 @@ func (c *Container) ProvideWith(constructor any, o Options) error {
 	if reason := planUnit(u, o); reason != "" {
 		return misuse("Provide", types, "%s", reason)
 	}
-	// The value does not exist yet: a name shared with a registration whose
-	// resource is unknown is checked when the value is built.
-	if err := c.nameConflictLocked(u, nil); err != nil {
+	if err := c.nameConflictLocked(u, c.replacedLocked(targetType, o)); err != nil {
 		return misuse("Provide", types, "%v", err)
 	}
 
@@ -84,6 +82,16 @@ func (c *Container) checkOverrideLocked(op string, t reflect.Type, o Options) er
 			"bind %s first, or drop credo.Override()", t, t)
 	}
 	return nil
+}
+
+// replacedLocked returns the binding of t that an override replaces, or nil:
+// without credo.Override(), or when the override replaces an alias. c.mu
+// must be held.
+func (c *Container) replacedLocked(t reflect.Type, o Options) *Unit {
+	if !o.Override {
+		return nil
+	}
+	return c.unitOf[t]
 }
 
 // replaceAliasLocked removes the alias of t that an override replaces. The
@@ -172,21 +180,20 @@ func (c *Container) provideValue[T any](op string, value T, o Options) error {
 	if idErr != nil {
 		return misuse(op, types, "%v", idErr)
 	}
-	if err := c.hiddenCapabilityErrorLocked(u, any(value), token, hasToken); err != nil {
+	// The binding an override replaces never becomes the App's: it owns
+	// nothing and names nothing the new value is checked against.
+	replaced := c.replacedLocked(targetType, o)
+	if err := c.ownershipErrorLocked(u, any(value), token, hasToken, replaced); err != nil {
 		return misuse(op, types, "%v", err)
 	}
-	if o.Override {
-		c.forgetHolderLocked(c.unitOf[targetType])
-	}
-	// The registration order the admission compares holders by: an override
-	// takes the replaced binding's place.
-	u.index = len(c.units)
-	if old, ok := c.unitOf[targetType]; ok {
-		u.index = old.index
-	}
-	if err := c.admitValueLocked(u, any(value), token, hasToken); err != nil {
+	if err := hiddenCapabilityError(u, any(value)); err != nil {
 		return misuse(op, types, "%v", err)
 	}
+	if err := c.nameConflictLocked(u, replaced); err != nil {
+		return misuse(op, types, "%v", err)
+	}
+	c.forgetHolderLocked(replaced)
+	c.admitValueLocked(u, any(value), token, hasToken)
 
 	c.replaceAliasLocked(op, targetType)
 	c.bindLocked(u, valueProvider{value: value}, &singletonEntry{state: entryBuilt, value: value})

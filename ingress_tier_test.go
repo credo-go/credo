@@ -121,8 +121,8 @@ func TestIngressComponent_HiddenTierIsRefused(t *testing.T) {
 		want := "credo: App.ProvideValue[credo_test.tierView]: the binding's type credo_test.tierView hides " +
 			"IngressTier of its value, a *credo_test.tierGate, and the App plans Start, Ready and the ingress " +
 			"tier only from the binding's type; bind the value as *credo_test.tierGate and the interface " +
-			"with app.Alias[credo_test.tierView, *credo_test.tierGate](), or give credo.Borrowed() when the " +
-			"caller starts and stops it"
+			"with app.Alias[credo_test.tierView, *credo_test.tierGate](), or give credo.View() when another " +
+			"registration owns the value, or credo.Borrowed() when the caller starts and stops it"
 		defer func() {
 			if r := recover(); fmt.Sprint(r) != want {
 				t.Fatalf("panic = %v\nwant  %s", r, want)
@@ -140,7 +140,8 @@ func TestIngressComponent_HiddenTierIsRefused(t *testing.T) {
 		const want = "the constructor of credo_test.tierView returns a *credo_test.tierGate, whose " +
 			"IngressTier the binding's type hides, and the App plans Start, Ready and the ingress tier only " +
 			"from the binding's type; declare the constructor to return *credo_test.tierGate and bind " +
-			"credo_test.tierView with app.Alias[credo_test.tierView, *credo_test.tierGate]()"
+			"credo_test.tierView with app.Alias[credo_test.tierView, *credo_test.tierGate](), or give " +
+			"credo.View() when another registration owns the value"
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Resolve() = %v\nwant it to contain %s", err, want)
 		}

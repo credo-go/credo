@@ -77,11 +77,13 @@
 // # Resource Identity
 //
 // DB is a credo.ResourceIdentifier: ResourceIdentity returns the *DB pointer.
-// A wrapper type that embeds *DB inherits it, so the App treats the *DB and
-// its wrappers as holders of one database and closes it once, after the last
-// holder retires. Only a wrapper without state of its own to release may
-// share the identity; one that releases state of its own holds the *DB in a
-// named field and does not forward ResourceIdentity.
+// A wrapper type that embeds *DB inherits it, so the *DB and its wrappers are
+// one database with one owner: a wrapper bound beside the handle is bound with
+// credo.View(), and the App starts, asks and closes the database once,
+// through its owner, after the consumers of every binding. Only a wrapper
+// without state of its own to release may share the identity; one that
+// releases state of its own holds the *DB in a named field and does not
+// forward ResourceIdentity.
 //
 // # Query Builder Proxies
 //

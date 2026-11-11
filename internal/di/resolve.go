@@ -238,11 +238,11 @@ func (c *Container) resolveEntry(
 	if err != nil {
 		entry.state = entryFailed
 		entry.err = err
-		// A refused value that no other holder carries is the App's to
-		// release; one that shares a resource belongs to that resource's
-		// owner. A refused admission records no holder, so the holders
-		// found here are the others.
-		if refused && (!hasToken || len(c.resources[token]) == 0) && u.teardownOf(value) != teardownNone {
+		// A refused value whose resource no other registration owns is the
+		// App's to release; one that shares a resource with an owner belongs
+		// to that owner. A refused admission records no owner, so the owner
+		// found here is another registration.
+		if refused && (!hasToken || c.owners[token] == nil) && u.teardownOf(value) != teardownNone {
 			entry.rejected = value
 		}
 		value = nil

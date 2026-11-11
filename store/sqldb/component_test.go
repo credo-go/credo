@@ -338,7 +338,8 @@ func TestStart_LogsThePoolWarning(t *testing.T) {
 }
 
 // ordersDB is a semantic wrapper: it embeds the handle and keeps no state
-// of its own, so it shares the handle's resource identity.
+// of its own, so it shares the handle's resource identity and is bound as a
+// view of it.
 type ordersDB struct{ *sqldb.DB }
 
 // ordersConsumer depends on the wrapper.
@@ -353,9 +354,10 @@ func (c *ordersConsumer) Shutdown(ctx context.Context) error {
 }
 
 // TestComponent_RawAndWrapperAreOneDatabase: a raw handle and a wrapper that
-// embeds it give one ping, one readiness entry and one teardown, after the
-// consumers of both, in either registration order; the entry carries a name
-// given on either.
+// embeds it, declared a view, give one ping, one readiness entry and one
+// teardown, the handle's, after the consumers of both, in either
+// registration order; the entry carries the name the handle's registration
+// gives.
 func TestComponent_RawAndWrapperAreOneDatabase(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -363,16 +365,16 @@ func TestComponent_RawAndWrapperAreOneDatabase(t *testing.T) {
 		want     string
 	}{
 		{"raw first", func(app *credo.App, db *sqldb.DB) {
-			app.ProvideValue(db)
-			app.ProvideValue(&ordersDB{DB: db}, credo.ComponentName("orders-db"))
-		}, "orders-db"},
+			app.ProvideValue(db, credo.ComponentName("primary"))
+			app.ProvideValue(&ordersDB{DB: db}, credo.View())
+		}, "primary"},
 		{"wrapper first", func(app *credo.App, db *sqldb.DB) {
-			app.ProvideValue(&ordersDB{DB: db})
+			app.ProvideValue(&ordersDB{DB: db}, credo.View())
 			app.ProvideValue(db, credo.ComponentName("primary"))
 		}, "primary"},
 		{"wrapper built by a constructor", func(app *credo.App, db *sqldb.DB) {
 			app.ProvideValue(db)
-			app.Provide(func(d *sqldb.DB) *ordersDB { return &ordersDB{DB: d} })
+			app.Provide(func(d *sqldb.DB) *ordersDB { return &ordersDB{DB: d} }, credo.View())
 		}, "*sqldb.DB"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -409,48 +411,59 @@ func TestComponent_RawAndWrapperAreOneDatabase(t *testing.T) {
 	}
 }
 
-// TestComponent_RawAndWrapperAgreeOnTheEntry: credo.OptionalReadiness() on
-// one of the raw handle and the wrapper alone, or two different names,
-// panics at the second ProvideValue, and fails the start when a Provide
-// constructor builds the second value, naming both registrations, the
-// option and the remedies.
-func TestComponent_RawAndWrapperAgreeOnTheEntry(t *testing.T) {
-	const optionalMsg = "credo: App.ProvideValue[*sqldb_test.ordersDB]: *sqldb.DB and *sqldb_test.ordersDB " +
-		"hold one resource, which has one readiness entry, but disagree on credo.OptionalReadiness(): " +
-		"*sqldb.DB has it and *sqldb_test.ordersDB does not; give both the same options, or hold the handle " +
-		"in a named field so that each is a resource of its own"
-	const nameMsg = "credo: App.ProvideValue[*sqldb_test.ordersDB]: *sqldb.DB and *sqldb_test.ordersDB " +
-		"hold one resource, which has one readiness entry and one teardown, but name it differently with " +
-		"credo.ComponentName, \"primary\" and \"orders\"; give both the same options, or hold the handle in a " +
-		"named field so that each is a resource of its own"
+// TestComponent_TheEntryIsTheOwners: the readiness entry is the handle's,
+// so a wrapper that embeds the handle and carries credo.OptionalReadiness()
+// or a name of its own is refused — beside the handle, as a second owner;
+// declared a view, as an option only the owner takes — at the call for
+// ProvideValue and at the start when a Provide constructor builds it.
+func TestComponent_TheEntryIsTheOwners(t *testing.T) {
+	const prefix = "credo: App.ProvideValue[*sqldb_test.ordersDB]: "
+	const viewMsg = prefix + "credo.View() declares *sqldb_test.ordersDB a view of a resource another " +
+		"registration owns, and the tier, the name, the readiness entry and the teardown of a resource are its " +
+		"owner's alone; give %s to the owner's registration, or drop credo.View()"
+	const ownerMsg = prefix + "*sqldb_test.ordersDB holds the resource that the ProvideValue binding of " +
+		"*sqldb.DB owns, and a resource has one owner; declare *sqldb_test.ordersDB a view: give credo.View() " +
+		"to its registration in place of %s, which only the owner takes, or, when *sqldb_test.ordersDB releases " +
+		"state of its own, hold the *sqldb.DB in a named field of *sqldb_test.ordersDB, so that it is a " +
+		"resource of its own"
 	for _, tc := range []struct {
-		name    string
-		rawOpts []credo.RegistrationOption
-		wrapOpt []credo.RegistrationOption
-		want    string
+		name   string
+		option credo.RegistrationOption
+		given  string
 	}{
-		{"OptionalReadiness on one", []credo.RegistrationOption{credo.OptionalReadiness()}, nil, optionalMsg},
-		{"two names", []credo.RegistrationOption{credo.ComponentName("primary")},
-			[]credo.RegistrationOption{credo.ComponentName("orders")}, nameMsg},
+		{"OptionalReadiness", credo.OptionalReadiness(), "credo.OptionalReadiness()"},
+		{"ComponentName", credo.ComponentName("orders"), "credo.ComponentName"},
 	} {
-		t.Run(tc.name+", ProvideValue", func(t *testing.T) {
+		t.Run(tc.name+" on a view", func(t *testing.T) {
 			db := openGateDB(t, newGateConnector(t, gateAccept), sqldb.Config{})
 			app := newComponentApp(t, nil)
-			app.ProvideValue(db, tc.rawOpts...)
+			want := fmt.Sprintf(viewMsg, tc.given)
 			defer func() {
-				if r := recover(); fmt.Sprint(r) != tc.want {
-					t.Fatalf("panic = %v\nwant  %s", r, tc.want)
+				if r := recover(); fmt.Sprint(r) != want {
+					t.Fatalf("panic = %v\nwant  %s", r, want)
 				}
 			}()
-			app.ProvideValue(&ordersDB{DB: db}, tc.wrapOpt...)
+			app.ProvideValue(&ordersDB{DB: db}, credo.View(), tc.option)
 		})
-		t.Run(tc.name+", Provide", func(t *testing.T) {
+		t.Run(tc.name+" on a second owner, ProvideValue", func(t *testing.T) {
 			db := openGateDB(t, newGateConnector(t, gateAccept), sqldb.Config{})
 			app := newComponentApp(t, nil)
-			app.ProvideValue(db, tc.rawOpts...)
-			app.Provide(func(d *sqldb.DB) *ordersDB { return &ordersDB{DB: d} }, tc.wrapOpt...)
+			app.ProvideValue(db)
+			want := fmt.Sprintf(ownerMsg, tc.given)
+			defer func() {
+				if r := recover(); fmt.Sprint(r) != want {
+					t.Fatalf("panic = %v\nwant  %s", r, want)
+				}
+			}()
+			app.ProvideValue(&ordersDB{DB: db}, tc.option)
+		})
+		t.Run(tc.name+" on a second owner, Provide", func(t *testing.T) {
+			db := openGateDB(t, newGateConnector(t, gateAccept), sqldb.Config{})
+			app := newComponentApp(t, nil)
+			app.ProvideValue(db)
+			app.Provide(func(d *sqldb.DB) *ordersDB { return &ordersDB{DB: d} }, tc.option)
 			err := app.Start(t.Context())
-			want := strings.TrimPrefix(tc.want, "credo: App.ProvideValue[*sqldb_test.ordersDB]: ")
+			want := strings.TrimPrefix(fmt.Sprintf(ownerMsg, tc.given), prefix)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Start() = %v\nwant it to contain %s", err, want)
 			}

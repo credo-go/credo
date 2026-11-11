@@ -61,6 +61,17 @@ func (identity Identity) Valid() bool {
 	return identity.dynamicType != nil
 }
 
+// IsSelf reports whether identity is value's own: value names itself, rather
+// than a resource it wraps through a [Provider]. It calls no method of value.
+func (identity Identity) IsSelf(value any) bool {
+	if isNil(value) {
+		return false
+	}
+	reflected := reflect.ValueOf(value)
+	return identity.dynamicType == reflected.Type() && reflected.Comparable() && reflected.Equal(reflected) &&
+		identity.token == value
+}
+
 func isNil(value any) bool {
 	if value == nil {
 		return true

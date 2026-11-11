@@ -226,13 +226,14 @@ func (s *ctxStarter) Start(ctx context.Context) error { s.fn(ctx); return nil }
 func (s *ctxStarter) Shutdown(context.Context) error  { return nil }
 
 // TestComponents_StartIsCalledOnce: a component bound under two types — a
-// pointer and an interface alias over it — starts and stops once.
+// pointer and an interface view over it — starts and stops once, through
+// its owner.
 func TestComponents_StartIsCalledOnce(t *testing.T) {
 	j := &journal{}
 	app := mustNew(t)
 	p := &partA{&part{name: "shared", j: j}}
 	app.ProvideValue[*partA](p)
-	app.ProvideValue[fullComponent](p)
+	app.ProvideValue[fullComponent](p, credo.View())
 	startComponents(t, app)
 	if err := shutdownApp(t, app, 2*time.Second); err != nil {
 		t.Fatalf("Shutdown() = %v", err)

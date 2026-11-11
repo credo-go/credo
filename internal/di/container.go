@@ -37,14 +37,17 @@ type Container struct {
 	unitOf map[reflect.Type]*Unit
 	// names indexes the components that carry a name of their own — every
 	// managed component, and a binding given credo.ComponentName — by name.
-	// Registrations of one resource may share a name.
 	names map[string][]*Unit
 	// resources holds, per resource identity token, the holders whose values
-	// carry it, in registration order.
+	// carry it.
 	resources map[any][]*Unit
-	// started holds the resource keys the start walk has started, so a
-	// resource that several holders share is started once.
-	started map[any]bool
+	// owners holds, per resource identity token, the one registration that
+	// owns the resource: the first whose value claims it. The App starts the
+	// resource, reports its readiness and tears it down through it alone.
+	owners map[any]*Unit
+	// replaced holds, per resource identity token, the owner an override
+	// replaced, for the refusal of a view the override left without one.
+	replaced map[any]*Unit
 	// unreached holds, per type an override left without the alias that
 	// pointed at it, which override did so, and unreachedOrder their order;
 	// Seal drops each one nothing else reaches into dropped.
@@ -116,9 +119,10 @@ type singletonEntry struct {
 	err   error
 	// rejected is a value a constructor built that the container refused,
 	// when the value is the App's alone: its identity is unusable, or no
-	// other holder carries it. The construction failed, but the drain still
-	// releases the value. A value refused because it shares a resource with
-	// other holders is that resource, released by its owner, and is not kept.
+	// other registration owns its resource. The construction failed, but the
+	// drain still releases the value. A value refused because it claims a
+	// resource another registration owns is that resource, released by its
+	// owner, and is not kept.
 	rejected any
 
 	buildStart    time.Time
@@ -141,7 +145,8 @@ func New() *Container {
 		unitOf:         make(map[reflect.Type]*Unit),
 		names:          make(map[string][]*Unit),
 		resources:      make(map[any][]*Unit),
-		started:        make(map[any]bool),
+		owners:         make(map[any]*Unit),
+		replaced:       make(map[any]*Unit),
 		unreached:      make(map[reflect.Type]string),
 		dropped:        make(map[reflect.Type]string),
 

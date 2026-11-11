@@ -80,15 +80,52 @@ func misuseReason(t *testing.T, err error) string {
 	return m.Reason
 }
 
-func TestTeardown_SharedResourceRunsOnceThroughFirstHolder(t *testing.T) {
+// TestTeardown_SharedResourceRunsOnceThroughItsOwner: a wrapper with a
+// Shutdown of its own, declared a view, leaves the one teardown to the
+// owner, in either registration order.
+func TestTeardown_SharedResourceRunsOnceThroughItsOwner(t *testing.T) {
+	for _, viewFirst := range []bool{false, true} {
+		ev := &events{}
+		pool := &unitPool{ev: ev, name: "pool"}
+		c := di.New()
+		view := func() {
+			if err := c.ProvideValueWith[unitRepoComp](unitRepoComp{pool: pool}, di.Options{View: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if viewFirst {
+			view()
+		}
+		if err := c.ProvideValue[*unitPool](pool); err != nil {
+			t.Fatal(err)
+		}
+		if !viewFirst {
+			view()
+		}
+		seal(t, c)
+		if err := c.Shutdown(t.Context()); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		if got := ev.list(); !slices.Equal(got, []string{"shutdown pool"}) {
+			t.Fatalf("view first %v: events = %v, want one shutdown", viewFirst, got)
+		}
+	}
+}
+
+func TestTeardown_UndeclaredSecondOwnerIsRefused(t *testing.T) {
 	ev := &events{}
 	pool := &unitPool{ev: ev, name: "pool"}
 	c := di.New()
 	if err := c.ProvideValue[*unitPool](pool); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.ProvideValue[unitRepoComp](unitRepoComp{pool: pool}); err != nil {
-		t.Fatal(err)
+	err := c.ProvideValue[unitRepoComp](unitRepoComp{pool: pool})
+	const want = "di_test.unitRepoComp holds the resource that the ProvideValue binding of *di_test.unitPool owns, " +
+		"and a resource has one owner; declare di_test.unitRepoComp a view: give credo.View() to its registration, " +
+		"or, when di_test.unitRepoComp releases state of its own, hold the *di_test.unitPool in a named field of " +
+		"di_test.unitRepoComp, so that it is a resource of its own"
+	if reason := misuseReason(t, err); reason != want {
+		t.Fatalf("reason = %q\nwant      %q", reason, want)
 	}
 	seal(t, c)
 	if err := c.Shutdown(t.Context()); err != nil {
@@ -136,29 +173,86 @@ type identifiedCloser struct {
 func (c *identifiedCloser) ResourceIdentity() any { return c.pool }
 func (c *identifiedCloser) Close() error          { c.ev.add("close"); return nil }
 
-func TestProvideValue_KindConflictOnSharedResource(t *testing.T) {
+// TestProvideValue_SecondClaimIsRefused: each kind of claim — a teardown
+// through credo.CloseOnShutdown(), a borrowed binding — is refused beside an
+// owner, naming the option a view leaves to the owner; a borrowed owner is
+// named as one.
+func TestProvideValue_SecondClaimIsRefused(t *testing.T) {
 	ev := &events{}
 	pool := &unitPool{ev: ev}
+
 	c := di.New()
 	c.MustProvideValue[*unitPool](pool)
 	err := c.ProvideValueWith[*identifiedCloser](&identifiedCloser{pool: pool, ev: ev}, di.Options{CloseOnShutdown: true})
-	reason := misuseReason(t, err)
-	if !strings.Contains(reason, "disagree on its teardown") {
-		t.Fatalf("reason = %q", reason)
+	const wantClose = "*di_test.identifiedCloser holds the resource that the ProvideValue binding of " +
+		"*di_test.unitPool owns, and a resource has one owner; declare *di_test.identifiedCloser a view: give " +
+		"credo.View() to its registration in place of credo.CloseOnShutdown(), which only the owner takes, or, " +
+		"when *di_test.identifiedCloser releases state of its own, hold the *di_test.unitPool in a named field of " +
+		"*di_test.identifiedCloser, so that it is a resource of its own"
+	if reason := misuseReason(t, err); reason != wantClose {
+		t.Fatalf("reason = %q\nwant      %q", reason, wantClose)
+	}
+
+	c = di.New()
+	c.MustProvideValue[*unitPool](pool)
+	err = c.ProvideValueWith[unitRepoComp](unitRepoComp{pool: pool}, di.Options{Borrowed: true})
+	const wantBorrowed = "di_test.unitRepoComp holds the resource that the ProvideValue binding of " +
+		"*di_test.unitPool owns, and a resource has one owner; declare di_test.unitRepoComp a view: give " +
+		"credo.View() to its registration in place of credo.Borrowed(), which only the owner takes, or, when " +
+		"di_test.unitRepoComp releases state of its own, hold the *di_test.unitPool in a named field of " +
+		"di_test.unitRepoComp, so that it is a resource of its own"
+	if reason := misuseReason(t, err); reason != wantBorrowed {
+		t.Fatalf("reason = %q\nwant      %q", reason, wantBorrowed)
+	}
+
+	c = di.New()
+	if err = c.ProvideValueWith[*unitPool](pool, di.Options{Borrowed: true}); err != nil {
+		t.Fatal(err)
+	}
+	err = c.ProvideValue[unitRepoComp](unitRepoComp{pool: pool})
+	const wantOfBorrowed = "di_test.unitRepoComp holds the resource that the ProvideValue binding of " +
+		"*di_test.unitPool owns for its caller (credo.Borrowed()), and a resource has one owner; declare " +
+		"di_test.unitRepoComp a view: give credo.View() to its registration"
+	if reason := misuseReason(t, err); !strings.HasPrefix(reason, wantOfBorrowed) {
+		t.Fatalf("reason = %q\nwant it to start %q", reason, wantOfBorrowed)
 	}
 }
 
-func TestProvideValue_OwnerConflict(t *testing.T) {
-	ev := &events{}
-	pool := &unitPool{ev: ev}
-	c := di.New()
-	c.MustProvideValue[*unitPool](pool)
-	err := c.ProvideValueWith[unitRepoComp](unitRepoComp{pool: pool}, di.Options{Borrowed: true})
-	reason := misuseReason(t, err)
-	if !strings.Contains(reason, "disagree on its owner") {
-		t.Fatalf("reason = %q", reason)
+// TestProvideValue_PlainHolderBesideAnOwner: a binding that claims nothing
+// — no Shutdown on its value, no option — beside the credo.CloseOnShutdown()
+// owner of its value declares nothing, in either order, and the value is
+// closed once.
+func TestProvideValue_PlainHolderBesideAnOwner(t *testing.T) {
+	for _, holderFirst := range []bool{false, true} {
+		ev := &events{}
+		conn := &closeErrConn{ev: ev}
+		c := di.New()
+		holder := func() {
+			if err := c.ProvideValue[errCloser](conn); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if holderFirst {
+			holder()
+		}
+		if err := c.ProvideValueWith[*closeErrConn](conn, di.Options{CloseOnShutdown: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !holderFirst {
+			holder()
+		}
+		seal(t, c)
+		if err := c.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got := ev.list(); !slices.Equal(got, []string{"close err"}) {
+			t.Fatalf("holder first %v: events = %v, want one close", holderFirst, got)
+		}
 	}
 }
+
+// errCloser is an interface view of a connection that shows Close.
+type errCloser interface{ Close() error }
 
 func TestProvideValue_BorrowedIsNeverShutDown(t *testing.T) {
 	ev := &events{}
@@ -269,9 +363,17 @@ func TestManage_Misuse(t *testing.T) {
 			if _, err := c.Manage(pool, di.Options{Name: "a"}); err != nil {
 				t.Fatal(err)
 			}
-		}, pool, di.Options{Name: "b"}, "handed to Manage"},
+		}, pool, di.Options{Name: "b"}, "Manage(b) holds the resource that the value handed to Manage as a owns, " +
+			"and a resource has one owner; hand each resource to Manage once"},
 		{"held by ProvideValue", func(c *di.Container) { c.MustProvideValue[*unitPool](pool) },
-			pool, di.Options{}, "already managed through DI"},
+			pool, di.Options{}, "Manage(*di_test.unitPool) holds the resource that the ProvideValue binding of " +
+				"*di_test.unitPool owns, and a resource has one owner; drop the Manage call, since that binding " +
+				"already owns it"},
+		{"wrapper of a binding", func(c *di.Container) { c.MustProvideValue[*unitPool](pool) },
+			unitRepoComp{pool: pool}, di.Options{}, "Manage(di_test.unitRepoComp) holds the resource that the " +
+				"ProvideValue binding of *di_test.unitPool owns, and a resource has one owner; hold the " +
+				"*di_test.unitPool in a named field of di_test.unitRepoComp, so that it is a resource of its own, or " +
+				"drop the Manage call"},
 		{"duplicate name", func(c *di.Container) {
 			if _, err := c.Manage(&unitPool{ev: ev}, di.Options{Name: "x"}); err != nil {
 				t.Fatal(err)
