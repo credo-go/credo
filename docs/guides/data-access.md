@@ -532,12 +532,12 @@ app.ProvideValue(db, credo.OptionalReadiness()) // reported in /ready without ga
 
 Gating is the default for a reason, and it has a cost under load; the [deployment guide](deployment.md#shutdown-and-readiness) explains both.
 
-### One database, several holders
+### One database, several bindings
 
 A database's teardown follows the component rule of the [Dependency Injection Guide](dependency-injection.md#wrappers-and-resource-identity): values that share a resource identity are one resource. `*sqldb.DB` implements `credo.ResourceIdentifier` — `ResourceIdentity()` returns the `*DB` itself — and a wrapper that embeds it inherits that identity:
 
-- A `*sqldb.DB` bound raw and a wrapper that embeds it are one database: one ping, one readiness entry and one teardown, after the consumers of both, in either registration order.
-- Their registrations agree on `credo.OptionalReadiness()` and on the `credo.ComponentName` name, which the entry and the teardown carry. A disagreement panics at the second `ProvideValue`, or fails the start when a `Provide` constructor builds the second value, naming both registrations and the remedies: give both the same options, or hold the handle in a named field.
+- A `*sqldb.DB` bound raw and a wrapper that embeds it are one database with one owner, the handle's binding; the wrapper is bound as a view, `app.ProvideValue(OrdersDB{db}, credo.View())` before the handle or after it, or `app.Provide(NewOrdersDB, credo.View())` with a `NewOrdersDB` that takes the `*sqldb.DB`, since a view's owner exists before the view. The database gets one ping, one readiness entry and one teardown, the handle's, after the consumers of both.
+- `credo.OptionalReadiness()` and the `credo.ComponentName` name belong on the handle's binding, and the entry and the teardown carry that name. A view with either panics at the call, and a wrapper bound beside the handle without `credo.View()` is refused — at the second `ProvideValue`, or at the start when a `Provide` constructor builds the wrapper — naming the owner and the remedies: declare the wrapper a view, or hold the handle in a named field.
 - Only a wrapper without state of its own to release, and without readiness of its own, may share the identity. A wrapper that releases state of its own, or overrides the `Ready` it embeds, holds the `*DB` in a named field and does not forward `ResourceIdentity`; it is then a resource of its own ([A wrapper with a lifecycle of its own](#a-wrapper-with-a-lifecycle-of-its-own)).
 - A named-field wrapper without such state forwards the identity with one method, `ResourceIdentity() any`. Credo never scans wrapper fields.
 

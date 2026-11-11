@@ -5,28 +5,13 @@ import (
 	"slices"
 )
 
-// ClaimStart reports whether the start walk calls the Start of u, whose value
-// is built, and records the claim. A resource is started once, through the
-// first of its holders the walk reaches with a planned Start, as it is shut
-// down once; a resource any holder borrows is the caller's to start, whichever
-// holder shows Start.
-func (c *Container) ClaimStart(u *Unit) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !u.starts || !u.RunsCapabilities(c.valueOf(u)) {
-		return false
-	}
-	key := resourceKey(u)
-	if c.started[key] {
-		return false
-	}
-	for _, h := range c.resources[key] {
-		if h.borrowed {
-			return false
-		}
-	}
-	c.started[key] = true
-	return true
+// CallsStart reports whether the start walk calls the Start of u, whose
+// value is built. A resource is started once, through its owner: a view, a
+// holder that claims nothing and a borrowed owner plan no Start.
+func (c *Container) CallsStart(u *Unit) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return u.starts && u.RunsCapabilities(c.valueOf(u))
 }
 
 // StartPlan returns the units of tier the start walk visits, dependencies

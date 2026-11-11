@@ -42,10 +42,11 @@
 //
 // Several bindings may hold one physical resource — a *sqldb.DB bound raw and
 // a wrapper type that embeds it. A value that names its resource through
-// credo.ResourceIdentifier is one resource with the other holders of that
-// resource: one start, one readiness entry and one teardown, which happens
-// once, after the last holder retires. Only a value without state of its own
-// to release may share an identity.
+// credo.ResourceIdentifier is one resource with the other bindings of that
+// resource, with one owner: one start, one readiness entry and one teardown,
+// the owner's, after the consumers of every binding, and the bindings that do
+// not own it are bound with credo.View(). Only a value without state of its
+// own to release may share an identity.
 //
 // [Health.Cause] carries typed diagnostics for logging while remaining
 // excluded from JSON; free-form Details values are never interpreted as error

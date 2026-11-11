@@ -13,14 +13,15 @@ import (
 // function whose own type has Shutdown is a value, not a constructor. o.Name
 // names it, defaulting to its type; o.Ingress places it in the ingress tier.
 //
-// Only a value claims what it holds. The value a constructor builds claims
-// nothing: when it holds a resource a registration holds, it defers to that
-// registration. Every rejection is a [*MisuseError].
+// A resource has one owner. A value that holds a resource another
+// registration owns is refused here; the value a constructor builds is
+// checked once it exists, and fails its build when it does. Every rejection
+// is a [*MisuseError].
 func (c *Container) Manage(v any, o Options) (*Unit, error) {
 	if v == nil {
 		return nil, &MisuseError{Call: "Manage", Reason: "the component must not be nil"}
 	}
-	u := &Unit{managed: true, worker: o.Worker, call: o.Call, ingressGiven: o.Ingress}
+	u := &Unit{managed: true, worker: o.Worker, call: o.Call}
 	var token any
 	var hasToken bool
 	// A function is a constructor unless its own type is a component — a
@@ -39,7 +40,7 @@ func (c *Container) Manage(v any, o Options) (*Unit, error) {
 		u.t = reflect.TypeOf(v)
 		u.prov = valueProvider{value: v}
 		u.entry = &singletonEntry{state: entryBuilt, value: v}
-		u.claimant = true
+		u.handedIn = true
 		var err error
 		if token, hasToken, err = identityToken(v); err != nil {
 			return nil, misuse("Manage", []reflect.Type{u.t}, "%v", err)
@@ -66,12 +67,16 @@ func (c *Container) Manage(v any, o Options) (*Unit, error) {
 			"method, so there is no teardown for the App to own; a component is a value with Shutdown", u.t)
 	}
 	u.index = len(c.units)
-	if u.entry.state == entryBuilt {
-		if err := c.admitValueLocked(u, v, token, hasToken); err != nil {
+	if u.handedIn {
+		if err := c.ownershipErrorLocked(u, v, token, hasToken, nil); err != nil {
 			return nil, misuse("Manage", types, "%v", err)
 		}
-	} else if err := c.nameConflictLocked(u, nil); err != nil {
+	}
+	if err := c.nameConflictLocked(u, nil); err != nil {
 		return nil, misuse("Manage", types, "%v", err)
+	}
+	if u.handedIn {
+		c.admitValueLocked(u, v, token, hasToken)
 	}
 	c.units = append(c.units, u)
 	c.names[u.name] = append(c.names[u.name], u)

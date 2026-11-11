@@ -55,10 +55,10 @@ func (d *ctorDB) Shutdown(context.Context) error {
 	return d.shutdownFail
 }
 
-// ctorDBWorker is a worker that embeds the database: it holds the database's
-// resource, and its Start, Ready and Shutdown are the database's.
+// ctorDBWorker is a worker that holds the database in a named field: a
+// value of its own, with no lifecycle, beside the database's resource.
 type ctorDBWorker struct {
-	*ctorDB
+	db   *ctorDB
 	ran  chan struct{}
 	once sync.Once
 }
@@ -66,7 +66,16 @@ type ctorDBWorker struct {
 func (w *ctorDBWorker) Run(ctx context.Context) error {
 	w.once.Do(func() { close(w.ran) })
 	<-ctx.Done()
-	w.j.add("run returned")
+	w.db.j.add("run returned")
+	return nil
+}
+
+// ctorDBEmbedder is a worker that embeds the database: it holds the
+// database's resource, and its Start, Ready and Shutdown are the database's.
+type ctorDBEmbedder struct{ *ctorDB }
+
+func (*ctorDBEmbedder) Run(ctx context.Context) error {
+	<-ctx.Done()
 	return nil
 }
 
@@ -146,139 +155,180 @@ func readyNames(body readyBody) []string {
 	return names
 }
 
-// TestWorkersShared_RelayBoundAndRegisteredBothWays: a worker that other
-// code uses, bound with Provide, registered as the method expression of its
-// Run or through a constructor that returns the binding: a controller and
-// the loop share one value, started once before the loop and torn down once
-// after it; /ready shows the binding's one entry, which credo.OptionalReadiness()
-// on the binding keeps from gating; the entry and the teardown carry the
-// binding's name in either registration order.
-func TestWorkersShared_RelayBoundAndRegisteredBothWays(t *testing.T) {
-	forms := []struct {
-		name string
-		w    any
-	}{
-		{"method expression", (*ctorRelay).Run},
-		{"constructor that returns the binding", func(r *ctorRelay) *ctorRelay { return r }},
-	}
-	for _, form := range forms {
-		for _, order := range []string{"binding first", "worker first"} {
-			for _, named := range []bool{false, true} {
-				name := form.name + "/" + order
-				if named {
-					name += "/named"
-				}
-				t.Run(name, func(t *testing.T) {
-					app := mustNew(t)
-					j := &journal{}
-					relay := newCtorRelay(j)
-					relay.shutdownFail = errors.New("relay flush failed")
-					opts := []credo.RegistrationOption{credo.OptionalReadiness()}
-					entryName := "*credo_test.ctorRelay"
-					if named {
-						opts = append(opts, credo.ComponentName("outbox"))
-						entryName = "outbox"
-					}
-					bind := func() { app.Provide(func() *ctorRelay { return relay }, opts...) }
-					register := func() { app.Workers().Continuous("relay", form.w) }
-					if order == "binding first" {
-						bind()
-						register()
-					} else {
-						register()
-						bind()
-					}
-					app.Provide(newCtorController)
-					app.UseHealth()
-					if err := app.Start(t.Context()); err != nil {
-						t.Fatalf("App.Start() = %v", err)
-					}
-					workersAwait(t, relay.ran, "the relay's loop")
-					if c := app.MustResolve[*ctorController](); c.r != relay {
-						t.Error("the controller and the loop hold different values")
-					}
-					if !relay.startedAtRun.Load() {
-						t.Error("the loop ran before the relay started")
-					}
-
-					relay.setReady(errors.New("relay behind"))
-					body := getReady(t, app)
-					if got := readyNames(body); !slices.Equal(got, []string{entryName}) {
-						t.Errorf("/ready entries = %q, want the binding's one entry %q", got, entryName)
-					}
-					if body.code != http.StatusOK || body.Status != "degraded" {
-						t.Errorf("/ready = %+v, want 200 degraded: the binding's entry does not gate", body)
-					}
-
-					err := shutdownApp(t, app, 5*time.Second)
-					entry := lifecycleEntry(t, err, entryName)
-					if entry.Phase != credo.PhaseShutdown || entry.Tier != credo.TierInternal {
-						t.Errorf("teardown entry = %+v, want the binding's internal shutdown", entry)
-					}
-					if le, _ := errors.AsType[*credo.LifecycleError](err); len(le.Entries) != 1 {
-						t.Errorf("Shutdown() = %v, want the relay's one teardown entry", err)
-					}
-					if relay.starts.Load() != 1 || relay.stops.Load() != 1 {
-						t.Errorf("relay started %d and stopped %d times, want once each",
-							relay.starts.Load(), relay.stops.Load())
-					}
-					want := []string{"relay start", "run returned", "relay shutdown"}
-					if got := j.list(); !slices.Equal(got, want) {
-						t.Errorf("events = %q, want %q", got, want)
-					}
-				})
+// TestWorkersShared_RelayBoundAndRegisteredByItsRunFunction: a worker that
+// other code uses, bound with Provide and registered as the method
+// expression of its Run: a controller and the loop share one value, started
+// once before the loop and torn down once after it; /ready shows the
+// binding's one entry, which credo.OptionalReadiness() on the binding keeps
+// from gating; the entry and the teardown carry the binding's name in either
+// registration order.
+func TestWorkersShared_RelayBoundAndRegisteredByItsRunFunction(t *testing.T) {
+	for _, order := range []string{"binding first", "worker first"} {
+		for _, named := range []bool{false, true} {
+			name := order
+			if named {
+				name += "/named"
 			}
+			t.Run(name, func(t *testing.T) {
+				app := mustNew(t)
+				j := &journal{}
+				relay := newCtorRelay(j)
+				relay.shutdownFail = errors.New("relay flush failed")
+				opts := []credo.RegistrationOption{credo.OptionalReadiness()}
+				entryName := "*credo_test.ctorRelay"
+				if named {
+					opts = append(opts, credo.ComponentName("outbox"))
+					entryName = "outbox"
+				}
+				bind := func() { app.Provide(func() *ctorRelay { return relay }, opts...) }
+				register := func() { app.Workers().Continuous("relay", (*ctorRelay).Run) }
+				if order == "binding first" {
+					bind()
+					register()
+				} else {
+					register()
+					bind()
+				}
+				app.Provide(newCtorController)
+				app.UseHealth()
+				if err := app.Start(t.Context()); err != nil {
+					t.Fatalf("App.Start() = %v", err)
+				}
+				workersAwait(t, relay.ran, "the relay's loop")
+				if c := app.MustResolve[*ctorController](); c.r != relay {
+					t.Error("the controller and the loop hold different values")
+				}
+				if !relay.startedAtRun.Load() {
+					t.Error("the loop ran before the relay started")
+				}
+
+				relay.setReady(errors.New("relay behind"))
+				body := getReady(t, app)
+				if got := readyNames(body); !slices.Equal(got, []string{entryName}) {
+					t.Errorf("/ready entries = %q, want the binding's one entry %q", got, entryName)
+				}
+				if body.code != http.StatusOK || body.Status != "degraded" {
+					t.Errorf("/ready = %+v, want 200 degraded: the binding's entry does not gate", body)
+				}
+
+				err := shutdownApp(t, app, 5*time.Second)
+				entry := lifecycleEntry(t, err, entryName)
+				if entry.Phase != credo.PhaseShutdown || entry.Tier != credo.TierInternal {
+					t.Errorf("teardown entry = %+v, want the binding's internal shutdown", entry)
+				}
+				if le, _ := errors.AsType[*credo.LifecycleError](err); len(le.Entries) != 1 {
+					t.Errorf("Shutdown() = %v, want the relay's one teardown entry", err)
+				}
+				if relay.starts.Load() != 1 || relay.stops.Load() != 1 {
+					t.Errorf("relay started %d and stopped %d times, want once each",
+						relay.starts.Load(), relay.stops.Load())
+				}
+				want := []string{"relay start", "run returned", "relay shutdown"}
+				if got := j.list(); !slices.Equal(got, want) {
+					t.Errorf("events = %q, want %q", got, want)
+				}
+			})
 		}
+	}
+}
+
+// TestWorkersShared_ConstructorReturningTheBindingFailsTheStart: a worker
+// constructor that returns the value a binding owns — made with Provide,
+// with ProvideValue, or borrowed — fails the start in either registration
+// order, naming the worker's call, the built type, the owner and the method
+// expression that replaces the constructor.
+func TestWorkersShared_ConstructorReturningTheBindingFailsTheStart(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bind  func(app *credo.App, r *ctorRelay)
+		owner string
+	}{
+		{"Provide", func(app *credo.App, r *ctorRelay) { app.Provide(func() *ctorRelay { return r }) },
+			"the Provide binding of *credo_test.ctorRelay owns"},
+		{"ProvideValue", func(app *credo.App, r *ctorRelay) { app.ProvideValue(r) },
+			"the ProvideValue binding of *credo_test.ctorRelay owns"},
+		{"borrowed", func(app *credo.App, r *ctorRelay) { app.ProvideValue(r, credo.Borrowed()) },
+			"the ProvideValue binding of *credo_test.ctorRelay owns for its caller (credo.Borrowed())"},
+	} {
+		for _, workerFirst := range []bool{false, true} {
+			name := tc.name + "/binding first"
+			if workerFirst {
+				name = tc.name + "/worker first"
+			}
+			t.Run(name, func(t *testing.T) {
+				app := mustNew(t)
+				relay := newCtorRelay(&journal{})
+				register := func() { app.Workers().Continuous("relay", func(r *ctorRelay) *ctorRelay { return r }) }
+				if workerFirst {
+					register()
+				}
+				tc.bind(app, relay)
+				if !workerFirst {
+					register()
+				}
+				entry := lifecycleEntry(t, app.Start(t.Context()), "worker-value:relay")
+				want := `the value Workers.Continuous("relay") builds, a *credo_test.ctorRelay, holds the resource ` +
+					"that " + tc.owner + ", and a resource has one owner; register the worker's run function, the " +
+					"method expression (*credo_test.ctorRelay).Run, in place of a constructor that returns that " +
+					"binding's value"
+				if entry.Phase != credo.PhaseStart || entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
+					t.Fatalf("entry = %+v\nwant a start failure containing %q", entry, want)
+				}
+				if got := relay.ran; isClosed(got) {
+					t.Error("the loop ran")
+				}
+			})
+		}
+	}
+}
+
+// isClosed reports whether ch is closed.
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
 
 // TestWorkersShared_WithOverrideReplacesTheBoundWorkerForBoth: an override
 // of the bound type replaces the value the controller and the loop share.
 func TestWorkersShared_WithOverrideReplacesTheBoundWorkerForBoth(t *testing.T) {
-	forms := []struct {
-		name string
-		w    any
-	}{
-		{"method expression", (*ctorRelay).Run},
-		{"constructor that returns the binding", func(r *ctorRelay) *ctorRelay { return r }},
+	var built atomic.Int32
+	fake := newCtorRelay(&journal{})
+	app := testutil.NewApp(t,
+		testutil.WithWiring(func(app *credo.App) {
+			app.Provide(func() *ctorRelay {
+				built.Add(1)
+				return newCtorRelay(&journal{})
+			})
+			app.Workers().Continuous("relay", (*ctorRelay).Run)
+			app.Provide(newCtorController)
+		}),
+		testutil.WithOverride[*ctorRelay](fake),
+	)
+	testutil.Start(t, app)
+	workersAwait(t, fake.ran, "the override's loop")
+	if c := app.MustResolve[*ctorController](); c.r != fake {
+		t.Error("the controller does not hold the override")
 	}
-	for _, form := range forms {
-		t.Run(form.name, func(t *testing.T) {
-			var built atomic.Int32
-			fake := newCtorRelay(&journal{})
-			app := testutil.NewApp(t,
-				testutil.WithWiring(func(app *credo.App) {
-					app.Provide(func() *ctorRelay {
-						built.Add(1)
-						return newCtorRelay(&journal{})
-					})
-					app.Workers().Continuous("relay", form.w)
-					app.Provide(newCtorController)
-				}),
-				testutil.WithOverride[*ctorRelay](fake),
-			)
-			testutil.Start(t, app)
-			workersAwait(t, fake.ran, "the override's loop")
-			if c := app.MustResolve[*ctorController](); c.r != fake {
-				t.Error("the controller does not hold the override")
-			}
-			if built.Load() != 0 {
-				t.Errorf("the replaced constructor ran %d times, want 0", built.Load())
-			}
-		})
+	if built.Load() != 0 {
+		t.Errorf("the replaced constructor ran %d times, want 0", built.Load())
 	}
 }
 
-// TestWorkersShared_WorkerEmbedsABoundDatabase: a worker that embeds a
-// database bound with ProvideValue shares its one teardown, after the loop
-// and every other consumer, and /ready shows the database's entry alone,
-// which does not gate with credo.OptionalReadiness(); bound with
-// credo.Borrowed(), the database is neither started nor torn down.
-func TestWorkersShared_WorkerEmbedsABoundDatabase(t *testing.T) {
-	newWorker := func(db *ctorDB) *ctorDBWorker { return &ctorDBWorker{ctorDB: db, ran: make(chan struct{})} }
+// TestWorkersShared_WorkerHoldsABoundDatabase: a worker that holds a database
+// bound with ProvideValue in a named field leaves the database its one
+// teardown, after the loop and every other consumer, and /ready shows the
+// database's entry alone, which does not gate with
+// credo.OptionalReadiness(); bound with credo.Borrowed(), the database is
+// neither started nor torn down. A worker that embeds the database holds
+// its resource and fails the start, naming the named field.
+func TestWorkersShared_WorkerHoldsABoundDatabase(t *testing.T) {
 	var w *ctorDBWorker
 	capture := func(db *ctorDB) *ctorDBWorker {
-		w = newWorker(db)
+		w = &ctorDBWorker{db: db, ran: make(chan struct{})}
 		return w
 	}
 	for _, optional := range []bool{false, true} {
@@ -350,16 +400,33 @@ func TestWorkersShared_WorkerEmbedsABoundDatabase(t *testing.T) {
 			t.Errorf("borrowed database started %d and stopped %d times, want 0", db.starts.Load(), db.stops.Load())
 		}
 	})
+	t.Run("embedded", func(t *testing.T) {
+		app := mustNew(t)
+		db := newCtorDB(&journal{})
+		app.ProvideValue(db)
+		app.Workers().Continuous("relay", func(d *ctorDB) *ctorDBEmbedder { return &ctorDBEmbedder{d} })
+		entry := lifecycleEntry(t, app.Start(t.Context()), "worker-value:relay")
+		const want = `the value Workers.Continuous("relay") builds, a *credo_test.ctorDBEmbedder, holds the ` +
+			"resource that the ProvideValue binding of *credo_test.ctorDB owns, and a resource has one owner; " +
+			"hold the *credo_test.ctorDB in a named field of *credo_test.ctorDBEmbedder, so that it is a resource " +
+			"of its own"
+		if entry.Phase != credo.PhaseStart || entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
+			t.Fatalf("entry = %+v\nwant a start failure containing %q", entry, want)
+		}
+		if db.stops.Load() != 1 {
+			t.Errorf("database stopped %d times by the rollback, want once", db.stops.Load())
+		}
+	})
 }
 
-// TestWorkersShared_ConstructorOverABorrowedBinding: a constructor that
-// returns a borrowed value: the loop runs, the App neither starts nor shuts
-// the value down, and /ready reports it once.
-func TestWorkersShared_ConstructorOverABorrowedBinding(t *testing.T) {
+// TestWorkersShared_RunFunctionOverABorrowedBinding: the run function of a
+// borrowed value: the loop runs, the App neither starts nor shuts the value
+// down, and /ready reports it once.
+func TestWorkersShared_RunFunctionOverABorrowedBinding(t *testing.T) {
 	app := mustNew(t)
 	relay := newCtorRelay(&journal{})
 	app.ProvideValue(relay, credo.Borrowed())
-	app.Workers().Continuous("relay", func(r *ctorRelay) *ctorRelay { return r })
+	app.Workers().Continuous("relay", (*ctorRelay).Run)
 	app.UseHealth()
 	if err := app.Start(t.Context()); err != nil {
 		t.Fatalf("App.Start() = %v", err)
@@ -398,29 +465,51 @@ func (s *ctorShared) Shutdown(context.Context) error {
 	return nil
 }
 
-// TestWorkersShared_TwoConstructorsOfOneSingleton: both loops run, the value
-// has one readiness entry, the first registered holder's, and it is torn
-// down once.
+// TestWorkersShared_TwoConstructorsOfOneSingleton: two worker constructors
+// that return one value fail the start at the second, naming the first and
+// the remedy; bound once and registered twice by the method expression of
+// its Run, both loops run, the value has one readiness entry, the binding's,
+// and it is torn down once.
 func TestWorkersShared_TwoConstructorsOfOneSingleton(t *testing.T) {
-	app := mustNew(t)
-	shared := &ctorShared{both: make(chan struct{})}
-	ctor := func() *ctorShared { return shared }
-	app.Workers().Continuous("a", ctor)
-	app.Workers().Continuous("b", ctor)
-	app.UseHealth()
-	if err := app.Start(t.Context()); err != nil {
-		t.Fatalf("App.Start() = %v", err)
-	}
-	workersAwait(t, shared.both, "both loops to run")
-	if got := readyNames(getReady(t, app)); !slices.Equal(got, []string{"worker-value:a"}) {
-		t.Errorf("/ready entries = %q, want one entry, worker-value:a", got)
-	}
-	if err := shutdownApp(t, app, 5*time.Second); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-	if got := shared.stops.Load(); got != 1 {
-		t.Errorf("the shared value was torn down %d times, want once", got)
-	}
+	t.Run("two constructors", func(t *testing.T) {
+		app := mustNew(t)
+		shared := &ctorShared{both: make(chan struct{})}
+		ctor := func() *ctorShared { return shared }
+		app.Workers().Continuous("a", ctor)
+		app.Workers().Continuous("b", ctor)
+		entry := lifecycleEntry(t, app.Start(t.Context()), "worker-value:b")
+		const want = `the value Workers.Continuous("b") builds, a *credo_test.ctorShared, holds the resource that ` +
+			`the value the constructor of Workers.Continuous("a") builds owns, and a resource has one owner; bind ` +
+			`the *credo_test.ctorShared in place of the value Workers.Continuous("a") builds, and register each ` +
+			"worker that runs it by its run function, the method expression (*credo_test.ctorShared).Run"
+		if entry.Phase != credo.PhaseStart || entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
+			t.Fatalf("entry = %+v\nwant a start failure containing %q", entry, want)
+		}
+		if got := shared.stops.Load(); got != 1 {
+			t.Errorf("the rollback tore the value down %d times, want once, through its owner", got)
+		}
+	})
+	t.Run("bound once, two run functions", func(t *testing.T) {
+		app := mustNew(t)
+		shared := &ctorShared{both: make(chan struct{})}
+		app.ProvideValue(shared)
+		app.Workers().Continuous("a", (*ctorShared).Run)
+		app.Workers().Continuous("b", (*ctorShared).Run)
+		app.UseHealth()
+		if err := app.Start(t.Context()); err != nil {
+			t.Fatalf("App.Start() = %v", err)
+		}
+		workersAwait(t, shared.both, "both loops to run")
+		if got := readyNames(getReady(t, app)); !slices.Equal(got, []string{"*credo_test.ctorShared"}) {
+			t.Errorf("/ready entries = %q, want the binding's one entry", got)
+		}
+		if err := shutdownApp(t, app, 5*time.Second); err != nil {
+			t.Fatalf("Shutdown() = %v", err)
+		}
+		if got := shared.stops.Load(); got != 1 {
+			t.Errorf("the shared value was torn down %d times, want once", got)
+		}
+	})
 }
 
 // ctorOwned is a worker with Start and Shutdown of its own.
@@ -598,9 +687,9 @@ func (*ctorIngressDep) Shutdown(context.Context) error { return nil }
 // a teardown of its own that depends on an ingress component fails Finalize
 // — or its build, when the teardown is found only on the value — with the
 // remedy of splitting the worker; a constructor that returns a binding made
-// with credo.Ingress() fails Finalize with the remedy of binding it without,
-// and bound without, the loop stays ingress and the value is torn down in
-// the internal tier, after the ingress tier.
+// with credo.Ingress() fails Finalize with the remedy of the run function,
+// and the run function of a binding bound without it keeps the loop ingress
+// and tears the value down in the internal tier, after the ingress tier.
 func TestWorkersConstructor_BuiltValueOnAnIngressComponent(t *testing.T) {
 	split := func(call string) string {
 		return "the value the constructor of " + call + " builds is internal and has a teardown of its own, " +
@@ -638,22 +727,20 @@ func TestWorkersConstructor_BuiltValueOnAnIngressComponent(t *testing.T) {
 		app.Provide(func() *ctorRelay { return newCtorRelay(&journal{}) }, credo.Ingress())
 		app.Workers().Scheduled("relay", "@every 1h", func(r *ctorRelay) *ctorRelay { return r })
 		const want = `di: the constructor of Workers.Scheduled("relay") returns the ingress component ` +
-			"*credo_test.ctorRelay, and the value a worker's constructor builds is torn down in the internal " +
-			`tier, after the HTTP drain: the value Workers.Scheduled("relay") builds → *credo_test.ctorRelay; ` +
-			"bind *credo_test.ctorRelay " +
-			"without credo.Ingress()"
+			"*credo_test.ctorRelay, the value of a binding that owns it: the value Workers.Scheduled(\"relay\") " +
+			"builds → *credo_test.ctorRelay; register the worker's run function, the method expression " +
+			"(*credo_test.ctorRelay).Run, in place of the constructor"
 		if err := app.Finalize(); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Finalize() = %v\nwant it to contain %q", err, want)
 		}
 	})
-	t.Run("the binding the constructor returns, bound internal", func(t *testing.T) {
+	t.Run("the binding the run function runs, bound internal", func(t *testing.T) {
 		app := mustNew(t)
 		j := &journal{}
 		relay := newCtorRelay(j)
 		relay.shutdownFail = errors.New("flush failed")
 		app.Provide(func() *ctorRelay { return relay })
-		app.Workers().Scheduled("relay", "@every 1h", func(r *ctorRelay) *ctorRelay { return r },
-			credo.ScheduledConfig{RunOnStart: true})
+		app.Workers().Scheduled("relay", "@every 1h", (*ctorRelay).Run, credo.ScheduledConfig{RunOnStart: true})
 		app.Manage(&stopOnly{name: "ingress component", j: j}, credo.Ingress())
 		if err := app.Start(t.Context()); err != nil {
 			t.Fatalf("App.Start() = %v", err)
@@ -694,68 +781,69 @@ func (d *tierDB) Shutdown(context.Context) error {
 
 type tierWrapper struct{ *tierDB }
 
-// TestResourceTier_RegistrationsAgree: a raw handle bound internal and a
-// wrapper that embeds it bound with credo.Ingress() are refused in either
-// order — a panic for two values handed in, a failed start for a wrapper a
-// constructor builds, and so for a Manage value beside an internal binding
-// of it. Bound in one tier, they have one start and one teardown, in that
-// tier; a borrowed handle beside an ingress wrapper starts.
-func TestResourceTier_RegistrationsAgree(t *testing.T) {
-	const remedy = "; give them one tier, or, when one of them has a teardown of its own to run in its tier, " +
-		"hold the handle in a named field, so that it is a resource of its own"
-	tiers := func(first, firstTier, second, secondTier string) string {
-		return first + " and " + second + " hold one resource, which has one teardown, but are placed in " +
-			"different tiers: " + first + " is " + firstTier + " and " + second + " is " + secondTier + remedy
-	}
+// TestResourceTier_IsTheOwners: a wrapper that embeds a raw handle and asks
+// for credo.Ingress() beside it is refused in either order — a panic for two
+// values handed in, a failed start for one a constructor builds — naming the
+// option a view leaves to its owner, and a view that asks for it panics at
+// the call. A view takes the owner's tier, in either order, with one start
+// and one teardown in it; a view of a borrowed handle is neither started nor
+// torn down.
+func TestResourceTier_IsTheOwners(t *testing.T) {
 	t.Run("ProvideValue, raw first", func(t *testing.T) {
 		app := mustNew(t)
 		db := &tierDB{}
 		app.ProvideValue(db)
 		msg := mustPanicMessage(t, func() { app.ProvideValue(tierWrapper{db}, credo.Ingress()) })
-		registerWant(t, msg, "credo: App.ProvideValue[credo_test.tierWrapper]: "+
-			tiers("*credo_test.tierDB", "internal", "credo_test.tierWrapper", "ingress"))
+		registerWant(t, msg, "credo: App.ProvideValue[credo_test.tierWrapper]: credo_test.tierWrapper holds the "+
+			"resource that the ProvideValue binding of *credo_test.tierDB owns, and a resource has one owner; "+
+			"declare credo_test.tierWrapper a view: give credo.View() to its registration in place of "+
+			"credo.Ingress(), which only the owner takes, or, when credo_test.tierWrapper releases state of its "+
+			"own, hold the *credo_test.tierDB in a named field of credo_test.tierWrapper, so that it is a resource "+
+			"of its own")
 	})
 	t.Run("ProvideValue, wrapper first", func(t *testing.T) {
 		app := mustNew(t)
 		db := &tierDB{}
 		app.ProvideValue(tierWrapper{db}, credo.Ingress())
 		msg := mustPanicMessage(t, func() { app.ProvideValue(db) })
-		registerWant(t, msg, "credo: App.ProvideValue[*credo_test.tierDB]: "+
-			tiers("credo_test.tierWrapper", "ingress", "*credo_test.tierDB", "internal"))
+		registerWant(t, msg, "credo: App.ProvideValue[*credo_test.tierDB]: *credo_test.tierDB holds the resource "+
+			"that the ProvideValue binding of credo_test.tierWrapper owns, and a resource has one owner; declare "+
+			"*credo_test.tierDB a view: give credo.View() to its registration, or, when credo_test.tierWrapper "+
+			"releases state of its own, hold the *credo_test.tierDB in a named field of credo_test.tierWrapper, "+
+			"so that it is a resource of its own")
 	})
-	for _, order := range []string{"raw first", "wrapper first"} {
-		t.Run("wrapper built by Provide, "+order, func(t *testing.T) {
-			app := mustNew(t)
-			db := &tierDB{}
-			raw := func() { app.ProvideValue(db) }
-			wrapper := func() {
-				app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.Ingress())
-			}
-			first, second := "*credo_test.tierDB", "credo_test.tierWrapper"
-			firstTier, secondTier := "internal", "ingress"
-			if order == "raw first" {
-				raw()
-				wrapper()
-			} else {
-				wrapper()
-				raw()
-				first, second, firstTier, secondTier = second, first, secondTier, firstTier
-			}
-			err := app.Start(t.Context())
-			entry := lifecycleEntry(t, err, "credo_test.tierWrapper")
-			if want := tiers(first, firstTier, second, secondTier); !strings.Contains(entry.Err.Error(), want) {
-				t.Fatalf("entry = %+v\nwant it to contain %q", entry, want)
-			}
+	t.Run("wrapper built by Provide", func(t *testing.T) {
+		app := mustNew(t)
+		db := &tierDB{}
+		app.ProvideValue(db)
+		app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.Ingress())
+		entry := lifecycleEntry(t, app.Start(t.Context()), "credo_test.tierWrapper")
+		const want = "credo_test.tierWrapper holds the resource that the ProvideValue binding of " +
+			"*credo_test.tierDB owns, and a resource has one owner; declare credo_test.tierWrapper a view: give " +
+			"credo.View() to its registration in place of credo.Ingress(), which only the owner takes"
+		if entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
+			t.Fatalf("entry = %+v\nwant it to contain %q", entry, want)
+		}
+	})
+	t.Run("a view with credo.Ingress()", func(t *testing.T) {
+		app := mustNew(t)
+		msg := mustPanicMessage(t, func() {
+			app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.View(), credo.Ingress())
 		})
-	}
+		registerWant(t, msg, "credo: App.Provide[credo_test.tierWrapper]: credo.View() declares "+
+			"credo_test.tierWrapper a view of a resource another registration owns, and the tier, the name, the "+
+			"readiness entry and the teardown of a resource are its owner's alone; give credo.Ingress() to the "+
+			"owner's registration, or drop credo.View()")
+	})
 	t.Run("Manage with credo.Ingress() beside an internal Provide binding", func(t *testing.T) {
 		app := mustNew(t)
 		db := &tierDB{}
 		app.Provide(func() *tierDB { return db })
 		app.Manage(db, credo.Ingress())
-		err := app.Start(t.Context())
-		entry := lifecycleEntry(t, err, "*credo_test.tierDB")
-		want := tiers("*credo_test.tierDB", "internal", "Manage(*credo_test.tierDB)", "ingress")
+		entry := lifecycleEntry(t, app.Start(t.Context()), "*credo_test.tierDB")
+		const want = "*credo_test.tierDB holds the resource that the value handed to Manage as *credo_test.tierDB " +
+			"owns, and a resource has one owner; declare *credo_test.tierDB a view: give credo.View() to its " +
+			"registration"
 		if entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
 			t.Fatalf("entry = %+v\nwant it to contain %q", entry, want)
 		}
@@ -767,30 +855,51 @@ func TestResourceTier_RegistrationsAgree(t *testing.T) {
 			tier = credo.TierIngress
 			opts = append(opts, credo.Ingress())
 		}
-		t.Run("one tier, "+tier.String(), func(t *testing.T) {
-			app := mustNew(t)
-			db := &tierDB{fail: errors.New("close failed")}
-			app.ProvideValue(db, opts...)
-			app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, opts...)
-			if err := app.Start(t.Context()); err != nil {
-				t.Fatalf("App.Start() = %v", err)
+		for _, viewFirst := range []bool{false, true} {
+			name := "the owner's tier, " + tier.String() + ", owner first"
+			if viewFirst {
+				name = "the owner's tier, " + tier.String() + ", view first"
 			}
-			err := shutdownApp(t, app, 5*time.Second)
-			if e := lifecycleEntry(t, err, "*credo_test.tierDB"); e.Tier != tier {
-				t.Errorf("teardown tier = %s, want %s", e.Tier, tier)
-			}
-			if db.starts.Load() != 1 || db.stops.Load() != 1 {
-				t.Errorf("started %d and stopped %d times, want once each", db.starts.Load(), db.stops.Load())
-			}
-		})
+			t.Run(name, func(t *testing.T) {
+				app := mustNew(t)
+				db := &tierDB{fail: errors.New("close failed")}
+				view := func() { app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.View()) }
+				if viewFirst {
+					view()
+				}
+				app.ProvideValue(db, opts...)
+				if !viewFirst {
+					view()
+				}
+				if err := app.Start(t.Context()); err != nil {
+					t.Fatalf("App.Start() = %v", err)
+				}
+				if _, err := app.Resolve[tierWrapper](); err != nil {
+					t.Fatal(err)
+				}
+				err := shutdownApp(t, app, 5*time.Second)
+				if e := lifecycleEntry(t, err, "*credo_test.tierDB"); e.Tier != tier {
+					t.Errorf("teardown tier = %s, want %s", e.Tier, tier)
+				}
+				if le, _ := errors.AsType[*credo.LifecycleError](err); len(le.Entries) != 1 {
+					t.Errorf("Shutdown() = %v, want the owner's one teardown entry", err)
+				}
+				if db.starts.Load() != 1 || db.stops.Load() != 1 {
+					t.Errorf("started %d and stopped %d times, want once each", db.starts.Load(), db.stops.Load())
+				}
+			})
+		}
 	}
-	t.Run("borrowed handle beside an ingress wrapper", func(t *testing.T) {
+	t.Run("a view of a borrowed handle", func(t *testing.T) {
 		app := mustNew(t)
 		db := &tierDB{}
 		app.ProvideValue(db, credo.Borrowed())
-		app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.Ingress())
+		app.Provide(func(d *tierDB) tierWrapper { return tierWrapper{d} }, credo.View())
 		if err := app.Start(t.Context()); err != nil {
 			t.Fatalf("App.Start() = %v", err)
+		}
+		if _, err := app.Resolve[tierWrapper](); err != nil {
+			t.Fatal(err)
 		}
 		if err := shutdownApp(t, app, 5*time.Second); err != nil {
 			t.Fatalf("Shutdown() = %v", err)
@@ -815,132 +924,63 @@ func (o *ctorDBOwner) Shutdown(context.Context) error {
 	return nil
 }
 
-// TestManage_ConstructorsClaimNothing: only a value handed to Manage claims
-// what it holds. A Manage value beside a ProvideValue binding of its
-// resource, and two Manage calls of one value, are refused; a constructor
-// whose value embeds a bound handle, or returns a binding's own value,
-// starts and shares that binding's one entry and teardown.
-func TestManage_ConstructorsClaimNothing(t *testing.T) {
-	t.Run("a value a ProvideValue binding holds", func(t *testing.T) {
+// TestManage_OneOwnerPerResource: a value handed to Manage owns what it
+// holds. A Manage value beside a ProvideValue binding of its resource, a
+// wrapper of a bound handle handed in, and two Manage calls of one value
+// panic; a constructor whose value embeds a bound handle — owned or borrowed
+// — or returns a binding's own value fails the start, naming the remedy; a
+// wrapper that holds the handle in a named field is a component of its own,
+// with an entry of its own.
+func TestManage_OneOwnerPerResource(t *testing.T) {
+	t.Run("a value a ProvideValue binding owns", func(t *testing.T) {
 		app := mustNew(t)
 		db := newCtorDB(&journal{})
 		app.ProvideValue(db)
 		msg := mustPanicMessage(t, func() { app.Manage(db) })
-		registerWant(t, msg, "credo: App.Manage[*credo_test.ctorDB]: the resource is already managed through "+
-			"DI by the ProvideValue binding of *credo_test.ctorDB; drop the Manage call, since that binding is "+
-			"already the component")
+		registerWant(t, msg, "credo: App.Manage[*credo_test.ctorDB]: Manage(*credo_test.ctorDB) holds the "+
+			"resource that the ProvideValue binding of *credo_test.ctorDB owns, and a resource has one owner; drop "+
+			"the Manage call, since that binding already owns it")
 	})
 	t.Run("one value handed to Manage twice", func(t *testing.T) {
 		app := mustNew(t)
 		db := newCtorDB(&journal{})
 		app.Manage(db)
 		msg := mustPanicMessage(t, func() { app.Manage(db, credo.ComponentName("again")) })
-		registerWant(t, msg, "credo: App.Manage[*credo_test.ctorDB]: this resource was already handed to "+
-			"Manage as *credo_test.ctorDB; hand each resource to Manage once")
+		registerWant(t, msg, "credo: App.Manage[*credo_test.ctorDB]: Manage(again) holds the resource that the "+
+			"value handed to Manage as *credo_test.ctorDB owns, and a resource has one owner; hand each resource "+
+			"to Manage once")
 	})
-	t.Run("a wrapper's constructor over a ProvideValue handle", func(t *testing.T) {
-		app := mustNew(t)
-		j := &journal{}
-		db := newCtorDB(j)
-		app.ProvideValue(db)
-		app.Manage(func(d *ctorDB) *ctorDBWrapper { return &ctorDBWrapper{d} })
-		app.Provide(func(d *ctorDB) *ctorConsumer { return &ctorConsumer{db: d} })
-		if err := app.Start(t.Context()); err != nil {
-			t.Fatalf("App.Start() = %v", err)
+	for _, borrowed := range []bool{false, true} {
+		name, owner := "a wrapper's constructor over a ProvideValue handle", "owns"
+		var opts []credo.RegistrationOption
+		if borrowed {
+			name, owner = "a wrapper's constructor over a borrowed handle", "owns for its caller (credo.Borrowed())"
+			opts = append(opts, credo.Borrowed())
 		}
-		if err := shutdownApp(t, app, 5*time.Second); err != nil {
-			t.Fatalf("Shutdown() = %v", err)
-		}
-		want := []string{"db start", "consumer shutdown", "db shutdown"}
-		if got := j.list(); !slices.Equal(got, want) {
-			t.Errorf("events = %q, want %q: one start, one teardown after every consumer", got, want)
-		}
-	})
-	t.Run("a wrapper's constructor over a borrowed handle", func(t *testing.T) {
-		app := mustNew(t)
-		db := newCtorDB(&journal{})
-		app.ProvideValue(db, credo.Borrowed())
-		app.Manage(func(d *ctorDB) *ctorDBWrapper { return &ctorDBWrapper{d} })
-		if err := app.Start(t.Context()); err != nil {
-			t.Fatalf("App.Start() = %v", err)
-		}
-		if err := shutdownApp(t, app, 5*time.Second); err != nil {
-			t.Fatalf("Shutdown() = %v", err)
-		}
-		if db.starts.Load() != 0 || db.stops.Load() != 0 {
-			t.Errorf("started %d and stopped %d times, want 0", db.starts.Load(), db.stops.Load())
-		}
-	})
-	t.Run("a constructor that returns a binding's own value", func(t *testing.T) {
-		app := mustNew(t)
-		relay := newCtorRelay(&journal{})
-		relay.shutdownFail = errors.New("flush failed")
-		app.Manage(func(r *ctorRelay) *ctorRelay { return r })
-		app.Provide(func() *ctorRelay { return relay })
-		app.UseHealth()
-		if err := app.Start(t.Context()); err != nil {
-			t.Fatalf("App.Start() = %v", err)
-		}
-		if got := readyNames(getReady(t, app)); !slices.Equal(got, []string{"*credo_test.ctorRelay"}) {
-			t.Errorf("/ready entries = %q, want the binding's one entry", got)
-		}
-		err := shutdownApp(t, app, 5*time.Second)
-		le, _ := errors.AsType[*credo.LifecycleError](err)
-		if le == nil || len(le.Entries) != 1 || le.Entries[0].Name != "*credo_test.ctorRelay" {
-			t.Errorf("Shutdown() = %v, want one teardown, the binding's", err)
-		}
-		if relay.starts.Load() != 1 || relay.stops.Load() != 1 {
-			t.Errorf("started %d and stopped %d times, want once each", relay.starts.Load(), relay.stops.Load())
-		}
-	})
-}
-
-// TestManage_ValueThatDefersTakesNoOptions: a constructor handed to Manage
-// with credo.ComponentName, credo.Ingress() or credo.OptionalReadiness()
-// whose value defers to the handle's binding fails the start, naming the
-// binding and the remedies; with the option on the binding it starts, and
-// the handle's one entry carries the name and does not gate; a wrapper that
-// holds the handle in a named field has an entry of its own.
-func TestManage_ValueThatDefersTakesNoOptions(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		opt   credo.RegistrationOption
-		given string
-		entry string
-	}{
-		{"credo.ComponentName", credo.ComponentName("relay"), "credo.ComponentName", "relay"},
-		{"credo.Ingress()", credo.Ingress(), "credo.Ingress()", "*credo_test.ctorDBWrapper"},
-		{"credo.OptionalReadiness()", credo.OptionalReadiness(), "credo.OptionalReadiness()",
-			"*credo_test.ctorDBWrapper"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			app := mustNew(t)
-			app.ProvideValue(newCtorDB(&journal{}))
-			app.Manage(func(d *ctorDB) *ctorDBWrapper { return &ctorDBWrapper{d} }, tc.opt)
-			err := app.Start(t.Context())
-			entry := lifecycleEntry(t, err, tc.entry)
-			want := "*credo_test.ctorDBWrapper shares the resource of the ProvideValue binding of " +
-				"*credo_test.ctorDB, whose readiness and shutdown follow that binding; give " + tc.given +
-				" to that binding, or hold the *credo_test.ctorDB in a named field"
+			app.ProvideValue(newCtorDB(&journal{}), opts...)
+			app.Manage(func(d *ctorDB) *ctorDBWrapper { return &ctorDBWrapper{d} }, credo.ComponentName("wrapper"))
+			entry := lifecycleEntry(t, app.Start(t.Context()), "wrapper")
+			want := "the value the constructor handed to Manage(wrapper) builds, a *credo_test.ctorDBWrapper, holds " +
+				"the resource that the ProvideValue binding of *credo_test.ctorDB " + owner + ", and a resource has " +
+				"one owner; hold the *credo_test.ctorDB in a named field of *credo_test.ctorDBWrapper, so that it is " +
+				"a resource of its own"
 			if entry.Phase != credo.PhaseStart || entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
 				t.Fatalf("entry = %+v\nwant a start failure containing %q", entry, want)
 			}
 		})
 	}
-	t.Run("the options on the handle's binding", func(t *testing.T) {
+	t.Run("a constructor that returns a binding's own value", func(t *testing.T) {
 		app := mustNew(t)
-		db := newCtorDB(&journal{})
-		app.ProvideValue(db, credo.ComponentName("orders-db"), credo.OptionalReadiness())
-		app.Manage(func(d *ctorDB) *ctorDBWrapper { return &ctorDBWrapper{d} })
-		app.UseHealth()
-		startServing(t, app)
-		db.setReady(errors.New("db down"))
-		body := getReady(t, app)
-		if got := readyNames(body); !slices.Equal(got, []string{"orders-db"}) {
-			t.Errorf("/ready entries = %q, want the handle's one entry, orders-db", got)
-		}
-		if body.code != http.StatusOK || body.Status != "degraded" {
-			t.Errorf("/ready = %+v, want 200 degraded", body)
+		app.Manage(func(r *ctorRelay) *ctorRelay { return r })
+		app.Provide(func() *ctorRelay { return newCtorRelay(&journal{}) })
+		entry := lifecycleEntry(t, app.Start(t.Context()), "*credo_test.ctorRelay")
+		const want = "the value the constructor handed to Manage(*credo_test.ctorRelay) builds, a " +
+			"*credo_test.ctorRelay, holds the resource that the Provide binding of *credo_test.ctorRelay owns, and " +
+			"a resource has one owner; drop the Manage call, since that binding already owns the value"
+		if entry.Phase != credo.PhaseStart || entry.Err == nil || !strings.Contains(entry.Err.Error(), want) {
+			t.Fatalf("entry = %+v\nwant a start failure containing %q", entry, want)
 		}
 	})
 	t.Run("a wrapper that holds the handle in a named field", func(t *testing.T) {

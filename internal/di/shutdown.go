@@ -74,8 +74,9 @@ type attempt struct {
 type node struct {
 	key     any
 	members []*Unit
-	// holder runs the teardown (teardownHolderLocked). nil for a pending
-	// construction, a stuck resource and a borrowed one.
+	// holder runs the teardown: the resource's owner, or the one unit of a
+	// value that shares its identity with no other (teardownHolderLocked).
+	// nil for a pending construction and a stuck resource.
 	holder  *Unit
 	pending bool
 	stuck   bool
@@ -297,7 +298,8 @@ func (c *Container) nextReady(td *teardown, tier Tier) (ready []*node, pending b
 // is active while its value is built (or being built) and it has not
 // retired. Holders that share a resource identity form one node; a resource
 // none of whose holders has a teardown — a value that is no component, a
-// borrowed resource — is transparent: edges pass through it. It retires
+// borrowed resource, a view whose owner is not built — is transparent: edges
+// pass through it. It retires
 // failed builds and holders of a torn-down resource, so c.mu must be held
 // for writing.
 func (c *Container) snapshotLocked(td *teardown) []*node {
@@ -342,10 +344,9 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 			active = append(active, n)
 			continue
 		}
-		excluded, borrowed := false, false
+		excluded := false
 		for _, m := range n.members {
 			excluded = excluded || td.excluded[m]
-			borrowed = borrowed || m.borrowed
 			n.stuck = n.stuck || td.stuck[m]
 		}
 		if excluded {
@@ -355,7 +356,7 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 			}
 			continue
 		}
-		if !borrowed && !n.stuck {
+		if !n.stuck {
 			n.holder = c.teardownHolderLocked(n.members)
 		}
 		if n.holder == nil && !n.stuck {
@@ -460,29 +461,18 @@ func (c *Container) snapshotLocked(td *teardown) []*node {
 	return nodes
 }
 
-// teardownHolderLocked returns the holder that runs the teardown of the
-// resource members hold, given in registration order, or nil when none has
-// one: among the holders that take part in the resource — its registrations,
-// or the holder of record of a resource no registration holds — the first
-// that is a component by its type and has a teardown, else the first with a
-// teardown. Registrations that are components by their type agree on the
-// tier, so the teardown carries the registrations' tier and the holder's
-// name. A value a constructor that is not a binding builds defers to the
-// registrations and never runs it. c.mu must be held.
+// teardownHolderLocked returns the member that runs the teardown of the
+// resource members hold, or nil when none has one. That is the resource's
+// owner, the one member with a teardown: a view, a borrowed owner and a
+// holder that claims nothing have none. The teardown carries the owner's
+// tier and name. c.mu must be held.
 func (c *Container) teardownHolderLocked(members []*Unit) *Unit {
-	var first *Unit
 	for _, m := range members {
-		if !takesPart(m, members) || m.teardownOf(c.teardownValueOf(m)) == teardownNone {
-			continue
-		}
-		if m.component {
+		if m.teardownOf(c.teardownValueOf(m)) != teardownNone {
 			return m
 		}
-		if first == nil {
-			first = m
-		}
 	}
-	return first
+	return nil
 }
 
 // derivedHoldersLocked returns the holders of one resource that reached it
@@ -536,7 +526,7 @@ type pendingKey struct{ u *Unit }
 
 // TeardownReport classifies every unit at the boundary and returns nil when
 // nothing failed or remained incomplete. Holders that share a resource are
-// reported through the one that ran its teardown.
+// reported through its owner, which ran its teardown.
 func (c *Container) TeardownReport(ctx context.Context) *ShutdownError {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -679,26 +669,14 @@ func isPanicError(err error) bool {
 
 // lateCleanup is the single owner of the best-effort cleanup for an instance
 // whose construction completed after the shutdown context ended. It runs on
-// its own goroutine, bounded by lateCleanupBudget, and only logs outcomes. A
-// value whose resource another holder still holds, or whose resource was
-// already torn down, is left to that teardown.
+// its own goroutine, bounded by lateCleanupBudget, and only logs outcomes.
+// A value with a teardown is its resource's owner, since a view and a holder
+// that claims nothing have none; one whose resource was already torn down is
+// left to that teardown.
 func (c *Container) lateCleanup(u *Unit, t reflect.Type, state entryState, value any, buildErr error) {
 	c.mu.RLock()
 	logger := c.logger
-	shared := false
-	if u != nil && u.key != nil {
-		if c.td != nil && c.td.done[u.key] {
-			shared = true
-		}
-		for _, h := range c.resources[u.key] {
-			if e := c.entryOf(h); h != u && e != nil && e.state == entryBuilt && !e.late {
-				shared = true
-			}
-			if h.borrowed {
-				shared = true
-			}
-		}
-	}
+	shared := u != nil && u.key != nil && c.td != nil && c.td.done[u.key]
 	c.mu.RUnlock()
 
 	typeAttr := slog.String("type", t.String())

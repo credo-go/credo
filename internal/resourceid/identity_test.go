@@ -84,3 +84,27 @@ func TestOf(t *testing.T) {
 		}
 	})
 }
+
+func TestIdentityIsSelf(t *testing.T) {
+	handle := new(int)
+	own, err := Of(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !own.IsSelf(handle) {
+		t.Error("a pointer's identity is not its own")
+	}
+	wrapped, err := Of(identityProvider{token: handle})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrapped.IsSelf(identityProvider{token: handle}) {
+		t.Error("a wrapper's identity is its own, want the handle's")
+	}
+	if !wrapped.IsSelf(handle) {
+		t.Error("the handle a wrapper names does not own the wrapper's identity")
+	}
+	if own.IsSelf(nil) || own.IsSelf([]int{1}) || own.IsSelf(new(int)) {
+		t.Error("IsSelf accepted a nil, a non-comparable or another value")
+	}
+}

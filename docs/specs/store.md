@@ -182,17 +182,16 @@ The binding may also be a constructor (`app.Provide(openDB)`), which the start w
 
 #### One resource, one entry
 
-`*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too ([container spec](container.md#resource-identity-and-teardown)). A raw handle and a wrapper bound together give one ping (the start-once-per-resource rule), one readiness entry and one teardown, after the consumers of both, in either registration order.
+`*sqldb.DB` implements `credo.ResourceIdentifier`; its `ResourceIdentity` returns the `*DB`. A wrapper that embeds `*sqldb.DB` inherits it, so the wrapper and the handle are one resource, and two wrappers over one handle are one resource too ([container spec](container.md#resource-identity-and-teardown)). The resource has one owner, the first registration that claims it ([container spec](container.md#one-owner-per-resource)), and a raw handle and a wrapper bound together give one ping (the start-once-per-resource rule), one readiness entry and one teardown, the owner's, after the consumers of both. The wrapper is bound as a view, with `credo.View()`: a `ProvideValue` wrapper before a handle handed in or after it, and a wrapper a constructor builds from the handle's binding, since a view's owner exists before the view ([container spec](container.md#one-owner-per-resource)).
 
-- The one readiness entry is the resource's holder of record's ([lifecycle spec](lifecycle.md)), whose `Ready` is asked.
-- The registrations that hold the resource and plan an entry for it agree on the options that shape it: `credo.OptionalReadiness()` is on every one of them or on none, and the names given with `credo.ComponentName` are one name, which the entry and the teardown carry — the holder of record's type name without one.
-- A disagreement panics at the registration for a value handed in (`ProvideValue`, `Manage`) and fails the start for a value a binding's constructor builds, naming both registrations, the option and the remedies: the same options on both, or a named field.
+- The one readiness entry is the owner's, whose `Ready` is asked; `credo.OptionalReadiness()` and `credo.ComponentName` on the owner shape it, and the entry and the teardown carry the owner's name, else its type name.
+- A view takes neither option and panics at the call with one. A wrapper bound beside the handle without `credo.View()` claims the resource and is refused — at the registration for a value handed in (`ProvideValue`, `Manage`), at the start for a value a constructor builds — naming the owner and the remedies: declare it a view, or hold the handle in a named field.
 - A wrapper with readiness of its own, one that overrides the `Ready` it embeds, holds the handle in a named field, so that it is a resource of its own.
-- A value a constructor builds that holds the handle — a worker's, or one from a constructor handed to `Manage` — adds no entry of its own and defers to the binding ([lifecycle spec](lifecycle.md)).
+- A value a constructor builds that is not a binding — a worker's, or one from a constructor handed to `Manage` — and that embeds the handle fails the start; such a value holds the handle in a named field ([container spec](container.md#one-owner-per-resource)).
 
 #### Naming and several databases
 
-`credo.ComponentName(name)` on `Provide` or `ProvideValue` names the binding's component in `/ready`, in a `*credo.LifecycleError` and in the lifecycle's records; a duplicate name panics, except on registrations of one resource, which give it one name. The default name is the binding's type, such as `*sqldb.DB`. Each database beyond a default `*sqldb.DB` is a wrapper type, bound once:
+`credo.ComponentName(name)` on `Provide` or `ProvideValue` names the binding's component in `/ready`, in a `*credo.LifecycleError` and in the lifecycle's records; a duplicate name panics at the call, and a view takes none, since the name is the owner's. The default name is the binding's type, such as `*sqldb.DB`. Each database beyond a default `*sqldb.DB` is a wrapper type, bound once:
 
 ```go
 type PrimaryDB struct{ *sqldb.DB }

@@ -28,7 +28,11 @@ type shutdowner interface {
 //   - each circular dependency (A → B → A);
 //   - context.Context parameters, which constructors cannot take;
 //   - an internal component that depends on an ingress component, directly or
-//     through bindings that are not components.
+//     through bindings that are not components;
+//   - a view bound with ProvideValue whose value has Shutdown and whose
+//     resource no value handed in owns: a view's owner exists before the
+//     view's value, and only a value handed in exists before anything is
+//     built.
 //
 // Aliases and BindMany collections are not checked again here: Alias and
 // BindMany reject a binding whose types do not fit when it is made, and no
@@ -175,6 +179,19 @@ func (c *Container) validate() error {
 				"depends on", p[0].head(), dep, formatPath(p), p[0].head(), remedy, dep)})
 	}
 
+	// A view's owner exists before the view's value.
+	for _, u := range c.units {
+		if !u.view || !u.valueBinding || u.key == nil || c.owners[u.key] != nil {
+			continue
+		}
+		if v := c.valueOf(u); v != nil {
+			if _, ok := v.(shutdowner); ok {
+				findings = append(findings, finding{u.index, fmt.Errorf("di: %w", c.unownedViewError(u, v, u.key,
+					false))})
+			}
+		}
+	}
+
 	slices.SortStableFunc(findings, func(a, b finding) int { return cmp.Compare(a.at, b.at) })
 	// A constructor that takes one type twice finds its problem twice.
 	errs := make([]error, 0, len(findings))
@@ -202,7 +219,8 @@ func (c *Container) depsOfLocked(u *Unit) []reflect.Type {
 
 // depUnitsLocked returns the units a unit's constructor parameters resolve
 // to, deduplicated, in parameter order, then the units its edges name
-// (AddEdge). c.mu must be held.
+// (AddEdge), then, for a view, the owner of its resource (viewOwnerLocked).
+// c.mu must be held.
 func (c *Container) depUnitsLocked(u *Unit) []*Unit {
 	var deps []*Unit
 	seen := make(map[*Unit]bool)
@@ -225,7 +243,23 @@ func (c *Container) depUnitsLocked(u *Unit) []*Unit {
 			deps = append(deps, d)
 		}
 	}
+	if o := c.viewOwnerLocked(u); o != nil && !seen[o] {
+		deps = append(deps, o)
+	}
 	return deps
+}
+
+// viewOwnerLocked returns the owner of the resource view u holds, or nil
+// when u is not a view, its value is not built yet or no registration owns
+// the resource yet. A view depends on its owner, as an alias resolves to its
+// target: a consumer of the view starts after the owner and stops before it,
+// and an internal component that uses the view of an ingress one depends on
+// the ingress tier. c.mu must be held.
+func (c *Container) viewOwnerLocked(u *Unit) *Unit {
+	if !u.view || u.key == nil {
+		return nil
+	}
+	return c.owners[u.key]
 }
 
 // ingressPathLocked returns the dependency path from u to the first ingress
@@ -259,6 +293,16 @@ func (c *Container) ingressPathLocked(u *Unit) []pathStep {
 			visited[d] = true
 			step := pathStep{t: d.t, via: d.t, label: d.label(), at: d.index}
 			if found := visit(d, append(slices.Clone(path), step)); found != nil {
+				return found
+			}
+		}
+		if o := c.viewOwnerLocked(from); o != nil && !visited[o] {
+			visited[o] = true
+			step := pathStep{t: o.t, via: o.t}
+			if o.managed {
+				step.label, step.at = o.label(), o.index
+			}
+			if found := visit(o, append(slices.Clone(path), step)); found != nil {
 				return found
 			}
 		}

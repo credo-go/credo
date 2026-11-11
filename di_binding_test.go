@@ -56,8 +56,8 @@ func (*stopOnly) isQuietThing() {}
 
 // TestHiddenCapability_ProvideValuePanics: a ProvideValue whose type hides
 // its value's Start or Ready panics at the call, naming the binding, the
-// methods it hides and the remedies; credo.Borrowed() is exempt, and a type
-// that hides only Shutdown is torn down as before.
+// methods it hides and the remedies; credo.Borrowed() is exempt, as is a
+// view, and a type that hides only Shutdown is torn down as before.
 func TestHiddenCapability_ProvideValuePanics(t *testing.T) {
 	t.Run("hidden Start and Ready", func(t *testing.T) {
 		app := mustNew(t)
@@ -68,8 +68,8 @@ func TestHiddenCapability_ProvideValuePanics(t *testing.T) {
 			"credo: App.ProvideValue[credo_test.namedThing]: the binding's type credo_test.namedThing hides " +
 				"Shutdown, Start and Ready of its value, a *credo_test.partA",
 			"bind the value as *credo_test.partA and the interface with " +
-				"app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.Borrowed() when the caller " +
-				"starts and stops it",
+				"app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.View() when another " +
+				"registration owns the value, or credo.Borrowed() when the caller starts and stops it",
 		} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("panic = %q\nwant it to contain %q", msg, want)
@@ -304,28 +304,41 @@ type fakeNamed struct{}
 
 func (fakeNamed) isNamedThing() {}
 
-// TestHiddenCapability_ViewOfAHeldResource: an interface view of a resource
-// another registration holds and starts is accepted, bound by ProvideValue
-// or returned by a constructor, and the resource is started, readied and
-// stopped once, through that holder. ProvideValue decides against the
-// registrations made before it, so the view bound first panics, naming the
-// remedy.
+// TestHiddenCapability_ViewOfAHeldResource: an interface declared a view of
+// a resource another registration owns is accepted, bound by ProvideValue or
+// returned by a constructor, before the owner or after it, and the resource
+// is started, readied and stopped once, through its owner; the type a view
+// binds hides nothing the App plans. Undeclared, the interface claims the
+// resource: after the owner it is refused as a second claim, naming
+// app.Alias and credo.View(); bound first, ProvideValue panics at the
+// hidden capabilities, naming both remedies.
 func TestHiddenCapability_ViewOfAHeldResource(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		view func(app *credo.App, p *partA)
 	}{
-		{"ProvideValue", func(app *credo.App, p *partA) { app.ProvideValue[namedThing](p) }},
+		{"ProvideValue", func(app *credo.App, p *partA) { app.ProvideValue[namedThing](p, credo.View()) }},
 		{"constructor", func(app *credo.App, p *partA) {
-			app.Provide(func() namedThing { return p })
+			app.Provide(func() namedThing { return p }, credo.View())
+		}},
+		{"ProvideValue, view first", func(app *credo.App, p *partA) {
+			app.ProvideValue[namedThing](p, credo.View())
+		}},
+		{"constructor, view first", func(app *credo.App, p *partA) {
+			app.Provide(func() namedThing { return p }, credo.View())
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := &journal{}
 			p := &partA{&part{name: "held", j: j}}
 			app := mustNew(t)
-			app.ProvideValue(p)
-			tc.view(app, p)
+			if strings.HasSuffix(tc.name, "view first") {
+				tc.view(app, p)
+				app.ProvideValue(p)
+			} else {
+				app.ProvideValue(p)
+				tc.view(app, p)
+			}
 			app.UseHealth()
 			startComponents(t, app)
 			if _, err := app.Resolve[namedThing](); err != nil {
@@ -344,14 +357,41 @@ func TestHiddenCapability_ViewOfAHeldResource(t *testing.T) {
 			}
 		})
 	}
-	t.Run("view bound first", func(t *testing.T) {
+	t.Run("undeclared, owner first", func(t *testing.T) {
+		p := &partA{&part{name: "first", j: &journal{}}}
+		app := mustNew(t)
+		app.ProvideValue(p)
+		const want = "credo: App.ProvideValue[credo_test.namedThing]: credo_test.namedThing holds the resource " +
+			"that the ProvideValue binding of *credo_test.partA owns, and a resource has one owner; declare " +
+			"credo_test.namedThing a view: bind it with app.Alias[credo_test.namedThing, *credo_test.partA](), " +
+			"or give credo.View() to its registration"
+		if got := mustPanicMessage(t, func() { app.ProvideValue[namedThing](p) }); got != want {
+			t.Fatalf("panic = %q\nwant    %q", got, want)
+		}
+	})
+	t.Run("undeclared constructor, owner first", func(t *testing.T) {
+		p := &partA{&part{name: "first", j: &journal{}}}
+		app := mustNew(t)
+		app.ProvideValue(p)
+		app.Provide(func() namedThing { return p })
+		startComponents(t, app)
+		_, err := app.Resolve[namedThing]()
+		const want = "credo_test.namedThing holds the resource that the ProvideValue binding of " +
+			"*credo_test.partA owns, and a resource has one owner; declare credo_test.namedThing a view: bind " +
+			"it with app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.View() to its " +
+			"registration"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Resolve() = %v\nwant it to contain %q", err, want)
+		}
+	})
+	t.Run("undeclared, view bound first", func(t *testing.T) {
 		p := &partA{&part{name: "first", j: &journal{}}}
 		app := mustNew(t)
 		const want = "credo: App.ProvideValue[credo_test.namedThing]: the binding's type credo_test.namedThing " +
 			"hides Shutdown, Start and Ready of its value, a *credo_test.partA, and the App plans Start, Ready " +
 			"and the ingress tier only from the binding's type; bind the value as *credo_test.partA and the " +
-			"interface with app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.Borrowed() " +
-			"when the caller starts and stops it"
+			"interface with app.Alias[credo_test.namedThing, *credo_test.partA](), or give credo.View() when " +
+			"another registration owns the value, or credo.Borrowed() when the caller starts and stops it"
 		if got := mustPanicMessage(t, func() { app.ProvideValue[namedThing](p) }); got != want {
 			t.Fatalf("panic = %q\nwant    %q", got, want)
 		}

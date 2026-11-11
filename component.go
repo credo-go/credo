@@ -37,11 +37,11 @@ type Component interface {
 //
 // Start is planned from the binding's type, and a component whose binding's
 // type hides its value's Start or Ready is refused — a ProvideValue at the
-// call, a built value at the start — unless another holder of the same
-// resource plans it or the binding is [Borrowed]; bind the concrete type and
-// the interface with [App.Alias]. A type with Start but no Shutdown is not a
-// component and is never started. Holders that share a resource identity
-// start it once, and a borrowed resource is not started through any holder.
+// call, a built value at the start — unless the binding is a [View] or
+// [Borrowed]; bind the concrete type and the interface with [App.Alias]. A
+// type with Start but no Shutdown is not a component and is never started. A
+// resource is started once, through its owner ([ResourceIdentifier]), and a
+// borrowed resource is not started.
 // A Start that returns an error has released what it opened; the App does not
 // shut it down.
 type Starter interface {
@@ -71,17 +71,22 @@ type IngressComponent interface {
 }
 
 // ResourceIdentifier names the resource a value holds. Values that share an
-// identity are one resource, started once and torn down once: the teardown
-// runs when the last holder retires, through its holder of record: the first
-// registration that holds it — a binding, or a value handed to [App.Manage],
-// one that is a component by its type preferred — else its first holder. A
-// value a constructor builds without becoming a binding, a worker's or one
-// from a constructor handed to Manage, defers to a registration: it adds no
-// readiness entry and never runs the teardown. The registrations of one
-// resource agree on its tier. Without the method a comparable value — a
-// pointer, or a struct over one — is its own identity. A value that releases
-// state of its own must not share an identity: a wrapper that does holds the
-// handle in a named field instead of embedding it.
+// identity are one resource with one owner: the first registration whose
+// value claims it — a value with Shutdown, a binding with [CloseOnShutdown]
+// or [Borrowed] — through which alone the App starts it, reports its
+// readiness and tears it down, after the consumers of every registration
+// that holds it; its tier, name and readiness options are the owner's. A
+// value handed in claims at its call; a constructor claims when its value is
+// built, so of two constructors the first whose value is built owns the
+// resource, whatever their registration order. A later registration that
+// claims the same resource panics, or fails its build when a constructor
+// makes it, unless it is a view ([View], or an [App.Alias]); one that claims
+// nothing, such as a second binding of a value with Close beside the one
+// that carries [CloseOnShutdown], is a plain holder. Without the method a
+// comparable value — a pointer, or a struct over one — is its own identity.
+// A value that releases state of its own must not share an identity: a
+// wrapper that does holds the handle in a named field instead of embedding
+// it.
 type ResourceIdentifier interface {
 	ResourceIdentity() any
 }
@@ -140,9 +145,9 @@ func (t *Tier) UnmarshalText(text []byte) error {
 }
 
 // RegistrationOption is an option of a component registration: [Ingress],
-// [Borrowed], [CloseOnShutdown], [Override], [ComponentName] or
-// [OptionalReadiness]. Each call accepts the options that apply to it and
-// panics on any other.
+// [Borrowed], [CloseOnShutdown], [Override], [ComponentName],
+// [OptionalReadiness] or [View]. Each call accepts the options that apply to
+// it and panics on any other.
 type RegistrationOption struct {
 	kind optionKind
 	name string
@@ -157,6 +162,7 @@ const (
 	optOverride
 	optComponentName
 	optOptionalReadiness
+	optView
 )
 
 func (k optionKind) String() string {
@@ -173,6 +179,8 @@ func (k optionKind) String() string {
 		return "credo.ComponentName()"
 	case optOptionalReadiness:
 		return "credo.OptionalReadiness()"
+	case optView:
+		return "credo.View()"
 	}
 	return "a zero RegistrationOption"
 }
@@ -184,10 +192,39 @@ func (k optionKind) String() string {
 func Ingress() RegistrationOption { return RegistrationOption{kind: optIngress} }
 
 // Borrowed, on ProvideValue only, keeps the binding and the value's readiness
-// contribution and leaves starting and shutting the value down to the caller,
-// through every holder of the resource: a pool two Apps in one process share, or a fixture a test suite reuses. A
-// holder of the same resource that claims its teardown panics.
+// contribution and leaves starting and shutting the value down to the caller:
+// a pool two Apps in one process share, or a fixture a test suite reuses. The
+// borrowed binding owns the resource for its caller ([ResourceIdentifier]),
+// so a later registration that holds it is a [View] or panics, and the App
+// never starts or shuts it down through either.
 func Borrowed() RegistrationOption { return RegistrationOption{kind: optBorrowed} }
+
+// View, on Provide and ProvideValue, declares a binding a view of a resource
+// another registration owns ([ResourceIdentifier]): the same pointer under a
+// second type, the interface an adapter's constructor returns, or a wrapper
+// beside the handle it embeds. The App starts the resource, reports its
+// readiness and tears it down through the owner alone, so a view takes none
+// of [Ingress], [ComponentName], [OptionalReadiness], [CloseOnShutdown] and
+// [Borrowed], and panics at the call with any of them. A view's owner exists
+// before the view's value: an owner handed in, with ProvideValue or
+// [App.Manage], may be registered before the view or after it, while an
+// owner a constructor builds needs the view built from it — an [App.Alias],
+// or a constructor that takes the owner's binding, with View. A consumer of
+// the view starts after the owner and stops before it, and an internal
+// component that uses the view of an ingress one fails [App.Finalize] as if
+// it used the owner. A view whose value has Shutdown and whose resource no
+// registration owns once that value exists is refused, since nothing would
+// start or shut it down — by [App.Finalize] for a value bound with
+// ProvideValue, which only a value handed in can own, and by its build for
+// one a constructor builds — and so is a value a constructor builds that
+// claims a resource a view already holds while no registration owns it. A
+// view whose value carries no identity is refused at the call. An interface
+// view of a bound concrete type is better written [App.Alias], which
+// follows an override of its target.
+//
+//	app.ProvideValue(db, credo.ComponentName("primary"))
+//	app.ProvideValue(PrimaryDB{db}, credo.View())
+func View() RegistrationOption { return RegistrationOption{kind: optView} }
 
 // CloseOnShutdown makes a binding whose type has a Close method — Close()
 // error, Close(), or Close(ctx) error, which receives the drain deadline — a
@@ -211,13 +248,12 @@ func Override() RegistrationOption { return RegistrationOption{kind: optOverride
 // [App.ProvideValue], or a value handed to [App.Manage] — in logs, readiness
 // and lifecycle errors; the default is its type as the lifecycle prints it,
 // such as *sqldb.DB. The name follows the rules of a health check name. Each
-// component has its own name, except the registrations of one resource, a
-// raw handle and a wrapper that embeds it, which give it one name: the name
-// given on either, which its readiness entry and its teardown carry. The name
-// labels the component and is not a DI key: a second value of one type is
-// bound under a wrapper type of its own. On a binding it panics when the
-// binding is not a component at registration, since the name is planned
-// before the value exists.
+// component has its own name, checked at the call; a resource several
+// registrations hold has its owner's, which its readiness entry and its
+// teardown carry, and a [View] takes none. The name labels the component and
+// is not a DI key: a second value of one type is bound under a wrapper type
+// of its own. On a binding it panics when the binding is not a component at
+// registration, since the name is planned before the value exists.
 func ComponentName(name string) RegistrationOption {
 	return RegistrationOption{kind: optComponentName, name: name}
 }
@@ -230,8 +266,8 @@ func ComponentName(name string) RegistrationOption {
 // fails still fails the start. It applies to [App.Provide], [App.ProvideValue]
 // and [App.Manage] wherever the registration plans a readiness entry — its
 // type shows Ready, and it is a component or borrowed — and panics elsewhere
-// at registration; [App.AddReadinessCheck] takes it too. The registrations of
-// one resource all give it or none does.
+// at registration; [App.AddReadinessCheck] takes it too. A resource several
+// registrations hold has its owner's entry, so a [View] takes none.
 func OptionalReadiness() RegistrationOption { return RegistrationOption{kind: optOptionalReadiness} }
 
 // registrationOptions checks opts against the options call accepts and
@@ -244,7 +280,7 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 		switch {
 		case opt.kind == 0:
 			panic("credo: " + call + ": a zero RegistrationOption; use credo.Ingress, credo.Borrowed, " +
-				"credo.CloseOnShutdown, credo.Override, credo.ComponentName or credo.OptionalReadiness")
+				"credo.CloseOnShutdown, credo.Override, credo.ComponentName, credo.OptionalReadiness or credo.View")
 		case !containsKind(accepted, opt.kind):
 			panic(fmt.Sprintf("credo: %s does not accept %s; it accepts %s", call, opt.kind, kindList(accepted)))
 		case seen[opt.kind]:
@@ -270,6 +306,8 @@ func registrationOptions(call string, opts []RegistrationOption, accepted ...opt
 			o.Name = opt.name
 		case optOptionalReadiness:
 			o.OptionalReadiness = true
+		case optView:
+			o.View = true
 		}
 	}
 	return o
@@ -307,18 +345,16 @@ func containsKind(kinds []optionKind, k optionKind) bool {
 // parameters' edges. A mounted child App is handed to Manage so that its
 // start phase runs in the parent's.
 //
-// Only a value claims the resource it holds. The value a constructor builds
-// claims nothing: when it holds a resource a registration holds too, such as
-// a wrapper that embeds a bound handle, it defers to that registration, which
-// gives the resource's one readiness entry and runs its one teardown. Such a
-// constructor with ComponentName, Ingress or OptionalReadiness fails the
-// start once its value is built, since the value has no entry and no
-// teardown of its own for them to shape.
+// A resource has one owner ([ResourceIdentifier]). A value handed to Manage
+// owns what it holds, or panics when another registration already owns it.
+// The value a constructor builds is checked once it exists: when it holds a
+// resource another registration owns, such as a wrapper that embeds a bound
+// handle, the start fails, naming the remedy — drop the Manage call when the
+// constructor returns that registration's own value, or hold the handle in a
+// named field so that the value is a resource of its own.
 //
 // Manage panics on a value without Shutdown, on a duplicate name, on a
-// resource a ProvideValue binding already holds, on a resource handed to
-// Manage twice, on a resource whose registrations are placed in different
-// tiers, and after Finalize or shutdown.
+// resource another registration owns, and after Finalize or shutdown.
 func (app *App) Manage(v any, opts ...RegistrationOption) {
 	o := registrationOptions("App.Manage", opts, optIngress, optComponentName, optOptionalReadiness)
 	if v != nil && reflect.TypeOf(v) == reflect.TypeFor[*App]() && v.(*App) == app {

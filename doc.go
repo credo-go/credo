@@ -132,12 +132,15 @@
 // hides its value's Start, Ready or ingress tier is refused. The App starts
 // components in dependency order before it accepts requests and shuts them
 // down after their consumers in two tiers ([Tier]): the ingress tier with the
-// HTTP drain, then the internal tier. Holders that share a resource
-// ([ResourceIdentifier]) start it once and tear it down once, through its
-// holder of record. Every call the App makes on a component carries its
-// scoped [Infra], read with [InfraFrom], whose logger writes
-// component=<name>. Start and drain failures are reported as a
-// [*LifecycleError].
+// HTTP drain, then the internal tier. A resource has one owner
+// ([ResourceIdentifier]): the registrations that hold it share one start, one
+// readiness entry and one teardown, the owner's, and a second registration
+// that claims it declares itself a [View]. A view's owner exists before the
+// view's value: an owner handed in, in either registration order, or an
+// owner a constructor builds, with the view built from its binding. Every
+// call the App makes on a component carries its scoped [Infra], read with
+// [InfraFrom], whose logger writes component=<name>. Start and drain
+// failures are reported as a [*LifecycleError].
 //
 // # Workers
 //

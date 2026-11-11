@@ -1,7 +1,7 @@
 package health
 
 // ReadinessCheck is one contributed readiness entry: the Ready of a
-// resource's holder of record, a worker's among them. It is reported exactly
+// resource's owner, a worker's among them. It is reported exactly
 // like a check added through credo.App.AddReadinessCheck and shares that name
 // space: a name that collides with a named check or another contribution
 // fails closed as a configuration error. Probe must be a stable pointer

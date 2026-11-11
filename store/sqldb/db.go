@@ -51,11 +51,12 @@ type poolConfigurer interface {
 }
 
 // ResourceIdentity names the physical database the DB holds. Wrapper types
-// that embed *DB inherit it, so the App treats a *DB and the wrappers around
-// it as holders of one resource and closes that resource once, after its last
-// holder retires. Only a wrapper without state of its own to release may
-// share the identity; one that releases state of its own holds the *DB in a
-// named field and does not forward it.
+// that embed *DB inherit it, so a *DB and the wrappers around it are one
+// resource with one owner, and the wrappers bound beside the handle are bound
+// with credo.View(); the App closes the database once, through its owner,
+// after the consumers of every binding. Only a wrapper without state of its
+// own to release may share the identity; one that releases state of its own
+// holds the *DB in a named field and does not forward it.
 func (db *DB) ResourceIdentity() any {
 	return db
 }

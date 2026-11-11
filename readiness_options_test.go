@@ -279,10 +279,10 @@ func TestComponentName_OnBindings(t *testing.T) {
 	})
 }
 
-// TestComponentName_Misuse: a duplicate name panics, and so do a name on a
-// binding that is not a component and an invalid name, naming the option;
-// a duplicate binding whose registration carries a name says that the name
-// is not a DI key.
+// TestComponentName_Misuse: a duplicate name panics at the call, a
+// constructor's too, and so do a name on a binding that is not a component
+// and an invalid name, naming the option; a duplicate binding whose
+// registration carries a name says that the name is not a DI key.
 func TestComponentName_Misuse(t *testing.T) {
 	t.Run("duplicate name", func(t *testing.T) {
 		app := mustNew(t)
@@ -299,11 +299,12 @@ func TestComponentName_Misuse(t *testing.T) {
 	t.Run("duplicate name on a constructor", func(t *testing.T) {
 		app := mustNew(t)
 		app.ProvideValue(&cacheComponent{}, credo.ComponentName("shared"))
-		app.Provide(func() *gateComponent { return &gateComponent{} }, credo.ComponentName("shared"))
-		err := app.Start(t.Context())
-		if want := "a component named \"shared\" is already registered, as *credo_test.cacheComponent"; err == nil ||
-			!strings.Contains(err.Error(), want) {
-			t.Fatalf("Start() = %v, want it to contain %q", err, want)
+		const want = "credo: App.Provide[*credo_test.gateComponent]: a component named \"shared\" is already " +
+			"registered, as *credo_test.cacheComponent; give each component its own name with credo.ComponentName"
+		if got := mustPanicMessage(t, func() {
+			app.Provide(func() *gateComponent { return &gateComponent{} }, credo.ComponentName("shared"))
+		}); got != want {
+			t.Fatalf("panic = %q\nwant    %q", got, want)
 		}
 	})
 	t.Run("not a component", func(t *testing.T) {
