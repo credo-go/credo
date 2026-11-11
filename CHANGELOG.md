@@ -21,12 +21,14 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - `credo.New` records what its automatic configuration load read: the files found, the `.env` file and the environment prefix, never a key or a value. The record is at Info when a file was read and at Debug otherwise, so a test that counts the records of the App's logger at Debug sees one more.
 - `config.Sources` and `(*config.Config).Sources()`, the same list for an application that loads explicitly.
 - `Context.T` and `Context.TPlural` warn in debug mode when the key is not in the catalog, naming the key, the locale and the route.
+- `config.Section[T].Exists(src)` reports whether a section is present in any `RawConfig`, decoding nothing.
+- An App that has health checks and never called `UseHealth` warns once when it starts, since no endpoint runs them.
 
 ### Changed
 
 - **BREAKING (behavior): text after a catch-all panics at registration.** A pattern such as `/a/{p...}/x` can never match; it now panics with the message `middleware.Rewrite` gives such a pattern, and so does a catch-all in a `Mount` or `Static` prefix.
 - **BREAKING: `ContractGuard` requires a Content-Type on a body by default.** A body-carrying request without one fails a `MetaAccept` contract with 415; `ContractConfig.AllowMissingContentType` lets it pass, and `RequireContentType` is removed.
-- **BREAKING (behavior): a `UseHealth` with `Enabled` false is the App's `UseHealth` call.** A second `UseHealth` after it panics, where it was accepted.
+- **BREAKING (behavior): a `UseHealth` that mounts no endpoint is the App's `UseHealth` call.** A second `UseHealth` after it panics, where it was accepted.
 - **BREAKING (behavior): `middleware.Secure` fills the zero fields of a config it is given.** A `SecureConfig` that sets some fields still sends `X-Content-Type-Options: nosniff` and `X-Frame-Options: SAMEORIGIN`, where it sent neither. `DisableContentTypeNosniff` and `DisableXFrameOptions` turn them off, and the `ContentTypeNosniff` string is removed.
 - **BREAKING (behavior): `middleware.Secure` sends no `X-XSS-Protection` by default.** Set `SecureConfig.XSSProtection` to send it.
 - **BREAKING: a zero config field selects its default, and the `Default*Config` constructors are removed.** `DefaultContractConfig`, `DefaultCORSConfig`, `DefaultCSRFConfig`, `DefaultRewriteConfig`, `DefaultSecureConfig`, `DefaultTimeoutConfig` and `DefaultSkipper` leave `middleware`, with `ratelimit.DefaultConfig` and `httpclient.DefaultRetryConfig`: the zero config is the default one, and a nil `Skipper` skips no request.
@@ -35,13 +37,28 @@ The `v0.1.0` section records the initial public development baseline; it was not
 - **BREAKING: `validation.ValidationError`, `validation.Errors` and `validation.NewError` are renamed `validation.Violation`, `validation.Violations` and `validation.NewViolation`,** after the wire's `violations`. No behavior changes.
 - **BREAKING: `log` is a framework section, decoded strictly.** An application section of that name with other keys fails `credo.New`, naming the unknown key: rename it, or pass the logger with `credo.WithLogger`, which leaves the section unread.
 - **BREAKING (behavior): an XML request body with content after its root element is refused** with 400 `trailing_data`; white space, comments and processing instructions are still accepted. A body that passes the size limit after its root element is a 413.
+- **BREAKING: `AddLivenessCheck` and `AddReadinessCheck` take a `func(context.Context) error`.** The `HealthChecker` interface is removed: pass `checker.Check`, or the function itself.
+- **BREAKING: the `HealthConfig` switches are plain bools.** `Disabled`, `DisableLiveness` and `DisableReadiness` replace the `*bool` fields `Enabled`, `Liveness` and `Readiness`; the zero config still mounts both endpoints.
+- **BREAKING: `App.State()` returns a `credo.State`,** with the constants `StateBuilding`, `StateStarting`, `StateRunning`, `StateStopping` and `StateStopped`. A comparison with a string literal still compiles.
+- **BREAKING: `App.ConfigExists` takes a `config.Section[T]`,** as `GetConfig` does. A literal key converts with the type argument, `app.ConfigExists[CacheConfig]("cache")`.
+- **BREAKING: `DIPanicError` is `PanicError`, a type of the root package.** `DIPanicPhase` is `PanicPhase`, a string type, and `DIPanicConstruction`, `DIPanicStart`, `DIPanicShutdown` and `DIPanicLateCleanup` are `PanicConstruction`, `PanicStart`, `PanicShutdown` and `PanicLateCleanup`.
+- **BREAKING (behavior): the text of a `PanicError` begins with `credo: panic during`,** where it began with `di: panic during`. So does the text of a dependent's error or a `LifecycleError` that carries one, and the `error` attribute of the container's shutdown and late-cleanup log records.
+- **BREAKING: `HTTPError` has no JSON member names.** `json.Marshal` of one writes Go field names; the error bodies are unchanged. Return the error and let the pipeline render it, or build a body from `ErrorInfo` in an `ErrorRenderer`.
+- **BREAKING: a route is read as its `RouteInfo`.** `Context.Route()` returns a `RouteInfo` value, not `*Route`, and the zero `RouteInfo` when no route matched: test with `c.HasRoute()`, not against nil. `Exchange.Route()` returns the `RouteInfo`, not the pattern, and `Exchange.RouteName` is removed. `App.GetRoute(name)` returns `(RouteInfo, bool)`. `c.Route().GetMeta(key)` is unchanged.
+- **BREAKING: `*Route` is the registration handle only.** `GetName`, `GetMethod`, `GetPattern` and `GetHost` are removed, and `BuildURI` and `BuildURL` are methods of `RouteInfo`.
+- **BREAKING (behavior): meta read without a matched route is "not set".** `c.Route().GetMeta(key)` on such a request panicked on the nil route; it now reports false, so a guard on `PreRouting` that takes "not set" for "nothing required" passes every request. Check `c.HasRoute()` first and register the guard with `app.Middleware`.
+- **BREAKING (behavior): `BuildURL` of a host-scoped route returns a network-path reference,** `//acme.myapp.com/users/42` where it returned `acme.myapp.com/users/42`. Prefix `https:` for an absolute URL.
+- **BREAKING (behavior): `BuildURI`, and `BuildURL` of a route without a host, return an error for a path that begins with `//`,** which a root catch-all builds from a value that begins with `/`: a client reads such a reference as a host.
+- **BREAKING: `Context.T` and `Context.TPlural` take a `credo.MessageKey`.** A literal key is unchanged; a `string` variable or a computed string converts, `c.T(credo.MessageKey("status." + code))`.
+- **BREAKING (behavior): `testutil.CheckMessageKeys` checks the first argument of `T` and `TPlural`,** so a test that passed may fail for a key there that no catalog defines. A computed key written as a literal or string-constant prefix ending in `.`, followed by the computed part, is a family: the check fails when no catalog has a key under the prefix, where it reported every such conversion.
+- Health checks are collected in any order: `AddLivenessCheck` and `AddReadinessCheck` are accepted before `UseHealth`, after it, and beside a `UseHealth` that mounts no endpoint, where they never run.
 - A strict unknown-key error names the `.env` entry or environment variable that set the key.
 - A SIGHUP under `Run` over a configuration that cannot reload is logged at Info as ignored, with the signal and the configuration's type, instead of being dropped.
 
 ### Fixed
 
 - A field promoted from an unexported embedded struct is bound from a query or form and named in its violation, as `encoding/json` promotes it; a field promoted through an embedded pointer is named as well, where its violation had an empty field.
-- `AddLivenessCheck` and `AddReadinessCheck` after a `UseHealth` with `Enabled` false are accepted and never run, where they panicked with a message saying `UseHealth` had not been called.
+- `App.Routes` on an App with host routes may be called while another goroutine prepares the App; it read the host list that preparation sorts.
 
 ## [0.26.0] - 2026-11-09
 

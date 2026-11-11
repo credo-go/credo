@@ -78,20 +78,20 @@ Progress is tracked by the boxes below.
 
 ## Part C: The root package
 
-- [ ] **C1. A route has one write handle and one read view.**
+- [x] **C1. A route has one write handle and one read view.**
   - **Problem:** `Context.Route()` returns `*Route`, the handle registration returns, so its setters are in reach at request time and panic when called. A read view exists, `RouteInfo`, yet one datum has three spellings: `Route.GetPattern()`, `RouteInfo.Pattern`, and `Exchange.Route()`, which returns the pattern as a string.
   - **Fix:** `*Route` is what a registration returns and nothing else. `Context.Route()`, `Exchange.Route()`, `App.GetRoute(name)` and `App.Routes()` give the same `RouteInfo`. `GetRoute` returns `(RouteInfo, bool)`, so `Get` means a lookup that reports presence everywhere except `GetConfig`. `BuildURI` and `BuildURL` move to `RouteInfo`.
   - **Removed:** `Route.GetName`, `GetMethod`, `GetPattern`, `GetHost`; `Exchange.RouteName`.
   - **Shape:** a route's `RouteInfo` is built once at compile and returned by value, so a request allocates nothing for it. `Context.HasRoute` stays.
   - **Tests:** a middleware reads `c.Route().GetMeta(key)` unchanged; the three accessors return equal values for one request; a mount's view; no route gives the zero view and `HasRoute` false. Benchstat on the `ServeHTTP` benchmarks.
   - **Docs:** ADR-007, the router and context specs, the routing and middleware guides.
-- [ ] **C2. `BuildURL` returns a valid reference.**
+- [x] **C2. `BuildURL` returns a valid reference.**
   - **Problem:** for a host-scoped route `BuildURL` returns the host joined to the path, `acme.myapp.com/users/42`. That is not a URL, and a client resolves it as a relative path. The feature is right to have, since a path alone cannot address a host-scoped route, and wrong as implemented.
   - **Fix:** it returns the network-path reference `//acme.myapp.com/users/42` (RFC 3986 §4.2), which is valid as it stands in a `Location` header or a link. A caller that needs an absolute URL prefixes the scheme it knows.
   - **Decided:** the reference. Rejected: `BuildURL(scheme string, params ...string)`, which asks for a scheme where a reference would do.
   - **Tests:** the reference parses with `net/url` to the host and path; a host-less route returns what `BuildURI` returns; host parameters first, then path parameters, as today.
   - **Docs:** ADR-007, the router spec and the routing guide. Lands with C1, since both move the method.
-- [ ] **C3. Health: checks in any order, as functions, with plain bools.**
+- [x] **C3. Health: checks in any order, as functions, with plain bools.**
   - **Problem:** a check registered before `UseHealth` panics, the one registration in the root whose validity depends on call order without that being its meaning. A check is a `HealthChecker` with a `HealthCheckFunc` adapter, beside `Readier.Ready(ctx) error`, the same contract under another name. `Enabled`, `Liveness` and `Readiness` are `*bool` with nil meaning true.
   - **Fix:**
     - Checks are collected whenever they are registered. `UseHealth` mounts the endpoints and preparation joins the two. Checks registered on an App that never calls `UseHealth` are accepted, and the start logs one warning naming their count.
@@ -99,27 +99,27 @@ Progress is tracked by the boxes below.
     - `HealthConfig.Disabled`, `DisableLiveness` and `DisableReadiness` replace the three pointers, as `RestartPolicy.Disabled` and `RecoverConfig.DisableStackTrace` already spell a default-on switch.
   - **Removed:** `HealthChecker`, `HealthCheckFunc`, `HealthConfig.Enabled`, `Liveness`, `Readiness`.
   - **Docs:** ADR-016 (the `*bool` decision is reversed; an inverted bool tells "not set" from false with a zero value) and ADR-017's sentence that reserves the pointer pattern; the health spec; the deployment guide.
-- [ ] **C4. `App.State()` returns a typed state.**
+- [x] **C4. `App.State()` returns a typed state.**
   - **Fix:** `type State string` with `StateBuilding`, `StateStarting`, `StateRunning`, `StateStopping`, `StateStopped`, the string values unchanged, so a comparison with a literal still compiles. `IsRunning` stays.
   - **Break:** code that assigns the result to a `string` variable converts it.
   - **Docs:** the lifecycle spec.
-- [ ] **C5. `ConfigExists` takes a section.**
+- [x] **C5. `ConfigExists` takes a section.**
   - **Problem:** `App.ConfigExists(key string)` is the one configuration method on `App` that takes a string key.
   - **Fix:** `config.Section[T]` gains `Exists(src RawConfig) bool`, and `App.ConfigExists` takes a section as `GetConfig` does. Like the other two, it never finalizes the container.
   - **Docs:** ADR-005, the config spec and the configuration guide.
-- [ ] **C6. The panic error is a root type.**
+- [x] **C6. The panic error is a root type.**
   - **Problem:** `DIPanicError`, `DIPanicPhase` and its constants are aliases of `internal/di` types, so their documentation lives at an internal type, the reason ADR-023 gives for defining the worker types in the root. The `DI` prefix also misnames a panic in a component's `Start` or `Shutdown`.
   - **Fix:** a root-defined `PanicError{Type, Phase, Value, Stack}`, converted at the root's boundary wherever the container's error surfaces: `Resolve`, the value `MustResolve` panics with, and a `LifecycleError`'s entries.
   - **Decided:** the phase is a root-defined `PanicPhase` with today's four values (construction, start, shutdown, late cleanup). Rejected: folding them into `LifecyclePhase`, which has two values and would lose which of them a panic came from, or gain two values that no `LifecycleEntry` carries.
   - **Tests:** `errors.AsType[*credo.PanicError]` finds the error from `Resolve` and through a `LifecycleError`; a panic value that is an error is still reachable through `errors.Is`.
   - **Docs:** ADR-022 and ADR-024; the container and lifecycle specs.
-- [ ] **C7. `T` takes a `MessageKey`, and the key check covers it.**
+- [x] **C7. `T` takes a `MessageKey`, and the key check covers it.**
   - **Problem:** `Context.T` and `TPlural` take a `string`, so the call an application writes catalog keys into by hand is the one the key type and `testutil.CheckMessageKeys` do not cover.
   - **Fix:** the key parameter is a `credo.MessageKey`; an untyped literal still compiles. `CheckMessageKeys` also collects the first argument of a `T` or `TPlural` call.
   - **Decided:** computed keys. A key built from a prefix and a code is written `c.T(credo.MessageKey(prefix + code))`, and the check reports every conversion whose operand is not a literal, so an application with such key families could not adopt the check. The check therefore accepts a concatenation that begins with a literal or a string constant ending in `.`, treats that text as a family, and fails when no catalog defines a key under it; a computed key with no literal prefix is still reported. Rejected: leaving the check as it is and asking the application for a map from each code to a typed constant.
   - **Tests:** a literal in `T` that no catalog defines fails the check; a family with catalog keys passes and one without fails, naming the prefix; a key with no literal prefix is reported.
   - **Docs:** ADR-013, the i18n spec, the localization guide and the `testutil` godoc. Lands after B1.
-- [ ] **C8. `HTTPError` loses its JSON tags.**
+- [x] **C8. `HTTPError` loses its JSON tags.**
   - **Problem:** the tags present the type as a wire shape, and it is not one: nothing marshals it, the envelope is built from `ErrorInfo`, and `Details` is tagged `json:"-"`, so marshalling it directly yields a flat object that is not the envelope and omits the details.
   - **Fix:** remove the tags. A test pins that the default and the RFC 9457 bodies are unchanged.
   - **Docs:** ADR-009 if it shows the struct; CHANGELOG as **BREAKING** for code that marshalled the type.
