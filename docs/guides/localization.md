@@ -12,7 +12,7 @@ Credo's i18n support is intentionally small from the application's point of view
 
 - `app.UseI18n(...)` registers i18n during startup; the locale files are read in the start phase
 - `c.Locale()` returns the resolved locale for the current request
-- `c.T(key, data...)` translates application messages by key
+- `c.T(key, data...)` translates application messages by key; the key is a `credo.MessageKey`, so a literal is passed as it is
 
 When i18n is active, Credo also translates:
 
@@ -434,6 +434,31 @@ level=WARN msg="credo: translation key is not in the catalog; the key is returne
 
 The warning is written in debug mode only, and only while i18n is active; the key is returned either way.
 
+### Keys Are Typed and Checked
+
+`c.T` and `c.TPlural` take a `credo.MessageKey`. A literal needs nothing: `c.T("messages.welcome")` compiles as it is. A key you compute does not compile as a `string`, so you convert it, and you write it as a literal prefix that ends in `.` followed by the computed part:
+
+```go
+// "status.active", "status.suspended", …
+label := c.T(credo.MessageKey("status." + account.Status))
+```
+
+That form is what lets a test check your keys against your catalogs before a request ever misses one:
+
+```go
+func TestMessageKeys(t *testing.T) {
+    testutil.CheckMessageKeys(t, "locales", ".")
+}
+```
+
+`CheckMessageKeys` reads the sources under the roots you give it and fails the test, with the file and line, for:
+
+- a literal key no catalog defines, in `c.T`, `c.TPlural`, `WithMessageKey`, `RenderMessageKey` or a `MessageKey` field;
+- a family, such as `"status." +` above, when no catalog has any key that begins with `status.`;
+- a key it cannot read: one computed with no literal prefix (`credo.MessageKey(kind + ".title")`), a prefix that does not end in `.`, or a variable.
+
+The prefix may be a string constant (`const statusPrefix = "status."`), in the same package or an imported one. A family is checked by its prefix, not member by member: the test proves `status.` is a prefix your catalogs know, and the debug warning above tells you when one status has no message. For a key that must be proved exactly, write a constant with the key type, `const KeyWelcome credo.MessageKey = "messages.welcome"`, and pass the constant.
+
 ---
 
 ## Automatic Validation Translation
@@ -546,7 +571,7 @@ return credo.NewHTTPError(http.StatusConflict, "email_exists").
     WithMessageKey("user.email_exists")
 ```
 
-If no translation is found, the message is the built-in one for the code, then the status text (`Conflict`), never the key; with `WithDebug` the pipeline warns with the key, the code and the route. A hard-coded message is set with `WithMessage("…")`, which is never looked up. The [error-handling guide](error-handling.md#httperror) shows `testutil.CheckMessageKeys`, which fails a test for a key the catalogs do not define.
+If no translation is found, the message is the built-in one for the code, then the status text (`Conflict`), never the key; with `WithDebug` the pipeline warns with the key, the code and the route. A hard-coded message is set with `WithMessage("…")`, which is never looked up. `testutil.CheckMessageKeys` fails a test for a key the catalogs do not define, here as in `c.T` ([Keys Are Typed and Checked](#keys-are-typed-and-checked)).
 
 ---
 
@@ -633,7 +658,7 @@ Check the following:
 
 1. `UseI18n(...)` was called during startup
 2. locale files actually exist under the directory you configured
-3. the key exists in `messages.json`; with `credo.WithDebug()` a missing key logs a warning with the key, the locale and the route
+3. the key exists in `messages.json`; with `credo.WithDebug()` a missing key logs a warning with the key, the locale and the route, and `testutil.CheckMessageKeys` finds it in a test ([Keys Are Typed and Checked](#keys-are-typed-and-checked))
 4. the request resolved to the locale you expect
 5. for `DirFS`, you passed the correct filesystem root, often via `fs.Sub(...)`
 

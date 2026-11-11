@@ -294,25 +294,31 @@ func (c *Context) resolveLocale() string {
 // configured or the key is not found, the key itself is returned.
 // Optional data map provides template variables for the message.
 //
+// The key is a [MessageKey], the type every other place a catalog key is
+// written takes, so [github.com/credo-go/credo/testutil.CheckMessageKeys]
+// finds it: a literal is passed as it is (c.T("greeting.hello")), and a key
+// built at run time is converted from a literal prefix that ends in "." and
+// the computed part (c.T(credo.MessageKey("status." + code))).
+//
 // A key the active catalog does not define is returned as the text, and in
 // debug mode ([WithDebug]) the miss is logged as a warning with the key, the
 // locale and the route.
 //
 // T always renders the message's Other plural form; for count-based plural
 // selection use [Context.TPlural].
-func (c *Context) T(key string, data ...map[string]any) string {
+func (c *Context) T(key MessageKey, data ...map[string]any) string {
 	if c.app == nil || c.app.i18n == nil {
-		return key
+		return string(key)
 	}
 	var d map[string]any
 	if len(data) > 0 {
 		d = data[0]
 	}
-	if s, ok := c.app.i18n.bundle.TranslateForLang(c.resolveLocale(), key, d); ok {
+	if s, ok := c.app.i18n.bundle.TranslateForLang(c.resolveLocale(), string(key), d); ok {
 		return s
 	}
 	c.app.noteTranslationMiss(c, key)
-	return key
+	return string(key)
 }
 
 // TPlural translates a message key using the detected locale, rendering the
@@ -326,20 +332,21 @@ func (c *Context) T(key string, data ...map[string]any) string {
 //
 // If i18n is not configured or the key is not found, the key itself is
 // returned, and a miss is logged in debug mode as [Context.T] logs it. When
-// count cannot be interpreted as a number, the Other form is rendered.
-func (c *Context) TPlural(key string, count any, data ...map[string]any) string {
+// count cannot be interpreted as a number, the Other form is rendered. The
+// key is a [MessageKey], as for [Context.T].
+func (c *Context) TPlural(key MessageKey, count any, data ...map[string]any) string {
 	if c.app == nil || c.app.i18n == nil {
-		return key
+		return string(key)
 	}
 	var d map[string]any
 	if len(data) > 0 {
 		d = data[0]
 	}
-	if s, ok := c.app.i18n.bundle.TranslatePluralForLang(c.resolveLocale(), key, count, d); ok {
+	if s, ok := c.app.i18n.bundle.TranslatePluralForLang(c.resolveLocale(), string(key), count, d); ok {
 		return s
 	}
 	c.app.noteTranslationMiss(c, key)
-	return key
+	return string(key)
 }
 
 // --- Request context access ---

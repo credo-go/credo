@@ -839,7 +839,7 @@ func TestTranslationMiss_NoWarning(t *testing.T) {
 				app.UseI18n(credo.I18nConfig{DirFS: i18nTestFS(), Default: "en"})
 			}
 			app.GET("/x", func(c *credo.Context) error {
-				return c.Response().Text(200, c.T(tc.key)+"|"+c.TPlural(tc.key, 2))
+				return c.Response().Text(200, c.T(credo.MessageKey(tc.key))+"|"+c.TPlural(credo.MessageKey(tc.key), 2))
 			})
 			startServing(t, app)
 

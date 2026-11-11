@@ -109,10 +109,13 @@
 // # Checking message keys
 //
 // A message key is a catalog key, never rendered as text: a key the catalogs
-// do not define renders the code's built-in message. [CheckMessageKeys] parses
-// the application's sources and fails the test for each key written as a
-// literal that the catalogs do not define, and for each key that is not a
-// literal:
+// do not define renders the code's built-in message, and one given to
+// [credo.Context.T] is returned as the text. [CheckMessageKeys] parses the
+// application's sources and fails the test for each key written as a literal
+// that the catalogs do not define — the first argument of T and TPlural
+// included — for each family of computed keys, a literal prefix that ends in
+// "." followed by a computed part, that no catalog has a key under, and for
+// each key it cannot read:
 //
 //	func TestMessageKeys(t *testing.T) {
 //		testutil.CheckMessageKeys(t, "locales", ".")

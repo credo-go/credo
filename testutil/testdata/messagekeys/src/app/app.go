@@ -18,5 +18,17 @@ func handler(c *credo.Context, name string) error {
 	_ = validation.Violation{Field: "name", Code: "required", MessageKey: "validation.undefined"}
 	var info credo.ErrorInfo
 	info.MessageKey = "problem.conflict"
+	_ = c.T("user.created")
+	_ = c.T("t.undefined")
+	_ = c.TPlural("plural.undefined", 2)
+	_ = c.T(credo.MessageKey("status." + name))
+	_ = c.T(credo.MessageKey(keys.StatusPrefix + name))
+	_ = c.T(credo.MessageKey(keys.StatusPrefix + "sub." + name))
+	_ = c.T(credo.MessageKey("orphan." + name))
+	_ = c.TPlural(credo.MessageKey(keys.OrphanPrefix+name), 2)
+	_ = c.T(credo.MessageKey(name + ".title"))
+	_ = c.T(credo.MessageKey("status" + name))
+	_ = c.T(credo.MessageKey(keys.StatusPrefix + "active"))
+	_ = c.T(credo.MessageKey(keys.StatusPrefix + "gone"))
 	return nil
 }

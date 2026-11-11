@@ -56,7 +56,7 @@ return credo.NewHTTPError(http.StatusNotFound, "record_not_found").
     WithMessage("Kayıt bulunamadı")
 ```
 
-A key is never rendered as text. A key your catalogs do not define falls back to the built-in message for the code, then to the status text, and with `WithDebug` the pipeline logs a warning naming the key, the code and the route. `testutil.CheckMessageKeys` fails a test for each key in your sources that the catalogs do not define:
+A key is never rendered as text. A key your catalogs do not define falls back to the built-in message for the code, then to the status text, and with `WithDebug` the pipeline logs a warning naming the key, the code and the route. `testutil.CheckMessageKeys` fails a test for each key in your sources that the catalogs do not define, the keys you pass to `c.T` and `c.TPlural` included ([localization guide](localization.md#keys-are-typed-and-checked)):
 
 ```go
 func TestMessageKeys(t *testing.T) {
