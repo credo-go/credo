@@ -50,6 +50,17 @@ These changes are on `main` and not yet in a release.
 | `c.T(key)`, `c.TPlural(key, n)` with `key` a `string` variable | `c.T(credo.MessageKey(key))`; declare the variable, field or parameter as `credo.MessageKey` where the key comes from. A literal key is unchanged |
 | `c.T("prefix." + code)` | `c.T(credo.MessageKey("prefix." + code))` |
 | A `testutil.CheckMessageKeys` test that passed | It may fail for an undefined key in a `T` or `TPlural` call, a key family with no catalog key, or a key passed to `T` as a variable: add the key, or write the call in a form the check reads |
+| `app.ProvideValue(db)` and `app.ProvideValue(PrimaryDB{db})`, a wrapper beside the handle it embeds | `app.ProvideValue(PrimaryDB{db}, credo.View())`, before the handle or after it |
+| A wrapper beside a handle that a `Provide` constructor builds, `app.Provide(sqldb.Open…)` and `app.ProvideValue(PrimaryDB{db})` | Build the wrapper from the handle's binding: `app.Provide(func(db *sqldb.DB) PrimaryDB { return PrimaryDB{db} }, credo.View())`; or bind the handle with `ProvideValue` |
+| `app.ProvideValue(pub)` and `app.ProvideValue[Events](pub)`, one pointer under its type and an interface | `app.Alias[Events, *Publisher]()`, or `app.ProvideValue[Events](pub, credo.View())` |
+| `app.Provide(func(db *sqldb.DB) Querier { return db })`, an adapter over a bound value | `app.Provide(func(db *sqldb.DB) Querier { return db }, credo.View())` |
+| The same `credo.ComponentName`, `credo.OptionalReadiness()` or `credo.Ingress()` on a handle and on the wrapper beside it | Keep them on the handle's registration, the owner, and drop them from the wrapper's, which carries `credo.View()` |
+| `credo.CloseOnShutdown()` or `credo.Borrowed()` on a second registration of one resource | Keep it on one registration; the other carries `credo.View()`, or nothing when its type has no `Shutdown` |
+| A worker that embeds a bound handle, `type Relay struct{ *sqldb.DB }`, registered through its constructor | Hold the handle in a named field, `type Relay struct{ db *sqldb.DB }` |
+| `app.Workers().Continuous(name, NewRelay)` where `NewRelay` returns a value bound with `Provide` | `app.Workers().Continuous(name, (*Relay).Run)`, the run function over the binding |
+| `app.Manage(NewT)` where `NewT` returns a bound value | Drop the `Manage` call: the binding owns the value |
+| `app.Manage(NewWrapper)` where the wrapper embeds a bound handle | Hold the handle in a named field of the wrapper |
+| Two `Provide` registrations with one `credo.ComponentName` name, which failed the start | The second panics at the call: give each component its own name |
 
 ## v0.26.0 at a glance
 
